@@ -16,7 +16,7 @@ native dev          # build and run the real app (markup hot reload)
 native check        # verify core.ts (subset checker) + markup + app.json
 native build        # ReleaseFast binary in zig-out/bin/
 native test         # the app's test suite
-native package --target macos --binary "zig-out/bin/Iroh Echo" --output "Iroh Echo.app"
+native package --target macos --binary "zig-out/bin/Nufon" --output "Nufon.app"
                     # create a Finder-launchable macOS app bundle
 ```
 
@@ -55,7 +55,7 @@ running or make exit appear to hang until the Iroh timeout expires.
 For development, close leftover instances with:
 
 ```sh
-pkill -x "Iroh Echo"
+pkill -x "Nufon"
 ```
 
 This is a lifecycle limitation in `src/iroh_ffi.zig`; it does not affect the

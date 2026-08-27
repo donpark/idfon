@@ -2,7 +2,7 @@ const std = @import("std");
 const native_sdk = @import("native_sdk");
 const ffi = @cImport({ @cInclude("irohnet.h"); });
 
-const alpn = "nuphone-echo/1";
+const alpn = "nufon-echo/1";
 const channel_key = 1;
 const max_message = 1024;
 const max_payload = 8192;
@@ -189,9 +189,6 @@ fn sendWorker(job: *Job) void {
     if (split == 0 or split == job.len) { self.complete(job.key, false, "invalid_payload"); return; }
     const address_text = job.bytes[0..split]; const message = job.bytes[split + 1 .. job.len];
     if (message.len > max_message) { self.complete(job.key, false, "message_too_large"); return; }
-    lock(&self.endpoint_lock); const receiver_endpoint = self.endpoint; self.endpoint_lock.unlock();
-    if (receiver_endpoint == null) { self.complete(job.key, false, "receiver_unavailable"); return; }
-
     // An endpoint cannot dial its own endpoint ID. Use a second endpoint in
     // this process for the sender while keeping the receiver shared in the UI.
     var config = ffi.endpoint_config_default();

@@ -1,12 +1,12 @@
 {
-  "name": "nuphone",
+  "name": "nufon",
   "version": "1.0.0",
   "description": "",
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "js": "pnpm --filter @nuphone/js",
-    "native": "pnpm --filter @nuphone/native"
+    "js": "pnpm --filter @nufon/js",
+    "native": "pnpm --filter @nufon/native"
   },
   "keywords": [],
   "author": "Don Park",

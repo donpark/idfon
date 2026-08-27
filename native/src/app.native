@@ -1,26 +1,49 @@
 <column gap="12" padding="16">
   <row cross="center">
-    <text grow="1" size="heading">Iroh Echo</text>
+    <text grow="1" size="heading">Nufon</text>
     <text foreground="text_muted">Sender + Receiver</text>
   </row>
 
   <panel padding="12">
     <column gap="8">
-      <text>Receiver</text>
-      <text foreground="text_muted">Start a persistent Iroh endpoint.</text>
-      <button variant="primary" on-press="connect_receiver">Connect receiver</button>
+      <text>Identity</text>
+      <text foreground="text_muted">Start an endpoint and share its ticket out of band.</text>
+      <button variant="primary" on-press="connect_receiver">Start endpoint</button>
       <text>{receiverStatus}</text>
-      <text foreground="text_muted">Public key: {receiverKey}</text>
-      <text foreground="text_muted">Address: {receiverTicket}</text>
+      <button variant="secondary" on-press="show_ticket">Ticket</button>
+      <if test="{showTicket}">
+        <panel padding="8">
+          <column gap="6">
+            <text>{receiverTicket}</text>
+            <button variant="secondary" on-press="copy_ticket">Copy ticket</button>
+          </column>
+        </panel>
+      </if>
     </column>
   </panel>
 
   <panel padding="12">
     <column gap="8">
-      <text>Sender</text>
+      <row cross="center">
+        <text grow="1">Connections</text>
+        <button variant="secondary" on-press="show_add_connection">Add Connection</button>
+      </row>
+      <text>{senderStatus}</text>
       <text-field text="{message}" placeholder="Message to echo" on-input="message_edit" />
       <button variant="secondary" disabled="{senderDisabled}" on-press="send_message">Send message</button>
-      <text>{senderStatus}</text>
     </column>
   </panel>
+
+  <if test="{showAddConnection}">
+    <dialog text="Add Connection">
+      <column gap="8" padding="12">
+        <text-field text="{connectionName}" label="Name" placeholder="Connection name" on-input="connection_name_edit" />
+        <text-field text="{receiverId}" label="Receiver ID" placeholder="Paste receiver ticket" on-input="receiver_id_edit" />
+        <row gap="8">
+          <button variant="secondary" on-press="cancel_add_connection">Cancel</button>
+          <button variant="primary" on-press="add_connection">Add</button>
+        </row>
+      </column>
+    </dialog>
+  </if>
 </column>

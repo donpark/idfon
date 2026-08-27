@@ -1,6 +1,6 @@
-# NuPhone Communication Model
+# Nufon Communication Model
 
-NuPhone is not limited to the classic phone-call or audio/video-chat model. It should support many loosely coupled ways for people and groups to communicate, with fine-grained control over how each capability reaches the recipient.
+Nufon is not limited to the classic phone-call or audio/video-chat model. It should support many loosely coupled ways for people and groups to communicate, with fine-grained control over how each capability reaches the recipient.
 
 ## Core idea
 
@@ -53,7 +53,7 @@ Policy should be configurable per person, group, capability, and context. A glob
 
 ## Communication modes
 
-NuPhone should treat these as distinct modes that can be combined when useful:
+Nufon should treat these as distinct modes that can be combined when useful:
 
 ### Direct messaging
 
@@ -91,7 +91,7 @@ communication mode
 transport and media delivery
 ```
 
-The underlying networking technology is an implementation detail. It may provide transports for live bytes, messages, events, stored media, or replicated state, but it should not define NuPhone’s product model.
+The underlying networking technology is an implementation detail. It may provide transports for live bytes, messages, events, stored media, or replicated state, but it should not define Nufon’s product model.
 
 ## Privacy and safety requirements
 
@@ -111,4 +111,4 @@ The default should favor user control and predictable behavior. An authorized se
 
 ## Design principle
 
-NuPhone should feel less like answering calls and more like configuring trusted communication channels: each person or group can be given precisely defined ways to reach you, while you retain control over when and how those channels affect your attention.
+Nufon should feel less like answering calls and more like configuring trusted communication channels: each person or group can be given precisely defined ways to reach you, while you retain control over when and how those channels affect your attention.
