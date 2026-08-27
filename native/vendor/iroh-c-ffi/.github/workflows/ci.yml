@@ -1,0 +1,457 @@
+name: CI
+
+on:
+    pull_request:
+    push:
+        branches:
+            - main
+
+concurrency:
+    group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+
+env:
+  IROH_FORCE_STAGING_RELAYS: "1"
+
+jobs:
+    build_and_test_nix:
+        name: Build and test
+        timeout-minutes: 30
+        runs-on: ${{ matrix.runner }}
+        strategy:
+            fail-fast: false
+            matrix:
+                name: [ubuntu-latest, macOS-arm-latest]
+                rust: [stable]
+                include:
+                    - name: ubuntu-latest
+                      os: ubuntu-latest
+                      release-os: linux
+                      release-arch: amd64
+                      runner: [self-hosted, linux, X64]
+                    - name: macOS-arm-latest
+                      os: macOS-latest
+                      release-os: darwin
+                      release-arch: aarch64
+                      runner: [self-hosted, macOS, ARM64]
+        steps:
+            - name: checkout
+              uses: actions/checkout@v4
+
+            - name: Install ${{ matrix.rust }} rust
+              uses: dtolnay/rust-toolchain@master
+              with:
+                toolchain: ${{ matrix.rust }}
+            - name: install cargo-nextest
+              uses: taiki-e/install-action@v2
+              with:
+                tool: nextest
+            - name: run tests
+              run: |
+                cargo nextest run --all-features --lib --bins --tests --no-fail-fast
+              env:
+                RUST_LOG: "TRACE"
+            - name: build
+              run: |
+                cargo build --release
+                cargo run --features headers --bin generate_headers --release
+            - name: build test binary
+              run: |
+                cc -o main{,.c} -L target/release -l iroh_c_ffi -lc -lm
+              env:
+                LD_LIBRARY_PATH: target/release
+            - name: test run
+              id: run_tests
+              continue-on-error: true
+              env:
+                LD_LIBRARY_PATH: target/release
+              run: |
+                ./main server --json > server_output.json &
+                server_pid=$!
+                # Wait for the server to start
+                sleep 10
+                # Read the second line of the file
+                line=$(sed -n '2p' server_output.json)
+
+                # Check if the line is empty
+                if [[ -z "$line" ]]; then
+                    echo "Error: server_output.json does not have at least 2 lines"
+                    echo "server_output.json:"
+                    cat server_output.json
+                    exit 1
+                fi
+                # Parse the JSON
+                json_output=$(echo $line | jq .)
+
+                # Store variables
+                endpoint_id=$(echo $json_output | jq -r '.endpoint_id')
+                relay=$(echo $json_output | jq -r '.relay')
+                addrs=$(echo $json_output | jq -r '.addrs[]')
+                ./main client $endpoint_id $relay ${addrs[@]}
+                sleep 10
+
+                # wait for server the shutdown
+                wait $server_pid
+                server_status=$?
+                echo ""
+                echo "Server closed with status $server_status"
+                if [[ "$server_status" != "0" ]]; then
+                  exit 1
+                fi
+
+                # Read the 3rd line of the file
+                last_line=$(sed -n '3p' server_output.json)
+                # Parse the JSON
+                json_output=$(echo $last_line | jq -r '.data')
+                # Ensure json_output is as expected
+                if [[ "$json_output" != "hello world from C" ]]; then
+                    echo "Error: Unexpected output for line 3"
+                    echo "server_output.json:"
+                    cat server_output.json
+                    exit 1
+                fi
+
+                # Repeat for the 6th line of the file
+                last_line=$(sed -n '6p' server_output.json)
+                # Parse the JSON
+                json_output=$(echo $last_line | jq -r '.data')
+                # Ensure json_output is as expected
+                if [[ "$json_output" != "hello world from C" ]]; then
+                    echo "Error: Unexpected output for line 6"
+                    echo "server_output.json:"
+                    cat server_output.json
+                    exit 1
+                fi
+
+                echo ""
+                echo "Success"
+                echo "server_output.json:"
+                cat server_output.json
+            - name: Fail Job if Tests Failed
+              if: ${{ steps.run_tests.outcome == 'failure' }}
+              run: |
+                echo "Tests failed, server logs are:"
+                cat server_output.json
+                exit 1
+            - name: check headers
+              shell: bash
+              run: |
+                cp irohnet.h irohnet.h.orig
+                echo "Running generate_headers"
+                ./target/release/generate_headers
+                echo "Generating diff of irohnet.h"
+                diff_output="$(diff irohnet.h irohnet.h.orig)" || true
+                echo "Checking diff"
+                # Check if the diff_output is not empty
+                if [ -n "$diff_output" ]; then
+                    echo "Error: Differences were found compared to the checked in headers"
+                    echo "$diff_output"
+                    exit 1
+                fi
+              env:
+                CARGO_CRATE_NAME: iroh_c_ffi
+
+    build_and_test_windows:
+        name: Build and test
+        timeout-minutes: 30
+        runs-on: ${{ matrix.runner }}
+        strategy:
+            fail-fast: false
+            matrix:
+                name: [windows-latest]
+                rust: [stable]
+                target:
+                    - x86_64-pc-windows-gnu
+                include:
+                    - name: windows-latest
+                      os: windows
+                      runner: [self-hosted, windows, x64]
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+            - name: Install ${{ matrix.rust }}
+              run: |
+                rustup toolchain install ${{ matrix.rust }}
+                rustup toolchain default ${{ matrix.rust }}
+                rustup target add ${{ matrix.target }}
+                rustup set default-host ${{ matrix.target }}
+            - name: Install cargo-nextest
+              shell: powershell
+              run: |
+                $tmp = New-TemporaryFile | Rename-Item -NewName { $_ -replace 'tmp$', 'zip' } -PassThru
+                Invoke-WebRequest -OutFile $tmp https://get.nexte.st/latest/windows
+                $outputDir = if ($Env:CARGO_HOME) { Join-Path $Env:CARGO_HOME "bin" } else { "~/.cargo/bin" }
+                $tmp | Expand-Archive -DestinationPath $outputDir -Force
+                $tmp | Remove-Item
+            - uses: msys2/setup-msys2@v2
+              id: msys2
+              with:
+                msystem: MINGW64
+                update: true
+                install: mingw-w64-x86_64-toolchain
+            - name: Add MinGW to PATH
+              shell: pwsh
+              run: |
+                echo "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin" >> $env:GITHUB_PATH
+            - name: run tests
+              run: |
+                cargo nextest run --all-features --lib --bins --tests --no-fail-fast
+              env:
+                RUST_LOG: "TRACE"
+            - name: build
+              run: |
+                cargo build --release --target ${{ matrix.target }}
+                cargo run --features headers --bin generate_headers --release --target ${{ matrix.target }}
+            - name: build test binary
+              run: |
+                Copy-Item target/x86_64-pc-windows-gnu/release/iroh_c_ffi.dll iroh_c_ffi.dll
+                gcc -o main.exe main.c -L target/x86_64-pc-windows-gnu/release -liroh_c_ffi -lm -lkernel32 -ladvapi32 -lbcrypt -lntdll -luserenv -lws2_32 -lmsvcrt
+              env:
+                LD_LIBRARY_PATH: target/release
+            - name: test run
+              id: run_tests
+              continue-on-error: true
+              run: |
+                $server_process = Start-Process -PassThru -NoNewWindow -FilePath "./main.exe" -ArgumentList "server", "--json" -RedirectStandardOutput "server_output.json"
+                # Wait for the server to start
+                Start-Sleep -Seconds 10
+                # Read the second line of the file
+                $line = Get-Content server_output.json | Select-Object -Index 1
+
+                # Check if the line is empty
+                if ([string]::IsNullOrEmpty($line)) {
+                    Write-Output "Error: server_output.json does not have at least 2 lines"
+                    exit 1
+                }
+                # Parse the JSON
+                $json_output = ConvertFrom-Json $line
+
+                # Store variables
+                $endpoint_id = $json_output.endpoint_id
+                $relay = $json_output.relay
+                $addrs = $json_output.addrs
+                & "./main" "client" $endpoint_id $relay $addrs
+
+                # wait for the server process to terminate
+                Wait-Process -InputObject $server_process
+
+                # # ramfox: ExitCode in windows seems to not work in all environments. I've tried a few variations, but they all show the exitCode as Null. commenting this out for now.
+                # $exitCode = $server_process.ExitCode
+
+                # Write-Output ""
+                # Write-Output "Server process exited with code: $exitCode"
+
+                # if ($exitCode -ne 0) {
+                #     exit 1
+                # }
+
+                # Read the 3rd line of the file
+                Write-Output "checking first data transfer:"
+                $last_line = Get-Content server_output.json | Select-Object -Index 2
+                # Parse the JSON
+                $json_output = ConvertFrom-Json $last_line
+                # Ensure json_output is as expected
+                if ($json_output.data -ne "hello world from C") {
+                    Write-Output "Error: Unexpected output for line 3"
+                    Write-Output $json_output
+                    exit 1
+                }
+
+                Write-Output "checking second data transfer:"
+                # Repeat for the 6th line of the file
+                $last_line = Get-Content server_output.json | Select-Object -Index 5
+                # Parse the JSON
+                $json_output = ConvertFrom-Json $last_line
+                # Ensure json_output is as expected
+                if ($json_output.data -ne "hello world from C") {
+                    Write-Output "Error: Unexpected output for line 6"
+                    Write-Output $json_output
+                    exit 1
+                }
+                Write-Output ""
+                Write-Output "Success"
+                Write-Output "server_output.json:"
+                Get-Content server_output.json
+            - name: Fail Job if Tests Failed
+              if: ${{ steps.run_tests.outcome == 'failure' }}
+              run: |
+                Write-Output "Tests failed, server logs are:"
+                Get-Content server_output.json
+                exit 1
+
+    android_build:
+        name: Android Build Only
+        timeout-minutes: 30
+        # runs-on: ubuntu-latest
+        runs-on: [self-hosted, linux, X64]
+        strategy:
+          fail-fast: false
+          matrix:
+            target:
+              - aarch64-linux-android
+              - armv7-linux-androideabi
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                target: ${{ matrix.target }}
+            - name: Install rustup target
+              run: rustup target add ${{ matrix.target }}
+
+            - name: Setup Java
+              uses: actions/setup-java@v4
+              with:
+                distribution: 'temurin'
+                java-version: '17'
+
+            - name: Setup Android SDK
+              uses: android-actions/setup-android@v3
+
+            - name: Setup Android NDK
+              uses: arqu/setup-ndk@main
+              id: setup-ndk
+              with:
+                ndk-version: r23
+                add-to-path: true
+
+            - name: Build
+              env:
+                ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+              run: |
+                cargo install cargo-ndk
+                cargo ndk --target ${{ matrix.target }} build
+
+    cross:
+        timeout-minutes: 30
+        name: Cross compile
+        runs-on: [self-hosted, linux, X64]
+        strategy:
+            fail-fast: false
+            matrix:
+              target:
+                - i686-unknown-linux-gnu
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                submodules: recursive
+
+            - name: Install rust stable
+              uses: dtolnay/rust-toolchain@stable
+
+            - name: Cleanup Docker
+              continue-on-error: true
+              run: |
+                docker kill $(docker ps -q)
+
+            - name: Install cross
+              # See https://github.com/cross-rs/cross/issues/1222
+              run: cargo install cross --git https://github.com/cross-rs/cross
+
+            - name: build
+              # cross tests are currently broken vor armv7 and aarch64
+              # see https://github.com/cross-rs/cross/issues/1311.  So on
+              # those platforms we only build but do not run tests.
+              if: matrix.target != 'i686-unknown-linux-gnu'
+              run: cross build --all --target ${{ matrix.target }}
+              env:
+                RUST_LOG: ${{ runner.debug && 'DEBUG' || 'INFO'}}
+
+            - name: test
+              # cross tests are currently broken for armv7 and aarch64
+              # see https://github.com/cross-rs/cross/issues/1311
+              if: matrix.target == 'i686-unknown-linux-gnu'
+              run: cross test --all --target ${{ matrix.target }} -- --test-threads=12
+              env:
+                RUST_LOG: ${{ runner.debug && 'DEBUG' || 'INFO'}}
+
+    cargo_deny:
+        timeout-minutes: 30
+        name: cargo deny
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: EmbarkStudios/cargo-deny-action@v2
+              with:
+                command: check advisories bans licenses sources
+
+    check_fmt_and_docs:
+        timeout-minutes: 30
+        name: Checking fmt and docs
+        runs-on: ubuntu-latest
+        env:
+            RUSTC_WRAPPER: "sccache"
+            SCCACHE_GHA_ENABLED: "on"
+        steps:
+        - uses: actions/checkout@master
+
+        - uses: dtolnay/rust-toolchain@stable
+          with:
+            components: rustfmt
+
+        - name: Install sccache
+          uses: mozilla-actions/sccache-action@v0.0.9
+
+        - name: fmt
+          run: cargo fmt --all -- --check
+
+        - name: Docs
+          run: cargo doc --workspace --all-features --no-deps --document-private-items
+
+    clippy_check:
+        timeout-minutes: 30
+        runs-on: ubuntu-latest
+        env:
+            RUSTC_WRAPPER: "sccache"
+            SCCACHE_GHA_ENABLED: "on"
+        steps:
+        - uses: actions/checkout@master
+        - uses: dtolnay/rust-toolchain@stable
+        - name: Install sccache
+          uses: mozilla-actions/sccache-action@v0.0.9
+
+        # TODO: We have a bunch of platform-dependent code so should
+        #    probably run this job on the full platform matrix
+        - name: clippy check (all features)
+          run: cargo clippy --workspace --all-features --all-targets --bins --tests --benches
+
+        - name: clippy check (no features)
+          run: cargo clippy --workspace --no-default-features --lib --bins --tests
+
+        - name: clippy check (default features)
+          run: cargo clippy --workspace --all-targets
+
+    check_semver:
+        timeout-minutes: 30
+        name: Check semver
+        runs-on: ubuntu-latest
+        env:
+            RUSTC_WRAPPER: "sccache"
+            SCCACHE_GHA_ENABLED: "on"
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+            - name: Install sccache
+              uses: mozilla-actions/sccache-action@v0.0.9
+
+            - name: Setup Environment (PR)
+              if: ${{ github.event_name == 'pull_request' }}
+              shell: bash
+              run: |
+                  echo "HEAD_COMMIT_SHA=$(git rev-parse origin/${{ github.base_ref }})" >> ${GITHUB_ENV}
+            - name: Setup Environment (Push)
+              if: ${{ github.event_name == 'push' || github.event_name == 'merge_group' }}
+              shell: bash
+              run: |
+                  echo "HEAD_COMMIT_SHA=$(git rev-parse origin/main)" >> ${GITHUB_ENV}
+            - name: Check semver
+              # uses: obi1kenobi/cargo-semver-checks-action@v2
+              uses: n0-computer/cargo-semver-checks-action@feat-baseline
+              with:
+                  package: iroh-c-ffi
+                  baseline-rev: ${{ env.HEAD_COMMIT_SHA }}
+                  use-cache: false

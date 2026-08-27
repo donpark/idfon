@@ -1,7 +1,11 @@
 {
   "name": "@nuphone/native",
-  "private": true,
   "description": "Native-SDK version of Nuphone.",
+  "private": true,
+  "scripts": {
+    "build": "native build",
+    "package": "native package --target macos --binary 'zig-out/bin/Iroh Echo' --output 'Iroh Echo.app'"
+  },
   "dependencies": {
     "@native-sdk/core": "0.10.1"
   }

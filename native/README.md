@@ -16,6 +16,8 @@ native dev          # build and run the real app (markup hot reload)
 native check        # verify core.ts (subset checker) + markup + app.json
 native build        # ReleaseFast binary in zig-out/bin/
 native test         # the app's test suite
+native package --target macos --binary "zig-out/bin/Iroh Echo" --output "Iroh Echo.app"
+                    # create a Finder-launchable macOS app bundle
 ```
 
 Edit `src/core.ts` for behavior, `src/app.native` for the view, and
@@ -41,6 +43,32 @@ next `native check`/`dev`/`build` puts it back. Running `npm install`
 is optional for the same reason: the CLI materializes and refreshes the
 package itself, and an install simply lands the identical content once
 `@native-sdk/core` is on npm.
+
+## Known shutdown limitation
+
+The Iroh host starts detached native worker threads for the receiver accept
+loop and sender requests. Shutdown currently does not cancel and join every
+worker before the process exits. If a worker is blocked in endpoint or stream
+I/O, closing the window or stopping `native dev native` can leave the app
+running or make exit appear to hang until the Iroh timeout expires.
+
+For development, close leftover instances with:
+
+```sh
+pkill -x "Iroh Echo"
+```
+
+This is a lifecycle limitation in `src/iroh_ffi.zig`; it does not affect the
+normal bind/send protocol while the app is running.
+
+## Packaging and size
+
+`native build` creates a raw executable. Use `native package` to create a
+Finder-launchable `.app` bundle; launching the raw executable may open a
+Terminal window on macOS. The build links the optimized Rust Iroh archive
+(`target/release/libiroh_c_ffi.a`), so the packaged app is roughly 26 MB on
+macOS. WebKit is a system framework dependency of the Native SDK's macOS host,
+not a framework or WebView payload bundled in the app.
 
 ## Requirements
 

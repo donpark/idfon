@@ -1,9 +1,9 @@
 {
     "$schema": "https://schema.native-sdk.dev/app/v1.json",
     "id": "dev.native_sdk.native",
-    "name": "native",
-    "display_name": "Native",
-    "description": "A counter that lives in one native window.",
+    "name": "Iroh Echo",
+    "display_name": "Iroh Echo",
+    "description": "A native Iroh echo sender and receiver.",
     "version": "0.1.0",
     "icons": ["assets/icon.png"],
     "platforms": ["macos"],
@@ -13,11 +13,11 @@
         "windows": [
             {
                 "label": "main",
-                "title": "Native",
+                "title": "Iroh Echo",
                 "width": 480,
-                "height": 320,
+                "height": 520,
                 "views": [
-                    { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Counter canvas", "accessibility_label": "Counter", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
+                    { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Iroh echo", "accessibility_label": "Iroh echo sender and receiver", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
                 ]
             }
         ]
