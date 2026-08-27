@@ -1,0 +1,8 @@
+{
+  "name": "@nuphone/native",
+  "private": true,
+  "description": "Native-SDK version of Nuphone.",
+  "dependencies": {
+    "@native-sdk/core": "0.10.1"
+  }
+}
