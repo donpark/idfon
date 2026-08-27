@@ -8,6 +8,7 @@ export type ChannelState = "data" | "closed" | "rejected";
 
 export interface Model {
   readonly message: Uint8Array;
+  readonly replyRoute: Uint8Array;
   readonly connectionName: Uint8Array;
   readonly receiverId: Uint8Array;
   readonly receiverTicket: Uint8Array;
@@ -33,6 +34,7 @@ export type Msg =
   | { readonly kind: "cancel_add_connection" }
   | { readonly kind: "add_connection" }
   | { readonly kind: "send_message" }
+  | { readonly kind: "reply_message" }
   | { readonly kind: "sender_ready"; readonly data: Uint8Array }
   | { readonly kind: "sender_error"; readonly data: Uint8Array };
 
@@ -42,6 +44,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
   return [{
 
     message: EMPTY,
+    replyRoute: EMPTY,
     connectionName: EMPTY,
     receiverId: EMPTY,
     receiverTicket: EMPTY,
@@ -70,8 +73,21 @@ function receiverTicket(data: Uint8Array): Uint8Array {
   return data;
 }
 
+function routedFields(data: Uint8Array): [Uint8Array, Uint8Array] {
+  let i = 0;
+  while (i < data.length) {
+    if (data[i] === 10) return [data.slice(0, i), data.slice(i + 1)];
+    i += 1;
+  }
+  return [EMPTY, EMPTY];
+}
+
 function sendPayload(model: Model): Uint8Array {
   return concat(concat(model.receiverId, new Uint8Array([10])), model.message);
+}
+
+function replyPayload(model: Model): Uint8Array {
+  return concat(concat(model.replyRoute, new Uint8Array([10])), model.message);
 }
 
 function editText(text: Uint8Array, edit: TextInputEvent): Uint8Array {
@@ -93,7 +109,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "receiver_error":
       return { ...model, receiverStatus: msg.data, receiverAvailable: false };
     case "receiver_event":
-      return msg.state === "data" ? { ...model, receiverStatus: concat(utf8Bytes("Received: "), msg.bytes) } : model;
+      if (msg.state !== "data") return model;
+      {
+        const fields = routedFields(msg.bytes);
+        const route = fields[0];
+        const message = fields[1];
+        if (route.length === 0) return model;
+        return { ...model, replyRoute: route, message, receiverStatus: concat(utf8Bytes("Received: "), message), senderStatus: utf8Bytes("Reply available") };
+      }
     case "message_edit":
       return { ...model, message: editText(model.message, msg.edit) };
     case "connection_name_edit":
@@ -115,6 +138,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "send_message":
       if (model.receiverId.length === 0 || model.message.length === 0) return model;
       return [model, Cmd.request("iroh.sender.send", sendPayload(model), { key: "iroh-send", ok: "sender_ready", err: "sender_error" })];
+    case "reply_message":
+      if (model.replyRoute.length === 0 || model.message.length === 0) return model;
+      return [model, Cmd.request("iroh.receiver.reply", replyPayload(model), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
     case "sender_ready":
       return { ...model, senderStatus: msg.data.length === 0 ? utf8Bytes("Message echoed") : msg.data };
     case "sender_error":

@@ -33,6 +33,7 @@ const ShutdownJob = struct {
 const Host = struct {
     endpoint: ?*ffi.Endpoint_t = null,
     active_connection: ?*ffi.Connection_t = null,
+    active_send_stream: ?*ffi.SendStream_t = null,
     shutting_down: bool = false,
     endpoint_lock: std.atomic.Mutex = .unlocked,
     channel_binding: ?ChannelBinding = null,
@@ -94,7 +95,7 @@ fn send(context: *anyopaque, name: []const u8, payload: []const u8) void {
 
 fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8) void {
     const self: *Host = @ptrCast(@alignCast(context));
-    if (!std.mem.eql(u8, name, "iroh.receiver.bind") and !std.mem.eql(u8, name, "iroh.sender.send")) {
+    if (!std.mem.eql(u8, name, "iroh.receiver.bind") and !std.mem.eql(u8, name, "iroh.receiver.reply") and !std.mem.eql(u8, name, "iroh.sender.send")) {
         self.complete(key, false, "unknown_command"); return;
     }
     if (payload.len > max_payload) { self.complete(key, false, "payload_too_large"); return; }
@@ -105,6 +106,11 @@ fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8)
     @memcpy(job.bytes[0..payload.len], payload);
     if (std.mem.eql(u8, name, "iroh.receiver.bind")) {
         var thread = std.Thread.spawn(.{}, bindWorker, .{job}) catch {
+            std.heap.page_allocator.destroy(job); self.complete(key, false, "thread_failed"); return;
+        };
+        thread.detach();
+    } else if (std.mem.eql(u8, name, "iroh.receiver.reply")) {
+        var thread = std.Thread.spawn(.{}, replyWorker, .{job}) catch {
             std.heap.page_allocator.destroy(job); self.complete(key, false, "thread_failed"); return;
         };
         thread.detach();
@@ -182,6 +188,42 @@ fn endpointInfo(endpoint: *ffi.Endpoint_t, output: []u8) !usize {
     return a.len + 1 + k.len;
 }
 
+fn replyWorker(job: *Job) void {
+    defer std.heap.page_allocator.destroy(job);
+    const self = job.host;
+    var split: usize = 0; while (split < job.len and job.bytes[split] != 10) split += 1;
+    if (split == 0 or split == job.len) { self.complete(job.key, false, "invalid_payload"); return; }
+    const route = job.bytes[0..split];
+    const message = job.bytes[split + 1 .. job.len];
+    if (message.len > max_message) { self.complete(job.key, false, "message_too_large"); return; }
+
+    lock(&self.endpoint_lock);
+    const connection = self.active_connection;
+    const stream = self.active_send_stream;
+    self.active_connection = null;
+    self.active_send_stream = null;
+    self.endpoint_lock.unlock();
+    if (!std.mem.eql(u8, route, "1") or stream == null) {
+        self.complete(job.key, false, "reply_unavailable"); return;
+    }
+    var tx = stream;
+    if (ffi.send_stream_write_timeout(&tx, .{ .ptr = message.ptr, .len = message.len }, 30_000) != 0) {
+        ffi.send_stream_free(tx);
+        if (connection) |value| ffi.connection_close(value);
+        self.complete(job.key, false, "reply_failed"); return;
+    }
+    // send_stream_finish consumes tx; do not free it afterwards.
+    if (ffi.send_stream_finish(tx) != 0) {
+        if (connection) |value| ffi.connection_close(value);
+        self.complete(job.key, false, "reply_failed"); return;
+    }
+    // Leave the connection open long enough for the peer to read the
+    // finished reply stream; the sender closes it after receiving the reply.
+    self.complete(job.key, true, "replied");
+    var thread = std.Thread.spawn(.{}, acceptLoop, .{self}) catch return;
+    thread.detach();
+}
+
 fn sendWorker(job: *Job) void {
     defer std.heap.page_allocator.destroy(job);
     const self = job.host;
@@ -242,15 +284,23 @@ fn acceptLoop(self: *Host) void {
         }
         var received = ffi.rust_buffer_alloc(0);
         if (ffi.recv_stream_read_to_end_timeout(&rx, &received, max_message, 30_000) == 0) {
-            if (ffi.send_stream_write(&tx, .{ .ptr = received.ptr, .len = received.len }) == 0) {
-                _ = ffi.send_stream_finish(tx);
-            } else {
-                ffi.send_stream_free(tx);
+            lock(&self.endpoint_lock);
+            self.active_send_stream = tx;
+            self.endpoint_lock.unlock();
+            // Route 1 is local-only; the UI uses it to reply on this live connection.
+            // ponytail: one live inbound route; map connection IDs when concurrent replies matter.
+            var routed: [max_result]u8 = undefined;
+            const prefix = "1\n";
+            if (prefix.len + received.len <= routed.len) {
+                @memcpy(routed[0..prefix.len], prefix);
+                @memcpy(routed[prefix.len..][0..received.len], received.ptr[0..received.len]);
+                if (self.channel()) |handle| _ = handle.post(routed[0 .. prefix.len + received.len]);
             }
-            if (self.channel()) |handle| _ = handle.post(received.ptr[0..received.len]);
-        } else {
-            ffi.send_stream_free(tx);
+            ffi.recv_stream_free(rx);
+            ffi.rust_buffer_free(received);
+            return;
         }
+        ffi.send_stream_free(tx);
         ffi.rust_buffer_free(received); ffi.recv_stream_free(rx);
         lock(&self.endpoint_lock);
         const owns_connection = self.active_connection == connection;
