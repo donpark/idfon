@@ -13,6 +13,12 @@ export interface Connection {
   readonly endpoint: Uint8Array;
 }
 
+export interface SessionLaunch {
+  readonly peerId: Uint8Array;
+  readonly sessionId: Uint8Array;
+  readonly sessionType: Uint8Array;
+}
+
 export interface Model {
   readonly message: Uint8Array;
   readonly replyRoute: Uint8Array;
@@ -21,6 +27,7 @@ export interface Model {
   readonly identityError: boolean;
   readonly connections: readonly Connection[];
   readonly selectedConnectionName: Uint8Array;
+  readonly sessionLaunch: SessionLaunch | null;
   readonly chatOpen: boolean;
   readonly connectionName: Uint8Array;
   readonly receiverId: Uint8Array;
@@ -123,7 +130,7 @@ export type Msg =
 export const viewUnbound = ["receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error"] as const;
 
 export function initialModel(): Model | [Model, Cmd<Msg>] {
-  return [{
+  const model: Model = {
 
     message: EMPTY,
     replyRoute: EMPTY,
@@ -132,6 +139,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     identityError: false,
     connections: NO_CONNECTIONS,
     selectedConnectionName: EMPTY,
+    sessionLaunch: null,
     chatOpen: false,
     connectionName: EMPTY,
     receiverId: EMPTY,
@@ -162,7 +170,8 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     showAdvanced: false,
     showTicket: false,
     showAddConnection: false,
-  }, Cmd.batch([
+  };
+  return [model, Cmd.batch([
     Cmd.channelOpen(RECEIVER_CHANNEL, { event: "receiver_event" }),
     Cmd.request("iroh.receiver.bind", EMPTY, { key: "iroh-receiver", ok: "receiver_ready", err: "receiver_error" }),
   ])];
@@ -304,7 +313,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           const isStop = sameBytes(action, utf8Bytes("stop"));
           if (!isStart && !isStop) return model;
           if (isStart && ticket.length === 0) return model;
-          const next = { ...model, identitySelected: true, replyRoute: route, liveTicketInput: ticket, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), liveStatus: utf8Bytes(isStart ? "Subscribing to live audio" : "Stopping live audio") };
+          const next = { ...model, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), liveStatus: utf8Bytes(isStart ? "Subscribing to live audio" : "Stopping live audio") };
           if (isStart) return [next, Cmd.batch([
             Cmd.request("media.live.subscribe", ticket, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
             Cmd.request("iroh.receiver.reply", replyTextPayload(model, utf8Bytes("call_started")), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
@@ -317,12 +326,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         const recordingPrefix = utf8Bytes("NUFON-RECORDING/1\n");
         if (message.length > recordingPrefix.length && sameBytes(message.slice(0, recordingPrefix.length), recordingPrefix)) {
           const ticket = recordingTicket(message);
-          return [{ ...model, identitySelected: true, replyRoute: route, message: utf8Bytes("Received recording"), blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true }, Cmd.batch([
+          return [{ ...model, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, message: utf8Bytes("Received recording"), blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true }, Cmd.batch([
             Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" }),
             Cmd.request("media.blob.fetch", ticket, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" }),
           ])];
         }
-        return { ...model, identitySelected: true, replyRoute: route, message, receiverStatus: utf8Bytes("Received: receiver_event"), senderStatus: utf8Bytes("Reply available"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true };
+        return { ...model, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, message, receiverStatus: utf8Bytes("Received: receiver_event"), senderStatus: utf8Bytes("Reply available"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true };
       }
     case "connection_selected": {
       const connection = model.connections.find((item) => sameBytes(item.name, msg.name));
@@ -333,11 +342,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "connection_opened": {
       const connection = model.connections.find((item) => sameBytes(item.name, msg.name));
       if (connection === undefined) return model;
-      const next = { ...model, selectedConnectionName: connection.name, receiverId: connection.endpoint, senderDisabled: false, senderStatus: concat(utf8Bytes("Ready: "), connection.name), chatOpen: true };
+      const next = { ...model, selectedConnectionName: connection.name, receiverId: connection.endpoint, sessionLaunch: { peerId: connection.endpoint, sessionId: connection.endpoint, sessionType: utf8Bytes("chat") }, senderDisabled: false, senderStatus: concat(utf8Bytes("Ready: "), connection.name), chatOpen: true };
       return [next, Cmd.request("media.set_scope", connection.endpoint, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
     }
     case "chat_closed":
-      return { ...model, chatOpen: false };
+      return { ...model, chatOpen: false, sessionLaunch: null };
     case "message_edit":
       return { ...model, message: editText(model.message, msg.edit) };
     case "identity_name_edit":
