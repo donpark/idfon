@@ -7,65 +7,65 @@
     <button variant="secondary" on-press="reply_message">Reply</button>
   </row>
 
-  <row gap="8" cross="center">
-    <text grow="1">{audioStatus}</text>
-    <if test="{audioActive}">
-      <button variant="secondary" on-press="audio_stop">Stop microphone</button>
+  <text foreground="text_muted">{audioStatus}</text>
+  <row gap="8">
+    <if test="{recordingActive}">
+      <button variant="secondary" on-press="recording_stop">Stop</button>
     </if>
     <else>
-      <button variant="primary" on-press="audio_start">Start microphone</button>
+      <if test="{recordingTicket}">
+        <button variant="primary" on-press="recording_send">Send recording</button>
+      </if>
+      <else>
+        <button variant="primary" on-press="recording_start">Record</button>
+      </else>
     </else>
-    <button variant="secondary" on-press="audio_probe">Test microphone</button>
-    <button variant="secondary" on-press="audio_emergency_stop">Emergency stop</button>
-    <text-field text="{volumeInput}" label="Volume 0-100" on-input="volume_edit" />
-    <button variant="secondary" on-press="volume_set">Set volume</button>
-  </row>
-
-  <row gap="8" cross="center">
-    <text grow="1">{liveStatus}</text>
     <if test="{liveActive}">
-      <button variant="secondary" on-press="live_stop">Stop live</button>
+      <button variant="secondary" on-press="live_stop">End call</button>
     </if>
     <else>
-      <button variant="primary" on-press="live_start">Start live</button>
+      <button variant="secondary" on-press="live_start">Call</button>
     </else>
   </row>
-  <if test="{liveActive}">
-    <text>{liveTicket}</text>
-    <button variant="secondary" on-press="copy_live_ticket">Copy live ticket</button>
-  </if>
-  <text-field text="{liveTicketInput}" label="Live ticket" placeholder="Paste iroh-live ticket" on-input="live_ticket_edit" />
-  <if test="{subscribedActive}">
-    <button variant="secondary" on-press="live_unsubscribe">Stop subscribed audio</button>
-  </if>
-  <else>
-    <button variant="secondary" on-press="live_subscribe">Subscribe to live audio</button>
-  </else>
-  <if test="{recordingActive}">
-    <button variant="secondary" on-press="recording_stop">Stop recording</button>
-  </if>
-  <else>
-    <button variant="secondary" on-press="recording_start">Record microphone</button>
-  </else>
-  <if test="{recordingReady}">
-    <button variant="secondary" on-press="recording_store">Store recording as blob</button>
-  </if>
   <text foreground="text_muted">{recordingStatus}</text>
-  <if test="{recordingTicket}">
-    <text>{recordingTicket}</text>
-    <button variant="secondary" on-press="copy_recording_ticket">Copy blob ticket</button>
-    <button variant="primary" on-press="recording_send">Send recording</button>
-  </if>
-  <text-field text="{blobTicketInput}" label="Blob ticket" placeholder="Paste BlobTicket" on-input="blob_ticket_edit" />
-  <button variant="secondary" on-press="blob_fetch">Fetch recording</button>
-  <text foreground="text_muted">{blobStatus}</text>
+  <text foreground="text_muted">{liveStatus}</text>
   <if test="{fetchedRecordingReady}">
     <if test="{playbackActive}">
-      <button variant="secondary" on-press="playback_stop">Stop playback</button>
+      <button variant="secondary" on-press="playback_stop">Stop received recording</button>
     </if>
     <else>
-      <button variant="secondary" on-press="playback_start">Play recording</button>
+      <button variant="primary" on-press="playback_start">Play received recording</button>
     </else>
   </if>
-  <text foreground="text_muted">{playbackStatus}</text>
+
+  <button variant="secondary" on-press="toggle_advanced">Advanced</button>
+  <if test="{showAdvanced}">
+    <column gap="8">
+      <button variant="secondary" on-press="audio_probe">Test microphone</button>
+      <row gap="8" cross="center">
+        <text-field text="{volumeInput}" label="Volume 0-100" on-input="volume_edit" />
+        <button variant="secondary" on-press="volume_set">Set volume</button>
+      </row>
+      <button variant="secondary" on-press="audio_emergency_stop">Stop all audio</button>
+      <text-field text="{liveTicketInput}" label="Live ticket" placeholder="Paste iroh-live ticket" on-input="live_ticket_edit" />
+      <if test="{liveActive}">
+        <text>{liveTicket}</text>
+        <button variant="secondary" on-press="copy_live_ticket">Copy live ticket</button>
+      </if>
+      <if test="{subscribedActive}">
+        <button variant="secondary" on-press="live_unsubscribe">Stop subscribed audio</button>
+      </if>
+      <else>
+        <button variant="secondary" on-press="live_subscribe">Subscribe to live audio</button>
+      </else>
+      <if test="{recordingTicket}">
+        <text>{recordingTicket}</text>
+        <button variant="secondary" on-press="copy_recording_ticket">Copy recording ticket</button>
+      </if>
+      <text-field text="{blobTicketInput}" label="Blob ticket" placeholder="Paste BlobTicket" on-input="blob_ticket_edit" />
+      <button variant="secondary" on-press="blob_fetch">Fetch recording</button>
+      <text>{blobStatus}</text>
+      <text>{playbackStatus}</text>
+    </column>
+  </if>
 </column>

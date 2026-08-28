@@ -472,8 +472,12 @@ pub fn media_recording_play() -> u8 {
     }
     let file = match File::open(&path) {
         Ok(file) => file,
-        Err(_) => return 1,
+        Err(err) => {
+            tracing::warn!(path = %path.display(), "recording playback open failed: {err:#}");
+            return 1;
+        }
     };
+    tracing::info!(path = %path.display(), bytes = file.metadata().map(|value| value.len()).unwrap_or(0), "recording playback started");
     let mut packets = PacketReader::new(file);
     let config = iroh_live::media::config::AudioConfig {
         codec: iroh_live::media::config::AudioCodec::Opus,
@@ -492,8 +496,15 @@ pub fn media_recording_play() -> u8 {
     let thread = thread::spawn(move || {
         let mut output = match tokio_executor(audio().default_output()) {
             Ok(output) => output,
-            Err(_) => return,
+            Err(err) => {
+                tracing::warn!("recording playback output initialization failed: {err:#}");
+                return;
+            }
         };
+        let mut decoded_packets = 0usize;
+        let mut decoded_samples = 0usize;
+        let mut peak = 0.0f32;
+        let mut prebuffered = 0usize;
         while !thread_stop.load(Ordering::Relaxed) {
             let packet = match packets.read_packet() {
                 Ok(Some(packet)) => packet,
@@ -507,12 +518,46 @@ pub fn media_recording_play() -> u8 {
                 payload: buf_list::BufList::from(Bytes::from(packet.data)),
                 is_keyframe: true,
             };
-            if decoder.push_packet(media_packet).is_ok() {
-                if let Ok(Some(samples)) = decoder.pop_samples() {
-                    let _ = output.push_samples(samples);
+            match decoder.push_packet(media_packet) {
+                Ok(()) => {
+                    if let Ok(Some(samples)) = decoder.pop_samples() {
+                        decoded_packets += 1;
+                        decoded_samples += samples.len();
+                        for sample in samples {
+                            peak = peak.max(sample.abs());
+                        }
+                        if let Err(err) = output.push_samples(samples) {
+                            tracing::warn!("recording playback output failed: {err:#}");
+                            break;
+                        }
+                        // Prebuffer before starting the device clock. Without
+                        // this, callback scheduling can drain each 20 ms frame
+                        // before the next one is submitted, producing pops.
+                        prebuffered += 1;
+                        if prebuffered >= 10 {
+                            while output.occupied_seconds() > 0.2
+                                && !thread_stop.load(Ordering::Relaxed)
+                            {
+                                thread::sleep(Duration::from_millis(5));
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("recording playback Opus decode failed: {err:#}");
+                    break;
                 }
             }
         }
+        while output.occupied_seconds() > 0.0 && !thread_stop.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        tracing::info!(
+            decoded_packets,
+            decoded_samples,
+            peak,
+            "recording playback finished"
+        );
     });
     *PLAYBACK.lock().expect("playback mutex poisoned") = Some(Playback {
         stop,

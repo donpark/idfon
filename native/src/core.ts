@@ -48,6 +48,7 @@ export interface Model {
   readonly playbackActive: boolean;
   readonly fetchedRecordingReady: boolean;
   readonly playbackStatus: Uint8Array;
+  readonly showAdvanced: boolean;
   readonly showTicket: boolean;
   readonly showAddConnection: boolean;
 }
@@ -82,6 +83,7 @@ export type Msg =
   | { readonly kind: "audio_error"; readonly data: Uint8Array }
   | { readonly kind: "audio_probe" }
   | { readonly kind: "audio_emergency_stop" }
+  | { readonly kind: "toggle_advanced" }
   | { readonly kind: "audio_probe_result"; readonly data: Uint8Array }
   | { readonly kind: "volume_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "volume_set" }
@@ -157,6 +159,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     playbackActive: false,
     fetchedRecordingReady: false,
     playbackStatus: utf8Bytes("Playback stopped"),
+    showAdvanced: false,
     showTicket: false,
     showAddConnection: false,
   }, Cmd.batch([
@@ -270,7 +273,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         const recordingPrefix = utf8Bytes("NUFON-RECORDING/1\n");
         if (message.length > recordingPrefix.length && sameBytes(message.slice(0, recordingPrefix.length), recordingPrefix)) {
           const ticket = recordingTicket(message);
-          return [{ ...model, identitySelected: true, replyRoute: route, message: utf8Bytes("Received recording"), blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Recording ticket ready"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true }, Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" })];
+          return [{ ...model, identitySelected: true, replyRoute: route, message: utf8Bytes("Received recording"), blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true }, Cmd.batch([
+            Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" }),
+            Cmd.request("media.blob.fetch", ticket, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" }),
+          ])];
         }
         return { ...model, identitySelected: true, replyRoute: route, message, receiverStatus: utf8Bytes("Received: receiver_event"), senderStatus: utf8Bytes("Reply available"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true };
       }
@@ -328,6 +334,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [model, Cmd.request("media.audio.stop", EMPTY, { key: "media-audio", ok: "audio_stopped", err: "audio_error" })];
     case "audio_emergency_stop":
       return [model, Cmd.request("media.emergency_stop", EMPTY, { key: "media-emergency", ok: "audio_emergency_stopped", err: "audio_error" })];
+    case "toggle_advanced":
+      return { ...model, showAdvanced: !model.showAdvanced };
     case "audio_started":
       return { ...model, audioActive: true, audioStatus: utf8Bytes("Microphone on") };
     case "audio_stopped":
@@ -380,16 +388,18 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (!model.recordingActive) return model;
       return [model, Cmd.request("media.recording.stop", EMPTY, { key: "media-recording", ok: "recording_stopped", err: "recording_error" })];
     case "recording_started":
-      return { ...model, recordingActive: true, recordingReady: false, recordingStatus: utf8Bytes("Recording microphone") };
-    case "recording_stopped":
-      return { ...model, recordingActive: false, recordingReady: true, subscribedRecording: false, recordingStatus: utf8Bytes("Recording ready") };
+      return { ...model, recordingActive: true, recordingReady: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Recording microphone") };
+    case "recording_stopped": {
+      const next = { ...model, recordingActive: false, recordingReady: false, subscribedRecording: false, recordingStatus: utf8Bytes("Preparing recording") };
+      return [next, Cmd.request("media.live.recording.store", EMPTY, { key: "media-recording-store", ok: "recording_stored", err: "recording_store_error" })];
+    }
     case "recording_error":
       return { ...model, recordingActive: false, recordingStatus: msg.data };
     case "recording_store":
       if (!model.recordingReady) return model;
       return [model, Cmd.request("media.live.recording.store", EMPTY, { key: "media-recording-store", ok: "recording_stored", err: "recording_store_error" })];
     case "recording_stored":
-      return { ...model, recordingStatus: utf8Bytes("Recording stored"), recordingTicket: msg.data };
+      return { ...model, recordingReady: true, recordingStatus: utf8Bytes("Recording ready to send"), recordingTicket: msg.data };
     case "copy_recording_ticket":
       if (model.recordingTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.recordingTicket)];
@@ -404,9 +414,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (model.blobTicketInput.length === 0) return model;
       return [model, Cmd.request("media.blob.fetch", model.blobTicketInput, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" })];
     case "blob_fetched":
-      return { ...model, fetchedRecordingReady: true, blobStatus: utf8Bytes("Recording fetched") };
+      return { ...model, fetchedRecordingReady: true, blobStatus: utf8Bytes("Recording ready"), senderStatus: utf8Bytes("Received recording ready") };
     case "blob_fetch_error":
-      return { ...model, fetchedRecordingReady: false, blobStatus: msg.data };
+      return { ...model, fetchedRecordingReady: false, blobStatus: msg.data, senderStatus: utf8Bytes("Could not receive recording") };
     case "playback_start":
       if (!model.fetchedRecordingReady) return model;
       return [model, Cmd.request("media.recording.play", EMPTY, { key: "media-playback", ok: "playback_started", err: "playback_error" })];
