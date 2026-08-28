@@ -16,14 +16,26 @@ native dev          # build and run the real app (markup hot reload)
 native check        # verify core.ts (subset checker) + markup + app.json
 native build        # ReleaseFast binary in zig-out/bin/
 native test         # the app's test suite
+pnpm --filter @nufon/native launch
+                    # build with SDK runtime tracing off, package, and open
 native package --target macos --binary "zig-out/bin/Nufon" --output "Nufon.app"
                     # create a Finder-launchable macOS app bundle
+./zig-out/bin/Nufon
+                    # raw binary; native diagnostics go to /tmp/nufon-<pid>.log
+rm -f /tmp/nufon-*.log
+cat /tmp/nufon-<pid>.log
+                    # inspect one process's Iroh diagnostics
 ```
 
-Edit `src/core.ts` for behavior, `src/app.native` for the view, and
-`app.json` for windows/identity/permissions. Markup binds the model's
-field names exactly as core.ts wrote them (`tickCount` -> `{tickCount}`),
-and exported single-model helpers bind as derived values (`{total}`).
+Edit `src/core.ts` for behavior, `src/app.native` for the home view,
+`src/windows/*.native` for secondary windows, and `app.json` for
+windows/identity/permissions. The home view restores the default identity,
+starts its endpoint, and shows that identity's connections. Selecting an
+identity copies its full Iroh ticket. Double-clicking or pressing Enter on a
+connection opens its chat window; incoming messages open the receiving chat
+window automatically. Markup binds the model's field names exactly as core.ts
+wrote them (`tickCount` -> `{tickCount}`), and exported single-model helpers
+bind as derived values (`{total}`).
 
 ## Try the core loop
 

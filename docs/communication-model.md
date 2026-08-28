@@ -75,6 +75,19 @@ Both sides can participate in a live exchange, with explicit controls for who ma
 
 A group may have different roles and permissions. Some members may speak, some may listen, and some may be able to interrupt or moderate. Broadcasting should not be conflated with a group call.
 
+## Endpoint identity and connection context
+
+Nufon identities are named local contexts. Each identity owns its Iroh key and
+endpoint, and can have its own set of connections. The selected identity is
+the active context: its endpoint starts automatically and its connections are
+shown in the home view. Selecting an identity may copy its full Iroh ticket
+for sharing; the Endpoint ID remains cryptographic identity metadata rather
+than connection bootstrap data.
+
+A connection ticket identifies the remote endpoint and provides the bootstrap
+information needed to connect. Possessing a ticket or endpoint ID is not, by
+itself, application authorization.
+
 ## Separation of concerns
 
 Keep these concepts independent:

@@ -1,4 +1,8 @@
 const std = @import("std");
+const c = @cImport({
+    @cInclude("stdio.h");
+    @cInclude("unistd.h");
+});
 const native_sdk = @import("native_sdk");
 const ffi = @cImport({ @cInclude("irohnet.h"); });
 
@@ -70,6 +74,7 @@ const Host = struct {
         lock(&self.services_lock);
         const services = self.services;
         self.services_lock.unlock();
+        trace("completion queued key={d} ok={} bytes={d}", .{ key, ok, bytes.len });
         if (services) |value| value.wake() catch {};
     }
 
@@ -79,9 +84,39 @@ const Host = struct {
         self.channel_lock.unlock();
         return if (channels) |value| value.acquire_fn(value.context, channel_key) else null;
     }
+
+    fn postReceiverEvent(self: *Host, bytes: []const u8) void {
+        while (true) {
+            if (self.channel()) |handle| {
+                const result = handle.post(bytes);
+                trace("receiver event post {t} ({d} bytes)", .{ result, bytes.len });
+                return;
+            }
+            lock(&self.endpoint_lock);
+            const stopping = self.shutting_down;
+            self.endpoint_lock.unlock();
+            if (stopping) return;
+            std.Thread.yield() catch {};
+        }
+    }
 };
 
 var host: Host = .{};
+var trace_lock: std.atomic.Mutex = .unlocked;
+
+fn trace(comptime format: []const u8, args: anytype) void {
+    var line: [512]u8 = undefined;
+    var path: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&line, format, args) catch return;
+    const log_path = std.fmt.bufPrintZ(&path, "/tmp/nufon-{d}.log", .{c.getpid()}) catch return;
+    lock(&trace_lock);
+    defer trace_lock.unlock();
+    const file = c.fopen(log_path.ptr, "a") orelse return;
+    _ = c.fwrite(text.ptr, 1, text.len, file);
+    _ = c.fwrite("\n", 1, 1, file);
+    _ = c.fflush(file);
+    _ = c.fclose(file);
+}
 
 pub fn binding() native_sdk.HostCallBinding { return host.binding(); }
 
@@ -95,6 +130,7 @@ fn send(context: *anyopaque, name: []const u8, payload: []const u8) void {
 
 fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8) void {
     const self: *Host = @ptrCast(@alignCast(context));
+    trace("host request {s} key={d} payload={d}", .{ name, key, payload.len });
     if (!std.mem.eql(u8, name, "iroh.receiver.bind") and !std.mem.eql(u8, name, "iroh.receiver.reply") and !std.mem.eql(u8, name, "iroh.sender.send")) {
         self.complete(key, false, "unknown_command"); return;
     }
@@ -132,6 +168,7 @@ fn bindServices(context: *anyopaque, services: *const native_sdk.platform.Platfo
 fn bindChannels(context: *anyopaque, channels: ChannelBinding) void {
     const self: *Host = @ptrCast(@alignCast(context));
     lock(&self.channel_lock); self.channel_binding = channels; self.channel_lock.unlock();
+    trace("UI channel binding installed key={d}", .{channel_key});
 }
 
 fn pending(context: *anyopaque) bool {
@@ -144,6 +181,7 @@ fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
     lock(&self.queue_lock); defer self.queue_lock.unlock();
     if (self.queue_len == 0) return null;
     const item = &self.queue[self.queue_head];
+    trace("host poll completion key={d} ok={} bytes={d}", .{ item.key, item.ok, item.len });
     @memcpy(self.poll_bytes[0..item.len], item.bytes[0..item.len]);
     const result = native_sdk.HostCallCompletion{ .key = item.key, .ok = item.ok, .bytes = self.poll_bytes[0..item.len] };
     self.queue_head = (self.queue_head + 1) % queue_size; self.queue_len -= 1; return result;
@@ -162,6 +200,7 @@ fn bindWorker(job: *Job) void {
         ffi.endpoint_free(endpoint); self.complete(job.key, false, "bind_failed"); return;
     }
     self.endpoint = endpoint;
+    trace("endpoint bound", .{});
     const thread = std.Thread.spawn(.{}, acceptLoop, .{self}) catch {
         ffi.endpoint_close(endpoint); self.endpoint = null; self.complete(job.key, false, "thread_failed"); return;
     };
@@ -170,8 +209,12 @@ fn bindWorker(job: *Job) void {
 }
 
 fn finishBind(self: *Host, key: u64, endpoint: *ffi.Endpoint_t) void {
+    trace("preparing receiver_ready key={d}", .{key});
     var response: [max_result]u8 = undefined;
     const len = endpointInfo(endpoint, &response) catch { self.complete(key, false, "address_failed"); return; };
+    var split: usize = 0;
+    while (split < len and response[split] != 10) split += 1;
+    if (split < len) trace("receiver endpoint id={s}", .{response[split + 1 .. len]});
     self.complete(key, true, response[0..len]);
 }
 
@@ -250,6 +293,9 @@ fn sendWorker(job: *Job) void {
     if (address_text.len >= address_buffer.len) { ffi.endpoint_addr_free(address); self.complete(job.key, false, "address_too_large"); return; }
     @memcpy(address_buffer[0..address_text.len], address_text); address_buffer[address_text.len] = 0;
     if (ffi.endpoint_addr_from_string(&address_buffer, &address) != 0) { ffi.endpoint_addr_free(address); self.complete(job.key, false, "invalid_address"); return; }
+    const target_id = ffi.public_key_as_base32(&address.id) orelse { ffi.endpoint_addr_free(address); self.complete(job.key, false, "invalid_address"); return; };
+    defer ffi.rust_free_string(target_id);
+    trace("sender target endpoint id={s}", .{std.mem.span(target_id)});
     var connection: ?*ffi.Connection_t = ffi.connection_default();
     if (connection == null or ffi.endpoint_connect(&local_endpoint, alpnSlice(), address, &connection) != 0) { ffi.connection_free(connection); self.complete(job.key, false, "connect_failed"); return; }
     var tx: ?*ffi.SendStream_t = ffi.send_stream_default(); var rx: ?*ffi.RecvStream_t = ffi.recv_stream_default();
@@ -263,11 +309,16 @@ fn sendWorker(job: *Job) void {
 }
 
 fn acceptLoop(self: *Host) void {
+    trace("accept loop started", .{});
     while (true) {
         lock(&self.endpoint_lock); const endpoint = self.endpoint; self.endpoint_lock.unlock();
         const ep = endpoint orelse return;
         var connection: ?*ffi.Connection_t = ffi.connection_default();
-        if (connection == null or ffi.endpoint_accept(&ep, alpnSlice(), &connection) != 0) { ffi.connection_free(connection); return; }
+        if (connection == null or ffi.endpoint_accept(&ep, alpnSlice(), &connection) != 0) {
+            trace("endpoint_accept failed", .{});
+            ffi.connection_free(connection); return;
+        }
+        trace("inbound connection accepted", .{});
         lock(&self.endpoint_lock);
         const stopping = self.shutting_down;
         if (!stopping) self.active_connection = connection;
@@ -275,6 +326,7 @@ fn acceptLoop(self: *Host) void {
         if (stopping) { ffi.connection_close(connection); return; }
         var tx: ?*ffi.SendStream_t = ffi.send_stream_default(); var rx: ?*ffi.RecvStream_t = ffi.recv_stream_default();
         if (tx == null or rx == null or ffi.connection_accept_bi(&connection, &tx, &rx) != 0) {
+            trace("connection_accept_bi failed", .{});
             lock(&self.endpoint_lock);
             const owns_connection = self.active_connection == connection;
             if (owns_connection) self.active_connection = null;
@@ -283,7 +335,10 @@ fn acceptLoop(self: *Host) void {
             ffi.send_stream_free(tx); ffi.recv_stream_free(rx); continue;
         }
         var received = ffi.rust_buffer_alloc(0);
-        if (ffi.recv_stream_read_to_end_timeout(&rx, &received, max_message, 30_000) == 0) {
+        const read_result = ffi.recv_stream_read_to_end_timeout(&rx, &received, max_message, 30_000);
+        trace("receive stream result={d} bytes={d}", .{ read_result, received.len });
+        if (read_result == 0) {
+            trace("received message ({d} bytes)", .{received.len});
             lock(&self.endpoint_lock);
             self.active_send_stream = tx;
             self.endpoint_lock.unlock();
@@ -294,7 +349,7 @@ fn acceptLoop(self: *Host) void {
             if (prefix.len + received.len <= routed.len) {
                 @memcpy(routed[0..prefix.len], prefix);
                 @memcpy(routed[prefix.len..][0..received.len], received.ptr[0..received.len]);
-                if (self.channel()) |handle| _ = handle.post(routed[0 .. prefix.len + received.len]);
+                self.postReceiverEvent(routed[0 .. prefix.len + received.len]);
             }
             ffi.recv_stream_free(rx);
             ffi.rust_buffer_free(received);
@@ -320,6 +375,7 @@ fn shutdownWorker(job: *ShutdownJob) void {
 
 fn shutdown(context: *anyopaque) void {
     const self: *Host = @ptrCast(@alignCast(context));
+    trace("host shutdown", .{});
     lock(&self.endpoint_lock);
     self.shutting_down = true;
     const endpoint = self.endpoint;

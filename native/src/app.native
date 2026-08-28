@@ -1,41 +1,50 @@
 <column gap="12" padding="16">
   <row cross="center">
     <text grow="1" size="heading">Nufon</text>
-    <text foreground="text_muted">Sender + Receiver</text>
   </row>
 
-  <panel padding="12">
-    <column gap="8">
-      <text>Identity</text>
-      <text foreground="text_muted">Start an endpoint and share its ticket out of band.</text>
-      <button variant="primary" on-press="connect_receiver">Start endpoint</button>
-      <text>{receiverStatus}</text>
-      <button variant="secondary" on-press="show_ticket">Ticket</button>
-      <if test="{showTicket}">
-        <panel padding="8">
-          <column gap="6">
-            <text>{receiverTicket}</text>
-            <button variant="secondary" on-press="copy_ticket">Copy ticket</button>
-          </column>
+  <row gap="8" cross="center">
+    <stack>
+      <if test="{receiverAvailable}">
+        <panel background="success" radius="xl" padding="4">
+          <avatar label="{identityName}" selected="{identitySelected}" on-press="identity_pressed">DF</avatar>
         </panel>
       </if>
-    </column>
-  </panel>
+      <else>
+        <if test="{identityError}">
+          <panel background="destructive" radius="xl" padding="4">
+            <avatar label="{identityName}" selected="{identitySelected}" on-press="identity_pressed">DF</avatar>
+          </panel>
+        </if>
+        <else>
+          <if test="{identitySelected}">
+            <panel background="accent" radius="xl" padding="4">
+              <avatar label="{identityName}" selected="{identitySelected}" on-press="identity_pressed">DF</avatar>
+            </panel>
+          </if>
+          <else>
+            <panel background="surface_subtle" radius="xl" padding="4">
+              <avatar label="{identityName}" selected="{identitySelected}" on-press="identity_pressed">DF</avatar>
+            </panel>
+          </else>
+        </else>
+      </else>
+      <tooltip anchor="below" tooltip-delay="0">{identityName}</tooltip>
+    </stack>
+    <text foreground="text_muted">{receiverStatus}</text>
+  </row>
 
-  <panel padding="12">
+  <if test="{identitySelected}">
     <column gap="8">
       <row cross="center">
         <text grow="1">Connections</text>
         <button variant="secondary" on-press="show_add_connection">Add Connection</button>
       </row>
-      <text>{senderStatus}</text>
-      <text-field text="{message}" placeholder="Message to echo" on-input="message_edit" />
-      <row gap="8">
-        <button variant="secondary" disabled="{senderDisabled}" on-press="send_message">Send message</button>
-        <button variant="secondary" on-press="reply_message">Reply</button>
-      </row>
+      <for each="connections" key="name" as="connection">
+        <list-item label="{connection.name}" on-press="connection_selected:{connection.name}" on-double-press="connection_opened:{connection.name}" on-submit="connection_opened:{connection.name}">{connection.name}</list-item>
+      </for>
     </column>
-  </panel>
+  </if>
 
   <if test="{showAddConnection}">
     <dialog text="Add Connection">

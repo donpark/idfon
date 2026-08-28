@@ -1,0 +1,9 @@
+<column gap="12" padding="16">
+  <text size="heading">{selectedConnectionName}</text>
+  <text>{senderStatus}</text>
+  <text-field text="{message}" placeholder="Message" on-input="message_edit" />
+  <row gap="8">
+    <button variant="primary" disabled="{senderDisabled}" on-press="send_message">Send</button>
+    <button variant="secondary" on-press="reply_message">Reply</button>
+  </row>
+</column>
