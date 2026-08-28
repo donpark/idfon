@@ -745,6 +745,160 @@ void
 iroh_enable_tracing (void);
 
 /** \brief
+ *  Selects the identity/conversation namespace used by subsequent media operations.
+ */
+uint8_t
+media_set_scope (
+    char const * scope);
+
+/** \brief
+ *  Persists a recording ticket once in the active conversation's ledger.
+ */
+uint8_t
+media_recording_persist (
+    char const * ticket);
+
+/** \brief
+ *  Returns whether a microphone source or live publisher is active.
+ */
+uint8_t
+media_audio_active (void);
+
+/** \brief
+ *  Returns the number of currently enumerated input devices.
+ */
+size_t
+media_audio_input_count (void);
+
+/** \brief
+ *  Returns the number of currently enumerated output devices.
+ */
+size_t
+media_audio_output_count (void);
+
+/** \brief
+ *  Captures a short sample window and returns the number of non-silent samples.
+ */
+size_t
+media_audio_probe (
+    uint64_t duration_ms);
+
+/** \brief
+ *  Sets the active subscriber output volume from 0 to 100.
+ */
+uint8_t
+media_audio_set_volume (
+    uint8_t percent);
+
+/** \brief
+ *  Starts the default 48 kHz mono microphone stream.
+ */
+uint8_t
+media_audio_start (void);
+
+/** \brief
+ *  Stops microphone capture when it is not owned by a live publisher.
+ */
+void
+media_audio_stop (void);
+
+/** \brief
+ *  Switches the microphone input device by its cpal device identifier.
+ */
+uint8_t
+media_audio_switch_input (
+    char const * device);
+
+/** \brief
+ *  Switches the speaker output device by its cpal device identifier.
+ */
+uint8_t
+media_audio_switch_output (
+    char const * device);
+
+/** \brief
+ *  Fetches a BlobTicket into the Native SDK app-data directory.
+ *  Returns `0` on success and `1` on failure.
+ */
+uint8_t
+media_blob_fetch (
+    char const * ticket);
+
+/** \brief
+ *  Returns the number of decoded frames written to the subscriber WAV file.
+ */
+size_t
+media_live_recording_samples (void);
+
+/** \brief
+ *  Stores the finalized recipient recording in the local iroh-blobs filesystem store.
+ *  Returns the BLAKE3 content hash, or an empty string on failure.
+ */
+char *
+media_live_recording_store (void);
+
+/** \brief
+ *  Starts an Opus microphone broadcast and returns its iroh-live ticket.
+ */
+char *
+media_live_start (void);
+
+/** \brief
+ *  Stops the live microphone broadcast.
+ */
+void
+media_live_stop (void);
+
+/** \brief
+ *  Subscribes to a live ticket and records decoded audio in the app-data directory.
+ */
+uint8_t
+media_live_subscribe (
+    char const * ticket);
+
+/** \brief
+ *  Stops the live audio subscription and finalizes its WAV recording.
+ */
+void
+media_live_unsubscribe (void);
+
+/** \brief
+ *  Plays the fetched recording through the default output device.
+ */
+uint8_t
+media_recording_play (void);
+
+/** \brief
+ *  Starts recording microphone audio in the Native SDK app-data directory.
+ */
+uint8_t
+media_recording_start (void);
+
+/** \brief
+ *  Stops and finalizes the local microphone recording.
+ */
+uint8_t
+media_recording_stop (void);
+
+/** \brief
+ *  Stops fetched-recording playback.
+ */
+void
+media_recording_stop_playback (void);
+
+/** \brief
+ *  Immediately stops inbound live audio, playback, and microphone capture.
+ */
+void
+media_emergency_stop (void);
+
+/** \brief
+ *  Stops all media resources during application shutdown.
+ */
+void
+media_shutdown (void);
+
+/** \brief
  *  Returns the public key as a base32 string.
  *
  *  Result must be freed using `rust_free_string`

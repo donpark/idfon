@@ -3,8 +3,9 @@
   "description": "Native-SDK version of Nufon.",
   "private": true,
   "scripts": {
-    "build": "native build && native package --target macos --binary 'zig-out/bin/Nufon' --output 'Nufon.app'",
-    "launch": "native build -Dtrace=off && native package --target macos --binary 'zig-out/bin/Nufon' --output 'Nufon.app' && open -n 'Nufon.app'"
+    "build": "native build -Dtrace=off && native package --target macos --binary 'zig-out/bin/Nufon' --output 'Nufon.app'",
+    "run:app": "open -n 'Nufon.app'",
+    "run:bin": "open -n 'zig-out/bin/Nufon'"
   },
   "dependencies": {
     "@native-sdk/core": "0.10.1"

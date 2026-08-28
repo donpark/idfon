@@ -29,7 +29,8 @@ cat /tmp/nufon-<pid>.log
 
 Edit `src/core.ts` for behavior, `src/app.native` for the home view,
 `src/windows/*.native` for secondary windows, and `app.json` for
-windows/identity/permissions. The home view restores the default identity,
+windows/identity/permissions. Audio media status, verified behavior, and
+remaining production tasks are documented in [`../docs/audio-media.md`](../docs/audio-media.md). The home view restores the default identity,
 starts its endpoint, and shows that identity's connections. Selecting an
 identity copies its full Iroh ticket. Double-clicking or pressing Enter on a
 connection opens its chat window; incoming messages open the receiving chat
@@ -56,13 +57,20 @@ is optional for the same reason: the CLI materializes and refreshes the
 package itself, and an install simply lands the identical content once
 `@native-sdk/core` is on npm.
 
-## Known shutdown limitation
+## Known limitations
 
-The Iroh host starts detached native worker threads for the receiver accept
-loop and sender requests. Shutdown currently does not cancel and join every
-worker before the process exits. If a worker is blocked in endpoint or stream
-I/O, closing the window or stopping `native dev native` can leave the app
-running or make exit appear to hang until the Iroh timeout expires.
+The Iroh host still starts detached native worker threads for the receiver
+accept loop and sender requests. Shutdown currently does not cancel and join
+every worker before the process exits. If a worker is blocked in endpoint or
+stream I/O, closing the window or stopping `native dev native` can leave the
+app running or make exit appear to hang until the Iroh timeout expires.
+
+Media files and live broadcast names are scoped to the selected peer under
+`NATIVE_SDK_APP_DATA_DIR/conversations/<scope>`. Active media resources remain
+process-global until multi-session media ownership is implemented. Recording
+messages use a versioned metadata envelope and persist deduplicated BlobTickets
+in `recording-history.log`; full durable chat history and capability
+authorization are still pending.
 
 For development, close leftover instances with:
 

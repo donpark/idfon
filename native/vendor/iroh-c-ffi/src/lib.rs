@@ -1,6 +1,7 @@
 pub mod addr;
 pub mod endpoint;
 pub mod key;
+pub mod media;
 pub mod stream;
 pub mod util;
 

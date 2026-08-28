@@ -35,11 +35,30 @@ pub fn build(b: *std.Build) void {
     artifacts.exe.root_module.addObjectFile(archive);
     artifacts.tests.root_module.addObjectFile(archive);
     artifacts.exe.root_module.linkFramework("SystemConfiguration", .{});
+    artifacts.exe.root_module.linkFramework("CoreAudio", .{});
+    artifacts.exe.root_module.linkFramework("AudioToolbox", .{});
     artifacts.tests.root_module.linkFramework("SystemConfiguration", .{});
+    artifacts.tests.root_module.linkFramework("CoreAudio", .{});
+    artifacts.tests.root_module.linkFramework("AudioToolbox", .{});
     if (b.sysroot) |sysroot| {
         const frameworks: std.Build.LazyPath = .{ .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }) };
         artifacts.exe.root_module.addFrameworkPath(frameworks);
         artifacts.tests.root_module.addFrameworkPath(frameworks);
+        // cpal's macOS backend uses the Swift Dispatch bridge. Rust links it
+        // transitively, but the final Zig link must provide the Swift runtime.
+        const developer_dir = std.mem.trimEnd(u8, b.run(&.{ "xcode-select", "--print-path" }), "\r\n");
+        const swift_dir = b.pathJoin(&.{ developer_dir, "Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift" });
+        const swift_core: std.Build.LazyPath = .{ .cwd_relative = b.pathJoin(&.{ swift_dir, "libswiftCore.tbd" }) };
+        const swift_dispatch: std.Build.LazyPath = .{ .cwd_relative = b.pathJoin(&.{ swift_dir, "libswiftDispatch.tbd" }) };
+        const swift_core_foundation: std.Build.LazyPath = .{ .cwd_relative = b.pathJoin(&.{ swift_dir, "libswiftCoreFoundation.tbd" }) };
+        const swift_iokit: std.Build.LazyPath = .{ .cwd_relative = b.pathJoin(&.{ swift_dir, "libswiftIOKit.tbd" }) };
+        const swift_objc: std.Build.LazyPath = .{ .cwd_relative = b.pathJoin(&.{ swift_dir, "libswiftObjectiveC.tbd" }) };
+        const swift_xpc: std.Build.LazyPath = .{ .cwd_relative = b.pathJoin(&.{ swift_dir, "libswiftXPC.tbd" }) };
+        const swift_float: std.Build.LazyPath = .{ .cwd_relative = b.pathJoin(&.{ swift_dir, "libswift_Builtin_float.tbd" }) };
+        for ([_]std.Build.LazyPath{ swift_core, swift_dispatch, swift_core_foundation, swift_iokit, swift_objc, swift_xpc, swift_float }) |library| {
+            artifacts.exe.root_module.addObjectFile(library);
+            artifacts.tests.root_module.addObjectFile(library);
+        }
     }
 
     const runner = app.module.root_source_file orelse @panic("Generated runner missing");

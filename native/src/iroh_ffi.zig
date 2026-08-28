@@ -8,7 +8,7 @@ const ffi = @cImport({ @cInclude("irohnet.h"); });
 
 const alpn = "nufon-echo/1";
 const channel_key = 1;
-const max_message = 1024;
+const max_message = 8192;
 const max_payload = 8192;
 const max_result = 8192;
 const queue_size = 16;
@@ -25,6 +25,8 @@ const Completion = struct {
 const Job = struct {
     host: *Host,
     key: u64,
+    command: [64]u8 = undefined,
+    command_len: usize = 0,
     bytes: [max_payload]u8 = undefined,
     len: usize = 0,
 };
@@ -131,14 +133,40 @@ fn send(context: *anyopaque, name: []const u8, payload: []const u8) void {
 fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8) void {
     const self: *Host = @ptrCast(@alignCast(context));
     trace("host request {s} key={d} payload={d}", .{ name, key, payload.len });
-    if (!std.mem.eql(u8, name, "iroh.receiver.bind") and !std.mem.eql(u8, name, "iroh.receiver.reply") and !std.mem.eql(u8, name, "iroh.sender.send")) {
+    const is_media_audio = std.mem.eql(u8, name, "media.audio.switch_input") or
+        std.mem.eql(u8, name, "media.audio.switch_output") or
+        std.mem.eql(u8, name, "media.recording.play") or
+        std.mem.eql(u8, name, "media.recording.stop_playback") or
+        std.mem.eql(u8, name, "media.recording.start") or
+        std.mem.eql(u8, name, "media.recording.stop") or
+        std.mem.eql(u8, name, "media.audio.start") or
+        std.mem.eql(u8, name, "media.audio.stop") or
+        std.mem.eql(u8, name, "media.emergency_stop") or
+        std.mem.eql(u8, name, "media.audio.output_count") or
+        std.mem.eql(u8, name, "media.audio.set_volume") or
+        std.mem.eql(u8, name, "media.audio.input_count") or
+        std.mem.eql(u8, name, "media.audio.probe") or
+        std.mem.eql(u8, name, "media.live.start") or
+        std.mem.eql(u8, name, "media.live.stop") or
+        std.mem.eql(u8, name, "media.live.subscribe") or
+        std.mem.eql(u8, name, "media.live.unsubscribe") or
+        std.mem.eql(u8, name, "media.live.recording.store") or
+        std.mem.eql(u8, name, "media.blob.fetch");
+    if (!std.mem.eql(u8, name, "iroh.receiver.bind") and !std.mem.eql(u8, name, "iroh.receiver.reply") and
+        !std.mem.eql(u8, name, "iroh.sender.send") and !is_media_audio and
+        !std.mem.eql(u8, name, "media.set_scope") and
+        !std.mem.eql(u8, name, "media.recording.persist")) {
         self.complete(key, false, "unknown_command"); return;
     }
     if (payload.len > max_payload) { self.complete(key, false, "payload_too_large"); return; }
     const job = std.heap.page_allocator.create(Job) catch {
         self.complete(key, false, "out_of_memory"); return;
     };
-    job.* = .{ .host = self, .key = key, .len = payload.len };
+    if (name.len > job.command.len) {
+        std.heap.page_allocator.destroy(job); self.complete(key, false, "command_too_large"); return;
+    }
+    job.* = .{ .host = self, .key = key, .command_len = name.len, .len = payload.len };
+    @memcpy(job.command[0..name.len], name);
     @memcpy(job.bytes[0..payload.len], payload);
     if (std.mem.eql(u8, name, "iroh.receiver.bind")) {
         var thread = std.Thread.spawn(.{}, bindWorker, .{job}) catch {
@@ -147,6 +175,11 @@ fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8)
         thread.detach();
     } else if (std.mem.eql(u8, name, "iroh.receiver.reply")) {
         var thread = std.Thread.spawn(.{}, replyWorker, .{job}) catch {
+            std.heap.page_allocator.destroy(job); self.complete(key, false, "thread_failed"); return;
+        };
+        thread.detach();
+    } else if (is_media_audio or std.mem.eql(u8, name, "media.set_scope") or std.mem.eql(u8, name, "media.recording.persist")) {
+        var thread = std.Thread.spawn(.{}, mediaAudioWorker, .{job}) catch {
             std.heap.page_allocator.destroy(job); self.complete(key, false, "thread_failed"); return;
         };
         thread.detach();
@@ -267,6 +300,109 @@ fn replyWorker(job: *Job) void {
     thread.detach();
 }
 
+fn mediaAudioWorker(job: *Job) void {
+    defer std.heap.page_allocator.destroy(job);
+    const self = job.host;
+    const name = job.command[0..job.command_len];
+    if (std.mem.eql(u8, name, "media.set_scope")) {
+        var scope: [max_payload + 1]u8 = undefined;
+        @memcpy(scope[0..job.len], job.bytes[0..job.len]); scope[job.len] = 0;
+        if (ffi.media_set_scope(&scope) == 0) self.complete(job.key, true, "media_scope_set")
+        else self.complete(job.key, false, "media_scope_failed");
+    } else if (std.mem.eql(u8, name, "media.recording.persist")) {
+        var ticket: [max_payload + 1]u8 = undefined;
+        @memcpy(ticket[0..job.len], job.bytes[0..job.len]); ticket[job.len] = 0;
+        if (ffi.media_recording_persist(&ticket) == 0) self.complete(job.key, true, "recording_persisted")
+        else self.complete(job.key, false, "recording_persist_failed");
+    } else if (std.mem.eql(u8, name, "media.audio.switch_input")) {
+        var device: [max_payload + 1]u8 = undefined;
+        @memcpy(device[0..job.len], job.bytes[0..job.len]); device[job.len] = 0;
+        if (ffi.media_audio_switch_input(&device) == 0) self.complete(job.key, true, "input_device_set")
+        else self.complete(job.key, false, "input_device_failed");
+    } else if (std.mem.eql(u8, name, "media.audio.switch_output")) {
+        var device: [max_payload + 1]u8 = undefined;
+        @memcpy(device[0..job.len], job.bytes[0..job.len]); device[job.len] = 0;
+        if (ffi.media_audio_switch_output(&device) == 0) self.complete(job.key, true, "output_device_set")
+        else self.complete(job.key, false, "output_device_failed");
+    } else if (std.mem.eql(u8, name, "media.recording.play")) {
+        if (ffi.media_recording_play() == 0) self.complete(job.key, true, "recording_playing")
+        else self.complete(job.key, false, "recording_play_failed");
+    } else if (std.mem.eql(u8, name, "media.recording.stop_playback")) {
+        ffi.media_recording_stop_playback();
+        self.complete(job.key, true, "recording_playback_stopped");
+    } else if (std.mem.eql(u8, name, "media.recording.start")) {
+        if (ffi.media_recording_start() == 0) self.complete(job.key, true, "recording_started")
+        else self.complete(job.key, false, "recording_start_failed");
+    } else if (std.mem.eql(u8, name, "media.recording.stop")) {
+        if (ffi.media_recording_stop() == 0) self.complete(job.key, true, "recording_stopped")
+        else self.complete(job.key, false, "recording_stop_failed");
+    } else if (std.mem.eql(u8, name, "media.audio.output_count")) {
+        var result: [32]u8 = undefined;
+        const text = std.fmt.bufPrint(&result, "{d}", .{ffi.media_audio_output_count()}) catch {
+            self.complete(job.key, false, "audio_output_count_failed"); return;
+        };
+        self.complete(job.key, true, text);
+    } else if (std.mem.eql(u8, name, "media.audio.set_volume")) {
+        const percent = if (job.len != 0) std.fmt.parseInt(u8, job.bytes[0..job.len], 10) catch null else null;
+        if (percent) |value| {
+            if (ffi.media_audio_set_volume(value) == 0) self.complete(job.key, true, "volume_set")
+            else self.complete(job.key, false, "volume_set_failed");
+        } else self.complete(job.key, false, "invalid_volume");
+    } else if (std.mem.eql(u8, name, "media.audio.start")) {
+        if (ffi.media_audio_start() == 0) self.complete(job.key, true, "audio_started")
+        else self.complete(job.key, false, "audio_start_failed");
+    } else if (std.mem.eql(u8, name, "media.audio.probe")) {
+        const samples = ffi.media_audio_probe(1000);
+        var result: [32]u8 = undefined;
+        const text = std.fmt.bufPrint(&result, "{d}", .{samples}) catch {
+            self.complete(job.key, false, "audio_probe_failed"); return;
+        };
+        self.complete(job.key, true, text);
+    } else if (std.mem.eql(u8, name, "media.live.start")) {
+        const ticket = ffi.media_live_start();
+        defer ffi.rust_free_string(ticket);
+        const text = std.mem.span(ticket);
+        if (text.len == 0) self.complete(job.key, false, "live_start_failed")
+        else self.complete(job.key, true, text);
+    } else if (std.mem.eql(u8, name, "media.live.stop")) {
+        ffi.media_live_stop();
+        self.complete(job.key, true, "live_stopped");
+    } else if (std.mem.eql(u8, name, "media.live.subscribe")) {
+        var ticket: [max_payload + 1]u8 = undefined;
+        @memcpy(ticket[0..job.len], job.bytes[0..job.len]);
+        ticket[job.len] = 0;
+        if (ffi.media_live_subscribe(&ticket) == 0) self.complete(job.key, true, "live_subscribed")
+        else self.complete(job.key, false, "live_subscribe_failed");
+    } else if (std.mem.eql(u8, name, "media.live.unsubscribe")) {
+        ffi.media_live_unsubscribe();
+        self.complete(job.key, true, "live_unsubscribed");
+    } else if (std.mem.eql(u8, name, "media.live.recording.store")) {
+        const ticket = ffi.media_live_recording_store();
+        defer ffi.rust_free_string(ticket);
+        const text = std.mem.span(ticket);
+        if (text.len == 0) self.complete(job.key, false, "recording_store_failed")
+        else self.complete(job.key, true, text);
+    } else if (std.mem.eql(u8, name, "media.blob.fetch")) {
+        var ticket: [max_payload + 1]u8 = undefined;
+        @memcpy(ticket[0..job.len], job.bytes[0..job.len]);
+        ticket[job.len] = 0;
+        if (ffi.media_blob_fetch(&ticket) == 0) self.complete(job.key, true, "recording_fetched")
+        else self.complete(job.key, false, "recording_fetch_failed");
+    } else if (std.mem.eql(u8, name, "media.emergency_stop")) {
+        ffi.media_emergency_stop();
+        self.complete(job.key, true, "media_stopped");
+    } else if (std.mem.eql(u8, name, "media.audio.stop")) {
+        ffi.media_audio_stop();
+        self.complete(job.key, true, "audio_stopped");
+    } else {
+        var result: [32]u8 = undefined;
+        const text = std.fmt.bufPrint(&result, "{d}", .{ffi.media_audio_input_count()}) catch {
+            self.complete(job.key, false, "audio_count_failed"); return;
+        };
+        self.complete(job.key, true, text);
+    }
+}
+
 fn sendWorker(job: *Job) void {
     defer std.heap.page_allocator.destroy(job);
     const self = job.host;
@@ -376,6 +512,7 @@ fn shutdownWorker(job: *ShutdownJob) void {
 fn shutdown(context: *anyopaque) void {
     const self: *Host = @ptrCast(@alignCast(context));
     trace("host shutdown", .{});
+    ffi.media_shutdown();
     lock(&self.endpoint_lock);
     self.shutting_down = true;
     const endpoint = self.endpoint;
