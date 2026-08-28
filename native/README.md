@@ -34,7 +34,10 @@ remaining production tasks are documented in [`../docs/audio-media.md`](../docs/
 starts its endpoint, and shows that identity's connections. Selecting an
 identity copies its full Iroh ticket. Double-clicking or pressing Enter on a
 connection opens its chat window; incoming messages open the receiving chat
-window automatically. Markup binds the model's field names exactly as core.ts
+window automatically. Pressing Call publishes live audio and sends the live
+ticket to the selected peer; the peer subscribes automatically. Ending the call
+on either side stops both the local publisher and the remote subscription.
+Markup binds the model's field names exactly as core.ts
 wrote them (`tickCount` -> `{tickCount}`), and exported single-model helpers
 bind as derived values (`{total}`).
 

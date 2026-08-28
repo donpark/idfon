@@ -43,8 +43,9 @@ does not yet support concurrent active sessions in one process.
 The chat window currently provides:
 
 - microphone start/stop and a microphone sample probe;
-- live Opus publish/stop and `iroh-live` ticket copy;
-- live ticket subscription/unsubscription;
+- live Opus call start/stop with automatic ticket signaling to the selected peer;
+- automatic live ticket subscription/unsubscription for incoming calls;
+- `iroh-live` ticket copy and manual subscription controls for debugging;
 - local microphone recording start/stop;
 - Ogg Opus recording storage through `iroh-blobs`;
 - BlobTicket copy/send/fetch;
@@ -82,7 +83,12 @@ Rust media tests cover:
 
 The Native SDK app has also been tested with automation for microphone capture,
 recording, live ticket creation, subscription setup, blob storage, blob
-fetching, and two-instance recording delivery/playback. The macOS package
+fetching, and two-instance recording delivery/playback. A normal Call now starts
+an `iroh-live` publisher, sends a `NUFON-LIVE/1` invite containing its ticket
+through the existing control channel, and makes the receiver subscribe
+automatically. Either participant can end the call: the stop message tears down
+the peer subscription, and the receiver's `call_stopped` reply stops the
+publisher. The macOS package
 includes `NSMicrophoneUsageDescription`. Per-process Zig and Rust diagnostics
 are written to `/tmp/nufon-<pid>.log`.
 

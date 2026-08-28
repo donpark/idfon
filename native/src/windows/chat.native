@@ -24,7 +24,12 @@
       <button variant="secondary" on-press="live_stop">End call</button>
     </if>
     <else>
-      <button variant="secondary" on-press="live_start">Call</button>
+      <if test="{subscribedActive}">
+        <button variant="secondary" on-press="live_stop">End call</button>
+      </if>
+      <else>
+        <button variant="secondary" on-press="live_start">Call</button>
+      </else>
     </else>
   </row>
   <text foreground="text_muted">{recordingStatus}</text>

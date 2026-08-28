@@ -220,6 +220,14 @@ function replyPayload(model: Model): Uint8Array {
   return concat(concat(model.replyRoute, new Uint8Array([10])), model.message);
 }
 
+function replyTextPayload(model: Model, message: Uint8Array): Uint8Array {
+  return concat(concat(model.replyRoute, new Uint8Array([10])), message);
+}
+
+function liveInvitePayload(model: Model, action: Uint8Array, ticket: Uint8Array): Uint8Array {
+  return concat(concat(model.receiverId, new Uint8Array([10])), concat(utf8Bytes("NUFON-LIVE/1\naction="), concat(action, concat(utf8Bytes("\nticket="), ticket))));
+}
+
 function recordingEnvelope(model: Model): Uint8Array {
   return concat(utf8Bytes("NUFON-RECORDING/1\nid="), concat(model.recordingTicket, concat(utf8Bytes("\ncodec=opus\nchannels=1\nsample_rate=48000\nduration_ms=0\nsender_id="), concat(model.endpointId, concat(utf8Bytes("\nticket="), model.recordingTicket)))));
 }
@@ -231,6 +239,15 @@ function recordingPayload(model: Model): Uint8Array {
 function editText(text: Uint8Array, edit: TextInputEvent): Uint8Array {
   const next = applyTextInputEvent({ text, selection: { anchor: 1024, focus: 1024 }, composition: null }, edit, MAX_MESSAGE);
   return next === null ? text : next.text;
+}
+
+function byteIndex(data: Uint8Array, value: number, start: number): number {
+  let i = start;
+  while (i < data.length) {
+    if (data[i] === value) return i;
+    i += 1;
+  }
+  return -1;
 }
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
@@ -276,6 +293,27 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         const route = fields[0];
         const message = fields[1];
         if (route.length === 0) return model;
+        const livePrefix = utf8Bytes("NUFON-LIVE/1\naction=");
+        if (message.length > livePrefix.length && sameBytes(message.slice(0, livePrefix.length), livePrefix)) {
+          const actionEnd = byteIndex(message, 10, livePrefix.length);
+          const ticketPrefix = utf8Bytes("\nticket=");
+          if (actionEnd === -1 || !sameBytes(message.slice(actionEnd, actionEnd + ticketPrefix.length), ticketPrefix)) return model;
+          const action = message.slice(livePrefix.length, actionEnd);
+          const ticket = message.slice(actionEnd + ticketPrefix.length);
+          const isStart = sameBytes(action, utf8Bytes("start"));
+          const isStop = sameBytes(action, utf8Bytes("stop"));
+          if (!isStart && !isStop) return model;
+          if (isStart && ticket.length === 0) return model;
+          const next = { ...model, identitySelected: true, replyRoute: route, liveTicketInput: ticket, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), liveStatus: utf8Bytes(isStart ? "Subscribing to live audio" : "Stopping live audio") };
+          if (isStart) return [next, Cmd.batch([
+            Cmd.request("media.live.subscribe", ticket, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
+            Cmd.request("iroh.receiver.reply", replyTextPayload(model, utf8Bytes("call_started")), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+          ])];
+          return [next, Cmd.batch([
+            Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
+            Cmd.request("iroh.receiver.reply", replyTextPayload(model, utf8Bytes("call_stopped")), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+          ])];
+        }
         const recordingPrefix = utf8Bytes("NUFON-RECORDING/1\n");
         if (message.length > recordingPrefix.length && sameBytes(message.slice(0, recordingPrefix.length), recordingPrefix)) {
           const ticket = recordingTicket(message);
@@ -325,6 +363,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (model.replyRoute.length === 0 || model.message.length === 0) return model;
       return [model, Cmd.request("iroh.receiver.reply", replyPayload(model), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
     case "sender_ready":
+      if (sameBytes(msg.data, utf8Bytes("call_stopped")) && model.liveActive) return [
+        { ...model, senderStatus: utf8Bytes("Receiver ended call") },
+        Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
+      ];
       return { ...model, senderStatus: msg.data.length === 0 ? utf8Bytes("Message echoed") : msg.data };
     case "sender_error":
       return { ...model, senderStatus: msg.data };
@@ -359,13 +401,24 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "volume_set":
       return [model, Cmd.request("media.audio.set_volume", model.volumeInput, { key: "media-volume", ok: "sender_ready", err: "sender_error" })];
     case "live_start":
-      if (model.liveActive) return model;
+      if (model.liveActive || model.receiverId.length === 0) return model;
       return [model, Cmd.request("media.live.start", EMPTY, { key: "media-live", ok: "live_started", err: "live_error" })];
     case "live_stop":
+      if (model.subscribedActive && !model.liveActive) {
+        if (model.replyRoute.length === 0) return [model, Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" })];
+        return [model, Cmd.batch([
+          Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
+          Cmd.request("iroh.receiver.reply", replyTextPayload(model, utf8Bytes("call_stopped")), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+        ])];
+      }
       if (!model.liveActive) return model;
-      return [model, Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" })];
+      if (model.receiverId.length === 0) return [model, Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" })];
+      return [model, Cmd.batch([
+        Cmd.request("iroh.sender.send", liveInvitePayload(model, utf8Bytes("stop"), EMPTY), { key: "media-live-stop-signal", ok: "sender_ready", err: "sender_error" }),
+        Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
+      ])];
     case "live_started":
-      return { ...model, liveActive: true, audioActive: true, audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data, liveStatus: utf8Bytes("Live audio publishing") };
+      return [{ ...model, liveActive: true, audioActive: true, audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data, liveStatus: utf8Bytes("Calling receiver") }, Cmd.request("iroh.sender.send", liveInvitePayload(model, utf8Bytes("start"), msg.data), { key: "media-live-signal", ok: "sender_ready", err: "sender_error" })];
     case "copy_live_ticket":
       if (model.liveTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.liveTicket)];
