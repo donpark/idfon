@@ -113,14 +113,19 @@ fn trace(comptime format: []const u8, args: anytype) void {
     const log_path = std.fmt.bufPrintZ(&path, "/tmp/nufon-{d}.log", .{c.getpid()}) catch return;
     lock(&trace_lock);
     defer trace_lock.unlock();
-    const file = c.fopen(log_path.ptr, "a") orelse return;
+    var mode: [2:0]u8 = .{ 'a', 0 };
+    const file = c.fopen(log_path.ptr, &mode) orelse return;
+    defer _ = c.fclose(file);
     _ = c.fwrite(text.ptr, 1, text.len, file);
     _ = c.fwrite("\n", 1, 1, file);
     _ = c.fflush(file);
-    _ = c.fclose(file);
 }
 
-pub fn binding() native_sdk.HostCallBinding { return host.binding(); }
+pub fn binding() native_sdk.HostCallBinding {
+    ffi.iroh_enable_tracing();
+    trace("Rust tracing initialized", .{});
+    return host.binding();
+}
 
 fn lock(mutex: *std.atomic.Mutex) void {
     while (!mutex.tryLock()) std.atomic.spinLoopHint();

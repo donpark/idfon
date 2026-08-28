@@ -253,7 +253,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("iroh.receiver.bind", EMPTY, { key: "iroh-receiver", ok: "receiver_ready", err: "receiver_error" }),
       ];
       if (model.receiverTicket.length === 0) return { ...model, identitySelected: true };
-      return [{ ...model, identitySelected: true }, Cmd.clipboardWrite(model.receiverTicket)];
+      return [{ ...model, identitySelected: true }, Cmd.batch([
+        Cmd.clipboardWrite(model.receiverTicket),
+        Cmd.showNotification({
+          title: asciiBytes("Nufon ticket copied"),
+          body: concat(asciiBytes("Endpoint: "), model.endpointId),
+        }),
+      ])];
     case "receiver_ready": {
       const ticket = receiverTicket(msg.data);
       return [

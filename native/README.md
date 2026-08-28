@@ -60,7 +60,9 @@ package itself, and an install simply lands the identical content once
 ## Known limitations
 
 The Iroh host still starts detached native worker threads for the receiver
-accept loop and sender requests. Shutdown currently does not cancel and join
+accept loop and sender requests. Each endpoint bind generates a fresh identity,
+which allows two blindly launched app instances to connect after copying the
+receiver's current ticket. Shutdown currently does not cancel and join
 every worker before the process exits. If a worker is blocked in endpoint or
 stream I/O, closing the window or stopping `native dev native` can leave the
 app running or make exit appear to hang until the Iroh timeout expires.
@@ -72,7 +74,13 @@ messages use a versioned metadata envelope and persist deduplicated BlobTickets
 in `recording-history.log`; full durable chat history and capability
 authorization are still pending.
 
-For development, close leftover instances with:
+For development, inspect per-process diagnostics with:
+
+```sh
+cat /tmp/nufon-<pid>.log
+```
+
+and close leftover instances with:
 
 ```sh
 pkill -x "Nufon"

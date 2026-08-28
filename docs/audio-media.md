@@ -22,7 +22,9 @@ completed recording
   → local file
 ```
 
-The current implementation is macOS-first and uses the following app-data files
+The current implementation is macOS-first and has been verified with two simultaneously running app instances sending and playing a short recording. Each receiver instance generates a fresh endpoint identity on launch, so two instances may safely share the default development directory for endpoint identity; separate directories are still recommended to isolate media files.
+
+It uses the following app-data files
 under `NATIVE_SDK_APP_DATA_DIR` (with `/tmp/nufon` as a development fallback):
 
 - `conversations/<scope>/recording.opus` — local microphone recording;
@@ -79,8 +81,10 @@ Rust media tests cover:
 - provider-to-recipient BlobTicket transfer.
 
 The Native SDK app has also been tested with automation for microphone capture,
-recording, live ticket creation, subscription setup, blob storage, and blob
-fetching. The macOS package includes `NSMicrophoneUsageDescription`.
+recording, live ticket creation, subscription setup, blob storage, blob
+fetching, and two-instance recording delivery/playback. The macOS package
+includes `NSMicrophoneUsageDescription`. Per-process Zig and Rust diagnostics
+are written to `/tmp/nufon-<pid>.log`.
 
 Typical checks:
 
@@ -108,6 +112,7 @@ These production follow-ups remain:
    stop now exists as a local control, but authorization is not implemented.
 2. **Multi-session media state** — replace process-global capture, playback,
    subscriptions, and blob providers with identity/conversation keyed state.
+   Persisted files are scoped, but active resources remain one-per-process.
 3. **Durable chat history** — move beyond the recording-ticket ledger to a
    durable message model with delivery state, retries, and normal messages.
 4. **Recording metadata accuracy** — measure duration and persist/display the

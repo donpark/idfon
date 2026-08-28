@@ -7,7 +7,7 @@
     "version": "0.1.0",
     "icons": ["assets/icon.png"],
     "platforms": ["macos"],
-    "permissions": ["view", "command", "microphone"],
+    "permissions": ["view", "command", "microphone", "notifications"],
     "capabilities": ["native_views", "gpu_surfaces", "clipboard", "dialog"],
     "shell": {
         "windows": [

@@ -69,6 +69,8 @@ struct LocalRecording {
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
     recorder: Arc<Mutex<OggOpusRecorder>>,
+    peak: Arc<Mutex<f32>>,
+    started: Instant,
 }
 
 struct Playback {
@@ -217,6 +219,13 @@ impl OggOpusRecorder {
     }
 
     fn finish(&mut self) -> anyhow::Result<()> {
+        // OpusEncoder buffers until a complete 20 ms frame. Pad the tail so
+        // short recordings and a final partial capture are not discarded.
+        self.encoder.push_samples(&vec![0.0f32; 960])?;
+        while let Some(packet) = self.encoder.pop_packet()? {
+            self.granule += 960;
+            self.write_packet(&packet.payload, self.granule, false, false)?;
+        }
         self.write_packet(&[], self.granule, false, true)
     }
 
@@ -505,6 +514,7 @@ pub fn media_recording_play() -> u8 {
         let mut decoded_samples = 0usize;
         let mut peak = 0.0f32;
         let mut prebuffered = 0usize;
+        let mut playback_deadline = Instant::now() + Duration::from_millis(200);
         while !thread_stop.load(Ordering::Relaxed) {
             let packet = match packets.read_packet() {
                 Ok(Some(packet)) => packet,
@@ -535,10 +545,15 @@ pub fn media_recording_play() -> u8 {
                         // before the next one is submitted, producing pops.
                         prebuffered += 1;
                         if prebuffered >= 10 {
-                            while output.occupied_seconds() > 0.2
-                                && !thread_stop.load(Ordering::Relaxed)
+                            let frame_duration =
+                                Duration::from_secs_f64(samples.len() as f64 / (48_000.0 * 2.0));
+                            playback_deadline += frame_duration;
+                            if let Some(remaining) =
+                                playback_deadline.checked_duration_since(Instant::now())
                             {
-                                thread::sleep(Duration::from_millis(5));
+                                if !thread_stop.load(Ordering::Relaxed) {
+                                    thread::sleep(remaining);
+                                }
                             }
                         }
                     }
@@ -549,8 +564,10 @@ pub fn media_recording_play() -> u8 {
                 }
             }
         }
-        while output.occupied_seconds() > 0.0 && !thread_stop.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(10));
+        if !thread_stop.load(Ordering::Relaxed) {
+            if let Some(remaining) = playback_deadline.checked_duration_since(Instant::now()) {
+                thread::sleep(remaining);
+            }
         }
         tracing::info!(
             decoded_packets,
@@ -702,26 +719,42 @@ pub fn media_recording_start() -> u8 {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
     let thread_recorder = recorder.clone();
+    let peak = Arc::new(Mutex::new(0.0f32));
+    let thread_peak = peak.clone();
     let thread = thread::spawn(move || {
         let mut input = input;
         let mut samples = vec![0.0f32; 480];
         while !thread_stop.load(Ordering::Relaxed) {
             match input.pop_samples(&mut samples) {
                 Ok(Some(count)) => {
+                    let current_peak = samples[..count]
+                        .iter()
+                        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+                    let mut recorded_peak =
+                        thread_peak.lock().expect("recording peak mutex poisoned");
+                    *recorded_peak = recorded_peak.max(current_peak);
+                    drop(recorded_peak);
                     let _ = thread_recorder
                         .lock()
                         .expect("recorder mutex poisoned")
                         .push(&samples[..count]);
+                    // InputStream can report an underflow with a filled buffer;
+                    // do not spin and encode thousands of synthetic frames per
+                    // second while waiting for the device callback.
+                    thread::sleep(Duration::from_millis(10));
                 }
                 Ok(None) => thread::sleep(Duration::from_millis(5)),
                 Err(_) => break,
             }
         }
     });
+    tracing::info!(path = %path.display(), "microphone recording started");
     *LOCAL_RECORDING.lock().expect("recording mutex poisoned") = Some(LocalRecording {
         stop,
         thread: Some(thread),
         recorder,
+        peak,
+        started: Instant::now(),
     });
     0
 }
@@ -740,13 +773,26 @@ pub fn media_recording_stop() -> u8 {
     if let Some(thread) = recording.thread.take() {
         let _ = thread.join();
     }
-    if recording
+    let peak = *recording
+        .peak
+        .lock()
+        .expect("recording peak mutex poisoned");
+    let result = recording
         .recorder
         .lock()
         .expect("recorder mutex poisoned")
-        .finish()
-        .is_err()
-    {
+        .finish();
+    let elapsed_ms = recording.started.elapsed().as_millis();
+    let packets = recording
+        .recorder
+        .lock()
+        .expect("recorder mutex poisoned")
+        .sequence;
+    tracing::info!(elapsed_ms, packets, peak, "microphone recording finalized");
+    if result.is_err() || peak < 0.001 {
+        if peak < 0.001 {
+            tracing::warn!(peak, "microphone recording contains no audible samples");
+        }
         return 1;
     }
     0
