@@ -45,6 +45,7 @@ fn run() -> io::Result<()> {
             "operation" if !operation_wait => Some("operation.get"),
             "cancel" => Some("operation.cancel"),
             "events" => Some("events"),
+            "access" => Some("access.check"),
             "wait" => Some(if operation_wait {
                 "operation.wait"
             } else {
@@ -91,6 +92,8 @@ fn run() -> io::Result<()> {
     let follow = args.iter().any(|arg| arg == "--follow");
     let after = argument(&args, "--after");
     let event_type = argument(&args, "--type");
+    let subject = argument(&args, "--subject");
+    let capability = argument(&args, "--capability");
     let identity = args
         .iter()
         .position(|arg| arg == "use" || arg == "create" || arg == "delete")
@@ -121,6 +124,8 @@ fn run() -> io::Result<()> {
         || method == "operation.wait"
     {
         serde_json::json!({"operation_id": operation_id, "timeout_ms": timeout_ms})
+    } else if method == "access.check" {
+        serde_json::json!({"identity": identity, "subject": subject, "capability": capability})
     } else if method == "identity.use" || method == "identity.create" || method == "identity.delete"
     {
         serde_json::json!({"name": identity})
@@ -276,6 +281,9 @@ fn print_usage() {
     eprintln!("       nufon [--socket PATH] resolve PEER [--json]");
     eprintln!("       nufon [--socket PATH] show PEER [--json]");
     eprintln!("       nufon [--socket PATH] peer-status PEER [--json]");
+    eprintln!(
+        "       nufon [--socket PATH] access --subject PEER --capability CAPABILITY [--json]"
+    );
     eprintln!("       nufon [--socket PATH] use IDENTITY [--json]");
     eprintln!("       nufon [--socket PATH] create IDENTITY [--json]");
     eprintln!("       nufon [--socket PATH] delete IDENTITY [--json]");

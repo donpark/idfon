@@ -113,6 +113,8 @@ struct Store {
     messages: Vec<nufon_protocol::MessageEnvelope>,
     #[serde(default)]
     grants: Vec<nufon_protocol::CapabilityGrant>,
+    #[serde(default)]
+    policies: Vec<nufon_protocol::LocalPolicy>,
     #[serde(skip)]
     data_dir: PathBuf,
 }
@@ -141,6 +143,7 @@ impl Store {
                     events: Vec::new(),
                     messages: Vec::new(),
                     grants: Vec::new(),
+                    policies: Vec::new(),
                     data_dir: data_dir.to_path_buf(),
                 };
                 let mut store = store;
@@ -482,6 +485,11 @@ fn dispatch_with_transport(
                 ),
             }
         }
+        "access.grant" => access_grant(&request, store),
+        "access.revoke" => access_revoke(&request, store),
+        "access.check" => access_check(&request, store),
+        "policy.set" => policy_set(&request, store),
+        "policy.dry_run" => policy_dry_run(&request, store),
         "identity.create" => identity_create(&request, store),
         "identity.delete" => identity_delete(&request, store),
         "identity.use" => {
@@ -680,6 +688,10 @@ fn send_message(
             && grant.subject == peer.id
             && grant.capability == nufon_protocol::Capability::MessageSend
             && grant.revoked_at.is_none()
+            && grant
+                .expires_at
+                .as_deref()
+                .is_none_or(|expires| expires > now().as_str())
     }) {
         return error_response(
             request.id.clone(),
@@ -1088,6 +1100,382 @@ fn operation_wait(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             false,
         ),
     }
+}
+
+fn capability(value: &str) -> Option<nufon_protocol::Capability> {
+    serde_json::from_value(serde_json::Value::String(value.replace('.', "_"))).ok()
+}
+
+fn access_grant(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(identity) = request
+        .params
+        .get("identity")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "identity is required".into(),
+            false,
+        );
+    };
+    let Some(subject) = request
+        .params
+        .get("subject")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "subject is required".into(),
+            false,
+        );
+    };
+    let Some(value) = request
+        .params
+        .get("capability")
+        .and_then(serde_json::Value::as_str)
+        .and_then(capability)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "unknown capability".into(),
+            false,
+        );
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    let revision = state
+        .grants
+        .iter()
+        .filter(|grant| {
+            grant.identity == identity && grant.subject == subject && grant.capability == value
+        })
+        .map(|grant| grant.revision)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let grant = nufon_protocol::CapabilityGrant {
+        capability: value,
+        identity: identity.into(),
+        subject: subject.into(),
+        conversation: request
+            .params
+            .get("conversation")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        active_at: request
+            .params
+            .get("active_at")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("0")
+            .into(),
+        expires_at: request
+            .params
+            .get("expires_at")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        revision,
+        revoked_at: None,
+    };
+    state.grants.push(grant.clone());
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"grant": grant}))
+}
+
+fn access_revoke(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(identity) = request
+        .params
+        .get("identity")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "identity is required".into(),
+            false,
+        );
+    };
+    let Some(subject) = request
+        .params
+        .get("subject")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "subject is required".into(),
+            false,
+        );
+    };
+    let Some(value) = request
+        .params
+        .get("capability")
+        .and_then(serde_json::Value::as_str)
+        .and_then(capability)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "unknown capability".into(),
+            false,
+        );
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    let mut changed = false;
+    for grant in &mut state.grants {
+        if grant.identity == identity
+            && grant.subject == subject
+            && grant.capability == value
+            && grant.revoked_at.is_none()
+        {
+            grant.revoked_at = Some(now());
+            changed = true;
+        }
+    }
+    if !changed {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "grant not found".into(),
+            false,
+        );
+    }
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"revoked": true}))
+}
+
+fn access_check(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(identity) = request
+        .params
+        .get("identity")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "identity is required".into(),
+            false,
+        );
+    };
+    let Some(subject) = request
+        .params
+        .get("subject")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "subject is required".into(),
+            false,
+        );
+    };
+    let Some(value) = request
+        .params
+        .get("capability")
+        .and_then(serde_json::Value::as_str)
+        .and_then(capability)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "unknown capability".into(),
+            false,
+        );
+    };
+    let state = store.lock().expect("store mutex poisoned");
+    let allowed = state.grants.iter().any(|grant| {
+        grant.identity == identity
+            && grant.subject == subject
+            && grant.capability == value
+            && grant.revoked_at.is_none()
+            && grant
+                .expires_at
+                .as_deref()
+                .is_none_or(|expires| expires > now().as_str())
+    });
+    success(
+        request,
+        serde_json::json!({"allowed": allowed, "identity": identity, "subject": subject, "capability": value}),
+    )
+}
+
+fn policy_set(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let required = ["id", "identity", "subject", "mode", "delivery"];
+    if required.iter().any(|field| {
+        request
+            .params
+            .get(*field)
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    }) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "id, identity, subject, mode, and delivery are required".into(),
+            false,
+        );
+    }
+    let start = request
+        .params
+        .get("schedule_start")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as u8);
+    let end = request
+        .params
+        .get("schedule_end")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as u8);
+    if start.is_some_and(|value| value > 23)
+        || end.is_some_and(|value| value > 24)
+        || start.is_some() != end.is_some()
+        || start.zip(end).is_some_and(|(start, end)| start >= end)
+    {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "schedule must be a valid start/end hour window".into(),
+            false,
+        );
+    }
+    let mut state = store.lock().expect("store mutex poisoned");
+    let id = request.params["id"].as_str().unwrap();
+    let revision = state
+        .policies
+        .iter()
+        .filter(|policy| policy.id == id)
+        .map(|policy| policy.revision)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let policy = nufon_protocol::LocalPolicy {
+        id: id.into(),
+        identity: request.params["identity"].as_str().unwrap().into(),
+        subject: request.params["subject"].as_str().unwrap().into(),
+        mode: request.params["mode"].as_str().unwrap().into(),
+        delivery: request.params["delivery"].as_str().unwrap().into(),
+        notify: request
+            .params
+            .get("notify")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        auto_accept: request
+            .params
+            .get("auto_accept")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        interrupt: request
+            .params
+            .get("interrupt")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        record: request
+            .params
+            .get("record")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        expires_at: request
+            .params
+            .get("expires_at")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        schedule_start: start,
+        schedule_end: end,
+        revision,
+    };
+    state.policies.retain(|existing| existing.id != policy.id);
+    state.policies.push(policy.clone());
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"policy": policy}))
+}
+
+fn policy_dry_run(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let peer = request
+        .params
+        .get("peer")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let mode = request
+        .params
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("text");
+    let state = store.lock().expect("store mutex poisoned");
+    let policy = state
+        .policies
+        .iter()
+        .find(|policy| policy.subject == peer && policy.mode == mode);
+    let hour = request
+        .params
+        .get("hour")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u8;
+    let decision = policy
+        .filter(|policy| {
+            policy
+                .expires_at
+                .as_deref()
+                .is_none_or(|expires| expires > now().as_str())
+        })
+        .filter(|policy| {
+            policy
+                .schedule_start
+                .zip(policy.schedule_end)
+                .is_none_or(|(start, end)| hour >= start && hour < end)
+        })
+        .map(|policy| {
+            if policy.auto_accept {
+                "accept"
+            } else if policy.notify {
+                "notify"
+            } else {
+                "queue"
+            }
+        })
+        .unwrap_or("reject");
+    success(
+        request,
+        serde_json::json!({"decision": decision, "peer": peer, "mode": mode}),
+    )
 }
 
 fn identity_create(request: &Request, store: &Arc<Mutex<Store>>) -> Response {

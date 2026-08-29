@@ -68,6 +68,8 @@ export interface Model {
   readonly showAdvanced: boolean;
   readonly showTicket: boolean;
   readonly showAddConnection: boolean;
+  readonly liveAutoAccept: boolean;
+  readonly livePolicyStatus: Uint8Array;
 }
 
 export type Msg =
@@ -88,6 +90,7 @@ export type Msg =
   | { readonly kind: "copy_endpoint_id" }
   | { readonly kind: "show_add_connection" }
   | { readonly kind: "cancel_add_connection" }
+  | { readonly kind: "toggle_live_auto_accept" }
   | { readonly kind: "add_connection" }
   | { readonly kind: "send_message" }
   | { readonly kind: "reply_message" }
@@ -184,6 +187,8 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     showAdvanced: false,
     showTicket: false,
     showAddConnection: false,
+    liveAutoAccept: false,
+    livePolicyStatus: utf8Bytes("Incoming live audio requires approval"),
   };
   return [model, Cmd.batch([
     Cmd.channelOpen(RECEIVER_CHANNEL, { event: "receiver_event" }),
@@ -371,7 +376,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           const isStop = sameBytes(action, utf8Bytes("stop"));
           if (!isStart && !isStop) return model;
           if (isStart && ticket.length === 0) return model;
-          const next = { ...model, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), liveStatus: utf8Bytes(isStart ? "Subscribing to live audio" : "Stopping live audio") };
+          const next = { ...model, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), liveStatus: utf8Bytes(isStart ? (model.liveAutoAccept ? "Subscribing to live audio" : "Incoming live audio awaiting approval") : "Stopping live audio") };
+          if (isStart && !model.liveAutoAccept) return { ...next, livePolicyStatus: utf8Bytes("Incoming live audio blocked by local policy") };
           if (isStart) return [next, Cmd.batch([
             Cmd.request("media.live.subscribe", ticket, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
             Cmd.request("iroh.receiver.reply", replyTextPayload(model, utf8Bytes("call_started")), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
@@ -420,6 +426,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return { ...model, showAddConnection: true };
     case "cancel_add_connection":
       return { ...model, showAddConnection: false };
+    case "toggle_live_auto_accept":
+      return { ...model, liveAutoAccept: !model.liveAutoAccept, livePolicyStatus: utf8Bytes(model.liveAutoAccept ? "Incoming live audio requires approval" : "Incoming live audio auto-accepted") };
     case "add_connection":
       if (model.connectionName.length === 0 || model.receiverId.length === 0) return model;
       return [{ ...model, connections: [...model.connections, { name: model.connectionName, endpoint: model.receiverId }], showAddConnection: false, senderDisabled: false, senderStatus: concat(utf8Bytes("Ready: "), model.connectionName) }, Cmd.request("media.set_scope", model.receiverId, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];

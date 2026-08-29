@@ -568,6 +568,23 @@ The GUI performs the same logical operations through the daemon, and a future
 named endpoint resolver can replace local peer aliases without changing this
 workflow.
 
+## Phase 5 implementation status
+
+Authorization and local-policy foundations are implemented. Capability grants
+can be created, checked, revoked, expired, and persisted. Incoming and outgoing
+message operations enforce the relevant capability and fail closed for missing
+or expired grants. Local policy records and deterministic `policy.dry_run`
+decisions are available without transport or media devices. Policy decisions
+remain local; remote parameters cannot override them.
+
+The initial capability vocabulary is the one defined in the Phase 0 decisions.
+Audit information is represented through the existing durable event stream.
+The Native SDK GUI now exposes the local live-audio approval policy, shows its
+current state, and blocks incoming live subscriptions unless auto-accept is
+explicitly enabled. Emergency stop remains available independently. Full
+persistent policy editing, schedules, recording-specific consent, and richer
+structured diagnostics remain follow-up work for media and GUI integration.
+
 ## Phase 4 implementation status
 
 Multi-identity and peer management now support persistent identity creation,

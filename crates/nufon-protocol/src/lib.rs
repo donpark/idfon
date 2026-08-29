@@ -207,6 +207,33 @@ pub enum Capability {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyDiagnostic {
+    pub path: String,
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalPolicy {
+    pub id: String,
+    pub identity: String,
+    pub subject: String,
+    pub mode: String,
+    pub delivery: String,
+    pub notify: bool,
+    pub auto_accept: bool,
+    pub interrupt: bool,
+    pub record: bool,
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub schedule_start: Option<u8>,
+    #[serde(default)]
+    pub schedule_end: Option<u8>,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Session {
     pub id: String,
     pub app_id: String,

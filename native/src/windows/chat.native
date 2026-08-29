@@ -81,6 +81,8 @@
         <button variant="secondary" on-press="volume_set">Set volume</button>
       </row>
       <button variant="secondary" on-press="audio_emergency_stop">Stop all audio</button>
+      <button variant="secondary" on-press="toggle_live_auto_accept">Toggle live-audio approval</button>
+      <text foreground="text_muted">{livePolicyStatus}</text>
       <text-field text="{liveTicketInput}" label="Live ticket" placeholder="Paste iroh-live ticket" on-input="live_ticket_edit" />
       <if test="{liveActive}">
         <text>{liveTicket}</text>
