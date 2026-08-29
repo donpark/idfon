@@ -1,37 +1,66 @@
 <column gap="12" padding="16">
-  <text size="heading">{selectedConnectionName}</text>
-  <text>{senderStatus}</text>
-  <text-field text="{message}" placeholder="Message" on-input="message_edit" />
-  <row gap="8">
-    <button variant="primary" disabled="{senderDisabled}" on-press="send_message">Send</button>
-    <button variant="secondary" on-press="reply_message">Reply</button>
+  <row cross="center">
+    <avatar label="{selectedConnectionName}">NU</avatar>
+    <column gap="2" grow="1">
+      <text size="heading">{selectedConnectionName}</text>
+      <text foreground="text_muted">{senderStatus}</text>
+    </column>
   </row>
-
-  <text foreground="text_muted">{audioStatus}</text>
-  <row gap="8">
+  <separator />
+  <scroll grow="1">
+    <column gap="8">
+      <for each="history" key="timestamp" as="item">
+        <if test="{item.sent}">
+          <row main="end">
+            <bubble variant="primary"><text wrap="true">{item.text}</text><text foreground="text_muted">{item.timestamp} · {item.status}</text></bubble>
+          </row>
+        </if>
+        <else>
+          <row main="start">
+            <avatar label="{selectedConnectionName}">NU</avatar>
+            <bubble><text wrap="true">{item.text}</text><text foreground="text_muted">{item.timestamp} · {item.status}</text></bubble>
+          </row>
+        </else>
+      </for>
+    </column>
+  </scroll>
+  <row gap="8" cross="center">
+    <text foreground="text_muted">Voice</text>
     <if test="{recordingActive}">
-      <button variant="secondary" on-press="recording_stop">Stop</button>
+      <button variant="destructive" size="icon" label="Stop recording" icon="x" on-press="recording_stop" />
     </if>
     <else>
-      <if test="{recordingTicket}">
-        <button variant="primary" on-press="recording_send">Send recording</button>
-      </if>
-      <else>
-        <button variant="primary" on-press="recording_start">Record</button>
-      </else>
+      <button variant="secondary" size="icon" label="Record microphone" icon="circle-dot" on-press="recording_start" />
     </else>
     <if test="{liveActive}">
-      <button variant="secondary" on-press="live_stop">End call</button>
+      <button variant="destructive" size="icon" label="End call" icon="x" on-press="live_stop" />
     </if>
     <else>
       <if test="{subscribedActive}">
-        <button variant="secondary" on-press="live_stop">End call</button>
+        <button variant="destructive" size="icon" label="End call" icon="x" on-press="live_stop" />
       </if>
       <else>
-        <button variant="secondary" on-press="live_start">Call</button>
+        <button variant="secondary" size="icon" label="Call" icon="volume" on-press="live_start" />
       </else>
     </else>
+    <text foreground="text_muted">{audioStatus}</text>
   </row>
+  <if test="{recordingReady}">
+    <row gap="8" cross="center">
+      <icon name="file-text" />
+      <text grow="1">{recordingDuration} sec audio attached</text>
+      <button variant="ghost" size="icon" label="Remove audio attachment" icon="x" on-press="recording_cancel" />
+    </row>
+  </if>
+  <input-group label="Message" height="78">
+    <textarea text="{message}" placeholder="Write a message…" submit-on-enter="true" on-input="message_edit" on-submit="send_message" />
+    <input-group-actions>
+      <spacer grow="1" />
+      <button variant="secondary" on-press="reply_message">Reply</button>
+      <button variant="primary" disabled="{senderDisabled}" on-press="send_message" icon="send">Send</button>
+    </input-group-actions>
+  </input-group>
+
   <text foreground="text_muted">{recordingStatus}</text>
   <text foreground="text_muted">{liveStatus}</text>
   <if test="{fetchedRecordingReady}">

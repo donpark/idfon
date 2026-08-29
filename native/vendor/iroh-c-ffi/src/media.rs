@@ -4,7 +4,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
     thread,
@@ -45,6 +45,7 @@ static LIVE: Mutex<Option<LiveSession>> = Mutex::new(None);
 static SUBSCRIBER: Mutex<Option<Subscriber>> = Mutex::new(None);
 static BLOB_PROVIDER: Mutex<Option<BlobProvider>> = Mutex::new(None);
 static LOCAL_RECORDING: Mutex<Option<LocalRecording>> = Mutex::new(None);
+static LAST_RECORDING_DURATION_MS: AtomicU64 = AtomicU64::new(0);
 static PLAYBACK: Mutex<Option<Playback>> = Mutex::new(None);
 
 struct LiveSession {
@@ -783,6 +784,7 @@ pub fn media_recording_stop() -> u8 {
         .expect("recorder mutex poisoned")
         .finish();
     let elapsed_ms = recording.started.elapsed().as_millis();
+    LAST_RECORDING_DURATION_MS.store(elapsed_ms as u64, Ordering::Relaxed);
     let packets = recording
         .recorder
         .lock()
@@ -796,6 +798,12 @@ pub fn media_recording_stop() -> u8 {
         return 1;
     }
     0
+}
+
+/// Returns the duration of the most recently finalized local recording.
+#[ffi_export]
+pub fn media_recording_duration_ms() -> u64 {
+    LAST_RECORDING_DURATION_MS.load(Ordering::Relaxed)
 }
 
 /// Returns whether a microphone source or live publisher is active.

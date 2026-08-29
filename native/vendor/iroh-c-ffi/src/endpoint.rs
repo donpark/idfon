@@ -967,8 +967,8 @@ mod tests {
     use crate::{
         addr::endpoint_addr_default,
         stream::{
-            recv_stream_default, recv_stream_read, send_stream_default, send_stream_finish,
-            send_stream_write,
+            recv_stream_default, recv_stream_read, recv_stream_read_to_end_timeout,
+            send_stream_default, send_stream_finish, send_stream_write,
         },
         util::rust_buffer_alloc,
     };
@@ -1340,6 +1340,110 @@ mod tests {
 
         server_thread.join().unwrap();
         client_thread.join().unwrap();
+    }
+
+    #[test]
+    fn recording_receiver_bi_roundtrip() {
+        let alpn: vec::Vec<u8> = b"nufon-chat/1".to_vec().into();
+        let mut server_config = endpoint_config_default();
+        endpoint_config_add_alpn(&mut server_config, alpn.as_ref());
+        let mut client_config = endpoint_config_default();
+        endpoint_config_add_alpn(&mut client_config, alpn.as_ref());
+        let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let server_alpn = alpn.clone();
+        let client_alpn = alpn.clone();
+
+        let server = std::thread::spawn(move || {
+            let ep = endpoint_default();
+            assert_eq!(
+                endpoint_bind(&server_config, None, None, &ep),
+                EndpointResult::Ok
+            );
+            let mut addr = endpoint_addr_default();
+            assert_eq!(endpoint_addr(&ep, &mut addr), EndpointResult::Ok);
+            addr_tx.send(addr).unwrap();
+
+            let conn = connection_default();
+            assert_eq!(
+                endpoint_accept(&ep, server_alpn.as_ref(), &conn),
+                EndpointResult::Ok
+            );
+            let mut send = send_stream_default();
+            let mut recv = recv_stream_default();
+            assert_eq!(
+                connection_accept_bi(&conn, &mut send, &mut recv),
+                EndpointResult::Ok
+            );
+            let mut received = rust_buffer_alloc(0);
+            assert_eq!(
+                recv_stream_read_to_end_timeout(&mut recv, &mut received, 8196, 5000),
+                EndpointResult::Ok
+            );
+            assert!(received.len() >= 4);
+            let declared =
+                u32::from_be_bytes([received[0], received[1], received[2], received[3]]) as usize;
+            assert_eq!(declared, received.len() - 4);
+            assert_eq!(
+                &received[4..],
+                b"NUFON-RECORDING/1\nid=test\nticket=test-ticket"
+            );
+            let ack_len = (13u32).to_be_bytes();
+            assert_eq!(
+                send_stream_write(&mut send, (&ack_len[..]).into()),
+                EndpointResult::Ok
+            );
+            assert_eq!(
+                send_stream_write(&mut send, b"audio_received"[..].into()),
+                EndpointResult::Ok
+            );
+            assert_eq!(send_stream_finish(send), EndpointResult::Ok);
+            done_rx.recv().unwrap();
+            connection_close(conn);
+            endpoint_close(ep);
+        });
+
+        let client = std::thread::spawn(move || {
+            let ep = endpoint_default();
+            assert_eq!(
+                endpoint_bind(&client_config, None, None, &ep),
+                EndpointResult::Ok
+            );
+            let addr = addr_rx.recv().unwrap();
+            let conn = connection_default();
+            assert_eq!(
+                endpoint_connect(&ep, client_alpn.as_ref(), addr, &conn),
+                EndpointResult::Ok
+            );
+            let mut send = send_stream_default();
+            let mut recv = recv_stream_default();
+            assert_eq!(
+                connection_open_bi(&conn, &mut send, &mut recv),
+                EndpointResult::Ok
+            );
+            let payload = b"NUFON-RECORDING/1\nid=test\nticket=test-ticket";
+            let len = (payload.len() as u32).to_be_bytes();
+            assert_eq!(
+                send_stream_write(&mut send, (&len[..]).into()),
+                EndpointResult::Ok
+            );
+            assert_eq!(
+                send_stream_write(&mut send, payload[..].into()),
+                EndpointResult::Ok
+            );
+            assert_eq!(send_stream_finish(send), EndpointResult::Ok);
+            let mut ack = rust_buffer_alloc(0);
+            assert_eq!(
+                recv_stream_read_to_end_timeout(&mut recv, &mut ack, 8196, 5000),
+                EndpointResult::Ok
+            );
+            assert_eq!(&ack[..], b"\0\0\0\raudio_received");
+            done_tx.send(()).unwrap();
+            connection_close(conn);
+            endpoint_close(ep);
+        });
+        server.join().unwrap();
+        client.join().unwrap();
     }
 
     #[test]

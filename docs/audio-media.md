@@ -22,7 +22,7 @@ completed recording
   → local file
 ```
 
-The current implementation is macOS-first and has been verified with two simultaneously running app instances sending and playing a short recording. Each receiver instance generates a fresh endpoint identity on launch, so two instances may safely share the default development directory for endpoint identity; separate directories are still recommended to isolate media files.
+The current implementation is macOS-first and has been verified with two simultaneously running app instances sending and playing a short recording. Recording attachments use the custom `nufon-chat/1` ALPN and a length-prefixed bidirectional QUIC stream; the receiver acknowledges a validated envelope with `audio_received` before the sender reports delivery success. Each receiver instance generates a fresh endpoint identity on launch, so two instances may safely share the default development directory for endpoint identity; separate directories are still recommended to isolate media files.
 
 It uses the following app-data files
 under `NATIVE_SDK_APP_DATA_DIR` (with `/tmp/nufon` as a development fallback):
@@ -48,6 +48,7 @@ The chat window currently provides:
 - `iroh-live` ticket copy and manual subscription controls for debugging;
 - local microphone recording start/stop;
 - Ogg Opus recording storage through `iroh-blobs`;
+- recording attachments with explicit Send/remove controls;
 - BlobTicket copy/send/fetch;
 - fetched Ogg Opus playback;
 - subscriber output volume control.
@@ -60,7 +61,7 @@ id=<BlobTicket>
 codec=opus
 channels=1
 sample_rate=48000
-duration_ms=0
+duration_ms=<recording duration in milliseconds>
 sender_id=<Endpoint ID>
 ticket=<BlobTicket>
 ```
@@ -69,13 +70,14 @@ The BlobTicket is the stable recording ID for this prototype: it is
 content-addressed and remains unchanged across duplicate delivery. The
 receiver validates the ticket before persisting it in the conversation's
 recording history ledger. Audio bytes are never placed in the message.
-`duration_ms=0` means duration measurement is not yet exposed by the recorder.
+The sender measures the finalized local recording duration and includes it in the envelope. The attachment UI displays the rounded duration in seconds, for example `4 sec audio attached`.
 
 ## Verification
 
 Rust media tests cover:
 
 - Ogg Opus headers and packet parsing;
+- the recording receiver bidirectional stream, framing, and acknowledgment path;
 - Ogg Opus packet decoding with libopus;
 - WAV test-recorder finalization;
 - persistent blob tags;
@@ -83,7 +85,9 @@ Rust media tests cover:
 
 The Native SDK app has also been tested with automation for microphone capture,
 recording, live ticket creation, subscription setup, blob storage, blob
-fetching, and two-instance recording delivery/playback. A normal Call now starts
+fetching, and two-instance recording delivery/playback. Direct FFI tests also
+cover the exact length-prefixed recording envelope and `audio_received`
+acknowledgment exchange. A normal Call now starts
 an `iroh-live` publisher, sends a `NUFON-LIVE/1` invite containing its ticket
 through the existing control channel, and makes the receiver subscribe
 automatically. Either participant can end the call: the stop message tears down
@@ -121,8 +125,8 @@ These production follow-ups remain:
    Persisted files are scoped, but active resources remain one-per-process.
 3. **Durable chat history** — move beyond the recording-ticket ledger to a
    durable message model with delivery state, retries, and normal messages.
-4. **Recording metadata accuracy** — measure duration and persist/display the
-   metadata; `duration_ms=0` remains the explicit unavailable value.
+4. **Recording metadata accuracy** — persist richer metadata such as the exact
+   duration and codec details across the recording history ledger.
 5. **Device management** — expose device IDs and names, add selection UI, and
    handle disconnect/reconnect status visibly.
 6. **Playback UX** — add queueing, pause/resume, progress, completion state, and

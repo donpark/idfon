@@ -6,7 +6,7 @@ const c = @cImport({
 const native_sdk = @import("native_sdk");
 const ffi = @cImport({ @cInclude("irohnet.h"); });
 
-const alpn = "nufon-echo/1";
+const alpn = "nufon-chat/1";
 const channel_key = 1;
 const max_message = 8192;
 const max_payload = 8192;
@@ -239,10 +239,10 @@ fn bindWorker(job: *Job) void {
     }
     self.endpoint = endpoint;
     trace("endpoint bound", .{});
-    const thread = std.Thread.spawn(.{}, acceptLoop, .{self}) catch {
+    const accept_thread = std.Thread.spawn(.{}, acceptLoop, .{self}) catch {
         ffi.endpoint_close(endpoint); self.endpoint = null; self.complete(job.key, false, "thread_failed"); return;
     };
-    thread.detach();
+    accept_thread.detach();
     finishBind(self, job.key, endpoint.?);
 }
 
@@ -269,6 +269,26 @@ fn endpointInfo(endpoint: *ffi.Endpoint_t, output: []u8) !usize {
     return a.len + 1 + k.len;
 }
 
+fn writeFrame(stream: *?*ffi.SendStream_t, payload: []const u8) bool {
+    if (payload.len > max_message) return false;
+    var frame: [max_message + 4]u8 = undefined;
+    std.mem.writeInt(u32, frame[0..4], @intCast(payload.len), .big);
+    trace("write frame payload={d} header={d}", .{ payload.len, std.mem.readInt(u32, frame[0..4], .big) });
+    @memcpy(frame[4..][0..payload.len], payload);
+    return ffi.send_stream_write_timeout(stream, .{ .ptr = &frame, .len = payload.len + 4 }, 30_000) == 0;
+}
+
+fn framePayload(data: []const u8) ?[]const u8 {
+    if (data.len < 4) return null;
+    const length: usize = (@as(usize, data[0]) << 24) | (@as(usize, data[1]) << 16) | (@as(usize, data[2]) << 8) | data[3];
+    if (length > max_message or data.len != length + 4) return null;
+    return data[4..];
+}
+
+fn hasPrefix(data: []const u8, prefix: []const u8) bool {
+    return data.len >= prefix.len and std.mem.eql(u8, data[0..prefix.len], prefix);
+}
+
 fn replyWorker(job: *Job) void {
     defer std.heap.page_allocator.destroy(job);
     const self = job.host;
@@ -288,7 +308,7 @@ fn replyWorker(job: *Job) void {
         self.complete(job.key, false, "reply_unavailable"); return;
     }
     var tx = stream;
-    if (ffi.send_stream_write_timeout(&tx, .{ .ptr = message.ptr, .len = message.len }, 30_000) != 0) {
+    if (!writeFrame(&tx, message)) {
         ffi.send_stream_free(tx);
         if (connection) |value| ffi.connection_close(value);
         self.complete(job.key, false, "reply_failed"); return;
@@ -385,8 +405,14 @@ fn mediaAudioWorker(job: *Job) void {
         const ticket = ffi.media_live_recording_store();
         defer ffi.rust_free_string(ticket);
         const text = std.mem.span(ticket);
-        if (text.len == 0) self.complete(job.key, false, "recording_store_failed")
-        else self.complete(job.key, true, text);
+        if (text.len == 0) self.complete(job.key, false, "recording_store_failed") else {
+            var result: [max_result]u8 = undefined;
+            const duration = std.fmt.bufPrint(&result, "{d}", .{(ffi.media_recording_duration_ms() + 500) / 1000}) catch { self.complete(job.key, false, "recording_store_failed"); return; };
+            if (duration.len + 1 + text.len > result.len) { self.complete(job.key, false, "recording_store_failed"); return; }
+            result[duration.len] = 10;
+            @memcpy(result[duration.len + 1 ..][0..text.len], text);
+            self.complete(job.key, true, result[0 .. duration.len + 1 + text.len]);
+        }
     } else if (std.mem.eql(u8, name, "media.blob.fetch")) {
         var ticket: [max_payload + 1]u8 = undefined;
         @memcpy(ticket[0..job.len], job.bytes[0..job.len]);
@@ -419,6 +445,7 @@ fn sendWorker(job: *Job) void {
     // this process for the sender while keeping the receiver shared in the UI.
     var config = ffi.endpoint_config_default();
     defer ffi.endpoint_config_free(config);
+    const is_recording = hasPrefix(message, "NUFON-RECORDING/1\n");
     ffi.endpoint_config_add_alpn(&config, alpnSlice());
     var sender_endpoint: ?*ffi.Endpoint_t = ffi.endpoint_default();
     if (sender_endpoint == null or ffi.endpoint_bind(&config, null, null, &sender_endpoint) != 0) {
@@ -439,14 +466,72 @@ fn sendWorker(job: *Job) void {
     trace("sender target endpoint id={s}", .{std.mem.span(target_id)});
     var connection: ?*ffi.Connection_t = ffi.connection_default();
     if (connection == null or ffi.endpoint_connect(&local_endpoint, alpnSlice(), address, &connection) != 0) { ffi.connection_free(connection); self.complete(job.key, false, "connect_failed"); return; }
+    if (is_recording) {
+        var tx: ?*ffi.SendStream_t = ffi.send_stream_default();
+        var rx: ?*ffi.RecvStream_t = ffi.recv_stream_default();
+        if (tx == null or rx == null or ffi.connection_open_bi(&connection, &tx, &rx) != 0) { ffi.connection_close(connection); ffi.send_stream_free(tx); ffi.recv_stream_free(rx); self.complete(job.key, false, "stream_failed"); return; }
+        if (!writeFrame(&tx, message) or ffi.send_stream_finish(tx) != 0) { ffi.send_stream_free(tx); ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, false, "write_failed"); return; }
+        trace("recording frame sent; waiting for ack", .{});
+        var ack = ffi.rust_buffer_alloc(0); defer ffi.rust_buffer_free(ack);
+        const ack_result = ffi.recv_stream_read_to_end_timeout(&rx, &ack, max_message + 4, 30_000);
+        if (ack_result != 0) { ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, false, "audio_ack_failed"); return; }
+        const ack_payload = framePayload(ack.ptr[0..ack.len]) orelse { ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, false, "invalid_ack"); return; };
+        if (!std.mem.eql(u8, ack_payload, "audio_received")) { ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, false, "audio_rejected"); return; }
+        ffi.recv_stream_free(rx);
+        ffi.connection_close(connection);
+        self.complete(job.key, true, "audio_sent");
+        return;
+    }
     var tx: ?*ffi.SendStream_t = ffi.send_stream_default(); var rx: ?*ffi.RecvStream_t = ffi.recv_stream_default();
     if (tx == null or rx == null or ffi.connection_open_bi(&connection, &tx, &rx) != 0) { ffi.connection_close(connection); ffi.send_stream_free(tx); ffi.recv_stream_free(rx); self.complete(job.key, false, "stream_failed"); return; }
-    if (ffi.send_stream_write_timeout(&tx, .{ .ptr = message.ptr, .len = message.len }, 30_000) != 0) { ffi.send_stream_free(tx); ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, false, "write_failed"); return; }
+    if (!writeFrame(&tx, message)) { ffi.send_stream_free(tx); ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, false, "write_failed"); return; }
     if (ffi.send_stream_finish(tx) != 0) { ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, false, "write_failed"); return; }
     var echoed = ffi.rust_buffer_alloc(0); defer ffi.rust_buffer_free(echoed);
-    const read_result = ffi.recv_stream_read_to_end_timeout(&rx, &echoed, max_message, 30_000);
+    const read_result = ffi.recv_stream_read_to_end_timeout(&rx, &echoed, max_message + 4, 30_000);
     if (read_result != 0) { ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, false, if (read_result == ffi.ENDPOINT_RESULT_TIMEOUT) "read_timeout" else "read_failed"); return; }
-    ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, true, echoed.ptr[0..echoed.len]);
+    const payload = framePayload(echoed.ptr[0..echoed.len]) orelse { ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, false, "invalid_frame"); return; };
+    ffi.recv_stream_free(rx); ffi.connection_close(connection); self.complete(job.key, true, payload);
+}
+
+fn handleConnection(self: *Host, connection: ?*ffi.Connection_t) void {
+    var conn = connection;
+    trace("connection worker started", .{});
+    var tx: ?*ffi.SendStream_t = ffi.send_stream_default(); var rx: ?*ffi.RecvStream_t = ffi.recv_stream_default();
+    trace("waiting for inbound bidirectional stream", .{});
+    if (tx == null or rx == null or ffi.connection_accept_bi(&conn, &tx, &rx) != 0) {
+        trace("connection_accept_bi failed", .{});
+        ffi.send_stream_free(tx); ffi.recv_stream_free(rx); ffi.connection_close(conn); return;
+    }
+    var received = ffi.rust_buffer_alloc(0);
+    const read_result = ffi.recv_stream_read_to_end_timeout(&rx, &received, max_message + 4, 30_000);
+    trace("receive stream result={d} bytes={d}", .{ read_result, received.len });
+    if (read_result != 0) { ffi.send_stream_free(tx); ffi.rust_buffer_free(received); ffi.recv_stream_free(rx); ffi.connection_close(conn); return; }
+    const raw = received.ptr[0..received.len];
+    if (raw.len >= 4) trace("read frame actual={d} declared={d}", .{ raw.len, std.mem.readInt(u32, raw[0..4], .big) });
+    const payload = framePayload(raw) orelse {
+        if (raw.len >= 4) {
+            const declared: usize = (@as(usize, raw[0]) << 24) | (@as(usize, raw[1]) << 16) | (@as(usize, raw[2]) << 8) | raw[3];
+            trace("invalid recording/chat frame actual={d} declared={d}", .{ raw.len, declared });
+        } else trace("invalid frame too short actual={d}", .{raw.len});
+        ffi.send_stream_free(tx); ffi.rust_buffer_free(received); ffi.recv_stream_free(rx); ffi.connection_close(conn); return;
+    };
+    trace("received message ({d} bytes)", .{payload.len});
+    if (hasPrefix(payload, "NUFON-RECORDING/1\n")) {
+        trace("recording received; sending ack", .{});
+        if (!writeFrame(&tx, "audio_received") or ffi.send_stream_finish(tx) != 0) { ffi.send_stream_free(tx); ffi.recv_stream_free(rx); ffi.rust_buffer_free(received); ffi.connection_close(conn); return; }
+    } else {
+        lock(&self.endpoint_lock);
+        self.active_connection = conn;
+        self.active_send_stream = tx;
+        self.endpoint_lock.unlock();
+    }
+    var routed: [max_result]u8 = undefined;
+    const prefix = "1\n";
+    if (prefix.len + payload.len <= routed.len) {
+        @memcpy(routed[0..prefix.len], prefix); @memcpy(routed[prefix.len..][0..payload.len], payload);
+        self.postReceiverEvent(routed[0 .. prefix.len + payload.len]);
+    }
+    ffi.recv_stream_free(rx); ffi.rust_buffer_free(received); ffi.connection_close(conn);
 }
 
 fn acceptLoop(self: *Host) void {
@@ -455,54 +540,13 @@ fn acceptLoop(self: *Host) void {
         lock(&self.endpoint_lock); const endpoint = self.endpoint; self.endpoint_lock.unlock();
         const ep = endpoint orelse return;
         var connection: ?*ffi.Connection_t = ffi.connection_default();
-        if (connection == null or ffi.endpoint_accept(&ep, alpnSlice(), &connection) != 0) {
-            trace("endpoint_accept failed", .{});
-            ffi.connection_free(connection); return;
-        }
+        if (connection == null or ffi.endpoint_accept(&ep, alpnSlice(), &connection) != 0) { trace("endpoint_accept failed", .{}); ffi.connection_free(connection); return; }
         trace("inbound connection accepted", .{});
-        lock(&self.endpoint_lock);
-        const stopping = self.shutting_down;
-        if (!stopping) self.active_connection = connection;
-        self.endpoint_lock.unlock();
+        lock(&self.endpoint_lock); const stopping = self.shutting_down; self.endpoint_lock.unlock();
         if (stopping) { ffi.connection_close(connection); return; }
-        var tx: ?*ffi.SendStream_t = ffi.send_stream_default(); var rx: ?*ffi.RecvStream_t = ffi.recv_stream_default();
-        if (tx == null or rx == null or ffi.connection_accept_bi(&connection, &tx, &rx) != 0) {
-            trace("connection_accept_bi failed", .{});
-            lock(&self.endpoint_lock);
-            const owns_connection = self.active_connection == connection;
-            if (owns_connection) self.active_connection = null;
-            self.endpoint_lock.unlock();
-            if (owns_connection) ffi.connection_close(connection);
-            ffi.send_stream_free(tx); ffi.recv_stream_free(rx); continue;
-        }
-        var received = ffi.rust_buffer_alloc(0);
-        const read_result = ffi.recv_stream_read_to_end_timeout(&rx, &received, max_message, 30_000);
-        trace("receive stream result={d} bytes={d}", .{ read_result, received.len });
-        if (read_result == 0) {
-            trace("received message ({d} bytes)", .{received.len});
-            lock(&self.endpoint_lock);
-            self.active_send_stream = tx;
-            self.endpoint_lock.unlock();
-            // Route 1 is local-only; the UI uses it to reply on this live connection.
-            // ponytail: one live inbound route; map connection IDs when concurrent replies matter.
-            var routed: [max_result]u8 = undefined;
-            const prefix = "1\n";
-            if (prefix.len + received.len <= routed.len) {
-                @memcpy(routed[0..prefix.len], prefix);
-                @memcpy(routed[prefix.len..][0..received.len], received.ptr[0..received.len]);
-                self.postReceiverEvent(routed[0 .. prefix.len + received.len]);
-            }
-            ffi.recv_stream_free(rx);
-            ffi.rust_buffer_free(received);
-            return;
-        }
-        ffi.send_stream_free(tx);
-        ffi.rust_buffer_free(received); ffi.recv_stream_free(rx);
-        lock(&self.endpoint_lock);
-        const owns_connection = self.active_connection == connection;
-        if (owns_connection) self.active_connection = null;
-        self.endpoint_lock.unlock();
-        if (owns_connection) ffi.connection_close(connection);
+        const thread = std.Thread.spawn(.{}, handleConnection, .{ self, connection }) catch { trace("connection worker spawn failed", .{}); ffi.connection_close(connection); return; };
+        thread.detach();
+        trace("connection worker spawned", .{});
     }
 }
 

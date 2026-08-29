@@ -881,6 +881,12 @@ uint8_t
 media_recording_stop (void);
 
 /** \brief
+ *  Returns duration of the most recently finalized local recording.
+ */
+uint64_t
+media_recording_duration_ms (void);
+
+/** \brief
  *  Stops fetched-recording playback.
  */
 void

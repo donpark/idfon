@@ -13,6 +13,13 @@ export interface Connection {
   readonly endpoint: Uint8Array;
 }
 
+export interface ChatMessage {
+  readonly text: Uint8Array;
+  readonly sent: boolean;
+  readonly timestamp: Uint8Array;
+  readonly status: Uint8Array;
+}
+
 export interface SessionLaunch {
   readonly peerId: Uint8Array;
   readonly sessionId: Uint8Array;
@@ -21,6 +28,7 @@ export interface SessionLaunch {
 
 export interface Model {
   readonly message: Uint8Array;
+  readonly history: readonly ChatMessage[];
   readonly replyRoute: Uint8Array;
   readonly identityName: Uint8Array;
   readonly identitySelected: boolean;
@@ -47,9 +55,11 @@ export interface Model {
   readonly liveStatus: Uint8Array;
   readonly recordingStatus: Uint8Array;
   readonly recordingReady: boolean;
+  readonly pendingRecordingSend: boolean;
   readonly subscribedRecording: boolean;
   readonly recordingActive: boolean;
   readonly recordingTicket: Uint8Array;
+  readonly recordingDuration: Uint8Array;
   readonly blobTicketInput: Uint8Array;
   readonly blobStatus: Uint8Array;
   readonly playbackActive: boolean;
@@ -113,6 +123,7 @@ export type Msg =
   | { readonly kind: "recording_error"; readonly data: Uint8Array }
   | { readonly kind: "recording_store" }
   | { readonly kind: "recording_stored"; readonly data: Uint8Array }
+  | { readonly kind: "recording_cancel" }
   | { readonly kind: "copy_recording_ticket" }
   | { readonly kind: "recording_send" }
   | { readonly kind: "recording_store_error"; readonly data: Uint8Array }
@@ -133,6 +144,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
   const model: Model = {
 
     message: EMPTY,
+    history: [],
     replyRoute: EMPTY,
     identityName: utf8Bytes("Default"),
     identitySelected: true,
@@ -159,9 +171,11 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     liveStatus: utf8Bytes("Live audio off"),
     recordingStatus: utf8Bytes("No recording"),
     recordingReady: false,
+    pendingRecordingSend: false,
     subscribedRecording: false,
     recordingActive: false,
     recordingTicket: EMPTY,
+    recordingDuration: utf8Bytes("0"),
     blobTicketInput: EMPTY,
     blobStatus: utf8Bytes("No blob selected"),
     playbackActive: false,
@@ -221,16 +235,60 @@ function recordingTicket(envelope: Uint8Array): Uint8Array {
   return EMPTY;
 }
 
+function chatMessage(message: Uint8Array): Uint8Array {
+  const out: number[] = [123, 34, 118, 34, 58, 49, 44, 34, 116, 121, 112, 101, 34, 58, 34, 109, 101, 115, 115, 97, 103, 101, 34, 44, 34, 98, 121, 116, 101, 115, 34, 58, 91];
+  for (let i = 0; i < message.length; i += 1) {
+    const value = message[i];
+    if (value >= 100) out.push(48 + Math.floor(value / 100));
+    if (value >= 10) out.push(48 + Math.floor(value / 10) % 10);
+    out.push(48 + value % 10);
+    if (i + 1 < message.length) out.push(44);
+  }
+  out.push(93, 125);
+  return new Uint8Array(out);
+}
+
+function decodeChatMessage(message: Uint8Array): Uint8Array {
+  const marker = utf8Bytes("\"bytes\":[");
+  let start = -1;
+  for (let i = 0; i + marker.length <= message.length; i += 1) {
+    if (sameBytes(message.slice(i, i + marker.length), marker)) { start = i + marker.length; break; }
+  }
+  if (start < 0) return message;
+  const values: number[] = [];
+  let value = 0;
+  let digits = 0;
+  for (let i = start; i < message.length; i += 1) {
+    const byte = message[i];
+    if (byte >= 48 && byte <= 57) { value = value * 10 + byte - 48; digits += 1; continue; }
+    if (digits > 0) { if (value > 255) return message; values.push(value); value = 0; digits = 0; }
+    if (byte === 93) { const result = new Uint8Array(values.length); for (let j = 0; j < values.length; j += 1) result[j] = values[j]; return result; }
+    if (byte !== 44 && byte !== 32) return message;
+  }
+  return message;
+}
+
 function sendPayload(model: Model): Uint8Array {
-  return concat(concat(model.receiverId, new Uint8Array([10])), model.message);
+  return concat(concat(model.receiverId, new Uint8Array([10])), chatMessage(model.message));
 }
 
 function replyPayload(model: Model): Uint8Array {
-  return concat(concat(model.replyRoute, new Uint8Array([10])), model.message);
+  return concat(concat(model.replyRoute, new Uint8Array([10])), chatMessage(model.message));
 }
 
 function replyTextPayload(model: Model, message: Uint8Array): Uint8Array {
   return concat(concat(model.replyRoute, new Uint8Array([10])), message);
+}
+
+function addChatMessage(model: Model, text: Uint8Array, sent: boolean, status: Uint8Array): Model {
+  return { ...model, history: [...model.history, { text, sent, timestamp: utf8Bytes("just now"), status }] };
+}
+
+function setLastMessageStatus(model: Model, status: Uint8Array): Model {
+  if (model.history.length === 0) return model;
+  const history = model.history.slice();
+  history[history.length - 1] = { ...history[history.length - 1], status };
+  return { ...model, history };
 }
 
 function liveInvitePayload(model: Model, action: Uint8Array, ticket: Uint8Array): Uint8Array {
@@ -300,7 +358,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       {
         const fields = routedFields(msg.bytes);
         const route = fields[0];
-        const message = fields[1];
+        const message = decodeChatMessage(fields[1]);
         if (route.length === 0) return model;
         const livePrefix = utf8Bytes("NUFON-LIVE/1\naction=");
         if (message.length > livePrefix.length && sameBytes(message.slice(0, livePrefix.length), livePrefix)) {
@@ -331,7 +389,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
             Cmd.request("media.blob.fetch", ticket, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" }),
           ])];
         }
-        return { ...model, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, message, receiverStatus: utf8Bytes("Received: receiver_event"), senderStatus: utf8Bytes("Reply available"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true };
+        return addChatMessage({ ...model, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, message, receiverStatus: utf8Bytes("Received: receiver_event"), senderStatus: utf8Bytes("Reply available"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true }, message, false, utf8Bytes("Received"));
       }
     case "connection_selected": {
       const connection = model.connections.find((item) => sameBytes(item.name, msg.name));
@@ -366,19 +424,27 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (model.connectionName.length === 0 || model.receiverId.length === 0) return model;
       return [{ ...model, connections: [...model.connections, { name: model.connectionName, endpoint: model.receiverId }], showAddConnection: false, senderDisabled: false, senderStatus: concat(utf8Bytes("Ready: "), model.connectionName) }, Cmd.request("media.set_scope", model.receiverId, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
     case "send_message":
+      if (model.recordingTicket.length !== 0) {
+        if (model.receiverId.length === 0 || model.pendingRecordingSend) return model;
+        return [
+        { ...model, pendingRecordingSend: true, recordingStatus: utf8Bytes("Sending attachment") },
+        Cmd.request("iroh.sender.send", recordingPayload(model), { key: "media-recording-send", ok: "sender_ready", err: "sender_error" }),
+        ];
+      }
       if (model.receiverId.length === 0 || model.message.length === 0) return model;
-      return [model, Cmd.request("iroh.sender.send", sendPayload(model), { key: "iroh-send", ok: "sender_ready", err: "sender_error" })];
+      return [addChatMessage(model, model.message, true, utf8Bytes("Sending")), Cmd.request("iroh.sender.send", sendPayload(model), { key: "iroh-send", ok: "sender_ready", err: "sender_error" })];
     case "reply_message":
       if (model.replyRoute.length === 0 || model.message.length === 0) return model;
-      return [model, Cmd.request("iroh.receiver.reply", replyPayload(model), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
+      return [addChatMessage(model, model.message, true, utf8Bytes("Sending")), Cmd.request("iroh.receiver.reply", replyPayload(model), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
     case "sender_ready":
+      if (model.pendingRecordingSend) return { ...model, pendingRecordingSend: false, recordingReady: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Audio sent"), senderStatus: utf8Bytes("Audio sent") };
       if (sameBytes(msg.data, utf8Bytes("call_stopped")) && model.liveActive) return [
         { ...model, senderStatus: utf8Bytes("Receiver ended call") },
         Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
       ];
-      return { ...model, senderStatus: msg.data.length === 0 ? utf8Bytes("Message echoed") : msg.data };
+      return setLastMessageStatus({ ...model, senderStatus: msg.data.length === 0 ? utf8Bytes("Message sent") : msg.data }, utf8Bytes("Sent"));
     case "sender_error":
-      return { ...model, senderStatus: msg.data };
+      return setLastMessageStatus({ ...model, senderStatus: msg.data }, utf8Bytes("Failed"));
     case "recording_persisted":
       return model;
     case "recording_persist_error":
@@ -466,8 +532,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "recording_store":
       if (!model.recordingReady) return model;
       return [model, Cmd.request("media.live.recording.store", EMPTY, { key: "media-recording-store", ok: "recording_stored", err: "recording_store_error" })];
-    case "recording_stored":
-      return { ...model, recordingReady: true, recordingStatus: utf8Bytes("Recording ready to send"), recordingTicket: msg.data };
+    case "recording_stored": {
+      const fields = routedFields(msg.data);
+      return { ...model, recordingReady: true, senderDisabled: model.receiverId.length === 0, recordingDuration: fields[0], recordingStatus: utf8Bytes("Recording attached"), recordingTicket: fields[1] };
+    }
+    case "recording_cancel":
+      return { ...model, recordingReady: false, pendingRecordingSend: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Recording discarded") };
     case "copy_recording_ticket":
       if (model.recordingTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.recordingTicket)];
