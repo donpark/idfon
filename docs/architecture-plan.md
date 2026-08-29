@@ -568,6 +568,20 @@ The GUI performs the same logical operations through the daemon, and a future
 named endpoint resolver can replace local peer aliases without changing this
 workflow.
 
+## Phase 3 implementation status
+
+The CLI exposes status, context, identities, peers, peer resolution, peer show,
+peer status, identity selection, send, operation lookup/cancellation, events,
+and wait. Machine-readable JSON and JSONL output are available, stdin request
+parameters are accepted with `--stdin-json`, and built-in help, examples,
+schema, and stable-error descriptions are available through the corresponding
+help topics. Operation lookup and event wait requests accept bounded timeout
+parameters.
+
+The CLI remains intentionally small and uses the same logical daemon methods as
+the GUI. Full command-specific schema generation and a richer argument parser
+remain future improvements if the surface grows beyond these commands.
+
 ## Phase 2 implementation status
 
 Event queries now support type, peer, and cursor filtering. The daemon supports

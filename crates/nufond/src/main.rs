@@ -399,6 +399,7 @@ fn dispatch_with_transport(
         "message.receive" => receive_message(&request, store),
         "message.send" => send_message(&request, store, transport),
         "operation.get" => operation_get(&request, store),
+        "operation.wait" => operation_wait(&request, store),
         "operation.cancel" => operation_cancel(&request, store),
         "events" => events(&request, store),
         "wait" => wait_event(&request, store),
@@ -431,6 +432,71 @@ fn dispatch_with_transport(
         "peers" => {
             let state = store.lock().expect("store mutex poisoned");
             success(&request, serde_json::json!({"peers": state.peers}))
+        }
+        "peer.show" | "peer.status" => {
+            let reference = request
+                .params
+                .get("ref")
+                .and_then(serde_json::Value::as_str);
+            let state = store.lock().expect("store mutex poisoned");
+            let peer = state.peers.iter().find(|peer| {
+                reference.is_some_and(|reference| {
+                    peer.id == reference
+                        || peer.name == reference
+                        || peer.aliases.iter().any(|alias| alias == reference)
+                        || peer.endpoint_id.as_deref() == Some(reference)
+                })
+            });
+            match peer {
+                Some(peer) => success(
+                    &request,
+                    serde_json::json!({"peer": peer, "status": "known"}),
+                ),
+                None => error_response(
+                    request.id,
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    "peer not found".into(),
+                    false,
+                ),
+            }
+        }
+        "identity.use" => {
+            let name = request
+                .params
+                .get("name")
+                .and_then(serde_json::Value::as_str);
+            let mut state = store.lock().expect("store mutex poisoned");
+            let found = state.identities.iter().any(|identity| {
+                name.is_some_and(|name| identity.id == name || identity.name == name)
+            });
+            if !found {
+                return error_response(
+                    request.id,
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    "identity not found".into(),
+                    false,
+                );
+            }
+            for identity in &mut state.identities {
+                identity.active =
+                    Some(identity.id.as_str()) == name || Some(identity.name.as_str()) == name;
+            }
+            let data_dir = state.data_dir.clone();
+            if let Err(error) = state.save(&data_dir) {
+                return error_response(
+                    request.id,
+                    &request.method,
+                    ErrorCode::Internal,
+                    error.to_string(),
+                    true,
+                );
+            }
+            success(
+                &request,
+                serde_json::json!({"identity": name, "active": true}),
+            )
         }
         "peer.resolve" => {
             let reference = request
@@ -930,6 +996,37 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             "status": "delivered",
         }),
     )
+}
+
+fn operation_wait(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let id = request
+        .params
+        .get("operation_id")
+        .and_then(serde_json::Value::as_str);
+    let Some(id) = id else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "operation_id is required".into(),
+            false,
+        );
+    };
+    let state = store.lock().expect("store mutex poisoned");
+    match state
+        .operations
+        .iter()
+        .find(|operation| operation.operation_id == id)
+    {
+        Some(operation) => success(request, serde_json::json!({"operation": operation})),
+        None => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "operation not found".into(),
+            false,
+        ),
+    }
 }
 
 fn operation_get(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
