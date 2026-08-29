@@ -861,7 +861,10 @@ pub fn media_live_start() -> char_p::Box {
 /// Stops the live microphone broadcast.
 #[ffi_export]
 pub fn media_live_stop() {
-    LIVE.lock().expect("live mutex poisoned").take();
+    let session = LIVE.lock().expect("live mutex poisoned").take();
+    if let Some(session) = session {
+        tokio_executor(async move { session._live.shutdown().await });
+    }
 }
 
 /// Subscribes to a live ticket and records decoded audio in the app-data directory.
@@ -894,7 +897,7 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
     });
     match result {
         Ok((live, subscription, tracks, recorder)) => {
-            SUBSCRIBER
+            let previous = SUBSCRIBER
                 .lock()
                 .expect("subscriber mutex poisoned")
                 .replace(Subscriber {
@@ -903,6 +906,19 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                     _tracks: tracks,
                     recording: recorder,
                 });
+            if let Some(previous) = previous {
+                tokio_executor(async move {
+                    let Subscriber {
+                        _live,
+                        _subscription,
+                        _tracks,
+                        recording: _,
+                    } = previous;
+                    drop(_tracks);
+                    drop(_subscription);
+                    _live.shutdown().await;
+                });
+            }
             0
         }
         Err(err) => {
@@ -1193,7 +1209,7 @@ pub fn media_live_unsubscribe() {
         // Stop the decoder/output thread before rewriting the WAV header.
         drop(_tracks);
         drop(_subscription);
-        drop(_live);
+        tokio_executor(async move { _live.shutdown().await });
         let mut recorder = recording.lock().expect("recorder mutex poisoned");
         let _ = recorder.finish();
         tracing::info!(samples = recorder.samples, "live audio recording finalized");

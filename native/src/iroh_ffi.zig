@@ -531,7 +531,15 @@ fn handleConnection(self: *Host, connection: ?*ffi.Connection_t) void {
         @memcpy(routed[0..prefix.len], prefix); @memcpy(routed[prefix.len..][0..payload.len], payload);
         self.postReceiverEvent(routed[0 .. prefix.len + payload.len]);
     }
-    ffi.recv_stream_free(rx); ffi.rust_buffer_free(received); ffi.connection_close(conn);
+    const is_recording = hasPrefix(payload, "NUFON-RECORDING/1\n");
+    ffi.recv_stream_free(rx);
+    ffi.rust_buffer_free(received);
+    if (is_recording) {
+        ffi.connection_close(conn);
+        return;
+    }
+    // Keep the connection and its send stream alive for the UI's reply.
+    // replyWorker consumes both after sending the response.
 }
 
 fn acceptLoop(self: *Host) void {

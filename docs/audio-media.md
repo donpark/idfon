@@ -53,6 +53,11 @@ The chat window currently provides:
 - fetched Ogg Opus playback;
 - subscriber output volume control.
 
+Live publisher and subscriber shutdown paths call `Live::shutdown()` before
+releasing their sessions, including replacement of an active subscriber. This
+keeps the underlying Iroh endpoint/router shutdown graceful and avoids the
+`Endpoint dropped without calling Endpoint::close` error.
+
 Recording messages use a versioned metadata envelope:
 
 ```text
@@ -131,8 +136,9 @@ These production follow-ups remain:
    handle disconnect/reconnect status visibly.
 6. **Playback UX** — add queueing, pause/resume, progress, completion state, and
    per-recording volume.
-7. **Lifecycle hardening** — replace detached Zig workers with cancellation and
-   joins where possible, and test shutdown during blocking operations.
+7. **Lifecycle hardening** — the `iroh-live` publisher/subscriber shutdown paths
+   are graceful; detached Zig workers still need cancellation and joins where
+   possible, plus shutdown tests during blocking operations.
 8. **Packaging portability** — validate Swift runtime linking on clean Xcode
    installations and CI.
 9. **Cross-platform support** — evaluate Linux, Windows, and mobile capture,
