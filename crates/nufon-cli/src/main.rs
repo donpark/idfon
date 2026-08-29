@@ -27,6 +27,7 @@ fn run() -> io::Result<()> {
             "operation" => Some("operation.get"),
             "cancel" => Some("operation.cancel"),
             "events" => Some("events"),
+            "wait" => Some("wait"),
             "send" => Some("message.send"),
             _ => None,
         })
@@ -59,6 +60,10 @@ fn run() -> io::Result<()> {
         .iter()
         .position(|arg| arg == "--retries")
         .and_then(|index| args.get(index + 1));
+    let follow = args.iter().any(|arg| arg == "--follow");
+    let after = argument(&args, "--after");
+    let event_type = argument(&args, "--type");
+    let wait = method == "wait";
     if method == "peer.resolve" && reference.is_none() {
         print_usage();
         return Err(io::Error::new(
@@ -73,6 +78,8 @@ fn run() -> io::Result<()> {
         serde_json::json!({"operation_id": operation_id})
     } else if method == "message.send" {
         serde_json::json!({"to": peer, "text": text, "idempotency_key": idempotency_key, "retries": retries})
+    } else if method == "events" || method == "wait" {
+        serde_json::json!({"follow": follow, "after": after, "type": event_type})
     } else {
         serde_json::json!({})
     };
@@ -110,9 +117,28 @@ fn run() -> io::Result<()> {
     }
     let mut response = vec![0; length];
     std::io::Read::read_exact(&mut stream, &mut response)?;
-    let response: Response = serde_json::from_slice(&response).map_err(io::Error::other)?;
+    let mut response: Response = serde_json::from_slice(&response).map_err(io::Error::other)?;
 
-    if json {
+    if follow && method == "events" {
+        loop {
+            print_events(&response)?;
+            let mut header = [0; 4];
+            std::io::Read::read_exact(&mut stream, &mut header)?;
+            let length = u32::from_be_bytes(header) as usize;
+            if length > nufon_protocol::MAX_FRAME_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "response frame too large",
+                ));
+            }
+            let mut bytes = vec![0; length];
+            std::io::Read::read_exact(&mut stream, &mut bytes)?;
+            response = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        }
+    }
+    if wait {
+        print_events(&response)?;
+    } else if json {
         println!(
             "{}",
             serde_json::to_string(&response).map_err(io::Error::other)?
@@ -125,6 +151,20 @@ fn run() -> io::Result<()> {
     } else {
         Err(io::Error::other("request failed"))
     }
+}
+
+fn print_events(response: &Response) -> io::Result<()> {
+    if let nufon_protocol::ResponseBody::Success { result, .. } = &response.body {
+        if let Some(events) = result.get("events").and_then(serde_json::Value::as_array) {
+            for event in events {
+                println!(
+                    "{}",
+                    serde_json::to_string(event).map_err(io::Error::other)?
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn print_human(response: &Response) {
@@ -159,4 +199,8 @@ fn print_usage() {
     eprintln!("       nufon [--socket PATH] resolve PEER [--json]");
     eprintln!("       nufon [--socket PATH] send PEER --text TEXT --idempotency-key KEY [--retries N] [--json]");
     eprintln!("       nufon [--socket PATH] cancel OPERATION_ID [--json]");
+    eprintln!(
+        "       nufon [--socket PATH] events [--follow] [--after CURSOR] [--type TYPE] [--jsonl]"
+    );
+    eprintln!("       nufon [--socket PATH] wait --type TYPE [--after CURSOR]");
 }

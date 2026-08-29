@@ -19,6 +19,7 @@ use tokio::{
 const DEFAULT_SOCKET: &str = "/tmp/nufon/nufond.sock";
 const DEFAULT_DATA_DIR: &str = "/tmp/nufon";
 const DEFAULT_TRANSPORT: &str = "iroh";
+const EVENT_RETENTION: usize = 1000;
 
 enum TransportMode {
     Fake(FakeTransport),
@@ -290,16 +291,79 @@ async fn serve(
         let Some(frame) = read_frame(&mut stream).await? else {
             return Ok(());
         };
-        let response = match serde_json::from_slice::<Request>(&frame) {
-            Ok(request) => dispatch_with_transport(request, &store, &transport),
-            Err(error) => error_response(
-                "unknown".into(),
-                "protocol",
-                ErrorCode::InvalidJson,
-                error.to_string(),
-                false,
-            ),
+        let request = match serde_json::from_slice::<Request>(&frame) {
+            Ok(request) => request,
+            Err(error) => {
+                let response = error_response(
+                    "unknown".into(),
+                    "protocol",
+                    ErrorCode::InvalidJson,
+                    error.to_string(),
+                    false,
+                );
+                write_frame(
+                    &mut stream,
+                    &encode_json(&response).map_err(io::Error::other)?,
+                )
+                .await?;
+                continue;
+            }
         };
+        if request.method == "wait" {
+            let timeout = request
+                .params
+                .get("timeout_ms")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(30_000)
+                .min(300_000);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout);
+            loop {
+                let response = dispatch_with_transport(request.clone(), &store, &transport);
+                let found = matches!(&response.body, ResponseBody::Success { result, .. } if result.get("events").and_then(serde_json::Value::as_array).is_some_and(|events| !events.is_empty()));
+                if found || tokio::time::Instant::now() >= deadline {
+                    write_frame(
+                        &mut stream,
+                        &encode_json(&response).map_err(io::Error::other)?,
+                    )
+                    .await?;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            continue;
+        }
+        if request.method == "events"
+            && request
+                .params
+                .get("follow")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        {
+            let mut follow_request = request;
+            loop {
+                let response = dispatch_with_transport(follow_request.clone(), &store, &transport);
+                if let ResponseBody::Success { result, .. } = &response.body {
+                    if let Some(last) = result
+                        .get("events")
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|events| events.last())
+                        .and_then(|event| event.get("cursor"))
+                        .cloned()
+                    {
+                        if let Some(params) = follow_request.params.as_object_mut() {
+                            params.insert("after".into(), last);
+                        }
+                    }
+                }
+                write_frame(
+                    &mut stream,
+                    &encode_json(&response).map_err(io::Error::other)?,
+                )
+                .await?;
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+        let response = dispatch_with_transport(request, &store, &transport);
         write_frame(
             &mut stream,
             &encode_json(&response).map_err(io::Error::other)?,
@@ -337,6 +401,7 @@ fn dispatch_with_transport(
         "operation.get" => operation_get(&request, store),
         "operation.cancel" => operation_cancel(&request, store),
         "events" => events(&request, store),
+        "wait" => wait_event(&request, store),
         "status" => success(
             &request,
             serde_json::json!({
@@ -726,6 +791,10 @@ fn update_operation(
             identity: "default".into(),
             data: serde_json::json!({"operation_id": operation_id, "status": status}),
         });
+        if state.events.len() > EVENT_RETENTION {
+            let excess = state.events.len() - EVENT_RETENTION;
+            state.events.drain(..excess);
+        }
     }
     let data_dir = state.data_dir.clone();
     state.save(&data_dir)
@@ -838,6 +907,10 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         identity,
         data: serde_json::json!({"message_id": envelope.message_id, "peer_id": envelope.sender.peer_id}),
     });
+    if state.events.len() > EVENT_RETENTION {
+        let excess = state.events.len() - EVENT_RETENTION;
+        state.events.drain(..excess);
+    }
     let result = state.save(&state.data_dir);
     drop(state);
     if let Err(error) = result {
@@ -882,16 +955,60 @@ fn operation_get(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     }
 }
 
+fn wait_event(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let mut response = events(request, store);
+    if let ResponseBody::Success { ref mut result, .. } = response.body {
+        if let Some(events) = result
+            .get_mut("events")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            events.truncate(1);
+        }
+    }
+    response
+}
+
 fn events(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let after = request
         .params
         .get("after")
         .and_then(serde_json::Value::as_str);
+    let kind = request
+        .params
+        .get("type")
+        .and_then(serde_json::Value::as_str);
+    let peer = request
+        .params
+        .get("peer")
+        .and_then(serde_json::Value::as_str);
     let state = store.lock().expect("store mutex poisoned");
+    if let (Some(after), Some(oldest)) = (after, state.events.first()) {
+        if !after.is_empty() && after < oldest.cursor.as_str() {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::CursorTooOld,
+                "event cursor is older than retained history".into(),
+                false,
+            );
+        }
+    }
     let events: Vec<_> = state
         .events
         .iter()
-        .filter(|event| after.is_none_or(|cursor| event.cursor.as_str() > cursor))
+        .rev()
+        .take(EVENT_RETENTION)
+        .filter(|event| {
+            after.is_none_or(|cursor| event.cursor.as_str() > cursor)
+                && kind.is_none_or(|value| event.r#type == value)
+                && peer.is_none_or(|value| {
+                    event
+                        .data
+                        .get("peer_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(value)
+                })
+        })
         .cloned()
         .collect();
     success(request, serde_json::json!({"events": events}))
@@ -1229,6 +1346,53 @@ mod tests {
             store.lock().unwrap().operations[0].status,
             nufon_protocol::OperationStatus::Cancelled
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn event_queries_filter_and_reject_old_cursors() {
+        let dir = temp_dir("events");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        {
+            let mut state = store.lock().unwrap();
+            state.events = vec![nufon_protocol::Event {
+                event_id: "evt-2".into(),
+                cursor: "cur_00000000000000000002".into(),
+                r#type: "message.received".into(),
+                timestamp: now(),
+                identity: "default".into(),
+                data: serde_json::json!({"peer_id": "alice"}),
+            }];
+        }
+        let filtered = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "test".into(),
+                method: "events".into(),
+                params: serde_json::json!({"after": "cur_00000000000000000002", "type": "message.received", "peer": "alice"}),
+            },
+            &store,
+        );
+        assert!(filtered.ok);
+        let old = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "test".into(),
+                method: "events".into(),
+                params: serde_json::json!({"after": "cur_00000000000000000001"}),
+            },
+            &store,
+        );
+        assert!(matches!(
+            old.body,
+            ResponseBody::Failure {
+                error: ApiError {
+                    code: ErrorCode::CursorTooOld,
+                    ..
+                },
+                ..
+            }
+        ));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

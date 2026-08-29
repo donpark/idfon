@@ -567,3 +567,17 @@ nufon events --type message.received --after CURSOR --jsonl
 The GUI performs the same logical operations through the daemon, and a future
 named endpoint resolver can replace local peer aliases without changing this
 workflow.
+
+## Phase 2 implementation status
+
+Event queries now support type, peer, and cursor filtering. The daemon supports
+one-shot `wait` responses and length-prefixed follow-mode responses; the CLI
+renders follow-mode events as JSONL and supports `--after`, `--type`, and
+`--follow`. Event delivery remains at-least-once and clients should
+ deduplicate by `event_id`.
+
+The durable event store and cursor format are implemented. Events are retained
+up to the configured bounded history, stale cursors return `cursor_too_old`,
+`wait` blocks up to its bounded timeout, and follow mode advances its cursor so
+already-delivered events are not repeatedly emitted. Delivery remains
+at-least-once; clients deduplicate by `event_id`.
