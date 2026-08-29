@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use nufon_core::transport::{FakeTransport, IrohTransport, MessageTransport};
+use nufon_core::transport::{FakeTransport, MessageTransport};
 use nufon_protocol::{
     encode_json, validate_request, ApiError, ErrorCode, Identity, Request, Response, ResponseBody,
     PROTOCOL_VERSION,
@@ -23,14 +23,14 @@ const EVENT_RETENTION: usize = 1000;
 
 enum TransportMode {
     Fake(FakeTransport),
-    Iroh(Arc<IrohTransport>),
+    Iroh(Arc<nufon_core::transport::TransportManager>),
 }
 
 impl TransportMode {
     async fn new(name: &str, key: Option<[u8; 32]>) -> io::Result<Self> {
         match name {
             "fake" => Ok(Self::Fake(FakeTransport::default())),
-            "iroh" => IrohTransport::bind_with_key(key)
+            "iroh" => nufon_core::transport::TransportManager::bind_with_key(key)
                 .await
                 .map(Arc::new)
                 .map(Self::Iroh)
@@ -45,8 +45,26 @@ impl TransportMode {
     fn endpoint_id(&self) -> Option<String> {
         match self {
             Self::Fake(_) => None,
-            Self::Iroh(transport) => Some(transport.endpoint().id().to_string()),
+            Self::Iroh(transport) => Some(transport.endpoint_id()),
         }
+    }
+
+    fn rebind(&self, key: [u8; 32]) -> io::Result<Option<String>> {
+        let Self::Iroh(manager) = self else {
+            return Ok(None);
+        };
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let runtime = tokio::runtime::Runtime::new()?;
+                    runtime
+                        .block_on(manager.rebind(Some(key)))
+                        .map(Some)
+                        .map_err(io::Error::other)
+                })
+                .join()
+                .map_err(|_| io::Error::other("rebind worker panicked"))?
+        })
     }
 
     fn send(
@@ -433,6 +451,9 @@ fn dispatch_with_transport(
             let state = store.lock().expect("store mutex poisoned");
             success(&request, serde_json::json!({"peers": state.peers}))
         }
+        "peer.add" => peer_add(&request, store),
+        "peer.update" => peer_update(&request, store),
+        "peer.remove" => peer_remove(&request, store),
         "peer.show" | "peer.status" => {
             let reference = request
                 .params
@@ -461,6 +482,8 @@ fn dispatch_with_transport(
                 ),
             }
         }
+        "identity.create" => identity_create(&request, store),
+        "identity.delete" => identity_delete(&request, store),
         "identity.use" => {
             let name = request
                 .params
@@ -479,9 +502,47 @@ fn dispatch_with_transport(
                     false,
                 );
             }
+            let identity_id = state
+                .identities
+                .iter()
+                .find(|identity| {
+                    identity.id == name.unwrap_or_default()
+                        || identity.name == name.unwrap_or_default()
+                })
+                .map(|identity| identity.id.clone())
+                .unwrap();
+            let key = match state.identity_key(&identity_id) {
+                Ok(key) => key,
+                Err(error) => {
+                    return error_response(
+                        request.id,
+                        &request.method,
+                        ErrorCode::Internal,
+                        error.to_string(),
+                        false,
+                    )
+                }
+            };
+            let endpoint_id = match transport.rebind(nufon_core::signing_key_bytes(&key)) {
+                Ok(endpoint_id) => endpoint_id,
+                Err(error) => {
+                    return error_response(
+                        request.id,
+                        &request.method,
+                        ErrorCode::Internal,
+                        error.to_string(),
+                        true,
+                    )
+                }
+            };
             for identity in &mut state.identities {
-                identity.active =
-                    Some(identity.id.as_str()) == name || Some(identity.name.as_str()) == name;
+                identity.active = identity.id == identity_id;
+            }
+            if let Some(endpoint_id) = endpoint_id {
+                if let Some(identity) = state.identities.iter_mut().find(|identity| identity.active)
+                {
+                    identity.endpoint_id = Some(endpoint_id);
+                }
             }
             let data_dir = state.data_dir.clone();
             if let Err(error) = state.save(&data_dir) {
@@ -1029,6 +1090,317 @@ fn operation_wait(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     }
 }
 
+fn identity_create(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(name) = request
+        .params
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "name is required".into(),
+            false,
+        );
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    if state
+        .identities
+        .iter()
+        .any(|identity| identity.id == name || identity.name == name)
+    {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "identity already exists".into(),
+            false,
+        );
+    }
+    let identity = Identity {
+        id: name.into(),
+        name: name.into(),
+        endpoint_id: None,
+        public_key: None,
+        active: false,
+    };
+    state.identities.push(identity.clone());
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.ensure_identity_keys(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"identity": identity}))
+}
+
+fn identity_delete(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(name) = request
+        .params
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "name is required".into(),
+            false,
+        );
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    let Some(index) = state
+        .identities
+        .iter()
+        .position(|identity| identity.id == name || identity.name == name)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "identity not found".into(),
+            false,
+        );
+    };
+    if state.identities[index].active || state.identities.len() == 1 {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "cannot delete active or last identity".into(),
+            false,
+        );
+    }
+    let id = state.identities.remove(index).id;
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    let _ = std::fs::remove_file(data_dir.join(format!("identity-{id}.key")));
+    success(request, serde_json::json!({"deleted": id}))
+}
+
+fn peer_add(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(id) = request
+        .params
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "id is required".into(),
+            false,
+        );
+    };
+    let name = request
+        .params
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(id);
+    let mut state = store.lock().expect("store mutex poisoned");
+    if state
+        .peers
+        .iter()
+        .any(|peer| peer.id == id || peer.name == name)
+    {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer already exists".into(),
+            false,
+        );
+    }
+    let peer = nufon_protocol::Peer {
+        id: id.into(),
+        name: name.into(),
+        endpoint_id: request
+            .params
+            .get("endpoint_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        endpoint_addr: request
+            .params
+            .get("endpoint_addr")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        aliases: request
+            .params
+            .get("aliases")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    state.peers.push(peer.clone());
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"peer": peer}))
+}
+
+fn peer_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(reference) = request
+        .params
+        .get("ref")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "ref is required".into(),
+            false,
+        );
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    let Some(peer) = state.peers.iter_mut().find(|peer| {
+        peer.id == reference
+            || peer.name == reference
+            || peer.aliases.iter().any(|alias| alias == reference)
+    }) else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer not found".into(),
+            false,
+        );
+    };
+    if let Some(name) = request
+        .params
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+    {
+        if name.is_empty() {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "name cannot be empty".into(),
+                false,
+            );
+        }
+        peer.name = name.into();
+    }
+    if let Some(endpoint_id) = request
+        .params
+        .get("endpoint_id")
+        .and_then(serde_json::Value::as_str)
+    {
+        peer.endpoint_id = Some(endpoint_id.into());
+    }
+    if let Some(endpoint_addr) = request
+        .params
+        .get("endpoint_addr")
+        .and_then(serde_json::Value::as_str)
+    {
+        if serde_json::from_str::<serde_json::Value>(endpoint_addr).is_err() {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "endpoint_addr must be valid JSON".into(),
+                false,
+            );
+        }
+        peer.endpoint_addr = Some(endpoint_addr.into());
+    }
+    if let Some(aliases) = request
+        .params
+        .get("aliases")
+        .and_then(serde_json::Value::as_array)
+    {
+        peer.aliases = aliases
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect();
+    }
+    let updated = peer.clone();
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"peer": updated}))
+}
+
+fn peer_remove(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(reference) = request
+        .params
+        .get("ref")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "ref is required".into(),
+            false,
+        );
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    let before = state.peers.len();
+    state.peers.retain(|peer| {
+        !(peer.id == reference
+            || peer.name == reference
+            || peer.aliases.iter().any(|alias| alias == reference))
+    });
+    if state.peers.len() == before {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer not found".into(),
+            false,
+        );
+    }
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"removed": reference}))
+}
+
 fn operation_get(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let id = request
         .params
@@ -1407,6 +1779,37 @@ mod tests {
         assert_eq!(reloaded.messages.len(), 1);
         assert_eq!(reloaded.events.len(), 1);
         assert_eq!(reloaded.operations.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn identity_and_peer_mutations_persist() {
+        let dir = temp_dir("management");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let create = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "create".into(),
+                method: "identity.create".into(),
+                params: serde_json::json!({"name": "work"}),
+            },
+            &store,
+        );
+        assert!(create.ok);
+        let add = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "add".into(),
+                method: "peer.add".into(),
+                params: serde_json::json!({"id": "peer-1", "name": "Alice", "aliases": ["alice@work"]}),
+            },
+            &store,
+        );
+        assert!(add.ok);
+        let state = Store::load(&dir).unwrap();
+        assert_eq!(state.identities.len(), 2);
+        assert_eq!(state.peers[0].aliases, vec!["alice@work"]);
+        assert!(dir.join("identity-work.key").is_file());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

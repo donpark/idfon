@@ -33,7 +33,12 @@ fn run() -> io::Result<()> {
             "status" => Some("status"),
             "context" => Some("context"),
             "identities" => Some("identities"),
+            "create" => Some("identity.create"),
+            "delete" => Some("identity.delete"),
             "peers" => Some("peers"),
+            "add" => Some("peer.add"),
+            "update" => Some("peer.update"),
+            "remove" => Some("peer.remove"),
             "resolve" => Some("peer.resolve"),
             "show" => Some("peer.show"),
             "peer-status" => Some("peer.status"),
@@ -88,8 +93,15 @@ fn run() -> io::Result<()> {
     let event_type = argument(&args, "--type");
     let identity = args
         .iter()
-        .position(|arg| arg == "use")
+        .position(|arg| arg == "use" || arg == "create" || arg == "delete")
         .and_then(|index| args.get(index + 1));
+    let peer_id = args
+        .iter()
+        .position(|arg| arg == "add" || arg == "update" || arg == "remove")
+        .and_then(|index| args.get(index + 1));
+    let peer_name = argument(&args, "--name");
+    let endpoint_id = argument(&args, "--endpoint-id");
+    let endpoint_addr = argument(&args, "--endpoint-addr");
     let wait = method == "wait";
     let timeout_ms = argument(&args, "--timeout-ms");
     if method == "peer.resolve" && reference.is_none() {
@@ -109,8 +121,13 @@ fn run() -> io::Result<()> {
         || method == "operation.wait"
     {
         serde_json::json!({"operation_id": operation_id, "timeout_ms": timeout_ms})
-    } else if method == "identity.use" {
+    } else if method == "identity.use" || method == "identity.create" || method == "identity.delete"
+    {
         serde_json::json!({"name": identity})
+    } else if method == "peer.add" || method == "peer.update" {
+        serde_json::json!({"ref": peer_id, "id": peer_id, "name": peer_name, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "aliases": []})
+    } else if method == "peer.remove" {
+        serde_json::json!({"ref": peer_id.or(reference)})
     } else if method == "message.send" {
         serde_json::json!({"to": peer, "text": text, "idempotency_key": idempotency_key, "retries": retries})
     } else if method == "events" || method == "wait" {
@@ -260,6 +277,11 @@ fn print_usage() {
     eprintln!("       nufon [--socket PATH] show PEER [--json]");
     eprintln!("       nufon [--socket PATH] peer-status PEER [--json]");
     eprintln!("       nufon [--socket PATH] use IDENTITY [--json]");
+    eprintln!("       nufon [--socket PATH] create IDENTITY [--json]");
+    eprintln!("       nufon [--socket PATH] delete IDENTITY [--json]");
+    eprintln!("       nufon [--socket PATH] add PEER --name NAME [--endpoint-id ID] [--endpoint-addr JSON]");
+    eprintln!("       nufon [--socket PATH] update PEER [--name NAME] [--endpoint-id ID] [--endpoint-addr JSON]");
+    eprintln!("       nufon [--socket PATH] remove PEER [--json]");
     eprintln!("       nufon [--socket PATH] send PEER --text TEXT --idempotency-key KEY [--retries N] [--json]");
     eprintln!("       nufon [--socket PATH] cancel OPERATION_ID [--json]");
     eprintln!(

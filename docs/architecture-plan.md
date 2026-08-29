@@ -568,6 +568,21 @@ The GUI performs the same logical operations through the daemon, and a future
 named endpoint resolver can replace local peer aliases without changing this
 workflow.
 
+## Phase 4 implementation status
+
+Multi-identity and peer management now support persistent identity creation,
+selection, and deletion safeguards, plus persistent peer add/remove operations.
+Identity keys are generated and protected on creation. Peer records retain names,
+aliases, endpoint IDs, and serialized endpoint addresses for future Iroh
+resolution. Resolution remains deterministic and refuses ambiguous references.
+
+The active identity cannot be deleted, and the final identity cannot be deleted.
+Live endpoint rebinding is implemented for Iroh mode. `identity.use` binds the
+replacement endpoint from the selected persisted key before swapping transport,
+closes the previous endpoint, restarts the receiver loop through the transport
+manager, and persists the new endpoint ID. Fake mode keeps its in-memory
+transport and does not require endpoint rebinding.
+
 ## Phase 3 implementation status
 
 The CLI exposes status, context, identities, peers, peer resolution, peer show,
