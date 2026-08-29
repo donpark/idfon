@@ -3,10 +3,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
+mod blob;
+
 use nufon_core::transport::{FakeTransport, MessageTransport};
+use nufon_media::service::MediaService;
 use nufon_protocol::{
     encode_json, validate_request, ApiError, ErrorCode, Identity, Request, Response, ResponseBody,
     PROTOCOL_VERSION,
@@ -20,6 +23,8 @@ const DEFAULT_SOCKET: &str = "/tmp/nufon/nufond.sock";
 const DEFAULT_DATA_DIR: &str = "/tmp/nufon";
 const DEFAULT_TRANSPORT: &str = "iroh";
 const EVENT_RETENTION: usize = 1000;
+const MAX_RESOURCE_BYTES: usize = 512 * 1024;
+static MEDIA_SERVICE: OnceLock<MediaService> = OnceLock::new();
 
 enum TransportMode {
     Fake(FakeTransport),
@@ -115,6 +120,10 @@ struct Store {
     grants: Vec<nufon_protocol::CapabilityGrant>,
     #[serde(default)]
     policies: Vec<nufon_protocol::LocalPolicy>,
+    #[serde(default)]
+    resources: Vec<nufon_protocol::MediaResource>,
+    #[serde(default)]
+    sessions: Vec<nufon_protocol::MediaSession>,
     #[serde(skip)]
     data_dir: PathBuf,
 }
@@ -144,6 +153,8 @@ impl Store {
                     messages: Vec::new(),
                     grants: Vec::new(),
                     policies: Vec::new(),
+                    resources: Vec::new(),
+                    sessions: Vec::new(),
                     data_dir: data_dir.to_path_buf(),
                 };
                 let mut store = store;
@@ -209,6 +220,8 @@ async fn main() -> io::Result<()> {
     }
     let _data_lock = DataLock::acquire(&data_dir)?;
     let store = Arc::new(Mutex::new(Store::load(&data_dir)?));
+    let media_service = Arc::new(MediaService::default());
+    let _ = MEDIA_SERVICE.set((*media_service).clone());
     let identity_key = store
         .lock()
         .expect("store mutex poisoned")
@@ -281,7 +294,7 @@ async fn main() -> io::Result<()> {
     let _cleanup = SocketCleanup(socket.clone());
 
     tokio::select! {
-        result = accept_loop(listener, store, transport) => result,
+        result = accept_loop(listener, store, transport, media_service) => result,
         result = tokio::signal::ctrl_c() => result.map_err(io::Error::other),
     }
 }
@@ -290,13 +303,15 @@ async fn accept_loop(
     listener: UnixListener,
     store: Arc<Mutex<Store>>,
     transport: Arc<TransportMode>,
+    media_service: Arc<MediaService>,
 ) -> io::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let store = Arc::clone(&store);
         let transport = Arc::clone(&transport);
+        let media_service = Arc::clone(&media_service);
         tokio::spawn(async move {
-            if let Err(error) = serve(stream, store, transport).await {
+            if let Err(error) = serve(stream, store, transport, media_service).await {
                 eprintln!("nufond client error: {error}");
             }
         });
@@ -307,6 +322,7 @@ async fn serve(
     mut stream: UnixStream,
     store: Arc<Mutex<Store>>,
     transport: Arc<TransportMode>,
+    media_service: Arc<MediaService>,
 ) -> io::Result<()> {
     loop {
         let Some(frame) = read_frame(&mut stream).await? else {
@@ -499,6 +515,16 @@ fn dispatch_with_transport(
         "access.grant" => access_grant(&request, store),
         "access.revoke" => access_revoke(&request, store),
         "access.check" => access_check(&request, store),
+        "media.session.start" => media_session_start(&request, store),
+        "media.session.stop" => media_session_stop(&request, store),
+        "media.resource.register" => media_resource_register(&request, store),
+        "media.resource.put" => media_resource_put(&request, store),
+        "media.resource.fetch" => media_resource_fetch(&request, store),
+        "media.resource.get" => media_resource_get(&request, store),
+        "media.resource.delete" => media_resource_delete(&request, store),
+        "media.resource.gc" => media_resource_gc(&request, store),
+        "media.resources" => media_resources(&request, store),
+        "media.sessions" => media_sessions(&request, store),
         "policy.set" => policy_set(&request, store),
         "policy.dry_run" => policy_dry_run(&request, store),
         "identity.create" => identity_create(&request, store),
@@ -1347,6 +1373,559 @@ fn access_check(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     )
 }
 
+fn media_capability(kind: &nufon_protocol::MediaKind) -> nufon_protocol::Capability {
+    match kind {
+        nufon_protocol::MediaKind::File => nufon_protocol::Capability::RecordingFetch,
+        nufon_protocol::MediaKind::Recording => nufon_protocol::Capability::RecordingFetch,
+        nufon_protocol::MediaKind::LiveAudio => nufon_protocol::Capability::LiveAudioSubscribe,
+        nufon_protocol::MediaKind::LiveVideo => nufon_protocol::Capability::LiveAudioSubscribe,
+    }
+}
+
+fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(identity) = request_text(&request.params, "identity") else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "identity is required".into(),
+            false,
+        );
+    };
+    let Some(peer) = request_text(&request.params, "peer") else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer is required".into(),
+            false,
+        );
+    };
+    let Some(kind) = request
+        .params
+        .get("kind")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "valid media kind is required".into(),
+            false,
+        );
+    };
+    let capability = media_capability(&kind);
+    let mut state = store.lock().expect("store mutex poisoned");
+    let allowed = state.grants.iter().any(|grant| {
+        grant.identity == identity
+            && grant.subject == peer
+            && grant.capability == capability
+            && grant.revoked_at.is_none()
+            && grant
+                .expires_at
+                .as_deref()
+                .is_none_or(|expires| expires > now().as_str())
+    });
+    if !allowed {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::CapabilityDenied,
+            "media capability denied".into(),
+            false,
+        );
+    }
+    let session = nufon_protocol::MediaSession {
+        session_id: format!("session_{}", state.sessions.len() + 1),
+        identity: identity.clone(),
+        peer: peer.clone(),
+        conversation: request
+            .params
+            .get("conversation")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        kind,
+        capability,
+        active: true,
+        created_at: now(),
+    };
+    let media_handle = MEDIA_SERVICE.get().map(|service| {
+        service.start(
+            session.session_id.clone(),
+            session.identity.clone(),
+            session.peer.clone(),
+            session.kind.clone(),
+            session.capability.clone(),
+        )
+    });
+    let mode = request
+        .params
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("record");
+    let live_ticket = if session.kind == nufon_protocol::MediaKind::LiveAudio && mode == "publish" {
+        let Some(handle) = media_handle.clone() else {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::Internal,
+                "media service unavailable".into(),
+                true,
+            );
+        };
+        match std::thread::spawn(move || {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(handle.start_publisher())
+        })
+        .join()
+        {
+            Ok(Ok(ticket)) => Some(ticket),
+            Ok(Err(error)) => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::Internal,
+                    error.to_string(),
+                    true,
+                )
+            }
+            Err(_) => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::Internal,
+                    "media worker panicked".into(),
+                    true,
+                )
+            }
+        }
+    } else if session.kind == nufon_protocol::MediaKind::LiveAudio && mode == "subscribe" {
+        let Some(ticket) = request
+            .params
+            .get("ticket")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "ticket is required".into(),
+                false,
+            );
+        };
+        let Some(handle) = media_handle else {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::Internal,
+                "media service unavailable".into(),
+                true,
+            );
+        };
+        let ticket = ticket.to_owned();
+        match std::thread::spawn(move || {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(handle.start_subscriber(&ticket))
+        })
+        .join()
+        {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::Internal,
+                    error.to_string(),
+                    true,
+                )
+            }
+            Err(_) => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::Internal,
+                    "media worker panicked".into(),
+                    true,
+                )
+            }
+        }
+    } else {
+        None
+    };
+    state.sessions.push(session.clone());
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(
+        request,
+        serde_json::json!({"session": session, "live_ticket": live_ticket}),
+    )
+}
+
+fn media_session_stop(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(id) = request
+        .params
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "session_id is required".into(),
+            false,
+        );
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    let Some(session) = state
+        .sessions
+        .iter_mut()
+        .find(|session| session.session_id == id)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "session not found".into(),
+            false,
+        );
+    };
+    session.active = false;
+    if let Some(service) = MEDIA_SERVICE.get() {
+        if let Ok(handle) = service.get(id) {
+            let _ = std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(handle.stop_publisher())
+            })
+            .join();
+        }
+        let _ = service.stop(id);
+    }
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(
+        request,
+        serde_json::json!({"session_id": id, "active": false}),
+    )
+}
+
+fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(id) = request
+        .params
+        .get("resource_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "resource_id is required".into(),
+            false,
+        );
+    };
+    let Some(bytes) = request
+        .params
+        .get("bytes")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "bytes are required".into(),
+            false,
+        );
+    };
+    if bytes.len() > MAX_RESOURCE_BYTES {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::FrameTooLarge,
+            "resource is too large".into(),
+            false,
+        );
+    }
+    let mut data = Vec::with_capacity(bytes.len());
+    for byte in bytes {
+        let Some(byte) = byte.as_u64().and_then(|value| u8::try_from(value).ok()) else {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "bytes must be 0..255".into(),
+                false,
+            );
+        };
+        data.push(byte);
+    }
+    let state = store.lock().expect("store mutex poisoned");
+    let path = state.data_dir.join("resources").join(id);
+    if let Some(parent) = path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::Internal,
+                error.to_string(),
+                true,
+            );
+        }
+    }
+    if let Err(error) = std::fs::write(&path, &data) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    let blob_ticket = match blob::run_put(state.data_dir.join("blobs"), data.clone()) {
+        Ok((ticket, _)) => ticket.to_string(),
+        Err(error) => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::Internal,
+                error.to_string(),
+                true,
+            )
+        }
+    };
+    success(
+        request,
+        serde_json::json!({"resource_id": id, "size_bytes": data.len(), "content_hash": blake3::hash(&data).to_hex().to_string(), "blob_ticket": blob_ticket}),
+    )
+}
+
+fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(id) = request
+        .params
+        .get("resource_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "resource_id is required".into(),
+            false,
+        );
+    };
+    let state = store.lock().expect("store mutex poisoned");
+    let bytes = if let Some(ticket) = request
+        .params
+        .get("blob_ticket")
+        .and_then(serde_json::Value::as_str)
+    {
+        match blob::run_fetch(ticket.into(), state.data_dir.join("blobs-fetched")) {
+            Ok(path) => std::fs::read(path),
+            Err(error) => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::PeerOffline,
+                    error.to_string(),
+                    true,
+                )
+            }
+        }
+    } else {
+        std::fs::read(state.data_dir.join("resources").join(id))
+    };
+    match bytes {
+        Ok(bytes) => success(
+            request,
+            serde_json::json!({"resource_id": id, "bytes": bytes}),
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "resource not found".into(),
+            false,
+        ),
+        Err(error) => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        ),
+    }
+}
+
+fn media_resource_register(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let resource: nufon_protocol::MediaResource =
+        match serde_json::from_value(request.params.get("resource").cloned().unwrap_or_default()) {
+            Ok(resource) => resource,
+            Err(error) => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    error.to_string(),
+                    false,
+                )
+            }
+        };
+    let mut state = store.lock().expect("store mutex poisoned");
+    if state
+        .resources
+        .iter()
+        .any(|item| item.resource_id == resource.resource_id)
+    {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "resource already exists".into(),
+            false,
+        );
+    }
+    state.resources.push(resource.clone());
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"resource": resource}))
+}
+
+fn media_resource_get(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(id) = request
+        .params
+        .get("resource_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "resource_id is required".into(),
+            false,
+        );
+    };
+    let state = store.lock().expect("store mutex poisoned");
+    match state
+        .resources
+        .iter()
+        .find(|resource| resource.resource_id == id)
+    {
+        Some(resource) => success(request, serde_json::json!({"resource": resource})),
+        None => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "resource not found".into(),
+            false,
+        ),
+    }
+}
+
+fn media_resource_delete(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(id) = request
+        .params
+        .get("resource_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "resource_id is required".into(),
+            false,
+        );
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    let before = state.resources.len();
+    state
+        .resources
+        .retain(|resource| resource.resource_id != id);
+    let _ = std::fs::remove_file(state.data_dir.join("resources").join(id));
+    if before == state.resources.len() {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "resource not found".into(),
+            false,
+        );
+    }
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"deleted": id}))
+}
+
+fn media_resource_gc(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let mut state = store.lock().expect("store mutex poisoned");
+    let mut removed = 0usize;
+    let data_root = state.data_dir.join("resources");
+    let resources = std::mem::take(&mut state.resources);
+    let mut kept = Vec::with_capacity(resources.len());
+    for resource in resources {
+        if data_root.join(&resource.resource_id).exists() {
+            kept.push(resource);
+        } else {
+            removed += 1;
+        }
+    }
+    state.resources = kept;
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"removed": removed}))
+}
+
+fn media_resources(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let state = store.lock().expect("store mutex poisoned");
+    success(request, serde_json::json!({"resources": state.resources}))
+}
+
+fn media_sessions(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let state = store.lock().expect("store mutex poisoned");
+    success(request, serde_json::json!({"sessions": state.sessions}))
+}
+
 fn policy_set(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let required = ["id", "identity", "subject", "mode", "delivery"];
     if required.iter().any(|field| {
@@ -1851,7 +2430,9 @@ fn compact_peers(store: &Arc<Mutex<Store>>) -> Vec<u8> {
     for peer in &state.peers {
         let name = peer.name.as_bytes();
         let endpoint = peer.endpoint_id.as_deref().unwrap_or("").as_bytes();
-        if name.len() > u16::MAX as usize || endpoint.len() > u16::MAX as usize { continue; }
+        if name.len() > u16::MAX as usize || endpoint.len() > u16::MAX as usize {
+            continue;
+        }
         payload.extend_from_slice(&(name.len() as u16).to_be_bytes());
         payload.extend_from_slice(name);
         payload.extend_from_slice(&(endpoint.len() as u16).to_be_bytes());
@@ -1862,16 +2443,41 @@ fn compact_peers(store: &Arc<Mutex<Store>>) -> Vec<u8> {
 
 fn compact_events(store: &Arc<Mutex<Store>>, after: Option<&str>) -> Vec<u8> {
     let state = store.lock().expect("store mutex poisoned");
-    let events: Vec<_> = state.events.iter().filter(|event| after.is_none_or(|cursor| event.cursor.as_str() > cursor)).collect();
+    let events: Vec<_> = state
+        .events
+        .iter()
+        .filter(|event| after.is_none_or(|cursor| event.cursor.as_str() > cursor))
+        .collect();
     let mut payload = Vec::new();
     payload.extend_from_slice(&(events.len() as u16).to_be_bytes());
     for event in events {
         let cursor = event.cursor.as_bytes();
         let kind = event.r#type.as_bytes();
-        let peer = event.data.get("peer_id").and_then(serde_json::Value::as_str).unwrap_or("").as_bytes();
-        let message = event.data.get("message_id").and_then(serde_json::Value::as_str).unwrap_or("").as_bytes();
-        let text = event.data.get("text").and_then(serde_json::Value::as_str).unwrap_or("").as_bytes();
-        for value in [cursor, kind, peer, message, text] { if value.len() > u16::MAX as usize { return Vec::new(); } payload.extend_from_slice(&(value.len() as u16).to_be_bytes()); payload.extend_from_slice(value); }
+        let peer = event
+            .data
+            .get("peer_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .as_bytes();
+        let message = event
+            .data
+            .get("message_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .as_bytes();
+        let text = event
+            .data
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .as_bytes();
+        for value in [cursor, kind, peer, message, text] {
+            if value.len() > u16::MAX as usize {
+                return Vec::new();
+            }
+            payload.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            payload.extend_from_slice(value);
+        }
     }
     payload
 }
@@ -2332,6 +2938,39 @@ mod tests {
                 ..
             }
         ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn media_resource_put_and_fetch_round_trip() {
+        let dir = temp_dir("resource");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let put = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "put".into(),
+                method: "media.resource.put".into(),
+                params: serde_json::json!({"resource_id": "res-1", "bytes": [1, 2, 3]}),
+            },
+            &store,
+        );
+        assert!(put.ok);
+        let fetch = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "fetch".into(),
+                method: "media.resource.fetch".into(),
+                params: serde_json::json!({"resource_id": "res-1"}),
+            },
+            &store,
+        );
+        assert!(fetch.ok);
+        match fetch.body {
+            ResponseBody::Success { result, .. } => {
+                assert_eq!(result["bytes"], serde_json::json!([1, 2, 3]))
+            }
+            _ => panic!("resource fetch failed"),
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

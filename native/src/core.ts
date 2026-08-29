@@ -145,6 +145,7 @@ export type Msg =
   | { readonly kind: "playback_stopped"; readonly data: Uint8Array }
   | { readonly kind: "playback_error"; readonly data: Uint8Array }
   | { readonly kind: "audio_emergency_stopped"; readonly data: Uint8Array }
+  | { readonly kind: "media_session_ready"; readonly data: Uint8Array }
   | { readonly kind: "events_loaded"; readonly data: Uint8Array }
   | { readonly kind: "poll_events"; readonly at: number };
 
@@ -298,6 +299,10 @@ function byteArrayJson(data: Uint8Array): Uint8Array {
   }
   out.push(93);
   return new Uint8Array(out);
+}
+
+function mediaSessionStartPayload(model: Model): Uint8Array {
+  return concat(concat(utf8Bytes('{"version":1,"id":"gui-live","method":"media.session.start","params":{"identity":"default","peer_bytes":'), byteArrayJson(model.receiverId)), utf8Bytes(',"kind":"live_audio","mode":"publish"}}}'));
 }
 
 function daemonEventsPayload(cursor: Uint8Array): Uint8Array {
@@ -588,6 +593,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [model, Cmd.request("media.audio.set_volume", model.volumeInput, { key: "media-volume", ok: "sender_ready", err: "sender_error" })];
     case "live_start":
       if (model.liveActive || model.receiverId.length === 0) return model;
+      return [model, Cmd.request("nufond.request", mediaSessionStartPayload(model), { key: "media-session", ok: "media_session_ready", err: "live_error" })];
+    case "media_session_ready":
       return [model, Cmd.request("media.live.start", EMPTY, { key: "media-live", ok: "live_started", err: "live_error" })];
     case "live_stop":
       if (model.subscribedActive && !model.liveActive) {

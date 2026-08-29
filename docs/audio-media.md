@@ -1,8 +1,10 @@
 # Audio media status
 
-Nufon has a Rust-owned media layer behind the Native SDK app's Zig host and C ABI.
-The Native SDK application remains TypeScript + Native markup; Zig only dispatches
-media commands and receives status/results. Audio samples do not cross the ABI.
+Nufon has a Rust media backend behind the Native SDK app's Zig host and C ABI.
+The daemon owns network media sessions, blob providers, resource transfer, and
+authorization. The Native SDK application remains TypeScript + Native markup;
+Zig dispatches local device/playback commands and daemon IPC. Raw audio samples
+do not cross the daemon IPC or the C ABI.
 
 ## Verified pipeline
 
@@ -34,9 +36,10 @@ under `NATIVE_SDK_APP_DATA_DIR` (with `/tmp/nufon` as a development fallback):
 - `conversations/<scope>/blobs/` — provider blob store;
 - `conversations/<scope>/fetched-blobs/` — recipient blob store.
 
-The scope is the selected peer endpoint in the current prototype. Media state is
-still process-global, so this isolates persisted data and broadcast names but
-does not yet support concurrent active sessions in one process.
+The scope is the selected peer endpoint in the current prototype. Local
+device/playback state remains process-global, so this isolates persisted data
+and broadcast names but does not yet support concurrent active sessions in one
+process. Daemon network session records are identity- and conversation-scoped.
 
 ## Chat controls
 
@@ -104,6 +107,8 @@ are written to `/tmp/nufon-<pid>.log`.
 Typical checks:
 
 ```sh
+scripts/test-rust.sh
+scripts/test-media.sh
 cargo fmt --manifest-path native/vendor/iroh-c-ffi/Cargo.toml -- --check
 cargo test --manifest-path native/vendor/iroh-c-ffi/Cargo.toml --lib
 native check native
@@ -117,6 +122,14 @@ Direct Rust tests on macOS may need the Xcode Swift 5.5 runtime in
 `DYLD_LIBRARY_PATH`; the Native SDK final app link supplies the required SDK
 libraries. Xcode currently emits duplicate Swift class warnings during direct
 Rust tests.
+
+## Current architecture
+
+The daemon owns network media sessions, BlobTicket providers, resource transfer,
+and authorization. The GUI owns local microphone/speaker access, playback,
+volume/mute, consent, notifications, and emergency stop. The extracted
+`nufon-media` crate provides explicit publisher/subscriber and local resource
+session handles while the legacy Native SDK local-device backend is migrated.
 
 ## Remaining work
 

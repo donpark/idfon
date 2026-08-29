@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["crates/nufon-protocol", "crates/nufon-core", "crates/nufond", "crates/nufon-cli"]
+members = ["crates/nufon-protocol", "crates/nufon-core", "crates/nufon-media", "crates/nufond", "crates/nufon-cli"]
 exclude = ["native/vendor/iroh-c-ffi"]

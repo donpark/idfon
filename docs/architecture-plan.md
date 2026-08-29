@@ -341,7 +341,28 @@ media UX in the app.
 **Done when:** GUI and CLI observe the same identity, peer, operation, and
 event state.
 
-### Milestone 7: Files, recordings, and live media
+### Milestone 7: Files, recordings, and live media — complete
+
+Phase 7 is complete under the revised boundary: the daemon owns network media
+sessions, resource transfer, blob providers, authorization, operations, and
+events; the GUI owns local device access, playback, consent, and emergency
+stop.
+
+Phase 7 MVP now includes versioned media/resource/session contracts, a
+persistent daemon-owned media registry, bounded resource put/fetch/delete and
+GC operations, resource/session listing, BLAKE3 content hashes, and capability-
+checked media session lifecycle. Resource bytes are bounded to 512 KiB because
+control IPC is bounded; larger content uses the BlobTicket transfer path.
+
+The media boundary deliberately separates concerns: the daemon owns network
+media sessions, blob providers, resource transfer, authorization, operations,
+and events; the GUI owns local microphone/speaker devices, playback, consent,
+volume/mute, notifications, and emergency stop. Raw device samples do not pass
+through the daemon IPC. Live-session creation must therefore receive an
+explicit GUI media source/consumer bridge rather than opening the default
+microphone implicitly. The extracted `nufon-media` crate provides explicit
+publisher/subscriber and local-resource handles; GUI device access remains
+process-scoped because raw samples do not cross daemon IPC.
 
 Add file transfer and domain-specific recording/live commands only where their
 lifecycle differs materially from ordinary messages.
@@ -349,7 +370,7 @@ lifecycle differs materially from ordinary messages.
 **Done when:** large content uses the appropriate Rust/Iroh mechanism without
 leaking blobs, streams, or tickets into the normal agent workflow.
 
-### Milestone 8: Custom app sessions
+### Milestone 8: Custom app sessions — remaining
 
 Implement app registration, approval, scoped sessions, capability checks, and
 session event subscriptions.
@@ -357,7 +378,7 @@ session event subscriptions.
 **Done when:** a registered app can operate through the same API while an
 unregistered or over-scoped app is rejected.
 
-### Milestone 9: Named endpoint resolution
+### Milestone 9: Named endpoint resolution — remaining
 
 Add named endpoint lookup behind the existing peer resolver and `--to` field.
 

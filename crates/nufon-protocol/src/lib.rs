@@ -11,6 +11,8 @@ pub type OperationId = String;
 pub type EventId = String;
 pub type Cursor = String;
 pub type MessageId = String;
+pub type MediaId = String;
+pub type ResourceId = String;
 
 /// Transport-independent proof-bearing peer identity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,6 +52,51 @@ pub struct MessageEnvelope {
 pub struct MessageAck {
     pub message_id: MessageId,
     pub status: AckStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaResource {
+    pub resource_id: ResourceId,
+    pub media_id: MediaId,
+    pub kind: MediaKind,
+    pub codec: Option<String>,
+    pub size_bytes: u64,
+    pub duration_ms: Option<u64>,
+    pub content_hash: Option<String>,
+    #[serde(default)]
+    pub blob_ticket: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaKind {
+    File,
+    Recording,
+    LiveAudio,
+    LiveVideo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MediaSession {
+    pub session_id: String,
+    pub identity: String,
+    pub peer: String,
+    pub conversation: Option<String>,
+    pub kind: MediaKind,
+    pub capability: Capability,
+    pub active: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaOperation {
+    Upload,
+    Download,
+    Publish,
+    Subscribe,
+    Stop,
+    Delete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -336,6 +383,37 @@ mod tests {
         assert_eq!(
             validate_request(&request),
             Err(ProtocolError::InvalidVersion(2))
+        );
+    }
+
+    #[test]
+    fn media_resource_and_session_round_trip() {
+        let value = (
+            MediaResource {
+                resource_id: "res_1".into(),
+                media_id: "media_1".into(),
+                kind: MediaKind::Recording,
+                codec: Some("opus".into()),
+                size_bytes: 42,
+                duration_ms: Some(1000),
+                content_hash: Some("hash".into()),
+                blob_ticket: None,
+            },
+            MediaSession {
+                session_id: "session_1".into(),
+                identity: "default".into(),
+                peer: "alice".into(),
+                conversation: None,
+                kind: MediaKind::Recording,
+                capability: Capability::RecordingFetch,
+                active: true,
+                created_at: "0".into(),
+            },
+        );
+        let json = encode_json(&value).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<(MediaResource, MediaSession)>(&json).unwrap(),
+            value
         );
     }
 
