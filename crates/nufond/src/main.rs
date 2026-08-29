@@ -384,12 +384,23 @@ async fn serve(
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
         }
+        if request.method == "peers.compact" {
+            let payload = compact_peers(&store);
+            write_frame(&mut stream, &payload).await?;
+            continue;
+        }
+        if request.method == "events.compact" {
+            let after = request_text(&request.params, "after");
+            let payload = compact_events(&store, after.as_deref());
+            write_frame(&mut stream, &payload).await?;
+            continue;
+        }
         let response = dispatch_with_transport(request, &store, &transport);
         write_frame(
             &mut stream,
             &encode_json(&response).map_err(io::Error::other)?,
         )
-        .await?;
+        .await?
     }
 }
 
@@ -613,20 +624,28 @@ fn dispatch_with_transport(
     }
 }
 
+fn request_text(params: &serde_json::Value, name: &str) -> Option<String> {
+    if let Some(value) = params.get(name).and_then(serde_json::Value::as_str) {
+        return Some(value.to_owned());
+    }
+    let bytes = params
+        .get(&format!("{name}_bytes"))
+        .and_then(serde_json::Value::as_array)?;
+    let mut output = String::with_capacity(bytes.len());
+    for byte in bytes {
+        output.push(byte.as_u64()?.try_into().ok().and_then(char::from_u32)?);
+    }
+    Some(output)
+}
+
 fn send_message(
     request: &Request,
     store: &Arc<Mutex<Store>>,
     transport: &Arc<TransportMode>,
 ) -> Response {
-    let to = request.params.get("to").and_then(serde_json::Value::as_str);
-    let text = request
-        .params
-        .get("text")
-        .and_then(serde_json::Value::as_str);
-    let key = request
-        .params
-        .get("idempotency_key")
-        .and_then(serde_json::Value::as_str);
+    let to = request_text(&request.params, "to");
+    let text = request_text(&request.params, "text");
+    let key = request_text(&request.params, "idempotency_key");
     let retries = request
         .params
         .get("retries")
@@ -636,8 +655,8 @@ fn send_message(
     if to.is_none()
         || text.is_none()
         || key.is_none()
-        || text.is_some_and(str::is_empty)
-        || key.is_some_and(str::is_empty)
+        || text.as_deref().is_some_and(str::is_empty)
+        || key.as_deref().is_some_and(str::is_empty)
     {
         return error_response(
             request.id.clone(),
@@ -670,7 +689,7 @@ fn send_message(
         }
     };
     let peer = match state.peers.iter().find(|peer| {
-        peer.id == to || peer.name == to || peer.aliases.iter().any(|alias| alias == to)
+        peer.id == to || peer.name == to || peer.aliases.iter().any(|alias| alias == &to)
     }) {
         Some(peer) => peer.clone(),
         None => {
@@ -703,7 +722,7 @@ fn send_message(
     }
     if let Some(existing) = state.operations.iter().find(|operation| {
         operation.target.as_deref() == Some(peer.id.as_str())
-            && operation.idempotency_key.as_deref() == Some(key)
+            && operation.idempotency_key.as_deref() == Some(&key)
     }) {
         if existing.request_fingerprint.as_deref() != Some(fingerprint.as_str()) {
             return error_response(
@@ -737,7 +756,7 @@ fn send_message(
         identity.endpoint_id.unwrap_or_default(),
         message_id.clone(),
         nufon_protocol::MessageContent::Text { text: text.into() },
-        key,
+        &key,
         None,
     ) {
         Ok(envelope) => envelope,
@@ -1044,7 +1063,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         r#type: "message.received".into(),
         timestamp: now,
         identity,
-        data: serde_json::json!({"message_id": envelope.message_id, "peer_id": envelope.sender.peer_id}),
+        data: serde_json::json!({"message_id": envelope.message_id, "peer_id": envelope.sender.peer_id, "text": match &envelope.content { nufon_protocol::MessageContent::Text { text } => text }}),
     });
     if state.events.len() > EVENT_RETENTION {
         let excess = state.events.len() - EVENT_RETENTION;
@@ -1823,6 +1842,38 @@ fn wait_event(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         }
     }
     response
+}
+
+fn compact_peers(store: &Arc<Mutex<Store>>) -> Vec<u8> {
+    let state = store.lock().expect("store mutex poisoned");
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(state.peers.len() as u16).to_be_bytes());
+    for peer in &state.peers {
+        let name = peer.name.as_bytes();
+        let endpoint = peer.endpoint_id.as_deref().unwrap_or("").as_bytes();
+        if name.len() > u16::MAX as usize || endpoint.len() > u16::MAX as usize { continue; }
+        payload.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        payload.extend_from_slice(name);
+        payload.extend_from_slice(&(endpoint.len() as u16).to_be_bytes());
+        payload.extend_from_slice(endpoint);
+    }
+    payload
+}
+
+fn compact_events(store: &Arc<Mutex<Store>>, after: Option<&str>) -> Vec<u8> {
+    let state = store.lock().expect("store mutex poisoned");
+    let events: Vec<_> = state.events.iter().filter(|event| after.is_none_or(|cursor| event.cursor.as_str() > cursor)).collect();
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(events.len() as u16).to_be_bytes());
+    for event in events {
+        let cursor = event.cursor.as_bytes();
+        let kind = event.r#type.as_bytes();
+        let peer = event.data.get("peer_id").and_then(serde_json::Value::as_str).unwrap_or("").as_bytes();
+        let message = event.data.get("message_id").and_then(serde_json::Value::as_str).unwrap_or("").as_bytes();
+        let text = event.data.get("text").and_then(serde_json::Value::as_str).unwrap_or("").as_bytes();
+        for value in [cursor, kind, peer, message, text] { if value.len() > u16::MAX as usize { return Vec::new(); } payload.extend_from_slice(&(value.len() as u16).to_be_bytes()); payload.extend_from_slice(value); }
+    }
+    payload
 }
 
 fn events(request: &Request, store: &Arc<Mutex<Store>>) -> Response {

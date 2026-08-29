@@ -1,4 +1,4 @@
-import { Cmd, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
+import { Cmd, Sub, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
 import { type WindowDescriptor } from "@native-sdk/core/events";
 import { type TextInputEvent, applyTextInputEvent } from "@native-sdk/core/text";
 
@@ -70,6 +70,7 @@ export interface Model {
   readonly showAddConnection: boolean;
   readonly liveAutoAccept: boolean;
   readonly livePolicyStatus: Uint8Array;
+  readonly eventCursor: Uint8Array;
 }
 
 export type Msg =
@@ -77,6 +78,9 @@ export type Msg =
   | { readonly kind: "receiver_ready"; readonly data: Uint8Array }
   | { readonly kind: "receiver_error"; readonly data: Uint8Array }
   | { readonly kind: "receiver_event"; readonly key: number; readonly state: ChannelState; readonly bytes: Uint8Array; readonly droppedPending: number; readonly droppedTotal: number }
+  | { readonly kind: "daemon_ready"; readonly data: Uint8Array }
+  | { readonly kind: "daemon_error"; readonly data: Uint8Array }
+  | { readonly kind: "peers_loaded"; readonly data: Uint8Array }
   | { readonly kind: "recording_persisted"; readonly data: Uint8Array }
   | { readonly kind: "recording_persist_error"; readonly data: Uint8Array }
   | { readonly kind: "message_edit"; readonly edit: TextInputEvent }
@@ -94,6 +98,7 @@ export type Msg =
   | { readonly kind: "add_connection" }
   | { readonly kind: "send_message" }
   | { readonly kind: "reply_message" }
+
   | { readonly kind: "sender_ready"; readonly data: Uint8Array }
   | { readonly kind: "sender_error"; readonly data: Uint8Array }
   | { readonly kind: "audio_start" }
@@ -139,9 +144,16 @@ export type Msg =
   | { readonly kind: "playback_started"; readonly data: Uint8Array }
   | { readonly kind: "playback_stopped"; readonly data: Uint8Array }
   | { readonly kind: "playback_error"; readonly data: Uint8Array }
-  | { readonly kind: "audio_emergency_stopped"; readonly data: Uint8Array };
+  | { readonly kind: "audio_emergency_stopped"; readonly data: Uint8Array }
+  | { readonly kind: "events_loaded"; readonly data: Uint8Array }
+  | { readonly kind: "poll_events"; readonly at: number };
 
-export const viewUnbound = ["receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error"] as const;
+export const viewUnbound = ["receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "poll_events"] as const;
+
+export function subscriptions(model: Model): Sub<Msg> {
+  if (!model.receiverAvailable) return Sub.none;
+  return Sub.timer("nufond-events", 1000, "poll_events");
+}
 
 export function initialModel(): Model | [Model, Cmd<Msg>] {
   const model: Model = {
@@ -189,10 +201,12 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     showAddConnection: false,
     liveAutoAccept: false,
     livePolicyStatus: utf8Bytes("Incoming live audio requires approval"),
+    eventCursor: EMPTY,
   };
   return [model, Cmd.batch([
-    Cmd.channelOpen(RECEIVER_CHANNEL, { event: "receiver_event" }),
-    Cmd.request("iroh.receiver.bind", EMPTY, { key: "iroh-receiver", ok: "receiver_ready", err: "receiver_error" }),
+    Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-context","method":"context","params":{}}'), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
+    Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-peers","method":"peers.compact","params":{}}'), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
+    Cmd.request("nufond.request", daemonEventsPayload(EMPTY), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" }),
   ])];
 }
 
@@ -273,12 +287,33 @@ function decodeChatMessage(message: Uint8Array): Uint8Array {
   return message;
 }
 
+function byteArrayJson(data: Uint8Array): Uint8Array {
+  const out: number[] = [91];
+  for (let i = 0; i < data.length; i += 1) {
+    const value = data[i];
+    if (value >= 100) out.push(48 + Math.floor(value / 100));
+    if (value >= 10) out.push(48 + Math.floor(value / 10) % 10);
+    out.push(48 + value % 10);
+    if (i + 1 < data.length) out.push(44);
+  }
+  out.push(93);
+  return new Uint8Array(out);
+}
+
+function daemonEventsPayload(cursor: Uint8Array): Uint8Array {
+  return concat(concat(utf8Bytes('{"version":1,"id":"gui-events","method":"events.compact","params":{"after_bytes":'), byteArrayJson(cursor)), utf8Bytes('}}}'));
+}
+
+function daemonMessagePayload(to: Uint8Array, text: Uint8Array, key: Uint8Array): Uint8Array {
+  return concat(concat(concat(concat(concat(concat(utf8Bytes('{"version":1,"id":"gui-send","method":"message.send","params":{"to_bytes":'), byteArrayJson(to)), utf8Bytes(',"text_bytes":')), byteArrayJson(text)), utf8Bytes(',"idempotency_key_bytes":')), byteArrayJson(key)), utf8Bytes('}}}'));
+}
+
 function sendPayload(model: Model): Uint8Array {
-  return concat(concat(model.receiverId, new Uint8Array([10])), chatMessage(model.message));
+  return daemonMessagePayload(model.receiverId, model.message, utf8Bytes(`gui-${model.history.length}`));
 }
 
 function replyPayload(model: Model): Uint8Array {
-  return concat(concat(model.replyRoute, new Uint8Array([10])), chatMessage(model.message));
+  return daemonMessagePayload(model.replyRoute, model.message, utf8Bytes(`gui-reply-${model.history.length}`));
 }
 
 function replyTextPayload(model: Model, message: Uint8Array): Uint8Array {
@@ -296,8 +331,8 @@ function setLastMessageStatus(model: Model, status: Uint8Array): Model {
   return { ...model, history };
 }
 
-function liveInvitePayload(model: Model, action: Uint8Array, ticket: Uint8Array): Uint8Array {
-  return concat(concat(model.receiverId, new Uint8Array([10])), concat(utf8Bytes("NUFON-LIVE/1\naction="), concat(action, concat(utf8Bytes("\nticket="), ticket))));
+function liveInviteMessage(action: Uint8Array, ticket: Uint8Array): Uint8Array {
+  return concat(utf8Bytes("NUFON-LIVE/1\naction="), concat(action, concat(utf8Bytes("\nticket="), ticket)));
 }
 
 function recordingEnvelope(model: Model): Uint8Array {
@@ -305,7 +340,7 @@ function recordingEnvelope(model: Model): Uint8Array {
 }
 
 function recordingPayload(model: Model): Uint8Array {
-  return concat(concat(model.receiverId, new Uint8Array([10])), recordingEnvelope(model));
+  return daemonMessagePayload(model.receiverId, recordingEnvelope(model), utf8Bytes(`recording-${model.history.length}`));
 }
 
 function editText(text: Uint8Array, edit: TextInputEvent): Uint8Array {
@@ -335,11 +370,11 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   switch (msg.kind) {
     case "connect_receiver":
-      return [model, Cmd.request("iroh.receiver.bind", EMPTY, { key: "iroh-receiver", ok: "receiver_ready", err: "receiver_error" })];
+      return [model, Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-context","method":"context","params":{}}'), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" })];
     case "identity_pressed":
       if (!model.receiverAvailable) return [
         { ...model, identitySelected: true },
-        Cmd.request("iroh.receiver.bind", EMPTY, { key: "iroh-receiver", ok: "receiver_ready", err: "receiver_error" }),
+        Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-context","method":"context","params":{}}'), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
       ];
       if (model.receiverTicket.length === 0) return { ...model, identitySelected: true };
       return [{ ...model, identitySelected: true }, Cmd.batch([
@@ -349,6 +384,74 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           body: concat(asciiBytes("Endpoint: "), model.endpointId),
         }),
       ])];
+    case "daemon_ready":
+      return { ...model, receiverStatus: utf8Bytes("Daemon connected"), receiverAvailable: true };
+    case "daemon_error":
+      return { ...model, receiverStatus: msg.data, receiverAvailable: false };
+    case "poll_events":
+      return [model, Cmd.request("nufond.request", daemonEventsPayload(model.eventCursor), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" })];
+    case "events_loaded": {
+      if (msg.data.length < 2) return model;
+      const count = msg.data[0] * 256 + msg.data[1];
+      let offset = 2;
+      let index = 0;
+      let next = model;
+      while (index < count && offset + 2 <= msg.data.length) {
+        const cursorLength = msg.data[offset] * 256 + msg.data[offset + 1];
+        offset += 2;
+        if (offset + cursorLength + 2 > msg.data.length) break;
+        const cursor = msg.data.slice(offset, offset + cursorLength);
+        offset += cursorLength;
+        const kindLength = msg.data[offset] * 256 + msg.data[offset + 1];
+        offset += 2;
+        if (offset + kindLength + 2 > msg.data.length) break;
+        const kind = msg.data.slice(offset, offset + kindLength);
+        offset += kindLength;
+        const peerLength = msg.data[offset] * 256 + msg.data[offset + 1];
+        offset += 2;
+        if (offset + peerLength + 2 > msg.data.length) break;
+        const peer = msg.data.slice(offset, offset + peerLength);
+        offset += peerLength;
+        const messageLength = msg.data[offset] * 256 + msg.data[offset + 1];
+        offset += 2;
+        if (offset + messageLength + 2 > msg.data.length) break;
+        const message = msg.data.slice(offset, offset + messageLength);
+        offset += messageLength;
+        const textLength = msg.data[offset] * 256 + msg.data[offset + 1];
+        offset += 2;
+        if (offset + textLength > msg.data.length) break;
+        const text = msg.data.slice(offset, offset + textLength);
+        offset += textLength;
+        next = { ...next, eventCursor: cursor };
+        if (sameBytes(kind, utf8Bytes("message.received"))) {
+          next = update(next, { kind: "receiver_event", key: 1, state: "data", bytes: concat(concat(peer, new Uint8Array([10])), text), droppedPending: 0, droppedTotal: 0 }) as Model;
+        }
+        index += 1;
+      }
+      return next;
+    }
+    case "peers_loaded": {
+      if (msg.data.length < 2) return { ...model, receiverStatus: utf8Bytes("Daemon peers loaded") };
+      const count = msg.data[0] * 256 + msg.data[1];
+      let offset = 2;
+      const connections: Connection[] = [];
+      let index = 0;
+      while (index < count && offset + 2 <= msg.data.length) {
+        const nameLength = msg.data[offset] * 256 + msg.data[offset + 1];
+        offset += 2;
+        if (offset + nameLength + 2 > msg.data.length) break;
+        const name = msg.data.slice(offset, offset + nameLength);
+        offset += nameLength;
+        const endpointLength = msg.data[offset] * 256 + msg.data[offset + 1];
+        offset += 2;
+        if (offset + endpointLength > msg.data.length) break;
+        const endpoint = msg.data.slice(offset, offset + endpointLength);
+        offset += endpointLength;
+        if (name.length !== 0 && endpoint.length !== 0) connections.push({ name, endpoint });
+        index += 1;
+      }
+      return { ...model, connections, selectedConnectionName: connections.length === 0 ? EMPTY : connections[0].name, receiverStatus: utf8Bytes("Daemon peers loaded") };
+    }
     case "receiver_ready": {
       const ticket = receiverTicket(msg.data);
       return [
@@ -380,11 +483,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           if (isStart && !model.liveAutoAccept) return { ...next, livePolicyStatus: utf8Bytes("Incoming live audio blocked by local policy") };
           if (isStart) return [next, Cmd.batch([
             Cmd.request("media.live.subscribe", ticket, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
-            Cmd.request("iroh.receiver.reply", replyTextPayload(model, utf8Bytes("call_started")), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+            Cmd.request("nufond.request", daemonMessagePayload(model.replyRoute, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.history.length}`)), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
           ])];
           return [next, Cmd.batch([
             Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
-            Cmd.request("iroh.receiver.reply", replyTextPayload(model, utf8Bytes("call_stopped")), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+            Cmd.request("nufond.request", daemonMessagePayload(model.replyRoute, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`)), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
           ])];
         }
         const recordingPrefix = utf8Bytes("NUFON-RECORDING/1\n");
@@ -436,14 +539,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (model.receiverId.length === 0 || model.pendingRecordingSend) return model;
         return [
         { ...model, pendingRecordingSend: true, recordingStatus: utf8Bytes("Sending attachment") },
-        Cmd.request("iroh.sender.send", recordingPayload(model), { key: "media-recording-send", ok: "sender_ready", err: "sender_error" }),
+        Cmd.request("nufond.request", recordingPayload(model), { key: "media-recording-send", ok: "sender_ready", err: "sender_error" }),
         ];
       }
       if (model.receiverId.length === 0 || model.message.length === 0) return model;
-      return [addChatMessage(model, model.message, true, utf8Bytes("Sending")), Cmd.request("iroh.sender.send", sendPayload(model), { key: "iroh-send", ok: "sender_ready", err: "sender_error" })];
+      return [addChatMessage(model, model.message, true, utf8Bytes("Sending")), Cmd.request("nufond.request", sendPayload(model), { key: "nufond-send", ok: "sender_ready", err: "sender_error" })];
     case "reply_message":
       if (model.replyRoute.length === 0 || model.message.length === 0) return model;
-      return [addChatMessage(model, model.message, true, utf8Bytes("Sending")), Cmd.request("iroh.receiver.reply", replyPayload(model), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
+      return [addChatMessage(model, model.message, true, utf8Bytes("Sending")), Cmd.request("nufond.request", replyPayload(model), { key: "nufond-reply", ok: "sender_ready", err: "sender_error" })];
     case "sender_ready":
       if (model.pendingRecordingSend) return { ...model, pendingRecordingSend: false, recordingReady: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Audio sent"), senderStatus: utf8Bytes("Audio sent") };
       if (sameBytes(msg.data, utf8Bytes("call_stopped")) && model.liveActive) return [
@@ -491,17 +594,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (model.replyRoute.length === 0) return [model, Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" })];
         return [model, Cmd.batch([
           Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
-          Cmd.request("iroh.receiver.reply", replyTextPayload(model, utf8Bytes("call_stopped")), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+          Cmd.request("nufond.request", daemonMessagePayload(model.replyRoute, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`)), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
         ])];
       }
       if (!model.liveActive) return model;
       if (model.receiverId.length === 0) return [model, Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" })];
       return [model, Cmd.batch([
-        Cmd.request("iroh.sender.send", liveInvitePayload(model, utf8Bytes("stop"), EMPTY), { key: "media-live-stop-signal", ok: "sender_ready", err: "sender_error" }),
+        Cmd.request("nufond.request", daemonMessagePayload(model.receiverId, liveInviteMessage(utf8Bytes("stop"), EMPTY), utf8Bytes(`live-stop-${model.history.length}`)), { key: "media-live-stop-signal", ok: "sender_ready", err: "sender_error" }),
         Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
       ])];
     case "live_started":
-      return [{ ...model, liveActive: true, audioActive: true, audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data, liveStatus: utf8Bytes("Calling receiver") }, Cmd.request("iroh.sender.send", liveInvitePayload(model, utf8Bytes("start"), msg.data), { key: "media-live-signal", ok: "sender_ready", err: "sender_error" })];
+      return [{ ...model, liveActive: true, audioActive: true, audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data, liveStatus: utf8Bytes("Calling receiver") }, Cmd.request("nufond.request", daemonMessagePayload(model.receiverId, liveInviteMessage(utf8Bytes("start"), msg.data), utf8Bytes(`live-start-${model.history.length}`)), { key: "media-live-signal", ok: "sender_ready", err: "sender_error" })];
     case "copy_live_ticket":
       if (model.liveTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.liveTicket)];
@@ -551,7 +654,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [model, Cmd.clipboardWrite(model.recordingTicket)];
     case "recording_send":
       if (model.recordingTicket.length === 0 || model.receiverId.length === 0) return model;
-      return [model, Cmd.request("iroh.sender.send", recordingPayload(model), { key: "media-recording-send", ok: "sender_ready", err: "sender_error" })];
+      return [model, Cmd.request("nufond.request", recordingPayload(model), { key: "media-recording-send", ok: "sender_ready", err: "sender_error" })];
     case "recording_store_error":
       return { ...model, recordingStatus: msg.data };
     case "blob_ticket_edit":

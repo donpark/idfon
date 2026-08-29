@@ -568,6 +568,20 @@ The GUI performs the same logical operations through the daemon, and a future
 named endpoint resolver can replace local peer aliases without changing this
 workflow.
 
+## Phase 6 implementation status
+
+The first GUI migration slice is implemented. The Native SDK host now exposes a
+narrow `nufond.request` command that uses protected Unix IPC with the daemon's
+length-prefixed JSON protocol. The GUI requests daemon context during startup
+and reports daemon availability through model state. The host bridge does not
+access identity keys or create a new daemon endpoint.
+
+GUI text, reply, peer, and event traffic now uses the daemon IPC bridge. The
+Native host retains only the daemon IPC client and local media controls; direct
+GUI Iroh endpoint, receiver, sender, reply, and channel code has been removed.
+Incoming message events are cursor-polled through the compact daemon event
+protocol and converted into GUI conversation state.
+
 ## Phase 5 implementation status
 
 Authorization and local-policy foundations are implemented. Capability grants
