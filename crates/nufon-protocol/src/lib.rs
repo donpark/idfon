@@ -10,6 +10,54 @@ pub type RequestId = String;
 pub type OperationId = String;
 pub type EventId = String;
 pub type Cursor = String;
+pub type MessageId = String;
+
+/// Transport-independent proof-bearing peer identity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerAuth {
+    pub peer_id: String,
+    pub endpoint_id: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MessageContent {
+    Text { text: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageSend {
+    pub to: String,
+    pub content: MessageContent,
+    pub sender: PeerAuth,
+    pub idempotency_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageEnvelope {
+    pub message_id: MessageId,
+    pub sender: PeerAuth,
+    pub content: MessageContent,
+    pub idempotency_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageAck {
+    pub message_id: MessageId,
+    pub status: AckStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AckStatus {
+    Accepted,
+    Duplicate,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Request {
@@ -91,6 +139,10 @@ pub struct Operation {
     pub operation_id: OperationId,
     pub method: String,
     pub status: OperationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_fingerprint: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,6 +166,8 @@ pub struct Identity {
     pub id: String,
     pub name: String,
     pub endpoint_id: Option<String>,
+    #[serde(default)]
+    pub public_key: Option<String>,
     pub active: bool,
 }
 
@@ -122,6 +176,8 @@ pub struct Peer {
     pub id: String,
     pub name: String,
     pub endpoint_id: Option<String>,
+    #[serde(default)]
+    pub endpoint_addr: Option<String>,
     pub aliases: Vec<String>,
 }
 
@@ -185,6 +241,47 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request, serde_json::Error> {
     serde_json::from_slice(bytes)
 }
 
+/// Encodes one complete IPC frame: big-endian u32 length followed by JSON.
+pub fn encode_frame<T: Serialize>(value: &T) -> Result<Vec<u8>, FrameError> {
+    let payload = encode_json(value).map_err(FrameError::Json)?;
+    if payload.len() > MAX_FRAME_BYTES || payload.len() > u32::MAX as usize {
+        return Err(FrameError::TooLarge(payload.len()));
+    }
+    let mut frame = Vec::with_capacity(4 + payload.len());
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+pub fn decode_frame<T: for<'de> Deserialize<'de>>(frame: &[u8]) -> Result<T, FrameError> {
+    if frame.len() < 4 {
+        return Err(FrameError::Truncated);
+    }
+    let length = u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize;
+    if length > MAX_FRAME_BYTES {
+        return Err(FrameError::TooLarge(length));
+    }
+    if frame.len() != length + 4 {
+        return Err(FrameError::LengthMismatch {
+            declared: length,
+            actual: frame.len() - 4,
+        });
+    }
+    serde_json::from_slice(&frame[4..]).map_err(FrameError::Json)
+}
+
+#[derive(Debug, Error)]
+pub enum FrameError {
+    #[error("frame is truncated")]
+    Truncated,
+    #[error("frame length {0} exceeds the limit")]
+    TooLarge(usize),
+    #[error("frame length mismatch: declared {declared}, received {actual}")]
+    LengthMismatch { declared: usize, actual: usize },
+    #[error("invalid JSON: {0}")]
+    Json(serde_json::Error),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +310,41 @@ mod tests {
             validate_request(&request),
             Err(ProtocolError::InvalidVersion(2))
         );
+    }
+
+    #[test]
+    fn message_envelope_round_trips_with_authentication_fields() {
+        let message = MessageEnvelope {
+            message_id: "msg_1".into(),
+            sender: PeerAuth {
+                peer_id: "alice".into(),
+                endpoint_id: "ep_alice".into(),
+                signature: "sig".into(),
+            },
+            content: MessageContent::Text {
+                text: "hello".into(),
+            },
+            idempotency_key: "hello-1".into(),
+            conversation: Some("conversation-1".into()),
+        };
+        let frame = encode_frame(&message).unwrap();
+        assert_eq!(decode_frame::<MessageEnvelope>(&frame).unwrap(), message);
+    }
+
+    #[test]
+    fn frame_decoder_rejects_truncated_and_mismatched_frames() {
+        assert!(matches!(
+            decode_frame::<Request>(&[0, 0, 0]),
+            Err(FrameError::Truncated)
+        ));
+        let frame = [0, 0, 0, 5, b'{', b'}'];
+        assert!(matches!(
+            decode_frame::<Request>(&frame),
+            Err(FrameError::LengthMismatch {
+                declared: 5,
+                actual: 2
+            })
+        ));
     }
 
     #[test]

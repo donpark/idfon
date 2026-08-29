@@ -515,6 +515,42 @@ The following are deferred rather than blocking the foundation:
 5. The final macOS application identity mechanism for custom-app sessions.
 6. Additional capability vocabulary needed by media and groups.
 
+## Implementation status
+
+The contract, daemon IPC, persistence, CLI query surface, authenticated
+message envelope, selectable transports, and application acknowledgment path
+are implemented. The next active phase is **Phase 1: messaging hardening**.
+
+Phase 1 is complete only when outgoing work has explicit durable transitions,
+transport failures are bounded and retryable, idempotency survives restart, and
+a real two-endpoint integration check proves message plus acknowledgment
+exchange. The fake transport is test-only; production daemon startup uses the
+Iroh transport explicitly.
+
+Current implementation status: the protocol, signing, peer/capability checks,
+persistence, fake transport, real Iroh stream, acknowledgment exchange,
+unit-level localhost Iroh round trip, asynchronous operation execution,
+bounded retries, cancellation, persisted endpoint-key binding, and daemon
+process startup verification are complete. The process test verifies two
+independent real-Iroh daemons start with distinct persisted endpoint identities
+and respond over protected IPC. A full two-process message exchange remains an
+integration-test enhancement once peer provisioning is exposed through the
+public API.
+
+### Phase 1 guarantees
+
+- `accepted` is persisted before a send result is returned.
+- `queued`, `transmitting`, `remote_ack`, and terminal transitions are persisted
+  before they are reported.
+- A transport timeout is retryable and does not imply delivery.
+- `delivered` requires a valid matching `MessageAck`.
+- Reusing an idempotency key with different content returns
+  `idempotency_key_conflict`.
+- Receiver-side duplicate delivery returns a duplicate acknowledgment without
+  creating a second message, operation, or event.
+- Message and acknowledgment frames are bounded and versioned.
+- Fake transport is available only to deterministic tests.
+
 ## Definition of a successful first release
 
 An agent can perform this complete workflow without understanding Iroh:

@@ -24,6 +24,10 @@ fn run() -> io::Result<()> {
             "identities" => Some("identities"),
             "peers" => Some("peers"),
             "resolve" => Some("peer.resolve"),
+            "operation" => Some("operation.get"),
+            "cancel" => Some("operation.cancel"),
+            "events" => Some("events"),
+            "send" => Some("message.send"),
             _ => None,
         })
         .ok_or_else(|| {
@@ -35,6 +39,26 @@ fn run() -> io::Result<()> {
         .position(|arg| arg == "resolve")
         .or_else(|| args.iter().position(|arg| arg == "peer"))
         .and_then(|index| args.get(index + 1));
+    let operation_id = args
+        .iter()
+        .position(|arg| arg == "operation" || arg == "cancel")
+        .and_then(|index| args.get(index + 1));
+    let peer = args
+        .iter()
+        .position(|arg| arg == "send")
+        .and_then(|index| args.get(index + 1));
+    let text = args
+        .iter()
+        .position(|arg| arg == "--text")
+        .and_then(|index| args.get(index + 1));
+    let idempotency_key = args
+        .iter()
+        .position(|arg| arg == "--idempotency-key")
+        .and_then(|index| args.get(index + 1));
+    let retries = args
+        .iter()
+        .position(|arg| arg == "--retries")
+        .and_then(|index| args.get(index + 1));
     if method == "peer.resolve" && reference.is_none() {
         print_usage();
         return Err(io::Error::new(
@@ -45,9 +69,20 @@ fn run() -> io::Result<()> {
 
     let params = if method == "peer.resolve" {
         serde_json::json!({"ref": reference})
+    } else if method == "operation.get" || method == "operation.cancel" {
+        serde_json::json!({"operation_id": operation_id})
+    } else if method == "message.send" {
+        serde_json::json!({"to": peer, "text": text, "idempotency_key": idempotency_key, "retries": retries})
     } else {
         serde_json::json!({})
     };
+    if method == "message.send" && (peer.is_none() || text.is_none() || idempotency_key.is_none()) {
+        print_usage();
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "send requires peer, text, and idempotency key",
+        ));
+    }
     let request = Request {
         version: PROTOCOL_VERSION,
         id: "cli-1".into(),
@@ -122,4 +157,6 @@ fn argument(args: &[String], name: &str) -> Option<String> {
 fn print_usage() {
     eprintln!("usage: nufon [--socket PATH] <status|context|identities|peers>");
     eprintln!("       nufon [--socket PATH] resolve PEER [--json]");
+    eprintln!("       nufon [--socket PATH] send PEER --text TEXT --idempotency-key KEY [--retries N] [--json]");
+    eprintln!("       nufon [--socket PATH] cancel OPERATION_ID [--json]");
 }
