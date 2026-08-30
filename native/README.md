@@ -63,7 +63,9 @@ package itself, and an install simply lands the identical content once
 ## Known limitations
 
 The Iroh host still starts detached native worker threads for the receiver
-accept loop and sender requests. Each endpoint bind generates a fresh identity,
+accept loop and sender requests. The packaged app carries a matching `nufond`
+binary beside the GUI executable; development launches look in the workspace
+build locations first. Each endpoint bind generates a fresh identity,
 which allows two blindly launched app instances to connect after copying the
 receiver's current ticket. Shutdown currently does not cancel and join
 every worker before the process exits. If a worker is blocked in endpoint or

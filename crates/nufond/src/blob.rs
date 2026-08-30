@@ -7,6 +7,7 @@ use iroh::protocol::Router;
 use iroh::{endpoint::presets, Endpoint};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 
+#[allow(dead_code)]
 pub struct BlobProvider {
     pub endpoint: Endpoint,
     pub store: FsStore,

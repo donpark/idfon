@@ -13,6 +13,11 @@ export interface Connection {
   readonly endpoint: Uint8Array;
 }
 
+export interface Identity {
+  readonly name: Uint8Array;
+  readonly active: boolean;
+}
+
 export interface ChatMessage {
   readonly text: Uint8Array;
   readonly sent: boolean;
@@ -31,7 +36,9 @@ export interface Model {
   readonly history: readonly ChatMessage[];
   readonly replyRoute: Uint8Array;
   readonly identityName: Uint8Array;
+  readonly identities: readonly Identity[];
   readonly identitySelected: boolean;
+  readonly copyIdentityTicket: boolean;
   readonly identityError: boolean;
   readonly connections: readonly Connection[];
   readonly selectedConnectionName: Uint8Array;
@@ -68,6 +75,8 @@ export interface Model {
   readonly showAdvanced: boolean;
   readonly showTicket: boolean;
   readonly showAddConnection: boolean;
+  readonly showAddIdentity: boolean;
+  readonly newIdentityName: Uint8Array;
   readonly liveAutoAccept: boolean;
   readonly livePolicyStatus: Uint8Array;
   readonly eventCursor: Uint8Array;
@@ -86,6 +95,16 @@ export type Msg =
   | { readonly kind: "message_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "identity_name_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "identity_pressed" }
+  | { readonly kind: "identity_selected"; readonly name: Uint8Array }
+  | { readonly kind: "identities_loaded"; readonly data: Uint8Array }
+  | { readonly kind: "show_add_identity" }
+  | { readonly kind: "cancel_add_identity" }
+  | { readonly kind: "new_identity_name_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "create_identity" }
+  | { readonly kind: "identity_created"; readonly data: Uint8Array }
+  | { readonly kind: "identity_create_error"; readonly data: Uint8Array }
+  | { readonly kind: "identity_used"; readonly data: Uint8Array }
+  | { readonly kind: "identity_use_error"; readonly data: Uint8Array }
   | { readonly kind: "connection_selected"; readonly name: Uint8Array }
   | { readonly kind: "connection_opened"; readonly name: Uint8Array }
   | { readonly kind: "chat_closed" }
@@ -96,6 +115,8 @@ export type Msg =
   | { readonly kind: "cancel_add_connection" }
   | { readonly kind: "toggle_live_auto_accept" }
   | { readonly kind: "add_connection" }
+  | { readonly kind: "peer_added"; readonly data: Uint8Array }
+  | { readonly kind: "peer_add_error"; readonly data: Uint8Array }
   | { readonly kind: "send_message" }
   | { readonly kind: "reply_message" }
 
@@ -163,7 +184,9 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     history: [],
     replyRoute: EMPTY,
     identityName: utf8Bytes("Default"),
+    identities: [{ name: utf8Bytes("Default"), active: true }],
     identitySelected: true,
+    copyIdentityTicket: false,
     identityError: false,
     connections: NO_CONNECTIONS,
     selectedConnectionName: EMPTY,
@@ -173,7 +196,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     receiverId: EMPTY,
     receiverTicket: EMPTY,
     endpointId: EMPTY,
-    receiverStatus: utf8Bytes("Not connected"),
+    receiverStatus: utf8Bytes("Connecting"),
     senderStatus: utf8Bytes("Waiting for receiver"),
     receiverAvailable: false,
     senderDisabled: true,
@@ -200,12 +223,15 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     showAdvanced: false,
     showTicket: false,
     showAddConnection: false,
+    showAddIdentity: false,
+    newIdentityName: EMPTY,
     liveAutoAccept: false,
     livePolicyStatus: utf8Bytes("Incoming live audio requires approval"),
     eventCursor: EMPTY,
   };
   return [model, Cmd.batch([
     Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-context","method":"context","params":{}}'), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
+    Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "nufond-identities", ok: "identities_loaded", err: "daemon_error" }),
     Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-peers","method":"peers.compact","params":{}}'), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
     Cmd.request("nufond.request", daemonEventsPayload(EMPTY), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" }),
   ])];
@@ -232,6 +258,35 @@ function endpointId(data: Uint8Array): Uint8Array {
   while (i < data.length) {
     if (data[i] === 10) return data.slice(i + 1);
     i += 1;
+  }
+  return EMPTY;
+}
+
+function contextTicket(data: Uint8Array): Uint8Array {
+  const marker = utf8Bytes("\"ticket\":[");
+  let start = -1;
+  for (let i = 0; i + marker.length <= data.length; i += 1) {
+    if (sameBytes(data.slice(i, i + marker.length), marker)) { start = i + marker.length; break; }
+  }
+  if (start < 0) return EMPTY;
+  let count = 0;
+  for (let i = start; i < data.length; i += 1) {
+    const byte = data[i];
+    if (byte >= 48 && byte <= 57) continue;
+    if (byte === 93) break;
+    if (byte === 44 || byte === 32) { if (i > start && data[i - 1] >= 48 && data[i - 1] <= 57) count += 1; continue; }
+    return EMPTY;
+  }
+  const result = new Uint8Array(count + 1);
+  let index = 0;
+  let value = 0;
+  let digits = 0;
+  for (let i = start; i < data.length; i += 1) {
+    const byte = data[i];
+    if (byte >= 48 && byte <= 57) { value = value * 10 + byte - 48; digits += 1; continue; }
+    if (digits > 0) { if (value > 255 || index >= result.length) return EMPTY; result[index] = value; index += 1; value = 0; digits = 0; }
+    if (byte === 93) return result.slice(0, index);
+    if (byte !== 44 && byte !== 32) return EMPTY;
   }
   return EMPTY;
 }
@@ -286,6 +341,49 @@ function decodeChatMessage(message: Uint8Array): Uint8Array {
     if (byte !== 44 && byte !== 32) return message;
   }
   return message;
+}
+
+function jsonString(data: Uint8Array): Uint8Array {
+  const out: number[] = [34];
+  for (let i = 0; i < data.length; i += 1) {
+    const value = data[i];
+    if (value === 34 || value === 92) out.push(92);
+    if (value === 10) { out.push(92, 110); continue; }
+    if (value === 13) { out.push(92, 114); continue; }
+    if (value === 9) { out.push(92, 116); continue; }
+    out.push(value);
+  }
+  out.push(34);
+  return new Uint8Array(out);
+}
+
+function identityPayload(method: Uint8Array, name: Uint8Array): Uint8Array {
+  return concat(concat(concat(concat(utf8Bytes('{"version":1,"id":"gui-identity","method":"'), method), utf8Bytes('","params":{"name":')), jsonString(name)), utf8Bytes('}}'));
+}
+
+function ticketEndpointId(ticket: Uint8Array): Uint8Array {
+  const marker = utf8Bytes("\"id\":\"");
+  for (let i = 0; i + marker.length < ticket.length; i += 1) {
+    if (sameBytes(ticket.slice(i, i + marker.length), marker)) {
+      const start = i + marker.length;
+      let end = start;
+      while (end < ticket.length && ticket[end] !== 34) end += 1;
+      return ticket.slice(start, end);
+    }
+  }
+  return EMPTY;
+}
+
+function peerAddPayload(name: Uint8Array, ticket: Uint8Array): Uint8Array {
+  const id = ticketEndpointId(ticket);
+  let payload = concat(utf8Bytes('{"version":1,"id":"gui-peer-add","method":"peer.add","params":{"id":'), jsonString(id));
+  payload = concat(payload, utf8Bytes(',"name":'));
+  payload = concat(payload, jsonString(name));
+  payload = concat(payload, utf8Bytes(',"endpoint_id":'));
+  payload = concat(payload, jsonString(id));
+  payload = concat(payload, utf8Bytes(',"endpoint_addr":'));
+  payload = concat(payload, jsonString(ticket));
+  return concat(payload, utf8Bytes(',"aliases":[]}}'));
 }
 
 function byteArrayJson(data: Uint8Array): Uint8Array {
@@ -389,10 +487,55 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           body: concat(asciiBytes("Endpoint: "), model.endpointId),
         }),
       ])];
-    case "daemon_ready":
-      return { ...model, receiverStatus: utf8Bytes("Daemon connected"), receiverAvailable: true };
+    case "daemon_ready": {
+      const ticket = contextTicket(msg.data);
+      const next = { ...model, receiverStatus: utf8Bytes("Connected"), receiverTicket: ticket, receiverAvailable: true, copyIdentityTicket: false };
+      if (model.copyIdentityTicket && ticket.length !== 0) return [next, Cmd.batch([
+        Cmd.clipboardWrite(ticket),
+        Cmd.showNotification({ title: asciiBytes("Identity ticket copied"), body: concat(asciiBytes("Identity: "), model.identityName) }),
+      ])];
+      return next;
+    }
     case "daemon_error":
       return { ...model, receiverStatus: msg.data, receiverAvailable: false };
+    case "identities_loaded": {
+      if (msg.data.length < 2) return model;
+      const count = msg.data[0] * 256 + msg.data[1];
+      let offset = 2;
+      const identities: Identity[] = [];
+      let index = 0;
+      while (index < count && offset + 2 <= msg.data.length) {
+        const length = msg.data[offset] * 256 + msg.data[offset + 1];
+        offset += 2;
+        if (offset + length + 1 > msg.data.length) break;
+        identities.push({ name: msg.data.slice(offset, offset + length), active: msg.data[offset + length] !== 0 });
+        offset += length + 1;
+        index += 1;
+      }
+      return { ...model, identities };
+    }
+    case "identity_selected":
+      return [{ ...model, identityName: msg.name, newIdentityName: msg.name, copyIdentityTicket: true }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
+    case "show_add_identity":
+      return { ...model, showAddIdentity: true, newIdentityName: EMPTY };
+    case "cancel_add_identity":
+      return { ...model, showAddIdentity: false };
+    case "new_identity_name_edit":
+      return { ...model, newIdentityName: editText(model.newIdentityName, msg.edit) };
+    case "create_identity":
+      if (model.newIdentityName.length === 0) return model;
+      return [model, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.create"), model.newIdentityName), { key: "nufond-identity-create", ok: "identity_created", err: "identity_create_error" })];
+    case "identity_created":
+      return [{ ...model, identityName: model.newIdentityName, identitySelected: true, copyIdentityTicket: true, showAddIdentity: false }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), model.newIdentityName), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
+    case "identity_create_error":
+      return { ...model, receiverStatus: msg.data };
+    case "identity_used":
+      return [{ ...model, identityName: model.newIdentityName }, Cmd.batch([
+        Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-context","method":"context","params":{}}'), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
+        Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "nufond-identities", ok: "identities_loaded", err: "daemon_error" }),
+      ])];
+    case "identity_use_error":
+      return { ...model, receiverStatus: msg.data };
     case "poll_events":
       return [model, Cmd.request("nufond.request", daemonEventsPayload(model.eventCursor), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" })];
     case "events_loaded": {
@@ -436,7 +579,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return next;
     }
     case "peers_loaded": {
-      if (msg.data.length < 2) return { ...model, receiverStatus: utf8Bytes("Daemon peers loaded") };
+      if (msg.data.length < 2) return { ...model, receiverStatus: utf8Bytes("Connected") };
       const count = msg.data[0] * 256 + msg.data[1];
       let offset = 2;
       const connections: Connection[] = [];
@@ -455,7 +598,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (name.length !== 0 && endpoint.length !== 0) connections.push({ name, endpoint });
         index += 1;
       }
-      return { ...model, connections, selectedConnectionName: connections.length === 0 ? EMPTY : connections[0].name, receiverStatus: utf8Bytes("Daemon peers loaded") };
+      return { ...model, connections, selectedConnectionName: connections.length === 0 ? EMPTY : connections[0].name, receiverStatus: utf8Bytes("Connected") };
     }
     case "receiver_ready": {
       const ticket = receiverTicket(msg.data);
@@ -538,7 +681,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return { ...model, liveAutoAccept: !model.liveAutoAccept, livePolicyStatus: utf8Bytes(model.liveAutoAccept ? "Incoming live audio requires approval" : "Incoming live audio auto-accepted") };
     case "add_connection":
       if (model.connectionName.length === 0 || model.receiverId.length === 0) return model;
-      return [{ ...model, connections: [...model.connections, { name: model.connectionName, endpoint: model.receiverId }], showAddConnection: false, senderDisabled: false, senderStatus: concat(utf8Bytes("Ready: "), model.connectionName) }, Cmd.request("media.set_scope", model.receiverId, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
+      return [model, Cmd.request("nufond.request", peerAddPayload(model.connectionName, model.receiverId), { key: "nufond-peer-add", ok: "peer_added", err: "peer_add_error" })];
+    case "peer_added": {
+      const connection: Connection = { name: model.connectionName, endpoint: model.receiverId };
+      return [{ ...model, connections: [...model.connections, connection], showAddConnection: false, senderDisabled: false, senderStatus: concat(utf8Bytes("Ready: "), model.connectionName) }, Cmd.request("media.set_scope", model.receiverId, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
+    }
+    case "peer_add_error":
+      return { ...model, senderStatus: msg.data };
     case "send_message":
       if (model.recordingTicket.length !== 0) {
         if (model.receiverId.length === 0 || model.pendingRecordingSend) return model;

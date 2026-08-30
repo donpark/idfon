@@ -4,7 +4,13 @@ const c = @cImport({
     @cInclude("unistd.h");
     @cInclude("sys/socket.h");
     @cInclude("sys/un.h");
+    @cInclude("signal.h");
+    @cInclude("sys/wait.h");
+    @cInclude("fcntl.h");
+    @cInclude("crt_externs.h");
 });
+extern fn _NSGetExecutablePath(buf: [*:0]u8, bufsize: *u32) c_int;
+
 const native_sdk = @import("native_sdk");
 const ffi = @cImport({ @cInclude("irohnet.h"); });
 
@@ -12,6 +18,8 @@ const max_message = 8192;
 const max_payload = 8192;
 const max_result = 8192;
 const queue_size = 16;
+const default_socket = "/tmp/nufon/nufond.sock";
+const default_data_dir = "/tmp/nufon";
 const Completion = struct {
     key: u64,
     ok: bool,
@@ -35,6 +43,8 @@ const Host = struct {
     queue_head: usize = 0,
     queue_len: usize = 0,
     queue_lock: std.atomic.Mutex = .unlocked,
+    daemon_lock: std.atomic.Mutex = .unlocked,
+    daemon_pid: c.pid_t = -1,
     poll_bytes: [max_result]u8 = undefined,
 
     fn binding(self: *Host) native_sdk.HostCallBinding {
@@ -177,16 +187,19 @@ fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
 fn daemonWorker(job: *Job) void {
     defer std.heap.page_allocator.destroy(job);
     const self = job.host;
-    const path = "/tmp/nufon/nufond.sock";
-    const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
+    var socket_path: [256:0]u8 = undefined;
+    const path = daemonPaths(&socket_path, null);
+    var fd = connectDaemon(path);
+    if (fd < 0) {
+        if (!launchDaemon(self)) { self.complete(job.key, false, "daemon_unavailable"); return; }
+        var attempt: usize = 0;
+        while (attempt < 50 and fd < 0) : (attempt += 1) {
+            _ = c.usleep(100000);
+            fd = connectDaemon(path);
+        }
+    }
     if (fd < 0) { self.complete(job.key, false, "daemon_unavailable"); return; }
     defer _ = c.close(fd);
-    var address: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
-    address.sun_family = c.AF_UNIX;
-    if (path.len >= address.sun_path.len) { self.complete(job.key, false, "socket_path_too_long"); return; }
-    @memcpy(address.sun_path[0..path.len], path);
-    const address_len: c.socklen_t = @intCast(@sizeOf(c.sa_family_t) + path.len + 1);
-    if (c.connect(fd, @ptrCast(&address), address_len) != 0) { self.complete(job.key, false, "daemon_unavailable"); return; }
     var frame: [max_payload + 4]u8 = undefined;
     if (job.len > max_payload) { self.complete(job.key, false, "payload_too_large"); return; }
     std.mem.writeInt(u32, frame[0..4], @intCast(job.len), .big);
@@ -311,9 +324,129 @@ fn mediaAudioWorker(job: *Job) void {
 }
 
 
+fn connectDaemon(path: []const u8) c_int {
+    const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    var address: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
+    address.sun_family = c.AF_UNIX;
+    @memcpy(address.sun_path[0..path.len], path);
+    const address_len: c.socklen_t = @intCast(@sizeOf(c.sa_family_t) + path.len + 1);
+    if (c.connect(fd, @ptrCast(&address), address_len) != 0) {
+        _ = c.close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+fn daemonSeed() ?[]const u8 {
+    const argc = c._NSGetArgc().*;
+    const argv = c._NSGetArgv().*;
+    var index: c_int = 1;
+    while (index + 1 < argc) : (index += 1) {
+        const name = std.mem.span(argv[@intCast(index)]);
+        if (std.mem.eql(u8, name, "--seed")) return std.mem.span(argv[@intCast(index + 1)]);
+    }
+    return null;
+}
+
+fn daemonPaths(socket_buffer: *[256:0]u8, data_buffer: ?*[256:0]u8) []const u8 {
+    const seed = daemonSeed() orelse return default_socket;
+    var safe: [64]u8 = undefined;
+    var length: usize = 0;
+    for (seed) |value| {
+        if (length == safe.len) break;
+        safe[length] = if ((value >= 'a' and value <= 'z') or (value >= 'A' and value <= 'Z') or (value >= '0' and value <= '9') or value == '-' or value == '_') value else '_';
+        length += 1;
+    }
+    if (length == 0) return default_socket;
+    if (data_buffer) |buffer| _ = std.fmt.bufPrintZ(buffer, "/tmp/nufon/{s}", .{safe[0..length]}) catch return default_socket;
+    const path = std.fmt.bufPrintZ(socket_buffer, "/tmp/nufon/{s}/nufond.sock", .{safe[0..length]}) catch return default_socket;
+    return path;
+}
+
+fn launchDaemon(self: *Host) bool {
+    lock(&self.daemon_lock);
+    defer self.daemon_lock.unlock();
+    if (self.daemon_pid > 0) return true;
+    const pid = c.fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        var socket_buffer: [256:0]u8 = undefined;
+        var data_buffer: [256:0]u8 = undefined;
+        const socket_path = daemonPaths(&socket_buffer, &data_buffer);
+        const data_path = if (daemonSeed() == null) default_data_dir else std.mem.span(data_buffer[0..].ptr);
+        var daemon_log_path: [64:0]u8 = undefined;
+        const daemon_log = std.fmt.bufPrintZ(&daemon_log_path, "/tmp/nufond-auto-{d}.log", .{c.getpid()}) catch null;
+        var log_fd: c_int = -1;
+        if (daemon_log) |path_z| {
+            log_fd = c.open(path_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_int, 0o600));
+            if (log_fd >= 0) {
+                _ = c.dup2(log_fd, c.STDOUT_FILENO);
+                _ = c.dup2(log_fd, c.STDERR_FILENO);
+                // Keep the descriptor open so failed exec attempts are logged.
+            }
+        }
+        if (log_fd >= 0) _ = c.dprintf(log_fd, "auto-start child pid=%d\\n", c.getpid());
+        const launch_argv = [_]?[*:0]u8{
+            @constCast("nufond"), @constCast("--socket"), @constCast(@ptrCast(socket_path.ptr)), @constCast("--data-dir"), @constCast(@ptrCast(data_path.ptr)), null,
+        };
+        const argv = launch_argv;
+        _ = c.execvp(argv[0], @ptrCast(&argv));
+        if (log_fd >= 0) _ = c.dprintf(log_fd, "execvp failed\\n");
+        const paths = [_][]const u8{
+            "target/release/nufond",
+            "../target/release/nufond",
+            "zig-out/bin/nufond",
+            "Nufon.app/Contents/MacOS/nufond",
+            "/usr/local/bin/nufond",
+        };
+        for (paths) |path| {
+            var path_z: [256:0]u8 = undefined;
+            const name = std.fmt.bufPrintZ(&path_z, "{s}", .{path}) catch continue;
+            var path_argv = [_]?[*:0]u8{ name.ptr, @constCast("--socket"), @constCast(@ptrCast(socket_path.ptr)), @constCast("--data-dir"), @constCast(@ptrCast(data_path.ptr)), null };
+            _ = c.execv(name.ptr, @ptrCast(&path_argv));
+            if (log_fd >= 0) _ = c.dprintf(log_fd, "execv %s failed\\n", name.ptr);
+        }
+        var executable: [1024:0]u8 = undefined;
+        var executable_len: u32 = executable.len;
+        if (log_fd >= 0) _ = c.dprintf(log_fd, "executable path lookup\\n");
+        if (_NSGetExecutablePath(&executable, &executable_len) == 0) {
+            var end: usize = 0;
+            while (end < executable.len and executable[end] != 0) : (end += 1) {}
+            while (end > 0 and executable[end - 1] != '/') : (end -= 1) {}
+            if (end == 0) { c._exit(127); }
+            const sibling = std.fmt.bufPrintZ(executable[end..], "nufond", .{}) catch null;
+            if (sibling) |_| {
+                var sibling_argv = [_]?[*:0]u8{ executable[0..].ptr, @constCast("--socket"), @constCast(@ptrCast(socket_path.ptr)), @constCast("--data-dir"), @constCast(data_path.ptr), null };
+                if (log_fd >= 0) _ = c.dprintf(log_fd, "execv sibling %s\\n", executable[0..].ptr);
+                _ = c.execv(executable[0..].ptr, @ptrCast(&sibling_argv));
+                if (log_fd >= 0) _ = c.dprintf(log_fd, "execv sibling failed\\n");
+            }
+        }
+        c._exit(127);
+    }
+    self.daemon_pid = pid;
+    trace("launched nufond pid={d}", .{pid});
+    return true;
+}
+
+fn stopDaemon(self: *Host) void {
+    lock(&self.daemon_lock);
+    const pid = self.daemon_pid;
+    self.daemon_pid = -1;
+    self.daemon_lock.unlock();
+    if (pid > 0) {
+        // nufond handles SIGINT through tokio and runs its lock/socket cleanup.
+        _ = c.kill(pid, c.SIGINT);
+        _ = c.waitpid(pid, null, 0);
+        trace("stopped nufond pid={d}", .{pid});
+    }
+}
+
 fn shutdown(context: *anyopaque) void {
     const self: *Host = @ptrCast(@alignCast(context));
     trace("host shutdown", .{});
+    stopDaemon(self);
     ffi.media_shutdown();
     lock(&self.services_lock);
     self.services = null;

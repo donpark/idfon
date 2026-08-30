@@ -54,54 +54,38 @@ impl TransportMode {
         }
     }
 
+    fn endpoint_ticket(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::Fake(_) => None,
+            Self::Iroh(transport) => transport.endpoint_ticket(),
+        }
+    }
+
     fn rebind(&self, key: [u8; 32]) -> io::Result<Option<String>> {
-        let Self::Iroh(manager) = self else {
-            return Ok(None);
-        };
+        let Self::Iroh(manager) = self else { return Ok(None); };
         std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let runtime = tokio::runtime::Runtime::new()?;
-                    runtime
-                        .block_on(manager.rebind(Some(key)))
-                        .map(Some)
-                        .map_err(io::Error::other)
-                })
-                .join()
-                .map_err(|_| io::Error::other("rebind worker panicked"))?
+            scope.spawn(|| {
+                let runtime = tokio::runtime::Runtime::new()?;
+                runtime.block_on(manager.rebind(Some(key))).map(Some).map_err(io::Error::other)
+            }).join().map_err(|_| io::Error::other("rebind worker panicked"))?
         })
     }
 
-    fn send(
-        &self,
-        peer: &nufon_protocol::Peer,
-        message: &nufon_protocol::MessageEnvelope,
-    ) -> io::Result<nufon_protocol::MessageAck> {
+    fn send(&self, peer: &nufon_protocol::Peer, message: &nufon_protocol::MessageEnvelope) -> io::Result<nufon_protocol::MessageAck> {
         let address = if matches!(self, Self::Fake(_)) {
             "0000000000000000000000000000000000000000000000000000000000000000"
         } else {
-            peer.endpoint_addr.as_deref().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "peer has no endpoint address")
-            })?
+            peer.endpoint_addr.as_deref().ok_or_else(|| io::Error::other("peer has no endpoint address"))?
         };
-        let target = serde_json::from_str(address).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("invalid endpoint address: {error}"),
-            )
-        })?;
+        let target = serde_json::from_str(address).map_err(|error| io::Error::other(format!("invalid endpoint address: {error}")))?;
         std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let runtime = tokio::runtime::Runtime::new()?;
-                    match self {
-                        Self::Fake(transport) => runtime.block_on(transport.send(&target, message)),
-                        Self::Iroh(transport) => runtime.block_on(transport.send(&target, message)),
-                    }
-                    .map_err(io::Error::other)
-                })
-                .join()
-                .map_err(|_| io::Error::other("transport worker panicked"))?
+            scope.spawn(|| {
+                let runtime = tokio::runtime::Runtime::new()?;
+                match self {
+                    Self::Fake(transport) => runtime.block_on(transport.send(&target, message)),
+                    Self::Iroh(transport) => runtime.block_on(transport.send(&target, message)),
+                }.map_err(io::Error::other)
+            }).join().map_err(|_| io::Error::other("transport worker panicked"))?
         })
     }
 }
@@ -294,7 +278,7 @@ async fn main() -> io::Result<()> {
     let _cleanup = SocketCleanup(socket.clone());
 
     tokio::select! {
-        result = accept_loop(listener, store, transport, media_service) => result,
+        result = accept_loop(listener, store, transport) => result,
         result = tokio::signal::ctrl_c() => result.map_err(io::Error::other),
     }
 }
@@ -303,15 +287,13 @@ async fn accept_loop(
     listener: UnixListener,
     store: Arc<Mutex<Store>>,
     transport: Arc<TransportMode>,
-    media_service: Arc<MediaService>,
 ) -> io::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let store = Arc::clone(&store);
         let transport = Arc::clone(&transport);
-        let media_service = Arc::clone(&media_service);
         tokio::spawn(async move {
-            if let Err(error) = serve(stream, store, transport, media_service).await {
+            if let Err(error) = serve(stream, store, transport).await {
                 eprintln!("nufond client error: {error}");
             }
         });
@@ -322,7 +304,6 @@ async fn serve(
     mut stream: UnixStream,
     store: Arc<Mutex<Store>>,
     transport: Arc<TransportMode>,
-    media_service: Arc<MediaService>,
 ) -> io::Result<()> {
     loop {
         let Some(frame) = read_frame(&mut stream).await? else {
@@ -405,6 +386,11 @@ async fn serve(
             write_frame(&mut stream, &payload).await?;
             continue;
         }
+        if request.method == "identities.compact" {
+            let payload = compact_identities(&store);
+            write_frame(&mut stream, &payload).await?;
+            continue;
+        }
         if request.method == "events.compact" {
             let after = request_text(&request.params, "after");
             let payload = compact_events(&store, after.as_deref());
@@ -467,6 +453,7 @@ fn dispatch_with_transport(
                     "identity": state.identities.iter().find(|identity| identity.active),
                     "daemon": "nufond",
                     "ready": true,
+                    "ticket": transport.endpoint_ticket().unwrap_or_default(),
                 }),
             )
         }
@@ -477,6 +464,7 @@ fn dispatch_with_transport(
                 serde_json::json!({"identities": state.identities}),
             )
         }
+        "identities.compact" => success(&request, serde_json::json!(compact_identities(store))),
         "peers" => {
             let state = store.lock().expect("store mutex poisoned");
             success(&request, serde_json::json!({"peers": state.peers}))
@@ -2421,6 +2409,20 @@ fn wait_event(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         }
     }
     response
+}
+
+fn compact_identities(store: &Arc<Mutex<Store>>) -> Vec<u8> {
+    let state = store.lock().expect("store mutex poisoned");
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(state.identities.len() as u16).to_be_bytes());
+    for identity in &state.identities {
+        let name = identity.name.as_bytes();
+        if name.len() > u16::MAX as usize { return Vec::new(); }
+        payload.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        payload.extend_from_slice(name);
+        payload.push(if identity.active { 1 } else { 0 });
+    }
+    payload
 }
 
 fn compact_peers(store: &Arc<Mutex<Store>>) -> Vec<u8> {

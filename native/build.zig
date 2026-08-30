@@ -22,7 +22,11 @@ fn hostModule(b: *std.Build, parent: *std.Build.Module, sdk: *std.Build.Module) 
 pub fn build(b: *std.Build) void {
     const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{ .name = "Nufon", .manifest = "app.json" });
     const cargo = b.addSystemCommand(&.{ "cargo", "build", "--release", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml" });
+    const daemon = b.addSystemCommand(&.{ "cargo", "build", "--release", "-p", "nufond" });
+    const daemon_rpath = b.addSystemCommand(&.{ "install_name_tool", "-add_rpath", "/usr/lib/swift", "../target/release/nufond" });
+    daemon_rpath.step.dependOn(&daemon.step);
     artifacts.exe.step.dependOn(&cargo.step);
+    artifacts.exe.step.dependOn(&daemon_rpath.step);
     artifacts.tests.step.dependOn(&cargo.step);
 
     const app = appCode(artifacts.exe);

@@ -179,6 +179,10 @@ impl TransportManager {
             .to_string()
     }
 
+    pub fn endpoint_ticket(&self) -> Option<Vec<u8>> {
+        serde_json::to_vec(&self.current.try_read().ok()?.endpoint().addr()).ok()
+    }
+
     pub async fn current(&self) -> Arc<IrohTransport> {
         Arc::clone(&*self.current.read().await)
     }

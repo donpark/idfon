@@ -4,34 +4,11 @@
   </row>
 
   <row gap="8" cross="center">
-    <stack>
-      <if test="{receiverAvailable}">
-        <panel background="success" radius="xl" padding="4">
-          <avatar label="{identityName}" selected="{identitySelected}" on-press="identity_pressed">DF</avatar>
-        </panel>
-      </if>
-      <else>
-        <if test="{identityError}">
-          <panel background="destructive" radius="xl" padding="4">
-            <avatar label="{identityName}" selected="{identitySelected}" on-press="identity_pressed">DF</avatar>
-          </panel>
-        </if>
-        <else>
-          <if test="{identitySelected}">
-            <panel background="accent" radius="xl" padding="4">
-              <avatar label="{identityName}" selected="{identitySelected}" on-press="identity_pressed">DF</avatar>
-            </panel>
-          </if>
-          <else>
-            <panel background="surface_subtle" radius="xl" padding="4">
-              <avatar label="{identityName}" selected="{identitySelected}" on-press="identity_pressed">DF</avatar>
-            </panel>
-          </else>
-        </else>
-      </else>
-      <tooltip anchor="below" tooltip-delay="0">{identityName}</tooltip>
-    </stack>
+    <for each="identities" key="name" as="identity">
+      <button variant="secondary" selected="{identity.active}" on-press="identity_selected:{identity.name}">{identity.name}</button>
+    </for>
     <text foreground="text_muted">{receiverStatus}</text>
+    <button variant="secondary" on-press="show_add_identity">+</button>
   </row>
 
   <if test="{identitySelected}">
@@ -44,6 +21,18 @@
         <list-item label="{connection.name}" on-press="connection_selected:{connection.name}" on-double-press="connection_opened:{connection.name}" on-submit="connection_opened:{connection.name}">{connection.name}</list-item>
       </for>
     </column>
+  </if>
+
+  <if test="{showAddIdentity}">
+    <dialog text="New Identity">
+      <column gap="8" padding="12">
+        <text-field text="{newIdentityName}" label="Name" placeholder="Identity name" on-input="new_identity_name_edit" />
+        <row gap="8">
+          <button variant="secondary" on-press="cancel_add_identity">Cancel</button>
+          <button variant="primary" on-press="create_identity">Create</button>
+        </row>
+      </column>
+    </dialog>
   </if>
 
   <if test="{showAddConnection}">
