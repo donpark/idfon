@@ -77,7 +77,8 @@ impl TransportMode {
             peer.endpoint_addr.as_deref().ok_or_else(|| io::Error::other("peer has no endpoint address"))?
         };
         let target = serde_json::from_str(address).map_err(|error| io::Error::other(format!("invalid endpoint address: {error}")))?;
-        std::thread::scope(|scope| {
+        eprintln!("[nufond] transport send attempt identity={} peer={} endpoint_id={:?} message_id={} target_bytes={}", identity, peer.id, peer.endpoint_id, message.message_id, address.len());
+        let result = std::thread::scope(|scope| {
             scope.spawn(|| {
                 let runtime = tokio::runtime::Runtime::new()?;
                 match self {
@@ -85,7 +86,12 @@ impl TransportMode {
                     Self::Iroh(transport) => runtime.block_on(transport.send(identity, &target, message)),
                 }.map_err(io::Error::other)
             }).join().map_err(|_| io::Error::other("transport worker panicked"))?
-        })
+        });
+        match &result {
+            Ok(ack) => eprintln!("[nufond] transport send acknowledged identity={} peer={} message_id={} status={:?}", identity, peer.id, message.message_id, ack.status),
+            Err(error) => eprintln!("[nufond] transport send failed identity={} peer={} message_id={} error={}", identity, peer.id, message.message_id, error),
+        }
+        result
     }
 }
 
@@ -455,13 +461,19 @@ fn dispatch_with_transport(
         ),
         "context" => {
             let state = store.lock().expect("store mutex poisoned");
+            let identity_ref = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+            let identity = state
+                .identities
+                .iter()
+                .find(|identity| identity.id == identity_ref || identity.name == identity_ref);
+            let identity_id = identity.map(|identity| identity.id.as_str()).unwrap_or("default");
             success(
                 &request,
                 serde_json::json!({
-                    "identity": state.identities.iter().find(|identity| identity.id == request_text(&request.params, "identity").unwrap_or_else(|| "default".into()) || identity.name == request_text(&request.params, "identity").unwrap_or_else(|| "default".into())),
+                    "identity": identity,
                     "daemon": "nufond",
                     "ready": true,
-                    "ticket": transport.endpoint_ticket_for(request_text(&request.params, "identity").as_deref().unwrap_or("default")).unwrap_or_default(),
+                    "ticket": transport.endpoint_ticket_for(identity_id).unwrap_or_default(),
                 }),
             )
         }
@@ -556,6 +568,9 @@ fn dispatch_with_transport(
                 })
                 .map(|identity| identity.id.clone())
                 .unwrap();
+            for identity in &mut state.identities {
+                identity.active = identity.id == identity_id;
+            }
             let key = match state.identity_key(&identity_id) {
                 Ok(key) => key,
                 Err(error) => {
@@ -723,6 +738,7 @@ fn send_message(
     }) {
         Some(peer) => peer.clone(),
         None => {
+            eprintln!("[nufond] message send peer lookup failed identity={} target={}", identity.id, to);
             return error_response(
                 request.id.clone(),
                 &request.method,
@@ -732,6 +748,24 @@ fn send_message(
             )
         }
     };
+    eprintln!("[nufond] message send peer resolved identity={} target={} peer={} endpoint_id={:?} endpoint_addr_len={:?} key={}", identity.id, to, peer.id, peer.endpoint_id, peer.endpoint_addr.as_ref().map(String::len), key);
+    let is_self = identity
+        .public_key
+        .as_deref()
+        .is_some_and(|public_key| public_key == peer.id)
+        || identity
+            .endpoint_id
+            .as_deref()
+            .is_some_and(|endpoint_id| peer.endpoint_id.as_deref() == Some(endpoint_id));
+    if is_self {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "cannot send a message to the sending identity".into(),
+            false,
+        );
+    }
     if !state.grants.iter().any(|grant| {
         grant.identity == identity.id
             && grant.subject == peer.id
@@ -749,6 +783,23 @@ fn send_message(
             "message.send capability denied".into(),
             false,
         );
+    }
+    // A successful send also establishes the local receive side of the reply path.
+    if !state.grants.iter().any(|grant| {
+        grant.identity == identity.id
+            && grant.subject == peer.id
+            && grant.capability == nufon_protocol::Capability::MessageReceive
+    }) {
+        state.grants.push(nufon_protocol::CapabilityGrant {
+            capability: nufon_protocol::Capability::MessageReceive,
+            identity: identity.id.clone(),
+            subject: peer.id.clone(),
+            conversation: None,
+            active_at: "0".into(),
+            expires_at: None,
+            revision: 1,
+            revoked_at: None,
+        });
     }
     if let Some(existing) = state.operations.iter().find(|operation| {
         operation.target.as_deref() == Some(peer.id.as_str())
@@ -826,6 +877,7 @@ fn send_message(
             true,
         );
     }
+    eprintln!("[nufond] message send queued identity={} operation_id={} message_id={} peer={}", operation.identity, operation.operation_id, operation.message_id.as_deref().unwrap_or(""), peer.id);
     let operation_id = operation.operation_id.clone();
     let response_message_id = envelope.message_id.clone();
     let worker_store = Arc::clone(store);
@@ -852,7 +904,8 @@ fn send_message(
             return;
         }
         let mut delivery = Err(io::Error::other("no transport attempt"));
-        for _ in 0..=retries {
+        for attempt in 0..=retries {
+            eprintln!("[nufond] message send transport attempt identity={} operation_id={} message_id={} attempt={}", worker_identity, operation_id, worker_envelope.message_id, attempt);
             if is_cancelled(&worker_store, &operation_id, &worker_identity) {
                 let _ = update_operation(
                     &worker_store,
@@ -871,6 +924,10 @@ fn send_message(
                     Ok(result) => result,
                     Err(error) => Err(io::Error::other(error)),
                 };
+            match &delivery {
+                Ok(ack) => eprintln!("[nufond] message send delivered identity={} operation_id={} message_id={} status={:?}", worker_identity, operation_id, worker_envelope.message_id, ack.status),
+                Err(error) => eprintln!("[nufond] message send attempt failed identity={} operation_id={} message_id={} error={}", worker_identity, operation_id, worker_envelope.message_id, error),
+            }
             if delivery.is_ok() {
                 break;
             }
@@ -880,6 +937,7 @@ fn send_message(
         } else {
             nufon_protocol::OperationStatus::Failed
         };
+        eprintln!("[nufond] message send finished identity={} operation_id={} message_id={} status={:?}", worker_identity, operation_id, worker_envelope.message_id, status);
         let identity = worker_identity.clone();
         let _ = tokio::task::spawn_blocking(move || {
             update_operation(&worker_store, &operation_id, &identity, status)
@@ -977,6 +1035,7 @@ fn update_operation(
         .iter_mut()
         .find(|operation| operation.operation_id == operation_id && operation.identity == identity)
     {
+        eprintln!("[nufond] operation state changed identity={} operation_id={} message_id={:?} status={:?}", identity, operation_id, operation.message_id, status);
         operation.status = status.clone();
         operation.updated_at = now();
         let event_number = state.events.len() + 1;
@@ -1013,6 +1072,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             }
         };
     if let Err(error) = nufon_core::verify_message(&envelope) {
+        eprintln!("[nufond] message receive authentication failed message_id={} sender={} error={}", envelope.message_id, envelope.sender.peer_id, error);
         return error_response(
             request.id.clone(),
             &request.method,
@@ -1023,6 +1083,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     }
     let state = store.lock().expect("store mutex poisoned");
     let receiving_identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    eprintln!("[nufond] message receive authenticated identity={} message_id={} sender={} sender_endpoint={}", receiving_identity, envelope.message_id, envelope.sender.peer_id, envelope.sender.endpoint_id);
     if let Some(ticket) = &envelope.capability_ticket {
         if nufon_core::verify_capability_ticket(ticket).is_err()
             || ticket.issuer != state.identities.iter().find(|identity| identity.id == receiving_identity).and_then(|identity| identity.public_key.clone()).unwrap_or_default()
@@ -1050,6 +1111,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     });
     drop(state);
     if !known_peer {
+        eprintln!("[nufond] message receive rejected: unknown peer identity={} message_id={} sender={} sender_endpoint={}", receiving_identity, envelope.message_id, envelope.sender.peer_id, envelope.sender.endpoint_id);
         return error_response(
             request.id.clone(),
             &request.method,
@@ -1059,6 +1121,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         );
     }
     if !allowed {
+        eprintln!("[nufond] message receive rejected: capability denied identity={} message_id={} sender={}", receiving_identity, envelope.message_id, envelope.sender.peer_id);
         return error_response(
             request.id.clone(),
             &request.method,
@@ -1067,12 +1130,32 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             false,
         );
     }
+    eprintln!("[nufond] message receive accepted identity={} message_id={} sender={}", receiving_identity, envelope.message_id, envelope.sender.peer_id);
     let mut state = store.lock().expect("store mutex poisoned");
+    // Receiving an authorized message establishes the reciprocal reply path.
+    // Do not resurrect a grant that was explicitly revoked or expired.
+    if !state.grants.iter().any(|grant| {
+        grant.identity == receiving_identity
+            && grant.subject == envelope.sender.peer_id
+            && grant.capability == nufon_protocol::Capability::MessageSend
+    }) {
+        state.grants.push(nufon_protocol::CapabilityGrant {
+            capability: nufon_protocol::Capability::MessageSend,
+            identity: receiving_identity.clone(),
+            subject: envelope.sender.peer_id.clone(),
+            conversation: None,
+            active_at: "0".into(),
+            expires_at: None,
+            revision: 1,
+            revoked_at: None,
+        });
+    }
     if let Some(existing) = state.messages.iter().find(|message| {
         message.sender.peer_id == envelope.sender.peer_id
             && message.idempotency_key == envelope.idempotency_key
     }) {
         if existing.content != envelope.content {
+            eprintln!("[nufond] message receive rejected: duplicate key with different content identity={} message_id={} sender={}", receiving_identity, envelope.message_id, envelope.sender.peer_id);
             return error_response(
                 request.id.clone(),
                 &request.method,
@@ -1081,6 +1164,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
                 false,
             );
         }
+        eprintln!("[nufond] message receive duplicate identity={} message_id={} sender={}", receiving_identity, existing.message_id, envelope.sender.peer_id);
         return success(
             request,
             serde_json::json!({
@@ -1435,7 +1519,7 @@ fn media_capability(kind: &nufon_protocol::MediaKind) -> nufon_protocol::Capabil
 }
 
 fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
-    let Some(identity) = request_text(&request.params, "identity") else {
+    let Some(identity_ref) = request_text(&request.params, "identity") else {
         return error_response(
             request.id.clone(),
             &request.method,
@@ -1467,7 +1551,22 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
         );
     };
     let capability = media_capability(&kind);
+    eprintln!("[nufond] media session start requested identity={} peer={} kind={:?} capability={:?}", identity_ref, peer, kind, capability);
     let mut state = store.lock().expect("store mutex poisoned");
+    let Some(identity) = state
+        .identities
+        .iter()
+        .find(|candidate| candidate.id == identity_ref || candidate.name == identity_ref)
+        .map(|candidate| candidate.id.clone())
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "identity not found".into(),
+            false,
+        );
+    };
     let allowed = state.grants.iter().any(|grant| {
         grant.identity == identity
             && grant.subject == peer
@@ -1479,6 +1578,7 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
                 .is_none_or(|expires| expires > now().as_str())
     });
     if !allowed {
+        eprintln!("[nufond] media session start rejected: capability denied identity={} peer={} capability={:?}", identity, peer, capability);
         return error_response(
             request.id.clone(),
             &request.method,
@@ -1515,6 +1615,7 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
         .get("mode")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("record");
+    eprintln!("[nufond] media session authorized session_id={} identity={} peer={} mode={}", session.session_id, session.identity, session.peer, mode);
     let live_ticket = if session.kind == nufon_protocol::MediaKind::LiveAudio && mode == "publish" {
         let Some(handle) = media_handle.clone() else {
             return error_response(
@@ -1617,6 +1718,7 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
             true,
         );
     }
+    eprintln!("[nufond] media session started session_id={} live_ticket_len={:?}", session.session_id, live_ticket.as_ref().map(String::len));
     success(
         request,
         serde_json::json!({"session": session, "live_ticket": live_ticket}),
@@ -1652,6 +1754,7 @@ fn media_session_stop(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             false,
         );
     };
+    eprintln!("[nufond] media session stopping identity={} session_id={} peer={}", session.identity, session.session_id, session.peer);
     session.active = false;
     if let Some(service) = MEDIA_SERVICE.get() {
         if let Ok(handle) = service.get(id) {
@@ -1664,6 +1767,7 @@ fn media_session_stop(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
         }
         let _ = service.stop(id);
     }
+    eprintln!("[nufond] media session stopped identity={} session_id={}", session.identity, session.session_id);
     let data_dir = state.data_dir.clone();
     if let Err(error) = state.save(&data_dir) {
         return error_response(
@@ -2268,13 +2372,13 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<Transp
     if state
         .peers
         .iter()
-        .any(|peer| peer.identity == identity && (peer.id == id || peer.name == name))
+        .any(|peer| peer.identity == identity && peer.id != id && peer.name == name)
     {
         return error_response(
             request.id.clone(),
             &request.method,
             ErrorCode::InvalidRequest,
-            "peer already exists".into(),
+            "peer name already exists".into(),
             false,
         );
     }
@@ -2305,6 +2409,7 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<Transp
             })
             .unwrap_or_default(),
     };
+    state.peers.retain(|candidate| !(candidate.identity == peer.identity && candidate.id == peer.id));
     state.peers.push(peer.clone());
     if let Some(remote) = state.identities.iter().find(|candidate| candidate.endpoint_id.as_deref() == peer.endpoint_id.as_deref()).cloned() {
         if let Some(source) = state.identities.iter().find(|candidate| candidate.id == peer.identity).cloned() {
@@ -2316,7 +2421,8 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<Transp
                 endpoint_addr: transport.endpoint_ticket_for(&source.id).and_then(|bytes| String::from_utf8(bytes).ok()),
                 aliases: Vec::new(),
             };
-            if !reciprocal.id.is_empty() && !state.peers.iter().any(|candidate| candidate.identity == reciprocal.identity && candidate.id == reciprocal.id) {
+            if !reciprocal.id.is_empty() {
+                state.peers.retain(|candidate| !(candidate.identity == reciprocal.identity && candidate.id == reciprocal.id));
                 state.peers.push(reciprocal);
             }
             for (grant_identity, subject, capability) in [
@@ -2531,9 +2637,11 @@ fn compact_identities(store: &Arc<Mutex<Store>>) -> Vec<u8> {
 
 fn compact_peers(store: &Arc<Mutex<Store>>, identity: Option<&str>) -> Vec<u8> {
     let state = store.lock().expect("store mutex poisoned");
+    let identity_id = identity.and_then(|value| state.identities.iter().find(|item| item.id == value || item.name == value).map(|item| item.id.as_str()));
+    let peers: Vec<_> = state.peers.iter().filter(|peer| identity_id.is_none_or(|value| peer.identity == value)).collect();
     let mut payload = Vec::new();
-    payload.extend_from_slice(&(state.peers.len() as u16).to_be_bytes());
-    for peer in state.peers.iter().filter(|peer| identity.is_none_or(|value| peer.identity == value)) {
+    payload.extend_from_slice(&(peers.len() as u16).to_be_bytes());
+    for peer in peers {
         let name = peer.name.as_bytes();
         let endpoint = peer.endpoint_id.as_deref().unwrap_or("").as_bytes();
         if name.len() > u16::MAX as usize || endpoint.len() > u16::MAX as usize {
@@ -2549,10 +2657,11 @@ fn compact_peers(store: &Arc<Mutex<Store>>, identity: Option<&str>) -> Vec<u8> {
 
 fn compact_events(store: &Arc<Mutex<Store>>, after: Option<&str>, identity: Option<&str>) -> Vec<u8> {
     let state = store.lock().expect("store mutex poisoned");
+    let identity_id = identity.and_then(|value| state.identities.iter().find(|item| item.id == value || item.name == value).map(|item| item.id.as_str()));
     let events: Vec<_> = state
         .events
         .iter()
-        .filter(|event| identity.is_none_or(|value| event.identity == value))
+        .filter(|event| identity_id.is_none_or(|value| event.identity == value))
         .filter(|event| after.is_none_or(|cursor| event.cursor.as_str() > cursor))
         .collect();
     let mut payload = Vec::new();
@@ -2763,6 +2872,7 @@ impl DataLock {
     fn acquire(data_dir: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         let path = data_dir.join("state.lock");
+        Self::recover_stale(&path);
         std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -2782,6 +2892,18 @@ impl DataLock {
                 }
             })?;
         Ok(Self(path))
+    }
+
+    // A crash skips Drop, leaving a lock whose PID is dead; take over then.
+    fn recover_stale(path: &Path) {
+        let Ok(contents) = std::fs::read_to_string(path) else { return };
+        let Ok(pid) = contents.trim().parse::<u32>() else { return };
+        if pid == std::process::id() { return; }
+        let process = unsafe { libc::kill(pid as i32, 0) };
+        if process == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) {
+            return; // process is alive
+        }
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -2858,7 +2980,7 @@ mod tests {
         state.grants.push(nufon_protocol::CapabilityGrant {
             capability: nufon_protocol::Capability::MessageReceive,
             identity: "default".into(),
-            subject: peer_id,
+            subject: peer_id.clone(),
             conversation: None,
             active_at: "0".into(),
             expires_at: None,
@@ -2873,6 +2995,11 @@ mod tests {
             params: serde_json::to_value(&message).unwrap(),
         };
         assert!(dispatch(request.clone(), &store).ok);
+        assert!(store.lock().unwrap().grants.iter().any(|grant| {
+            grant.identity == "default"
+                && grant.subject == peer_id
+                && grant.capability == nufon_protocol::Capability::MessageSend
+        }));
 
         let mut tampered = message;
         tampered.content = nufon_protocol::MessageContent::Text {
@@ -2998,6 +3125,16 @@ mod tests {
             &store,
         );
         assert!(create.ok);
+        let use_identity = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "use".into(),
+                method: "identity.use".into(),
+                params: serde_json::json!({"name": "work"}),
+            },
+            &store,
+        );
+        assert!(use_identity.ok);
         let add = dispatch(
             Request {
                 version: PROTOCOL_VERSION,
@@ -3010,8 +3147,41 @@ mod tests {
         assert!(add.ok);
         let state = Store::load(&dir).unwrap();
         assert_eq!(state.identities.len(), 2);
+        assert!(!state.identities.iter().find(|identity| identity.id == "default").unwrap().active);
+        assert!(state.identities.iter().find(|identity| identity.id == "work").unwrap().active);
         assert_eq!(state.peers[0].aliases, vec!["alice@work"]);
         assert!(dir.join("identity-work.key").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sending_to_own_identity_is_rejected() {
+        let dir = temp_dir("self-send");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let self_id = {
+            let mut state = store.lock().unwrap();
+            state.identities[0].endpoint_id = Some("self-endpoint".into());
+            let identity = state.identities[0].clone();
+            state.peers.push(nufon_protocol::Peer {
+                id: identity.public_key.clone().unwrap(),
+                identity: identity.id,
+                name: "Self".into(),
+                endpoint_id: Some("self-endpoint".into()),
+                endpoint_addr: Some("{}".into()),
+                aliases: Vec::new(),
+            });
+            identity.public_key.unwrap()
+        };
+        let response = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "self-send".into(),
+                method: "message.send".into(),
+                params: serde_json::json!({"identity": "default", "to": self_id, "text": "hello", "idempotency_key": "self-send"}),
+            },
+            &store,
+        );
+        assert!(matches!(response.body, ResponseBody::Failure { error: ApiError { code: ErrorCode::InvalidRequest, .. }, .. }));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3141,6 +3311,16 @@ mod tests {
         drop(first);
         let second = DataLock::acquire(&dir).unwrap();
         drop(second);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn data_lock_recovers_stale_lock_from_dead_pid() {
+        let dir = temp_dir("lock-stale");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("state.lock"), "999999999\n").unwrap();
+        let lock = DataLock::acquire(&dir).unwrap();
+        drop(lock);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

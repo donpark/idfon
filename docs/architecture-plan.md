@@ -239,6 +239,11 @@ Effectful commands accept `--idempotency-key`. Repeating a request with the
 same key returns the original operation/resource rather than duplicating the
 remote effect.
 
+> **Client note:** keys must be unique across restarts, not just within one
+> GUI session — see *GUI sends rejected with `idempotency_key_conflict`* in
+> `docs/troubleshooting.md` for a concrete failure caused by session-local
+> keys colliding with persisted operations.
+
 Waiting is explicit and bounded:
 
 ```sh

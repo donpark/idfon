@@ -3769,6 +3769,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "iroh",
  "iroh-blobs",
+ "libc",
  "nufon-core",
  "nufon-media",
  "nufon-protocol",

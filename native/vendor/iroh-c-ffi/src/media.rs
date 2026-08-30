@@ -134,6 +134,7 @@ fn media_path(name: &str) -> std::path::PathBuf {
 #[ffi_export]
 pub fn media_recording_persist(ticket: char_p::Ref<'_>) -> u8 {
     let ticket = ticket.to_str();
+    tracing::info!(ticket_len = ticket.len(), "recording persist requested");
     if ticket.is_empty()
         || ticket
             .bytes()
@@ -142,6 +143,7 @@ pub fn media_recording_persist(ticket: char_p::Ref<'_>) -> u8 {
         return 1;
     }
     if ticket.parse::<BlobTicket>().is_err() {
+        tracing::warn!("recording persist rejected: invalid blob ticket");
         return 1;
     }
     let _guard = RECORDING_HISTORY
@@ -150,6 +152,7 @@ pub fn media_recording_persist(ticket: char_p::Ref<'_>) -> u8 {
     let path = media_path("recording-history.log");
     let existing = fs::read_to_string(&path).unwrap_or_default();
     if existing.lines().any(|line| line == ticket) {
+        tracing::info!("recording persist duplicate");
         return 0;
     }
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
@@ -158,6 +161,7 @@ pub fn media_recording_persist(ticket: char_p::Ref<'_>) -> u8 {
     if writeln!(file, "{ticket}").is_err() {
         return 1;
     }
+    tracing::info!("recording persist complete");
     0
 }
 
@@ -172,6 +176,7 @@ pub fn media_set_scope(scope: char_p::Ref<'_>) -> u8 {
         return 1;
     }
     *MEDIA_SCOPE.lock().expect("media scope mutex poisoned") = Some(scope.to_owned());
+    tracing::info!(scope_len = scope.len(), "media scope selected");
     0
 }
 
@@ -385,6 +390,41 @@ impl AudioSinkHandle for RecordingSinkHandle {
     }
 }
 
+struct NullAudioSink {
+    format: AudioFormat,
+    handle: RecordingSinkHandle,
+}
+
+impl AudioSinkHandle for NullAudioSink {
+    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
+        self.handle.cloned_boxed()
+    }
+    fn pause(&self) {
+        self.handle.pause();
+    }
+    fn resume(&self) {
+        self.handle.resume();
+    }
+    fn is_paused(&self) -> bool {
+        self.handle.is_paused()
+    }
+    fn toggle_pause(&self) {
+        self.handle.toggle_pause();
+    }
+}
+
+impl AudioSink for NullAudioSink {
+    fn format(&self) -> anyhow::Result<AudioFormat> {
+        Ok(self.format)
+    }
+    fn push_samples(&mut self, _samples: &[f32]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn handle(&self) -> Box<dyn AudioSinkHandle> {
+        self.handle.cloned_boxed()
+    }
+}
+
 struct RecordingSink {
     format: AudioFormat,
     recorder: Arc<Mutex<WavRecorder>>,
@@ -457,14 +497,26 @@ impl AudioStreamFactory for RecordingBackend {
         let recorder = self.recorder.clone();
         let output = self.output.clone();
         Box::pin(async move {
-            let output = output.create_output(format).await?;
+            let handle = RecordingSinkHandle {
+                paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            let output = match output.create_output(format).await {
+                Ok(output) => output,
+                Err(error) => {
+                    tracing::warn!("audio output unavailable; recording live audio without playback: {error:#}");
+                    Box::new(NullAudioSink {
+                        format,
+                        handle: RecordingSinkHandle {
+                            paused: handle.paused.clone(),
+                        },
+                    }) as Box<dyn AudioSink>
+                }
+            };
             Ok(Box::new(RecordingSink {
                 format,
                 recorder,
                 output,
-                handle: RecordingSinkHandle {
-                    paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                },
+                handle,
             }) as Box<dyn AudioSink>)
         })
     }
@@ -657,9 +709,14 @@ pub fn media_audio_input_count() -> usize {
 /// Starts the default 48 kHz mono microphone stream.
 #[ffi_export]
 pub fn media_audio_start() -> u8 {
+    tracing::info!("audio start requested");
     let result = tokio_executor(audio().default_input());
-    let Ok(input) = result else { return 1 };
+    let Ok(input) = result else {
+        tracing::warn!("audio start failed");
+        return 1;
+    };
     *INPUT.lock().expect("audio capture mutex poisoned") = Some(input);
+    tracing::info!("audio started");
     0
 }
 
@@ -692,16 +749,19 @@ pub fn media_audio_probe(duration_ms: u64) -> usize {
 #[ffi_export]
 pub fn media_audio_stop() {
     *INPUT.lock().expect("audio capture mutex poisoned") = None;
+    tracing::info!("audio stopped");
 }
 
 /// Starts recording microphone audio in the Native SDK app-data directory.
 #[ffi_export]
 pub fn media_recording_start() -> u8 {
+    tracing::info!("recording start requested");
     if LOCAL_RECORDING
         .lock()
         .expect("recording mutex poisoned")
         .is_some()
     {
+        tracing::warn!("recording start rejected: already recording");
         return 1;
     }
     let input = match tokio_executor(audio().default_input()) {
@@ -715,7 +775,10 @@ pub fn media_recording_start() -> u8 {
     let recorder =
         match OggOpusRecorder::create(path.to_str().unwrap_or("/tmp/nufon/recording.opus")) {
             Ok(r) => Arc::new(Mutex::new(r)),
-            Err(_) => return 1,
+            Err(err) => {
+                tracing::warn!(error = %err, "recording file initialization failed");
+                return 1;
+            }
         };
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
@@ -763,11 +826,13 @@ pub fn media_recording_start() -> u8 {
 /// Stops and finalizes the local microphone recording.
 #[ffi_export]
 pub fn media_recording_stop() -> u8 {
+    tracing::info!("recording stop requested");
     let Some(mut recording) = LOCAL_RECORDING
         .lock()
         .expect("recording mutex poisoned")
         .take()
     else {
+        tracing::warn!("recording stop rejected: no active recording");
         return 1;
     };
     recording.stop.store(true, Ordering::Relaxed);
@@ -792,11 +857,15 @@ pub fn media_recording_stop() -> u8 {
         .sequence;
     tracing::info!(elapsed_ms, packets, peak, "microphone recording finalized");
     if result.is_err() || peak < 0.001 {
+        if let Err(error) = result {
+            tracing::warn!(error = %error, "microphone recording finalization failed");
+        }
         if peak < 0.001 {
             tracing::warn!(peak, "microphone recording contains no audible samples");
         }
         return 1;
     }
+    tracing::info!("recording stop complete");
     0
 }
 
@@ -828,6 +897,7 @@ pub fn media_audio_active() -> u8 {
 /// Starts an Opus microphone broadcast and returns its iroh-live ticket.
 #[ffi_export]
 pub fn media_live_start() -> char_p::Box {
+    tracing::info!("live publisher start requested");
     let result = tokio_executor(async {
         let input = match INPUT.lock().expect("audio capture mutex poisoned").take() {
             Some(input) => input,
@@ -850,7 +920,10 @@ pub fn media_live_start() -> char_p::Box {
         anyhow::Ok(ticket)
     });
     match result {
-        Ok(ticket) => ticket.try_into().expect("live ticket conversion failed"),
+        Ok(ticket) => {
+            tracing::info!(ticket_len = ticket.len(), "live publisher started");
+            ticket.try_into().expect("live ticket conversion failed")
+        }
         Err(err) => {
             tracing::warn!("failed to start live audio: {err:#}");
             String::new().try_into().expect("empty ticket conversion")
@@ -861,16 +934,23 @@ pub fn media_live_start() -> char_p::Box {
 /// Stops the live microphone broadcast.
 #[ffi_export]
 pub fn media_live_stop() {
+    tracing::info!("live publisher stop requested");
     let session = LIVE.lock().expect("live mutex poisoned").take();
     if let Some(session) = session {
         tokio_executor(async move { session._live.shutdown().await });
+        tracing::info!("live publisher stopped");
+    } else {
+        tracing::info!("live publisher stop ignored: no active publisher");
     }
 }
 
 /// Subscribes to a live ticket and records decoded audio in the app-data directory.
 #[ffi_export]
 pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
-    let Ok(ticket) = LiveTicket::deserialize(ticket.to_str()) else {
+    let ticket_text = ticket.to_str();
+    tracing::info!(ticket_len = ticket_text.len(), "live subscriber start requested");
+    let Ok(ticket) = LiveTicket::deserialize(ticket_text) else {
+        tracing::warn!("live subscriber rejected: invalid ticket");
         return 1;
     };
     let result = tokio_executor(async {
@@ -897,6 +977,7 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
     });
     match result {
         Ok((live, subscription, tracks, recorder)) => {
+            tracing::info!("live subscriber connected and recording");
             let previous = SUBSCRIBER
                 .lock()
                 .expect("subscriber mutex poisoned")
@@ -1105,6 +1186,7 @@ mod tests {
 /// Returns the BLAKE3 content hash, or an empty string on failure.
 #[ffi_export]
 pub fn media_live_recording_store() -> char_p::Box {
+    tracing::info!("recording blob store requested");
     let result = tokio_executor(async {
         let live = Live::from_env().await?.spawn();
         let store = FsStore::load(media_dir().join("blobs")).await?;
@@ -1135,7 +1217,10 @@ pub fn media_live_recording_store() -> char_p::Box {
         anyhow::Ok(ticket.to_string())
     });
     match result {
-        Ok(hash) => hash.try_into().expect("blob hash conversion failed"),
+        Ok(hash) => {
+            tracing::info!(ticket_len = hash.len(), "recording blob stored");
+            hash.try_into().expect("blob hash conversion failed")
+        }
         Err(err) => {
             tracing::warn!("failed to store recording blob: {err:#}");
             String::new()
@@ -1149,7 +1234,10 @@ pub fn media_live_recording_store() -> char_p::Box {
 /// Returns `0` on success and `1` on failure.
 #[ffi_export]
 pub fn media_blob_fetch(ticket: char_p::Ref<'_>) -> u8 {
-    let Ok(ticket) = ticket.to_str().parse::<BlobTicket>() else {
+    let ticket_text = ticket.to_str();
+    tracing::info!(ticket_len = ticket_text.len(), "recording blob fetch requested");
+    let Ok(ticket) = ticket_text.parse::<BlobTicket>() else {
+        tracing::warn!("recording blob fetch rejected: invalid ticket");
         return 1;
     };
     let result = tokio_executor(async {
@@ -1165,7 +1253,10 @@ pub fn media_blob_fetch(ticket: char_p::Ref<'_>) -> u8 {
         anyhow::Ok(())
     });
     match result {
-        Ok(()) => 0,
+        Ok(()) => {
+            tracing::info!("recording blob fetch complete");
+            0
+        }
         Err(err) => {
             tracing::warn!("failed to fetch recording blob: {err:#}");
             1
@@ -1199,6 +1290,7 @@ pub fn media_shutdown() {
 /// Stops the live audio subscription and finalizes its WAV recording.
 #[ffi_export]
 pub fn media_live_unsubscribe() {
+    tracing::info!("live subscriber stop requested");
     if let Some(subscriber) = SUBSCRIBER.lock().expect("subscriber mutex poisoned").take() {
         let Subscriber {
             _live,
@@ -1213,5 +1305,7 @@ pub fn media_live_unsubscribe() {
         let mut recorder = recording.lock().expect("recorder mutex poisoned");
         let _ = recorder.finish();
         tracing::info!(samples = recorder.samples, "live audio recording finalized");
+    } else {
+        tracing::info!("live subscriber stop ignored: no active subscriber");
     }
 }

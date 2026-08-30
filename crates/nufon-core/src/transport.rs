@@ -116,9 +116,13 @@ impl IrohTransport {
                 .accept()
                 .await
                 .ok_or_else(|| TransportError::Failed("message endpoint closed".into()))?;
-            let connection = incoming
-                .await
-                .map_err(|error| TransportError::Failed(error.to_string()))?;
+            let connection = match incoming.await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    eprintln!("[nufon-core] message connection handshake failed: {error}");
+                    continue;
+                }
+            };
             let handler = handler.clone();
             let alpn = self.alpn.clone();
             tokio::spawn(async move {

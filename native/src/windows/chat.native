@@ -9,7 +9,7 @@
   <separator />
   <scroll grow="1">
     <column gap="8">
-      <for each="history" key="timestamp" as="item">
+      <for each="history" key="id" as="item">
         <if test="{item.sent}">
           <row main="end">
             <bubble variant="primary"><text wrap="true">{item.text}</text><text foreground="text_muted">{item.timestamp} · {item.status}</text></bubble>

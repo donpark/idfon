@@ -5,7 +5,12 @@
 
   <row gap="8" cross="center">
     <for each="identities" key="name" as="identity">
-      <button variant="secondary" selected="{identity.active}" on-press="identity_selected:{identity.name}">{identity.name}</button>
+      <if test="{identity.active}">
+        <button variant="primary" on-press="identity_selected:{identity.name}">{identity.name}</button>
+      </if>
+      <else>
+        <button variant="secondary" on-press="identity_selected:{identity.name}">{identity.name}</button>
+      </else>
     </for>
     <text foreground="text_muted">{receiverStatus}</text>
     <button variant="secondary" on-press="show_add_identity">+</button>
