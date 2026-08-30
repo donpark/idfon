@@ -199,6 +199,36 @@ mod tests {
     }
 
     #[test]
+    fn capability_ticket_verifies_and_tampering_fails() {
+        let key = generate_identity();
+        let mut ticket = issue_capability_ticket(
+            &key,
+            Some("subject".into()),
+            vec![Capability::MessageReceive],
+            Some("2099-01-01T00:00:00Z".into()),
+            "ticket-1",
+        );
+        assert_eq!(verify_capability_ticket(&ticket), Ok(()));
+        ticket.ticket_id = "ticket-2".into();
+        assert_eq!(verify_capability_ticket(&ticket), Err(AuthError::VerificationFailed));
+    }
+
+    #[test]
+    fn malformed_capability_ticket_is_rejected() {
+        let mut ticket = CapabilityTicket {
+            issuer: "not-a-peer-id".into(),
+            subject: None,
+            capabilities: vec![Capability::MessageReceive],
+            expires_at: None,
+            ticket_id: "ticket-1".into(),
+            signature: "bad".into(),
+        };
+        assert_eq!(verify_capability_ticket(&ticket), Err(AuthError::InvalidPeerId));
+        ticket.issuer = "00".repeat(32);
+        assert_eq!(verify_capability_ticket(&ticket), Err(AuthError::InvalidSignature));
+    }
+
+    #[test]
     fn endpoint_binding_is_authenticated() {
         let key = generate_identity();
         let mut message = sign_message(

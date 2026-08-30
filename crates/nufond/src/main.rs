@@ -1029,7 +1029,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             || ticket.subject.as_deref().is_some_and(|subject| subject != envelope.sender.peer_id)
             || !ticket.capabilities.contains(&nufon_protocol::Capability::MessageReceive)
             || state.revoked_tickets.iter().any(|id| id == &ticket.ticket_id)
-            || ticket.expires_at.as_deref().is_some_and(|expires| expires <= now().as_str())
+            || ticket.expires_at.as_deref().is_some_and(expiry_is_past)
         {
             return error_response(request.id.clone(), &request.method, ErrorCode::CapabilityDenied, "invalid or expired capability ticket".into(), false);
         }
@@ -2646,6 +2646,15 @@ fn now() -> String {
         .to_string()
 }
 
+fn expiry_is_past(value: &str) -> bool {
+    if let Ok(seconds) = value.parse::<u64>() {
+        return seconds <= now().parse::<u64>().unwrap_or(u64::MAX);
+    }
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp <= chrono::Utc::now())
+        .unwrap_or(true)
+}
+
 fn success(request: &Request, result: serde_json::Value) -> Response {
     Response {
         version: PROTOCOL_VERSION,
@@ -2806,6 +2815,21 @@ mod tests {
     }
 
     #[test]
+    fn capability_ticket_issue_and_revoke_persist() {
+        let dir = temp_dir("capability-ticket");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let issue = dispatch(Request { version: PROTOCOL_VERSION, id: "issue".into(), method: "capability.ticket".into(), params: serde_json::json!({"identity":"default", "subject":"peer-1", "capabilities":["message.receive"], "ticket_id":"ticket-1", "expires_at":"2099-01-01T00:00:00Z"}) }, &store);
+        assert!(issue.ok);
+        let ticket = match issue.body { ResponseBody::Success { result, .. } => result["ticket"].clone(), ResponseBody::Failure { .. } => panic!("ticket issuance failed") };
+        let ticket: nufon_protocol::CapabilityTicket = serde_json::from_value(ticket).unwrap();
+        assert_eq!(nufon_core::verify_capability_ticket(&ticket), Ok(()));
+        let revoke = dispatch(Request { version: PROTOCOL_VERSION, id: "revoke".into(), method: "capability.ticket.revoke".into(), params: serde_json::json!({"identity":"default", "ticket_id":"ticket-1"}) }, &store);
+        assert!(revoke.ok);
+        assert!(Store::load(&dir).unwrap().revoked_tickets.iter().any(|id| id == "ticket-1"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn authenticated_message_is_accepted_and_tampering_rejected() {
         let dir = temp_dir("auth");
         let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
@@ -2871,6 +2895,28 @@ mod tests {
                 ..
             }
         ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn capability_ticket_scope_expiry_and_issuer_are_enforced() {
+        let dir = temp_dir("capability-policy");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let sender_key = nufon_core::generate_identity();
+        let receiver_key = store.lock().unwrap().identity_key("default").unwrap();
+        let sender_id = nufon_core::peer_id(&sender_key);
+        let mut state = store.lock().unwrap();
+        state.peers.push(nufon_protocol::Peer { id: sender_id.clone(), identity: "default".into(), name: "Alice".into(), endpoint_id: Some("endpoint-a".into()), endpoint_addr: None, aliases: Vec::new() });
+        state.grants.push(nufon_protocol::CapabilityGrant { capability: nufon_protocol::Capability::MessageReceive, identity: "default".into(), subject: sender_id.clone(), conversation: None, active_at: "0".into(), expires_at: None, revision: 1, revoked_at: None });
+        drop(state);
+        let rejected = |ticket: nufon_protocol::CapabilityTicket, message_id: &str| {
+            let message = nufon_core::sign_message_with_ticket(&sender_key, "endpoint-a", message_id, nufon_protocol::MessageContent::Text { text: "hello".into() }, message_id, None, Some(ticket)).unwrap();
+            let response = dispatch(Request { version: PROTOCOL_VERSION, id: message_id.into(), method: "message.receive".into(), params: serde_json::to_value(message).unwrap() }, &store);
+            assert!(matches!(response.body, ResponseBody::Failure { error: ApiError { code: ErrorCode::CapabilityDenied, .. }, .. }));
+        };
+        rejected(nufon_core::issue_capability_ticket(&receiver_key, Some("different-peer".into()), vec![nufon_protocol::Capability::MessageReceive], None, "ticket-subject"), "message-subject");
+        rejected(nufon_core::issue_capability_ticket(&receiver_key, Some(sender_id.clone()), vec![nufon_protocol::Capability::MessageReceive], Some("2000-01-01T00:00:00Z".into()), "ticket-expired"), "message-expired");
+        rejected(nufon_core::issue_capability_ticket(&sender_key, Some(sender_id), vec![nufon_protocol::Capability::MessageReceive], None, "ticket-issuer"), "message-issuer");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

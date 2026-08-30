@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 blake3 = "1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 iroh = "1"
 iroh-blobs = "0.103"
 ed25519-dalek = "2"

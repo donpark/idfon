@@ -121,7 +121,10 @@ native test native
 Direct Rust tests on macOS may need the Xcode Swift 5.5 runtime in
 `DYLD_LIBRARY_PATH`; the Native SDK final app link supplies the required SDK
 libraries. Xcode currently emits duplicate Swift class warnings during direct
-Rust tests.
+Rust tests because the media dependencies need the Xcode Swift 5.5 runtime
+alongside macOS's system Swift runtime. The runtime path is required for the
+tests to execute successfully; the warning is environmental rather than an
+application diagnostic.
 
 ## Current architecture
 
@@ -137,8 +140,9 @@ The Phase 7 MVP is implemented. The following production follow-ups remain:
 
 1. **Authorization and local policy** — connect every media action to capability
    grants, expiry, revocation, schedules, and recipient policy. Capability-ticket
-   issuance and validation now exist for message receive authorization; media
-   actions still need the same ticket enforcement.
+   issuance and validation now exist for message receive authorization,
+   including signed-claim, subject, issuer, expiration, and revocation checks;
+   media actions still need the same ticket enforcement.
 2. **Multi-session media state** — capture, playback, subscriptions, and blob
    providers still need fully identity/conversation-keyed active ownership.
    Persisted resource metadata and paths are identity-scoped.

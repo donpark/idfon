@@ -540,9 +540,11 @@ The following are deferred rather than blocking the foundation:
 
 The contract, daemon IPC, persistence, CLI query surface, authenticated
 message envelope, selectable transports, application acknowledgment path, and
-multi-identity endpoint routing are implemented. Capability tickets provide
+multi-identity endpoint routing are implemented. Phases 1–7 are complete under
+the revised daemon-centered media boundary. Capability tickets provide
 issuer-controlled signed capability claims for message delivery; legacy grants
-remain supported for compatibility. The next active phase is **Phase 1: messaging hardening**.
+remain supported for compatibility. The project is paused before **Phase 8:
+custom app sessions** and **Phase 9: named endpoint resolution**.
 
 Phase 1 is complete only when outgoing work has explicit durable transitions,
 transport failures are bounded and retryable, idempotency survives restart, and
@@ -559,6 +561,17 @@ independent real-Iroh daemons start with distinct persisted endpoint identities
 and respond over protected IPC. A full two-process message exchange remains an
 integration-test enhancement once peer provisioning is exposed through the
 public API.
+
+### Validation snapshot
+
+The current baseline passes the full Rust workspace tests, media tests, Native
+SDK check and tests, the two-daemon process test, workspace compilation, and
+`git diff --check`. Capability-ticket coverage includes signing, malformed
+claims, tampering, issuance, persistence, revocation, subject scoping,
+expiration, and issuer validation. RFC3339 expiration values are parsed as
+timestamps and invalid values fail closed. The Native SDK model contract is
+refreshed and unused model/message diagnostics are explicitly declared through
+`viewUnbound`.
 
 ### Phase 1 guarantees
 

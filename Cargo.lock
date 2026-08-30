@@ -3765,6 +3765,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "chrono",
  "ed25519-dalek 2.2.0",
  "iroh",
  "iroh-blobs",
