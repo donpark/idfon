@@ -1592,11 +1592,12 @@ fn media_session_stop(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             false,
         );
     };
+    let identity = request_text(&request.params, "identity");
     let mut state = store.lock().expect("store mutex poisoned");
     let Some(session) = state
         .sessions
         .iter_mut()
-        .find(|session| session.session_id == id)
+        .find(|session| session.session_id == id && identity.as_deref().is_none_or(|value| session.identity == value))
     else {
         return error_response(
             request.id.clone(),
@@ -1684,8 +1685,9 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
         };
         data.push(byte);
     }
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let state = store.lock().expect("store mutex poisoned");
-    let path = state.data_dir.join("resources").join(id);
+    let path = state.data_dir.join("resources").join(&identity).join(id);
     if let Some(parent) = path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
             return error_response(
@@ -1720,7 +1722,7 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
     };
     success(
         request,
-        serde_json::json!({"resource_id": id, "size_bytes": data.len(), "content_hash": blake3::hash(&data).to_hex().to_string(), "blob_ticket": blob_ticket}),
+        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": data.len(), "content_hash": blake3::hash(&data).to_hex().to_string(), "blob_ticket": blob_ticket}),
     )
 }
 
@@ -1738,6 +1740,7 @@ fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Respons
             false,
         );
     };
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let state = store.lock().expect("store mutex poisoned");
     let bytes = if let Some(ticket) = request
         .params
@@ -1757,7 +1760,7 @@ fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Respons
             }
         }
     } else {
-        std::fs::read(state.data_dir.join("resources").join(id))
+        std::fs::read(state.data_dir.join("resources").join(&identity).join(id))
     };
     match bytes {
         Ok(bytes) => success(
@@ -1782,6 +1785,7 @@ fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Respons
 }
 
 fn media_resource_register(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let resource: nufon_protocol::MediaResource =
         match serde_json::from_value(request.params.get("resource").cloned().unwrap_or_default()) {
             Ok(resource) => resource,
@@ -1795,11 +1799,13 @@ fn media_resource_register(request: &Request, store: &Arc<Mutex<Store>>) -> Resp
                 )
             }
         };
+    let mut resource = resource;
+    resource.identity = identity;
     let mut state = store.lock().expect("store mutex poisoned");
     if state
         .resources
         .iter()
-        .any(|item| item.resource_id == resource.resource_id)
+        .any(|item| item.identity == resource.identity && item.resource_id == resource.resource_id)
     {
         return error_response(
             request.id.clone(),
@@ -1841,7 +1847,7 @@ fn media_resource_get(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
     match state
         .resources
         .iter()
-        .find(|resource| resource.resource_id == id)
+        .find(|resource| resource.resource_id == id && request_text(&request.params, "identity").is_none_or(|identity| resource.identity == identity))
     {
         Some(resource) => success(request, serde_json::json!({"resource": resource})),
         None => error_response(
@@ -1868,12 +1874,12 @@ fn media_resource_delete(request: &Request, store: &Arc<Mutex<Store>>) -> Respon
             false,
         );
     };
+    let identity = request_text(&request.params, "identity");
     let mut state = store.lock().expect("store mutex poisoned");
     let before = state.resources.len();
-    state
-        .resources
-        .retain(|resource| resource.resource_id != id);
-    let _ = std::fs::remove_file(state.data_dir.join("resources").join(id));
+    state.resources.retain(|resource| !(resource.resource_id == id && identity.as_deref().is_none_or(|value| resource.identity == value)));
+    let resource_dir = identity.as_deref().unwrap_or("default");
+    let _ = std::fs::remove_file(state.data_dir.join("resources").join(resource_dir).join(id));
     if before == state.resources.len() {
         return error_response(
             request.id.clone(),
@@ -1897,13 +1903,16 @@ fn media_resource_delete(request: &Request, store: &Arc<Mutex<Store>>) -> Respon
 }
 
 fn media_resource_gc(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let identity = request_text(&request.params, "identity");
     let mut state = store.lock().expect("store mutex poisoned");
     let mut removed = 0usize;
     let data_root = state.data_dir.join("resources");
     let resources = std::mem::take(&mut state.resources);
     let mut kept = Vec::with_capacity(resources.len());
     for resource in resources {
-        if data_root.join(&resource.resource_id).exists() {
+        if (identity.as_deref().is_none_or(|value| resource.identity == value)
+            && data_root.join(&resource.identity).join(&resource.resource_id).exists())
+            || identity.as_deref().is_some_and(|value| resource.identity != value) {
             kept.push(resource);
         } else {
             removed += 1;
@@ -1925,12 +1934,16 @@ fn media_resource_gc(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
 
 fn media_resources(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let state = store.lock().expect("store mutex poisoned");
-    success(request, serde_json::json!({"resources": state.resources}))
+    let identity = request_text(&request.params, "identity");
+    let resources: Vec<_> = state.resources.iter().filter(|resource| identity.as_deref().is_none_or(|value| resource.identity == value)).collect();
+    success(request, serde_json::json!({"resources": resources}))
 }
 
 fn media_sessions(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let state = store.lock().expect("store mutex poisoned");
-    success(request, serde_json::json!({"sessions": state.sessions}))
+    let identity = request_text(&request.params, "identity");
+    let sessions: Vec<_> = state.sessions.iter().filter(|session| identity.as_deref().is_none_or(|value| session.identity == value)).collect();
+    success(request, serde_json::json!({"sessions": sessions}))
 }
 
 fn policy_set(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
