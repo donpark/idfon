@@ -23,6 +23,7 @@ fn run() -> io::Result<()> {
     let json = args.iter().any(|arg| arg == "--json");
     let stdin_json = args.iter().any(|arg| arg == "--stdin-json");
     let socket = argument(&args, "--socket").unwrap_or_else(|| DEFAULT_SOCKET.into());
+    let selected_identity = argument(&args, "--identity");
     let operation_wait = args
         .windows(2)
         .any(|pair| pair[0] == "operation" && pair[1] == "wait");
@@ -115,7 +116,7 @@ fn run() -> io::Result<()> {
         ));
     }
 
-    let params = if stdin_json {
+    let mut params = if stdin_json {
         serde_json::from_reader(std::io::stdin()).map_err(io::Error::other)?
     } else if method == "peer.resolve" || method == "peer.show" || method == "peer.status" {
         serde_json::json!({"ref": reference})
@@ -140,6 +141,11 @@ fn run() -> io::Result<()> {
     } else {
         serde_json::json!({})
     };
+    if let Some(identity) = selected_identity {
+        if let Some(params) = params.as_object_mut() {
+            params.entry("identity").or_insert(serde_json::Value::String(identity));
+        }
+    }
     if method == "message.send" && (peer.is_none() || text.is_none() || idempotency_key.is_none()) {
         print_usage();
         return Err(io::Error::new(
@@ -277,7 +283,7 @@ fn argument(args: &[String], name: &str) -> Option<String> {
 }
 
 fn print_usage() {
-    eprintln!("usage: nufon [--socket PATH] <status|context|identities|peers>");
+    eprintln!("usage: nufon [--socket PATH] [--identity ID] <status|context|identities|peers>");
     eprintln!("       nufon [--socket PATH] resolve PEER [--json]");
     eprintln!("       nufon [--socket PATH] show PEER [--json]");
     eprintln!("       nufon [--socket PATH] peer-status PEER [--json]");
@@ -297,14 +303,14 @@ fn print_usage() {
     );
     eprintln!("       nufon [--socket PATH] wait --type TYPE [--after CURSOR] [--timeout-ms MS]");
     eprintln!("       nufon [--socket PATH] operation wait OPERATION_ID [--timeout-ms MS]");
-    eprintln!("       nufon [--socket PATH] send --stdin-json < request.json [--json]");
+    eprintln!("       nufon [--socket PATH] [--identity ID] send --stdin-json < request.json [--json]");
 }
 
 fn help_text(topic: &str) -> &'static str {
     match topic {
-        "schema" => r#"request: {version:number,id:string,method:string,params:object}"#,
+        "schema" => r#"request: {version:number,id:string,method:string,params:object}; optional --identity selects the daemon identity"#,
         "errors" => "Stable errors: invalid_request, unauthorized, capability_denied, peer_offline, idempotency_key_conflict, cursor_too_old, timeout.",
-        "examples" => "nufon status --json\nnufon send alice --text hello --idempotency-key hello-1 --json\nnufon events --follow --jsonl",
+        "examples" => "nufon status --json\nnufon --identity Bob send alice --text hello --idempotency-key hello-1 --json\nnufon --identity Alice events --follow --jsonl",
         _ => "nufon commands: status, context, identities, peers, resolve, show, peer-status, use, send, operation, cancel, events, wait\nUse --json for machine output and --stdin-json for request parameters.",
     }
 }
