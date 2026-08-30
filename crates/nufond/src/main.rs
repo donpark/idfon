@@ -830,10 +830,12 @@ fn send_message(
         let transition = tokio::task::spawn_blocking({
             let store = Arc::clone(&worker_store);
             let operation_id = operation_id.clone();
+            let identity = worker_identity.clone();
             move || {
                 update_operation(
                     &store,
                     &operation_id,
+                    &identity,
                     nufon_protocol::OperationStatus::Transmitting,
                 )
             }
@@ -844,10 +846,11 @@ fn send_message(
         }
         let mut delivery = Err(io::Error::other("no transport attempt"));
         for _ in 0..=retries {
-            if is_cancelled(&worker_store, &operation_id) {
+            if is_cancelled(&worker_store, &operation_id, &worker_identity) {
                 let _ = update_operation(
                     &worker_store,
                     &operation_id,
+                    &worker_identity,
                     nufon_protocol::OperationStatus::Cancelled,
                 );
                 return;
@@ -870,8 +873,9 @@ fn send_message(
         } else {
             nufon_protocol::OperationStatus::Failed
         };
+        let identity = worker_identity.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            update_operation(&worker_store, &operation_id, status)
+            update_operation(&worker_store, &operation_id, &identity, status)
         })
         .await;
     });
@@ -881,7 +885,7 @@ fn send_message(
     )
 }
 
-fn is_cancelled(store: &Arc<Mutex<Store>>, operation_id: &str) -> bool {
+fn is_cancelled(store: &Arc<Mutex<Store>>, operation_id: &str, identity: &str) -> bool {
     store
         .lock()
         .expect("store mutex poisoned")
@@ -889,6 +893,7 @@ fn is_cancelled(store: &Arc<Mutex<Store>>, operation_id: &str) -> bool {
         .iter()
         .any(|operation| {
             operation.operation_id == operation_id
+                && operation.identity == identity
                 && operation.status == nufon_protocol::OperationStatus::Cancelled
         })
 }
@@ -911,7 +916,7 @@ fn operation_cancel(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let Some(operation) = state
         .operations
         .iter_mut()
-        .find(|operation| operation.operation_id == id)
+        .find(|operation| operation.operation_id == id && request_text(&request.params, "identity").is_none_or(|identity| operation.identity == identity))
     else {
         return error_response(
             request.id.clone(),
@@ -956,13 +961,14 @@ fn operation_cancel(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
 fn update_operation(
     store: &Arc<Mutex<Store>>,
     operation_id: &str,
+    identity: &str,
     status: nufon_protocol::OperationStatus,
 ) -> io::Result<()> {
     let mut state = store.lock().expect("store mutex poisoned");
     if let Some(operation) = state
         .operations
         .iter_mut()
-        .find(|operation| operation.operation_id == operation_id)
+        .find(|operation| operation.operation_id == operation_id && operation.identity == identity)
     {
         operation.status = status.clone();
         operation.updated_at = now();
@@ -1135,7 +1141,7 @@ fn operation_wait(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     match state
         .operations
         .iter()
-        .find(|operation| operation.operation_id == id)
+        .find(|operation| operation.operation_id == id && request_text(&request.params, "identity").is_none_or(|identity| operation.identity == identity))
     {
         Some(operation) => success(request, serde_json::json!({"operation": operation})),
         None => error_response(
