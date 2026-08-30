@@ -398,7 +398,7 @@ fn spawn_receiver(
             let identity = receiver_identity.clone();
             async move {
                 let mut params = serde_json::to_value(message).map_err(|error| nufon_core::transport::TransportError::Failed(error.to_string()))?;
-                params["__identity"] = serde_json::Value::String(identity);
+                params["identity"] = serde_json::Value::String(identity);
                 let request = Request { version: PROTOCOL_VERSION, id: format!("transport-{}", params["message_id"].as_str().unwrap_or("unknown")), method: "message.receive".into(), params };
                 let response = dispatch(request, &store);
                 match response.body {
