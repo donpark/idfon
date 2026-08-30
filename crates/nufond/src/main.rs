@@ -104,6 +104,8 @@ struct Store {
     #[serde(default)]
     policies: Vec<nufon_protocol::LocalPolicy>,
     #[serde(default)]
+    revoked_tickets: Vec<String>,
+    #[serde(default)]
     resources: Vec<nufon_protocol::MediaResource>,
     #[serde(default)]
     sessions: Vec<nufon_protocol::MediaSession>,
@@ -136,6 +138,7 @@ impl Store {
                     messages: Vec::new(),
                     grants: Vec::new(),
                     policies: Vec::new(),
+                    revoked_tickets: Vec::new(),
                     resources: Vec::new(),
                     sessions: Vec::new(),
                     data_dir: data_dir.to_path_buf(),
@@ -508,6 +511,8 @@ fn dispatch_with_transport(
             }
         }
         "access.grant" => access_grant(&request, store),
+        "capability.ticket" => capability_ticket_issue(&request, store),
+        "capability.ticket.revoke" => capability_ticket_revoke(&request, store),
         "access.revoke" => access_revoke(&request, store),
         "access.check" => access_check(&request, store),
         "media.session.start" => media_session_start(&request, store),
@@ -669,6 +674,7 @@ fn send_message(
     let to = request_text(&request.params, "to");
     let text = request_text(&request.params, "text");
     let key = request_text(&request.params, "idempotency_key");
+    let capability_ticket = request.params.get("capability_ticket").cloned().and_then(|value| serde_json::from_value(value).ok());
     let retries = request
         .params
         .get("retries")
@@ -775,13 +781,14 @@ fn send_message(
         }
     };
     let message_id = format!("msg_{}", state.operations.len() + 1);
-    let envelope = match nufon_core::sign_message(
+    let envelope = match nufon_core::sign_message_with_ticket(
         &signing_key,
         identity.endpoint_id.unwrap_or_default(),
         message_id.clone(),
         nufon_protocol::MessageContent::Text { text: text.into() },
         &key,
         None,
+        capability_ticket,
     ) {
         Ok(envelope) => envelope,
         Err(error) => {
@@ -1016,6 +1023,17 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     }
     let state = store.lock().expect("store mutex poisoned");
     let receiving_identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    if let Some(ticket) = &envelope.capability_ticket {
+        if nufon_core::verify_capability_ticket(ticket).is_err()
+            || ticket.issuer != state.identities.iter().find(|identity| identity.id == receiving_identity).and_then(|identity| identity.public_key.clone()).unwrap_or_default()
+            || ticket.subject.as_deref().is_some_and(|subject| subject != envelope.sender.peer_id)
+            || !ticket.capabilities.contains(&nufon_protocol::Capability::MessageReceive)
+            || state.revoked_tickets.iter().any(|id| id == &ticket.ticket_id)
+            || ticket.expires_at.as_deref().is_some_and(|expires| expires <= now().as_str())
+        {
+            return error_response(request.id.clone(), &request.method, ErrorCode::CapabilityDenied, "invalid or expired capability ticket".into(), false);
+        }
+    }
     let known_peer = state.peers.iter().any(|peer| {
         peer.identity == receiving_identity && peer.id == envelope.sender.peer_id
             && peer.endpoint_id.as_deref() == Some(envelope.sender.endpoint_id.as_str())
@@ -1156,6 +1174,33 @@ fn operation_wait(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
 
 fn capability(value: &str) -> Option<nufon_protocol::Capability> {
     serde_json::from_value(serde_json::Value::String(value.replace('.', "_"))).ok()
+}
+
+fn capability_ticket_issue(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let subject = request_text(&request.params, "subject");
+    let capabilities = request.params.get("capabilities").and_then(serde_json::Value::as_array).map(|values| values.iter().filter_map(serde_json::Value::as_str).filter_map(|value| capability(value)).collect()).unwrap_or_else(|| vec![nufon_protocol::Capability::MessageReceive]);
+    let ticket_id = request_text(&request.params, "ticket_id").unwrap_or_else(|| format!("ticket-{}", now()));
+    let expires_at = request_text(&request.params, "expires_at");
+    let state = store.lock().expect("store mutex poisoned");
+    let key = state.identity_key(&identity).map_err(|error| error.to_string());
+    let Ok(key) = key else { return error_response(request.id.clone(), &request.method, ErrorCode::InvalidRequest, "identity not found".into(), false); };
+    let ticket = nufon_core::issue_capability_ticket(&key, subject, capabilities, expires_at, ticket_id);
+    success(request, serde_json::json!({"ticket": ticket}))
+}
+
+fn capability_ticket_revoke(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(ticket_id) = request_text(&request.params, "ticket_id") else {
+        return error_response(request.id.clone(), &request.method, ErrorCode::InvalidRequest, "ticket_id is required".into(), false);
+    };
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let mut state = store.lock().expect("store mutex poisoned");
+    let issuer = state.identities.iter().find(|item| item.id == identity || item.name == identity).and_then(|item| item.public_key.clone()).unwrap_or_default();
+    if issuer.is_empty() { return error_response(request.id.clone(), &request.method, ErrorCode::InvalidRequest, "identity not found".into(), false); }
+    if !state.revoked_tickets.contains(&ticket_id) { state.revoked_tickets.push(ticket_id.clone()); }
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) { return error_response(request.id.clone(), &request.method, ErrorCode::Internal, error.to_string(), true); }
+    success(request, serde_json::json!({"ticket_id": ticket_id, "issuer": issuer, "revoked": true}))
 }
 
 fn access_grant(request: &Request, store: &Arc<Mutex<Store>>) -> Response {

@@ -44,6 +44,8 @@ pub struct MessageEnvelope {
     pub sender: PeerAuth,
     pub content: MessageContent,
     pub idempotency_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_ticket: Option<CapabilityTicket>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
 }
@@ -232,6 +234,16 @@ pub struct Peer {
     #[serde(default)]
     pub endpoint_addr: Option<String>,
     pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CapabilityTicket {
+    pub issuer: String,
+    pub subject: Option<String>,
+    pub capabilities: Vec<Capability>,
+    pub expires_at: Option<String>,
+    pub ticket_id: String,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -437,6 +449,7 @@ mod tests {
                 text: "hello".into(),
             },
             idempotency_key: "hello-1".into(),
+            capability_ticket: None,
             conversation: Some("conversation-1".into()),
         };
         let frame = encode_frame(&message).unwrap();

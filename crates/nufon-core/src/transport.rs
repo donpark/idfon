@@ -312,6 +312,7 @@ mod tests {
                     text: "hello".into(),
                 },
                 idempotency_key: "key-iroh".into(),
+                capability_ticket: None,
                 conversation: None,
             };
             let ack = sender
@@ -341,6 +342,7 @@ mod tests {
                 text: "hello".into(),
             },
             idempotency_key: "key-1".into(),
+            capability_ticket: None,
             conversation: None,
         };
         let target = EndpointAddr::from_parts(

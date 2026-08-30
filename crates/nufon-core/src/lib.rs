@@ -1,7 +1,7 @@
 //! Domain security helpers kept independent from transport details.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use nufon_protocol::{MessageContent, MessageEnvelope, PeerAuth};
+use nufon_protocol::{Capability, CapabilityTicket, MessageContent, MessageEnvelope, PeerAuth};
 use rand_core::OsRng;
 use serde::Serialize;
 use thiserror::Error;
@@ -52,6 +52,18 @@ pub fn sign_message(
     idempotency_key: impl Into<String>,
     conversation: Option<String>,
 ) -> Result<MessageEnvelope, AuthError> {
+    sign_message_with_ticket(key, endpoint_id, message_id, content, idempotency_key, conversation, None)
+}
+
+pub fn sign_message_with_ticket(
+    key: &SigningKey,
+    endpoint_id: impl Into<String>,
+    message_id: impl Into<String>,
+    content: MessageContent,
+    idempotency_key: impl Into<String>,
+    conversation: Option<String>,
+    capability_ticket: Option<CapabilityTicket>,
+) -> Result<MessageEnvelope, AuthError> {
     let sender = PeerAuth {
         peer_id: peer_id(key),
         endpoint_id: endpoint_id.into(),
@@ -62,6 +74,7 @@ pub fn sign_message(
         sender: sender.clone(),
         content,
         idempotency_key: idempotency_key.into(),
+        capability_ticket,
         conversation,
     };
     let signature = key.sign(&auth_bytes(&unsigned)?);
@@ -72,6 +85,23 @@ pub fn sign_message(
         },
         ..unsigned
     })
+}
+
+pub fn issue_capability_ticket(key: &SigningKey, subject: Option<String>, capabilities: Vec<Capability>, expires_at: Option<String>, ticket_id: impl Into<String>) -> CapabilityTicket {
+    let mut ticket = CapabilityTicket { issuer: peer_id(key), subject, capabilities, expires_at, ticket_id: ticket_id.into(), signature: String::new() };
+    ticket.signature = encode_hex(&key.sign(&serde_json::to_vec(&ticket_unsigned(&ticket)).unwrap()).to_bytes());
+    ticket
+}
+
+pub fn verify_capability_ticket(ticket: &CapabilityTicket) -> Result<(), AuthError> {
+    let public = decode_fixed::<32>(&ticket.issuer).ok_or(AuthError::InvalidPeerId)?;
+    let key = VerifyingKey::from_bytes(&public).map_err(|_| AuthError::InvalidPeerId)?;
+    let sig = decode_fixed::<64>(&ticket.signature).ok_or(AuthError::InvalidSignature)?;
+    key.verify(&serde_json::to_vec(&ticket_unsigned(ticket)).map_err(|_| AuthError::Serialization)?, &Signature::from_bytes(&sig)).map_err(|_| AuthError::VerificationFailed)
+}
+
+fn ticket_unsigned(ticket: &CapabilityTicket) -> serde_json::Value {
+    serde_json::json!({"issuer":ticket.issuer,"subject":ticket.subject,"capabilities":ticket.capabilities,"expires_at":ticket.expires_at,"ticket_id":ticket.ticket_id})
 }
 
 pub fn verify_message(message: &MessageEnvelope) -> Result<(), AuthError> {
@@ -96,6 +126,7 @@ struct AuthPayload<'a> {
     endpoint_id: &'a str,
     content: &'a MessageContent,
     idempotency_key: &'a str,
+    capability_ticket: &'a Option<nufon_protocol::CapabilityTicket>,
     conversation: &'a Option<String>,
 }
 
@@ -106,6 +137,7 @@ fn auth_bytes(message: &MessageEnvelope) -> Result<Vec<u8>, AuthError> {
         endpoint_id: &message.sender.endpoint_id,
         content: &message.content,
         idempotency_key: &message.idempotency_key,
+        capability_ticket: &message.capability_ticket,
         conversation: &message.conversation,
     })
     .map_err(|_| AuthError::Serialization)

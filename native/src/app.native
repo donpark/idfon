@@ -10,6 +10,8 @@
     <text foreground="text_muted">{receiverStatus}</text>
     <button variant="secondary" on-press="show_add_identity">+</button>
   </row>
+  <text-field text="{capabilityTicketInput}" label="Capability ticket" placeholder="Paste capability ticket JSON" on-input="capability_ticket_edit" />
+  <button variant="secondary" on-press="issue_capability_ticket">Issue receive ticket</button>
 
   <if test="{identitySelected}">
     <column gap="8">

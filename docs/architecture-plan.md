@@ -539,8 +539,10 @@ The following are deferred rather than blocking the foundation:
 ## Implementation status
 
 The contract, daemon IPC, persistence, CLI query surface, authenticated
-message envelope, selectable transports, and application acknowledgment path
-are implemented. The next active phase is **Phase 1: messaging hardening**.
+message envelope, selectable transports, application acknowledgment path, and
+multi-identity endpoint routing are implemented. Capability tickets provide
+issuer-controlled signed capability claims for message delivery; legacy grants
+remain supported for compatibility. The next active phase is **Phase 1: messaging hardening**.
 
 Phase 1 is complete only when outgoing work has explicit durable transitions,
 transport failures are bounded and retryable, idempotency survives restart, and

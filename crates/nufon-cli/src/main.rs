@@ -86,6 +86,7 @@ fn run() -> io::Result<()> {
         .iter()
         .position(|arg| arg == "--idempotency-key")
         .and_then(|index| args.get(index + 1));
+    let capability_ticket = argument(&args, "--capability-ticket");
     let retries = args
         .iter()
         .position(|arg| arg == "--retries")
@@ -135,7 +136,7 @@ fn run() -> io::Result<()> {
     } else if method == "peer.remove" {
         serde_json::json!({"ref": peer_id.or(reference)})
     } else if method == "message.send" {
-        serde_json::json!({"to": peer, "text": text, "idempotency_key": idempotency_key, "retries": retries})
+        serde_json::json!({"to": peer, "text": text, "idempotency_key": idempotency_key, "capability_ticket": capability_ticket.and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok()), "retries": retries})
     } else if method == "events" || method == "wait" {
         serde_json::json!({"follow": follow, "after": after, "type": event_type})
     } else {
@@ -296,7 +297,7 @@ fn print_usage() {
     eprintln!("       nufon [--socket PATH] add PEER --name NAME [--endpoint-id ID] [--endpoint-addr JSON]");
     eprintln!("       nufon [--socket PATH] update PEER [--name NAME] [--endpoint-id ID] [--endpoint-addr JSON]");
     eprintln!("       nufon [--socket PATH] remove PEER [--json]");
-    eprintln!("       nufon [--socket PATH] send PEER --text TEXT --idempotency-key KEY [--retries N] [--json]");
+    eprintln!("       nufon [--socket PATH] send PEER --text TEXT --idempotency-key KEY [--capability-ticket JSON] [--retries N] [--json]");
     eprintln!("       nufon [--socket PATH] cancel OPERATION_ID [--json]");
     eprintln!(
         "       nufon [--socket PATH] events [--follow] [--after CURSOR] [--type TYPE] [--jsonl]"

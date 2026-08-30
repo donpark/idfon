@@ -131,16 +131,17 @@ volume/mute, consent, notifications, and emergency stop. The extracted
 `nufon-media` crate provides explicit publisher/subscriber and local resource
 session handles while the legacy Native SDK local-device backend is migrated.
 
-## Remaining work
+## Remaining production work
 
-These production follow-ups remain:
+The Phase 7 MVP is implemented. The following production follow-ups remain:
 
 1. **Authorization and local policy** — connect every media action to capability
-   grants, expiry, revocation, schedules, and recipient policy. The emergency
-   stop now exists as a local control, but authorization is not implemented.
-2. **Multi-session media state** — replace process-global capture, playback,
-   subscriptions, and blob providers with identity/conversation keyed state.
-   Persisted files are scoped, but active resources remain one-per-process.
+   grants, expiry, revocation, schedules, and recipient policy. Capability-ticket
+   issuance and validation now exist for message receive authorization; media
+   actions still need the same ticket enforcement.
+2. **Multi-session media state** — capture, playback, subscriptions, and blob
+   providers still need fully identity/conversation-keyed active ownership.
+   Persisted resource metadata and paths are identity-scoped.
 3. **Durable chat history** — move beyond the recording-ticket ledger to a
    durable message model with delivery state, retries, and normal messages.
 4. **Recording metadata accuracy** — persist richer metadata such as the exact
