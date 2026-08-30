@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -160,40 +161,42 @@ impl IrohTransport {
 
 /// Owns the active endpoint and swaps it only after the replacement is bound.
 pub struct TransportManager {
-    current: RwLock<Arc<IrohTransport>>,
+    current: RwLock<HashMap<String, Arc<IrohTransport>>>,
 }
 
 impl TransportManager {
     pub async fn bind_with_key(key: Option<[u8; 32]>) -> Result<Self, TransportError> {
-        Ok(Self {
-            current: RwLock::new(Arc::new(IrohTransport::bind_with_key(key).await?)),
-        })
+        let mut transports = HashMap::new();
+        transports.insert("default".into(), Arc::new(IrohTransport::bind_with_key(key).await?));
+        Ok(Self { current: RwLock::new(transports) })
     }
 
-    pub fn endpoint_id(&self) -> String {
-        self.current
-            .try_read()
-            .expect("transport manager lock unavailable")
-            .endpoint()
-            .id()
-            .to_string()
+    pub fn endpoint_id(&self, identity: &str) -> Option<String> {
+        self.current.try_read().ok()?.get(identity).map(|transport| transport.endpoint().id().to_string())
     }
 
-    pub fn endpoint_ticket(&self) -> Option<Vec<u8>> {
-        serde_json::to_vec(&self.current.try_read().ok()?.endpoint().addr()).ok()
+    pub fn endpoint_ticket(&self, identity: &str) -> Option<Vec<u8>> {
+        serde_json::to_vec(&self.current.try_read().ok()?.get(identity)?.endpoint().addr()).ok()
     }
 
-    pub async fn current(&self) -> Arc<IrohTransport> {
-        Arc::clone(&*self.current.read().await)
+    pub async fn current(&self, identity: &str) -> Option<Arc<IrohTransport>> {
+        self.current.read().await.get(identity).cloned()
     }
 
-    pub async fn serve<F, Fut>(&self, handler: F) -> Result<(), TransportError>
+    pub async fn add_identity(&self, identity: &str, key: [u8; 32]) -> Result<String, TransportError> {
+        let transport = Arc::new(IrohTransport::bind_with_key(Some(key)).await?);
+        let endpoint_id = transport.endpoint().id().to_string();
+        self.current.write().await.insert(identity.into(), transport);
+        Ok(endpoint_id)
+    }
+
+    pub async fn serve<F, Fut>(&self, identity: &str, handler: F) -> Result<(), TransportError>
     where
         F: Fn(MessageEnvelope) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<MessageAck, TransportError>> + Send + 'static,
     {
         loop {
-            let current = self.current().await;
+            let current = self.current(identity).await.ok_or_else(|| TransportError::Failed("identity transport not found".into()))?;
             match current.serve(handler.clone()).await {
                 Err(TransportError::Failed(message)) if message == "message endpoint closed" => {
                     continue
@@ -203,23 +206,16 @@ impl TransportManager {
         }
     }
 
-    pub async fn rebind(&self, key: Option<[u8; 32]>) -> Result<String, TransportError> {
+    pub async fn rebind(&self, identity: &str, key: Option<[u8; 32]>) -> Result<String, TransportError> {
         let replacement = Arc::new(IrohTransport::bind_with_key(key).await?);
         let id = replacement.endpoint().id().to_string();
-        let old = {
-            let mut current = self.current.write().await;
-            std::mem::replace(&mut *current, replacement)
-        };
-        old.endpoint().close().await;
+        let old = self.current.write().await.insert(identity.into(), replacement);
+        if let Some(old) = old { old.endpoint().close().await; }
         Ok(id)
     }
 
-    pub async fn send(
-        &self,
-        target: &EndpointAddr,
-        message: &MessageEnvelope,
-    ) -> Result<MessageAck, TransportError> {
-        self.current.read().await.send(target, message).await
+    pub async fn send(&self, identity: &str, target: &EndpointAddr, message: &MessageEnvelope) -> Result<MessageAck, TransportError> {
+        self.current(identity).await.ok_or_else(|| TransportError::Failed("identity transport not found".into()))?.send(target, message).await
     }
 }
 
@@ -278,10 +274,10 @@ mod tests {
             let manager = TransportManager::bind_with_key(Some([1; 32]))
                 .await
                 .unwrap();
-            let first = manager.endpoint_id();
-            let second = manager.rebind(Some([2; 32])).await.unwrap();
+            let first = manager.endpoint_id("default").unwrap();
+            let second = manager.rebind("default", Some([2; 32])).await.unwrap();
             assert_ne!(first, second);
-            manager.rebind(Some([1; 32])).await.unwrap();
+            manager.rebind("default", Some([1; 32])).await.unwrap();
         });
     }
 

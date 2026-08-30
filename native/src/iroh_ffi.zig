@@ -187,8 +187,7 @@ fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
 fn daemonWorker(job: *Job) void {
     defer std.heap.page_allocator.destroy(job);
     const self = job.host;
-    var socket_path: [256:0]u8 = undefined;
-    const path = daemonPaths(&socket_path, null);
+    const path = default_socket;
     var fd = connectDaemon(path);
     if (fd < 0) {
         if (!launchDaemon(self)) { self.complete(job.key, false, "daemon_unavailable"); return; }
@@ -338,32 +337,6 @@ fn connectDaemon(path: []const u8) c_int {
     return fd;
 }
 
-fn daemonSeed() ?[]const u8 {
-    const argc = c._NSGetArgc().*;
-    const argv = c._NSGetArgv().*;
-    var index: c_int = 1;
-    while (index + 1 < argc) : (index += 1) {
-        const name = std.mem.span(argv[@intCast(index)]);
-        if (std.mem.eql(u8, name, "--seed")) return std.mem.span(argv[@intCast(index + 1)]);
-    }
-    return null;
-}
-
-fn daemonPaths(socket_buffer: *[256:0]u8, data_buffer: ?*[256:0]u8) []const u8 {
-    const seed = daemonSeed() orelse return default_socket;
-    var safe: [64]u8 = undefined;
-    var length: usize = 0;
-    for (seed) |value| {
-        if (length == safe.len) break;
-        safe[length] = if ((value >= 'a' and value <= 'z') or (value >= 'A' and value <= 'Z') or (value >= '0' and value <= '9') or value == '-' or value == '_') value else '_';
-        length += 1;
-    }
-    if (length == 0) return default_socket;
-    if (data_buffer) |buffer| _ = std.fmt.bufPrintZ(buffer, "/tmp/nufon/{s}", .{safe[0..length]}) catch return default_socket;
-    const path = std.fmt.bufPrintZ(socket_buffer, "/tmp/nufon/{s}/nufond.sock", .{safe[0..length]}) catch return default_socket;
-    return path;
-}
-
 fn launchDaemon(self: *Host) bool {
     lock(&self.daemon_lock);
     defer self.daemon_lock.unlock();
@@ -371,10 +344,8 @@ fn launchDaemon(self: *Host) bool {
     const pid = c.fork();
     if (pid < 0) return false;
     if (pid == 0) {
-        var socket_buffer: [256:0]u8 = undefined;
-        var data_buffer: [256:0]u8 = undefined;
-        const socket_path = daemonPaths(&socket_buffer, &data_buffer);
-        const data_path = if (daemonSeed() == null) default_data_dir else std.mem.span(data_buffer[0..].ptr);
+        const socket_path = default_socket;
+        const data_path = default_data_dir;
         var daemon_log_path: [64:0]u8 = undefined;
         const daemon_log = std.fmt.bufPrintZ(&daemon_log_path, "/tmp/nufond-auto-{d}.log", .{c.getpid()}) catch null;
         var log_fd: c_int = -1;

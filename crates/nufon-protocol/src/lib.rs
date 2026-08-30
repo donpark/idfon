@@ -56,6 +56,8 @@ pub struct MessageAck {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MediaResource {
+    #[serde(default)]
+    pub identity: String,
     pub resource_id: ResourceId,
     pub media_id: MediaId,
     pub kind: MediaKind,
@@ -183,6 +185,8 @@ pub enum OperationStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Operation {
+    #[serde(default)]
+    pub identity: String,
     pub operation_id: OperationId,
     pub method: String,
     pub status: OperationStatus,
@@ -221,6 +225,8 @@ pub struct Identity {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Peer {
     pub id: String,
+    #[serde(default)]
+    pub identity: String,
     pub name: String,
     pub endpoint_id: Option<String>,
     #[serde(default)]
@@ -390,6 +396,7 @@ mod tests {
     fn media_resource_and_session_round_trip() {
         let value = (
             MediaResource {
+                identity: "default".into(),
                 resource_id: "res_1".into(),
                 media_id: "media_1".into(),
                 kind: MediaKind::Recording,

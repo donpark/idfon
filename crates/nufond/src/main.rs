@@ -47,31 +47,30 @@ impl TransportMode {
         }
     }
 
-    fn endpoint_id(&self) -> Option<String> {
+    fn endpoint_ticket_for(&self, identity: &str) -> Option<Vec<u8>> {
         match self {
             Self::Fake(_) => None,
-            Self::Iroh(transport) => Some(transport.endpoint_id()),
+            Self::Iroh(transport) => transport.endpoint_ticket(identity),
         }
     }
 
-    fn endpoint_ticket(&self) -> Option<Vec<u8>> {
-        match self {
-            Self::Fake(_) => None,
-            Self::Iroh(transport) => transport.endpoint_ticket(),
-        }
+    async fn add_identity(&self, identity: &str, key: [u8; 32]) -> io::Result<String> {
+        let Self::Iroh(manager) = self else { return Err(io::Error::other("fake transport has no endpoints")); };
+        manager.add_identity(identity, key).await.map_err(io::Error::other)
     }
 
-    fn rebind(&self, key: [u8; 32]) -> io::Result<Option<String>> {
+    fn ensure_identity(&self, identity: &str, key: [u8; 32]) -> io::Result<Option<String>> {
         let Self::Iroh(manager) = self else { return Ok(None); };
+        if let Some(endpoint_id) = manager.endpoint_id(identity) { return Ok(Some(endpoint_id)); }
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 let runtime = tokio::runtime::Runtime::new()?;
-                runtime.block_on(manager.rebind(Some(key))).map(Some).map_err(io::Error::other)
-            }).join().map_err(|_| io::Error::other("rebind worker panicked"))?
+                runtime.block_on(manager.add_identity(identity, key)).map(Some).map_err(io::Error::other)
+            }).join().map_err(|_| io::Error::other("identity bind worker panicked"))?
         })
     }
 
-    fn send(&self, peer: &nufon_protocol::Peer, message: &nufon_protocol::MessageEnvelope) -> io::Result<nufon_protocol::MessageAck> {
+    fn send(&self, identity: &str, peer: &nufon_protocol::Peer, message: &nufon_protocol::MessageEnvelope) -> io::Result<nufon_protocol::MessageAck> {
         let address = if matches!(self, Self::Fake(_)) {
             "0000000000000000000000000000000000000000000000000000000000000000"
         } else {
@@ -83,7 +82,7 @@ impl TransportMode {
                 let runtime = tokio::runtime::Runtime::new()?;
                 match self {
                     Self::Fake(transport) => runtime.block_on(transport.send(&target, message)),
-                    Self::Iroh(transport) => runtime.block_on(transport.send(&target, message)),
+                    Self::Iroh(transport) => runtime.block_on(transport.send(identity, &target, message)),
                 }.map_err(io::Error::other)
             }).join().map_err(|_| io::Error::other("transport worker panicked"))?
         })
@@ -217,56 +216,27 @@ async fn main() -> io::Result<()> {
         )
         .await?,
     );
-    if let Some(endpoint_id) = transport.endpoint_id() {
+    let identity_keys: Vec<(String, [u8; 32])> = {
+        let state = store.lock().expect("store mutex poisoned");
+        state.identities.iter().filter_map(|identity| state.identity_key(&identity.id).ok().map(|key| (identity.id.clone(), nufon_core::signing_key_bytes(&key)))).collect()
+    };
+    for (identity, key) in identity_keys.iter().filter(|(id, _)| id != "default") {
+        transport.add_identity(identity, *key).await?;
+    }
+    if let TransportMode::Iroh(manager) = transport.as_ref() {
         let mut state = store.lock().expect("store mutex poisoned");
-        if let Some(identity) = state.identities.iter_mut().find(|identity| identity.active) {
-            identity.endpoint_id = Some(endpoint_id);
+        for identity in &mut state.identities {
+            if let Some(endpoint_id) = manager.endpoint_id(&identity.id) {
+                identity.endpoint_id = Some(endpoint_id);
+            }
         }
         let data_dir = state.data_dir.clone();
         state.save(&data_dir)?;
     }
     if let TransportMode::Iroh(iroh) = transport.as_ref() {
-        let iroh = Arc::clone(iroh);
-        let receiver_store = Arc::clone(&store);
-        tokio::spawn(async move {
-            let result = iroh
-                .serve(move |message| {
-                    let store = Arc::clone(&receiver_store);
-                    async move {
-                        let request = Request {
-                            version: PROTOCOL_VERSION,
-                            id: format!("transport-{}", message.message_id),
-                            method: "message.receive".into(),
-                            params: serde_json::to_value(message).map_err(|error| {
-                                nufon_core::transport::TransportError::Failed(error.to_string())
-                            })?,
-                        };
-                        let response = dispatch(request, &store);
-                        match response.body {
-                            ResponseBody::Success { result, .. } => {
-                                Ok(nufon_protocol::MessageAck {
-                                    message_id: result["message_id"]
-                                        .as_str()
-                                        .unwrap_or_default()
-                                        .into(),
-                                    status: if result["status"] == "duplicate" {
-                                        nufon_protocol::AckStatus::Duplicate
-                                    } else {
-                                        nufon_protocol::AckStatus::Accepted
-                                    },
-                                })
-                            }
-                            ResponseBody::Failure { error, .. } => {
-                                Err(nufon_core::transport::TransportError::Failed(error.message))
-                            }
-                        }
-                    }
-                })
-                .await;
-            if let Err(error) = result {
-                eprintln!("nufond Iroh receiver stopped: {error}");
-            }
-        });
+        for (identity, _) in identity_keys {
+            spawn_receiver(Arc::clone(iroh), Arc::clone(&store), identity);
+        }
     }
     prepare_socket(&socket)?;
     if let Some(parent) = socket.parent() {
@@ -305,11 +275,12 @@ async fn serve(
     store: Arc<Mutex<Store>>,
     transport: Arc<TransportMode>,
 ) -> io::Result<()> {
+    let mut session_identity = String::from("default");
     loop {
         let Some(frame) = read_frame(&mut stream).await? else {
             return Ok(());
         };
-        let request = match serde_json::from_slice::<Request>(&frame) {
+        let mut request = match serde_json::from_slice::<Request>(&frame) {
             Ok(request) => request,
             Err(error) => {
                 let response = error_response(
@@ -327,6 +298,10 @@ async fn serve(
                 continue;
             }
         };
+        if let Some(params) = request.params.as_object_mut() {
+            params.entry("identity").or_insert_with(|| serde_json::Value::String(session_identity.clone()));
+            params.entry("__identity").or_insert_with(|| serde_json::Value::String(session_identity.clone()));
+        }
         if request.method == "wait" {
             let timeout = request
                 .params
@@ -382,7 +357,7 @@ async fn serve(
             }
         }
         if request.method == "peers.compact" {
-            let payload = compact_peers(&store);
+            let payload = compact_peers(&store, request_text(&request.params, "identity").as_deref());
             write_frame(&mut stream, &payload).await?;
             continue;
         }
@@ -393,17 +368,47 @@ async fn serve(
         }
         if request.method == "events.compact" {
             let after = request_text(&request.params, "after");
-            let payload = compact_events(&store, after.as_deref());
+            let payload = compact_events(&store, after.as_deref(), request_text(&request.params, "identity").as_deref());
             write_frame(&mut stream, &payload).await?;
             continue;
         }
-        let response = dispatch_with_transport(request, &store, &transport);
+        let response = dispatch_with_transport(request.clone(), &store, &transport);
+        if request.method == "identity.use" && response.ok {
+            if let Some(identity) = request_text(&request.params, "name") {
+                session_identity = identity;
+            }
+        }
         write_frame(
             &mut stream,
             &encode_json(&response).map_err(io::Error::other)?,
         )
         .await?
     }
+}
+
+fn spawn_receiver(
+    manager: Arc<nufon_core::transport::TransportManager>,
+    store: Arc<Mutex<Store>>,
+    identity: String,
+) {
+    tokio::spawn(async move {
+        let receiver_identity = identity.clone();
+        let result = manager.serve(&identity, move |message| {
+            let store = Arc::clone(&store);
+            let identity = receiver_identity.clone();
+            async move {
+                let mut params = serde_json::to_value(message).map_err(|error| nufon_core::transport::TransportError::Failed(error.to_string()))?;
+                params["__identity"] = serde_json::Value::String(identity);
+                let request = Request { version: PROTOCOL_VERSION, id: format!("transport-{}", params["message_id"].as_str().unwrap_or("unknown")), method: "message.receive".into(), params };
+                let response = dispatch(request, &store);
+                match response.body {
+                    ResponseBody::Success { result, .. } => Ok(nufon_protocol::MessageAck { message_id: result["message_id"].as_str().unwrap_or_default().into(), status: nufon_protocol::AckStatus::Accepted }),
+                    ResponseBody::Failure { error, .. } => Err(nufon_core::transport::TransportError::Failed(error.message)),
+                }
+            }
+        }).await;
+        if let Err(error) = result { eprintln!("nufond Iroh receiver ({identity}) stopped: {error}"); }
+    });
 }
 
 fn dispatch(request: Request, store: &Arc<Mutex<Store>>) -> Response {
@@ -450,10 +455,10 @@ fn dispatch_with_transport(
             success(
                 &request,
                 serde_json::json!({
-                    "identity": state.identities.iter().find(|identity| identity.active),
+                    "identity": state.identities.iter().find(|identity| identity.id == request_text(&request.params, "identity").unwrap_or_else(|| "default".into()) || identity.name == request_text(&request.params, "identity").unwrap_or_else(|| "default".into())),
                     "daemon": "nufond",
                     "ready": true,
-                    "ticket": transport.endpoint_ticket().unwrap_or_default(),
+                    "ticket": transport.endpoint_ticket_for(request_text(&request.params, "identity").as_deref().unwrap_or("default")).unwrap_or_default(),
                 }),
             )
         }
@@ -467,9 +472,11 @@ fn dispatch_with_transport(
         "identities.compact" => success(&request, serde_json::json!(compact_identities(store))),
         "peers" => {
             let state = store.lock().expect("store mutex poisoned");
-            success(&request, serde_json::json!({"peers": state.peers}))
+            let identity = request_text(&request.params, "identity");
+            let peers: Vec<_> = state.peers.iter().filter(|peer| identity.as_deref().is_none_or(|value| peer.identity == value)).collect();
+            success(&request, serde_json::json!({"peers": peers}))
         }
-        "peer.add" => peer_add(&request, store),
+        "peer.add" => peer_add(&request, store, transport),
         "peer.update" => peer_update(&request, store),
         "peer.remove" => peer_remove(&request, store),
         "peer.show" | "peer.status" => {
@@ -556,7 +563,7 @@ fn dispatch_with_transport(
                     )
                 }
             };
-            let endpoint_id = match transport.rebind(nufon_core::signing_key_bytes(&key)) {
+            let endpoint_id = match transport.ensure_identity(&identity_id, nufon_core::signing_key_bytes(&key)) {
                 Ok(endpoint_id) => endpoint_id,
                 Err(error) => {
                     return error_response(
@@ -568,12 +575,8 @@ fn dispatch_with_transport(
                     )
                 }
             };
-            for identity in &mut state.identities {
-                identity.active = identity.id == identity_id;
-            }
             if let Some(endpoint_id) = endpoint_id {
-                if let Some(identity) = state.identities.iter_mut().find(|identity| identity.active)
-                {
+                if let Some(identity) = state.identities.iter_mut().find(|identity| identity.id == identity_id) {
                     identity.endpoint_id = Some(endpoint_id);
                 }
             }
@@ -587,6 +590,9 @@ fn dispatch_with_transport(
                     true,
                 );
             }
+            if let TransportMode::Iroh(manager) = transport.as_ref() {
+                spawn_receiver(Arc::clone(manager), Arc::clone(store), identity_id.clone());
+            }
             success(
                 &request,
                 serde_json::json!({"identity": name, "active": true}),
@@ -598,9 +604,11 @@ fn dispatch_with_transport(
                 .get("ref")
                 .and_then(serde_json::Value::as_str);
             let state = store.lock().expect("store mutex poisoned");
+            let identity = request_text(&request.params, "identity");
             let matches: Vec<_> = state
                 .peers
                 .iter()
+                .filter(|peer| identity.as_deref().is_none_or(|value| peer.identity == value))
                 .filter(|peer| {
                     reference.is_some_and(|reference| {
                         peer.id == reference
@@ -657,6 +665,7 @@ fn send_message(
     store: &Arc<Mutex<Store>>,
     transport: &Arc<TransportMode>,
 ) -> Response {
+    let identity_id = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let to = request_text(&request.params, "to");
     let text = request_text(&request.params, "text");
     let key = request_text(&request.params, "idempotency_key");
@@ -688,7 +697,7 @@ fn send_message(
     let identity = match state
         .identities
         .iter()
-        .find(|identity| identity.active)
+        .find(|identity| identity.id == identity_id || identity.name == identity_id)
         .cloned()
     {
         Some(identity) => identity,
@@ -703,7 +712,8 @@ fn send_message(
         }
     };
     let peer = match state.peers.iter().find(|peer| {
-        peer.id == to || peer.name == to || peer.aliases.iter().any(|alias| alias == &to)
+        peer.identity == identity.id
+            && (peer.id == to || peer.name == to || peer.aliases.iter().any(|alias| alias == &to))
     }) {
         Some(peer) => peer.clone(),
         None => {
@@ -786,6 +796,7 @@ fn send_message(
     };
     let timestamp = now();
     let operation = nufon_protocol::Operation {
+        identity: identity.id.clone(),
         operation_id: format!("op_{message_id}"),
         method: request.method.clone(),
         status: nufon_protocol::OperationStatus::Queued,
@@ -814,6 +825,7 @@ fn send_message(
     let worker_transport = Arc::clone(transport);
     let worker_envelope = envelope.clone();
     let worker_peer = peer.clone();
+    let worker_identity = identity.id.clone();
     tokio::spawn(async move {
         let transition = tokio::task::spawn_blocking({
             let store = Arc::clone(&worker_store);
@@ -843,8 +855,9 @@ fn send_message(
             let transport = Arc::clone(&worker_transport);
             let peer = worker_peer.clone();
             let envelope = worker_envelope.clone();
+            let identity = worker_identity.clone();
             delivery =
-                match tokio::task::spawn_blocking(move || transport.send(&peer, &envelope)).await {
+                match tokio::task::spawn_blocking(move || transport.send(&identity, &peer, &envelope)).await {
                     Ok(result) => result,
                     Err(error) => Err(io::Error::other(error)),
                 };
@@ -996,12 +1009,14 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         );
     }
     let state = store.lock().expect("store mutex poisoned");
+    let receiving_identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let known_peer = state.peers.iter().any(|peer| {
-        peer.id == envelope.sender.peer_id
+        peer.identity == receiving_identity && peer.id == envelope.sender.peer_id
             && peer.endpoint_id.as_deref() == Some(envelope.sender.endpoint_id.as_str())
     });
     let allowed = state.grants.iter().any(|grant| {
-        grant.capability == nufon_protocol::Capability::MessageReceive
+        grant.identity == receiving_identity
+            && grant.capability == nufon_protocol::Capability::MessageReceive
             && grant.subject == envelope.sender.peer_id
             && grant.revoked_at.is_none()
             && grant
@@ -1052,6 +1067,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     }
     let now = now();
     let operation = nufon_protocol::Operation {
+        identity: receiving_identity.clone(),
         operation_id: format!("op_{}", envelope.message_id),
         method: request.method.clone(),
         status: nufon_protocol::OperationStatus::Delivered,
@@ -1065,12 +1081,9 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     state.messages.push(envelope.clone());
     state.operations.push(operation.clone());
     let cursor = format!("cur_{:020}", state.events.len() + 1);
-    let identity = state
-        .identities
-        .iter()
-        .find(|identity| identity.active)
-        .map(|identity| identity.id.clone())
-        .unwrap_or_default();
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| {
+        state.identities.iter().find(|identity| identity.active).map(|identity| identity.id.clone()).unwrap_or_default()
+    });
     state.events.push(nufon_protocol::Event {
         event_id: format!("evt_{}", envelope.message_id),
         cursor,
@@ -2166,7 +2179,7 @@ fn identity_delete(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     success(request, serde_json::json!({"deleted": id}))
 }
 
-fn peer_add(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<TransportMode>) -> Response {
     let Some(id) = request
         .params
         .get("id")
@@ -2186,11 +2199,12 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         .get("name")
         .and_then(serde_json::Value::as_str)
         .unwrap_or(id);
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let mut state = store.lock().expect("store mutex poisoned");
     if state
         .peers
         .iter()
-        .any(|peer| peer.id == id || peer.name == name)
+        .any(|peer| peer.identity == identity && (peer.id == id || peer.name == name))
     {
         return error_response(
             request.id.clone(),
@@ -2202,6 +2216,7 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     }
     let peer = nufon_protocol::Peer {
         id: id.into(),
+        identity,
         name: name.into(),
         endpoint_id: request
             .params
@@ -2227,6 +2242,29 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             .unwrap_or_default(),
     };
     state.peers.push(peer.clone());
+    if let Some(remote) = state.identities.iter().find(|candidate| candidate.endpoint_id.as_deref() == peer.endpoint_id.as_deref()).cloned() {
+        if let Some(source) = state.identities.iter().find(|candidate| candidate.id == peer.identity).cloned() {
+            let reciprocal = nufon_protocol::Peer {
+                id: source.public_key.clone().unwrap_or_default(),
+                identity: remote.id.clone(),
+                name: source.name.clone(),
+                endpoint_id: source.endpoint_id.clone(),
+                endpoint_addr: transport.endpoint_ticket_for(&source.id).and_then(|bytes| String::from_utf8(bytes).ok()),
+                aliases: Vec::new(),
+            };
+            if !reciprocal.id.is_empty() && !state.peers.iter().any(|candidate| candidate.identity == reciprocal.identity && candidate.id == reciprocal.id) {
+                state.peers.push(reciprocal);
+            }
+            for (grant_identity, subject, capability) in [
+                (peer.identity.clone(), remote.public_key.clone().unwrap_or_default(), nufon_protocol::Capability::MessageSend),
+                (remote.id.clone(), source.public_key.clone().unwrap_or_default(), nufon_protocol::Capability::MessageReceive),
+            ] {
+                if !state.grants.iter().any(|grant| grant.identity == grant_identity && grant.subject == subject && grant.capability == capability && grant.revoked_at.is_none()) {
+                    state.grants.push(nufon_protocol::CapabilityGrant { capability, identity: grant_identity, subject, conversation: None, active_at: "0".into(), expires_at: None, revision: 1, revoked_at: None });
+                }
+            }
+        }
+    }
     let data_dir = state.data_dir.clone();
     if let Err(error) = state.save(&data_dir) {
         return error_response(
@@ -2254,11 +2292,12 @@ fn peer_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             false,
         );
     };
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let mut state = store.lock().expect("store mutex poisoned");
     let Some(peer) = state.peers.iter_mut().find(|peer| {
-        peer.id == reference
+        peer.identity == identity && (peer.id == reference
             || peer.name == reference
-            || peer.aliases.iter().any(|alias| alias == reference)
+            || peer.aliases.iter().any(|alias| alias == reference))
     }) else {
         return error_response(
             request.id.clone(),
@@ -2346,12 +2385,13 @@ fn peer_remove(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             false,
         );
     };
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let mut state = store.lock().expect("store mutex poisoned");
     let before = state.peers.len();
     state.peers.retain(|peer| {
-        !(peer.id == reference
+        !(peer.identity == identity && (peer.id == reference
             || peer.name == reference
-            || peer.aliases.iter().any(|alias| alias == reference))
+            || peer.aliases.iter().any(|alias| alias == reference)))
     });
     if state.peers.len() == before {
         return error_response(
@@ -2425,11 +2465,11 @@ fn compact_identities(store: &Arc<Mutex<Store>>) -> Vec<u8> {
     payload
 }
 
-fn compact_peers(store: &Arc<Mutex<Store>>) -> Vec<u8> {
+fn compact_peers(store: &Arc<Mutex<Store>>, identity: Option<&str>) -> Vec<u8> {
     let state = store.lock().expect("store mutex poisoned");
     let mut payload = Vec::new();
     payload.extend_from_slice(&(state.peers.len() as u16).to_be_bytes());
-    for peer in &state.peers {
+    for peer in state.peers.iter().filter(|peer| identity.is_none_or(|value| peer.identity == value)) {
         let name = peer.name.as_bytes();
         let endpoint = peer.endpoint_id.as_deref().unwrap_or("").as_bytes();
         if name.len() > u16::MAX as usize || endpoint.len() > u16::MAX as usize {
@@ -2443,11 +2483,12 @@ fn compact_peers(store: &Arc<Mutex<Store>>) -> Vec<u8> {
     payload
 }
 
-fn compact_events(store: &Arc<Mutex<Store>>, after: Option<&str>) -> Vec<u8> {
+fn compact_events(store: &Arc<Mutex<Store>>, after: Option<&str>, identity: Option<&str>) -> Vec<u8> {
     let state = store.lock().expect("store mutex poisoned");
     let events: Vec<_> = state
         .events
         .iter()
+        .filter(|event| identity.is_none_or(|value| event.identity == value))
         .filter(|event| after.is_none_or(|cursor| event.cursor.as_str() > cursor))
         .collect();
     let mut payload = Vec::new();
@@ -2509,11 +2550,13 @@ fn events(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             );
         }
     }
+    let identity = request_text(&request.params, "identity");
     let events: Vec<_> = state
         .events
         .iter()
         .rev()
         .take(EVENT_RETENTION)
+        .filter(|event| identity.as_deref().is_none_or(|value| event.identity == value))
         .filter(|event| {
             after.is_none_or(|cursor| event.cursor.as_str() > cursor)
                 && kind.is_none_or(|value| event.r#type == value)
@@ -2718,6 +2761,7 @@ mod tests {
         let mut state = store.lock().unwrap();
         state.peers.push(nufon_protocol::Peer {
             id: peer_id.clone(),
+            identity: "default".into(),
             name: "Alice".into(),
             endpoint_id: Some("endpoint-a".into()),
             endpoint_addr: None,
@@ -2775,6 +2819,7 @@ mod tests {
         let mut state = store.lock().unwrap();
         state.peers.push(nufon_protocol::Peer {
             id: peer_id.clone(),
+            identity: "default".into(),
             name: "Alice".into(),
             endpoint_id: Some("ep".into()),
             endpoint_addr: None,
@@ -2869,6 +2914,7 @@ mod tests {
             .unwrap()
             .operations
             .push(nufon_protocol::Operation {
+                identity: "default".into(),
                 operation_id: "op_cancel".into(),
                 method: "message.send".into(),
                 status: nufon_protocol::OperationStatus::Queued,
@@ -3010,6 +3056,7 @@ mod tests {
         let mut store = Store::load(&dir).unwrap();
         store.peers.push(nufon_protocol::Peer {
             id: "peer-1".into(),
+            identity: "default".into(),
             name: "Alice".into(),
             endpoint_id: Some("ep-1".into()),
             endpoint_addr: None,
@@ -3040,6 +3087,7 @@ mod tests {
         for id in ["peer-1", "peer-2"] {
             store.peers.push(nufon_protocol::Peer {
                 id: id.into(),
+                identity: "default".into(),
                 name: "same".into(),
                 endpoint_id: None,
                 endpoint_addr: None,
