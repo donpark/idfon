@@ -137,6 +137,7 @@ export type Msg =
   | { readonly kind: "peer_add_error"; readonly data: Uint8Array }
   | { readonly kind: "send_message" }
   | { readonly kind: "attach_file" }
+  | { readonly kind: "open_link"; readonly data: Uint8Array }
   | { readonly kind: "reply_message" }
 
   | { readonly kind: "sender_ready"; readonly data: Uint8Array }
@@ -192,7 +193,7 @@ export type Msg =
 export const viewUnbound = [
   "replyRoute", "identityName", "copyIdentityTicket", "identityError", "chatOpen", "receiverTicket", "capabilityTicket", "endpointId", "audioActive", "pendingRecordingSend", "subscribedRecording", "showTicket", "liveAutoAccept", "eventCursor", "eventsReady",
   "receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "poll_events", "tickAt",
-  "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "chat_closed", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_emergency_stopped", "media_session_ready",
+  "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "chat_closed", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_emergency_stopped", "media_session_ready",
 ] as const;
 
 export function subscriptions(model: Model): Sub<Msg> {
@@ -852,6 +853,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (model.receiverId.length === 0 || model.message.length === 0) return model;
       if (isSelfTarget(model, model.receiverId)) return { ...model, senderStatus: utf8Bytes("Cannot send to this identity") };
       return [{ ...addChatMessage(model, model.message, true, utf8Bytes("Sending")), message: EMPTY }, Cmd.request("nufond.request", sendPayload(model), { key: "nufond-send", ok: "sender_ready", err: "sender_error" })];
+    case "open_link":
+      if (msg.data.length === 0) return model;
+      return [model, Cmd.openExternalUrl(msg.data)];
     case "attach_file":
       return { ...model, senderStatus: utf8Bytes("File attachments not supported yet") };
     case "reply_message":

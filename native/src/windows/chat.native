@@ -12,13 +12,13 @@
       <for each="history" key="id" as="item">
         <if test="{item.sent}">
           <row main="end">
-            <bubble variant="primary"><text wrap="true">{item.text}</text><text foreground="text_muted">{item.timestamp} · {item.status}</text></bubble>
+            <bubble variant="primary"><markdown source="{item.text}" on-link="open_link" /><text foreground="text_muted">{item.timestamp} · {item.status}</text></bubble>
           </row>
         </if>
         <else>
           <row main="start">
             <avatar label="{selectedConnectionName}">NU</avatar>
-            <bubble><text wrap="true">{item.text}</text><text foreground="text_muted">{item.timestamp} · {item.status}</text></bubble>
+            <bubble><markdown source="{item.text}" on-link="open_link" /><text foreground="text_muted">{item.timestamp} · {item.status}</text></bubble>
           </row>
         </else>
       </for>
