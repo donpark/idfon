@@ -32,6 +32,14 @@ export interface SessionLaunch {
   readonly sessionType: Uint8Array;
 }
 
+export interface Comms {
+  readonly audio: boolean;
+  readonly live: boolean;
+  readonly subscribed: boolean;
+  readonly recording: boolean;
+  readonly recReady: boolean;
+}
+
 export interface Model {
   readonly message: Uint8Array;
   readonly history: readonly ChatMessage[];
@@ -70,6 +78,7 @@ export interface Model {
   readonly recordingActive: boolean;
   readonly recordingTicket: Uint8Array;
   readonly recordingDuration: Uint8Array;
+  readonly comms: Comms;
   readonly blobTicketInput: Uint8Array;
   readonly blobStatus: Uint8Array;
   readonly playbackActive: boolean;
@@ -230,6 +239,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     recordingActive: false,
     recordingTicket: EMPTY,
     recordingDuration: utf8Bytes("0"),
+    comms: { audio: false, live: false, subscribed: false, recording: false, recReady: false },
     blobTicketInput: EMPTY,
     blobStatus: utf8Bytes("No blob selected"),
     playbackActive: false,
@@ -530,6 +540,22 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 
 function isSelfTarget(model: Model, target: Uint8Array): boolean {
   return model.endpointId.length !== 0 && sameBytes(model.endpointId, target);
+}
+
+function settle(model: Model): Model {
+  const c = model.comms;
+  return {
+    ...model,
+    audioActive: c.audio,
+    liveActive: c.live,
+    subscribedActive: c.subscribed,
+    recordingActive: c.recording,
+    recordingReady: c.recReady,
+  };
+}
+
+function comUpdate(model: Model, patch: Partial<Comms>): Model {
+  return settle({ ...model, comms: { ...model.comms, ...patch } });
 }
 
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
@@ -836,7 +862,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ];
       return setLastMessageStatus({ ...model, senderStatus: msg.data.length === 0 ? utf8Bytes("Message sent") : msg.data }, utf8Bytes("Sent"));
     case "sender_error":
-      return setLastMessageStatus({ ...model, senderStatus: msg.data }, utf8Bytes("Failed"));
+      return setLastMessageStatus({ ...model, pendingRecordingSend: false, senderStatus: msg.data }, utf8Bytes("Failed"));
     case "recording_persisted":
       return model;
     case "recording_persist_error":
@@ -852,7 +878,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "toggle_advanced":
       return { ...model, showAdvanced: !model.showAdvanced };
     case "audio_started":
-      return { ...model, audioActive: true, audioStatus: utf8Bytes("Microphone on") };
+      return { ...comUpdate(model, { audio: true }), audioStatus: utf8Bytes("Microphone on") };
     case "audio_stopped":
       return { ...model, audioActive: false, audioStatus: utf8Bytes("Microphone off") };
     case "audio_error":
@@ -887,14 +913,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
       ])];
     case "live_started":
-      return [{ ...model, liveActive: true, audioActive: true, audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data, liveStatus: utf8Bytes("Calling receiver") }, Cmd.request("nufond.request", daemonMessagePayload(model.identityName, model.receiverId, liveInviteMessage(utf8Bytes("start"), msg.data), utf8Bytes(`live-start-${model.history.length}`), model.capabilityTicket), { key: "media-live-signal", ok: "sender_ready", err: "sender_error" })];
+      return [{ ...comUpdate(model, { live: true, audio: true }), audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data, liveStatus: utf8Bytes("Calling receiver") }, Cmd.request("nufond.request", daemonMessagePayload(model.identityName, model.receiverId, liveInviteMessage(utf8Bytes("start"), msg.data), utf8Bytes(`live-start-${model.history.length}`), model.capabilityTicket), { key: "media-live-signal", ok: "sender_ready", err: "sender_error" })];
     case "copy_live_ticket":
       if (model.liveTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.liveTicket)];
     case "live_stopped":
-      return { ...model, liveActive: false, audioActive: false, audioStatus: utf8Bytes("Microphone off"), liveStatus: utf8Bytes("Live audio off") };
+      return { ...comUpdate({ ...model, audioStatus: utf8Bytes("Microphone off"), liveStatus: utf8Bytes("Live audio off") }, { live: false, audio: false }) };
     case "live_error":
-      return { ...model, liveActive: false, liveStatus: msg.data };
+      return { ...comUpdate({ ...model, liveStatus: msg.data }, { live: false }) };
     case "live_ticket_edit":
       return { ...model, liveTicketInput: editText(model.liveTicketInput, msg.edit) };
     case "live_subscribe":
