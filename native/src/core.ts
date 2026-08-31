@@ -917,10 +917,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "copy_live_ticket":
       if (model.liveTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.liveTicket)];
-    case "live_stopped":
-      return { ...comUpdate({ ...model, audioStatus: utf8Bytes("Microphone off"), liveStatus: utf8Bytes("Live audio off") }, { live: false, audio: false }) };
-    case "live_error":
-      return { ...comUpdate({ ...model, liveStatus: msg.data }, { live: false }) };
+    case "live_stopped": {
+      const quiet = { ...model, audioStatus: utf8Bytes("Microphone off"), liveStatus: utf8Bytes("Live audio off") };
+      return comUpdate(quiet, { live: false, audio: false });
+    }
+    case "live_error": {
+      const failed = { ...model, liveStatus: msg.data };
+      return comUpdate(failed, { live: false });
+    }
     case "live_ticket_edit":
       return { ...model, liveTicketInput: editText(model.liveTicketInput, msg.edit) };
     case "live_subscribe":
