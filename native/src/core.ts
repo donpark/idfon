@@ -558,7 +558,15 @@ function settle(model: Model): Model {
 }
 
 function comUpdate(model: Model, patch: Partial<Comms>): Model {
-  return settle({ ...model, comms: { ...model.comms, ...patch } });
+  // SC4013: spreading a Partial<Comms> parameter stamps undefined onto
+  // absent fields at runtime; merge each field explicitly instead.
+  return settle({ ...model, comms: {
+    audio: patch.audio ?? model.comms.audio,
+    live: patch.live ?? model.comms.live,
+    subscribed: patch.subscribed ?? model.comms.subscribed,
+    recording: patch.recording ?? model.comms.recording,
+    recReady: patch.recReady ?? model.comms.recReady,
+  } });
 }
 
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
