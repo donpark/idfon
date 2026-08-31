@@ -65,12 +65,6 @@
     <spacer width="12" />
   </row>
 
-  <row gap="12">
-    <text size="sm" foreground="text_muted">{recordingStatus}</text>
-    <text size="sm" foreground="text_muted">{liveStatus}</text>
-    <text size="sm" foreground="text_muted">{audioStatus}</text>
-  </row>
-
   <if test="{fetchedRecordingReady}">
     <if test="{playbackActive}">
       <button variant="secondary" on-press="playback_stop">Stop received recording</button>
@@ -78,38 +72,5 @@
     <else>
       <button variant="primary" on-press="playback_start">Play received recording</button>
     </else>
-  </if>
-
-  <button variant="secondary" on-press="toggle_advanced">Advanced</button>
-  <if test="{showAdvanced}">
-    <column gap="8">
-      <button variant="secondary" on-press="audio_probe">Test microphone</button>
-      <row gap="8" cross="center">
-        <text-field text="{volumeInput}" label="Volume 0-100" on-input="volume_edit" />
-        <button variant="secondary" on-press="volume_set">Set volume</button>
-      </row>
-      <button variant="secondary" on-press="audio_emergency_stop">Stop all audio</button>
-      <button variant="secondary" on-press="toggle_live_auto_accept">Toggle live-audio approval</button>
-      <text foreground="text_muted">{livePolicyStatus}</text>
-      <text-field text="{liveTicketInput}" label="Live ticket" placeholder="Paste iroh-live ticket" on-input="live_ticket_edit" />
-      <if test="{liveActive}">
-        <text>{liveTicket}</text>
-        <button variant="secondary" on-press="copy_live_ticket">Copy live ticket</button>
-      </if>
-      <if test="{subscribedActive}">
-        <button variant="secondary" on-press="live_unsubscribe">Stop subscribed audio</button>
-      </if>
-      <else>
-        <button variant="secondary" on-press="live_subscribe">Subscribe to live audio</button>
-      </else>
-      <if test="{recordingTicket}">
-        <text>{recordingTicket}</text>
-        <button variant="secondary" on-press="copy_recording_ticket">Copy recording ticket</button>
-      </if>
-      <text-field text="{blobTicketInput}" label="Blob ticket" placeholder="Paste BlobTicket" on-input="blob_ticket_edit" />
-      <button variant="secondary" on-press="blob_fetch">Fetch recording</button>
-      <text>{blobStatus}</text>
-      <text>{playbackStatus}</text>
-    </column>
   </if>
 </column>

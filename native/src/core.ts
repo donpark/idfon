@@ -251,7 +251,8 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     showAddConnection: false,
     showAddIdentity: false,
     newIdentityName: EMPTY,
-    liveAutoAccept: false,
+    // ponytail: auto-accept incoming calls now that the Advanced panel (the only approval toggle) is gone; real approval prompt if wanted later
+    liveAutoAccept: true,
     livePolicyStatus: utf8Bytes("Incoming live audio requires approval"),
     eventCursor: EMPTY,
     tickAt: 0,
