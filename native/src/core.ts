@@ -880,11 +880,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "audio_started":
       return { ...comUpdate(model, { audio: true }), audioStatus: utf8Bytes("Microphone on") };
     case "audio_stopped":
-      return { ...model, audioActive: false, audioStatus: utf8Bytes("Microphone off") };
+      return { ...comUpdate(model, { audio: false }), audioStatus: utf8Bytes("Microphone off") };
     case "audio_error":
-      return { ...model, audioActive: false, audioStatus: msg.data };
+      return { ...comUpdate(model, { audio: false }), audioStatus: msg.data };
     case "audio_emergency_stopped":
-      return { ...model, audioActive: false, liveActive: false, subscribedActive: false, recordingActive: false, playbackActive: false, audioStatus: utf8Bytes("Emergency stop"), liveStatus: utf8Bytes("Live audio stopped"), playbackStatus: utf8Bytes("Playback stopped") };
+      return { ...comUpdate(model, { audio: false, live: false, subscribed: false, recording: false, recReady: false }), playbackActive: false, audioStatus: utf8Bytes("Emergency stop"), liveStatus: utf8Bytes("Live audio stopped"), playbackStatus: utf8Bytes("Playback stopped") };
     case "audio_probe":
       return [model, Cmd.request("media.audio.probe", EMPTY, { key: "media-audio-probe", ok: "audio_probe_result", err: "audio_error" })];
     case "audio_probe_result":
@@ -930,9 +930,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (!model.subscribedActive) return model;
       return [model, Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" })];
     case "live_subscribed":
-      return { ...model, subscribedActive: true, subscribedRecording: true, liveStatus: utf8Bytes("Live audio subscribed") };
+      return { ...comUpdate(model, { subscribed: true }), subscribedRecording: true, liveStatus: utf8Bytes("Live audio subscribed") };
     case "live_unsubscribed":
-      return { ...model, subscribedActive: false, recordingReady: model.subscribedRecording || model.recordingReady, subscribedRecording: false, liveStatus: utf8Bytes("Live audio unsubscribed"), recordingStatus: model.subscribedRecording ? utf8Bytes("Recording ready") : model.recordingStatus };
+      return { ...comUpdate(model, { subscribed: false, recReady: model.subscribedRecording || model.recordingReady }), subscribedRecording: false, liveStatus: utf8Bytes("Live audio unsubscribed"), recordingStatus: model.subscribedRecording ? utf8Bytes("Recording ready") : model.recordingStatus };
     case "live_subscribe_error":
       return { ...model, liveStatus: msg.data };
     case "recording_start":
@@ -942,22 +942,22 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (!model.recordingActive) return model;
       return [model, Cmd.request("media.recording.stop", EMPTY, { key: "media-recording", ok: "recording_stopped", err: "recording_error" })];
     case "recording_started":
-      return { ...model, recordingActive: true, recordingReady: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Recording microphone") };
+      return { ...comUpdate(model, { recording: true }), recordingStatus: utf8Bytes("Recording microphone") };
     case "recording_stopped": {
-      const next = { ...model, recordingActive: false, recordingReady: false, subscribedRecording: false, recordingStatus: utf8Bytes("Preparing recording") };
+      const next = { ...comUpdate(model, { recording: false, recReady: false }), subscribedRecording: false, recordingStatus: utf8Bytes("Preparing recording") };
       return [next, Cmd.request("media.live.recording.store", EMPTY, { key: "media-recording-store", ok: "recording_stored", err: "recording_store_error" })];
     }
     case "recording_error":
-      return { ...model, recordingActive: false, recordingStatus: msg.data };
+      return { ...comUpdate(model, { recording: false }), recordingStatus: msg.data };
     case "recording_store":
       if (!model.recordingReady) return model;
       return [model, Cmd.request("media.live.recording.store", EMPTY, { key: "media-recording-store", ok: "recording_stored", err: "recording_store_error" })];
     case "recording_stored": {
       const fields = routedFields(msg.data);
-      return { ...model, recordingReady: true, senderDisabled: model.receiverId.length === 0, recordingDuration: fields[0], recordingStatus: utf8Bytes("Recording attached"), recordingTicket: fields[1] };
+      return { ...comUpdate(model, { recReady: true }), senderDisabled: model.receiverId.length === 0, recordingDuration: fields[0], recordingStatus: utf8Bytes("Recording attached"), recordingTicket: fields[1] };
     }
     case "recording_cancel":
-      return { ...model, recordingReady: false, pendingRecordingSend: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Recording discarded") };
+      return { ...comUpdate(model, { recReady: false }), pendingRecordingSend: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Recording discarded") };
     case "copy_recording_ticket":
       if (model.recordingTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.recordingTicket)];
