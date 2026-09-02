@@ -75,6 +75,9 @@ pub fn build(b: *std.Build) void {
     const runner = app.module.root_source_file orelse @panic("Generated runner missing");
     const patch = b.addSystemCommand(&.{ "python3", "patch_ts_runner.py" });
     patch.addFileArg(runner);
+    // Re-run the patch when the script itself changes (the runner input is
+    // otherwise content-cached across builds).
+    patch.addFileArg(b.path("patch_ts_runner.py"));
     app.compile.step.dependOn(&patch.step);
     artifacts.tests.step.dependOn(&patch.step);
 }

@@ -79,6 +79,32 @@ struct Playback {
     thread: Option<thread::JoinHandle<()>>,
 }
 
+/// Silences the microphone toward the live publisher while a local recording
+/// is active: the user can prepare a voice message mid-call without the peer
+/// hearing it. Sits between the capture device and the Opus encoder.
+struct MuteSource {
+    inner: InputStream,
+}
+
+impl AudioSource for MuteSource {
+    fn format(&self) -> AudioFormat {
+        self.inner.format()
+    }
+    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
+        let result = self.inner.pop_samples(buf);
+        if LOCAL_RECORDING
+            .lock()
+            .expect("recording mutex poisoned")
+            .is_some()
+        {
+            for sample in buf.iter_mut() {
+                *sample = 0.0;
+            }
+        }
+        result
+    }
+}
+
 fn audio() -> &'static AudioBackend {
     AUDIO.get_or_init(AudioBackend::default)
 }
@@ -466,7 +492,16 @@ impl AudioSink for RecordingSink {
         Ok(self.format)
     }
     fn push_samples(&mut self, samples: &[f32]) -> anyhow::Result<()> {
-        self.output.push_samples(samples)?;
+        // Mute the speaker while a local recording is active: there is no
+        // echo cancellation, so peer audio would bleed into the recording.
+        // The subscribed-call WAV recording keeps running regardless.
+        if LOCAL_RECORDING
+            .lock()
+            .expect("recording mutex poisoned")
+            .is_none()
+        {
+            self.output.push_samples(samples)?;
+        }
         if !self.handle.is_paused() {
             self.recorder
                 .lock()
@@ -938,7 +973,7 @@ pub fn media_live_start() -> char_p::Box {
         let broadcast = LocalBroadcast::new();
         broadcast
             .audio()
-            .set(input, AudioCodec::Opus, [AudioPreset::Hq])?;
+            .set(MuteSource { inner: input }, AudioCodec::Opus, [AudioPreset::Hq])?;
         let broadcast_name = broadcast_name();
         live.publish(&broadcast_name, &broadcast).await?;
         let ticket = LiveTicket::new(live.endpoint().addr(), &broadcast_name).serialize();

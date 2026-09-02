@@ -83,6 +83,11 @@ export interface Model {
   readonly recordingActive: boolean;
   readonly recordingTicket: Uint8Array;
   readonly recordingDuration: Uint8Array;
+  readonly recordingStartedAt: number;
+  readonly recordingElapsed: Uint8Array;
+  readonly composerActive: boolean;
+  readonly composerIdle: boolean;
+  readonly waveform: readonly number[];
   readonly comms: Comms;
   readonly blobTicketInput: Uint8Array;
   readonly blobStatus: Uint8Array;
@@ -168,6 +173,7 @@ export type Msg =
   | { readonly kind: "live_subscribed"; readonly data: Uint8Array }
   | { readonly kind: "live_unsubscribed"; readonly data: Uint8Array }
   | { readonly kind: "live_subscribe_error"; readonly data: Uint8Array }
+  | { readonly kind: "recording_preview" }
   | { readonly kind: "recording_start" }
   | { readonly kind: "recording_stop" }
   | { readonly kind: "recording_started"; readonly data: Uint8Array }
@@ -195,7 +201,7 @@ export type Msg =
 export const viewUnbound = [
   "replyRoute", "identityName", "identityInitials", "incomingLive", "copyIdentityTicket", "identityError", "chatOpen", "receiverTicket", "capabilityTicket", "endpointId", "audioActive", "pendingRecordingSend", "subscribedRecording", "showTicket", "liveAutoAccept", "eventCursor", "eventsReady",
   "receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "poll_events", "tickAt",
-  "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "chat_closed", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready",
+  "recordingStartedAt", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "chat_closed", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready",
 ] as const;
 
 export function subscriptions(model: Model): Sub<Msg> {
@@ -245,6 +251,11 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     recordingActive: false,
     recordingTicket: EMPTY,
     recordingDuration: utf8Bytes("0"),
+    recordingStartedAt: 0,
+    recordingElapsed: utf8Bytes("0:00"),
+    composerActive: false,
+    composerIdle: true,
+    waveform: [],
     comms: { audio: false, live: false, subscribed: false, recording: false, recReady: false },
     blobTicketInput: EMPTY,
     blobStatus: utf8Bytes("No blob selected"),
@@ -555,6 +566,20 @@ function withInboundTarget(model: Model, peer: Uint8Array): Model {
   return { ...model, receiverId: peer, senderDisabled: isSelfTarget(model, peer) };
 }
 
+function waveformBars(phase: number): readonly number[] {
+  // ponytail: deterministic bar pattern stepped by the 1s event poll, not
+  // real mic levels; drive from the recorder peak via a faster timer if
+  // true levels matter
+  const bars: number[] = [];
+  let i = 0;
+  while (i < 28) {
+    const h = (i * 37 + phase * 53) % 89;
+    bars.push(0.15 + (h / 89) * 0.85);
+    i += 1;
+  }
+  return bars;
+}
+
 function settle(model: Model): Model {
   const c = model.comms;
   return {
@@ -564,6 +589,8 @@ function settle(model: Model): Model {
     subscribedActive: c.subscribed,
     recordingActive: c.recording,
     recordingReady: c.recReady,
+    composerActive: model.message.length > 0,
+    composerIdle: !c.recording && !c.recReady,
   };
 }
 
@@ -668,8 +695,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ])];
     case "identity_use_error":
       return { ...model, receiverStatus: msg.data };
-    case "poll_events":
-      return [{ ...model, tickAt: msg.at }, Cmd.request("nufond.request", daemonEventsPayload(model.identityName, model.eventCursor), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" })];
+    case "poll_events": {
+      const elapsed = msg.at > model.recordingStartedAt ? msg.at - model.recordingStartedAt : 0;
+      const seconds = Math.floor(elapsed / 1000);
+      const mm = Math.floor(seconds / 60);
+      const ss = seconds % 60;
+      const pad = ss < 10 ? "0" : "";
+      return [{ ...model, tickAt: msg.at, recordingElapsed: utf8Bytes(`${mm}:${pad}${ss}`), waveform: waveformBars(seconds) }, Cmd.request("nufond.request", daemonEventsPayload(model.identityName, model.eventCursor), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" })];
+    }
     case "events_loaded": {
       if (msg.data.length < 2) return model;
       const count = msg.data[0] * 256 + msg.data[1];
@@ -826,8 +859,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "chat_closed":
       return { ...model, chatOpen: false, sessionLaunch: null };
-    case "message_edit":
-      return { ...model, message: editText(model.message, msg.edit) };
+    case "message_edit": {
+      const edited = editText(model.message, msg.edit);
+      return comUpdate({ ...model, message: edited }, {});
+    }
     case "identity_name_edit":
       return { ...model, identityName: editText(model.identityName, msg.edit), identityInitials: identityInitials(editText(model.identityName, msg.edit)) };
     case "connection_name_edit":
@@ -974,6 +1009,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return { ...comUpdate(model, { subscribed: false, recReady: model.subscribedRecording || model.recordingReady }), subscribedRecording: false, liveStatus: utf8Bytes("Live audio unsubscribed"), recordingStatus: model.subscribedRecording ? utf8Bytes("Recording ready") : model.recordingStatus };
     case "live_subscribe_error":
       return { ...model, liveStatus: msg.data };
+    case "recording_preview":
+      if (!model.recordingReady) return model;
+      return [model, Cmd.request("media.recording.play", model.recordingTicket, { key: "media-playback", ok: "playback_started", err: "playback_error" })];
     case "recording_start":
       if (model.recordingActive) return model;
       return [model, Cmd.request("media.recording.start", EMPTY, { key: "media-recording", ok: "recording_started", err: "recording_error" })];
@@ -981,7 +1019,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (!model.recordingActive) return model;
       return [model, Cmd.request("media.recording.stop", EMPTY, { key: "media-recording", ok: "recording_stopped", err: "recording_error" })];
     case "recording_started":
-      return { ...comUpdate(model, { recording: true }), recordingStatus: utf8Bytes("Recording microphone") };
+      return { ...comUpdate(model, { recording: true }), recordingStartedAt: model.tickAt, waveform: waveformBars(0), recordingStatus: utf8Bytes("Recording microphone") };
     case "recording_stopped": {
       const next = { ...comUpdate(model, { recording: false, recReady: false }), subscribedRecording: false, recordingStatus: utf8Bytes("Preparing recording") };
       return [next, Cmd.request("media.live.recording.store", EMPTY, { key: "media-recording-store", ok: "recording_stored", err: "recording_store_error" })];
@@ -994,7 +1032,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "recording_stored": {
       if (model.comms.recording) return model; // stale store from a superseded recording — never attach mid-recording
       const fields = routedFields(msg.data);
-      return { ...comUpdate(model, { recReady: true }), senderDisabled: model.receiverId.length === 0, recordingDuration: fields[0], recordingStatus: utf8Bytes("Recording attached"), recordingTicket: fields[1] };
+      const settled = comUpdate(model, { recReady: true });
+      return [{ ...settled, senderDisabled: model.receiverId.length === 0, recordingDuration: fields[0], recordingStatus: utf8Bytes("Recording attached"), recordingTicket: fields[1] },
+        // persist like the inbound path so preview playback can read the blob
+        Cmd.request("media.recording.persist", fields[1], { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" })];
     }
     case "recording_cancel":
       return { ...comUpdate(model, { recReady: false }), pendingRecordingSend: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Recording discarded") };

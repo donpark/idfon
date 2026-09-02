@@ -59,32 +59,56 @@
       </for>
     </column>
   </scroll>
-  <if test="{recordingReady}">
-    <row gap="8" cross="center">
-      <icon name="music" width="14" height="14" foreground="text_muted" />
-      <text grow="1" foreground="text_muted">{recordingDuration} sec audio attached</text>
-      <button variant="ghost" size="icon" label="Remove audio attachment" icon="x" on-press="recording_cancel" />
+  <if test="{recordingActive}">
+    <!-- Messages-style recording bar: red pill with live waveform and timer;
+         the stop button is pinned at the right edge so it never moves. -->
+    <row cross="center">
+      <spacer width="12" />
+      <row grow="1" height="44" background="surface_subtle" radius="lg" cross="center" gap="10" padding="8" label="Recording audio">
+        <icon name="circle-dot" width="12" height="12" foreground="destructive" />
+        <text foreground="destructive">Recording…</text>
+        <spacer grow="1" />
+        <chart y-min="0" y-max="1" grid-lines="0" height="22" grow="1" label="Microphone level">
+          <series values="{waveform}" kind="bar" color="destructive" />
+        </chart>
+        <text foreground="destructive">{recordingElapsed}</text>
+      </row>
+      <button size="icon" variant="destructive" icon="x" on-press="recording_stop" label="Stop recording"></button>
+      <spacer width="12" />
     </row>
   </if>
-  <!-- Chatbot-style composer: one bordered input group; attach, record,
-       and call actions live in the actions row and swap to a stop button
-       while recording or in a call. -->
-  <row>
-    <spacer width="12" />
-    <input-group grow="1" height="78" label="Message composer">
-      <textarea text="{message}" placeholder="Write a message…" submit-on-enter="true" on-input="message_edit" on-submit="send_message" label="Message" />
-      <input-group-actions>
-        <button size="icon" variant="ghost" icon="plus" on-press="attach_file" label="Attach file"></button>
+  <if test="{recordingReady}">
+    <!-- Messages-style playback pill: discard, preview, duration, send. -->
+    <row cross="center">
+      <spacer width="12" />
+      <button size="icon" variant="ghost" icon="x" on-press="recording_cancel" label="Discard recording"></button>
+      <row grow="1" height="44" background="surface_subtle" radius="lg" cross="center" gap="10" padding="8" label="Voice message preview">
+        <button size="icon" variant="ghost" icon="play" on-press="recording_preview" label="Preview recording"></button>
+        <text foreground="text_muted">Voice message · {recordingDuration} sec</text>
         <spacer grow="1" />
-        <if test="{recordingActive}">
-          <button size="icon" variant="destructive" icon="x" on-press="recording_stop" label="Stop recording"></button>
-        </if>
-        <else>
-          <button size="icon" variant="ghost" icon="circle-dot" on-press="recording_start" label="Record audio"></button>
-        </else>
+      </row>
+      <button size="icon" variant="primary" icon="arrow-up" disabled="{senderDisabled}" on-press="send_message" label="Send recording"></button>
+      <spacer width="12" />
+    </row>
+  </if>
+  <!-- Messages-style composer: + on the left, one pill field, record/send
+       swap on the field's right edge (record when empty, send when typing). -->
+  <if test="{composerIdle}">
+    <row cross="center">
+      <spacer width="12" />
+      <button size="icon" variant="secondary" icon="plus" on-press="attach_file" label="Attach file"></button>
+      <spacer width="4" />
+      <input-group grow="1" height="44" label="Message composer">
+        <textarea text="{message}" placeholder="Message" submit-on-enter="true" on-input="message_edit" on-submit="send_message" label="Message" />
+      </input-group>
+      <spacer width="4" />
+      <if test="{composerActive}">
         <button size="icon" variant="primary" icon="arrow-up" disabled="{senderDisabled}" on-press="send_message" label="Send message"></button>
-      </input-group-actions>
-    </input-group>
-    <spacer width="12" />
-  </row>
+      </if>
+      <else>
+        <button size="icon" variant="ghost" icon="app:wave" on-press="recording_start" label="Record audio"></button>
+      </else>
+      <spacer width="12" />
+    </row>
+  </if>
 </column>
