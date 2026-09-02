@@ -51,8 +51,14 @@ The chat window currently provides:
 - automatic live ticket subscription/unsubscription for incoming calls;
 - local microphone recording start/stop;
 - Ogg Opus recording storage through `iroh-blobs`;
+- a Messages-style composer with three states: an idle pill (record button
+  swaps to a send arrow while typing), a red recording bar with a live bar
+  waveform and elapsed timer, and a playback pill (discard, preview, send)
+  once the recording is stored;
 - recording attachments that appear as play/stop buttons in the message
   thread (voice messages), playable on both sides once the blob is local;
+  recordings can be captured and sent while a call is active (see muting
+  below);
 - fetched Ogg Opus playback, one playback at a time — a new play supersedes
   the previous one;
 - subscriber output volume control.
@@ -65,6 +71,24 @@ Live publisher and subscriber shutdown paths call `Live::shutdown()` before
 releasing their sessions, including replacement of an active subscriber. This
 keeps the underlying Iroh endpoint/router shutdown graceful and avoids the
 `Endpoint dropped without calling Endpoint::close` error.
+
+### Mid-call recording muting
+
+Recording is allowed while a call is active: some users prefer to compose a
+voice message instead of speaking ad-hoc. Because the live publisher and the
+local recorder would otherwise share the microphone, and there is no echo
+cancellation, `iroh-c-ffi/src/media.rs` mutes both directions while
+`LOCAL_RECORDING` is active:
+
+- a `MuteSource` wrapper between the capture device and the live Opus encoder
+  zeroes microphone samples toward the peer — the peer hears silence while you
+  record;
+- the subscriber's output sink skips speaker playback — peer audio does not
+  bleed into the recording. The subscribed-call WAV recording on disk keeps
+  running throughout.
+
+Both mutes lift automatically when the recording stops; a call active before
+the recording continues afterwards.
 
 Voice message playback is content-addressed: `media.blob.fetch` exports to
 `fetched-blobs/<hash>.opus` and `media.recording.play` takes the blob ticket,
@@ -183,3 +207,7 @@ The Phase 7 MVP is implemented. The following production follow-ups remain:
 11. **Automated smoke test** — promote the two-process media flow into a
     repeatable isolated test covering capture, decode, non-silent samples,
     BlobTicket transfer, fetched bytes, and playback.
+12. **Real waveform levels** — the recording bar's waveform is a
+    deterministic bar pattern stepped by the event poll, not microphone
+    levels; drive it from the recorder's peak (already tracked in
+    `LOCAL_RECORDING`) through a faster timer for true VU behavior.

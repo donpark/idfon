@@ -30,7 +30,11 @@ cat /tmp/nufon-<pid>.log
 
 Edit `src/core.ts` for behavior, `src/app.native` for the home view,
 `src/windows/*.native` for secondary windows, and `app.json` for
-windows/identity/permissions. Audio media status, verified behavior, and
+windows/identity/permissions. App-registered vector icons (`app:<name>` in
+markup) live in `assets/icons/*.svg` and are injected into the generated app
+runner by `patch_ts_runner.py` — add a new icon there and in `assets/icons/`
+together, and mark any intentional logic-only model fields or message tags in
+`viewUnbound` (`src/core.ts`). Audio media status, verified behavior, and
 remaining production tasks are documented in [`../docs/audio-media.md`](../docs/audio-media.md). The home view restores the default identity,
 starts its endpoint, and shows that identity's connections. Selecting an
 identity copies its full Iroh ticket. Double-clicking or pressing Enter on a
