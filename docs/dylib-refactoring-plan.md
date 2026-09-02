@@ -283,6 +283,28 @@ is cheap relative to re-doing the same packaging work twice.
 - `nufon-media` and `iroh-c-ffi` cannot have divergent `iroh-live` versions. ✓ (one crate graph)
 - Both processes share dylib pages in memory (verify with `vmmap`).
 
+### Phase 2 review findings (2026-09-02, fixed before commit)
+
+- **Duplicate media FFI copies** — the most serious find: `nufon-media`
+  carried its own `src/media.rs` + `util.rs`, a divergent second copy of
+  iroh-c-ffi's media FFI (same exported symbols, same function set, separate
+  static state). Unreferenced by any Rust caller (the daemon only uses
+  `service::MediaService`), but Phase 2 pulled it into the dylib link, where
+  **link order decided which implementation served the GUI**. Removed both
+  files and the now-unused deps (safer-ffi, ogg, once_cell, buf-list,
+  bytes, n0-future, tracing-subscriber); the 4 duplicated tests were
+  name-identical to the authoritative copies in iroh-c-ffi, which now run in
+  `test-rust.sh` (widened from `--lib client::` to `--lib`) and
+  `test-media.sh` (re-pointed at the vendored crate).
+- **Install-name flip-flop** — `test-rust.sh` built the vendored dylib
+  without build.zig's RUSTFLAGS, flipping the install name to an absolute
+  path (breaking thin nufond/bundle until the next zig build) and forcing a
+  full iroh rebuild on every alternating invocation. test-rust.sh now sets
+  the identical RUSTFLAGS.
+- Dead code from the daemon move deleted (`argument`, unused default consts
+  in nufon-daemon); unused test imports in nufon-client removed; README
+  dylib size corrected (38 → 18 MB).
+
 ### Phase 2 as-built 2026-09-02
 
 - **Step 0 (client-core extraction):** new workspace crate

@@ -3899,21 +3899,11 @@ dependencies = [
 name = "nufon-media"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "buf-list",
- "bytes",
  "iroh",
- "iroh-blobs",
  "iroh-live",
- "n0-future",
  "nufon-protocol",
- "ogg",
- "once_cell",
- "safer-ffi",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

@@ -171,11 +171,9 @@ pub fn socket_path_for(profile: Option<&[u8]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
     use std::os::unix::net::UnixListener;
     use std::sync::Mutex;
     use std::thread;
-    use std::time::SystemTime;
 
     /// Env-var mutation is process-global; serialize tests that touch it.
     static ENV_LOCK: Mutex<()> = Mutex::new(());

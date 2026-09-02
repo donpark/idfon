@@ -7,18 +7,8 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
-anyhow = "1"
-bytes = "1"
-buf-list = "1"
 iroh = "1"
-iroh-blobs = "0.103"
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "capture"] }
-n0-future = "0.3"
 nufon-protocol = { path = "../nufon-protocol" }
-once_cell = "1"
-ogg = "0.9"
-safer-ffi = { version = "0.1", features = ["async-fn"] }
-tokio = { version = "1", features = ["rt-multi-thread"] }
 thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }

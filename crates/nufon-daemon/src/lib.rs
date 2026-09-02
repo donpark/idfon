@@ -19,8 +19,6 @@ use tokio::{
     net::{UnixListener, UnixStream},
 };
 
-const DEFAULT_SOCKET: &str = "/tmp/nufon/nufond.sock";
-const DEFAULT_DATA_DIR: &str = "/tmp/nufon";
 const DEFAULT_TRANSPORT: &str = "iroh";
 const EVENT_RETENTION: usize = 1000;
 const MAX_RESOURCE_BYTES: usize = 512 * 1024;
@@ -2853,11 +2851,6 @@ async fn write_frame(stream: &mut UnixStream, payload: &[u8]) -> io::Result<()> 
     stream.write_all(payload).await
 }
 
-fn argument(args: &[String], name: &str) -> Option<String> {
-    args.windows(2)
-        .find(|pair| pair[0] == name)
-        .map(|pair| pair[1].clone())
-}
 
 fn prepare_socket(socket: &Path) -> io::Result<()> {
     if !socket.exists() {

@@ -100,7 +100,7 @@ normal bind/send protocol while the app is running.
 `native build` creates a raw executable. Use `native package` to create a
 Finder-launchable `.app` bundle; launching the raw executable may open a
 Terminal window on macOS. The app links the Rust Iroh stack dynamically
-(`zig-out/bin/libiroh_c_ffi.dylib`, ~38 MB, copied into `Contents/MacOS/` by
+(`zig-out/bin/libiroh_c_ffi.dylib`, ~18 MB, copied into `Contents/MacOS/` by
 the build script), so the app binary itself is ~8 MB and the bundle is
 dominated by the dylib. WebKit is a system framework dependency of the Native
 SDK's macOS host, not a framework or WebView payload bundled in the app.
