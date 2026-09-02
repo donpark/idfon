@@ -522,13 +522,44 @@ impl AudioStreamFactory for RecordingBackend {
     }
 }
 
+/// Downloads and exports a blob to a per-hash file unless it is already present.
+/// Returns the exported path.
+fn ensure_fetched(ticket: &BlobTicket) -> anyhow::Result<std::path::PathBuf> {
+    tokio_executor(async {
+        let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
+        let store = FsStore::load(media_dir().join("fetched-blobs")).await?;
+        let fetched = media_dir()
+            .join("fetched-blobs")
+            .join(format!("{}.opus", ticket.hash()));
+        if !fetched.exists() {
+            store
+                .downloader(&endpoint)
+                .download(ticket.hash(), Some(ticket.addr().id))
+                .await?;
+            store.blobs().export(ticket.hash(), &fetched).await?;
+        }
+        endpoint.close().await;
+        anyhow::Ok(fetched)
+    })
+}
+
 /// Plays the fetched recording through the default output device.
+/// Returns `0` on success and `1` on failure.
 #[ffi_export]
-pub fn media_recording_play() -> u8 {
-    if PLAYBACK.lock().expect("playback mutex poisoned").is_some() {
+pub fn media_recording_play(ticket: char_p::Ref<'_>) -> u8 {
+    let Ok(ticket) = ticket.to_str().parse::<BlobTicket>() else {
+        tracing::warn!("recording playback rejected: invalid ticket");
         return 1;
-    }
-    let path = media_path("fetched-recording.opus");
+    };
+    // per-message playback: a new play supersedes the previous one
+    media_recording_stop_playback();
+    let path = match ensure_fetched(&ticket) {
+        Ok(path) => path,
+        Err(err) => {
+            tracing::warn!("recording playback fetch failed: {err:#}");
+            return 1;
+        }
+    };
     if !path.exists() {
         return 1;
     }
@@ -1187,9 +1218,31 @@ mod tests {
 #[ffi_export]
 pub fn media_live_recording_store() -> char_p::Box {
     tracing::info!("recording blob store requested");
-    let result = tokio_executor(async {
-        let live = Live::from_env().await?.spawn();
-        let store = FsStore::load(media_dir().join("blobs")).await?;
+    // Reuse the previous provider's live/store/router instead of reopening:
+    // a second FsStore::load on the same "blobs" directory deadlocks on
+    // blobs.db while the previous store is still shutting down, which made
+    // every store after the first hang forever.
+    let existing = BLOB_PROVIDER
+        .lock()
+        .expect("blob provider mutex poisoned")
+        .take();
+    let result = tokio_executor(async move {
+        let (live, store, router) = match existing {
+            Some(BlobProvider {
+                _live: live,
+                _store: store,
+                _router: router,
+            }) => (live, store, router),
+            None => {
+                let live = Live::from_env().await?.spawn();
+                let store = FsStore::load(media_dir().join("blobs")).await?;
+                let protocol = BlobsProtocol::new(store.as_ref(), None);
+                let router = Router::builder(live.endpoint().clone())
+                    .accept(BLOBS_ALPN, protocol)
+                    .spawn();
+                (live, store, router)
+            }
+        };
         let local = media_path("recording.opus");
         let received = media_path("received.wav");
         let recording_path = if local.exists() { local } else { received };
@@ -1201,10 +1254,6 @@ pub fn media_live_recording_store() -> char_p::Box {
         let content = store.add_path(recording_path).await?;
         let recording_tag = format!("recording-{}", content.hash);
         store.tags().set(&recording_tag, content.hash).await?;
-        let protocol = BlobsProtocol::new(store.as_ref(), None);
-        let router = Router::builder(live.endpoint().clone())
-            .accept(BLOBS_ALPN, protocol)
-            .spawn();
         let ticket = BlobTicket::new(live.endpoint().addr(), content.hash, content.format);
         BLOB_PROVIDER
             .lock()
@@ -1240,20 +1289,8 @@ pub fn media_blob_fetch(ticket: char_p::Ref<'_>) -> u8 {
         tracing::warn!("recording blob fetch rejected: invalid ticket");
         return 1;
     };
-    let result = tokio_executor(async {
-        let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
-        let store = FsStore::load(media_dir().join("fetched-blobs")).await?;
-        let fetched = media_path("fetched-recording.opus");
-        store
-            .downloader(&endpoint)
-            .download(ticket.hash(), Some(ticket.addr().id))
-            .await?;
-        store.blobs().export(ticket.hash(), &fetched).await?;
-        endpoint.close().await;
-        anyhow::Ok(())
-    });
-    match result {
-        Ok(()) => {
+    match ensure_fetched(&ticket) {
+        Ok(_) => {
             tracing::info!("recording blob fetch complete");
             0
         }

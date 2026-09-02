@@ -31,7 +31,8 @@ under `NATIVE_SDK_APP_DATA_DIR` (with `/tmp/nufon` as a development fallback):
 
 - `conversations/<scope>/recording.opus` — local microphone recording;
 - `conversations/<scope>/received.wav` — decoded live audio test recording;
-- `conversations/<scope>/fetched-recording.opus` — fetched voice recording;
+- `conversations/<scope>/fetched-blobs/<hash>.opus` — fetched recordings,
+  one file per content hash;
 - `conversations/<scope>/recording-history.log` — durable deduplicated recording tickets;
 - `conversations/<scope>/blobs/` — provider blob store;
 - `conversations/<scope>/fetched-blobs/` — recipient blob store.
@@ -48,18 +49,30 @@ The chat window currently provides:
 - microphone start/stop and a microphone sample probe;
 - live Opus call start/stop with automatic ticket signaling to the selected peer;
 - automatic live ticket subscription/unsubscription for incoming calls;
-- `iroh-live` ticket copy and manual subscription controls for debugging;
 - local microphone recording start/stop;
 - Ogg Opus recording storage through `iroh-blobs`;
-- recording attachments with explicit Send/remove controls;
-- BlobTicket copy/send/fetch;
-- fetched Ogg Opus playback;
+- recording attachments that appear as play/stop buttons in the message
+  thread (voice messages), playable on both sides once the blob is local;
+- fetched Ogg Opus playback, one playback at a time — a new play supersedes
+  the previous one;
 - subscriber output volume control.
+
+Chat is symmetric once a peer reaches the GUI: an inbound message, call, or
+recording adopts the sender as the send target, so the callee can reply,
+record, and call back without adding the peer as a connection first.
 
 Live publisher and subscriber shutdown paths call `Live::shutdown()` before
 releasing their sessions, including replacement of an active subscriber. This
 keeps the underlying Iroh endpoint/router shutdown graceful and avoids the
 `Endpoint dropped without calling Endpoint::close` error.
+
+Voice message playback is content-addressed: `media.blob.fetch` exports to
+`fetched-blobs/<hash>.opus` and `media.recording.play` takes the blob ticket,
+fetches on demand, and supersedes any current playback. Replaying an already
+local recording does not re-download it. The blob-serving provider (live
+endpoint + FsStore + router) is created once per process and reused across
+recordings — reopening the store while the previous instance is shutting down
+deadlocks on `blobs.db`, which made every recording store after the first hang.
 
 Recording messages use a versioned metadata envelope:
 
@@ -78,7 +91,7 @@ The BlobTicket is the stable recording ID for this prototype: it is
 content-addressed and remains unchanged across duplicate delivery. The
 receiver validates the ticket before persisting it in the conversation's
 recording history ledger. Audio bytes are never placed in the message.
-The sender measures the finalized local recording duration and includes it in the envelope. The attachment UI displays the rounded duration in seconds, for example `4 sec audio attached`.
+The sender measures the finalized local recording duration and includes it in the envelope. Received recordings render inline in the thread as a play button once fetched; sent recordings are appended when the daemon acknowledges delivery.
 
 ## Verification
 
@@ -142,7 +155,11 @@ The Phase 7 MVP is implemented. The following production follow-ups remain:
    grants, expiry, revocation, schedules, and recipient policy. Capability-ticket
    issuance and validation now exist for message receive authorization,
    including signed-claim, subject, issuer, expiration, and revocation checks;
-   media actions still need the same ticket enforcement.
+   media actions still need the same ticket enforcement. Interim policy: a
+   pairing grant (`MessageSend`) authorizes live-audio calls to that peer; the
+   callee's `liveAutoAccept` is the consent gate for incoming calls. No code
+   path currently issues `LiveAudioSubscribe` grants, so explicit per-capability
+   call authorization remains future work.
 2. **Multi-session media state** — capture, playback, subscriptions, and blob
    providers still need fully identity/conversation-keyed active ownership.
    Persisted resource metadata and paths are identity-scoped.
