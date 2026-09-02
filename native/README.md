@@ -121,7 +121,7 @@ without it fails at launch with a dyld "Library not loaded" error.
 
 ## Signing
 
-`pnpm run build:dmg` signs with `Developer ID Application: WizOps LLC
+`pnpm run release` signs with `Developer ID Application: WizOps LLC
 (RV27HPQNMF)` in the required order — dylib, nufond, app bundle, then the
 DMG — all with `--timestamp`. Remaining before public distribution:
 notarization (`xcrun notarytool submit Nufon.dmg --keychain-profile
