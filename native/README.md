@@ -107,6 +107,18 @@ SDK's macOS host, not a framework or WebView payload bundled in the app.
 The dylib must sit next to the executable (`@executable_path` load); a bundle
 without it fails at launch with a dyld "Library not loaded" error.
 
+## Known limits
+
+- **8 KB host completion cap.** GUI daemon responses flow through the Zig
+  host's fixed completion queue (`src/iroh_ffi.zig`, `max_result`). A daemon
+  response over 8 KB fails with `daemon_result_too_large` (`daemon_error` in
+  the UI). All current call sites send small JSON, and media bytes go through
+  the FFI directly — but if you add a feature whose socket payload (either
+  direction) can exceed 8 KB (large context, event lists, media resources via
+  the daemon), lift the cap first: heap-allocate completion bodies and free
+  them at the next poll (see the `ponytail:` comment in `daemonWorker`).
+  The wire itself allows 1 MB frames.
+
 ## Requirements
 
 Node.js 24+ on PATH (the TypeScript frontend
