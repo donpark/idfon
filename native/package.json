@@ -1,1 +1,14 @@
-{"name":"@nufon/native","description":"Native-SDK version of Nufon.","private":true,"scripts":{"clean":"rm -rf .zig-cache zig-out","build":"native build && native package --target macos --binary 'zig-out/bin/Nufon' --output 'Nufon.app' && cp ../target/release/nufond 'Nufon.app/Contents/MacOS/nufond'","run:app":"open -n 'Nufon.app'","run:bin":"open -n 'zig-out/bin/Nufon'"},"dependencies":{"@native-sdk/core":"0.10.1"}}
+{
+  "name": "@nufon/native",
+  "description": "Native-SDK version of Nufon.",
+  "private": true,
+  "scripts": {
+    "clean": "rm -rf .zig-cache zig-out",
+    "build": "native build && native package --target macos --binary 'zig-out/bin/Nufon' --output 'Nufon.app' && cp ../target/release/nufond 'Nufon.app/Contents/MacOS/nufond' && cp zig-out/bin/libiroh_c_ffi.dylib 'Nufon.app/Contents/MacOS/'",
+    "run:app": "open -n 'Nufon.app'",
+    "run:bin": "open -n 'zig-out/bin/Nufon'"
+  },
+  "dependencies": {
+    "@native-sdk/core": "0.10.1"
+  }
+}

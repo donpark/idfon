@@ -2,3 +2,9 @@
 resolver = "2"
 members = ["crates/nufon-protocol", "crates/nufon-core", "crates/nufon-media", "crates/nufond", "crates/nufon-cli"]
 exclude = ["native/vendor/iroh-c-ffi"]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

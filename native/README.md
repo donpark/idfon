@@ -19,6 +19,7 @@ native test         # the app's test suite
 pnpm --filter @nufon/native launch
                     # build with SDK runtime tracing off, package, and open
 native package --target macos --binary "zig-out/bin/Nufon" --output "Nufon.app"
+                    # (the build script already appends the nufond + dylib copies)
                     # create a Finder-launchable macOS app bundle
 ./zig-out/bin/Nufon
                     # raw binary; native diagnostics go to /tmp/nufon-<pid>.log
@@ -98,10 +99,13 @@ normal bind/send protocol while the app is running.
 
 `native build` creates a raw executable. Use `native package` to create a
 Finder-launchable `.app` bundle; launching the raw executable may open a
-Terminal window on macOS. The build links the optimized Rust Iroh archive
-(`target/release/libiroh_c_ffi.a`), so the packaged app is roughly 26 MB on
-macOS. WebKit is a system framework dependency of the Native SDK's macOS host,
-not a framework or WebView payload bundled in the app.
+Terminal window on macOS. The app links the Rust Iroh stack dynamically
+(`zig-out/bin/libiroh_c_ffi.dylib`, ~38 MB, copied into `Contents/MacOS/` by
+the build script), so the app binary itself is ~8 MB and the bundle is
+dominated by the dylib. WebKit is a system framework dependency of the Native
+SDK's macOS host, not a framework or WebView payload bundled in the app.
+The dylib must sit next to the executable (`@executable_path` load); a bundle
+without it fails at launch with a dyld "Library not loaded" error.
 
 ## Requirements
 

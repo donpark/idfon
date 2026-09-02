@@ -22,6 +22,8 @@ fn hostModule(b: *std.Build, parent: *std.Build.Module, sdk: *std.Build.Module) 
 pub fn build(b: *std.Build) void {
     const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{ .name = "Nufon", .manifest = "app.json" });
     const cargo = b.addSystemCommand(&.{ "cargo", "build", "--release", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml" });
+    // The app loads the dylib from its own directory (bundle MacOS/, zig-out/bin/).
+    cargo.setEnvironmentVariable("RUSTFLAGS", "-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib");
     const daemon = b.addSystemCommand(&.{ "cargo", "build", "--release", "-p", "nufond" });
     const daemon_rpath = b.addSystemCommand(&.{ "install_name_tool", "-add_rpath", "/usr/lib/swift", "../target/release/nufond" });
     daemon_rpath.step.dependOn(&daemon.step);
@@ -35,9 +37,14 @@ pub fn build(b: *std.Build) void {
     const test_sdk = artifacts.tests.root_module.import_table.get("native_sdk") orelse @panic("Native SDK test module missing");
     artifacts.tests.root_module.addImport("iroh_host", hostModule(b, artifacts.tests.root_module, test_sdk));
 
-    const archive = b.path("vendor/iroh-c-ffi/target/release/libiroh_c_ffi.a");
-    artifacts.exe.root_module.addObjectFile(archive);
-    artifacts.tests.root_module.addObjectFile(archive);
+    const dylib = b.path("vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib");
+    artifacts.exe.root_module.addObjectFile(dylib);
+    artifacts.tests.root_module.addObjectFile(dylib);
+    // Ship the dylib next to the executable for direct runs; the packager
+    // gets it into the bundle via --binary-dir or a manual copy (see README).
+    const install_dylib = b.addInstallFileWithDir(dylib, .bin, "libiroh_c_ffi.dylib");
+    install_dylib.step.dependOn(&cargo.step);
+    b.getInstallStep().dependOn(&install_dylib.step);
     artifacts.exe.root_module.linkFramework("SystemConfiguration", .{});
     artifacts.exe.root_module.linkFramework("CoreAudio", .{});
     artifacts.exe.root_module.linkFramework("AudioToolbox", .{});

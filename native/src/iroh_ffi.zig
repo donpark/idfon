@@ -13,7 +13,10 @@ const c = @cImport({
 extern fn _NSGetExecutablePath(buf: [*:0]u8, bufsize: *u32) c_int;
 
 const native_sdk = @import("native_sdk");
-const ffi = @cImport({ @cInclude("irohnet.h"); });
+const ffi = @cImport({
+    @cInclude("irohnet.h");
+    @cInclude("nufon_client.h");
+});
 
 const max_message = 8192;
 const max_payload = 8192;
@@ -197,41 +200,66 @@ fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
     self.queue_head = (self.queue_head + 1) % queue_size; self.queue_len -= 1; return result;
 }
 
+const ClientResponse = struct {
+    code: c_int,
+    ok: bool,
+    ptr: [*c]u8,
+    len: usize,
+};
+
+/// Maps Rust client error codes to the historical completion strings.
+fn daemonError(code: c_int) []const u8 {
+    return switch (code) {
+        ffi.NUFON_EREQUEST => "payload_too_large",
+        ffi.NUFON_ECONNECT => "daemon_unavailable",
+        ffi.NUFON_EWRITE => "daemon_write_failed",
+        ffi.NUFON_EREAD => "daemon_read_failed",
+        ffi.NUFON_ETOOLARGE => "daemon_result_too_large",
+        ffi.NUFON_EINVALID => "daemon_invalid_response",
+        else => "client_invalid_argument", // NUFON_EARG: shim bug, not a daemon state
+    };
+}
+
+fn clientRequest(socket: []const u8, payload: []const u8, timeout_ms: u32) ClientResponse {
+    var socket_z: [128:0]u8 = undefined;
+    const socket_z_ptr = std.fmt.bufPrintZ(&socket_z, "{s}", .{socket}) catch {
+        return .{ .code = ffi.NUFON_EARG, .ok = false, .ptr = null, .len = 0 };
+    };
+    var out: [*c]u8 = null;
+    var out_len: usize = 0;
+    var ok: u8 = 0;
+    const code = ffi.nufon_client_request(socket_z_ptr.ptr, payload.ptr, payload.len, &out, &out_len, &ok, timeout_ms);
+    if (code != ffi.NUFON_OK) return .{ .code = code, .ok = false, .ptr = null, .len = 0 };
+    return .{ .code = code, .ok = ok == 1, .ptr = out, .len = out_len };
+}
+
 fn daemonWorker(job: *Job) void {
     defer std.heap.page_allocator.destroy(job);
     const self = job.host;
     const paths = profilePaths();
-    const path = paths.socket[0..paths.socket_len];
-    var fd = connectDaemon(path);
-    if (fd < 0) {
-        if (!launchDaemon(self, paths)) { self.complete(job.key, false, "daemon_unavailable"); return; }
-        var attempt: usize = 0;
-        while (attempt < 50 and fd < 0) : (attempt += 1) {
-            _ = c.usleep(100000);
-            fd = connectDaemon(path);
+    // Single fast attempt first so a cold start goes through launchDaemon.
+    var response = clientRequest(paths.socket[0..paths.socket_len], job.bytes[0..job.len], 0);
+    if (response.code == ffi.NUFON_ECONNECT) {
+        if (!launchDaemon(self, paths)) {
+            self.complete(job.key, false, "daemon_unavailable");
+            return;
         }
+        response = clientRequest(paths.socket[0..paths.socket_len], job.bytes[0..job.len], 5000);
     }
-    if (fd < 0) { self.complete(job.key, false, "daemon_unavailable"); return; }
-    defer _ = c.close(fd);
-    var frame: [max_payload + 4]u8 = undefined;
-    if (job.len > max_payload) { self.complete(job.key, false, "payload_too_large"); return; }
-    std.mem.writeInt(u32, frame[0..4], @intCast(job.len), .big);
-    @memcpy(frame[4..][0..job.len], job.bytes[0..job.len]);
-    if (c.write(fd, &frame, job.len + 4) != job.len + 4) { self.complete(job.key, false, "daemon_write_failed"); return; }
-    var header: [4]u8 = undefined;
-    if (c.read(fd, &header, header.len) != 4) { self.complete(job.key, false, "daemon_read_failed"); return; }
-    const length = std.mem.readInt(u32, &header, .big);
-    if (length > max_result) { self.complete(job.key, false, "daemon_result_too_large"); return; }
-    var result: [max_result]u8 = undefined;
-    if (c.read(fd, @ptrCast(&result), length) != length) { self.complete(job.key, false, "daemon_read_failed"); return; }
-    const response = result[0..length];
-    trace("daemon response key={d} body={s}", .{ job.key, response[0..@min(response.len, 400)] });
-    if (std.mem.indexOf(u8, response, "\"ok\":false") != null or
-        std.mem.indexOf(u8, response, "\"ok\": false") != null) {
-        self.complete(job.key, false, response);
-    } else {
-        self.complete(job.key, true, response);
+    if (response.code != ffi.NUFON_OK) {
+        self.complete(job.key, false, daemonError(response.code));
+        return;
     }
+    defer ffi.nufon_client_result_free(response.ptr, response.len);
+    // ponytail: the completion queue still caps results at max_result (8 KiB);
+    // heap-allocate completions to lift it toward the 1 MiB frame limit.
+    if (response.len > max_result) {
+        self.complete(job.key, false, "daemon_result_too_large");
+        return;
+    }
+    const body = response.ptr[0..response.len];
+    trace("daemon response key={d} ok={} body={s}", .{ job.key, response.ok, body[0..@min(body.len, 400)] });
+    self.complete(job.key, response.ok, body);
 }
 
 fn mediaAudioWorker(job: *Job) void {
@@ -347,51 +375,35 @@ fn mediaAudioWorker(job: *Job) void {
 
 
 fn profilePaths() ProfilePaths {
-    var paths = profilePathsDefault();
-    const profile_ptr = c.getenv("NUFON_PROFILE") orelse return paths;
-    var profile_len: usize = 0;
-    while (profile_ptr[profile_len] != 0 and profile_len < 64) : (profile_len += 1) {}
-    if (profile_len == 0 or (profile_len == 7 and std.mem.eql(u8, profile_ptr[0..profile_len], "default"))) {
+    var paths = ProfilePaths{};
+    // Socket path comes from Rust (single source of truth with the daemon).
+    const socket_len = ffi.nufon_client_socket_path(null, &paths.socket, paths.socket.len);
+    if (socket_len < 0) {
         @memcpy(paths.socket[0..default_socket.len], default_socket);
         paths.socket_len = default_socket.len;
-        @memcpy(paths.data[0..default_data_dir.len], default_data_dir);
-        paths.data_len = default_data_dir.len;
-        return paths;
+    } else {
+        paths.socket_len = @intCast(socket_len);
     }
-    var valid = true;
-    for (profile_ptr[0..profile_len]) |byte| {
-        valid = valid and ((byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or
-            (byte >= '0' and byte <= '9') or byte == '-' or byte == '_');
+    // ponytail: data-dir profile logic duplicates nufon_client_socket_path's
+    // rules; unify when profiles gain more settings.
+    if (c.getenv("NUFON_PROFILE")) |profile_ptr| {
+        var profile_len: usize = 0;
+        while (profile_ptr[profile_len] != 0 and profile_len < 64) : (profile_len += 1) {}
+        var valid = profile_len > 0 and
+            !(profile_len == 7 and std.mem.eql(u8, profile_ptr[0..profile_len], "default"));
+        if (valid) for (profile_ptr[0..profile_len]) |byte| {
+            valid = valid and ((byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or
+                (byte >= '0' and byte <= '9') or byte == '-' or byte == '_');
+        };
+        if (valid) {
+            const data = std.fmt.bufPrint(&paths.data, "/tmp/nufon-{s}", .{profile_ptr[0..profile_len]}) catch return paths;
+            paths.data_len = data.len;
+            return paths;
+        }
     }
-    if (!valid) return profilePathsDefault();
-    const socket = std.fmt.bufPrint(&paths.socket, "/tmp/nufon-{s}/nufond.sock", .{profile_ptr[0..profile_len]}) catch return profilePathsDefault();
-    const data = std.fmt.bufPrint(&paths.data, "/tmp/nufon-{s}", .{profile_ptr[0..profile_len]}) catch return profilePathsDefault();
-    paths.socket_len = socket.len;
-    paths.data_len = data.len;
-    return paths;
-}
-
-fn profilePathsDefault() ProfilePaths {
-    var paths = ProfilePaths{};
-    @memcpy(paths.socket[0..default_socket.len], default_socket);
-    paths.socket_len = default_socket.len;
     @memcpy(paths.data[0..default_data_dir.len], default_data_dir);
     paths.data_len = default_data_dir.len;
     return paths;
-}
-
-fn connectDaemon(path: []const u8) c_int {
-    const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
-    if (fd < 0) return -1;
-    var address: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
-    address.sun_family = c.AF_UNIX;
-    @memcpy(address.sun_path[0..path.len], path);
-    const address_len: c.socklen_t = @intCast(@sizeOf(c.sa_family_t) + path.len + 1);
-    if (c.connect(fd, @ptrCast(&address), address_len) != 0) {
-        _ = c.close(fd);
-        return -1;
-    }
-    return fd;
 }
 
 fn launchDaemon(self: *Host, paths: ProfilePaths) bool {
