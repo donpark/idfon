@@ -48,6 +48,8 @@ export interface Model {
   readonly history: readonly ChatMessage[];
   readonly replyRoute: Uint8Array;
   readonly identityName: Uint8Array;
+  readonly identityInitials: Uint8Array;
+  readonly incomingLive: boolean;
   readonly identities: readonly Identity[];
   readonly identitySelected: boolean;
   readonly copyIdentityTicket: boolean;
@@ -152,6 +154,8 @@ export type Msg =
   | { readonly kind: "audio_probe_result"; readonly data: Uint8Array }
   | { readonly kind: "volume_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "volume_set" }
+  | { readonly kind: "live_answer" }
+  | { readonly kind: "live_decline" }
   | { readonly kind: "live_start" }
   | { readonly kind: "live_stop" }
   | { readonly kind: "live_started"; readonly data: Uint8Array }
@@ -189,7 +193,7 @@ export type Msg =
   | { readonly kind: "poll_events"; readonly at: number };
 
 export const viewUnbound = [
-  "replyRoute", "identityName", "copyIdentityTicket", "identityError", "chatOpen", "receiverTicket", "capabilityTicket", "endpointId", "audioActive", "pendingRecordingSend", "subscribedRecording", "showTicket", "liveAutoAccept", "eventCursor", "eventsReady",
+  "replyRoute", "identityName", "identityInitials", "incomingLive", "copyIdentityTicket", "identityError", "chatOpen", "receiverTicket", "capabilityTicket", "endpointId", "audioActive", "pendingRecordingSend", "subscribedRecording", "showTicket", "liveAutoAccept", "eventCursor", "eventsReady",
   "receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "poll_events", "tickAt",
   "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "chat_closed", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready",
 ] as const;
@@ -206,6 +210,8 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     history: [],
     replyRoute: EMPTY,
     identityName: utf8Bytes("Default"),
+    identityInitials: utf8Bytes("De"),
+    incomingLive: false,
     identities: [{ name: utf8Bytes("Default"), active: true }],
     identitySelected: true,
     copyIdentityTicket: false,
@@ -247,8 +253,8 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     showAddConnection: false,
     showAddIdentity: false,
     newIdentityName: EMPTY,
-    // ponytail: auto-accept incoming calls now that the Advanced panel (the only approval toggle) is gone; real approval prompt if wanted later
-    liveAutoAccept: true,
+    // ponytail: explicit Answer button replaced auto-accept now that calls have header controls
+    liveAutoAccept: false,
     livePolicyStatus: utf8Bytes("Incoming live audio requires approval"),
     eventCursor: EMPTY,
     tickAt: 0,
@@ -481,6 +487,11 @@ function sendPayload(model: Model): Uint8Array {
   return daemonMessagePayload(model.identityName, model.receiverId, model.message, utf8Bytes(`gui-${model.tickAt}-${model.history.length}`), model.capabilityTicket);
 }
 
+function identityInitials(name: Uint8Array): Uint8Array {
+  // ponytail: ASCII-only initials slice; identity names are ASCII in this prototype
+  return name.slice(0, name.length > 2 ? 2 : name.length);
+}
+
 function addChatMessage(model: Model, text: Uint8Array, sent: boolean, status: Uint8Array): Model {
   return { ...model, history: [...model.history, { id: utf8Bytes(`message-${model.history.length}`), text, sent, timestamp: utf8Bytes("just now"), status, audio: EMPTY, isAudio: false, audioReady: false }] };
 }
@@ -626,7 +637,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (identities[identityIndex].active) activeName = identities[identityIndex].name;
         identityIndex += 1;
       }
-      const next = { ...model, identities, identityName: activeName, newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false };
+      const next = { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false };
       return [next, Cmd.batch([
         Cmd.request("nufond.request", contextPayload(activeName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
         Cmd.request("nufond.request", peersPayload(activeName), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
@@ -634,7 +645,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ])];
     }
     case "identity_selected":
-      return [{ ...model, identityName: msg.name, newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, copyIdentityTicket: true }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
+      return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, copyIdentityTicket: true }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
     case "show_add_identity":
       return { ...model, showAddIdentity: true, newIdentityName: EMPTY };
     case "cancel_add_identity":
@@ -645,11 +656,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (model.newIdentityName.length === 0) return model;
       return [model, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.create"), model.newIdentityName), { key: "nufond-identity-create", ok: "identity_created", err: "identity_create_error" })];
     case "identity_created":
-      return [{ ...model, identityName: model.newIdentityName, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, model.newIdentityName) })), identitySelected: true, copyIdentityTicket: true, showAddIdentity: false }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), model.newIdentityName), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
+      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, model.newIdentityName) })), identitySelected: true, copyIdentityTicket: true, showAddIdentity: false }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), model.newIdentityName), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
     case "identity_create_error":
       return { ...model, receiverStatus: msg.data };
     case "identity_used":
-      return [{ ...model, identityName: model.newIdentityName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false }, Cmd.batch([
+      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false }, Cmd.batch([
         Cmd.request("nufond.request", contextPayload(model.newIdentityName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
         Cmd.request("nufond.request", peersPayload(model.newIdentityName), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
         Cmd.request("nufond.request", daemonEventsPayload(model.newIdentityName, EMPTY), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" }),
@@ -706,20 +717,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
               const isStart = sameBytes(action, utf8Bytes("start"));
               const isStop = sameBytes(action, utf8Bytes("stop"));
               if ((isStart || isStop) && (!isStart || ticket.length !== 0)) {
-                const incoming = { ...next, identitySelected: true, replyRoute: peer, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), liveStatus: utf8Bytes(isStart ? (next.liveAutoAccept ? "Subscribing to live audio" : "Incoming live audio awaiting approval") : "Stopping live audio") };
-                if (isStart && !next.liveAutoAccept) {
-                  next = { ...incoming, livePolicyStatus: utf8Bytes("Incoming live audio blocked by local policy") };
-                } else if (isStart) {
-                  return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.batch([
-                    Cmd.request("media.live.subscribe", ticket, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
-                    Cmd.request("nufond.request", daemonMessagePayload(next.identityName, peer, utf8Bytes("call_started"), utf8Bytes(`call-started-${next.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
-                  ])];
-                } else {
-                  return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.batch([
-                    Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
-                    Cmd.request("nufond.request", daemonMessagePayload(next.identityName, peer, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${next.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
-                  ])];
+                const incoming = { ...next, identitySelected: true, replyRoute: peer, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart, liveStatus: utf8Bytes(isStart ? "Incoming call" : "Stopping live audio") };
+                if (isStart) {
+                  return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.none];
                 }
+                return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.batch([
+                  Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
+                  Cmd.request("nufond.request", daemonMessagePayload(next.identityName, peer, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${next.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+                ])];
               }
             }
           } else if (text.length > recordingPrefix.length && sameBytes(text.slice(0, recordingPrefix.length), recordingPrefix)) {
@@ -787,12 +792,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           const isStop = sameBytes(action, utf8Bytes("stop"));
           if (!isStart && !isStop) return model;
           if (isStart && ticket.length === 0) return model;
-          const next = { ...inbound, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), liveStatus: utf8Bytes(isStart ? (model.liveAutoAccept ? "Subscribing to live audio" : "Incoming live audio awaiting approval") : "Stopping live audio") };
-          if (isStart && !model.liveAutoAccept) return { ...next, livePolicyStatus: utf8Bytes("Incoming live audio blocked by local policy") };
-          if (isStart) return [next, Cmd.batch([
-            Cmd.request("media.live.subscribe", ticket, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
-            Cmd.request("nufond.request", daemonMessagePayload(model.identityName, route, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
-          ])];
+          const next = { ...inbound, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart, liveStatus: utf8Bytes(isStart ? "Incoming call" : "Stopping live audio") };
+          if (isStart) return [next, Cmd.none];
           return [next, Cmd.batch([
             Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
             Cmd.request("nufond.request", daemonMessagePayload(model.identityName, route, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
@@ -828,7 +829,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "message_edit":
       return { ...model, message: editText(model.message, msg.edit) };
     case "identity_name_edit":
-      return { ...model, identityName: editText(model.identityName, msg.edit) };
+      return { ...model, identityName: editText(model.identityName, msg.edit), identityInitials: identityInitials(editText(model.identityName, msg.edit)) };
     case "connection_name_edit":
       return { ...model, connectionName: editText(model.connectionName, msg.edit) };
     case "receiver_id_edit":
@@ -914,6 +915,19 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return { ...model, volumeInput: editText(model.volumeInput, msg.edit) };
     case "volume_set":
       return [model, Cmd.request("media.audio.set_volume", model.volumeInput, { key: "media-volume", ok: "sender_ready", err: "sender_error" })];
+    case "live_answer": {
+      if (!model.incomingLive) return model;
+      return [{ ...model, incomingLive: false, receiverStatus: utf8Bytes("In call") }, Cmd.batch([
+        Cmd.request("media.live.subscribe", model.liveTicketInput, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
+        Cmd.request("nufond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+      ])];
+    }
+    case "live_decline": {
+      if (!model.incomingLive) return model;
+      const declined = { ...model, incomingLive: false, liveTicketInput: EMPTY, receiverStatus: utf8Bytes("Call declined"), selectedConnectionName: utf8Bytes("Call declined") };
+      if (model.replyRoute.length === 0) return declined;
+      return [declined, Cmd.request("nufond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
+    }
     case "live_start":
       if (model.liveActive || model.receiverId.length === 0) return model;
       return [model, Cmd.request("nufond.request", mediaSessionStartPayload(model), { key: "media-session", ok: "media_session_ready", err: "live_error" })];

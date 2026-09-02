@@ -1,10 +1,28 @@
 <column gap="12" padding="16">
   <row cross="center">
     <avatar label="{selectedConnectionName}">NU</avatar>
+    <avatar label="{identityName}">{identityInitials}</avatar>
     <column gap="2" grow="1">
       <text size="heading">{selectedConnectionName}</text>
       <text foreground="text_muted">{senderStatus}</text>
     </column>
+    <if test="{incomingLive}">
+      <button size="sm" variant="primary" on-press="live_answer">Answer</button>
+      <button size="sm" variant="secondary" on-press="live_decline">Decline</button>
+    </if>
+    <else>
+      <if test="{liveActive}">
+        <button size="sm" variant="destructive" on-press="live_stop">End call</button>
+      </if>
+      <else>
+        <if test="{subscribedActive}">
+          <button size="sm" variant="destructive" on-press="live_stop">End call</button>
+        </if>
+        <else>
+          <button size="icon" variant="primary" icon="volume" on-press="live_start" label="Start call"></button>
+        </else>
+      </else>
+    </else>
   </row>
   <separator />
   <scroll grow="1">
@@ -63,17 +81,6 @@
         </if>
         <else>
           <button size="icon" variant="ghost" icon="circle-dot" on-press="recording_start" label="Record audio"></button>
-        </else>
-        <if test="{liveActive}">
-          <button size="icon" variant="destructive" icon="x" on-press="live_stop" label="End call"></button>
-        </if>
-        <else>
-          <if test="{subscribedActive}">
-            <button size="icon" variant="destructive" icon="x" on-press="live_stop" label="End call"></button>
-          </if>
-          <else>
-            <button size="icon" variant="ghost" icon="volume" on-press="live_start" label="Call"></button>
-          </else>
         </else>
         <button size="icon" variant="primary" icon="arrow-up" disabled="{senderDisabled}" on-press="send_message" label="Send message"></button>
       </input-group-actions>
