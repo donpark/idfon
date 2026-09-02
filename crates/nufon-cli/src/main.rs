@@ -1,6 +1,7 @@
-use std::{env, io, os::unix::net::UnixStream, path::PathBuf};
+use std::{env, io};
 
-use nufon_protocol::{encode_json, Request, Response, PROTOCOL_VERSION};
+use nufon_client::{Client, ClientError};
+use nufon_protocol::{encode_json, Request, Response, ResponseBody, PROTOCOL_VERSION};
 
 const DEFAULT_SOCKET: &str = "/tmp/nufon/nufond.sock";
 
@@ -160,33 +161,20 @@ fn run() -> io::Result<()> {
         method: method.into(),
         params,
     };
-    let mut stream = UnixStream::connect(PathBuf::from(socket)).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("daemon unavailable; start nufond or check --socket: {error}"),
-        )
+    let mut client = Client::connect(&socket).map_err(|error| match error {
+        ClientError::Connect(source) => io::Error::new(
+            source.kind(),
+            format!("daemon unavailable; start nufond or check --socket: {source}"),
+        ),
+        other => io::Error::other(other.to_string()),
     })?;
     let payload = encode_json(&request).map_err(io::Error::other)?;
-    std::io::Write::write_all(&mut stream, &(payload.len() as u32).to_be_bytes())?;
-    std::io::Write::write_all(&mut stream, &payload)?;
-
-    let mut header = [0; 4];
-    std::io::Read::read_exact(&mut stream, &mut header)?;
-    let length = u32::from_be_bytes(header) as usize;
-    if length > nufon_protocol::MAX_FRAME_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "response frame too large",
-        ));
-    }
-    let mut response = vec![0; length];
-    std::io::Read::read_exact(&mut stream, &mut response)?;
-    let mut response: Response = serde_json::from_slice(&response).map_err(io::Error::other)?;
+    let mut response = read_json(&mut client, &payload)?;
 
     if operation_wait {
         loop {
             let terminal = match &response.body {
-                nufon_protocol::ResponseBody::Success { result, .. } => result
+                ResponseBody::Success { result, .. } => result
                     .get("operation")
                     .and_then(|value| value.get("status"))
                     .and_then(serde_json::Value::as_str)
@@ -199,30 +187,13 @@ fn run() -> io::Result<()> {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
-            std::io::Write::write_all(&mut stream, &(payload.len() as u32).to_be_bytes())?;
-            std::io::Write::write_all(&mut stream, &payload)?;
-            std::io::Read::read_exact(&mut stream, &mut header)?;
-            let length = u32::from_be_bytes(header) as usize;
-            let mut bytes = vec![0; length];
-            std::io::Read::read_exact(&mut stream, &mut bytes)?;
-            response = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+            response = read_json(&mut client, &payload)?;
         }
     }
     if follow && method == "events" {
         loop {
             print_events(&response)?;
-            let mut header = [0; 4];
-            std::io::Read::read_exact(&mut stream, &mut header)?;
-            let length = u32::from_be_bytes(header) as usize;
-            if length > nufon_protocol::MAX_FRAME_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "response frame too large",
-                ));
-            }
-            let mut bytes = vec![0; length];
-            std::io::Read::read_exact(&mut stream, &mut bytes)?;
-            response = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+            response = client.next_response().map_err(io::Error::other)?.json().map_err(io::Error::other)?;
         }
     }
     if wait {
@@ -240,6 +211,14 @@ fn run() -> io::Result<()> {
     } else {
         Err(io::Error::other("request failed"))
     }
+}
+
+fn read_json(client: &mut Client, payload: &[u8]) -> io::Result<Response> {
+    client
+        .request(payload)
+        .map_err(io::Error::other)?
+        .json()
+        .map_err(io::Error::other)
 }
 
 fn print_events(response: &Response) -> io::Result<()> {

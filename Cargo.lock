@@ -3710,8 +3710,18 @@ dependencies = [
 name = "nufon-cli"
 version = "0.1.0"
 dependencies = [
+ "nufon-client",
  "nufon-protocol",
  "serde_json",
+]
+
+[[package]]
+name = "nufon-client"
+version = "0.1.0"
+dependencies = [
+ "nufon-protocol",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -3727,6 +3737,25 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nufon-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chrono",
+ "ed25519-dalek 2.2.0",
+ "iroh",
+ "iroh-blobs",
+ "libc",
+ "nufon-core",
+ "nufon-media",
+ "nufon-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -3763,19 +3792,7 @@ dependencies = [
 name = "nufond"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "blake3",
- "chrono",
- "ed25519-dalek 2.2.0",
- "iroh",
- "iroh-blobs",
- "libc",
- "nufon-core",
- "nufon-media",
- "nufon-protocol",
- "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]

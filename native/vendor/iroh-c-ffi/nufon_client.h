@@ -73,6 +73,19 @@ nufon_client_result_free (
     uint8_t * ptr,
     size_t len);
 
+/** \brief
+ *  Runs the nufond daemon on the calling thread until it exits (ctrl_c or
+ *  error). `socket_path` and `data_dir` must be non-null; `transport` may
+ *  be NULL for the default ("iroh"; "fake" is the only other valid value).
+ *  Returns 0 after a clean shutdown, -1 on a bad argument, -2 after an
+ *  error (already printed to stderr).
+ */
+int32_t
+nufon_daemon_run (
+    char const * socket_path,
+    char const * data_dir,
+    char const * transport);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

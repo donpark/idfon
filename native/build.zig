@@ -25,10 +25,10 @@ pub fn build(b: *std.Build) void {
     // The app loads the dylib from its own directory (bundle MacOS/, zig-out/bin/).
     cargo.setEnvironmentVariable("RUSTFLAGS", "-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib");
     const daemon = b.addSystemCommand(&.{ "cargo", "build", "--release", "-p", "nufond" });
-    const daemon_rpath = b.addSystemCommand(&.{ "install_name_tool", "-add_rpath", "/usr/lib/swift", "../target/release/nufond" });
-    daemon_rpath.step.dependOn(&daemon.step);
-    artifacts.exe.step.dependOn(&cargo.step);
-    artifacts.exe.step.dependOn(&daemon_rpath.step);
+    // The thin nufond links the dylib (see crates/nufond/build.rs), so it
+    // must only be linked once the dylib exists.
+    daemon.step.dependOn(&cargo.step);
+    artifacts.exe.step.dependOn(&daemon.step);
     artifacts.tests.step.dependOn(&cargo.step);
 
     const app = appCode(artifacts.exe);

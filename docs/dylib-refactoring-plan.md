@@ -225,10 +225,10 @@ one for the Zig/build swap). The `.a` continues to build unmodified.
 
 ## Phase 2 — Daemon onto the shared dylib (gated)
 
-**Gate:** only start when a ~10MB compressed reduction is an actual
-requirement (distribution, download limits), or when daemon↔app stack skew
-(especially `iroh-live` versions: GUI uses a pinned git rev, daemon uses
-crates-io) causes a real bug. Until then this is spec only.
+**Status 2026-09-02: implemented** (Option A) on the branch, see as-built
+below. Note the release-profile wins (Phase 1 follow-up) already brought the
+bundle to ~11MB compressed, most of the way to the original ~17MB estimate;
+Phase 2 removes the remaining daemon-stack copy.
 
 Target state: `Contents/MacOS/` contains `Nufon` (thin), `nufond` (thin),
 `libiroh_c_ffi.dylib` (the stack) → ~17MB compressed.
@@ -279,9 +279,34 @@ is cheap relative to re-doing the same packaging work twice.
 
 ### Phase 2 exit criteria
 
-- Single copy of the Rust stack in the bundle; `nufond` < 2MB.
-- `nufon-media` and `iroh-c-ffi` cannot have divergent `iroh-live` versions.
+- Single copy of the Rust stack in the bundle; `nufond` < 2MB. ✓ (296KB)
+- `nufon-media` and `iroh-c-ffi` cannot have divergent `iroh-live` versions. ✓ (one crate graph)
 - Both processes share dylib pages in memory (verify with `vmmap`).
+
+### Phase 2 as-built 2026-09-02
+
+- **Step 0 (client-core extraction):** new workspace crate
+  `crates/nufon-client` — pure-Rust IPC client (`Client`, `ClientResponse`,
+  `socket_path_for`, retry, framing, `*.compact` binary pass-through), 11
+  tests. `iroh-c-ffi/src/client.rs` is now a thin C-ABI adapter over it (4
+  C-ABI tests); `crates/nufon-cli` uses the same core (its framing copy is
+  gone).
+- **Daemon core:** new workspace crate `crates/nufon-daemon` — the former
+  `nufond/src/main.rs` + `blob.rs` with `DaemonConfig`, `run()`,
+  `run_blocking()` (own tokio runtime, ctrl_c shutdown). 14 tests moved with
+  it.
+- **Thin daemon:** `nufond` binary is 296KB: arg parsing + `extern "C"
+  nufon_daemon_run(socket, data_dir, transport)`; `build.rs` adds the dylib
+  link-search/link-lib and copies the dylib next to the built binary so
+  `@executable_path` resolves in `target/<profile>/`.
+- **Dylib:** `iroh-c-ffi/src/daemon.rs` exports `nufon_daemon_run` (blocking,
+  declared in `nufon_client.h`); dylib grew 16 → 18MB (daemon core moved in).
+- **build.zig:** daemon cargo step depends on the dylib cargo step; the
+  obsolete `/usr/lib/swift` rpath patch removed (dylib has no `@rpath` refs).
+- **Bundle:** 18MB dylib + 7.9MB app + 312KB nufond ≈ **11MB compressed**
+  (was ~27MB before Phase 1). Verified: thin nufond serves the CLI, SIGINT
+  cleans the socket, `crates/nufond/tests/process.rs` passes, packaged +
+  ad-hoc-signed bundle runs end-to-end.
 
 ---
 

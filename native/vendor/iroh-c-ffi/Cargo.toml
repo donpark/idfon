@@ -37,7 +37,8 @@ data-encoding = "2.9.0"
 ogg = "0.9.2"
 iroh-mdns-address-lookup = "0.4.0"
 nufon-protocol = { path = "../../../crates/nufon-protocol" }
-serde_json = "1"
+nufon-client = { path = "../../../crates/nufon-client" }
+nufon-daemon = { path = "../../../crates/nufon-daemon" }
 
 [features]
 # generate headers

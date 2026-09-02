@@ -2,18 +2,10 @@
 name = "nufond"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
-[dependencies]
-anyhow = "1"
-blake3 = "1"
-chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-iroh = "1"
-iroh-blobs = "0.103"
-libc = "0.2"
-ed25519-dalek = "2"
-nufon-core = { path = "../nufon-core" }
-nufon-media = { path = "../nufon-media" }
-nufon-protocol = { path = "../nufon-protocol" }
-serde = { version = "1", features = ["derive"] }
+# No runtime [dependencies]: the daemon core is reached through
+# libiroh_c_ffi.dylib (see build.rs and native/vendor/iroh-c-ffi/src/daemon.rs).
+
+[dev-dependencies]
 serde_json = "1"
-tokio = { version = "1", features = ["fs", "macros", "net", "io-util", "rt-multi-thread", "signal"] }
