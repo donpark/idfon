@@ -119,6 +119,17 @@ without it fails at launch with a dyld "Library not loaded" error.
   them at the next poll (see the `ponytail:` comment in `daemonWorker`).
   The wire itself allows 1 MB frames.
 
+## Signing
+
+`pnpm run build:dmg` signs with `Developer ID Application: WizOps LLC
+(RV27HPQNMF)` in the required order — dylib, nufond, app bundle, then the
+DMG — all with `--timestamp`. Remaining before public distribution:
+notarization (`xcrun notarytool submit Nufon.dmg --keychain-profile
+<profile> --wait`, then `xcrun stapler staple Nufon.dmg`), which needs an
+App Store Connect API key; and hardened runtime + audio-input entitlements
+if/when we enable `--options runtime` (required for notarization). Until
+notarized, Gatekeeper on other Macs blocks first launch.
+
 ## Requirements
 
 Node.js 24+ on PATH (the TypeScript frontend
