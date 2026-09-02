@@ -2552,10 +2552,12 @@ dependencies = [
  "iroh-mdns-address-lookup",
  "iroh-tickets",
  "n0-future",
+ "nufon-protocol",
  "ogg",
  "once_cell",
  "rand 0.10.1",
  "safer-ffi",
+ "serde_json",
  "socket2",
  "tokio",
  "tracing",
@@ -3765,6 +3767,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nufon-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
