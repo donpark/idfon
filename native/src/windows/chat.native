@@ -1,7 +1,6 @@
 <column gap="12" padding="16">
   <row cross="center">
     <avatar label="{selectedConnectionName}">NU</avatar>
-    <avatar label="{identityName}">{identityInitials}</avatar>
     <column gap="2" grow="1">
       <text size="heading">{selectedConnectionName}</text>
       <text foreground="text_muted">{senderStatus}</text>
@@ -27,20 +26,38 @@
   <separator />
   <scroll grow="1">
     <column gap="8">
+      <if test="{historyEmpty}">
+        <column cross="center" gap="4" padding="32">
+          <text foreground="text_muted">No messages yet</text>
+          <text foreground="text_muted">Send a message or record a voice note</text>
+        </column>
+      </if>
       <for each="history" key="id" as="item">
         <if test="{item.isAudio}">
           <if test="{item.audioReady}">
-        <if test="{item.sent}">
-          <row main="end">
-            <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
-          </row>
-        </if>
-        <else>
-          <row main="start">
-            <avatar label="{selectedConnectionName}">NU</avatar>
-            <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
-          </row>
-        </else>
+            <if test="{item.sent}">
+              <row main="end">
+                <bubble variant="primary">
+                  <row gap="8" cross="center">
+                    <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
+                    <icon name="app:wave" width="18" height="18" foreground="accent_text" />
+                    <text>{item.duration}</text>
+                  </row>
+                </bubble>
+              </row>
+            </if>
+            <else>
+              <row main="start">
+                <avatar label="{selectedConnectionName}">NU</avatar>
+                <bubble>
+                  <row gap="8" cross="center">
+                    <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
+                    <icon name="app:wave" width="18" height="18" foreground="text_muted" />
+                    <text foreground="text_muted">{item.duration}</text>
+                  </row>
+                </bubble>
+              </row>
+            </else>
           </if>
         </if>
         <else>

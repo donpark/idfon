@@ -27,6 +27,7 @@ export interface ChatMessage {
   readonly audio: Uint8Array;
   readonly isAudio: boolean;
   readonly audioReady: boolean;
+  readonly duration: Uint8Array;
 }
 
 export interface SessionLaunch {
@@ -88,6 +89,7 @@ export interface Model {
   readonly composerActive: boolean;
   readonly composerIdle: boolean;
   readonly waveform: readonly number[];
+  readonly historyEmpty: boolean;
   readonly comms: Comms;
   readonly blobTicketInput: Uint8Array;
   readonly blobStatus: Uint8Array;
@@ -256,6 +258,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     composerActive: false,
     composerIdle: true,
     waveform: [],
+    historyEmpty: true,
     comms: { audio: false, live: false, subscribed: false, recording: false, recReady: false },
     blobTicketInput: EMPTY,
     blobStatus: utf8Bytes("No blob selected"),
@@ -504,18 +507,58 @@ function identityInitials(name: Uint8Array): Uint8Array {
 }
 
 function addChatMessage(model: Model, text: Uint8Array, sent: boolean, status: Uint8Array): Model {
-  return { ...model, history: [...model.history, { id: utf8Bytes(`message-${model.history.length}`), text, sent, timestamp: utf8Bytes("just now"), status, audio: EMPTY, isAudio: false, audioReady: false }] };
+  return comUpdate({ ...model, history: [...model.history, { id: utf8Bytes(`message-${model.history.length}`), text, sent, timestamp: utf8Bytes("just now"), status, audio: EMPTY, isAudio: false, audioReady: false, duration: EMPTY }] }, {});
 }
 
-function addAudioMessage(model: Model, ticket: Uint8Array, sent: boolean, ready: boolean): Model {
-  return { ...model, history: [...model.history, { id: utf8Bytes(`message-${model.history.length}`), text: utf8Bytes("Voice message"), sent, timestamp: utf8Bytes("just now"), status: utf8Bytes(""), audio: ticket, isAudio: true, audioReady: ready }] };
+function addAudioMessage(model: Model, ticket: Uint8Array, sent: boolean, ready: boolean, duration: Uint8Array): Model {
+  return comUpdate({ ...model, history: [...model.history, { id: utf8Bytes(`message-${model.history.length}`), text: utf8Bytes("Voice message"), sent, timestamp: utf8Bytes("just now"), status: utf8Bytes(""), audio: ticket, isAudio: true, audioReady: ready, duration }] }, {});
 }
 
 function setLastMessageStatus(model: Model, status: Uint8Array): Model {
   if (model.history.length === 0) return model;
   const history = model.history.slice();
   history[history.length - 1] = { ...history[history.length - 1], status };
-  return { ...model, history };
+  return comUpdate({ ...model, history }, {});
+}
+
+function digitsToNumber(data: Uint8Array): number {
+  if (data.length === 0) return -1;
+  let value = 0;
+  let i = 0;
+  while (i < data.length) {
+    const byte = data[i];
+    if (byte < 48 || byte > 57) return -1;
+    value = value * 10 + byte - 48;
+    i += 1;
+  }
+  return value;
+}
+
+function secondsLabel(seconds: number): Uint8Array {
+  const pad = seconds % 60 < 10 ? "0" : "";
+  return utf8Bytes(`${Math.floor(seconds / 60)}:${pad}${seconds % 60}`);
+}
+
+function envelopeField(text: Uint8Array, field: Uint8Array): Uint8Array {
+  // value bytes of "field=" from an envelope header block
+  let i = 0;
+  while (i + field.length + 1 <= text.length) {
+    const start = i === 0 ? 0 : i + 1;
+    if ((i === 0 || text[i] === 10) && start + field.length + 1 <= text.length
+      && sameBytes(text.slice(start, start + field.length), field)
+      && text[start + field.length] === 61) {
+      let end = start + field.length + 1;
+      while (end < text.length && text[end] !== 10) end += 1;
+      return text.slice(start + field.length + 1, end);
+    }
+    i += 1;
+  }
+  return EMPTY;
+}
+
+function recordingDurationLabel(envelope: Uint8Array): Uint8Array {
+  const ms = digitsToNumber(envelopeField(envelope, utf8Bytes("duration_ms")));
+  return ms > 0 ? secondsLabel(Math.floor(ms / 1000)) : EMPTY;
 }
 
 function liveInviteMessage(action: Uint8Array, ticket: Uint8Array): Uint8Array {
@@ -523,7 +566,9 @@ function liveInviteMessage(action: Uint8Array, ticket: Uint8Array): Uint8Array {
 }
 
 function recordingEnvelope(model: Model): Uint8Array {
-  return concat(utf8Bytes("NUFON-RECORDING/1\nid="), concat(model.recordingTicket, concat(utf8Bytes("\ncodec=opus\nchannels=1\nsample_rate=48000\nduration_ms=0\nsender_id="), concat(model.endpointId, concat(utf8Bytes("\nticket="), model.recordingTicket)))));
+  const seconds = digitsToNumber(model.recordingDuration);
+  const ms = seconds > 0 ? seconds * 1000 : 0;
+  return concat(utf8Bytes("NUFON-RECORDING/1\nid="), concat(model.recordingTicket, concat(utf8Bytes("\ncodec=opus\nchannels=1\nsample_rate=48000\nduration_ms="), concat(utf8Bytes(`${ms}`), concat(utf8Bytes("\nsender_id="), concat(model.endpointId, concat(utf8Bytes("\nticket="), model.recordingTicket)))))));
 }
 
 function recordingPayload(model: Model): Uint8Array {
@@ -591,6 +636,7 @@ function settle(model: Model): Model {
     recordingReady: c.recReady,
     composerActive: model.message.length > 0,
     composerIdle: !c.recording && !c.recReady,
+    historyEmpty: model.history.length === 0,
   };
 }
 
@@ -762,13 +808,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
             }
           } else if (text.length > recordingPrefix.length && sameBytes(text.slice(0, recordingPrefix.length), recordingPrefix)) {
             const ticket = recordingTicket(text);
-            const withAudio = addAudioMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true, eventsReady: true }, ticket, false, false);
+            const withAudio = addAudioMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true, eventsReady: true }, ticket, false, false, recordingDurationLabel(text));
             return [withAudio, Cmd.batch([
               Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" }),
               Cmd.request("media.blob.fetch", ticket, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" }),
             ])];
           } else {
-            next = addChatMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Received: receiver_event"), senderStatus: utf8Bytes("Ready"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true }, text, false, utf8Bytes("Received"));
+            next = addChatMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), senderStatus: utf8Bytes("Ready"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true }, text, false, utf8Bytes("Received"));
           }
         }
         index += 1;
@@ -835,13 +881,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         const recordingPrefix = utf8Bytes("NUFON-RECORDING/1\n");
         if (message.length > recordingPrefix.length && sameBytes(message.slice(0, recordingPrefix.length), recordingPrefix)) {
           const ticket = recordingTicket(message);
-          const withAudio = addAudioMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true }, ticket, false, false);
+          const withAudio = addAudioMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true }, ticket, false, false, recordingDurationLabel(message));
           return [withAudio, Cmd.batch([
             Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" }),
             Cmd.request("media.blob.fetch", ticket, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" }),
           ])];
         }
-        return addChatMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Received: receiver_event"), senderStatus: utf8Bytes("Ready"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true }, message, false, utf8Bytes("Received"));
+        return addChatMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), senderStatus: utf8Bytes("Ready"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true }, message, false, utf8Bytes("Received"));
       }
     case "connection_selected": {
       const connection = model.connections.find((item) => sameBytes(item.name, msg.name));
@@ -909,12 +955,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (model.pendingRecordingSend) {
         // clear comms.recReady too — settle() re-derives the attachment row from it, and a stale true resurrects the old attachment mid-next-recording
         const cleared = comUpdate(model, { recReady: false });
-        return addAudioMessage({ ...cleared, pendingRecordingSend: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Audio sent"), senderStatus: utf8Bytes("Audio sent") }, model.recordingTicket, true, true);
+        const seconds = digitsToNumber(model.recordingDuration);
+        return addAudioMessage({ ...cleared, pendingRecordingSend: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Audio sent"), senderStatus: utf8Bytes("Audio sent") }, model.recordingTicket, true, true, seconds > 0 ? secondsLabel(seconds) : EMPTY);
       }
       if (sameBytes(msg.data, utf8Bytes("call_stopped")) && model.liveActive) return [
         { ...model, senderStatus: utf8Bytes("Receiver ended call") },
         Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
       ];
+      if (sameBytes(msg.data, utf8Bytes("media_scope_set"))) return { ...model, senderStatus: utf8Bytes("Ready") };
       // ponytail: nufond echoes its JSON response envelope on success; show a friendly status instead
       const isJsonEnvelope = msg.data.length !== 0 && msg.data[0] === 123;
       return setLastMessageStatus({ ...model, senderStatus: isJsonEnvelope || msg.data.length === 0 ? utf8Bytes("Message sent") : msg.data }, utf8Bytes("Sent"));
@@ -1056,7 +1104,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "blob_fetched": {
       // ponytail: marks all pending audio items matching the last fetched ticket; one incoming recording at a time today
       const history = model.history.map((item) => item.isAudio && !item.audioReady && sameBytes(item.audio, model.blobTicketInput) ? { ...item, audioReady: true } : item);
-      return { ...model, history, blobStatus: utf8Bytes("Recording ready"), senderStatus: utf8Bytes("Received recording ready") };
+      return comUpdate({ ...model, history, blobStatus: utf8Bytes("Recording ready"), senderStatus: utf8Bytes("Received recording ready") }, {});
     }
     case "blob_fetch_error":
       return { ...model, blobStatus: msg.data, senderStatus: utf8Bytes("Could not receive recording") };
