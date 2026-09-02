@@ -1567,16 +1567,22 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
             false,
         );
     };
-    let allowed = state.grants.iter().any(|grant| {
-        grant.identity == identity
-            && grant.subject == peer
-            && grant.capability == capability
-            && grant.revoked_at.is_none()
-            && grant
-                .expires_at
-                .as_deref()
-                .is_none_or(|expires| expires > now().as_str())
-    });
+    // ponytail: pairing (a non-revoked MessageSend grant) implies live-audio permission —
+    // the callee's liveAutoAccept is the actual consent gate. Explicit per-capability
+    // grants (LiveAudioSubscribe) can tighten this later if needed.
+    let granted = |cap: &nufon_protocol::Capability| {
+        state.grants.iter().any(|grant| {
+            grant.identity == identity
+                && grant.subject == peer
+                && grant.capability == *cap
+                && grant.revoked_at.is_none()
+                && grant
+                    .expires_at
+                    .as_deref()
+                    .is_none_or(|expires| expires > now().as_str())
+        })
+    };
+    let allowed = granted(&capability) || granted(&nufon_protocol::Capability::MessageSend);
     if !allowed {
         eprintln!("[nufond] media session start rejected: capability denied identity={} peer={} capability={:?}", identity, peer, capability);
         return error_response(

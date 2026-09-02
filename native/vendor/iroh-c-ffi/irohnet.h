@@ -863,10 +863,11 @@ void
 media_live_unsubscribe (void);
 
 /** \brief
- *  Plays the fetched recording through the default output device.
+ *  Plays the recording identified by the given blob ticket through the
+ *  default output device. Supersedes any current playback.
  */
 uint8_t
-media_recording_play (void);
+media_recording_play (char const* ticket);
 
 /** \brief
  *  Starts recording microphone audio in the Native SDK app-data directory.

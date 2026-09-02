@@ -10,16 +10,33 @@
   <scroll grow="1">
     <column gap="8">
       <for each="history" key="id" as="item">
+        <if test="{item.isAudio}">
+          <if test="{item.audioReady}">
         <if test="{item.sent}">
           <row main="end">
-            <bubble variant="primary"><markdown source="{item.text}" on-link="open_link" /><text foreground="text_muted">{item.timestamp} · {item.status}</text></bubble>
+            <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
           </row>
         </if>
         <else>
           <row main="start">
             <avatar label="{selectedConnectionName}">NU</avatar>
-            <bubble><markdown source="{item.text}" on-link="open_link" /><text foreground="text_muted">{item.timestamp} · {item.status}</text></bubble>
+            <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
           </row>
+        </else>
+          </if>
+        </if>
+        <else>
+          <if test="{item.sent}">
+            <row main="end">
+              <bubble variant="primary"><markdown source="{item.text}" on-link="open_link" /></bubble>
+            </row>
+          </if>
+          <else>
+            <row main="start">
+              <avatar label="{selectedConnectionName}">NU</avatar>
+              <bubble><markdown source="{item.text}" on-link="open_link" /></bubble>
+            </row>
+          </else>
         </else>
       </for>
     </column>
@@ -40,7 +57,6 @@
       <textarea text="{message}" placeholder="Write a message…" submit-on-enter="true" on-input="message_edit" on-submit="send_message" label="Message" />
       <input-group-actions>
         <button size="icon" variant="ghost" icon="plus" on-press="attach_file" label="Attach file"></button>
-        <button size="sm" variant="ghost" on-press="reply_message">Reply</button>
         <spacer grow="1" />
         <if test="{recordingActive}">
           <button size="icon" variant="destructive" icon="x" on-press="recording_stop" label="Stop recording"></button>
@@ -64,13 +80,4 @@
     </input-group>
     <spacer width="12" />
   </row>
-
-  <if test="{fetchedRecordingReady}">
-    <if test="{playbackActive}">
-      <button variant="secondary" on-press="playback_stop">Stop received recording</button>
-    </if>
-    <else>
-      <button variant="primary" on-press="playback_start">Play received recording</button>
-    </else>
-  </if>
 </column>

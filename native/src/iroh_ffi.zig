@@ -259,7 +259,9 @@ fn mediaAudioWorker(job: *Job) void {
         if (ffi.media_audio_switch_output(&device) == 0) self.complete(job.key, true, "output_device_set")
         else self.complete(job.key, false, "output_device_failed");
     } else if (std.mem.eql(u8, name, "media.recording.play")) {
-        if (ffi.media_recording_play() == 0) self.complete(job.key, true, "recording_playing")
+        var ticket: [max_payload + 1]u8 = undefined;
+        @memcpy(ticket[0..job.len], job.bytes[0..job.len]); ticket[job.len] = 0;
+        if (ffi.media_recording_play(&ticket) == 0) self.complete(job.key, true, "recording_playing")
         else self.complete(job.key, false, "recording_play_failed");
     } else if (std.mem.eql(u8, name, "media.recording.stop_playback")) {
         ffi.media_recording_stop_playback();
