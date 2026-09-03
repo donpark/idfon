@@ -21,6 +21,11 @@ use tokio::{
 
 const DEFAULT_TRANSPORT: &str = "iroh";
 const EVENT_RETENTION: usize = 1000;
+// Per-response cap for events.compact: the app's host-result budget is 256 KiB,
+// so a full-history response eventually exceeds it and wedges delivery (the
+// client's error path never advances its cursor). The client drains the rest
+// via its cursor on the next 1s poll.
+const COMPACT_EVENTS_MAX_BYTES: usize = 128 * 1024;
 const MAX_RESOURCE_BYTES: usize = 512 * 1024;
 static MEDIA_SERVICE: OnceLock<MediaService> = OnceLock::new();
 
@@ -2684,36 +2689,49 @@ fn compact_events(store: &Arc<Mutex<Store>>, after: Option<&str>, identity: Opti
         .filter(|event| after.is_none_or(|cursor| event.cursor.as_str() > cursor))
         .collect();
     let mut payload = Vec::new();
-    payload.extend_from_slice(&(events.len() as u16).to_be_bytes());
+    payload.extend_from_slice(&[0, 0]); // event count, patched below
+    let mut count: usize = 0;
     for event in events {
-        let cursor = event.cursor.as_bytes();
-        let kind = event.r#type.as_bytes();
-        let peer = event
-            .data
-            .get("peer_id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .as_bytes();
-        let message = event
-            .data
-            .get("message_id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .as_bytes();
-        let text = event
-            .data
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .as_bytes();
-        for value in [cursor, kind, peer, message, text] {
-            if value.len() > u16::MAX as usize {
-                return Vec::new();
-            }
+        let fields = [
+            event.cursor.as_bytes(),
+            event.r#type.as_bytes(),
+            event
+                .data
+                .get("peer_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+            event
+                .data
+                .get("message_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+            event
+                .data
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+        ];
+        if fields.iter().any(|value| value.len() > u16::MAX as usize) {
+            // ponytail: a single event with a >64 KiB field is skipped instead
+            // of wedging the whole stream (the old code returned an empty
+            // payload, which stalled delivery forever). Pathological input only.
+            continue;
+        }
+        let needed: usize = fields.iter().map(|value| value.len() + 2).sum();
+        // Always include at least one event so a page boundary can't loop forever.
+        if count > 0 && payload.len() + needed > COMPACT_EVENTS_MAX_BYTES {
+            break;
+        }
+        for value in fields {
             payload.extend_from_slice(&(value.len() as u16).to_be_bytes());
             payload.extend_from_slice(value);
         }
+        count += 1;
     }
+    payload[0..2].copy_from_slice(&(count as u16).to_be_bytes());
     payload
 }
 
@@ -3280,6 +3298,59 @@ mod tests {
                 ..
             }
         ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn compact_events_pages_large_histories() {
+        fn read_u16_field(payload: &[u8], offset: &mut usize) -> Vec<u8> {
+            let length = payload[*offset] as usize * 256 + payload[*offset + 1] as usize;
+            *offset += 2;
+            let value = payload[*offset..*offset + length].to_vec();
+            *offset += length;
+            value
+        }
+        let dir = temp_dir("compact-pages");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        {
+            let mut state = store.lock().unwrap();
+            for index in 0..20 {
+                state.events.push(nufon_protocol::Event {
+                    event_id: format!("evt-{index}"),
+                    cursor: format!("cur_{index:020}"),
+                    r#type: "message.received".into(),
+                    timestamp: now(),
+                    identity: "default".into(),
+                    data: serde_json::json!({"text": "x".repeat(16 * 1024)}),
+                });
+            }
+        }
+        let mut after: Option<String> = None;
+        let mut seen: Vec<String> = Vec::new();
+        loop {
+            let payload = compact_events(&store, after.as_deref(), None);
+            assert!(payload.len() >= 2);
+            assert!(payload.len() <= COMPACT_EVENTS_MAX_BYTES);
+            let count = u16::from_be_bytes([payload[0], payload[1]]) as usize;
+            let mut offset = 2;
+            let mut cursors: Vec<String> = Vec::new();
+            for _ in 0..count {
+                cursors.push(String::from_utf8(read_u16_field(&payload, &mut offset)).unwrap());
+                let _kind = read_u16_field(&payload, &mut offset);
+                let _peer = read_u16_field(&payload, &mut offset);
+                let _message = read_u16_field(&payload, &mut offset);
+                let _text = read_u16_field(&payload, &mut offset);
+            }
+            assert_eq!(offset, payload.len());
+            if count == 0 {
+                break;
+            }
+            assert!(seen.last().is_none_or(|last| cursors[0] > *last), "pages overlap or regress");
+            seen.extend(cursors);
+            after = Some(seen.last().unwrap().clone());
+            assert!(seen.len() <= 20, "paging did not terminate");
+        }
+        assert_eq!(seen.len(), 20);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

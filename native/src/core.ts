@@ -103,6 +103,12 @@ export interface Model {
   readonly eventCursor: Uint8Array;
   readonly tickAt: number;
   readonly eventsReady: boolean;
+  // Initial sync in progress: drain events.compact pages (empty-cursor load
+  // after launch/identity switch) without rendering or side effects. Done
+  // when a page returns zero events. Without this, pages 2+ of a large
+  // history replay through the live-message path (blob fetches, "Incoming
+  // recording/call" status) for events that arrived before the switch.
+  readonly syncingEvents: boolean;
 }
 
 export type Msg =
@@ -198,12 +204,13 @@ export type Msg =
   | { readonly kind: "audio_emergency_stopped"; readonly data: Uint8Array }
   | { readonly kind: "media_session_ready"; readonly data: Uint8Array }
   | { readonly kind: "events_loaded"; readonly data: Uint8Array }
+  | { readonly kind: "events_sync_error"; readonly data: Uint8Array }
   | { readonly kind: "poll_events"; readonly at: number };
 
 export const viewUnbound = [
   "replyRoute", "identityName", "identityInitials", "incomingLive", "copyIdentityTicket", "identityError", "chatOpen", "receiverTicket", "capabilityTicket", "endpointId", "audioActive", "pendingRecordingSend", "subscribedRecording", "showTicket", "liveAutoAccept", "eventCursor", "eventsReady",
-  "receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "poll_events", "tickAt",
-  "recordingStartedAt", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "chat_closed", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready",
+  "receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "events_sync_error", "poll_events", "tickAt",
+  "recordingStartedAt", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "events_sync_error", "chat_closed", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready",
 ] as const;
 
 export function subscriptions(model: Model): Sub<Msg> {
@@ -273,6 +280,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     eventCursor: EMPTY,
     tickAt: 0,
     eventsReady: false,
+    syncingEvents: false,
   };
   return [model, Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "nufond-identities", ok: "identities_loaded", err: "daemon_error" })];
 }
@@ -710,7 +718,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (identities[identityIndex].active) activeName = identities[identityIndex].name;
         identityIndex += 1;
       }
-      const next = { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false };
+      const next = { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true };
       return [next, Cmd.batch([
         Cmd.request("nufond.request", contextPayload(activeName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
         Cmd.request("nufond.request", peersPayload(activeName), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
@@ -718,7 +726,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ])];
     }
     case "identity_selected":
-      return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, copyIdentityTicket: true }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
+      return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, copyIdentityTicket: true }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
     case "show_add_identity":
       return { ...model, showAddIdentity: true, newIdentityName: EMPTY };
     case "cancel_add_identity":
@@ -733,7 +741,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "identity_create_error":
       return { ...model, receiverStatus: msg.data };
     case "identity_used":
-      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false }, Cmd.batch([
+      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true }, Cmd.batch([
         Cmd.request("nufond.request", contextPayload(model.newIdentityName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
         Cmd.request("nufond.request", peersPayload(model.newIdentityName), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
         Cmd.request("nufond.request", daemonEventsPayload(model.newIdentityName, EMPTY), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" }),
@@ -741,6 +749,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ])];
     case "identity_use_error":
       return { ...model, receiverStatus: msg.data };
+    case "events_sync_error":
+      // End the swallow so the 1s poll can retry; eventsReady stays false so
+      // the retry page still isn't rendered as live.
+      return { ...model, syncingEvents: false };
     case "poll_events": {
       const elapsed = msg.at > model.recordingStartedAt ? msg.at - model.recordingStartedAt : 0;
       const seconds = Math.floor(elapsed / 1000);
@@ -752,6 +764,26 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "events_loaded": {
       if (msg.data.length < 2) return model;
       const count = msg.data[0] * 256 + msg.data[1];
+      if (model.syncingEvents) {
+        if (count === 0) return { ...model, syncingEvents: false, eventsReady: true };
+        let syncOffset = 2;
+        let syncCursor = model.eventCursor;
+        let syncIndex = 0;
+        while (syncIndex < count && syncOffset + 2 <= msg.data.length) {
+          const cursorLength = msg.data[syncOffset] * 256 + msg.data[syncOffset + 1];
+          syncOffset += 2;
+          if (syncOffset + cursorLength > msg.data.length) break;
+          syncCursor = msg.data.slice(syncOffset, syncOffset + cursorLength);
+          syncOffset += cursorLength;
+          let field = 0;
+          while (field < 4 && syncOffset + 2 <= msg.data.length) {
+            syncOffset += 2 + msg.data[syncOffset] * 256 + msg.data[syncOffset + 1];
+            field += 1;
+          }
+          syncIndex += 1;
+        }
+        return [{ ...model, eventCursor: syncCursor }, Cmd.request("nufond.request", daemonEventsPayload(model.identityName, syncCursor), { key: "nufond-events", ok: "events_loaded", err: "events_sync_error" })];
+      }
       let offset = 2;
       let index = 0;
       let next = model;
