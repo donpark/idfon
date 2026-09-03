@@ -106,7 +106,15 @@ impl AudioSource for MuteSource {
 }
 
 fn audio() -> &'static AudioBackend {
-    AUDIO.get_or_init(AudioBackend::default)
+    let backend = AUDIO.get_or_init(AudioBackend::default);
+    // ponytail: AEC disabled — sonora's EchoRemover panics (slice index OOB,
+    // panic=abort → SIGABRT) on the CoreAudio IO thread when a mono output
+    // stream (48k/1 opus live track) joins the 2ch-configured AEC. The input
+    // device is 1ch while the AEC config is hardcoded 2ch, so cancellation was
+    // processing mono-as-stereo garbage anyway. Re-enable when iroh-live/sonora
+    // handles channel-count mismatches; echo risk until then.
+    backend.set_aec_enabled(false);
+    backend
 }
 
 fn media_dir() -> std::path::PathBuf {
