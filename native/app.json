@@ -4,7 +4,7 @@
     "name": "Nufon",
     "display_name": "Nufon",
     "description": "A native Nufon communication app.",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "icons": ["assets/icon.png"],
     "platforms": ["macos"],
     "permissions": ["view", "command", "microphone", "notifications"],

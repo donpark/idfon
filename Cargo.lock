@@ -3657,7 +3657,7 @@ dependencies = [
 
 [[package]]
 name = "nufon-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nufon-client",
  "nufon-protocol",
@@ -3666,7 +3666,7 @@ dependencies = [
 
 [[package]]
 name = "nufon-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nufon-protocol",
  "serde_json",
@@ -3675,7 +3675,7 @@ dependencies = [
 
 [[package]]
 name = "nufon-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "iroh",
@@ -3690,7 +3690,7 @@ dependencies = [
 
 [[package]]
 name = "nufon-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3709,7 +3709,7 @@ dependencies = [
 
 [[package]]
 name = "nufon-media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "iroh",
  "iroh-live",
@@ -3720,7 +3720,7 @@ dependencies = [
 
 [[package]]
 name = "nufon-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3729,7 +3729,7 @@ dependencies = [
 
 [[package]]
 name = "nufond"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]

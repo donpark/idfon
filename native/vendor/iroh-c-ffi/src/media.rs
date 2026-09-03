@@ -17,7 +17,6 @@ use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as 
 use iroh_live::{
     media::{
         audio_backend::InputStream,
-        codec::AudioCodec,
         codec::OpusEncoder,
         format::{AudioEncoderConfig, AudioFormat, AudioPreset, PlaybackConfig},
         publish::{AudioRenditions, LocalBroadcast},
@@ -1005,7 +1004,7 @@ pub fn media_live_start() -> char_p::Box {
             catalog.into(),
             move |_format| OpusEncoder::with_config(encoder_config.clone()),
         );
-        broadcast.audio().set_renditions(renditions)?;;
+        broadcast.audio().set_renditions(renditions)?;
         let broadcast_name = broadcast_name();
         live.publish(&broadcast_name, &broadcast).await?;
         let ticket = LiveTicket::new(live.endpoint().addr(), &broadcast_name).serialize();
