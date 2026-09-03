@@ -19,8 +19,8 @@ use iroh_live::{
         audio_backend::InputStream,
         codec::AudioCodec,
         codec::OpusEncoder,
-        format::{AudioFormat, AudioPreset, PlaybackConfig},
-        publish::LocalBroadcast,
+        format::{AudioEncoderConfig, AudioFormat, AudioPreset, PlaybackConfig},
+        publish::{AudioRenditions, LocalBroadcast},
         subscribe::MediaTracks,
         traits::{
             AudioDecoder, AudioEncoder, AudioEncoderFactory, AudioSink, AudioSinkHandle,
@@ -43,6 +43,10 @@ static RECORDING_HISTORY: Mutex<()> = Mutex::new(());
 static INPUT: Mutex<Option<InputStream>> = Mutex::new(None);
 static LIVE: Mutex<Option<LiveSession>> = Mutex::new(None);
 static SUBSCRIBER: Mutex<Option<Subscriber>> = Mutex::new(None);
+// Live audio encode target in bits per second (Opus VBR, so actual wire
+// usage dips below this on silence). Sender-configurable via
+// media_audio_set_bitrate; applies to the next live publisher start.
+static BITRATE: AtomicU64 = AtomicU64::new(32_000);
 static BLOB_PROVIDER: Mutex<Option<BlobProvider>> = Mutex::new(None);
 static LOCAL_RECORDING: Mutex<Option<LocalRecording>> = Mutex::new(None);
 static LAST_RECORDING_DURATION_MS: AtomicU64 = AtomicU64::new(0);
@@ -968,6 +972,19 @@ pub fn media_audio_active() -> u8 {
     u8::from(input_active || live_active || recording_active || subscribed)
 }
 
+/// Sets the live audio encode target bitrate in bits per second (Opus VBR).
+/// Valid range 8000..=510000; applies to the next live publisher start.
+#[ffi_export]
+pub fn media_audio_set_bitrate(bitrate: u32) -> u8 {
+    if !(8_000..=510_000).contains(&bitrate) {
+        tracing::warn!(bitrate, "live audio bitrate rejected: out of range");
+        return 1;
+    }
+    tracing::info!(bitrate, "live audio bitrate set");
+    BITRATE.store(bitrate as u64, Ordering::Relaxed);
+    0
+}
+
 /// Starts an Opus microphone broadcast and returns its iroh-live ticket.
 #[ffi_export]
 pub fn media_live_start() -> char_p::Box {
@@ -979,9 +996,16 @@ pub fn media_live_start() -> char_p::Box {
         };
         let live = Live::from_env().await?.with_router().spawn();
         let broadcast = LocalBroadcast::new();
-        broadcast
-            .audio()
-            .set(MuteSource { inner: input }, AudioCodec::Opus, [AudioPreset::Hq])?;
+        let bitrate = BITRATE.load(Ordering::Relaxed);
+        let encoder_config = AudioEncoderConfig::from_preset(AudioFormat::mono_48k(), AudioPreset::Hq).bitrate(bitrate);
+        let catalog = OpusEncoder::config_for(&encoder_config);
+        let mut renditions = AudioRenditions::empty(MuteSource { inner: input });
+        renditions.add_with_callback::<OpusEncoder>(
+            format!("audio/opus-{bitrate}"),
+            catalog.into(),
+            move |_format| OpusEncoder::with_config(encoder_config.clone()),
+        );
+        broadcast.audio().set_renditions(renditions)?;;
         let broadcast_name = broadcast_name();
         live.publish(&broadcast_name, &broadcast).await?;
         let ticket = LiveTicket::new(live.endpoint().addr(), &broadcast_name).serialize();

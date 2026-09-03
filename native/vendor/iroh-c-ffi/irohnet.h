@@ -745,20 +745,6 @@ void
 iroh_enable_tracing (void);
 
 /** \brief
- *  Selects the identity/conversation namespace used by subsequent media operations.
- */
-uint8_t
-media_set_scope (
-    char const * scope);
-
-/** \brief
- *  Persists a recording ticket once in the active conversation's ledger.
- */
-uint8_t
-media_recording_persist (
-    char const * ticket);
-
-/** \brief
  *  Returns whether a microphone source or live publisher is active.
  */
 uint8_t
@@ -782,6 +768,14 @@ media_audio_output_count (void);
 size_t
 media_audio_probe (
     uint64_t duration_ms);
+
+/** \brief
+ *  Sets the live audio encode target bitrate in bits per second (Opus VBR).
+ *  Valid range 8000..=510000; applies to the next live publisher start.
+ */
+uint8_t
+media_audio_set_bitrate (
+    uint32_t bitrate);
 
 /** \brief
  *  Sets the active subscriber output volume from 0 to 100.
@@ -825,6 +819,12 @@ media_blob_fetch (
     char const * ticket);
 
 /** \brief
+ *  Immediately stops inbound live audio, playback, and microphone capture.
+ */
+void
+media_emergency_stop (void);
+
+/** \brief
  *  Returns the number of decoded frames written to the subscriber WAV file.
  */
 size_t
@@ -863,11 +863,25 @@ void
 media_live_unsubscribe (void);
 
 /** \brief
- *  Plays the recording identified by the given blob ticket through the
- *  default output device. Supersedes any current playback.
+ *  Returns the duration of the most recently finalized local recording.
+ */
+uint64_t
+media_recording_duration_ms (void);
+
+/** \brief
+ *  Persists a recording ticket once in the active conversation's ledger.
  */
 uint8_t
-media_recording_play (char const* ticket);
+media_recording_persist (
+    char const * ticket);
+
+/** \brief
+ *  Plays the fetched recording through the default output device.
+ *  Returns `0` on success and `1` on failure.
+ */
+uint8_t
+media_recording_play (
+    char const * ticket);
 
 /** \brief
  *  Starts recording microphone audio in the Native SDK app-data directory.
@@ -882,22 +896,17 @@ uint8_t
 media_recording_stop (void);
 
 /** \brief
- *  Returns duration of the most recently finalized local recording.
- */
-uint64_t
-media_recording_duration_ms (void);
-
-/** \brief
  *  Stops fetched-recording playback.
  */
 void
 media_recording_stop_playback (void);
 
 /** \brief
- *  Immediately stops inbound live audio, playback, and microphone capture.
+ *  Selects the identity/conversation namespace used by subsequent media operations.
  */
-void
-media_emergency_stop (void);
+uint8_t
+media_set_scope (
+    char const * scope);
 
 /** \brief
  *  Stops all media resources during application shutdown.

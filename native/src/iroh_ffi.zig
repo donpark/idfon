@@ -150,6 +150,7 @@ fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8)
         std.mem.eql(u8, name, "media.emergency_stop") or
         std.mem.eql(u8, name, "media.audio.output_count") or
         std.mem.eql(u8, name, "media.audio.set_volume") or
+        std.mem.eql(u8, name, "media.audio.set_bitrate") or
         std.mem.eql(u8, name, "media.audio.input_count") or
         std.mem.eql(u8, name, "media.audio.probe") or
         std.mem.eql(u8, name, "media.live.start") or
@@ -326,6 +327,14 @@ fn mediaAudioWorker(job: *Job) void {
             if (ffi.media_audio_set_volume(value) == 0) self.complete(job.key, true, "volume_set")
             else self.complete(job.key, false, "volume_set_failed");
         } else self.complete(job.key, false, "invalid_volume");
+    } else if (std.mem.eql(u8, name, "media.audio.set_bitrate")) {
+        const kbps = if (job.len != 0) std.fmt.parseInt(u32, job.bytes[0..job.len], 10) catch null else null;
+        if (kbps) |value| {
+            if (value >= 8 and value <= 510) {
+                if (ffi.media_audio_set_bitrate(value * 1000) == 0) self.complete(job.key, true, "bitrate_set")
+                else self.complete(job.key, false, "bitrate_set_failed");
+            } else self.complete(job.key, false, "invalid_bitrate");
+        } else self.complete(job.key, false, "invalid_bitrate");
     } else if (std.mem.eql(u8, name, "media.audio.start")) {
         if (ffi.media_audio_start() == 0) self.complete(job.key, true, "audio_started")
         else self.complete(job.key, false, "audio_start_failed");

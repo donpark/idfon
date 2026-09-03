@@ -72,6 +72,7 @@ export interface Model {
   readonly audioActive: boolean;
   readonly audioStatus: Uint8Array;
   readonly volumeInput: Uint8Array;
+  readonly bitrateInput: Uint8Array;
   readonly liveActive: boolean;
   readonly subscribedActive: boolean;
   readonly liveTicket: Uint8Array;
@@ -167,6 +168,8 @@ export type Msg =
   | { readonly kind: "audio_probe_result"; readonly data: Uint8Array }
   | { readonly kind: "volume_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "volume_set" }
+  | { readonly kind: "bitrate_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "set_audio_bitrate" }
   | { readonly kind: "live_answer" }
   | { readonly kind: "live_decline" }
   | { readonly kind: "live_start" }
@@ -210,7 +213,7 @@ export type Msg =
 export const viewUnbound = [
   "replyRoute", "identityName", "identityInitials", "incomingLive", "copyIdentityTicket", "identityError", "chatOpen", "receiverTicket", "capabilityTicket", "endpointId", "audioActive", "pendingRecordingSend", "subscribedRecording", "showTicket", "liveAutoAccept", "eventCursor", "eventsReady",
   "receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "events_sync_error", "poll_events", "tickAt",
-  "recordingStartedAt", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "events_sync_error", "chat_closed", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready",
+  "recordingStartedAt", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "events_sync_error", "chat_closed", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready", "bitrate_edit", "set_audio_bitrate",
 ] as const;
 
 export function subscriptions(model: Model): Sub<Msg> {
@@ -248,6 +251,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     audioActive: false,
     audioStatus: utf8Bytes("Microphone off"),
     volumeInput: utf8Bytes("100"),
+    bitrateInput: utf8Bytes("32"),
     liveActive: false,
     subscribedActive: false,
     liveTicket: EMPTY,
@@ -1029,6 +1033,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return { ...model, volumeInput: editText(model.volumeInput, msg.edit) };
     case "volume_set":
       return [model, Cmd.request("media.audio.set_volume", model.volumeInput, { key: "media-volume", ok: "sender_ready", err: "sender_error" })];
+    case "bitrate_edit":
+      return { ...model, bitrateInput: editText(model.bitrateInput, msg.edit) };
+    case "set_audio_bitrate": {
+      if (model.bitrateInput.length === 0) return model;
+      return [model, Cmd.request("media.audio.set_bitrate", model.bitrateInput, { key: "media-bitrate", ok: "sender_ready", err: "sender_error" })];
+    }
     case "live_answer": {
       if (!model.incomingLive) return model;
       return [{ ...model, incomingLive: false, receiverStatus: utf8Bytes("In call") }, Cmd.batch([
