@@ -1,27 +1,24 @@
 <column gap="12" padding="16">
-  <row cross="center">
-    <avatar label="{selectedConnectionName}">NU</avatar>
-    <column gap="2" grow="1">
-      <text size="heading">{selectedConnectionName}</text>
-      <text foreground="text_muted">{senderStatus}</text>
-    </column>
-    <if test="{incomingLive}">
-      <button size="sm" variant="primary" on-press="live_answer">Answer</button>
-      <button size="sm" variant="secondary" on-press="live_decline">Decline</button>
+  <!-- Call header: participant avatars left, call controls + feedback right.
+       The peer name lives in the window title bar. -->
+  <row cross="center" gap="8">
+  <avatar label="{selectedConnectionName}">NU</avatar>
+  <spacer grow="1" />
+  <if test="{incomingLive}">
+    <text foreground="text_muted">{liveStatus}</text>
+    <button size="sm" variant="primary" on-press="live_answer">Answer</button>
+    <button size="sm" variant="secondary" on-press="live_decline">Decline</button>
+  </if>
+  <else>
+    <if test="{callActive}">
+      <text foreground="text_muted">{liveStatus}</text>
+      <button size="sm" variant="destructive" on-press="live_stop">End call</button>
     </if>
     <else>
-      <if test="{liveActive}">
-        <button size="sm" variant="destructive" on-press="live_stop">End call</button>
-      </if>
-      <else>
-        <if test="{subscribedActive}">
-          <button size="sm" variant="destructive" on-press="live_stop">End call</button>
-        </if>
-        <else>
-          <button size="icon" variant="primary" icon="volume" on-press="live_start" label="Start call"></button>
-        </else>
-      </else>
+      <text foreground="text_muted">{senderStatus}</text>
+      <button size="icon" variant="primary" icon="volume" on-press="live_start" label="Start call"></button>
     </else>
+  </else>
   </row>
   <separator />
   <scroll grow="1">

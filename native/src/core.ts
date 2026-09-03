@@ -75,6 +75,7 @@ export interface Model {
   readonly bitrateInput: Uint8Array;
   readonly liveActive: boolean;
   readonly subscribedActive: boolean;
+  readonly callActive: boolean;
   readonly liveTicket: Uint8Array;
   readonly liveTicketInput: Uint8Array;
   readonly liveStatus: Uint8Array;
@@ -254,6 +255,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     bitrateInput: utf8Bytes("32"),
     liveActive: false,
     subscribedActive: false,
+    callActive: false,
     liveTicket: EMPTY,
     liveTicketInput: EMPTY,
     liveStatus: utf8Bytes("Live audio off"),
@@ -639,11 +641,13 @@ function waveformBars(phase: number): readonly number[] {
 
 function settle(model: Model): Model {
   const c = model.comms;
+  const callActive = c.live || c.subscribed;
   return {
     ...model,
     audioActive: c.audio,
     liveActive: c.live,
     subscribedActive: c.subscribed,
+    callActive,
     recordingActive: c.recording,
     recordingReady: c.recReady,
     composerActive: model.message.length > 0,
