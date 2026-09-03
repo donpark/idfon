@@ -1117,16 +1117,21 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         peer.identity == receiving_identity && peer.id == envelope.sender.peer_id
             && peer.endpoint_id.as_deref() == Some(envelope.sender.endpoint_id.as_str())
     });
-    let allowed = state.grants.iter().any(|grant| {
-        grant.identity == receiving_identity
-            && grant.capability == nufon_protocol::Capability::MessageReceive
-            && grant.subject == envelope.sender.peer_id
-            && grant.revoked_at.is_none()
-            && grant
-                .expires_at
-                .as_deref()
-                .is_none_or(|expires| expires > now().as_str())
-    });
+    // A verified ticket (issuer = this identity, unexpired, unrevoked,
+    // subject-bound, contains message.receive) is the sender's standing
+    // authorization: it satisfies the gate even when the grant has not been
+    // materialized yet — always the case on a fresh cross-daemon pairing.
+    let allowed = envelope.capability_ticket.is_some()
+        || state.grants.iter().any(|grant| {
+            grant.identity == receiving_identity
+                && grant.capability == nufon_protocol::Capability::MessageReceive
+                && grant.subject == envelope.sender.peer_id
+                && grant.revoked_at.is_none()
+                && grant
+                    .expires_at
+                    .as_deref()
+                    .is_none_or(|expires| expires > now().as_str())
+        });
     drop(state);
     if !known_peer {
         eprintln!("[nufond] message receive rejected: unknown peer identity={} message_id={} sender={} sender_endpoint={}", receiving_identity, envelope.message_id, envelope.sender.peer_id, envelope.sender.endpoint_id);
@@ -1167,6 +1172,30 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             revision: 1,
             revoked_at: None,
         });
+    }
+    // The sender presented this identity's verified ticket: materialize its
+    // capabilities as grants (message.receive, live_audio_subscribe, …) so
+    // replies and live sessions work across daemons, where pairing creates
+    // no grants (no shared store). Same dedup rule as above.
+    if let Some(ticket) = &envelope.capability_ticket {
+        for capability in &ticket.capabilities {
+            if !state.grants.iter().any(|grant| {
+                grant.identity == receiving_identity
+                    && grant.subject == envelope.sender.peer_id
+                    && grant.capability == *capability
+            }) {
+                state.grants.push(nufon_protocol::CapabilityGrant {
+                    capability: capability.clone(),
+                    identity: receiving_identity.clone(),
+                    subject: envelope.sender.peer_id.clone(),
+                    conversation: None,
+                    active_at: "0".into(),
+                    expires_at: None,
+                    revision: 1,
+                    revoked_at: None,
+                });
+            }
+        }
     }
     if let Some(existing) = state.messages.iter().find(|message| {
         message.sender.peer_id == envelope.sender.peer_id
@@ -3059,6 +3088,43 @@ mod tests {
                 ..
             }
         ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn verified_ticket_bootstraps_grants_without_stored_grants() {
+        let dir = temp_dir("ticket-bootstrap");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let sender_key = nufon_core::generate_identity();
+        let receiver_key = store.lock().unwrap().identity_key("default").unwrap();
+        let sender_id = nufon_core::peer_id(&sender_key);
+        // Cross-daemon pairing: peer exists, but no grants at all.
+        store.lock().unwrap().peers.push(nufon_protocol::Peer { id: sender_id.clone(), identity: "default".into(), name: "Alice".into(), endpoint_id: Some("endpoint-a".into()), endpoint_addr: None, aliases: Vec::new() });
+        let ticket = nufon_core::issue_capability_ticket(&receiver_key, None, vec![nufon_protocol::Capability::MessageReceive, nufon_protocol::Capability::LiveAudioSubscribe], None, "tk-bootstrap");
+        let message = nufon_core::sign_message_with_ticket(&sender_key, "endpoint-a", "msg-boot", nufon_protocol::MessageContent::Text { text: "hello".into() }, "key-boot", None, Some(ticket)).unwrap();
+        let response = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "boot".into(),
+                method: "message.receive".into(),
+                params: serde_json::to_value(&message).unwrap(),
+            },
+            &store,
+        );
+        assert!(response.ok, "verified ticket must authorize first delivery");
+        let state = store.lock().unwrap();
+        for capability in [nufon_protocol::Capability::MessageReceive, nufon_protocol::Capability::LiveAudioSubscribe] {
+            assert!(state.grants.iter().any(|grant| {
+                grant.identity == "default"
+                    && grant.subject == sender_id
+                    && grant.capability == capability
+            }), "missing derived grant {capability:?}");
+        }
+        assert!(state.grants.iter().any(|grant| {
+            grant.identity == "default"
+                && grant.subject == sender_id
+                && grant.capability == nufon_protocol::Capability::MessageSend
+        }), "reciprocal reply grant missing");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

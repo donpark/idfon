@@ -119,7 +119,10 @@ impl IrohTransport {
             let connection = match incoming.await {
                 Ok(connection) => connection,
                 Err(error) => {
-                    eprintln!("[nufon-core] message connection handshake failed: {error}");
+                    // Expected noise, per iroh's Incoming::accept docs: the QUIC
+                    // socket receives unsolicited datagrams that abort handshakes.
+                    // Sends retry, so delivery is unaffected.
+                    eprintln!("[nufon-core] message connection handshake aborted (background UDP noise): {error}");
                     continue;
                 }
             };
