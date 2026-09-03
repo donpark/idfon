@@ -39,7 +39,12 @@ pub fn build(b: *std.Build) void {
 
     const dylib = b.path("vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib");
     artifacts.exe.root_module.addObjectFile(dylib);
-    artifacts.tests.root_module.addObjectFile(dylib);
+    // Tests (and the SDK's model-contract helper, which imports the same
+    // module) link the static archive: a dylib load command with an
+    // @executable_path install name aborts any helper run from its
+    // zig-cache dir, where no dylib sits next to the binary.
+    const archive = b.path("vendor/iroh-c-ffi/target/release/libiroh_c_ffi.a");
+    artifacts.tests.root_module.addObjectFile(archive);
     // Ship the dylib next to the executable for direct runs; the packager
     // gets it into the bundle via --binary-dir or a manual copy (see README).
     const install_dylib = b.addInstallFileWithDir(dylib, .bin, "libiroh_c_ffi.dylib");
