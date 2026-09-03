@@ -17,10 +17,6 @@
   </row>
   <text-field text="{capabilityTicketInput}" label="Capability ticket" placeholder="Paste capability ticket JSON" on-input="capability_ticket_edit" />
   <button variant="secondary" on-press="issue_capability_ticket">Issue receive ticket</button>
-  <row gap="8">
-    <text-field text="{bitrateInput}" label="Audio bitrate (kbps)" placeholder="e.g. 32" on-input="bitrate_edit" />
-    <button variant="secondary" on-press="set_audio_bitrate">Set bitrate</button>
-  </row>
 
   <if test="{identitySelected}">
     <column gap="8">
