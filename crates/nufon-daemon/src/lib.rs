@@ -1585,9 +1585,9 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
             false,
         );
     };
-    // ponytail: pairing (a non-revoked MessageSend grant) implies live-audio permission —
-    // the callee's liveAutoAccept is the actual consent gate. Explicit per-capability
-    // grants (LiveAudioSubscribe) can tighten this later if needed.
+    // ponytail: recording/file sessions still ride on a MessageSend grant;
+    // live audio now requires an explicit LiveAudioSubscribe grant created at
+    // pairing time — the callee's Answer button remains the consent gate.
     let granted = |cap: &nufon_protocol::Capability| {
         state.grants.iter().any(|grant| {
             grant.identity == identity
@@ -1600,7 +1600,10 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
                     .is_none_or(|expires| expires > now().as_str())
         })
     };
-    let allowed = granted(&capability) || granted(&nufon_protocol::Capability::MessageSend);
+    let allowed = match capability {
+        nufon_protocol::Capability::LiveAudioSubscribe => granted(&capability),
+        _ => granted(&capability) || granted(&nufon_protocol::Capability::MessageSend),
+    };
     if !allowed {
         eprintln!("[nufond] media session start rejected: capability denied identity={} peer={} capability={:?}", identity, peer, capability);
         return error_response(
@@ -2452,6 +2455,8 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<Transp
             for (grant_identity, subject, capability) in [
                 (peer.identity.clone(), remote.public_key.clone().unwrap_or_default(), nufon_protocol::Capability::MessageSend),
                 (remote.id.clone(), source.public_key.clone().unwrap_or_default(), nufon_protocol::Capability::MessageReceive),
+                (peer.identity.clone(), remote.public_key.clone().unwrap_or_default(), nufon_protocol::Capability::LiveAudioSubscribe),
+                (remote.id.clone(), source.public_key.clone().unwrap_or_default(), nufon_protocol::Capability::LiveAudioSubscribe),
             ] {
                 if !state.grants.iter().any(|grant| grant.identity == grant_identity && grant.subject == subject && grant.capability == capability && grant.revoked_at.is_none()) {
                     state.grants.push(nufon_protocol::CapabilityGrant { capability, identity: grant_identity, subject, conversation: None, active_at: "0".into(), expires_at: None, revision: 1, revoked_at: None });
@@ -2715,9 +2720,9 @@ fn compact_events(store: &Arc<Mutex<Store>>, after: Option<&str>, identity: Opti
                 .as_bytes(),
         ];
         if fields.iter().any(|value| value.len() > u16::MAX as usize) {
-            // ponytail: a single event with a >64 KiB field is skipped instead
-            // of wedging the whole stream (the old code returned an empty
-            // payload, which stalled delivery forever). Pathological input only.
+            // ponytail: skipped rather than wedging the stream; pathological
+            // input only — the log makes it observable if it ever fires.
+            eprintln!("[nufond] events.compact skipping oversized event {} identity={}", event.event_id, event.identity);
             continue;
         }
         let needed: usize = fields.iter().map(|value| value.len() + 2).sum();
@@ -3214,6 +3219,56 @@ mod tests {
             &store,
         );
         assert!(matches!(response.body, ResponseBody::Failure { error: ApiError { code: ErrorCode::InvalidRequest, .. }, .. }));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn live_audio_session_requires_subscribe_grant() {
+        let dir = temp_dir("live-grant");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap())) as Arc<Mutex<Store>>;
+        let start = |store: &Arc<Mutex<Store>>, id: &str| dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: id.into(),
+                method: "media.session.start".into(),
+                params: serde_json::json!({"identity": "default", "peer": "peer-1", "kind": "live_audio"}),
+            },
+            store,
+        );
+        // A MessageSend grant alone no longer implies live-audio permission.
+        {
+            let mut state = store.lock().unwrap();
+            state.grants.push(nufon_protocol::CapabilityGrant {
+                capability: nufon_protocol::Capability::MessageSend,
+                identity: "default".into(),
+                subject: "peer-1".into(),
+                conversation: None,
+                active_at: "0".into(),
+                expires_at: None,
+                revision: 1,
+                revoked_at: None,
+            });
+        }
+        let denied = start(&store, "denied");
+        assert!(matches!(
+            denied.body,
+            ResponseBody::Failure {
+                error: ApiError { code: ErrorCode::CapabilityDenied, .. },
+                ..
+            }
+        ));
+        // Pairing-time LiveAudioSubscribe grant unlocks the session.
+        store.lock().unwrap().grants.push(nufon_protocol::CapabilityGrant {
+            capability: nufon_protocol::Capability::LiveAudioSubscribe,
+            identity: "default".into(),
+            subject: "peer-1".into(),
+            conversation: None,
+            active_at: "0".into(),
+            expires_at: None,
+            revision: 1,
+            revoked_at: None,
+        });
+        assert!(start(&store, "allowed").ok);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

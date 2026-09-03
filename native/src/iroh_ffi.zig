@@ -370,7 +370,8 @@ fn mediaAudioWorker(job: *Job) void {
         var ticket: [max_payload + 1]u8 = undefined;
         @memcpy(ticket[0..job.len], job.bytes[0..job.len]);
         ticket[job.len] = 0;
-        if (ffi.media_blob_fetch(&ticket) == 0) self.complete(job.key, true, "recording_fetched")
+        // Echo the ticket back so the app can mark the exact history item.
+        if (ffi.media_blob_fetch(&ticket) == 0) self.complete(job.key, true, ticket[0..job.len])
         else self.complete(job.key, false, "recording_fetch_failed");
     } else if (std.mem.eql(u8, name, "media.emergency_stop")) {
         ffi.media_emergency_stop();
@@ -390,7 +391,8 @@ fn mediaAudioWorker(job: *Job) void {
 
 fn profilePaths() ProfilePaths {
     var paths = ProfilePaths{};
-    // Socket path comes from Rust (single source of truth with the daemon).
+    // Socket path comes from Rust (single source of truth with the daemon);
+    // the data dir is always the socket's parent (/tmp/nufon[-{profile}]).
     const socket_len = ffi.nufon_client_socket_path(null, &paths.socket, paths.socket.len);
     if (socket_len < 0) {
         @memcpy(paths.socket[0..default_socket.len], default_socket);
@@ -398,25 +400,15 @@ fn profilePaths() ProfilePaths {
     } else {
         paths.socket_len = @intCast(socket_len);
     }
-    // ponytail: data-dir profile logic duplicates nufon_client_socket_path's
-    // rules; unify when profiles gain more settings.
-    if (c.getenv("NUFON_PROFILE")) |profile_ptr| {
-        var profile_len: usize = 0;
-        while (profile_ptr[profile_len] != 0 and profile_len < 64) : (profile_len += 1) {}
-        var valid = profile_len > 0 and
-            !(profile_len == 7 and std.mem.eql(u8, profile_ptr[0..profile_len], "default"));
-        if (valid) for (profile_ptr[0..profile_len]) |byte| {
-            valid = valid and ((byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or
-                (byte >= '0' and byte <= '9') or byte == '-' or byte == '_');
-        };
-        if (valid) {
-            const data = std.fmt.bufPrint(&paths.data, "/tmp/nufon-{s}", .{profile_ptr[0..profile_len]}) catch return paths;
-            paths.data_len = data.len;
-            return paths;
-        }
+    const socket = paths.socket[0..paths.socket_len];
+    const slash = std.mem.lastIndexOfScalar(u8, socket, '/') orelse 0;
+    if (slash == 0) {
+        @memcpy(paths.data[0..default_data_dir.len], default_data_dir);
+        paths.data_len = default_data_dir.len;
+        return paths;
     }
-    @memcpy(paths.data[0..default_data_dir.len], default_data_dir);
-    paths.data_len = default_data_dir.len;
+    @memcpy(paths.data[0..slash], socket[0..slash]);
+    paths.data_len = slash;
     return paths;
 }
 

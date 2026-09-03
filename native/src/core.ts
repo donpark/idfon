@@ -406,7 +406,7 @@ function jsonString(data: Uint8Array): Uint8Array {
 }
 
 function capabilityTicketPayload(identity: Uint8Array): Uint8Array {
-  return concat(concat(utf8Bytes('{"version":1,"id":"gui-capability-ticket","method":"capability.ticket","params":{"identity":'), jsonString(identity)), utf8Bytes(',"capabilities":["message_receive"]}}'));
+  return concat(concat(utf8Bytes('{"version":1,"id":"gui-capability-ticket","method":"capability.ticket","params":{"identity":'), jsonString(identity)), utf8Bytes(',"capabilities":["message_receive","live_audio_subscribe"]}}'));
 }
 
 function extractTicket(data: Uint8Array): Uint8Array {
@@ -995,9 +995,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
       ];
       if (sameBytes(msg.data, utf8Bytes("media_scope_set"))) return { ...model, senderStatus: utf8Bytes("Ready") };
-      // ponytail: nufond echoes its JSON response envelope on success; show a friendly status instead
-      const isJsonEnvelope = msg.data.length !== 0 && msg.data[0] === 123;
-      return setLastMessageStatus({ ...model, senderStatus: isJsonEnvelope || msg.data.length === 0 ? utf8Bytes("Message sent") : msg.data }, utf8Bytes("Sent"));
+      // ok data from nufond.request paths is the daemon's JSON response envelope
+      return setLastMessageStatus({ ...model, senderStatus: utf8Bytes("Message sent") }, utf8Bytes("Sent"));
     case "sender_error":
       return setLastMessageStatus({ ...model, pendingRecordingSend: false, senderStatus: msg.data }, utf8Bytes("Failed"));
     case "recording_persisted":
@@ -1134,8 +1133,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (model.blobTicketInput.length === 0) return model;
       return [model, Cmd.request("media.blob.fetch", model.blobTicketInput, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" })];
     case "blob_fetched": {
-      // ponytail: marks all pending audio items matching the last fetched ticket; one incoming recording at a time today
-      const history = model.history.map((item) => item.isAudio && !item.audioReady && sameBytes(item.audio, model.blobTicketInput) ? { ...item, audioReady: true } : item);
+      // The completion carries the fetched ticket (media.blob.fetch echoes it
+      // back), so each pending item is marked by its own exact ticket.
+      const history = model.history.map((item) => item.isAudio && !item.audioReady && sameBytes(item.audio, msg.data) ? { ...item, audioReady: true } : item);
       return comUpdate({ ...model, history, blobStatus: utf8Bytes("Recording ready"), senderStatus: utf8Bytes("Received recording ready") }, {});
     }
     case "blob_fetch_error":
