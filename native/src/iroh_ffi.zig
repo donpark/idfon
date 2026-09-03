@@ -20,7 +20,9 @@ const ffi = @cImport({
 
 const max_message = 8192;
 const max_payload = 8192;
-const max_result = 8192;
+// ponytail: matches the runtime's max_effect_host_result_bytes (256 KiB);
+// the daemon frame limit is 1 MiB, but the runtime rejects anything larger.
+const max_result = 256 * 1024;
 const queue_size = 16;
 const default_socket = "/tmp/nufon/nufond.sock";
 const default_data_dir = "/tmp/nufon";
@@ -33,7 +35,11 @@ const ProfilePaths = struct {
 const Completion = struct {
     key: u64,
     ok: bool,
-    bytes: [max_result]u8 = undefined,
+    // Heap-owned copy. Valid until the consumer's next poll() call: the
+    // runtime copies handed-out bytes synchronously (feedHostResult memcpys
+    // before draining the next completion), so we free the previous handout
+    // on the following poll.
+    bytes: []const u8 = "",
     len: usize = 0,
 };
 
@@ -55,7 +61,7 @@ const Host = struct {
     queue_lock: std.atomic.Mutex = .unlocked,
     daemon_lock: std.atomic.Mutex = .unlocked,
     daemon_pid: c.pid_t = -1,
-    poll_bytes: [max_result]u8 = undefined,
+    handed_out: ?[]const u8 = null,
 
     fn binding(self: *Host) native_sdk.HostCallBinding {
         return .{ .context = self, .send_fn = send, .request_fn = request,
@@ -73,8 +79,14 @@ const Host = struct {
         const item = &self.queue[(self.queue_head + self.queue_len) % queue_size];
         item.key = key;
         item.ok = ok;
-        item.len = @min(bytes.len, max_result);
-        @memcpy(item.bytes[0..item.len], bytes[0..item.len]);
+        item.bytes = std.heap.page_allocator.dupe(u8, bytes) catch "";
+        if (item.bytes.len == 0 and bytes.len != 0) {
+            // Out of memory: release the reserved slot with a failure
+            // completion instead of silently truncating the payload.
+            item.ok = false;
+            item.bytes = "out_of_memory";
+        }
+        item.len = item.bytes.len;
         self.queue_len += 1;
         self.queue_lock.unlock();
         lock(&self.services_lock);
@@ -195,8 +207,9 @@ fn poll(context: *anyopaque) ?native_sdk.HostCallCompletion {
     if (self.queue_len == 0) return null;
     const item = &self.queue[self.queue_head];
     trace("host poll completion key={d} ok={} bytes={d}", .{ item.key, item.ok, item.len });
-    @memcpy(self.poll_bytes[0..item.len], item.bytes[0..item.len]);
-    const result = native_sdk.HostCallCompletion{ .key = item.key, .ok = item.ok, .bytes = self.poll_bytes[0..item.len] };
+    if (self.handed_out) |old| if (old.len > 0) std.heap.page_allocator.free(old);
+    self.handed_out = if (item.len > 0) item.bytes else null;
+    const result = native_sdk.HostCallCompletion{ .key = item.key, .ok = item.ok, .bytes = item.bytes[0..item.len] };
     self.queue_head = (self.queue_head + 1) % queue_size; self.queue_len -= 1; return result;
 }
 
@@ -251,8 +264,9 @@ fn daemonWorker(job: *Job) void {
         return;
     }
     defer ffi.nufon_client_result_free(response.ptr, response.len);
-    // ponytail: the completion queue still caps results at max_result (8 KiB);
-    // heap-allocate completions to lift it toward the 1 MiB frame limit.
+    // Cap at the runtime's host-result budget (max_effect_host_result_bytes);
+    // rejecting here keeps the error legible instead of the runtime's opaque
+    // "host result over budget".
     if (response.len > max_result) {
         self.complete(job.key, false, "daemon_result_too_large");
         return;
