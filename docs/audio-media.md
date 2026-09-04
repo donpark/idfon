@@ -146,6 +146,7 @@ Typical checks:
 ```sh
 scripts/test-rust.sh
 scripts/test-media.sh
+scripts/test-e2e.sh
 cargo fmt --manifest-path native/vendor/iroh-c-ffi/Cargo.toml -- --check
 cargo test --manifest-path native/vendor/iroh-c-ffi/Cargo.toml --lib
 native check native

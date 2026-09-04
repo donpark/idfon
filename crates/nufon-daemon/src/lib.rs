@@ -1855,11 +1855,23 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             false,
         );
     };
-    let Some(bytes) = request
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let resource_path = {
+        let state = store.lock().expect("store mutex poisoned");
+        state.data_dir.join("resources").join(&identity).join(id)
+    };
+    // Chunked mode: `append: true` appends to the stored resource; `finish:
+    // true` publishes the stored resource as a blob and returns its ticket.
+    // Together they move payloads larger than one IPC frame.
+    if request
         .params
-        .get("bytes")
-        .and_then(serde_json::Value::as_array)
-    else {
+        .get("finish")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return media_resource_finish(request, &resource_path, &identity, id, store);
+    }
+    let Some(mut data) = decode_resource_bytes(request) else {
         return error_response(
             request.id.clone(),
             &request.method,
@@ -1868,29 +1880,17 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             false,
         );
     };
-    if bytes.len() > MAX_RESOURCE_BYTES {
-        return error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::FrameTooLarge,
-            "resource is too large".into(),
-            false,
-        );
+    if let Some(response) = reject_oversize(request, data.len()) {
+        return response;
     }
-    let mut data = Vec::with_capacity(bytes.len());
-    for byte in bytes {
-        let Some(byte) = byte.as_u64().and_then(|value| u8::try_from(value).ok()) else {
-            return error_response(
-                request.id.clone(),
-                &request.method,
-                ErrorCode::InvalidRequest,
-                "bytes must be 0..255".into(),
-                false,
-            );
-        };
-        data.push(byte);
+    if request
+        .params
+        .get("append")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return media_resource_append(request, &resource_path, &identity, id, &data);
     }
-    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let state = store.lock().expect("store mutex poisoned");
     let path = state.data_dir.join("resources").join(&identity).join(id);
     if let Some(parent) = path.parent() {
@@ -1931,6 +1931,128 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
     )
 }
 
+fn media_resource_append(
+    request: &Request,
+    path: &std::path::Path,
+    identity: &str,
+    id: &str,
+    bytes: &[u8],
+) -> Response {
+    if let Some(parent) = path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::Internal,
+                error.to_string(),
+                true,
+            );
+        }
+    }
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            if let Err(error) = std::io::Write::write_all(&mut file, bytes) {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::Internal,
+                    error.to_string(),
+                    true,
+                );
+            }
+            let size_bytes = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+            success(
+                request,
+                serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": size_bytes}),
+            )
+        }
+        Err(error) => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        ),
+    }
+}
+
+fn media_resource_finish(
+    request: &Request,
+    path: &std::path::Path,
+    identity: &str,
+    id: &str,
+    store: &Arc<Mutex<Store>>,
+) -> Response {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "resource not found".into(),
+                false,
+            );
+        }
+        Err(error) => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::Internal,
+                error.to_string(),
+                true,
+            );
+        }
+    };
+    let data_dir = store.lock().expect("store mutex poisoned").data_dir.clone();
+    let blob_ticket = match blob::run_put(data_dir.join("blobs"), bytes.clone()) {
+        Ok((ticket, _)) => ticket.to_string(),
+        Err(error) => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::Internal,
+                error.to_string(),
+                true,
+            );
+        }
+    };
+    success(
+        request,
+        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": bytes.len(), "content_hash": blake3::hash(&bytes).to_hex().to_string(), "blob_ticket": blob_ticket}),
+    )
+}
+
+/// Decodes the `bytes` JSON array into a `Vec<u8>`, rejecting non-byte values.
+fn decode_resource_bytes(request: &Request) -> Option<Vec<u8>> {
+    let array = request
+        .params
+        .get("bytes")
+        .and_then(serde_json::Value::as_array)?;
+    let mut data = Vec::with_capacity(array.len());
+    for byte in array {
+        data.push(byte.as_u64().and_then(|value| u8::try_from(value).ok())?);
+    }
+    Some(data)
+}
+
+fn reject_oversize(request: &Request, size: usize) -> Option<Response> {
+    if size > MAX_RESOURCE_BYTES {
+        return Some(error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::FrameTooLarge,
+            "resource is too large".into(),
+            false,
+        ));
+    }
+    None
+}
+
 fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let Some(id) = request
         .params
@@ -1968,10 +2090,46 @@ fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Respons
         std::fs::read(state.data_dir.join("resources").join(&identity).join(id))
     };
     match bytes {
-        Ok(bytes) => success(
-            request,
-            serde_json::json!({"resource_id": id, "bytes": bytes}),
-        ),
+        Ok(bytes) => {
+            let total_size = bytes.len();
+            // Chunked reads: `offset`/`length` slice the payload so responses
+            // stay under the IPC frame limit. With a blob_ticket this reuses
+            // the per-identity FsStore under blobs-fetched, which persists
+            // downloaded blobs — the first chunk downloads, later chunks are
+            // local reads.
+            // ponytail: slice-after-full-download; range requests on the
+            // blob protocol would avoid the double transfer for big blobs.
+            let offset = request
+                .params
+                .get("offset")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize;
+            let length = request
+                .params
+                .get("length")
+                .and_then(serde_json::Value::as_u64)
+                .map(|value| value as usize);
+            let slice = if offset == 0 && length.is_none() {
+                &bytes[..]
+            } else if offset > total_size {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    "offset is beyond the resource size".into(),
+                    false,
+                );
+            } else {
+                let end = length
+                    .map(|len| (offset + len).min(total_size))
+                    .unwrap_or(total_size);
+                &bytes[offset..end]
+            };
+            success(
+                request,
+                serde_json::json!({"resource_id": id, "bytes": slice, "total_size": total_size}),
+            )
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => error_response(
             request.id.clone(),
             &request.method,
@@ -3505,6 +3663,82 @@ mod tests {
             }
             _ => panic!("resource fetch failed"),
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn chunked_put_and_sliced_fetch_round_trip() {
+        let dir = temp_dir("chunked");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        for chunk in [[1u8, 2, 3], [4, 5, 6]] {
+            let append = dispatch(
+                Request {
+                    version: PROTOCOL_VERSION,
+                    id: "append".into(),
+                    method: "media.resource.put".into(),
+                    params: serde_json::json!({"resource_id": "res-c", "bytes": chunk, "append": true}),
+                },
+                &store,
+            );
+            assert!(append.ok, "append failed: {append:?}");
+        }
+        let finish = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "finish".into(),
+                method: "media.resource.put".into(),
+                params: serde_json::json!({"resource_id": "res-c", "finish": true}),
+            },
+            &store,
+        );
+        assert!(finish.ok, "finish failed: {finish:?}");
+        // The finish step published a blob for the concatenated resource.
+        match &finish.body {
+            ResponseBody::Success { result, .. } => {
+                assert_eq!(result["size_bytes"], 6);
+                assert_eq!(result["content_hash"], blake3::hash(&[1u8, 2, 3, 4, 5, 6]).to_hex().to_string());
+                assert!(result["blob_ticket"].as_str().is_some_and(|ticket| ticket.starts_with("blob")));
+            }
+            _ => panic!("finish did not succeed"),
+        }
+        // Slicing works against the local resource branch too, so this stays
+        // off the network (ticket fetches are covered by scripts/test-e2e.sh).
+        let slice = |offset: u64, length: u64| {
+            dispatch(
+                Request {
+                    version: PROTOCOL_VERSION,
+                    id: "slice".into(),
+                    method: "media.resource.fetch".into(),
+                    params: serde_json::json!({"resource_id": "res-c", "offset": offset, "length": length}),
+                },
+                &store,
+            )
+        };
+        let first = slice(0, 4);
+        match first.body {
+            ResponseBody::Success { result, .. } => {
+                assert_eq!(result["bytes"], serde_json::json!([1, 2, 3, 4]));
+                assert_eq!(result["total_size"], 6);
+            }
+            _ => panic!("slice fetch failed"),
+        }
+        let rest = slice(4, 10);
+        match rest.body {
+            ResponseBody::Success { result, .. } => {
+                assert_eq!(result["bytes"], serde_json::json!([5, 6]));
+            }
+            _ => panic!("tail slice failed"),
+        }
+        assert!(matches!(
+            slice(99, 1).body,
+            ResponseBody::Failure {
+                error: ApiError {
+                    code: ErrorCode::InvalidRequest,
+                    ..
+                },
+                ..
+            }
+        ));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
