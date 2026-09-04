@@ -192,3 +192,9 @@ stream.
 - `scripts/fanout-e2e.sh` baselines direct fan-out: N concurrent listeners
   on one publisher (sizes 1/4/16, `SIZES` env to change) with
   `--no-relay`, every listener gated on the playback-UX metrics.
+- `scripts/geo-fanout.sh TICKET [N]` measures true internet fan-out: N
+  ephemeral Vercel Sandbox VMs (forked from a prebuilt snapshot of the
+  Linux listener) each capture the stream over the real network and report
+  the playback-UX metrics. The publisher runs locally with relays on, so
+  cloud listeners rendezvous through n0's public relays and connect after
+  hole-punch. Requires the `vercel` CLI and a sandbox snapshot.

@@ -229,7 +229,10 @@ input device (macOS mic permission), which the file path avoids.
 (default 1/4/16, `SIZES` env) on one publisher with `--no-relay`, every
 listener gated on the playback-UX metrics. A media relay
 (iroh-live-relay) is only needed later, when publisher egress — not the
-relay — becomes the bottleneck.
+relay — becomes the bottleneck. `scripts/geo-fanout.sh` extends this to
+true internet fan-out: N ephemeral Vercel Sandbox VMs each run the Linux
+listener against a local publisher (relays on for rendezvous/hole-punch)
+and report per-listener UX metrics.
 
 ## Remaining production work
 
