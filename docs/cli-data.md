@@ -1,6 +1,6 @@
 # CLI data transfer and live streaming
 
-The `nufon` CLI moves arbitrary data between two nufon endpoints with
+The `idfon` CLI moves arbitrary data between two idfon endpoints with
 bash-pipe semantics, and publishes live audio streams. File transfers ride
 the daemon's blob path (`media.resource.put`/`media.resource.fetch` over
 iroh-blobs), not the chat message path, so size is bounded by disk, not by
@@ -10,12 +10,12 @@ IPC frames. Live streaming rides iroh-live (`media.live.*` daemon methods).
 
 ```sh
 # Sender: pipe or --file. Prints a bare BlobTicket (one line) on success.
-cat recording.wav | nufon put > ticket.txt
-nufon put --file recording.wav
+cat recording.wav | idfon put > ticket.txt
+idfon put --file recording.wav
 
 # Receiver: streams the blob to stdout (or --out FILE).
-nufon get "$(cat ticket.txt)" > copy.wav
-nufon get "$(cat ticket.txt)" --out copy.wav
+idfon get "$(cat ticket.txt)" > copy.wav
+idfon get "$(cat ticket.txt)" --out copy.wav
 ```
 
 - The BlobTicket is the capability: anyone holding it can fetch the data
@@ -49,7 +49,7 @@ a 30 s timeout per download attempt.
 
 ## End-to-end test
 
-`scripts/test-e2e.sh` starts two `nufond` endpoints in temp dirs and
+`scripts/test-e2e.sh` starts two `idfond` endpoints in temp dirs and
 exercises the CLI path end to end:
 
 1. a one-chunk binary file (`--file` source, `--out` sink),
@@ -64,18 +64,18 @@ scripts/test-e2e.sh
 
 ## Signaled transfer through the message path
 
-`send-data`/`recv` close the loop: the BlobTicket travels through nufon's
+`send-data`/`recv` close the loop: the BlobTicket travels through idfon's
 own message path, so no side channel is needed.
 
 ```sh
 # Sender endpoint (paired with the receiver; see pairing below):
-cat data.bin | nufon send-data bob          # prints the BlobTicket on delivery
+cat data.bin | idfon send-data bob          # prints the BlobTicket on delivery
 # Receiver endpoint:
-nufon recv > data.bin                       # waits for the next data message
+idfon recv > data.bin                       # waits for the next data message
 ```
 
 - `send-data PEER` stores the data as a blob, sends a versioned
-  `NUFON-DATA/1` envelope (`ticket=`, `size=`) via `message.send`, and waits
+  `IDFON-DATA/1` envelope (`ticket=`, `size=`) via `message.send`, and waits
   for the delivery operation to reach a terminal state before printing the
   ticket. `--retries N` covers transient connection handshakes.
 - `recv` waits (default 60 s, `--timeout-ms`) for the next data message that
@@ -94,29 +94,29 @@ public key are the same value (hex of the Ed25519 public key), and
 
 ```sh
 # Peer info — run the same three lines against each daemon socket:
-ctx() { nufon --socket "$1" context --json; }
-EP=$(ctx /tmp/nufon-a/nufond.sock | jq -r .result.identity.endpoint_id)
-PID=$(ctx /tmp/nufon-a/nufond.sock | jq -r .result.identity.public_key)   # == peer id
-ADDR=$(ctx /tmp/nufon-a/nufond.sock | jq -r '.result.ticket | implode')   # EndpointAddr JSON
+ctx() { idfon --socket "$1" context --json; }
+EP=$(ctx /tmp/idfon-a/idfond.sock | jq -r .result.identity.endpoint_id)
+PID=$(ctx /tmp/idfon-a/idfond.sock | jq -r .result.identity.public_key)   # == peer id
+ADDR=$(ctx /tmp/idfon-a/idfond.sock | jq -r '.result.ticket | implode')   # EndpointAddr JSON
 
 # On daemon A: register B as a peer and grant it the send capability
 # (A's send gate checks a local message.send grant for B's peer id):
-nufon --socket /tmp/nufon-a/nufond.sock add "$B_PID" --name bob \
+idfon --socket /tmp/idfon-a/idfond.sock add "$B_PID" --name bob \
   --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR"
-nufon --socket /tmp/nufon-a/nufond.sock grant --subject "$B_PID" \
+idfon --socket /tmp/idfon-a/idfond.sock grant --subject "$B_PID" \
   --capability message.send
 
 # On daemon B: register A as a peer and grant it the receive capability
 # (B's receive gate checks message.receive for A's peer id, or a verified
 # capability ticket presented by the sender):
-nufon --socket /tmp/nufon-b/nufond.sock add "$A_PID" --name alice \
+idfon --socket /tmp/idfon-b/idfond.sock add "$A_PID" --name alice \
   --endpoint-id "$A_EP" --endpoint-addr "$A_ADDR"
-nufon --socket /tmp/nufon-b/nufond.sock grant --subject "$A_PID" \
+idfon --socket /tmp/idfon-b/idfond.sock grant --subject "$A_PID" \
   --capability message.receive
 ```
 
 Alternatively, a sender can present a capability ticket issued by the
-receiver instead of a local grant: `nufon ticket --subject SENDER_PEER_ID`
+receiver instead of a local grant: `idfon ticket --subject SENDER_PEER_ID`
 prints the ticket JSON, which `send --capability-ticket` accepts; a verified
 ticket satisfies the receive gate and materializes grants on first delivery.
 
@@ -132,12 +132,12 @@ extension).
 ```sh
 # Publisher endpoint: streams FILE (or stdin) as a live broadcast.
 # Prints a bare live ticket (one line) on success.
-nufon stream --file speech.wav --loop > ticket.txt
-cat song.flac | nufon stream > ticket.txt        # stdin is spooled by the CLI
+idfon stream --file speech.wav --loop > ticket.txt
+cat song.flac | idfon stream > ticket.txt        # stdin is spooled by the CLI
 
 # Listener endpoint: records the broadcast to stdout (or --out FILE).
-nufon listen "$(cat ticket.txt)" > copy.wav
-nufon listen "$(cat ticket.txt)" --out copy.wav --seconds 30
+idfon listen "$(cat ticket.txt)" > copy.wav
+idfon listen "$(cat ticket.txt)" --out copy.wav --seconds 30
 ```
 
 - The live ticket embeds the publisher's endpoint and broadcast name; it is
@@ -146,7 +146,7 @@ nufon listen "$(cat ticket.txt)" --out copy.wav --seconds 30
 - `--loop` repeats the source indefinitely; without it the broadcast ends
   when the file does (the publisher stays reachable until stopped).
 - `--name NAME` sets a stable broadcast name; default is
-  `nufon-live-<nanos>`.
+  `idfon-live-<nanos>`.
 - `listen --seconds N` caps the capture window (default 15, max 600); the
   request returns when the window ends or the broadcast ends.
 - `--no-relay` disables iroh relay transport entirely: subscribers connect
@@ -165,9 +165,9 @@ Publishers run inside the daemon and are kept in an in-memory registry
 (not persisted across daemon restarts):
 
 ```sh
-nufon stream --file speech.wav --loop --name radio    # prints the ticket
-nufon publishers                                       # list running publishers
-nufon stop-live live-<name>                            # graceful stop
+idfon stream --file speech.wav --loop --name radio    # prints the ticket
+idfon publishers                                       # list running publishers
+idfon stop-live live-<name>                            # graceful stop
 ```
 
 `stop` sends the underlying iroh session a graceful shutdown before tearing

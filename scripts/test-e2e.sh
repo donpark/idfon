@@ -2,10 +2,10 @@
 set -eu
 
 # End-to-end data transfer between two endpoints over the real daemon
-# protocol, driven through the nufon CLI with bash-pipe semantics:
+# protocol, driven through the idfon CLI with bash-pipe semantics:
 #
-#   nufond (endpoint A) <- stdin/file -- nufon put  --> BlobTicket
-#   nufond (endpoint B) -- nufon get TICKET --> stdout/file
+#   idfond (endpoint A) <- stdin/file -- idfon put  --> BlobTicket
+#   idfond (endpoint B) -- idfon get TICKET --> stdout/file
 #
 # Cases: one-chunk binary, multi-chunk binary (exercises the chunked
 # put/sliced-fetch path), and a WAV audio file. PASS requires every received
@@ -14,17 +14,17 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-# Build the vendored dylib first (the thin nufond links it); flags must match
+# Build the vendored dylib first (the thin idfond links it); flags must match
 # native/build.zig so the dylib's install name stays @executable_path-relative.
 RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
   cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-cargo build --release -p nufond -p nufon-cli
+cargo build --release -p idfond -p idfon-cli
 
 # A relink can leave an ad-hoc signature that no longer matches the pages;
 # the kernel then SIGKILLs the process at exec ("Code Signature Invalid").
-codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/nufond
+codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 
-work=$(mktemp -d /tmp/nufon-e2e.XXXXXX)
+work=$(mktemp -d /tmp/idfon-e2e.XXXXXX)
 pids=""
 cleanup() {
   if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; fi
@@ -32,9 +32,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-NUF="$root/target/release/nufon"
-A="$work/sender/nufond.sock"
-B="$work/receiver/nufond.sock"
+NUF="$root/target/release/idfon"
+A="$work/sender/idfond.sock"
+B="$work/receiver/idfond.sock"
 
 # Test data: 64KB random (one chunk), 1.25MB random (7 chunks), 1s sine WAV.
 head -c 65536 /dev/urandom > "$work/small.bin"
@@ -49,9 +49,9 @@ with wave.open(sys.argv[1], "w") as w:
 EOF
 
 mkdir -p "$work/sender" "$work/receiver"
-"$root/target/release/nufond" --socket "$A" --data-dir "$work/sender" &
+"$root/target/release/idfond" --socket "$A" --data-dir "$work/sender" &
 pids="$pids $!"
-"$root/target/release/nufond" --socket "$B" --data-dir "$work/receiver" &
+"$root/target/release/idfond" --socket "$B" --data-dir "$work/receiver" &
 pids="$pids $!"
 
 wait_ready() { # socket label
@@ -111,4 +111,4 @@ recv_pid=$!
 wait "$recv_pid"
 check "signaled send-data/recv" "$work/signaled.bin" "$work/signaled.received"
 
-echo "PASS: nufon put/get end-to-end over two daemon endpoints"
+echo "PASS: idfon put/get end-to-end over two daemon endpoints"

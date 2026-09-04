@@ -1,4 +1,4 @@
-# Nufon Architecture Implementation Plan
+# Idfon Architecture Implementation Plan
 
 ## Status
 
@@ -6,19 +6,19 @@ Planning document. This plan is intentionally written for review before implemen
 
 ## Objective
 
-Build Nufon as one local networking service with multiple clients:
+Build Idfon as one local networking service with multiple clients:
 
 ```text
-Nufon.app ─┐
-nufon CLI ─┼─ local IPC ── nufond ── nufon-core ── Iroh
+Idfon.app ─┐
+idfon CLI ─┼─ local IPC ── idfond ── idfon-core ── Iroh
 custom app ┘
 ```
 
-- `nufon-core`: reusable Rust domain and transport functionality.
-- `nufond`: long-running daemon that owns active endpoints, identity keys,
+- `idfon-core`: reusable Rust domain and transport functionality.
+- `idfond`: long-running daemon that owns active endpoints, identity keys,
   connections, operations, and event delivery.
-- `nufon`: thin, agent-friendly CLI client.
-- `Nufon.app`: GUI client that owns local UX policy and media presentation.
+- `idfon`: thin, agent-friendly CLI client.
+- `Idfon.app`: GUI client that owns local UX policy and media presentation.
 - Custom apps: scoped clients of the same local API.
 
 The primary public contract is the logical CLI/API, not Iroh, QUIC, or a
@@ -26,7 +26,7 @@ Rust dynamic-library ABI.
 
 ## Design principles
 
-1. **One endpoint owner.** `nufond` owns live endpoint instances and private
+1. **One endpoint owner.** `idfond` owns live endpoint instances and private
    identity keys. Clients do not independently start networking for the same
    identity.
 2. **Intent over transport.** Expose `send`, `fetch`, `events`, and `live
@@ -51,13 +51,13 @@ Rust dynamic-library ABI.
 
 ```text
 crates/
-  nufon-core/       # domain types, identity, transport, operations, events
-  nufon-protocol/   # versioned IPC/API request and response types
-  nufond/           # daemon and local IPC server
-  nufon-cli/        # thin command-line client
+  idfon-core/       # domain types, identity, transport, operations, events
+  idfon-protocol/   # versioned IPC/API request and response types
+  idfond/           # daemon and local IPC server
+  idfon-cli/        # thin command-line client
 ```
 
-The existing Native SDK application becomes a client of `nufond`. A narrow
+The existing Native SDK application becomes a client of `idfond`. A narrow
 Rust C ABI or dynamic library may be added for Zig integration where needed,
 but it must not become a second endpoint owner.
 
@@ -77,52 +77,52 @@ The API should expose only the concepts clients need:
 - `cursor`: durable event-stream position.
 
 Transport concepts such as endpoint, connection, stream, ALPN, relay, and blob
-provider remain implementation details except under `nufon debug`.
+provider remain implementation details except under `idfon debug`.
 
 ## Canonical CLI surface
 
 The initial surface should be:
 
 ```sh
-nufon context
-nufon status
+idfon context
+idfon status
 
-nufon identities
-nufon identity use NAME
+idfon identities
+idfon identity use NAME
 
-nufon peers
-nufon peer show REF
-nufon peer resolve REF
-nufon peer status REF
+idfon peers
+idfon peer show REF
+idfon peer resolve REF
+idfon peer status REF
 
-nufon send --to PEER --text TEXT
-nufon send --to PEER --file PATH
-nufon fetch RESOURCE --output PATH
+idfon send --to PEER --text TEXT
+idfon send --to PEER --file PATH
+idfon fetch RESOURCE --output PATH
 
-nufon events --follow
-nufon wait --for EVENT
+idfon events --follow
+idfon wait --for EVENT
 
-nufon operation get OPERATION_ID
-nufon operation wait OPERATION_ID
+idfon operation get OPERATION_ID
+idfon operation wait OPERATION_ID
 
-nufon access check --to PEER --capability CAPABILITY
-nufon access grant ...
-nufon access revoke ...
+idfon access check --to PEER --capability CAPABILITY
+idfon access grant ...
+idfon access revoke ...
 
-nufon session info TOKEN
+idfon session info TOKEN
 ```
 
-Useful aliases may include `nufon peer list`, `nufon identity list`, and
-`nufon events`, but documentation should emphasize a small, consistent common
+Useful aliases may include `idfon peer list`, `idfon identity list`, and
+`idfon events`, but documentation should emphasize a small, consistent common
 path.
 
 Every command must provide:
 
 ```sh
-nufon COMMAND --help
-nufon COMMAND examples
-nufon COMMAND schema
-nufon COMMAND errors
+idfon COMMAND --help
+idfon COMMAND examples
+idfon COMMAND schema
+idfon COMMAND errors
 ```
 
 Help must state purpose, usage, side effects, required capabilities, wait and
@@ -133,13 +133,13 @@ retry behavior, examples, input schema, output schema, and stable error codes.
 Simple operations use flags:
 
 ```sh
-nufon send --to alice --text "hello"
+idfon send --to alice --text "hello"
 ```
 
 Complex operations accept JSON from stdin:
 
 ```sh
-nufon send --json < request.json
+idfon send --json < request.json
 ```
 
 All addressed operations use `--to`. The daemon resolves the reference. Future
@@ -159,7 +159,7 @@ Resolution must never silently choose an ambiguous result. Return an
 Identity selection is explicit when needed:
 
 ```sh
-nufon --identity work send --to alice --text "hello"
+idfon --identity work send --to alice --text "hello"
 ```
 
 Every mutation result reports the identity and resolved target actually used.
@@ -206,7 +206,7 @@ Failure envelope:
     "message": "Peer 'alice' is unreachable.",
     "retryable": true,
     "retry_after_ms": 5000,
-    "next": ["nufon peer status alice"]
+    "next": ["idfon peer status alice"]
   }
 }
 ```
@@ -247,8 +247,8 @@ remote effect.
 Waiting is explicit and bounded:
 
 ```sh
-nufon send --to alice --text hello --wait --timeout 10s
-nufon operation wait op_123 --timeout 30s
+idfon send --to alice --text hello --wait --timeout 10s
+idfon operation wait op_123 --timeout 30s
 ```
 
 ## Events and resumability
@@ -256,7 +256,7 @@ nufon operation wait op_123 --timeout 30s
 Events are first-class daemon data, not log parsing:
 
 ```sh
-nufon events --type message.received --peer alice --after CURSOR --jsonl
+idfon events --type message.received --peer alice --after CURSOR --jsonl
 ```
 
 Event envelope:
@@ -276,12 +276,12 @@ Cursors are the primary resume mechanism. A one-shot wait avoids requiring an
 agent to implement a subscription loop:
 
 ```sh
-nufon wait --for message.received --peer alice --timeout 60s
+idfon wait --for message.received --peer alice --timeout 60s
 ```
 
 ## Security model
 
-`nufond` is the trust boundary for local Nufon state.
+`idfond` is the trust boundary for local Idfon state.
 
 - Private keys never appear in argv, environment variables, session tokens, or
   context files.
@@ -308,10 +308,10 @@ daemon, and test code; malformed and unknown inputs produce stable errors.
 
 ### Milestone 2: Daemon and local IPC
 
-Implement `nufond` lifecycle, readiness, status, shutdown, request IDs, and
+Implement `idfond` lifecycle, readiness, status, shutdown, request IDs, and
 protected local IPC.
 
-**Done when:** `nufon status` and `nufon context --json` work against a daemon,
+**Done when:** `idfon status` and `idfon context --json` work against a daemon,
 and daemon-unavailable errors are structured and actionable.
 
 ### Milestone 3: Identity and peer management
@@ -340,7 +340,7 @@ duplicating events beyond documented delivery semantics.
 
 ### Milestone 6: GUI migration
 
-Move `Nufon.app` communication onto the daemon API. Keep GUI-only policy and
+Move `Idfon.app` communication onto the daemon API. Keep GUI-only policy and
 media UX in the app.
 
 **Done when:** GUI and CLI observe the same identity, peer, operation, and
@@ -365,7 +365,7 @@ and events; the GUI owns local microphone/speaker devices, playback, consent,
 volume/mute, notifications, and emergency stop. Raw device samples do not pass
 through the daemon IPC. Live-session creation must therefore receive an
 explicit GUI media source/consumer bridge rather than opening the default
-microphone implicitly. The extracted `nufon-media` crate provides explicit
+microphone implicitly. The extracted `idfon-media` crate provides explicit
 publisher/subscriber and local-resource handles; GUI device access remains
 process-scoped because raw samples do not cross daemon IPC.
 
@@ -452,7 +452,7 @@ framing, stream completion, size limits, timeout, and reconnect behavior.
 ## Phase 0 architecture decisions
 
 These decisions unblock implementation of the contract and daemon foundation.
-They keep the first release small and preserve the normal `nufon` workflow.
+They keep the first release small and preserve the normal `idfon` workflow.
 
 1. **IPC framing:** use length-prefixed UTF-8 JSON frames over a protected Unix
    domain socket. The prefix is a fixed-width big-endian `u32`; each frame is
@@ -466,14 +466,14 @@ They keep the first release small and preserve the normal `nufon` workflow.
 3. **Frame limits:** reject IPC frames larger than 1 MiB. File and media bytes
    never travel through this control protocol; use resource references and a
    separate transfer path.
-4. **Daemon ownership:** `nufond` is the sole owner of active Iroh endpoints,
+4. **Daemon ownership:** `idfond` is the sole owner of active Iroh endpoints,
    identity keys, remote connections, and network listeners. Clients do not
    create endpoints. A per-data-directory daemon lock prevents duplicate
    owners.
-5. **Installation:** initially run `nufond` as a separately installed process.
+5. **Installation:** initially run `idfond` as a separately installed process.
    GUI bundling and supervision are deferred until the daemon contract is
    stable.
-6. **Persistence:** use one embedded transactional store owned by `nufond` for
+6. **Persistence:** use one embedded transactional store owned by `idfond` for
    identities, peers, grants, sessions, operations, idempotency records, and
    retained events. Private keys use a platform-secure storage boundary where
    available and never appear in protocol responses.
@@ -482,7 +482,7 @@ They keep the first release small and preserve the normal `nufon` workflow.
    transitions are persisted before being reported. `timeout` is an observation,
    not a durable terminal state. Recovery resumes queued work conservatively and
    never assumes an interrupted attempt was delivered.
-8. **Delivery meaning:** `delivered` means the remote Nufon protocol accepted
+8. **Delivery meaning:** `delivered` means the remote Idfon protocol accepted
    and durably recorded the logical message. Transport connection success alone
    is not delivery. If that acknowledgment is unavailable, end at
    `remote_ack` and report the weaker guarantee.
@@ -521,7 +521,7 @@ Milestone 1 is ready to start when these decisions are reflected in versioned
 Rust protocol types and golden fixtures. The first implementation slice is:
 
 ```text
-nufon-protocol → nufond IPC/status → persistent identity/peer store
+idfon-protocol → idfond IPC/status → persistent identity/peer store
                → daemon-owned endpoint → authenticated text send
 ```
 
@@ -597,12 +597,12 @@ refreshed and unused model/message diagnostics are explicitly declared through
 An agent can perform this complete workflow without understanding Iroh:
 
 ```sh
-nufon context --json
-nufon peer resolve alice --json
-nufon access check --to alice --capability message.send --json
-nufon send --to alice --text "hello" --idempotency-key hello-1 --json
-nufon operation wait OPERATION_ID --timeout 30s --json
-nufon events --type message.received --after CURSOR --jsonl
+idfon context --json
+idfon peer resolve alice --json
+idfon access check --to alice --capability message.send --json
+idfon send --to alice --text "hello" --idempotency-key hello-1 --json
+idfon operation wait OPERATION_ID --timeout 30s --json
+idfon events --type message.received --after CURSOR --jsonl
 ```
 
 The GUI performs the same logical operations through the daemon, and a future
@@ -612,7 +612,7 @@ workflow.
 ## Phase 6 implementation status
 
 The first GUI migration slice is implemented. The Native SDK host now exposes a
-narrow `nufond.request` command that uses protected Unix IPC with the daemon's
+narrow `idfond.request` command that uses protected Unix IPC with the daemon's
 length-prefixed JSON protocol. The GUI requests daemon context during startup
 and reports daemon availability through model state. The host bridge does not
 access identity keys or create a new daemon endpoint.

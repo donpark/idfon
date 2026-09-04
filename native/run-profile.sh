@@ -10,4 +10,4 @@ case "$profile" in
 esac
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec env NUFON_PROFILE="$profile" "$root/Nufon.app/Contents/MacOS/Nufon"
+exec env IDFON_PROFILE="$profile" "$root/Idfon.app/Contents/MacOS/Idfon"

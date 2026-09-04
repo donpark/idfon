@@ -1,13 +1,13 @@
 {
-  "name": "@nufon/native",
-  "description": "Native-SDK version of Nufon.",
+  "name": "@idfon/native",
+  "description": "Native-SDK version of Idfon.",
   "private": true,
   "scripts": {
     "clean": "rm -rf .zig-cache zig-out",
-    "build": "native build && native package --target macos --binary 'zig-out/bin/Nufon' --output 'Nufon.app' && cp ../target/release/nufond 'Nufon.app/Contents/MacOS/nufond' && cp zig-out/bin/libiroh_c_ffi.dylib 'Nufon.app/Contents/MacOS/'",
-    "run:app": "open -n 'Nufon.app'",
-    "run:bin": "open -n 'zig-out/bin/Nufon'",
-    "release": "pnpm run build && codesign --force --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Nufon.app/Contents/MacOS/libiroh_c_ffi.dylib Nufon.app/Contents/MacOS/nufond Nufon.app && hdiutil create -srcfolder Nufon.app -volname Nufon -format ULMO -ov Nufon.dmg && codesign --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Nufon.dmg"
+    "build": "native build && native package --target macos --binary 'zig-out/bin/Idfon' --output 'Idfon.app' && cp ../target/release/idfond 'Idfon.app/Contents/MacOS/idfond' && cp zig-out/bin/libiroh_c_ffi.dylib 'Idfon.app/Contents/MacOS/'",
+    "run:app": "open -n 'Idfon.app'",
+    "run:bin": "open -n 'zig-out/bin/Idfon'",
+    "release": "pnpm run build && codesign --force --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Idfon.app/Contents/MacOS/libiroh_c_ffi.dylib Idfon.app/Contents/MacOS/idfond Idfon.app && hdiutil create -srcfolder Idfon.app -volname Idfon -format ULMO -ov Idfon.dmg && codesign --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Idfon.dmg"
   },
   "dependencies": {
     "@native-sdk/core": "0.10.1"

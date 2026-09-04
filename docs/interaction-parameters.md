@@ -6,7 +6,7 @@ Design proposal.
 
 ## Summary
 
-Nufon separates the standalone CLI from the GUI. The CLI provides a narrow,
+Idfon separates the standalone CLI from the GUI. The CLI provides a narrow,
 agent-to-agent communication surface. The GUI owns interaction policy because
 policy is primarily about local UX: attention, notification, interruption,
 playback, recording, scheduling, and user control.
@@ -89,7 +89,7 @@ it should not depend on CLI implementation details to render policy.
 ### Transport and media implementations
 
 Iroh, QUIC, `iroh-live`, and `iroh-blobs` implement delivery mechanisms. They
-should not define Nufon policy or UX behavior. A parameter set may select a
+should not define Idfon policy or UX behavior. A parameter set may select a
 logical interaction mode, while the implementation chooses the appropriate
 transport and media path.
 
@@ -368,7 +368,7 @@ identity
           └─ policy revision
 ```
 
-The current Nufon prototype keeps connections and much of its state in memory.
+The current Idfon prototype keeps connections and much of its state in memory.
 Production implementation will need persistent policy storage separate from
 transient endpoint and media state.
 
@@ -476,7 +476,7 @@ The result should state the decision and why:
 
 ## Decision
 
-Nufon should treat interaction behavior as GUI-owned, validated parameter
+Idfon should treat interaction behavior as GUI-owned, validated parameter
 sets. The standalone CLI should remain a narrow agent-to-agent communication
 tool. Formal specifications and free-form descriptions are inputs to the GUI
 policy authoring flow; only approved, validated parameters may affect local

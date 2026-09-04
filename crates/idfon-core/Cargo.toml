@@ -1,0 +1,15 @@
+[package]
+name = "idfon-core"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+iroh = "1.0"
+idfon-protocol = { path = "../idfon-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+rand_core = { version = "0.6", features = ["getrandom"] }

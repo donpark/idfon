@@ -226,7 +226,7 @@ export const viewUnbound = [
 
 export function subscriptions(model: Model): Sub<Msg> {
   if (!model.receiverAvailable) return Sub.none;
-  return Sub.timer("nufond-events", 1000, "poll_events");
+  return Sub.timer("idfond-events", 1000, "poll_events");
 }
 
 export function initialModel(): Model | [Model, Cmd<Msg>] {
@@ -299,7 +299,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     eventsReady: false,
     syncingEvents: false,
   };
-  return [model, Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "nufond-identities", ok: "identities_loaded", err: "daemon_error" })];
+  return [model, Cmd.request("idfond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "idfond-identities", ok: "identities_loaded", err: "daemon_error" })];
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -587,13 +587,13 @@ function recordingDurationLabel(envelope: Uint8Array): Uint8Array {
 }
 
 function liveInviteMessage(action: Uint8Array, ticket: Uint8Array): Uint8Array {
-  return concat(utf8Bytes("NUFON-LIVE/1\naction="), concat(action, concat(utf8Bytes("\nticket="), ticket)));
+  return concat(utf8Bytes("IDFON-LIVE/1\naction="), concat(action, concat(utf8Bytes("\nticket="), ticket)));
 }
 
 function recordingEnvelope(model: Model): Uint8Array {
   const seconds = digitsToNumber(model.recordingDuration);
   const ms = seconds > 0 ? seconds * 1000 : 0;
-  return concat(utf8Bytes("NUFON-RECORDING/1\nid="), concat(model.recordingTicket, concat(utf8Bytes("\ncodec=opus\nchannels=1\nsample_rate=48000\nduration_ms="), concat(utf8Bytes(`${ms}`), concat(utf8Bytes("\nsender_id="), concat(model.endpointId, concat(utf8Bytes("\nticket="), model.recordingTicket)))))));
+  return concat(utf8Bytes("IDFON-RECORDING/1\nid="), concat(model.recordingTicket, concat(utf8Bytes("\ncodec=opus\nchannels=1\nsample_rate=48000\nduration_ms="), concat(utf8Bytes(`${ms}`), concat(utf8Bytes("\nsender_id="), concat(model.endpointId, concat(utf8Bytes("\nticket="), model.recordingTicket)))))));
 }
 
 function recordingPayload(model: Model): Uint8Array {
@@ -702,17 +702,17 @@ function comUpdate(model: Model, patch: Partial<Comms>): Model {
 export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   switch (msg.kind) {
     case "connect_receiver":
-      return [model, Cmd.request("nufond.request", contextPayload(model.identityName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" })];
+      return [model, Cmd.request("idfond.request", contextPayload(model.identityName), { key: "idfond-context", ok: "daemon_ready", err: "daemon_error" })];
     case "identity_pressed":
       if (!model.receiverAvailable) return [
         { ...model, identitySelected: true },
-        Cmd.request("nufond.request", contextPayload(model.identityName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
+        Cmd.request("idfond.request", contextPayload(model.identityName), { key: "idfond-context", ok: "daemon_ready", err: "daemon_error" }),
       ];
       if (model.receiverTicket.length === 0) return { ...model, identitySelected: true };
       return [{ ...model, identitySelected: true }, Cmd.batch([
         Cmd.clipboardWrite(model.receiverTicket),
         Cmd.showNotification({
-          title: asciiBytes("Nufon ticket copied"),
+          title: asciiBytes("Idfon ticket copied"),
           body: concat(asciiBytes("Endpoint: "), model.endpointId),
         }),
       ])];
@@ -730,7 +730,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "capability_ticket_edit":
       return { ...model, capabilityTicketInput: editText(model.capabilityTicketInput, msg.edit), capabilityTicket: editText(model.capabilityTicketInput, msg.edit) };
     case "issue_capability_ticket":
-      return [model, Cmd.request("nufond.request", capabilityTicketPayload(model.identityName), { key: "nufond-capability-ticket", ok: "capability_ticket_issued", err: "capability_ticket_error" })];
+      return [model, Cmd.request("idfond.request", capabilityTicketPayload(model.identityName), { key: "idfond-capability-ticket", ok: "capability_ticket_issued", err: "capability_ticket_error" })];
     case "capability_ticket_issued": {
       const ticket = extractTicket(msg.data);
       return { ...model, capabilityTicket: ticket, capabilityTicketInput: ticket };
@@ -759,13 +759,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       }
       const next = { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true };
       return [next, Cmd.batch([
-        Cmd.request("nufond.request", contextPayload(activeName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
-        Cmd.request("nufond.request", peersPayload(activeName), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
-        Cmd.request("nufond.request", daemonEventsPayload(activeName, EMPTY), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" }),
+        Cmd.request("idfond.request", contextPayload(activeName), { key: "idfond-context", ok: "daemon_ready", err: "daemon_error" }),
+        Cmd.request("idfond.request", peersPayload(activeName), { key: "idfond-peers", ok: "peers_loaded", err: "daemon_error" }),
+        Cmd.request("idfond.request", daemonEventsPayload(activeName, EMPTY), { key: "idfond-events", ok: "events_loaded", err: "daemon_error" }),
       ])];
     }
     case "identity_selected":
-      return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, copyIdentityTicket: true }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
+      return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, copyIdentityTicket: true }, Cmd.request("idfond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "idfond-identity-use", ok: "identity_used", err: "identity_use_error" })];
     case "show_add_identity":
       return { ...model, showAddIdentity: true, newIdentityName: EMPTY };
     case "cancel_add_identity":
@@ -774,17 +774,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return { ...model, newIdentityName: editText(model.newIdentityName, msg.edit) };
     case "create_identity":
       if (model.newIdentityName.length === 0) return model;
-      return [model, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.create"), model.newIdentityName), { key: "nufond-identity-create", ok: "identity_created", err: "identity_create_error" })];
+      return [model, Cmd.request("idfond.request", identityPayload(utf8Bytes("identity.create"), model.newIdentityName), { key: "idfond-identity-create", ok: "identity_created", err: "identity_create_error" })];
     case "identity_created":
-      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, model.newIdentityName) })), identitySelected: true, copyIdentityTicket: true, showAddIdentity: false }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), model.newIdentityName), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
+      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, model.newIdentityName) })), identitySelected: true, copyIdentityTicket: true, showAddIdentity: false }, Cmd.request("idfond.request", identityPayload(utf8Bytes("identity.use"), model.newIdentityName), { key: "idfond-identity-use", ok: "identity_used", err: "identity_use_error" })];
     case "identity_create_error":
       return { ...model, receiverStatus: msg.data };
     case "identity_used":
       return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true }, Cmd.batch([
-        Cmd.request("nufond.request", contextPayload(model.newIdentityName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
-        Cmd.request("nufond.request", peersPayload(model.newIdentityName), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
-        Cmd.request("nufond.request", daemonEventsPayload(model.newIdentityName, EMPTY), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" }),
-        Cmd.request("nufond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "nufond-identities", ok: "identities_loaded", err: "daemon_error" }),
+        Cmd.request("idfond.request", contextPayload(model.newIdentityName), { key: "idfond-context", ok: "daemon_ready", err: "daemon_error" }),
+        Cmd.request("idfond.request", peersPayload(model.newIdentityName), { key: "idfond-peers", ok: "peers_loaded", err: "daemon_error" }),
+        Cmd.request("idfond.request", daemonEventsPayload(model.newIdentityName, EMPTY), { key: "idfond-events", ok: "events_loaded", err: "daemon_error" }),
+        Cmd.request("idfond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "idfond-identities", ok: "identities_loaded", err: "daemon_error" }),
       ])];
     case "identity_use_error":
       return { ...model, receiverStatus: msg.data };
@@ -800,7 +800,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const pad = ss < 10 ? "0" : "";
       const expired = model.bannerVisible && msg.at >= model.bannerExpiresAt;
       const base = expired ? hideBanner(model) : model;
-      return [{ ...base, tickAt: msg.at, recordingElapsed: utf8Bytes(`${mm}:${pad}${ss}`), waveform: waveformBars(seconds) }, Cmd.request("nufond.request", daemonEventsPayload(base.identityName, base.eventCursor), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" })];
+      return [{ ...base, tickAt: msg.at, recordingElapsed: utf8Bytes(`${mm}:${pad}${ss}`), waveform: waveformBars(seconds) }, Cmd.request("idfond.request", daemonEventsPayload(base.identityName, base.eventCursor), { key: "idfond-events", ok: "events_loaded", err: "daemon_error" })];
     }
     case "banner_dismiss":
       return { ...model, bannerVisible: false };
@@ -825,7 +825,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           }
           syncIndex += 1;
         }
-        return [{ ...model, eventCursor: syncCursor }, Cmd.request("nufond.request", daemonEventsPayload(model.identityName, syncCursor), { key: "nufond-events", ok: "events_loaded", err: "events_sync_error" })];
+        return [{ ...model, eventCursor: syncCursor }, Cmd.request("idfond.request", daemonEventsPayload(model.identityName, syncCursor), { key: "idfond-events", ok: "events_loaded", err: "events_sync_error" })];
       }
       let offset = 2;
       let index = 0;
@@ -860,8 +860,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         next = { ...next, eventCursor: cursor };
         if (acceptMessages && sameBytes(kind, utf8Bytes("message.received")) && peer.length !== 0) {
           next = withInboundTarget(next, peer);
-          const livePrefix = utf8Bytes("NUFON-LIVE/1\naction=");
-          const recordingPrefix = utf8Bytes("NUFON-RECORDING/1\n");
+          const livePrefix = utf8Bytes("IDFON-LIVE/1\naction=");
+          const recordingPrefix = utf8Bytes("IDFON-RECORDING/1\n");
           if (text.length > livePrefix.length && sameBytes(text.slice(0, livePrefix.length), livePrefix)) {
             const actionEnd = byteIndex(text, 10, livePrefix.length);
             const ticketPrefix = utf8Bytes("\nticket=");
@@ -877,7 +877,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
                 }
                 return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.batch([
                   Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
-                  Cmd.request("nufond.request", daemonMessagePayload(next.identityName, peer, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${next.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+                  Cmd.request("idfond.request", daemonMessagePayload(next.identityName, peer, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${next.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
                 ])];
               }
             }
@@ -933,7 +933,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         const message = decodeChatMessage(fields[1]);
         if (route.length === 0) return model;
         const inbound = withInboundTarget(model, route);
-        const livePrefix = utf8Bytes("NUFON-LIVE/1\naction=");
+        const livePrefix = utf8Bytes("IDFON-LIVE/1\naction=");
         if (message.length > livePrefix.length && sameBytes(message.slice(0, livePrefix.length), livePrefix)) {
           const actionEnd = byteIndex(message, 10, livePrefix.length);
           const ticketPrefix = utf8Bytes("\nticket=");
@@ -948,10 +948,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           if (isStart) return [next, Cmd.none];
           return [next, Cmd.batch([
             Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
-            Cmd.request("nufond.request", daemonMessagePayload(model.identityName, route, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+            Cmd.request("idfond.request", daemonMessagePayload(model.identityName, route, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
           ])];
         }
-        const recordingPrefix = utf8Bytes("NUFON-RECORDING/1\n");
+        const recordingPrefix = utf8Bytes("IDFON-RECORDING/1\n");
         if (message.length > recordingPrefix.length && sameBytes(message.slice(0, recordingPrefix.length), recordingPrefix)) {
           const ticket = recordingTicket(message);
           const withAudio = addAudioMessage(showBanner({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), selectedConnectionName: utf8Bytes("Incoming recording"), selectedConnectionInitials: identityInitials(utf8Bytes("Incoming recording")), chatOpen: true }, utf8Bytes("Preparing recording")), ticket, false, false, recordingDurationLabel(message));
@@ -1003,7 +1003,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return { ...model, liveAutoAccept: !model.liveAutoAccept, livePolicyStatus: utf8Bytes(model.liveAutoAccept ? "Incoming live audio requires approval" : "Incoming live audio auto-accepted") };
     case "add_connection":
       if (model.connectionName.length === 0 || model.receiverId.length === 0) return model;
-      return [model, Cmd.request("nufond.request", peerAddPayload(model.identityName, model.connectionName, model.receiverId), { key: "nufond-peer-add", ok: "peer_added", err: "peer_add_error" })];
+      return [model, Cmd.request("idfond.request", peerAddPayload(model.identityName, model.connectionName, model.receiverId), { key: "idfond-peer-add", ok: "peer_added", err: "peer_add_error" })];
     case "peer_added": {
       const connection: Connection = { name: model.connectionName, endpoint: model.receiverId };
       const selfTarget = isSelfTarget(model, model.receiverId);
@@ -1017,12 +1017,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (isSelfTarget(model, model.receiverId)) return targetBanner(model, true);
         return [
         { ...model, pendingRecordingSend: true, recordingStatus: utf8Bytes("Sending attachment") },
-        Cmd.request("nufond.request", recordingPayload(model), { key: "media-recording-send", ok: "sender_ready", err: "sender_error" }),
+        Cmd.request("idfond.request", recordingPayload(model), { key: "media-recording-send", ok: "sender_ready", err: "sender_error" }),
         ];
       }
       if (model.receiverId.length === 0 || model.message.length === 0) return model;
       if (isSelfTarget(model, model.receiverId)) return targetBanner(model, true);
-      return [{ ...addChatMessage(model, model.message, true, utf8Bytes("Sending")), message: EMPTY }, Cmd.request("nufond.request", sendPayload(model), { key: "nufond-send", ok: "sender_ready", err: "sender_error" })];
+      return [{ ...addChatMessage(model, model.message, true, utf8Bytes("Sending")), message: EMPTY }, Cmd.request("idfond.request", sendPayload(model), { key: "idfond-send", ok: "sender_ready", err: "sender_error" })];
     case "open_link":
       if (msg.data.length === 0) return model;
       return [model, Cmd.openExternalUrl(msg.data)];
@@ -1040,7 +1040,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
       ];
       if (sameBytes(msg.data, utf8Bytes("media_scope_set"))) return { ...model, bannerVisible: false };
-      // ok data from nufond.request paths is the daemon's JSON response envelope
+      // ok data from idfond.request paths is the daemon's JSON response envelope
       return setLastMessageStatus(showBanner(model, utf8Bytes("Message sent")), utf8Bytes("Sent"));
     case "sender_error":
       return setLastMessageStatus(showBanner({ ...model, pendingRecordingSend: false }, msg.data), utf8Bytes("Failed"));
@@ -1084,18 +1084,18 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (!model.incomingLive) return model;
       return [hideBanner({ ...model, incomingLive: false, receiverStatus: utf8Bytes("In call") }), Cmd.batch([
         Cmd.request("media.live.subscribe", model.liveTicketInput, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
-        Cmd.request("nufond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+        Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
       ])];
     }
     case "live_decline": {
       if (!model.incomingLive) return model;
       const declined = hideBanner({ ...model, incomingLive: false, liveTicketInput: EMPTY, receiverStatus: utf8Bytes("Call declined"), selectedConnectionName: utf8Bytes("Call declined") });
       if (model.replyRoute.length === 0) return declined;
-      return [declined, Cmd.request("nufond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
+      return [declined, Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
     }
     case "live_start":
       if (model.liveActive || model.receiverId.length === 0) return model;
-      return [model, Cmd.request("nufond.request", mediaSessionStartPayload(model), { key: "media-session", ok: "media_session_ready", err: "live_error" })];
+      return [model, Cmd.request("idfond.request", mediaSessionStartPayload(model), { key: "media-session", ok: "media_session_ready", err: "live_error" })];
     case "media_session_ready":
       return [model, Cmd.request("media.live.start", EMPTY, { key: "media-live", ok: "live_started", err: "live_error" })];
     case "live_stop":
@@ -1103,17 +1103,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (model.replyRoute.length === 0) return [model, Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" })];
         return [model, Cmd.batch([
           Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
-          Cmd.request("nufond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+          Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
         ])];
       }
       if (!model.liveActive) return model;
       if (model.receiverId.length === 0) return [model, Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" })];
       return [model, Cmd.batch([
-        Cmd.request("nufond.request", daemonMessagePayload(model.identityName, model.receiverId, liveInviteMessage(utf8Bytes("stop"), EMPTY), utf8Bytes(`live-stop-${model.history.length}`), EMPTY), { key: "media-live-stop-signal", ok: "sender_ready", err: "sender_error" }),
+        Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.receiverId, liveInviteMessage(utf8Bytes("stop"), EMPTY), utf8Bytes(`live-stop-${model.history.length}`), EMPTY), { key: "media-live-stop-signal", ok: "sender_ready", err: "sender_error" }),
         Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
       ])];
     case "live_started":
-      return [showBanner({ ...comUpdate(model, { live: true, audio: true }), audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data }, utf8Bytes("Calling receiver")), Cmd.request("nufond.request", daemonMessagePayload(model.identityName, model.receiverId, liveInviteMessage(utf8Bytes("start"), msg.data), utf8Bytes(`live-start-${model.history.length}`), model.capabilityTicket), { key: "media-live-signal", ok: "sender_ready", err: "sender_error" })];
+      return [showBanner({ ...comUpdate(model, { live: true, audio: true }), audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data }, utf8Bytes("Calling receiver")), Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.receiverId, liveInviteMessage(utf8Bytes("start"), msg.data), utf8Bytes(`live-start-${model.history.length}`), model.capabilityTicket), { key: "media-live-signal", ok: "sender_ready", err: "sender_error" })];
     case "copy_live_ticket":
       if (model.liveTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.liveTicket)];
@@ -1175,7 +1175,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "recording_send":
       if (model.recordingTicket.length === 0 || model.receiverId.length === 0) return model;
       if (isSelfTarget(model, model.receiverId)) return targetBanner(model, true);
-      return [model, Cmd.request("nufond.request", recordingPayload(model), { key: "media-recording-send", ok: "sender_ready", err: "sender_error" })];
+      return [model, Cmd.request("idfond.request", recordingPayload(model), { key: "media-recording-send", ok: "sender_ready", err: "sender_error" })];
     case "recording_store_error":
       return { ...model, recordingStatus: msg.data };
     case "blob_ticket_edit":

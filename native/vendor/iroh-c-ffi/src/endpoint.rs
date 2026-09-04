@@ -1344,7 +1344,7 @@ mod tests {
 
     #[test]
     fn recording_receiver_bi_roundtrip() {
-        let alpn: vec::Vec<u8> = b"nufon-chat/1".to_vec().into();
+        let alpn: vec::Vec<u8> = b"idfon-chat/1".to_vec().into();
         let mut server_config = endpoint_config_default();
         endpoint_config_add_alpn(&mut server_config, alpn.as_ref());
         let mut client_config = endpoint_config_default();
@@ -1386,7 +1386,7 @@ mod tests {
             assert_eq!(declared, received.len() - 4);
             assert_eq!(
                 &received[4..],
-                b"NUFON-RECORDING/1\nid=test\nticket=test-ticket"
+                b"IDFON-RECORDING/1\nid=test\nticket=test-ticket"
             );
             let ack_len = (13u32).to_be_bytes();
             assert_eq!(
@@ -1421,7 +1421,7 @@ mod tests {
                 connection_open_bi(&conn, &mut send, &mut recv),
                 EndpointResult::Ok
             );
-            let payload = b"NUFON-RECORDING/1\nid=test\nticket=test-ticket";
+            let payload = b"IDFON-RECORDING/1\nid=test\nticket=test-ticket";
             let len = (payload.len() as u32).to_be_bytes();
             assert_eq!(
                 send_stream_write(&mut send, (&len[..]).into()),

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/nufon-protocol", "crates/nufon-core", "crates/nufon-media", "crates/nufond", "crates/nufon-cli", "crates/nufon-client", "crates/nufon-daemon"]
+members = ["crates/idfon-protocol", "crates/idfon-core", "crates/idfon-media", "crates/idfond", "crates/idfon-cli", "crates/idfon-client", "crates/idfon-daemon"]
 exclude = ["native/vendor/iroh-c-ffi"]
 
 [workspace.package]

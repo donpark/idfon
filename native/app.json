@@ -1,9 +1,9 @@
 {
     "$schema": "https://schema.native-sdk.dev/app/v1.json",
     "id": "dev.native_sdk.native",
-    "name": "Nufon",
-    "display_name": "Nufon",
-    "description": "A native Nufon communication app.",
+    "name": "Idfon",
+    "display_name": "Idfon",
+    "description": "A native Idfon communication app.",
     "version": "0.2.0",
     "icons": ["assets/icon.png"],
     "platforms": ["macos"],
@@ -13,11 +13,11 @@
         "windows": [
             {
                 "label": "main",
-                "title": "Nufon",
+                "title": "Idfon",
                 "width": 480,
                 "height": 520,
                 "views": [
-                    { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Nufon", "accessibility_label": "Nufon communication app", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
+                    { "label": "main-canvas", "kind": "gpu_surface", "fill": true, "role": "Idfon", "accessibility_label": "Idfon communication app", "gpu_backend": "metal", "gpu_pixel_format": "bgra8_unorm", "gpu_present_mode": "timer", "gpu_alpha_mode": "opaque", "gpu_color_space": "srgb", "gpu_vsync": true }
                 ]
             }
         ]

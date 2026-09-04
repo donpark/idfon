@@ -12,10 +12,10 @@ operation was created in the daemon store.
 
 **Diagnosis path.**
 
-1. GUI trace logs (`/tmp/nufon-<pid>.log`, written by `native/src/iroh_ffi.zig`)
+1. GUI trace logs (`/tmp/idfon-<pid>.log`, written by `native/src/iroh_ffi.zig`)
    showed the daemon's response to `message.send`:
    `{"ok":false,"error":{"code":"idempotency_key_conflict",...}}`.
-2. The daemon store (`/tmp/nufon*/state.json`) contained operations from
+2. The daemon store (`/tmp/idfon*/state.json`) contained operations from
    *previous* testing sessions with the same `(target, idempotency_key)` pair
    but a different request fingerprint.
 3. The GUI (`native/src/core.ts`) built the idempotency key as
@@ -47,18 +47,18 @@ operations, not per GUI session.
 **Testing note.** Testing two identities (Alice/Bob) on one computer is a
 test-only setup: both app instances normally talk to the same default-profile
 daemon unless each is launched with its own profile
-(`native/run-profile.sh <name>` sets `NUFON_PROFILE`, giving each instance its
-own socket and data directory under `/tmp/nufon-<name>/`). The bug above was
+(`native/run-profile.sh <name>` sets `IDFON_PROFILE`, giving each instance its
+own socket and data directory under `/tmp/idfon-<name>/`). The bug above was
 independent of that setup — it would bite identically between two machines —
 but the shared-daemon setup made the stale operations from earlier sessions
 visible in one `state.json`, which helped diagnosis.
 
 ## Related: stale daemon lock after a crash (2026-08-30)
 
-A crashed daemon left `/tmp/nufon/state.lock` behind (its `Drop` never ran),
+A crashed daemon left `/tmp/idfon/state.lock` behind (its `Drop` never ran),
 and every subsequent daemon start failed with
 `data directory is already locked: ...`, which the GUI surfaced as
 `daemon_unavailable`. Fixed in `DataLock::acquire`
-(`crates/nufond/src/main.rs`): the lock file records the holder's PID, and a
+(`crates/idfond/src/main.rs`): the lock file records the holder's PID, and a
 new daemon now takes the lock over when that PID is dead. See the
 `data_lock_recovers_stale_lock_from_dead_pid` test.

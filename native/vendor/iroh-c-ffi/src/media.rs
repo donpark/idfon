@@ -123,7 +123,7 @@ fn audio() -> &'static AudioBackend {
 fn media_dir() -> std::path::PathBuf {
     let root = std::env::var_os("NATIVE_SDK_APP_DATA_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/nufon"));
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/idfon"));
     let scope = MEDIA_SCOPE
         .lock()
         .expect("media scope mutex poisoned")
@@ -150,7 +150,7 @@ fn broadcast_name() -> String {
         .expect("media scope mutex poisoned")
         .clone()
         .unwrap_or_else(|| "default".to_owned());
-    let mut name = String::from("nufon-audio-");
+    let mut name = String::from("idfon-audio-");
     for byte in scope.bytes().take(64) {
         name.push(
             if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
@@ -244,7 +244,7 @@ impl OggOpusRecorder {
             false,
         )?;
         this.write_packet(
-            b"OpusTags\x05\x00\x00\x00Nufon\x00\x00\x00\x00",
+            b"OpusTags\x05\x00\x00\x00Idfon\x00\x00\x00\x00",
             0,
             false,
             false,
@@ -850,7 +850,7 @@ pub fn media_recording_start() -> u8 {
     };
     let path = media_path("recording.opus");
     let recorder =
-        match OggOpusRecorder::create(path.to_str().unwrap_or("/tmp/nufon/recording.opus")) {
+        match OggOpusRecorder::create(path.to_str().unwrap_or("/tmp/idfon/recording.opus")) {
             Ok(r) => Arc::new(Mutex::new(r)),
             Err(err) => {
                 tracing::warn!(error = %err, "recording file initialization failed");
@@ -1053,7 +1053,7 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
     let result = tokio_executor(async {
         let path = media_path("received.wav");
         let recorder = Arc::new(Mutex::new(WavRecorder::create(
-            path.to_str().unwrap_or("/tmp/nufon/received.wav"),
+            path.to_str().unwrap_or("/tmp/idfon/received.wav"),
             AudioFormat::stereo_48k(),
         )?));
         let backend = RecordingBackend {
@@ -1134,7 +1134,7 @@ mod tests {
     #[test]
     fn ogg_opus_writes_headers_and_audio_page() {
         let path = std::env::temp_dir().join(format!(
-            "nufon-test-{}.opus",
+            "idfon-test-{}.opus",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1154,7 +1154,7 @@ mod tests {
         );
         assert_eq!(
             reader.read_packet().unwrap().unwrap().data,
-            b"OpusTags\x05\x00\x00\x00Nufon\x00\x00\x00\x00"
+            b"OpusTags\x05\x00\x00\x00Idfon\x00\x00\x00\x00"
         );
         let packet = reader.read_packet().unwrap().unwrap();
         assert!(packet.data.len() > 2);
@@ -1182,7 +1182,7 @@ mod tests {
     #[test]
     fn wav_finalize_writes_data_size_and_samples() {
         let path = std::env::temp_dir().join(format!(
-            "nufon-test-{}.wav",
+            "idfon-test-{}.wav",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn blob_store_persists_named_recording() {
         let root = std::env::temp_dir().join(format!(
-            "nufon-blobs-{}",
+            "idfon-blobs-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1229,7 +1229,7 @@ mod tests {
     #[test]
     fn blob_ticket_transfers_recording_between_endpoints() {
         let root = std::env::temp_dir().join(format!(
-            "nufon-transfer-{}",
+            "idfon-transfer-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

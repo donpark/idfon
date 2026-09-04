@@ -3,8 +3,8 @@ set -eu
 
 # Audio quality round trip through the live path:
 #
-#   macOS `say` TTS -> 48k mono WAV -> nufon stream (--loop) -> iroh-live
-#   -> nufon listen (Opus decode) -> WAV -> alignment + objective metrics
+#   macOS `say` TTS -> 48k mono WAV -> idfon stream (--loop) -> iroh-live
+#   -> idfon listen (Opus decode) -> WAV -> alignment + objective metrics
 #
 # Metrics (source vs decoded, time-aligned via envelope + sample-domain
 # cross-correlation):
@@ -35,10 +35,10 @@ for tool in say sox jq; do
   command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 1; }
 done
 
-cargo build --release -p nufond -p nufon-cli
-codesign --force -s - target/release/nufond target/release/nufon
+cargo build --release -p idfond -p idfon-cli
+codesign --force -s - target/release/idfond target/release/idfon
 
-work=$(mktemp -d /tmp/nufon-audioq.XXXXXX)
+work=$(mktemp -d /tmp/idfon-audioq.XXXXXX)
 pids=""
 cleanup() {
   if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; fi
@@ -46,8 +46,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-A="$work/pub/nufond.sock"
-B="$work/sub/nufond.sock"
+A="$work/pub/idfond.sock"
+B="$work/sub/idfond.sock"
 
 # 1. Speech source: TTS -> 48k mono WAV (~10 s).
 say -v "$voice" -o "$work/speech.aiff" \
@@ -58,20 +58,20 @@ sox "$work/speech.aiff" -r 48000 -c 1 "$work/speech.wav" 2>/dev/null
 
 # 2. Two daemons, publish on A (looped), listen on B.
 mkdir -p "$work/pub" "$work/sub"
-target/release/nufond --socket "$A" --data-dir "$work/pub" &
+target/release/idfond --socket "$A" --data-dir "$work/pub" &
 pids="$pids $!"
-target/release/nufond --socket "$B" --data-dir "$work/sub" &
+target/release/idfond --socket "$B" --data-dir "$work/sub" &
 pids="$pids $!"
 for _ in $(seq 1 100); do
-  target/release/nufon --socket "$A" status --json >/dev/null 2>&1 \
-    && target/release/nufon --socket "$B" status --json >/dev/null 2>&1 && break
+  target/release/idfon --socket "$A" status --json >/dev/null 2>&1 \
+    && target/release/idfon --socket "$B" status --json >/dev/null 2>&1 && break
   sleep 0.1
 done
 
-ticket=$(target/release/nufon --socket "$A" stream --file "$work/speech.wav" --loop)
+ticket=$(target/release/idfon --socket "$A" stream --file "$work/speech.wav" --loop)
 sleep 2   # let the first announce land
 
-target/release/nufon --socket "$B" listen "$ticket" --out "$work/rec.wav" \
+target/release/idfon --socket "$B" listen "$ticket" --out "$work/rec.wav" \
   --seconds "$seconds" --json > "$work/listen.json"
 echo "recorded $(jq -r .result.duration_ms "$work/listen.json")ms, $(jq -r .result.packets "$work/listen.json") packets"
 

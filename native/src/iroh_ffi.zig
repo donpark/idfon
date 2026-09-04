@@ -15,7 +15,7 @@ extern fn _NSGetExecutablePath(buf: [*:0]u8, bufsize: *u32) c_int;
 const native_sdk = @import("native_sdk");
 const ffi = @cImport({
     @cInclude("irohnet.h");
-    @cInclude("nufon_client.h");
+    @cInclude("idfon_client.h");
 });
 
 const max_message = 8192;
@@ -24,8 +24,8 @@ const max_payload = 8192;
 // the daemon frame limit is 1 MiB, but the runtime rejects anything larger.
 const max_result = 256 * 1024;
 const queue_size = 16;
-const default_socket = "/tmp/nufon/nufond.sock";
-const default_data_dir = "/tmp/nufon";
+const default_socket = "/tmp/idfon/idfond.sock";
+const default_data_dir = "/tmp/idfon";
 const ProfilePaths = struct {
     socket: [128]u8 = undefined,
     socket_len: usize = 0,
@@ -105,7 +105,7 @@ fn trace(comptime format: []const u8, args: anytype) void {
     var line: [512]u8 = undefined;
     var path: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&line, format, args) catch return;
-    const log_path = std.fmt.bufPrintZ(&path, "/tmp/nufon-{d}.log", .{c.getpid()}) catch return;
+    const log_path = std.fmt.bufPrintZ(&path, "/tmp/idfon-{d}.log", .{c.getpid()}) catch return;
     lock(&trace_lock);
     defer trace_lock.unlock();
     var mode: [2:0]u8 = .{ 'a', 0 };
@@ -133,11 +133,11 @@ fn send(context: *anyopaque, name: []const u8, payload: []const u8) void {
 fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8) void {
     const self: *Host = @ptrCast(@alignCast(context));
     trace("host request {s} key={d} payload={d}", .{ name, key, payload.len });
-    if (std.mem.eql(u8, name, "nufond.request")) {
+    if (std.mem.eql(u8, name, "idfond.request")) {
         const head = payload[0..@min(payload.len, 180)];
         const tail_start = if (payload.len > 280) payload.len - 280 else 0;
-        trace("nufond request key={d} head={s}", .{ key, head });
-        trace("nufond request key={d} tail={s}", .{ key, payload[tail_start..] });
+        trace("idfond request key={d} head={s}", .{ key, head });
+        trace("idfond request key={d} tail={s}", .{ key, payload[tail_start..] });
     }
     const is_media_audio = std.mem.eql(u8, name, "media.audio.switch_input") or
         std.mem.eql(u8, name, "media.audio.switch_output") or
@@ -159,7 +159,7 @@ fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8)
         std.mem.eql(u8, name, "media.live.unsubscribe") or
         std.mem.eql(u8, name, "media.live.recording.store") or
         std.mem.eql(u8, name, "media.blob.fetch");
-    if (!std.mem.eql(u8, name, "nufond.request") and !is_media_audio and
+    if (!std.mem.eql(u8, name, "idfond.request") and !is_media_audio and
         !std.mem.eql(u8, name, "media.set_scope") and
         !std.mem.eql(u8, name, "media.recording.persist")) {
         self.complete(key, false, "unknown_command"); return;
@@ -174,7 +174,7 @@ fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8)
     job.* = .{ .host = self, .key = key, .command_len = name.len, .len = payload.len };
     @memcpy(job.command[0..name.len], name);
     @memcpy(job.bytes[0..payload.len], payload);
-    if (std.mem.eql(u8, name, "nufond.request")) {
+    if (std.mem.eql(u8, name, "idfond.request")) {
         var thread = std.Thread.spawn(.{}, daemonWorker, .{job}) catch {
             std.heap.page_allocator.destroy(job); self.complete(key, false, "thread_failed"); return;
         };
@@ -224,26 +224,26 @@ const ClientResponse = struct {
 /// Maps Rust client error codes to the historical completion strings.
 fn daemonError(code: c_int) []const u8 {
     return switch (code) {
-        ffi.NUFON_EREQUEST => "payload_too_large",
-        ffi.NUFON_ECONNECT => "daemon_unavailable",
-        ffi.NUFON_EWRITE => "daemon_write_failed",
-        ffi.NUFON_EREAD => "daemon_read_failed",
-        ffi.NUFON_ETOOLARGE => "daemon_result_too_large",
-        ffi.NUFON_EINVALID => "daemon_invalid_response",
-        else => "client_invalid_argument", // NUFON_EARG: shim bug, not a daemon state
+        ffi.IDFON_EREQUEST => "payload_too_large",
+        ffi.IDFON_ECONNECT => "daemon_unavailable",
+        ffi.IDFON_EWRITE => "daemon_write_failed",
+        ffi.IDFON_EREAD => "daemon_read_failed",
+        ffi.IDFON_ETOOLARGE => "daemon_result_too_large",
+        ffi.IDFON_EINVALID => "daemon_invalid_response",
+        else => "client_invalid_argument", // IDFON_EARG: shim bug, not a daemon state
     };
 }
 
 fn clientRequest(socket: []const u8, payload: []const u8, timeout_ms: u32) ClientResponse {
     var socket_z: [128:0]u8 = undefined;
     const socket_z_ptr = std.fmt.bufPrintZ(&socket_z, "{s}", .{socket}) catch {
-        return .{ .code = ffi.NUFON_EARG, .ok = false, .ptr = null, .len = 0 };
+        return .{ .code = ffi.IDFON_EARG, .ok = false, .ptr = null, .len = 0 };
     };
     var out: [*c]u8 = null;
     var out_len: usize = 0;
     var ok: u8 = 0;
-    const code = ffi.nufon_client_request(socket_z_ptr.ptr, payload.ptr, payload.len, &out, &out_len, &ok, timeout_ms);
-    if (code != ffi.NUFON_OK) return .{ .code = code, .ok = false, .ptr = null, .len = 0 };
+    const code = ffi.idfon_client_request(socket_z_ptr.ptr, payload.ptr, payload.len, &out, &out_len, &ok, timeout_ms);
+    if (code != ffi.IDFON_OK) return .{ .code = code, .ok = false, .ptr = null, .len = 0 };
     return .{ .code = code, .ok = ok == 1, .ptr = out, .len = out_len };
 }
 
@@ -253,18 +253,18 @@ fn daemonWorker(job: *Job) void {
     const paths = profilePaths();
     // Single fast attempt first so a cold start goes through launchDaemon.
     var response = clientRequest(paths.socket[0..paths.socket_len], job.bytes[0..job.len], 0);
-    if (response.code == ffi.NUFON_ECONNECT) {
+    if (response.code == ffi.IDFON_ECONNECT) {
         if (!launchDaemon(self, paths)) {
             self.complete(job.key, false, "daemon_unavailable");
             return;
         }
         response = clientRequest(paths.socket[0..paths.socket_len], job.bytes[0..job.len], 5000);
     }
-    if (response.code != ffi.NUFON_OK) {
+    if (response.code != ffi.IDFON_OK) {
         self.complete(job.key, false, daemonError(response.code));
         return;
     }
-    defer ffi.nufon_client_result_free(response.ptr, response.len);
+    defer ffi.idfon_client_result_free(response.ptr, response.len);
     // Cap at the runtime's host-result budget (max_effect_host_result_bytes);
     // rejecting here keeps the error legible instead of the runtime's opaque
     // "host result over budget".
@@ -401,8 +401,8 @@ fn mediaAudioWorker(job: *Job) void {
 fn profilePaths() ProfilePaths {
     var paths = ProfilePaths{};
     // Socket path comes from Rust (single source of truth with the daemon);
-    // the data dir is always the socket's parent (/tmp/nufon[-{profile}]).
-    const socket_len = ffi.nufon_client_socket_path(null, &paths.socket, paths.socket.len);
+    // the data dir is always the socket's parent (/tmp/idfon[-{profile}]).
+    const socket_len = ffi.idfon_client_socket_path(null, &paths.socket, paths.socket.len);
     if (socket_len < 0) {
         @memcpy(paths.socket[0..default_socket.len], default_socket);
         paths.socket_len = default_socket.len;
@@ -442,7 +442,7 @@ fn launchDaemon(self: *Host, paths: ProfilePaths) bool {
         const socket_z = std.fmt.bufPrintZ(&socket_path, "{s}", .{paths.socket[0..paths.socket_len]}) catch c._exit(127);
         const data_z = std.fmt.bufPrintZ(&data_path, "{s}", .{paths.data[0..paths.data_len]}) catch c._exit(127);
         var daemon_log_path: [64:0]u8 = undefined;
-        const daemon_log = std.fmt.bufPrintZ(&daemon_log_path, "/tmp/nufond-auto-{d}.log", .{c.getpid()}) catch null;
+        const daemon_log = std.fmt.bufPrintZ(&daemon_log_path, "/tmp/idfond-auto-{d}.log", .{c.getpid()}) catch null;
         var log_fd: c_int = -1;
         if (daemon_log) |path_z| {
             log_fd = c.open(path_z.ptr, c.O_WRONLY | c.O_CREAT | c.O_TRUNC, @as(c_int, 0o600));
@@ -454,17 +454,17 @@ fn launchDaemon(self: *Host, paths: ProfilePaths) bool {
         }
         if (log_fd >= 0) _ = c.dprintf(log_fd, "auto-start child pid=%d\n", c.getpid());
         const launch_argv = [_]?[*:0]u8{
-            @constCast("nufond"), @constCast("--socket"), @constCast(socket_z.ptr), @constCast("--data-dir"), @constCast(data_z.ptr), null,
+            @constCast("idfond"), @constCast("--socket"), @constCast(socket_z.ptr), @constCast("--data-dir"), @constCast(data_z.ptr), null,
         };
         const argv = launch_argv;
         _ = c.execvp(argv[0], @ptrCast(&argv));
         if (log_fd >= 0) _ = c.dprintf(log_fd, "execvp failed\n");
         const launch_paths = [_][]const u8{
-            "target/release/nufond",
-            "../target/release/nufond",
-            "zig-out/bin/nufond",
-            "Nufon.app/Contents/MacOS/nufond",
-            "/usr/local/bin/nufond",
+            "target/release/idfond",
+            "../target/release/idfond",
+            "zig-out/bin/idfond",
+            "Idfon.app/Contents/MacOS/idfond",
+            "/usr/local/bin/idfond",
         };
         for (launch_paths) |path| {
             var path_z: [256:0]u8 = undefined;
@@ -481,7 +481,7 @@ fn launchDaemon(self: *Host, paths: ProfilePaths) bool {
             while (end < executable.len and executable[end] != 0) : (end += 1) {}
             while (end > 0 and executable[end - 1] != '/') : (end -= 1) {}
             if (end == 0) { c._exit(127); }
-            const sibling = std.fmt.bufPrintZ(executable[end..], "nufond", .{}) catch null;
+            const sibling = std.fmt.bufPrintZ(executable[end..], "idfond", .{}) catch null;
             if (sibling) |_| {
                 var sibling_argv = [_]?[*:0]u8{ executable[0..].ptr, @constCast("--socket"), @constCast(socket_z.ptr), @constCast("--data-dir"), @constCast(data_z.ptr), null };
                 if (log_fd >= 0) _ = c.dprintf(log_fd, "execv sibling %s\n", executable[0..].ptr);
@@ -492,7 +492,7 @@ fn launchDaemon(self: *Host, paths: ProfilePaths) bool {
         c._exit(127);
     }
     self.daemon_pid = pid;
-    trace("launched nufond pid={d}", .{pid});
+    trace("launched idfond pid={d}", .{pid});
     return true;
 }
 
@@ -502,17 +502,17 @@ fn stopDaemon(self: *Host) void {
     self.daemon_pid = -1;
     self.daemon_lock.unlock();
     if (pid > 0) {
-        // nufond handles SIGINT through tokio and runs its lock/socket cleanup.
+        // idfond handles SIGINT through tokio and runs its lock/socket cleanup.
         _ = c.kill(pid, c.SIGINT);
         _ = c.waitpid(pid, null, 0);
-        trace("stopped nufond pid={d}", .{pid});
+        trace("stopped idfond pid={d}", .{pid});
     }
 }
 
 fn shutdown(context: *anyopaque) void {
     const self: *Host = @ptrCast(@alignCast(context));
     trace("host shutdown", .{});
-    // nufond is a shared long-running service; one GUI client must not stop it
+    // idfond is a shared long-running service; one GUI client must not stop it
     // while another client or the CLI is still using the same profile.
     ffi.media_shutdown();
     lock(&self.services_lock);

@@ -40,7 +40,7 @@ pub fn rust_buffer_free(buf: vec::Vec<u8>) {
 /// Log level can be controlled using the env variable `IROH_C_LOG`.
 #[ffi_export]
 pub fn iroh_enable_tracing() {
-    let path = PathBuf::from(format!("/tmp/nufon-{}.log", std::process::id()));
+    let path = PathBuf::from(format!("/tmp/idfon-{}.log", std::process::id()));
     let writer = move || {
         OpenOptions::new()
             .create(true)

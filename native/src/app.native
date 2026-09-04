@@ -1,6 +1,6 @@
 <column gap="12" padding="16">
   <row cross="center">
-    <text grow="1" size="heading">Nufon</text>
+    <text grow="1" size="heading">Idfon</text>
   </row>
 
   <row gap="8" cross="center">

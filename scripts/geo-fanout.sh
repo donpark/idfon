@@ -3,7 +3,7 @@ set -eu
 
 # True fan-out over the real internet using Vercel Sandboxes as listeners.
 #
-# One local publisher (nufon stream), N cloud listeners (one sandbox each,
+# One local publisher (idfon stream), N cloud listeners (one sandbox each,
 # forked from a prebuilt snapshot holding the Linux stream-recorder binary).
 # Each listener captures the stream and reports the playback-UX metrics;
 # results are aggregated locally.
@@ -50,13 +50,13 @@ for i in $(seq 1 "$N"); do
     r=$(echo "$REGIONS" | tr ' ,' '\n\n' | grep -v '^$' | sed -n "$(( (i-1) % $(echo "$REGIONS" | tr ' ,' '\n\n' | grep -cv '^$') + 1 ))p")
     region="--region $r"
   fi
-  name="nufon-geo-$i-$$"
+  name="idfon-geo-$i-$$"
   vercel sandbox create --snapshot "$SNAPSHOT_ID" --name "$name" --timeout 15m $region > /tmp/geo-create.log 2>&1 \
     || { echo "FAIL: sandbox $name"; tail -3 /tmp/geo-create.log >&2; overall=1; continue; }
   names="$names $name"
 done
 
-out_dir=$(mktemp -d /tmp/nufon-geo-results.XXXXXX)
+out_dir=$(mktemp -d /tmp/idfon-geo-results.XXXXXX)
 for name in $names; do
   run_exec "$name" "$TICKET" > "$out_dir/$name.log" 2>&1 \
     && cp "$out_dir/$name.log" "$out_dir/$name.ok" &

@@ -1,0 +1,11 @@
+[package]
+name = "idfond"
+version.workspace = true
+edition = "2021"
+build = "build.rs"
+
+# No runtime [dependencies]: the daemon core is reached through
+# libiroh_c_ffi.dylib (see build.rs and native/vendor/iroh-c-ffi/src/daemon.rs).
+
+[dev-dependencies]
+serde_json = "1"

@@ -1,11 +1,11 @@
 {
-  "name": "nufon",
+  "name": "idfon",
   "version": "1.0.0",
   "description": "",
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "native": "pnpm --filter @nufon/native"
+    "native": "pnpm --filter @idfon/native"
   },
   "keywords": [],
   "author": "Don Park",

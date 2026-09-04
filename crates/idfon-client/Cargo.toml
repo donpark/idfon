@@ -1,0 +1,9 @@
+[package]
+name = "idfon-client"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+idfon-protocol = { path = "../idfon-protocol" }
+serde_json = "1"
+thiserror = "2"

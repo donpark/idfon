@@ -2,10 +2,10 @@
 set -eu
 
 # Live audio streaming between two endpoints over the real daemon protocol,
-# driven through the nufon CLI (no microphone, no GUI):
+# driven through the idfon CLI (no microphone, no GUI):
 #
-#   nufond (endpoint A) -- nufon stream --file pip.wav --loop --> live ticket
-#   nufond (endpoint B) -- nufon listen TICKET --out rec.wav
+#   idfond (endpoint A) -- idfon stream --file pip.wav --loop --> live ticket
+#   idfond (endpoint B) -- idfon listen TICKET --out rec.wav
 #
 # The source is a "pip" pattern (100ms 1kHz tone every 2s), so the decoded
 # recording measures the live path: pip count, decode jitter, packet-arrival
@@ -16,16 +16,16 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-# Build the vendored dylib first (the thin nufond links it); flags must match
+# Build the vendored dylib first (the thin idfond links it); flags must match
 # native/build.zig so the dylib's install name stays @executable_path-relative.
 RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
   cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-cargo build --release -p nufond -p nufon-cli
+cargo build --release -p idfond -p idfon-cli
 # A relink can leave an ad-hoc signature that no longer matches the pages;
 # the kernel then SIGKILLs the process at exec ("Code Signature Invalid").
-codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/nufond target/release/nufon
+codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond target/release/idfon
 
-work=$(mktemp -d /tmp/nufon-live-e2e.XXXXXX)
+work=$(mktemp -d /tmp/idfon-live-e2e.XXXXXX)
 pids=""
 cleanup() {
   if [ -n "$pids" ]; then kill $pids 2>/dev/null || true; fi
@@ -33,9 +33,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-NUF="$root/target/release/nufon"
-A="$work/publisher/nufond.sock"
-B="$work/listener/nufond.sock"
+NUF="$root/target/release/idfon"
+A="$work/publisher/idfond.sock"
+B="$work/listener/idfond.sock"
 
 # Test source: 100ms @1kHz every 2s, 60s (looped by the publisher).
 python3 - "$work/pip.wav" <<'EOF'
@@ -51,9 +51,9 @@ w.writeframes(frames); w.close()
 EOF
 
 mkdir -p "$work/publisher" "$work/listener"
-"$root/target/release/nufond" --socket "$A" --data-dir "$work/publisher" &
+"$root/target/release/idfond" --socket "$A" --data-dir "$work/publisher" &
 pids="$pids $!"
-"$root/target/release/nufond" --socket "$B" --data-dir "$work/listener" &
+"$root/target/release/idfond" --socket "$B" --data-dir "$work/listener" &
 pids="$pids $!"
 
 wait_ready() { # socket label
@@ -132,4 +132,4 @@ run_case() { # label stream-args...
 run_case "stream --file --loop" --file "$work/pip.wav" --loop
 run_case "stream via stdin pipe" --loop < "$work/pip.wav"
 
-echo "PASS: nufon stream/listen live audio over two daemon endpoints"
+echo "PASS: idfon stream/listen live audio over two daemon endpoints"

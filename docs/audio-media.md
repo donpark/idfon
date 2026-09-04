@@ -1,6 +1,6 @@
 # Audio media status
 
-Nufon has a Rust media backend behind the Native SDK app's Zig host and C ABI.
+Idfon has a Rust media backend behind the Native SDK app's Zig host and C ABI.
 The daemon owns network media sessions, blob providers, resource transfer, and
 authorization. The Native SDK application remains TypeScript + Native markup;
 Zig dispatches local device/playback commands and daemon IPC. Raw audio samples
@@ -24,10 +24,10 @@ completed recording
   → local file
 ```
 
-The current implementation is macOS-first and has been verified with two simultaneously running app instances sending and playing a short recording. Recording attachments use the custom `nufon-chat/1` ALPN and a length-prefixed bidirectional QUIC stream; the receiver acknowledges a validated envelope with `audio_received` before the sender reports delivery success. Each receiver instance generates a fresh endpoint identity on launch, so two instances may safely share the default development directory for endpoint identity; separate directories are still recommended to isolate media files.
+The current implementation is macOS-first and has been verified with two simultaneously running app instances sending and playing a short recording. Recording attachments use the custom `idfon-chat/1` ALPN and a length-prefixed bidirectional QUIC stream; the receiver acknowledges a validated envelope with `audio_received` before the sender reports delivery success. Each receiver instance generates a fresh endpoint identity on launch, so two instances may safely share the default development directory for endpoint identity; separate directories are still recommended to isolate media files.
 
 It uses the following app-data files
-under `NATIVE_SDK_APP_DATA_DIR` (with `/tmp/nufon` as a development fallback):
+under `NATIVE_SDK_APP_DATA_DIR` (with `/tmp/idfon` as a development fallback):
 
 - `conversations/<scope>/recording.opus` — local microphone recording;
 - `conversations/<scope>/received.wav` — decoded live audio test recording;
@@ -101,7 +101,7 @@ deadlocks on `blobs.db`, which made every recording store after the first hang.
 Recording messages use a versioned metadata envelope:
 
 ```text
-NUFON-RECORDING/1
+IDFON-RECORDING/1
 id=<BlobTicket>
 codec=opus
 channels=1
@@ -133,13 +133,13 @@ recording, live ticket creation, subscription setup, blob storage, blob
 fetching, and two-instance recording delivery/playback. Direct FFI tests also
 cover the exact length-prefixed recording envelope and `audio_received`
 acknowledgment exchange. A normal Call now starts
-an `iroh-live` publisher, sends a `NUFON-LIVE/1` invite containing its ticket
+an `iroh-live` publisher, sends a `IDFON-LIVE/1` invite containing its ticket
 through the existing control channel, and makes the receiver subscribe
 automatically. Either participant can end the call: the stop message tears down
 the peer subscription, and the receiver's `call_stopped` reply stops the
 publisher. The macOS package
 includes `NSMicrophoneUsageDescription`. Per-process Zig and Rust diagnostics
-are written to `/tmp/nufon-<pid>.log`.
+are written to `/tmp/idfon-<pid>.log`.
 
 Typical checks:
 
@@ -153,7 +153,7 @@ native check native
 native build native
 native test native
 (cd native && native doctor --manifest app.json --strict)
-(cd native && native package --target macos --binary zig-out/bin/Nufon --output /tmp/Nufon.app)
+(cd native && native package --target macos --binary zig-out/bin/Idfon --output /tmp/Idfon.app)
 ```
 
 Direct Rust tests on macOS may need the Xcode Swift 5.5 runtime in
@@ -169,7 +169,7 @@ application diagnostic.
 The daemon owns network media sessions, BlobTicket providers, resource transfer,
 and authorization. The GUI owns local microphone/speaker access, playback,
 volume/mute, consent, notifications, and emergency stop. The extracted
-`nufon-media` crate provides explicit publisher/subscriber and local resource
+`idfon-media` crate provides explicit publisher/subscriber and local resource
 session handles while the legacy Native SDK local-device backend is migrated.
 
 ## Live streaming through the daemon (synthetic, no microphone)
@@ -178,11 +178,11 @@ session handles while the legacy Native SDK local-device backend is migrated.
 daemon protocol and CLI, no GUI or capture device:
 
 1. generates (or accepts as `$1`) a WAV — by default a 1 kHz pip every 2 s;
-2. publishes it via `nufon stream [--file FILE | stdin] [--loop]`, which calls
+2. publishes it via `idfon stream [--file FILE | stdin] [--loop]`, which calls
    the daemon's `media.live.publish` (symphonia decode → Opus encode →
    iroh-live broadcast) and prints the live ticket — the ticket is the
    subscriber capability, no pairing needed;
-3. subscribes via `nufon listen TICKET [--out FILE] [--seconds N]`, which calls
+3. subscribes via `idfon listen TICKET [--out FILE] [--seconds N]`, which calls
    `media.live.subscribe` (iroh-live subscribe with retry → Opus decode →
    48 kHz mono WAV + per-packet arrival timings);
 4. reports pip count, decode jitter, packet-arrival jitter, and a latency

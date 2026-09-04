@@ -9,11 +9,11 @@ export DYLD_LIBRARY_PATH="$swift_dir:$core_dir${DYLD_LIBRARY_PATH:+:$DYLD_LIBRAR
 # Must match native/build.zig's cargo step exactly: same flags avoid a
 # fingerprint flip-flop (full iroh rebuilds) and keep the dylib's install
 # name @executable_path/... (an absolute install name breaks the thin
-# nufond binary and the app bundle).
+# idfond binary and the app bundle).
 RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib"
 export RUSTFLAGS
 
-# The thin nufond binary links the vendored dylib (crates/nufond/build.rs),
+# The thin idfond binary links the vendored dylib (crates/idfond/build.rs),
 # so it must exist before the workspace build.
 cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
 

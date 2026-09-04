@@ -16,15 +16,15 @@ native dev          # build and run the real app (markup hot reload)
 native check        # verify core.ts (subset checker) + markup + app.json
 native build        # ReleaseFast binary in zig-out/bin/
 native test         # the app's test suite
-pnpm --filter @nufon/native launch
+pnpm --filter @idfon/native launch
                     # build with SDK runtime tracing off, package, and open
-native package --target macos --binary "zig-out/bin/Nufon" --output "Nufon.app"
-                    # (the build script already appends the nufond + dylib copies)
+native package --target macos --binary "zig-out/bin/Idfon" --output "Idfon.app"
+                    # (the build script already appends the idfond + dylib copies)
                     # create a Finder-launchable macOS app bundle
-./zig-out/bin/Nufon
-                    # raw binary; native diagnostics go to /tmp/nufon-<pid>.log
-rm -f /tmp/nufon-*.log
-cat /tmp/nufon-<pid>.log
+./zig-out/bin/Idfon
+                    # raw binary; native diagnostics go to /tmp/idfon-<pid>.log
+rm -f /tmp/idfon-*.log
+cat /tmp/idfon-<pid>.log
                     # inspect one process's Iroh diagnostics
 ```
 
@@ -68,7 +68,7 @@ package itself, and an install simply lands the identical content once
 ## Known limitations
 
 The Iroh host still starts detached native worker threads for the receiver
-accept loop and sender requests. The packaged app carries a matching `nufond`
+accept loop and sender requests. The packaged app carries a matching `idfond`
 binary beside the GUI executable; development launches look in the workspace
 build locations first. Each endpoint bind generates a fresh identity,
 which allows two blindly launched app instances to connect after copying the
@@ -87,13 +87,13 @@ authorization are still pending.
 For development, inspect per-process diagnostics with:
 
 ```sh
-cat /tmp/nufon-<pid>.log
+cat /tmp/idfon-<pid>.log
 ```
 
 and close leftover instances with:
 
 ```sh
-pkill -x "Nufon"
+pkill -x "Idfon"
 ```
 
 This is a lifecycle limitation in `src/iroh_ffi.zig`; it does not affect the
@@ -126,10 +126,10 @@ without it fails at launch with a dyld "Library not loaded" error.
 ## Signing
 
 `pnpm run release` signs with `Developer ID Application: WizOps LLC
-(RV27HPQNMF)` in the required order — dylib, nufond, app bundle, then the
+(RV27HPQNMF)` in the required order — dylib, idfond, app bundle, then the
 DMG — all with `--timestamp`. Remaining before public distribution:
-notarization (`xcrun notarytool submit Nufon.dmg --keychain-profile
-<profile> --wait`, then `xcrun stapler staple Nufon.dmg`), which needs an
+notarization (`xcrun notarytool submit Idfon.dmg --keychain-profile
+<profile> --wait`, then `xcrun stapler staple Idfon.dmg`), which needs an
 App Store Connect API key; and hardened runtime + audio-input entitlements
 if/when we enable `--options runtime` (required for notarization). Until
 notarized, Gatekeeper on other Macs blocks first launch.

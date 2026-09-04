@@ -1,6 +1,6 @@
-# Nufon Communication Model
+# Idfon Communication Model
 
-Nufon is not limited to the classic phone-call or audio/video-chat model. It should support many loosely coupled ways for people and groups to communicate, with fine-grained control over how each capability reaches the recipient.
+Idfon is not limited to the classic phone-call or audio/video-chat model. It should support many loosely coupled ways for people and groups to communicate, with fine-grained control over how each capability reaches the recipient.
 
 ## Core idea
 
@@ -53,7 +53,7 @@ Policy should be configurable per person, group, capability, and context. A glob
 
 ## Communication modes
 
-Nufon should treat these as distinct modes that can be combined when useful:
+Idfon should treat these as distinct modes that can be combined when useful:
 
 ### Direct messaging
 
@@ -77,7 +77,7 @@ A group may have different roles and permissions. Some members may speak, some m
 
 ## Endpoint identity and connection context
 
-Nufon identities are named local contexts. Each identity owns its Iroh key and
+Idfon identities are named local contexts. Each identity owns its Iroh key and
 endpoint, and can have its own set of connections. The selected identity is
 the active context: its endpoint starts automatically and its connections are
 shown in the home view. Selecting an identity may copy its full Iroh ticket
@@ -104,7 +104,7 @@ communication mode
 transport and media delivery
 ```
 
-The underlying networking technology is an implementation detail. It may provide transports for live bytes, messages, events, stored media, or replicated state, but it should not define Nufon’s product model.
+The underlying networking technology is an implementation detail. It may provide transports for live bytes, messages, events, stored media, or replicated state, but it should not define Idfon’s product model.
 
 ## Privacy and safety requirements
 
@@ -124,4 +124,4 @@ The default should favor user control and predictable behavior. An authorized se
 
 ## Design principle
 
-Nufon should feel less like answering calls and more like configuring trusted communication channels: each person or group can be given precisely defined ways to reach you, while you retain control over when and how those channels affect your attention.
+Idfon should feel less like answering calls and more like configuring trusted communication channels: each person or group can be given precisely defined ways to reach you, while you retain control over when and how those channels affect your attention.

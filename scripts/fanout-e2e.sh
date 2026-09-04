@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-# Fan-out scalability test: one nufon stream publisher, N concurrent
-# nufon listen subscribers, all direct P2P (runs with --no-relay: no relay
+# Fan-out scalability test: one idfon stream publisher, N concurrent
+# idfon listen subscribers, all direct P2P (runs with --no-relay: no relay
 # transport, subscribers connect straight to the publisher endpoint via the
 # ticket's direct addresses — no n0 public relay traffic, no rate limits).
 #
@@ -20,10 +20,10 @@ cd "$root"
 SIZES="${SIZES:-1 4 16}"
 LISTEN_SECONDS="${LISTEN_SECONDS:-12}"
 
-cargo build --release -p nufond -p nufon-cli
-codesign --force -s - target/release/nufond target/release/nufon
+cargo build --release -p idfond -p idfon-cli
+codesign --force -s - target/release/idfond target/release/idfon
 
-work=$(mktemp -d /tmp/nufon-fanout.XXXXXX)
+work=$(mktemp -d /tmp/idfon-fanout.XXXXXX)
 pids=""
 overall=0
 cleanup() {
@@ -36,9 +36,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-NUF="$root/target/release/nufon"
-A="$work/pub/nufond.sock"
-B="$work/sub/nufond.sock"
+NUF="$root/target/release/idfon"
+A="$work/pub/idfond.sock"
+B="$work/sub/idfond.sock"
 
 # Source: pip pattern (2 s spacing) so each listener's pip count also
 # verifies it kept up for the whole window, not just connected.
@@ -55,9 +55,9 @@ w.writeframes(frames); w.close()
 EOF
 
 mkdir -p "$work/pub" "$work/sub"
-target/release/nufond --socket "$A" --data-dir "$work/pub" &
+target/release/idfond --socket "$A" --data-dir "$work/pub" &
 pids="$pids $!"
-target/release/nufond --socket "$B" --data-dir "$work/sub" &
+target/release/idfond --socket "$B" --data-dir "$work/sub" &
 pids="$pids $!"
 for _ in $(seq 1 100); do
   "$NUF" --socket "$A" status --json >/dev/null 2>&1 \

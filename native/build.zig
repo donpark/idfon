@@ -20,12 +20,12 @@ fn hostModule(b: *std.Build, parent: *std.Build.Module, sdk: *std.Build.Module) 
 }
 
 pub fn build(b: *std.Build) void {
-    const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{ .name = "Nufon", .manifest = "app.json" });
+    const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{ .name = "Idfon", .manifest = "app.json" });
     const cargo = b.addSystemCommand(&.{ "cargo", "build", "--release", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml" });
     // The app loads the dylib from its own directory (bundle MacOS/, zig-out/bin/).
     cargo.setEnvironmentVariable("RUSTFLAGS", "-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib");
-    const daemon = b.addSystemCommand(&.{ "cargo", "build", "--release", "-p", "nufond" });
-    // The thin nufond links the dylib (see crates/nufond/build.rs), so it
+    const daemon = b.addSystemCommand(&.{ "cargo", "build", "--release", "-p", "idfond" });
+    // The thin idfond links the dylib (see crates/idfond/build.rs), so it
     // must only be linked once the dylib exists.
     daemon.step.dependOn(&cargo.step);
     artifacts.exe.step.dependOn(&daemon.step);
