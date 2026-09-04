@@ -1876,7 +1876,7 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
     {
         return media_resource_finish(request, &resource_path, &identity, id, store);
     }
-    let Some(mut data) = decode_resource_bytes(request) else {
+    let Some(data) = decode_resource_bytes(request) else {
         return error_response(
             request.id.clone(),
             &request.method,
