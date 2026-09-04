@@ -189,19 +189,33 @@ async fn listen_wav(
     let live = Live::builder(local_endpoint).spawn();
     let base = Instant::now();
     let mut last_err = String::new();
+    // A subscribe to a broadcast that never got announced blocks forever
+    // inside iroh, so every attempt is bounded by a timeout; the outer
+    // retries cover a publisher whose catalog announce hasn't landed yet.
+    const SUBSCRIBE_ATTEMPTS: u32 = 3;
+    const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(8);
     let sub = {
         let mut result = None;
-        for _attempt in 0..5 {
-            match live.subscribe(remote_addr.clone(), &name).await {
-                Ok(sub) => {
+        for _attempt in 0..SUBSCRIBE_ATTEMPTS {
+            match tokio::time::timeout(
+                SUBSCRIBE_TIMEOUT,
+                live.subscribe(remote_addr.clone(), &name),
+            )
+            .await
+            {
+                Ok(Ok(sub)) => {
                     result = Some(sub);
                     break;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     last_err = format!("{e:#}");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                Err(_) => {
+                    last_err =
+                        "timed out waiting for the broadcast to be announced".into();
                 }
             }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
         result.ok_or_else(|| anyhow::anyhow!("subscribe failed after retries: {last_err}"))?
     };
