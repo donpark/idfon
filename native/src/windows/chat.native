@@ -2,21 +2,24 @@
   <!-- Call header: participant avatars left, call controls + feedback right.
        The peer name lives in the window title bar. -->
   <row cross="center" gap="8">
-  <avatar label="{selectedConnectionName}">NU</avatar>
+    <stack>
+      <avatar label="{selectedConnectionName}">{selectedConnectionInitials}</avatar>
+      <tooltip anchor="above">{selectedConnectionName}</tooltip>
+    </stack>
   <spacer grow="1" />
   <if test="{incomingLive}">
     <text foreground="text_muted">{liveStatus}</text>
-    <button size="sm" variant="primary" on-press="live_answer">Answer</button>
-    <button size="sm" variant="secondary" on-press="live_decline">Decline</button>
+    <button variant="primary" on-press="live_answer">Answer</button>
+    <button variant="secondary" on-press="live_decline">Decline</button>
   </if>
   <else>
     <if test="{callActive}">
       <text foreground="text_muted">{liveStatus}</text>
-      <button size="sm" variant="destructive" on-press="live_stop">End call</button>
+      <button variant="destructive" on-press="live_stop">End call</button>
     </if>
     <else>
       <text foreground="text_muted">{senderStatus}</text>
-      <button size="icon" variant="primary" icon="volume" on-press="live_start" label="Start call"></button>
+      <button size="icon" variant="primary" icon="app:phone" on-press="live_start" label="Start call"></button>
     </else>
   </else>
   </row>
@@ -36,7 +39,12 @@
               <row main="end">
                 <bubble variant="primary">
                   <row gap="8" cross="center">
-                    <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
+                    <if test="{item.audio == playingTicket}">
+                      <button size="icon" variant="secondary" icon="pause" on-press="audio_toggle:{item.id}" label="Pause voice message"></button>
+                    </if>
+                    <else>
+                      <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
+                    </else>
                     <icon name="app:wave" width="18" height="18" foreground="accent_text" />
                     <text>{item.duration}</text>
                   </row>
@@ -44,11 +52,19 @@
               </row>
             </if>
             <else>
-              <row main="start">
-                <avatar label="{selectedConnectionName}">NU</avatar>
+              <row main="start" gap="8">
+                <stack>
+                  <avatar label="{selectedConnectionName}">{selectedConnectionInitials}</avatar>
+                  <tooltip anchor="above">{selectedConnectionName}</tooltip>
+                </stack>
                 <bubble>
                   <row gap="8" cross="center">
-                    <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
+                    <if test="{item.audio == playingTicket}">
+                      <button size="icon" variant="secondary" icon="pause" on-press="audio_toggle:{item.id}" label="Pause voice message"></button>
+                    </if>
+                    <else>
+                      <button size="icon" variant="secondary" icon="play" on-press="audio_toggle:{item.id}" label="Play voice message"></button>
+                    </else>
                     <icon name="app:wave" width="18" height="18" foreground="text_muted" />
                     <text foreground="text_muted">{item.duration}</text>
                   </row>
@@ -64,8 +80,11 @@
             </row>
           </if>
           <else>
-            <row main="start">
-              <avatar label="{selectedConnectionName}">NU</avatar>
+            <row main="start" gap="8">
+              <stack>
+                  <avatar label="{selectedConnectionName}">{selectedConnectionInitials}</avatar>
+                  <tooltip anchor="above">{selectedConnectionName}</tooltip>
+                </stack>
               <bubble><markdown source="{item.text}" on-link="open_link" /></bubble>
             </row>
           </else>

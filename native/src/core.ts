@@ -57,6 +57,7 @@ export interface Model {
   readonly identityError: boolean;
   readonly connections: readonly Connection[];
   readonly selectedConnectionName: Uint8Array;
+  readonly selectedConnectionInitials: Uint8Array;
   readonly sessionLaunch: SessionLaunch | null;
   readonly chatOpen: boolean;
   readonly connectionName: Uint8Array;
@@ -77,6 +78,7 @@ export interface Model {
   readonly subscribedActive: boolean;
   readonly callActive: boolean;
   readonly liveTicket: Uint8Array;
+  readonly playingTicket: Uint8Array;
   readonly liveTicketInput: Uint8Array;
   readonly liveStatus: Uint8Array;
   readonly recordingStatus: Uint8Array;
@@ -237,6 +239,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     identityError: false,
     connections: NO_CONNECTIONS,
     selectedConnectionName: EMPTY,
+    selectedConnectionInitials: EMPTY,
     sessionLaunch: null,
     chatOpen: false,
     connectionName: EMPTY,
@@ -257,6 +260,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     subscribedActive: false,
     callActive: false,
     liveTicket: EMPTY,
+    playingTicket: EMPTY,
     liveTicketInput: EMPTY,
     liveStatus: utf8Bytes("Live audio off"),
     recordingStatus: utf8Bytes("No recording"),
@@ -726,7 +730,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (identities[identityIndex].active) activeName = identities[identityIndex].name;
         identityIndex += 1;
       }
-      const next = { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true };
+      const next = { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true };
       return [next, Cmd.batch([
         Cmd.request("nufond.request", contextPayload(activeName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
         Cmd.request("nufond.request", peersPayload(activeName), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
@@ -734,7 +738,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ])];
     }
     case "identity_selected":
-      return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, copyIdentityTicket: true }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
+      return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, copyIdentityTicket: true }, Cmd.request("nufond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "nufond-identity-use", ok: "identity_used", err: "identity_use_error" })];
     case "show_add_identity":
       return { ...model, showAddIdentity: true, newIdentityName: EMPTY };
     case "cancel_add_identity":
@@ -749,7 +753,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "identity_create_error":
       return { ...model, receiverStatus: msg.data };
     case "identity_used":
-      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true }, Cmd.batch([
+      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true }, Cmd.batch([
         Cmd.request("nufond.request", contextPayload(model.newIdentityName), { key: "nufond-context", ok: "daemon_ready", err: "daemon_error" }),
         Cmd.request("nufond.request", peersPayload(model.newIdentityName), { key: "nufond-peers", ok: "peers_loaded", err: "daemon_error" }),
         Cmd.request("nufond.request", daemonEventsPayload(model.newIdentityName, EMPTY), { key: "nufond-events", ok: "events_loaded", err: "daemon_error" }),
@@ -836,7 +840,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
               const isStart = sameBytes(action, utf8Bytes("start"));
               const isStop = sameBytes(action, utf8Bytes("stop"));
               if ((isStart || isStop) && (!isStart || ticket.length !== 0)) {
-                const incoming = { ...next, identitySelected: true, replyRoute: peer, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart, liveStatus: utf8Bytes(isStart ? "Incoming call" : "Stopping live audio") };
+                const incoming = { ...next, identitySelected: true, replyRoute: peer, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), selectedConnectionInitials: identityInitials(utf8Bytes(isStart ? "Incoming call" : "Call ended")), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart, liveStatus: utf8Bytes(isStart ? "Incoming call" : "Stopping live audio") };
                 if (isStart) {
                   return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.none];
                 }
@@ -848,13 +852,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
             }
           } else if (text.length > recordingPrefix.length && sameBytes(text.slice(0, recordingPrefix.length), recordingPrefix)) {
             const ticket = recordingTicket(text);
-            const withAudio = addAudioMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true, eventsReady: true }, ticket, false, false, recordingDurationLabel(text));
+            const withAudio = addAudioMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), selectedConnectionInitials: identityInitials(utf8Bytes("Incoming recording")), chatOpen: true, eventsReady: true }, ticket, false, false, recordingDurationLabel(text));
             return [withAudio, Cmd.batch([
               Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" }),
               Cmd.request("media.blob.fetch", ticket, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" }),
             ])];
           } else {
-            next = addChatMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), senderStatus: utf8Bytes("Ready"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true }, text, false, utf8Bytes("Received"));
+            next = addChatMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), senderStatus: utf8Bytes("Ready"), selectedConnectionName: utf8Bytes("Incoming connection"), selectedConnectionInitials: identityInitials(utf8Bytes("Incoming connection")), chatOpen: true }, text, false, utf8Bytes("Received"));
           }
         }
         index += 1;
@@ -881,7 +885,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (name.length !== 0 && endpoint.length !== 0) connections.push({ name, endpoint });
         index += 1;
       }
-      return { ...model, connections, selectedConnectionName: connections.length === 0 ? EMPTY : connections[0].name, receiverStatus: utf8Bytes("Connected") };
+      return { ...model, connections, selectedConnectionName: connections.length === 0 ? EMPTY : connections[0].name, selectedConnectionInitials: identityInitials(connections.length === 0 ? EMPTY : connections[0].name), receiverStatus: utf8Bytes("Connected") };
     }
     case "receiver_ready": {
       const ticket = receiverTicket(msg.data);
@@ -911,7 +915,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           const isStop = sameBytes(action, utf8Bytes("stop"));
           if (!isStart && !isStop) return model;
           if (isStart && ticket.length === 0) return model;
-          const next = { ...inbound, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart, liveStatus: utf8Bytes(isStart ? "Incoming call" : "Stopping live audio") };
+          const next = { ...inbound, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), selectedConnectionInitials: identityInitials(utf8Bytes(isStart ? "Incoming call" : "Call ended")), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart, liveStatus: utf8Bytes(isStart ? "Incoming call" : "Stopping live audio") };
           if (isStart) return [next, Cmd.none];
           return [next, Cmd.batch([
             Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
@@ -921,26 +925,26 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         const recordingPrefix = utf8Bytes("NUFON-RECORDING/1\n");
         if (message.length > recordingPrefix.length && sameBytes(message.slice(0, recordingPrefix.length), recordingPrefix)) {
           const ticket = recordingTicket(message);
-          const withAudio = addAudioMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), chatOpen: true }, ticket, false, false, recordingDurationLabel(message));
+          const withAudio = addAudioMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), senderStatus: utf8Bytes("Preparing recording"), selectedConnectionName: utf8Bytes("Incoming recording"), selectedConnectionInitials: identityInitials(utf8Bytes("Incoming recording")), chatOpen: true }, ticket, false, false, recordingDurationLabel(message));
           return [withAudio, Cmd.batch([
             Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" }),
             Cmd.request("media.blob.fetch", ticket, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" }),
           ])];
         }
-        return addChatMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), senderStatus: utf8Bytes("Ready"), selectedConnectionName: utf8Bytes("Incoming connection"), chatOpen: true }, message, false, utf8Bytes("Received"));
+        return addChatMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), senderStatus: utf8Bytes("Ready"), selectedConnectionName: utf8Bytes("Incoming connection"), selectedConnectionInitials: identityInitials(utf8Bytes("Incoming connection")), chatOpen: true }, message, false, utf8Bytes("Received"));
       }
     case "connection_selected": {
       const connection = model.connections.find((item) => sameBytes(item.name, msg.name));
       if (connection === undefined) return model;
       const selfTarget = isSelfTarget(model, connection.endpoint);
-      const next = { ...model, selectedConnectionName: connection.name, receiverId: connection.endpoint, senderDisabled: selfTarget, senderStatus: utf8Bytes(selfTarget ? "Cannot send to this identity" : "Ready") };
+      const next = { ...model, selectedConnectionName: connection.name, selectedConnectionInitials: identityInitials(connection.name), receiverId: connection.endpoint, senderDisabled: selfTarget, senderStatus: utf8Bytes(selfTarget ? "Cannot send to this identity" : "Ready") };
       return [next, Cmd.request("media.set_scope", connection.endpoint, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
     }
     case "connection_opened": {
       const connection = model.connections.find((item) => sameBytes(item.name, msg.name));
       if (connection === undefined) return model;
       const selfTarget = isSelfTarget(model, connection.endpoint);
-      const next = { ...model, selectedConnectionName: connection.name, receiverId: connection.endpoint, sessionLaunch: { peerId: connection.endpoint, sessionId: connection.endpoint, sessionType: utf8Bytes("chat") }, senderDisabled: selfTarget, senderStatus: utf8Bytes(selfTarget ? "Cannot send to this identity" : "Ready"), chatOpen: true };
+      const next = { ...model, selectedConnectionName: connection.name, selectedConnectionInitials: identityInitials(connection.name), receiverId: connection.endpoint, sessionLaunch: { peerId: connection.endpoint, sessionId: connection.endpoint, sessionType: utf8Bytes("chat") }, senderDisabled: selfTarget, senderStatus: utf8Bytes(selfTarget ? "Cannot send to this identity" : "Ready"), chatOpen: true };
       return [next, Cmd.request("media.set_scope", connection.endpoint, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
     }
     case "chat_closed":
@@ -1157,13 +1161,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "audio_toggle": {
       const item = model.history.find((entry) => sameBytes(entry.id, msg.data));
       if (item === undefined || !item.audioReady) return model;
-      return [model, Cmd.request("media.recording.play", item.audio, { key: "media-playback", ok: "playback_started", err: "playback_error" })];
+      // real play/pause toggle: FFI play supersedes, stop_playback halts
+      if (sameBytes(item.audio, model.playingTicket)) {
+        return [comUpdate({ ...model, playingTicket: EMPTY }, {}), Cmd.request("media.recording.stop_playback", EMPTY, { key: "media-playback", ok: "playback_stopped", err: "playback_error" })];
+      }
+      return [comUpdate({ ...model, playingTicket: item.audio }, {}), Cmd.request("media.recording.play", item.audio, { key: "media-playback", ok: "playback_started", err: "playback_error" })];
     }
     case "playback_started":
     case "playback_stopped":
-    case "playback_error":
-      // playback is daemon-owned and finite; no UI state to track
       return model;
+    case "playback_error":
+      return { ...model, playingTicket: EMPTY };
   }
 }
 
