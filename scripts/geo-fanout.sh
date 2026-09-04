@@ -16,7 +16,7 @@ set -eu
 #
 # Usage:
 #   scripts/geo-fanout.sh TICKET [N]     # N listeners, default 3, region iad1
-#   REGIONS="iad1 sfo1 fra1" scripts/geo-fanout.sh TICKET 3   # geo spread
+#   REGIONS="iad1,sfo1,fra1" scripts/geo-fanout.sh TICKET 3   # geo spread (space or comma separated)
 #
 # Environment: SNAPSHOT_ID (built sandbox snapshot), LISTEN_SECONDS (15).
 
@@ -35,12 +35,12 @@ overall=0
 for i in $(seq 1 "$N"); do
   region=""
   if [ -n "$REGIONS" ]; then
-    r=$(echo "$REGIONS" | tr ',' '\n' | sed -n "$(( (i-1) % $(echo "$REGIONS" | tr ',' '\n' | wc -l) + 1 ))p")
+    r=$(echo "$REGIONS" | tr ' ,' '\n\n' | grep -v '^$' | sed -n "$(( (i-1) % $(echo "$REGIONS" | tr ' ,' '\n\n' | grep -cv '^$') + 1 ))p")
     region="--region $r"
   fi
   name="nufon-geo-$i-$$"
-  vercel sandbox create --snapshot "$SNAPSHOT_ID" --name "$name" --timeout 15m $region >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox $name" >&2; overall=1; continue; }
+  vercel sandbox create --snapshot "$SNAPSHOT_ID" --name "$name" --timeout 15m $region > /tmp/geo-create.log 2>&1 \
+    || { echo "FAIL: sandbox $name"; tail -3 /tmp/geo-create.log >&2; overall=1; continue; }
   names="$names $name"
 done
 
@@ -55,10 +55,26 @@ wait
 echo "=== per-listener results ==="
 for name in $names; do
   if [ -f "$out_dir/$name.ok" ]; then
-    # pull metrics json back and summarize
     vercel sandbox copy "$name:/tmp/geo-rec.timings.json" "$out_dir/$name.timings.json" >/dev/null 2>&1
-    jq -c --arg n "$name" '{listener: $n, packets: (.packets|length), startup_ms: .packets[0].t_ms}' \
-      "$out_dir/$name.timings.json" 2>/dev/null
+    python3 - "$name" "$out_dir/$name.timings.json" <<'EOF'
+import sys, json, statistics
+name, path = sys.argv[1], sys.argv[2]
+meta = json.load(open(path))
+arr = [p['t_ms'] for p in meta['packets']]
+pts = [p['pts_ms'] for p in meta['packets']]
+gaps = [b-a for a, b in zip(arr, arr[1:])]
+jitter = statistics.stdev(gaps) if len(gaps) > 1 else 0.0
+a0, p0 = arr[0], pts[0]
+prebuffer = max((a - (a0 + (p - p0))) for a, p in zip(arr, pts))
+step = statistics.median(pts[i+1]-pts[i] for i in range(len(pts)-1))
+missing = sum(round((pts[i+1]-pts[i])/step)-1 for i in range(len(pts)-1)
+              if pts[i+1] > pts[i] + 1.5*step)
+stalls = sum(g > 100 for g in gaps)
+print(json.dumps({'listener': name, 'packets': len(arr), 'startup_ms': arr[0],
+    'arrival_jitter_ms': round(jitter, 1), 'max_gap_ms': max(gaps),
+    'stalls_over_100ms': stalls, 'missing_packets': missing,
+    'prebuffer_ms': prebuffer}))
+EOF
   else
     echo "listener $name: FAILED"
     overall=1
