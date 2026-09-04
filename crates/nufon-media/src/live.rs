@@ -20,6 +20,7 @@ use iroh_live::media::{
     transport::PacketSource,
 };
 use iroh_live::{ticket::LiveTicket, Live};
+use iroh::Endpoint;
 
 /// A running file-source publisher. Holds the live endpoint, router, and
 /// broadcast; the tokio runtime is owned by this struct (a runtime dropped
@@ -34,13 +35,23 @@ pub struct LivePublisher {
 impl LivePublisher {
     /// Publishes `path` (WAV/MP3/FLAC) as a live broadcast. `loop_playback`
     /// repeats the file indefinitely; otherwise the broadcast ends when the
-    /// file does (the publisher stays reachable until stopped).
-    pub fn start(path: &Path, loop_playback: bool, name: &str) -> anyhow::Result<(Self, String)> {
+    /// file does (the publisher stays reachable until stopped). With
+    /// `relay` set, the endpoint uses n0's public relays as a fallback
+    /// transport; without it, subscribers must reach the endpoint directly
+    /// (loopback/LAN) and no relay traffic is generated at all.
+    pub fn start(
+        path: &Path,
+        loop_playback: bool,
+        name: &str,
+        relay: bool,
+    ) -> anyhow::Result<(Self, String)> {
         // The daemon dispatches on tokio workers; runtime creation and
         // block_on must happen on a fresh thread (see blob.rs).
         let path = path.to_path_buf();
         let name = name.to_string();
-        let handle = std::thread::spawn(move || Self::start_blocking(path, loop_playback, name));
+        let handle = std::thread::spawn(move || {
+            Self::start_blocking(path, loop_playback, name, relay)
+        });
         handle.join().map_err(|_| anyhow::anyhow!("publisher thread panicked"))?
     }
 
@@ -48,6 +59,7 @@ impl LivePublisher {
         path: PathBuf,
         loop_playback: bool,
         name: String,
+        relay: bool,
     ) -> anyhow::Result<(Self, String)> {
         let runtime = tokio::runtime::Runtime::new()?;
         let (tx, rx) = std::sync::mpsc::channel();
@@ -58,9 +70,13 @@ impl LivePublisher {
             let fail = |err: String| {
                 let _ = tx.send(Err(err));
             };
-            let live = match Live::from_env().await {
-                Ok(builder) => Arc::new(builder.with_router().spawn()),
-                Err(err) => return fail(format!("{err:#}")),
+            let endpoint = match build_endpoint(relay).await {
+                Ok(endpoint) => endpoint,
+                Err(err) => return fail(format!("endpoint: {err:#}")),
+            };
+            let live = match Live::builder(endpoint).with_router().spawn() {
+                Ok(live) => Arc::new(live),
+                Err(err) => return fail(format!("live spawn: {err:#}")),
             };
             let broadcast = LocalBroadcast::new();
             let source = match AudioFileSource::new(&path, loop_playback) {
@@ -130,26 +146,50 @@ pub struct ListenStats {
     pub prebuffer_ms: u64,
 }
 
+async fn build_endpoint(relay: bool) -> anyhow::Result<Endpoint> {
+    // N0 preset: n0 public relays as fallback transport + DNS discovery.
+    // N0DisableRelay: no relay transport at all — direct connections only
+    // (loopback/LAN tests, and keeps traffic off the rate-limited public
+    // relays); DNS address lookup still resolves direct addresses.
+    let preset = if relay {
+        iroh::endpoint::presets::N0
+    } else {
+        iroh::endpoint::presets::N0DisableRelay
+    };
+    Ok(Endpoint::builder(preset).bind().await?)
+}
+
 /// Subscribes to a live ticket and records up to `seconds` of audio to a
 /// 16-bit PCM mono 48 kHz WAV. Retries the initial subscribe: the publisher
 /// may not have announced its catalog yet.
-pub fn listen_to_wav(ticket: &str, out: &Path, seconds: u64) -> anyhow::Result<ListenStats> {
+pub fn listen_to_wav(
+    ticket: &str,
+    out: &Path,
+    seconds: u64,
+    relay: bool,
+) -> anyhow::Result<ListenStats> {
     let ticket = ticket.to_string();
     let out = out.to_path_buf();
     let handle = std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(listen_wav(&ticket, &out, seconds))
+            .block_on(listen_wav(&ticket, &out, seconds, relay))
     });
     handle.join().map_err(|_| anyhow::anyhow!("listener thread panicked"))?
 }
 
-async fn listen_wav(ticket: &str, out: &PathBuf, seconds: u64) -> anyhow::Result<ListenStats> {
+async fn listen_wav(
+    ticket: &str,
+    out: &PathBuf,
+    seconds: u64,
+    relay: bool,
+) -> anyhow::Result<ListenStats> {
     let parsed: LiveTicket = ticket.parse()?;
     let endpoint = parsed.endpoint.clone();
     let name = parsed.broadcast_name.clone();
-    let live = Live::from_env().await?.spawn();
+    let endpoint = build_endpoint(relay).await?;
+    let live = Live::builder(endpoint).spawn();
     let base = Instant::now();
     let mut last_err = String::new();
     let sub = {

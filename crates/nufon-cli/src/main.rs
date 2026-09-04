@@ -127,6 +127,7 @@ fn run() -> io::Result<()> {
         .and_then(|index| args.get(index + 1));
     let live_name = argument(&args, "--name");
     let loop_playback = args.iter().any(|arg| arg == "--loop");
+    let no_relay = args.iter().any(|arg| arg == "--no-relay");
     let seconds = argument(&args, "--seconds");
     let retries = args
         .iter()
@@ -158,6 +159,7 @@ fn run() -> io::Result<()> {
             &socket,
             data_file.as_ref(),
             loop_playback,
+            !no_relay,
             live_name.as_deref(),
             json,
             selected_identity.as_deref(),
@@ -176,6 +178,7 @@ fn run() -> io::Result<()> {
             &ticket,
             out.as_ref(),
             seconds.and_then(|value| value.parse::<u64>().ok()),
+            !no_relay,
             json,
             selected_identity.as_deref(),
         );
@@ -793,6 +796,7 @@ fn cmd_stream(
     socket: &str,
     file: Option<&String>,
     loop_playback: bool,
+    relay: bool,
     name: Option<&str>,
     json: bool,
     identity: Option<&str>,
@@ -816,7 +820,7 @@ fn cmd_stream(
             spooled.to_str().ok_or_else(|| io::Error::other("temp path not utf-8"))?
         }
     };
-    let mut params = serde_json::json!({"file": file, "loop": loop_playback});
+    let mut params = serde_json::json!({"file": file, "loop": loop_playback, "relay": relay});
     if let Some(name) = name {
         params["name"] = name.into();
     }
@@ -842,10 +846,11 @@ fn cmd_listen(
     ticket: &str,
     out: Option<&String>,
     seconds: Option<u64>,
+    relay: bool,
     json: bool,
     identity: Option<&str>,
 ) -> io::Result<()> {
-    let mut params = serde_json::json!({"ticket": ticket});
+    let mut params = serde_json::json!({"ticket": ticket, "relay": relay});
     if let Some(seconds) = seconds {
         params["seconds"] = seconds.into();
     }
@@ -915,8 +920,8 @@ fn print_usage() {
     eprintln!("       nufon [--socket PATH] operation wait OPERATION_ID [--timeout-ms MS]");
     eprintln!("       nufon [--socket PATH] put [--file FILE] [--resource-id ID] [--json]   # data from FILE or stdin; prints blob ticket");
     eprintln!("       nufon [--socket PATH] get TICKET [--out FILE]                            # streams blob to stdout or FILE");
-    eprintln!("       nufon [--socket PATH] stream [--file FILE] [--loop] [--name NAME] [--json]  # publish FILE (or stdin) as live audio; prints live ticket");
-    eprintln!("       nufon [--socket PATH] listen TICKET [--out FILE] [--seconds N]           # record live broadcast to stdout or FILE", );
+    eprintln!("       nufon [--socket PATH] stream [--file FILE] [--loop] [--no-relay] [--name NAME] [--json]  # publish FILE (or stdin) as live audio; prints live ticket");
+    eprintln!("       nufon [--socket PATH] listen TICKET [--out FILE] [--seconds N] [--no-relay]           # record live broadcast to stdout or FILE", );
     eprintln!("       nufon [--socket PATH] publishers [--json]                               # list running live publishers");
     eprintln!("       nufon [--socket PATH] stop-live PUBLISHER_ID [--json]", );
     eprintln!("       nufon [--socket PATH] send-data PEER [--file FILE] [--json]              # put + signal ticket via message path");

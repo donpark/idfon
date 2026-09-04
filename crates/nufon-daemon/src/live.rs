@@ -44,6 +44,11 @@ pub fn live_publish(request: &Request) -> Response {
         .get("loop")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let relay = request
+        .params
+        .get("relay")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
     let name = request
         .params
         .get("name")
@@ -63,7 +68,7 @@ pub fn live_publish(request: &Request) -> Response {
     if !path.is_file() {
         return error(&request.id, method, format!("file not found: {file}"));
     }
-    let (publisher, ticket) = match LivePublisher::start(&path, loop_playback, &name) {
+    let (publisher, ticket) = match LivePublisher::start(&path, loop_playback, &name, relay) {
         Ok(result) => result,
         Err(err) => return error(&request.id, method, format!("live publish failed: {err:#}")),
     };
@@ -122,6 +127,11 @@ pub fn live_subscribe(request: &Request) -> Response {
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(15)
         .clamp(1, 600);
+    let relay = request
+        .params
+        .get("relay")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
     let out = match request
         .params
         .get("out")
@@ -137,7 +147,7 @@ pub fn live_subscribe(request: &Request) -> Response {
                 .as_nanos()
         )),
     };
-    match listen_to_wav(ticket, &out, seconds) {
+    match listen_to_wav(ticket, &out, seconds, relay) {
         Ok(stats) => ok(
             &request.id,
             serde_json::json!({

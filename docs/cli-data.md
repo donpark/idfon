@@ -149,8 +149,15 @@ nufon listen "$(cat ticket.txt)" --out copy.wav --seconds 30
   `nufon-live-<nanos>`.
 - `listen --seconds N` caps the capture window (default 15, max 600); the
   request returns when the window ends or the broadcast ends.
+- `--no-relay` disables iroh relay transport entirely: subscribers connect
+  straight to the publisher (loopback/LAN), generating no traffic on n0's
+  public relays (which have unspecified rate limits). Without it, n0's
+  public relays serve as the discovery/hole-punch fallback automatically —
+  media always flows directly, so relays never carry stream bytes in this
+  mode.
 - `--json` on `stream` includes the publisher id and wall-clock anchor;
-  on `listen` it includes duration, packet count, and arrival jitter.
+  on `listen` it includes duration, packet count, arrival jitter, and the
+  playback-UX metrics described below.
 
 ### Publisher lifecycle
 
@@ -182,3 +189,6 @@ stream.
   jitter, and a latency estimate; `scripts/audio-quality.sh` scores a TTS
   speech round trip objectively (envelope correlation, segmental SNR,
   high-band check) and keeps source/decoded WAVs for ear checks.
+- `scripts/fanout-e2e.sh` baselines direct fan-out: N concurrent listeners
+  on one publisher (sizes 1/4/16, `SIZES` env to change) with
+  `--no-relay`, every listener gated on the playback-UX metrics.

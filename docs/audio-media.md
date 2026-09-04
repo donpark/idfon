@@ -225,8 +225,11 @@ The publisher holds the `LocalBroadcast` for the session's lifetime; dropping
 it tears down the catalog and breaks new subscribers (iroh-live contract).
 Mic input is a later extension: `AudioBackend::default()` opens the default
 input device (macOS mic permission), which the file path avoids.
-Multi-subscriber fan-out is a follow-up: `N` listeners on one ticket measure
-per-peer delivery.
+`scripts/fanout-e2e.sh` baselines direct fan-out: N concurrent listeners
+(default 1/4/16, `SIZES` env) on one publisher with `--no-relay`, every
+listener gated on the playback-UX metrics. A media relay
+(iroh-live-relay) is only needed later, when publisher egress — not the
+relay — becomes the bottleneck.
 
 ## Remaining production work
 
