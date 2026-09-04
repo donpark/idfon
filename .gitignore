@@ -9,3 +9,5 @@ audio-aligned.wav
 audio-quality.json
 stream-decoded.wav
 stream-timings.json
+geo-decoded.wav
+geo-timings.json
