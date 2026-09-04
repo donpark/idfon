@@ -189,6 +189,22 @@ daemon protocol and CLI, no GUI or capture device:
    estimate (~±0.2 s, pip-phase method), and writes the decoded WAV for ear
    checks — pass a speech sample as `$1` for voice-quality listening.
 
+`scripts/audio-quality.sh` goes further: it synthesizes speech with macOS
+`say` TTS, streams it through the same path, aligns the decoded recording
+to the source (envelope + sample-domain cross-correlation), and scores the
+round trip objectively:
+
+- envelope correlation (speech-intelligibility proxy, PASS >= 0.85)
+- segmental SNR over active speech frames (PASS >= 12 dB; Opus HQ loopback
+  measures ~20 dB)
+- high-band energy above 8 kHz relative to total, source vs decoded
+  (fullband check)
+
+Artifacts are kept for ear checks: `audio-source.wav`,
+`audio-decoded.wav`, `audio-aligned.wav`, metrics in `audio-quality.json`.
+`--voice NAME` picks a different macOS TTS voice, `--seconds N` the
+capture window.
+
 ```sh
 scripts/stream-e2e.sh              # pip pattern, ~60 s total
 scripts/stream-e2e.sh speech.wav   # voice quality source (looped)

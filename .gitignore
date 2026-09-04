@@ -3,3 +3,9 @@
 *.app
 /target/
 .agents/
+audio-source.wav
+audio-decoded.wav
+audio-aligned.wav
+audio-quality.json
+stream-decoded.wav
+stream-timings.json

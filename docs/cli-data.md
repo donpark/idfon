@@ -179,5 +179,6 @@ stream.
   cannot happen across CLI invocations.
 - `scripts/stream-e2e.sh` runs the whole flow between two fresh daemons
   with a synthetic pip pattern and reports decode jitter, packet-arrival
-  jitter, and a latency estimate; `scripts/stream-e2e.sh speech.wav`
-  substitutes a voice sample for quality listening.
+  jitter, and a latency estimate; `scripts/audio-quality.sh` scores a TTS
+  speech round trip objectively (envelope correlation, segmental SNR,
+  high-band check) and keeps source/decoded WAVs for ear checks.
