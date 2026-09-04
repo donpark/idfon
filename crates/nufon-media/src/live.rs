@@ -74,10 +74,7 @@ impl LivePublisher {
                 Ok(endpoint) => endpoint,
                 Err(err) => return fail(format!("endpoint: {err:#}")),
             };
-            let live = match Live::builder(endpoint).with_router().spawn() {
-                Ok(live) => Arc::new(live),
-                Err(err) => return fail(format!("live spawn: {err:#}")),
-            };
+            let live = Arc::new(Live::builder(endpoint).with_router().spawn());
             let broadcast = LocalBroadcast::new();
             let source = match AudioFileSource::new(&path, loop_playback) {
                 Ok(source) => source,
@@ -151,12 +148,12 @@ async fn build_endpoint(relay: bool) -> anyhow::Result<Endpoint> {
     // N0DisableRelay: no relay transport at all — direct connections only
     // (loopback/LAN tests, and keeps traffic off the rate-limited public
     // relays); DNS address lookup still resolves direct addresses.
-    let preset = if relay {
-        iroh::endpoint::presets::N0
+    let builder = if relay {
+        Endpoint::builder(iroh::endpoint::presets::N0)
     } else {
-        iroh::endpoint::presets::N0DisableRelay
+        Endpoint::builder(iroh::endpoint::presets::N0DisableRelay)
     };
-    Ok(Endpoint::builder(preset).bind().await?)
+    Ok(builder.bind().await?)
 }
 
 /// Subscribes to a live ticket and records up to `seconds` of audio to a
