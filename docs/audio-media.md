@@ -232,7 +232,11 @@ listener gated on the playback-UX metrics. A media relay
 relay — becomes the bottleneck. `scripts/geo-fanout.sh` extends this to
 true internet fan-out: N ephemeral Vercel Sandbox VMs each run the Linux
 listener against a local publisher (relays on for rendezvous/hole-punch)
-and report per-listener UX metrics.
+and report per-listener UX metrics. Baselines (see docs/cli-data.md for
+tables and limits): 16 concurrent loopback listeners and 6 concurrent
+internet listeners both complete with zero stalls, zero timeline holes,
+and sub-30ms required prebuffers — direct fan-out shows no UX degradation
+at these scales.
 
 ## Remaining production work
 

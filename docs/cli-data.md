@@ -198,3 +198,33 @@ stream.
   the playback-UX metrics. The publisher runs locally with relays on, so
   cloud listeners rendezvous through n0's public relays and connect after
   hole-punch. Requires the `vercel` CLI and a sandbox snapshot.
+
+### Fan-out baselines
+
+Measured 2026-09-04, publisher on a home-NAT macOS machine, Opus HQ,
+12–15 s captures. Playback-UX gates: startup < 2 s, max gap < 500 ms,
+no stalls, no timeline holes, required prebuffer < 200 ms.
+
+| Scenario | startup | arrival jitter | max gap | prebuffer |
+| --- | --- | --- | --- | --- |
+| loopback, 2 local daemons | 1 ms | 2.4 ms | 30 ms | 8–11 ms |
+| loopback, 16 concurrent listeners (`--no-relay`) | 0–2 ms | — | 25–54 ms | 0–29 ms |
+| internet, 6 concurrent Vercel Sandbox VMs (iad1) | 66–72 ms | 2.9 ms | 33–35 ms | 6–15 ms |
+
+All listeners in every scenario received the full stream with zero stalls
+and zero pts holes — per-listener UX did not degrade at N=6 (internet) or
+N=16 (loopback).
+
+Scope and limits of these numbers:
+
+- Sandbox fan-out exercised concurrent direct sessions from distinct
+  cloud VMs in one region (iad1). Vercel snapshots are region-local, so
+  geo-diverse runs need one build sandbox + snapshot per region; the
+  team's available regions are iad1, sfo1, cle1, cdg1.
+- The listener metrics do not yet distinguish direct from relayed
+  transport. Relayed listeners would be the ones exposed to n0 public
+  relay rate limits (which are unspecified) — surfacing iroh's connection
+  type per session is open instrumentation work.
+- A media relay (iroh-live-relay) is only relevant once direct publisher
+  egress — not the relay — becomes the bottleneck; these baselines are
+  the reference point for that decision.
