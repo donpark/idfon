@@ -227,8 +227,15 @@ Scope and limits of these numbers:
   cloud VMs in one region (iad1). Vercel snapshots are region-local, so
   geo-diverse runs need one build sandbox + snapshot per region; the
   team's available regions are iad1, sfo1, cle1, cdg1.
-- The listener metrics do not yet distinguish direct from relayed
-  transport. Relayed listeners would be the ones exposed to n0 public
+- Direct-vs-relayed transport was verified by wire capture: running
+  `tcpdump` inside a listener sandbox during a capture showed ~580 UDP
+  packets from the publisher's home IPv4 (media, direct) versus 9 packets
+  to/from n0 relay + DNS infrastructure (signaling only). A reusable
+  check: capture with `tcpdump -i any udp -w cap.pcap` in the sandbox
+  while listening, then count sources; publisher addresses mean direct,
+  `*.relay.n0.iroh.link` addresses mean relayed. A listener-side
+  connection-type API would make this automatic (iroh 1.x does not
+  expose it at the pinned version). Relayed listeners would be the ones exposed to n0 public
   relay rate limits (which are unspecified) — surfacing iroh's connection
   type per session is open instrumentation work.
 - A media relay (iroh-live-relay) is only relevant once direct publisher
