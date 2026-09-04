@@ -210,10 +210,16 @@ no stalls, no timeline holes, required prebuffer < 200 ms.
 | loopback, 2 local daemons | 1 ms | 2.4 ms | 30 ms | 8–11 ms |
 | loopback, 16 concurrent listeners (`--no-relay`) | 0–2 ms | — | 25–54 ms | 0–29 ms |
 | internet, 6 concurrent Vercel Sandbox VMs (iad1) | 66–72 ms | 2.9 ms | 33–35 ms | 6–15 ms |
+| internet, 32 concurrent Vercel Sandbox VMs (iad1) | 67–919 ms | 5.3–8.5 ms | 129–189 ms | 92–170 ms |
 
 All listeners in every scenario received the full stream with zero stalls
 and zero pts holes — per-listener UX did not degrade at N=6 (internet) or
-N=16 (loopback).
+N=16 (loopback), and degraded only gracefully at N=32 (internet): startup
+spread widened and required prebuffer rose to ~105 ms median, still 20×
+inside the gate. No public-relay rate-limit errors were observed at any
+scale; listeners launched in staggered waves (`WAVES` env) and every exec
+runs under a hard local timeout (`EXEC_TIMEOUT`) so a wedged sandbox
+cannot stall the run.
 
 Scope and limits of these numbers:
 

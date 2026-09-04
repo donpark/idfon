@@ -18,10 +18,22 @@ set -eu
 #   scripts/geo-fanout.sh TICKET [N]     # N listeners, default 3, region iad1
 #   REGIONS="iad1,sfo1,fra1" scripts/geo-fanout.sh TICKET 3   # geo spread (space or comma separated)
 #
-# Environment: SNAPSHOT_ID (built sandbox snapshot), LISTEN_SECONDS (15).
+# Environment: SNAPSHOT_ID (built sandbox snapshot), LISTEN_SECONDS (15),
+#   WAVES (concurrent-launch batch size; launches proceed in waves of this
+#   many sandboxes, default 8), EXEC_TIMEOUT (per-exec cap, default 180s).
+# A wedged exec is killed at EXEC_TIMEOUT and its listener counted as
+# failed, instead of stalling the whole run.
 
 SNAPSHOT_ID="${SNAPSHOT_ID:?set SNAPSHOT_ID to a sandbox snapshot with the built listener}"
 LISTEN_SECONDS="${LISTEN_SECONDS:-15}"
+WAVES="${WAVES:-8}"
+EXEC_TIMEOUT="${EXEC_TIMEOUT:-180}"
+
+run_exec() { # name ticket — exec listener with a hard local timeout
+  local name=$1 ticket=$2
+  perl -e 'alarm shift; exec @ARGV' "$EXEC_TIMEOUT" \
+    vercel sandbox exec "$name" -- sh -c "cd /tmp/src && ./target/release/examples/stream-recorder '$ticket' --seconds $LISTEN_SECONDS --out /tmp/geo-rec"
+}
 
 TICKET=$1
 N=${2:-3}
@@ -46,8 +58,7 @@ done
 
 out_dir=$(mktemp -d /tmp/nufon-geo-results.XXXXXX)
 for name in $names; do
-  vercel sandbox exec "$name" -- sh -c "cd /tmp/src && ./target/release/examples/stream-recorder '$TICKET' --seconds $LISTEN_SECONDS --out /tmp/geo-rec" \
-    > "$out_dir/$name.log" 2>&1 \
+  run_exec "$name" "$TICKET" > "$out_dir/$name.log" 2>&1 \
     && cp "$out_dir/$name.log" "$out_dir/$name.ok" &
 done
 wait
