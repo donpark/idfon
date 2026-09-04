@@ -3,26 +3,31 @@
        The peer name lives in the window title bar. -->
   <row cross="center" gap="8">
     <stack>
-      <avatar label="{selectedConnectionName}">{selectedConnectionInitials}</avatar>
+      <!-- on-press opens the peer-details sheet; the press binding also makes the avatar a hit target so the tooltip's hover intent arms (avatars are otherwise not hittable). -->
+      <avatar label="{selectedConnectionName}" on-press="avatar_pressed">{selectedConnectionInitials}</avatar>
       <tooltip anchor="above">{selectedConnectionName}</tooltip>
     </stack>
   <spacer grow="1" />
   <if test="{incomingLive}">
-    <text foreground="text_muted">{liveStatus}</text>
     <button variant="primary" on-press="live_answer">Answer</button>
     <button variant="secondary" on-press="live_decline">Decline</button>
   </if>
   <else>
     <if test="{callActive}">
-      <text foreground="text_muted">{liveStatus}</text>
       <button variant="destructive" on-press="live_stop">End call</button>
     </if>
     <else>
-      <text foreground="text_muted">{senderStatus}</text>
       <button size="icon" variant="primary" icon="app:phone" on-press="live_start" label="Start call"></button>
     </else>
   </else>
   </row>
+  <if test="{bannerVisible}">
+    <!-- Message banner: one markdown notice, auto-expires (~5s via the events poll); a new notice replaces the standing one. -->
+    <row cross="center" gap="8" padding="8" radius="md" background="surface_subtle">
+      <markdown source="{bannerText}" on-link="open_link" />
+      <button size="icon" variant="ghost" icon="x" on-press="banner_dismiss" label="Dismiss"></button>
+    </row>
+  </if>
   <separator />
   <scroll grow="1">
     <column gap="8">
@@ -54,7 +59,7 @@
             <else>
               <row main="start" gap="8">
                 <stack>
-                  <avatar label="{selectedConnectionName}">{selectedConnectionInitials}</avatar>
+                  <avatar label="{selectedConnectionName}" on-press="avatar_pressed">{selectedConnectionInitials}</avatar>
                   <tooltip anchor="above">{selectedConnectionName}</tooltip>
                 </stack>
                 <bubble>
@@ -82,7 +87,7 @@
           <else>
             <row main="start" gap="8">
               <stack>
-                  <avatar label="{selectedConnectionName}">{selectedConnectionInitials}</avatar>
+                  <avatar label="{selectedConnectionName}" on-press="avatar_pressed">{selectedConnectionInitials}</avatar>
                   <tooltip anchor="above">{selectedConnectionName}</tooltip>
                 </stack>
               <bubble><markdown source="{item.text}" on-link="open_link" /></bubble>
@@ -143,5 +148,21 @@
       </else>
       <spacer width="12" />
     </row>
+  </if>
+  <!-- Peer details sheet: opens from any avatar press, closes on Escape / outside click. -->
+  <if test="{avatarSheetOpen}">
+    <sheet text="Peer details" width="340" on-dismiss="avatar_sheet_closed">
+      <column gap="16" padding="20">
+        <row gap="12" cross="center">
+          <avatar label="{selectedConnectionName}">{selectedConnectionInitials}</avatar>
+          <column gap="2" grow="1">
+            <text>{selectedConnectionName}</text>
+            <text foreground="text_muted">{receiverId}</text>
+          </column>
+        </row>
+        <separator />
+        <button variant="secondary" icon="copy" on-press="copy_endpoint_id">Copy endpoint ID</button>
+      </column>
+    </sheet>
   </if>
 </column>
