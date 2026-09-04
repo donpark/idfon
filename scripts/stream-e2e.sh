@@ -99,7 +99,16 @@ d = (meta['wall_ms'] - meta['p0_wall_ms']) / 1000.0
 lat = statistics.median([((o % 2.0) + (d % 2.0)) % 2.0 for o in onsets])
 
 print(f"  pips={len(onsets)} jitter={jitter_ms:.1f}ms arrival_jitter={meta['arrival_jitter_ms']}ms latency~{lat:.2f}s duration={meta['duration_ms']}ms")
-ok = len(onsets) >= 5 and jitter_ms < 100 and lat < 3.0 and meta['duration_ms'] >= 10000
+print(f"  ux: startup={meta['startup_ms']}ms subscribe={meta['subscribe_ms']}ms "
+      f"max_gap={meta['max_gap_ms']}ms stalls>100ms={meta['stalls_over_100ms']} "
+      f"missing={meta['missing_packets']} prebuffer={meta['prebuffer_ms']}ms")
+# UX gates: a fully-received stream can still stutter. Startup must be fast,
+# no arrival gap may exceed a modest play buffer, the publisher timeline must
+# arrive without holes, and the prebuffer needed to avoid underrun stays small.
+ux_ok = (meta['startup_ms'] < 2000 and meta['max_gap_ms'] < 500
+         and meta['stalls_over_100ms'] == 0 and meta['missing_packets'] == 0
+         and meta['prebuffer_ms'] < 200)
+ok = len(onsets) >= 5 and jitter_ms < 100 and lat < 3.0 and meta['duration_ms'] >= 10000 and ux_ok
 sys.exit(0 if ok else 1)
 EOF
 }
@@ -114,6 +123,7 @@ run_case() { # label stream-args...
   sleep 2
   "$NUF" --socket "$B" listen "$ticket" --out "$work/rec.wav" --seconds 15 --json \
     | jq --argjson p0 "$p0_wall_ms" '.result + {p0_wall_ms: $p0} | del(.out)' > "$work/listen.json"
+  cat "$work/listen.json" | jq -c 'del(.p0_wall_ms)'
   analyze "$work/rec.wav" "$work/listen.json" \
     && echo "PASS: $label" \
     || { echo "FAIL: $label (analysis above)" >&2; exit 1; }

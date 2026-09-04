@@ -200,6 +200,15 @@ round trip objectively:
 - high-band energy above 8 kHz relative to total, source vs decoded
   (fullband check)
 
+Every `listen` capture also records playback-UX metrics in the daemon
+response: `subscribe_ms`/`startup_ms` (time to established session and to
+the first packet), `max_gap_ms` and `stalls_over_100ms` (arrival stalls —
+a fully-received stream can still have stuttered), `missing_packets`
+(pts-timeline holes), and `prebuffer_ms` (smallest play buffer that would
+have avoided an underrun given the observed arrival schedule).
+`scripts/stream-e2e.sh` gates on these (startup < 2 s, max gap < 500 ms,
+no stalls, no holes, prebuffer < 200 ms).
+
 Artifacts are kept for ear checks: `audio-source.wav`,
 `audio-decoded.wav`, `audio-aligned.wav`, metrics in `audio-quality.json`.
 `--voice NAME` picks a different macOS TTS voice, `--seconds N` the

@@ -113,6 +113,21 @@ pub struct ListenStats {
     pub arrival_jitter_ms: f64,
     /// Wall-clock (ms since epoch) when capture started, for latency analysis.
     pub wall_ms: u128,
+    /// Time from capture start to an established subscribe session.
+    pub subscribe_ms: u64,
+    /// Time from capture start to the first packet (startup latency;
+    /// UX-facing "how long until audio flows").
+    pub startup_ms: u64,
+    /// Largest interval between consecutive packets (a stall would show up
+    /// here even when the average jitter is tiny).
+    pub max_gap_ms: u64,
+    /// Arrival gaps longer than 100 ms (would drain any small play buffer).
+    pub stalls_over_100ms: u32,
+    /// Estimated missing packets from pts-timeline holes.
+    pub missing_packets: u32,
+    /// Smallest prebuffer that would have played the whole capture without
+    /// an underrun, given the observed arrival schedule (ms).
+    pub prebuffer_ms: u64,
 }
 
 /// Subscribes to a live ticket and records up to `seconds` of audio to a
@@ -135,6 +150,7 @@ async fn listen_wav(ticket: &str, out: &PathBuf, seconds: u64) -> anyhow::Result
     let endpoint = parsed.endpoint.clone();
     let name = parsed.broadcast_name.clone();
     let live = Live::from_env().await?.spawn();
+    let base = Instant::now();
     let mut last_err = String::new();
     let sub = {
         let mut result = None;
@@ -152,6 +168,7 @@ async fn listen_wav(ticket: &str, out: &PathBuf, seconds: u64) -> anyhow::Result
         }
         result.ok_or_else(|| anyhow::anyhow!("subscribe failed after retries: {last_err}"))?
     };
+    let subscribe_ms = base.elapsed().as_millis() as u64;
     let audio = sub
         .broadcast()
         .catalog()
@@ -171,10 +188,12 @@ async fn listen_wav(ticket: &str, out: &PathBuf, seconds: u64) -> anyhow::Result
         .as_millis();
     let mut samples: Vec<f32> = Vec::new();
     let mut arrivals: Vec<u128> = Vec::new();
+    let mut pts: Vec<u128> = Vec::new();
 
     while start.elapsed() < Duration::from_secs(seconds) {
         let Some(pkt) = source.read().await? else { break };
-        arrivals.push(start.elapsed().as_millis());
+        arrivals.push(base.elapsed().as_millis());
+        pts.push(pkt.timestamp.as_millis());
         if decoder.push_packet(pkt).is_err() {
             continue;
         }
@@ -198,11 +217,47 @@ async fn listen_wav(ticket: &str, out: &PathBuf, seconds: u64) -> anyhow::Result
     } else {
         0.0
     };
+
+    // UX metrics from the arrival schedule and publisher timeline.
+    let max_gap_ms = intervals.iter().max().copied().unwrap_or(0) as u64;
+    let stalls = intervals.iter().filter(|i| **i > 100).count() as u32;
+
+    // Missing packets: pts deltas much larger than the median pacing step.
+    let mut pts_deltas: Vec<u128> = pts.windows(2).map(|w| w[1] - w[0]).collect();
+    pts_deltas.sort_unstable();
+    let step = pts_deltas.get(pts_deltas.len() / 2).copied().unwrap_or(0);
+    let missing = if step > 0 {
+        pts.windows(2)
+            .filter(|w| w[1] > w[0] + step + step / 2)
+            .map(|w| ((w[1] - w[0]) as f64 / step as f64).round() as u32 - 1)
+            .sum::<u32>()
+    } else {
+        0
+    };
+
+    // Minimum prebuffer to play the capture without an underrun: replay
+    // starts when the first packet arrives and advances at the publisher's
+    // pacing; any packet arriving after its play time forces a stall.
+    let a0 = arrivals.first().copied().unwrap_or(0);
+    let p0 = pts.first().copied().unwrap_or(0);
+    let prebuffer = arrivals
+        .iter()
+        .zip(pts.iter())
+        .map(|(a, p)| a.saturating_sub(a0 + p.saturating_sub(p0)))
+        .max()
+        .unwrap_or(0) as u64;
+
     Ok(ListenStats {
         duration_ms: samples.len() as u64 / 48,
         packets: arrivals.len(),
         arrival_jitter_ms: (jitter * 10.0).round() / 10.0,
         wall_ms,
+        subscribe_ms,
+        startup_ms: arrivals.first().copied().unwrap_or(0).saturating_sub(subscribe_ms as u128) as u64,
+        max_gap_ms,
+        stalls_over_100ms: stalls,
+        missing_packets: missing,
+        prebuffer_ms: prebuffer,
     })
 }
 
