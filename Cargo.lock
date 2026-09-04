@@ -3784,6 +3784,7 @@ dependencies = [
  "nufon-protocol",
  "thiserror 2.0.20",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

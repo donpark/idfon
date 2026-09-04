@@ -18,6 +18,7 @@ use iroh_live::Live;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init(); // RUST_LOG surfaces iroh transport internals
     let mut args = std::env::args().skip(1);
     let ticket: iroh_live::ticket::LiveTicket = args
         .next()

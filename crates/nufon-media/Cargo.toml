@@ -14,3 +14,6 @@ iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f0
 nufon-protocol = { path = "../nufon-protocol" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+tracing-subscriber = "0.3"
