@@ -3899,6 +3899,8 @@ dependencies = [
 name = "nufon-media"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
+ "bytes",
  "iroh",
  "iroh-live",
  "nufon-protocol",

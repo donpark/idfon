@@ -7,6 +7,8 @@ edition = "2021"
 crate-type = ["rlib"]
 
 [dependencies]
+anyhow = "1"
+bytes = "1"
 iroh = "1"
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "capture"] }
 nufon-protocol = { path = "../nufon-protocol" }

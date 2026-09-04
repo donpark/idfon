@@ -1,9 +1,10 @@
-# CLI data transfer
+# CLI data transfer and live streaming
 
 The `nufon` CLI moves arbitrary data between two nufon endpoints with
-bash-pipe semantics. Data rides the daemon's blob path
-(`media.resource.put`/`media.resource.fetch` over iroh-blobs), not the chat
-message path, so size is bounded by disk, not by IPC frames.
+bash-pipe semantics, and publishes live audio streams. File transfers ride
+the daemon's blob path (`media.resource.put`/`media.resource.fetch` over
+iroh-blobs), not the chat message path, so size is bounded by disk, not by
+IPC frames. Live streaming rides iroh-live (`media.live.*` daemon methods).
 
 ## Commands
 
@@ -121,3 +122,62 @@ ticket satisfies the receive gate and materializes grants on first delivery.
 
 `scripts/test-e2e.sh` exercises the whole signaled flow (pairing,
 `send-data`, `recv`) as its fourth case.
+
+## Live audio streaming
+
+`stream`/`listen` publish and consume live audio over iroh-live. Sources and
+sinks are files — no microphone or GUI required (mic input is a later
+extension).
+
+```sh
+# Publisher endpoint: streams FILE (or stdin) as a live broadcast.
+# Prints a bare live ticket (one line) on success.
+nufon stream --file speech.wav --loop > ticket.txt
+cat song.flac | nufon stream > ticket.txt        # stdin is spooled by the CLI
+
+# Listener endpoint: records the broadcast to stdout (or --out FILE).
+nufon listen "$(cat ticket.txt)" > copy.wav
+nufon listen "$(cat ticket.txt)" --out copy.wav --seconds 30
+```
+
+- The live ticket embeds the publisher's endpoint and broadcast name; it is
+  the subscriber capability. No pairing, grants, or side channel needed —
+  distribute it over any channel (chat, SSH, QR).
+- `--loop` repeats the source indefinitely; without it the broadcast ends
+  when the file does (the publisher stays reachable until stopped).
+- `--name NAME` sets a stable broadcast name; default is
+  `nufon-live-<nanos>`.
+- `listen --seconds N` caps the capture window (default 15, max 600); the
+  request returns when the window ends or the broadcast ends.
+- `--json` on `stream` includes the publisher id and wall-clock anchor;
+  on `listen` it includes duration, packet count, and arrival jitter.
+
+### Publisher lifecycle
+
+Publishers run inside the daemon and are kept in an in-memory registry
+(not persisted across daemon restarts):
+
+```sh
+nufon stream --file speech.wav --loop --name radio    # prints the ticket
+nufon publishers                                       # list running publishers
+nufon stop-live live-<name>                            # graceful stop
+```
+
+`stop` sends the underlying iroh session a graceful shutdown before tearing
+it down — dropping the session without it would break subscribers mid-
+stream.
+
+### Implementation notes
+
+- The file source decodes through symphonia (WAV/MP3/FLAC, resampled to
+  48 kHz stereo) and encodes to Opus. It never opens the microphone:
+  iroh-live's `AudioBackend` (which grabs the default input device for
+  echo cancellation) is only needed for live mic input, a later extension.
+- The publisher must hold its broadcast for the session's lifetime;
+  dropping it silently kills the catalog and new subscribers fail with a
+  confusing `not found`. The daemon owns the session in a registry so this
+  cannot happen across CLI invocations.
+- `scripts/stream-e2e.sh` runs the whole flow between two fresh daemons
+  with a synthetic pip pattern and reports decode jitter, packet-arrival
+  jitter, and a latency estimate; `scripts/stream-e2e.sh speech.wav`
+  substitutes a voice sample for quality listening.

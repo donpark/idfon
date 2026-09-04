@@ -172,6 +172,37 @@ volume/mute, consent, notifications, and emergency stop. The extracted
 `nufon-media` crate provides explicit publisher/subscriber and local resource
 session handles while the legacy Native SDK local-device backend is migrated.
 
+## Live streaming through the daemon (synthetic, no microphone)
+
+`scripts/stream-e2e.sh` exercises the live path end to end through the real
+daemon protocol and CLI, no GUI or capture device:
+
+1. generates (or accepts as `$1`) a WAV — by default a 1 kHz pip every 2 s;
+2. publishes it via `nufon stream [--file FILE | stdin] [--loop]`, which calls
+   the daemon's `media.live.publish` (symphonia decode → Opus encode →
+   iroh-live broadcast) and prints the live ticket — the ticket is the
+   subscriber capability, no pairing needed;
+3. subscribes via `nufon listen TICKET [--out FILE] [--seconds N]`, which calls
+   `media.live.subscribe` (iroh-live subscribe with retry → Opus decode →
+   48 kHz mono WAV + per-packet arrival timings);
+4. reports pip count, decode jitter, packet-arrival jitter, and a latency
+   estimate (~±0.2 s, pip-phase method), and writes the decoded WAV for ear
+   checks — pass a speech sample as `$1` for voice-quality listening.
+
+```sh
+scripts/stream-e2e.sh              # pip pattern, ~60 s total
+scripts/stream-e2e.sh speech.wav   # voice quality source (looped)
+DURATION=30 scripts/stream-e2e.sh
+```
+
+Publishers live in an in-memory daemon registry until `media.live.stop`.
+The publisher holds the `LocalBroadcast` for the session's lifetime; dropping
+it tears down the catalog and breaks new subscribers (iroh-live contract).
+Mic input is a later extension: `AudioBackend::default()` opens the default
+input device (macOS mic permission), which the file path avoids.
+Multi-subscriber fan-out is a follow-up: `N` listeners on one ticket measure
+per-peer delivery.
+
 ## Remaining production work
 
 The Phase 7 MVP is implemented. The following production follow-ups remain:

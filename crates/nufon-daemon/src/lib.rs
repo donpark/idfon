@@ -7,6 +7,7 @@ use std::{
 };
 
 mod blob;
+mod live;
 
 use nufon_core::transport::{FakeTransport, MessageTransport};
 use nufon_media::service::MediaService;
@@ -555,6 +556,10 @@ fn dispatch_with_transport(
         "media.resource.gc" => media_resource_gc(&request, store),
         "media.resources" => media_resources(&request, store),
         "media.sessions" => media_sessions(&request, store),
+        "media.live.publish" => live::live_publish(&request),
+        "media.live.stop" => live::live_stop(&request),
+        "media.live.subscribe" => live::live_subscribe(&request),
+        "media.live.publishers" => live::live_publishers(&request),
         "policy.set" => policy_set(&request, store),
         "policy.dry_run" => policy_dry_run(&request, store),
         "identity.create" => identity_create(&request, store),

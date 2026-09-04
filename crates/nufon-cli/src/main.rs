@@ -61,6 +61,10 @@ fn run() -> io::Result<()> {
             "grant" => Some("access.grant"),
             "put" => Some("media.resource.put"),
             "get" => Some("media.resource.fetch"),
+            "stream" => Some("media.live.publish"),
+            "listen" => Some("media.live.subscribe"),
+            "publishers" => Some("media.live.publishers"),
+            "stop-live" => Some("media.live.stop"),
             _ => None,
         })
         .ok_or_else(|| {
@@ -119,8 +123,11 @@ fn run() -> io::Result<()> {
     let data_file = argument(&args, "--file");
     let ticket_arg = args
         .iter()
-        .position(|arg| arg == "get")
+        .position(|arg| arg == "get" || arg == "listen" || arg == "stop-live")
         .and_then(|index| args.get(index + 1));
+    let live_name = argument(&args, "--name");
+    let loop_playback = args.iter().any(|arg| arg == "--loop");
+    let seconds = argument(&args, "--seconds");
     let retries = args
         .iter()
         .position(|arg| arg == "--retries")
@@ -146,6 +153,33 @@ fn run() -> io::Result<()> {
     if method == "media.resource.put" {
         return cmd_put(&socket, data_file.as_ref(), resource_id, json, selected_identity.as_deref());
     }
+    if method == "media.live.publish" {
+        return cmd_stream(
+            &socket,
+            data_file.as_ref(),
+            loop_playback,
+            live_name.as_deref(),
+            json,
+            selected_identity.as_deref(),
+        );
+    }
+    if method == "media.live.subscribe" {
+        let Some(ticket) = ticket_arg else {
+            print_usage();
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "listen requires a live ticket",
+            ));
+        };
+        return cmd_listen(
+            &socket,
+            &ticket,
+            out.as_ref(),
+            seconds.and_then(|value| value.parse::<u64>().ok()),
+            json,
+            selected_identity.as_deref(),
+        );
+    }
     if args.iter().any(|arg| arg == "send-data") {
         let Some(peer) = send_data_peer else {
             print_usage();
@@ -168,6 +202,33 @@ fn run() -> io::Result<()> {
             ));
         };
         return cmd_get(&socket, &ticket, out.as_ref(), selected_identity.as_deref());
+    }
+    if method == "media.live.stop" {
+        let Some(id) = ticket_arg else {
+            print_usage();
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stop-live requires a publisher id (see nufon publishers)",
+            ));
+        };
+        let response = ipc(
+            &socket,
+            "media.live.stop",
+            serde_json::json!({"id": id}),
+            selected_identity.as_deref(),
+        )?;
+        if !response.ok {
+            return Err(io::Error::other(request_error(&response)));
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&response).map_err(io::Error::other)?
+            );
+        } else {
+            println!("stopped {}", result_str(&response, "id"));
+        }
+        return Ok(());
     }
     if method == "peer.resolve" && reference.is_none() {
         print_usage();
@@ -726,6 +787,111 @@ fn cmd_recv(
     }
 }
 
+/// `nufon stream`: publishes FILE (or stdin, spooled to a temp file) as a
+/// live iroh broadcast through the daemon. Prints the bare live ticket.
+fn cmd_stream(
+    socket: &str,
+    file: Option<&String>,
+    loop_playback: bool,
+    name: Option<&str>,
+    json: bool,
+    identity: Option<&str>,
+) -> io::Result<()> {
+    // The daemon reads the file itself, so stdin payloads need spooling.
+    let spooled;
+    let file = match file {
+        Some(path) => path.as_str(),
+        None => {
+            let path = std::env::temp_dir().join(format!(
+                "nufon-stream-{}.wav",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock before epoch")
+                    .as_nanos()
+            ));
+            let mut data = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::stdin(), &mut data)?;
+            std::fs::write(&path, data)?;
+            spooled = path;
+            spooled.to_str().ok_or_else(|| io::Error::other("temp path not utf-8"))?
+        }
+    };
+    let mut params = serde_json::json!({"file": file, "loop": loop_playback});
+    if let Some(name) = name {
+        params["name"] = name.into();
+    }
+    let response = ipc(socket, "media.live.publish", params, identity)?;
+    if !response.ok {
+        return Err(io::Error::other(request_error(&response)));
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&response).map_err(io::Error::other)?
+        );
+        return Ok(());
+    }
+    println!("{}", result_str(&response, "ticket"));
+    Ok(())
+}
+
+/// `nufon listen TICKET`: records a remote live broadcast for --seconds
+/// (default 15) into --out (default: a temp WAV copied to stdout).
+fn cmd_listen(
+    socket: &str,
+    ticket: &str,
+    out: Option<&String>,
+    seconds: Option<u64>,
+    json: bool,
+    identity: Option<&str>,
+) -> io::Result<()> {
+    let mut params = serde_json::json!({"ticket": ticket});
+    if let Some(seconds) = seconds {
+        params["seconds"] = seconds.into();
+    }
+    let temp;
+    if let Some(path) = out {
+        params["out"] = path.clone().into();
+    } else {
+        temp = std::env::temp_dir().join(format!(
+            "nufon-listen-{}.wav",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock before epoch")
+                .as_nanos()
+        ));
+        params["out"] = temp.display().to_string().into();
+    }
+    let response = ipc(socket, "media.live.subscribe", params, identity)?;
+    if !response.ok {
+        return Err(io::Error::other(request_error(&response)));
+    }
+    let written_path = match &response.body {
+        ResponseBody::Success { result, .. } => result
+            .get("out")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        _ => return Err(io::Error::other("unexpected response")),
+    };
+    if out.is_none() {
+        std::io::copy(
+            &mut std::fs::File::open(&written_path)?,
+            &mut std::io::stdout().lock(),
+        )?;
+        let _ = std::fs::remove_file(&written_path);
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&response).map_err(io::Error::other)?
+        );
+    } else {
+        eprintln!("listen: wrote {} ({})", written_path, result_str(&response, "duration_ms") + " ms audio");
+    }
+    Ok(())
+}
+
 fn print_usage() {
     eprintln!("usage: nufon [--socket PATH] [--identity ID] <status|context|identities|peers>");
     eprintln!("       nufon [--socket PATH] resolve PEER [--json]");
@@ -749,6 +915,10 @@ fn print_usage() {
     eprintln!("       nufon [--socket PATH] operation wait OPERATION_ID [--timeout-ms MS]");
     eprintln!("       nufon [--socket PATH] put [--file FILE] [--resource-id ID] [--json]   # data from FILE or stdin; prints blob ticket");
     eprintln!("       nufon [--socket PATH] get TICKET [--out FILE]                            # streams blob to stdout or FILE");
+    eprintln!("       nufon [--socket PATH] stream [--file FILE] [--loop] [--name NAME] [--json]  # publish FILE (or stdin) as live audio; prints live ticket");
+    eprintln!("       nufon [--socket PATH] listen TICKET [--out FILE] [--seconds N]           # record live broadcast to stdout or FILE", );
+    eprintln!("       nufon [--socket PATH] publishers [--json]                               # list running live publishers");
+    eprintln!("       nufon [--socket PATH] stop-live PUBLISHER_ID [--json]", );
     eprintln!("       nufon [--socket PATH] send-data PEER [--file FILE] [--json]              # put + signal ticket via message path");
     eprintln!("       nufon [--socket PATH] recv [--from PEER_ID] [--out FILE] [--timeout-ms MS]");
     eprintln!("       nufon [--socket PATH] ticket --subject PEER_ID [--capability CAP] [--expires-at RFC3339] [--json]");
@@ -761,6 +931,6 @@ fn help_text(topic: &str) -> &'static str {
         "schema" => r#"request: {version:number,id:string,method:string,params:object}; optional --identity selects the daemon identity"#,
         "errors" => "Stable errors: invalid_request, unauthorized, capability_denied, peer_offline, idempotency_key_conflict, cursor_too_old, timeout.",
         "examples" => "nufon status --json\nnufon --identity Bob send alice --text hello --idempotency-key hello-1 --json\nnufon --identity Alice events --follow --jsonl",
-        _ => "nufon commands: status, context, identities, peers, resolve, show, peer-status, use, send, send-data, recv, ticket, grant, operation, cancel, events, wait, put, get\nUse --json for machine output and --stdin-json for request parameters.\nData transfer: cat FILE | nufon put  ->  ticket;  nufon get TICKET > copy\nSignaled:      nufon send-data PEER < FILE   |   nufon recv > copy",
+        _ => "nufon commands: status, context, identities, peers, resolve, show, peer-status, use, send, send-data, recv, ticket, grant, operation, cancel, events, wait, put, get, stream, listen, publishers, stop-live\nUse --json for machine output and --stdin-json for request parameters.\nData transfer: cat FILE | nufon put  ->  ticket;  nufon get TICKET > copy\nSignaled:      nufon send-data PEER < FILE   |   nufon recv > copy\nLive audio:    nufon stream --file FILE --loop  ->  live ticket;  nufon listen TICKET > copy.wav",
     }
 }
