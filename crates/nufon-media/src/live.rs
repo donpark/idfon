@@ -186,16 +186,16 @@ async fn listen_wav(
     relay: bool,
 ) -> anyhow::Result<ListenStats> {
     let parsed: LiveTicket = ticket.parse()?;
-    let endpoint = parsed.endpoint.clone();
+    let remote_addr = parsed.endpoint.clone();
     let name = parsed.broadcast_name.clone();
-    let endpoint = build_endpoint(relay).await?;
-    let live = Live::builder(endpoint).spawn();
+    let local_endpoint = build_endpoint(relay).await?;
+    let live = Live::builder(local_endpoint).spawn();
     let base = Instant::now();
     let mut last_err = String::new();
     let sub = {
         let mut result = None;
         for _attempt in 0..5 {
-            match live.subscribe(endpoint.clone(), &name).await {
+            match live.subscribe(remote_addr.clone(), &name).await {
                 Ok(sub) => {
                     result = Some(sub);
                     break;
