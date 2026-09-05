@@ -1,4 +1,11 @@
 fn main() {
+    // Always link the release dylib, even for debug builds: the release dylib
+    // is rebuilt unconditionally by native/build.sh and scripts/test-*.sh, so
+    // this keeps debug idfond on the freshest code with no profile-matching
+    // ceremony. Debug daemon debugging would need a profile-matched debug
+    // dylib (plus a Swift-stdlib rpath; the debug dylib links @rpath/
+    // libswift_Concurrency.dylib, release does not) — only do that if you
+    // start debugging daemon code under lldb regularly.
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let lib_dir = std::path::Path::new(&manifest_dir)
         .join("../../native/vendor/iroh-c-ffi/target/release")
