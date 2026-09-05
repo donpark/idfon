@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "clean": "rm -rf .zig-cache zig-out",
-    "build": "native build && native package --target macos --binary 'zig-out/bin/Idfon' --output 'Idfon.app' && cp ../target/release/idfond 'Idfon.app/Contents/MacOS/idfond' && cp zig-out/bin/libiroh_c_ffi.dylib 'Idfon.app/Contents/MacOS/'",
+    "build": "bash build.sh",
     "run:app": "open -n 'Idfon.app'",
     "run:bin": "open -n 'zig-out/bin/Idfon'",
-    "release": "pnpm run build && codesign --force --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Idfon.app/Contents/MacOS/libiroh_c_ffi.dylib Idfon.app/Contents/MacOS/idfond Idfon.app && hdiutil create -srcfolder Idfon.app -volname Idfon -format ULMO -ov Idfon.dmg && codesign --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Idfon.dmg"
+    "release": "bash build.sh && codesign --force --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Idfon.app/Contents/MacOS/libiroh_c_ffi.dylib Idfon.app/Contents/MacOS/idfond Idfon.app && hdiutil create -srcfolder Idfon.app -volname Idfon -format ULMO -ov Idfon.dmg && codesign --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Idfon.dmg"
   },
   "dependencies": {
     "@native-sdk/core": "0.10.1"
