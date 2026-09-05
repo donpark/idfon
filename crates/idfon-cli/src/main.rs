@@ -1,9 +1,31 @@
-use std::{env, io};
+use std::{
+    env, io,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use idfon_client::{Client, ClientError};
 use idfon_protocol::{encode_json, Request, Response, ResponseBody, PROTOCOL_VERSION};
 
 const DEFAULT_SOCKET: &str = "/tmp/idfon/idfond.sock";
+const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Locates idfond: next to the idfon binary first (cargo builds them
+/// together), then PATH.
+fn find_daemon_binary() -> Option<PathBuf> {
+    let sibling = env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.join("idfond")));
+    match sibling {
+        Some(path) if path.is_file() => Some(path),
+        _ => env::var_os("PATH").and_then(|paths| {
+            env::split_paths(&paths)
+                .map(|dir| dir.join("idfond"))
+                .find(|path| path.is_file())
+        }),
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -302,13 +324,7 @@ fn run() -> io::Result<()> {
         method: method.into(),
         params,
     };
-    let mut client = Client::connect(&socket).map_err(|error| match error {
-        ClientError::Connect(source) => io::Error::new(
-            source.kind(),
-            format!("daemon unavailable; start idfond or check --socket: {source}"),
-        ),
-        other => io::Error::other(other.to_string()),
-    })?;
+    let mut client = connect_or_start_daemon(&socket)?;
     let payload = encode_json(&request).map_err(io::Error::other)?;
     let mut response = read_json(&mut client, &payload)?;
 
@@ -429,6 +445,51 @@ fn generated_resource_id() -> String {
     )
 }
 
+/// Connects to the daemon, auto-starting idfond if nothing is listening.
+/// The daemon is left running after the CLI exits (dockerd-style shared
+/// daemon, not one daemon per command).
+fn connect_or_start_daemon(socket: &str) -> io::Result<Client> {
+    match Client::connect(socket) {
+        Ok(client) => Ok(client),
+        Err(ClientError::Connect(_)) => {
+            match find_daemon_binary() {
+                Some(daemon) => {
+                    let data_dir = Path::new(socket)
+                        .parent()
+                        .map(|dir| dir.to_path_buf())
+                        .unwrap_or_default();
+                    Command::new(&daemon)
+                        .args([
+                            "--socket",
+                            socket,
+                            "--data-dir",
+                            &data_dir.to_string_lossy(),
+                        ])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .map_err(|error| {
+                            io::Error::other(format!(
+                                "failed to start daemon at {}: {error}", daemon.display()
+                            ))
+                        })?;
+                    Client::connect_with_retry(socket, DAEMON_START_TIMEOUT).map_err(|error| {
+                        io::Error::other(format!(
+                            "daemon unavailable; tried to start idfond automatically: {error}"
+                        ))
+                    })
+                }
+                None => Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "daemon unavailable and idfond not found (install it or add it to PATH)",
+                )),
+            }
+        }
+        other => other.map_err(|error| io::Error::other(error.to_string())),
+    }
+}
+
 fn ipc(
     socket: &str,
     method: &str,
@@ -444,13 +505,7 @@ fn ipc(
         method: method.into(),
         params,
     };
-    let mut client = Client::connect(socket).map_err(|error| match error {
-        ClientError::Connect(source) => io::Error::new(
-            source.kind(),
-            format!("daemon unavailable; start idfond or check --socket: {source}"),
-        ),
-        other => io::Error::other(other.to_string()),
-    })?;
+    let mut client = connect_or_start_daemon(socket)?;
     client
         .request(&encode_json(&request).map_err(io::Error::other)?)
         .map_err(io::Error::other)?
