@@ -275,8 +275,10 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     let _cleanup = SocketCleanup(socket.clone());
 
+    let shutdown = Arc::new(tokio::sync::Notify::new());
     tokio::select! {
-        result = accept_loop(listener, store, transport) => result,
+        result = accept_loop(listener, store, transport, Arc::clone(&shutdown)) => result,
+        _ = shutdown.notified() => Ok(()),
         result = tokio::signal::ctrl_c() => result.map_err(io::Error::other),
     }
 }
@@ -285,13 +287,15 @@ async fn accept_loop(
     listener: UnixListener,
     store: Arc<Mutex<Store>>,
     transport: Arc<TransportMode>,
+    shutdown: Arc<tokio::sync::Notify>,
 ) -> io::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let store = Arc::clone(&store);
         let transport = Arc::clone(&transport);
+        let shutdown = Arc::clone(&shutdown);
         tokio::spawn(async move {
-            if let Err(error) = serve(stream, store, transport).await {
+            if let Err(error) = serve(stream, store, transport, shutdown).await {
                 eprintln!("idfond client error: {error}");
             }
         });
@@ -302,6 +306,7 @@ async fn serve(
     mut stream: UnixStream,
     store: Arc<Mutex<Store>>,
     transport: Arc<TransportMode>,
+    shutdown: Arc<tokio::sync::Notify>,
 ) -> io::Result<()> {
     let mut session_identity = String::from("default");
     loop {
@@ -399,6 +404,16 @@ async fn serve(
             let payload = compact_events(&store, after.as_deref(), request_text(&request.params, "identity").as_deref());
             write_frame(&mut stream, &payload).await?;
             continue;
+        }
+        if request.method == "daemon.shutdown" {
+            let response = success(&request, serde_json::json!({"shutdown": true}));
+            write_frame(
+                &mut stream,
+                &encode_json(&response).map_err(io::Error::other)?,
+            )
+            .await?;
+            shutdown.notify_waiters();
+            return Ok(());
         }
         let response = dispatch_with_transport(request.clone(), &store, &transport);
         if request.method == "identity.use" && response.ok {
@@ -3082,14 +3097,9 @@ fn prepare_socket(socket: &Path) -> io::Result<()> {
                 io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
             ) =>
         {
-            if socket.is_file() {
-                std::fs::remove_file(socket)
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "socket path is not a file",
-                ))
-            }
+            // Stale socket: remove it (remove_file works on unix sockets too;
+            // Path::is_file() is false for sockets, don't use it here).
+            std::fs::remove_file(socket)
         }
         Err(error) => Err(error),
     }

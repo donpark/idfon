@@ -54,6 +54,7 @@ fn run() -> io::Result<()> {
         .iter()
         .skip(1)
         .find_map(|arg| match arg.as_str() {
+            "shutdown" => Some("daemon.shutdown"),
             "status" => Some("status"),
             "context" => Some("context"),
             "identities" => Some("identities"),
@@ -175,6 +176,29 @@ fn run() -> io::Result<()> {
     let timeout_ms = argument(&args, "--timeout-ms");
     if method == "media.resource.put" {
         return cmd_put(&socket, data_file.as_ref(), resource_id, json, selected_identity.as_deref());
+    }
+    if method == "daemon.shutdown" {
+        // No auto-start here: shutting down a daemon we just spawned is a no-op.
+        let mut client = Client::connect(&socket).map_err(|_| {
+            io::Error::new(io::ErrorKind::NotFound, "daemon is not running")
+        })?;
+        let request = Request {
+            version: PROTOCOL_VERSION,
+            id: "cli-shutdown".into(),
+            method: method.into(),
+            params: serde_json::json!({}),
+        };
+        let response = client
+            .request(&encode_json(&request).map_err(io::Error::other)?)
+            .map_err(io::Error::other)?
+            .json()
+            .map_err(io::Error::other)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&response).map_err(io::Error::other)?);
+        } else {
+            println!("daemon stopped");
+        }
+        return Ok(());
     }
     if method == "media.live.publish" {
         return cmd_stream(
@@ -458,27 +482,39 @@ fn connect_or_start_daemon(socket: &str) -> io::Result<Client> {
                         .parent()
                         .map(|dir| dir.to_path_buf())
                         .unwrap_or_default();
-                    Command::new(&daemon)
-                        .args([
-                            "--socket",
-                            socket,
-                            "--data-dir",
-                            &data_dir.to_string_lossy(),
-                        ])
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn()
-                        .map_err(|error| {
-                            io::Error::other(format!(
-                                "failed to start daemon at {}: {error}", daemon.display()
-                            ))
-                        })?;
-                    Client::connect_with_retry(socket, DAEMON_START_TIMEOUT).map_err(|error| {
-                        io::Error::other(format!(
-                            "daemon unavailable; tried to start idfond automatically: {error}"
-                        ))
-                    })
+                    // Two attempts: a just-killed daemon may still be dying
+                    // (lock/socket still held), so the first spawn can lose.
+                    let mut last_error = None;
+                    for _ in 0..2 {
+                        let spawned = Command::new(&daemon)
+                            .args([
+                                "--socket",
+                                socket,
+                                "--data-dir",
+                                &data_dir.to_string_lossy(),
+                            ])
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .spawn();
+                        match spawned {
+                            Err(error) => {
+                                return Err(io::Error::other(format!(
+                                    "failed to start daemon at {}: {error}",
+                                    daemon.display()
+                                )));
+                            }
+                            Ok(_) => match Client::connect_with_retry(socket, DAEMON_START_TIMEOUT)
+                            {
+                                Ok(client) => return Ok(client),
+                                Err(error) => last_error = Some(error),
+                            },
+                        }
+                    }
+                    Err(io::Error::other(format!(
+                        "daemon unavailable; tried to start idfond automatically: {}",
+                        last_error.expect("at least one connect attempt")
+                    )))
                 }
                 None => Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -973,6 +1009,7 @@ fn print_usage() {
     );
     eprintln!("       idfon [--socket PATH] wait --type TYPE [--after CURSOR] [--timeout-ms MS]");
     eprintln!("       idfon [--socket PATH] operation wait OPERATION_ID [--timeout-ms MS]");
+    eprintln!("       idfon [--socket PATH] shutdown [--json]                           # stop the background daemon");
     eprintln!("       idfon [--socket PATH] put [--file FILE] [--resource-id ID] [--json]   # data from FILE or stdin; prints blob ticket");
     eprintln!("       idfon [--socket PATH] get TICKET [--out FILE]                            # streams blob to stdout or FILE");
     eprintln!("       idfon [--socket PATH] stream [--file FILE] [--loop] [--no-relay] [--name NAME] [--json]  # publish FILE (or stdin) as live audio; prints live ticket");
