@@ -854,7 +854,7 @@ fn send_message(
             request.id.clone(),
             &request.method,
             ErrorCode::InvalidRequest,
-            "to, text, and idempotency_key are required".into(),
+            "text is required (use --text, --file, or --stream)".into(),
             false,
         );
     }
