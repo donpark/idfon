@@ -143,7 +143,8 @@ other peers' private data
 
 ## App-to-Idfon communication
 
-The initial integration can use the standalone CLI:
+The initial integration can use the standalone CLI (the `session`
+subcommand is planned; not yet implemented):
 
 ```sh
 idfon session info <token>

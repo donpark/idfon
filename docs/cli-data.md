@@ -101,17 +101,17 @@ ADDR=$(ctx /tmp/idfon-a/idfond.sock | jq -r '.result.ticket | implode')   # Endp
 
 # On daemon A: register B as a peer and grant it the send capability
 # (A's send gate checks a local message.send grant for B's peer id):
-idfon --socket /tmp/idfon-a/idfond.sock add "$B_PID" --name bob \
+idfon --socket /tmp/idfon-a/idfond.sock peer add "$B_PID" --name bob \
   --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR"
-idfon --socket /tmp/idfon-a/idfond.sock grant --subject "$B_PID" \
+idfon --socket /tmp/idfon-a/idfond.sock access grant --subject "$B_PID" \
   --capability message.send
 
 # On daemon B: register A as a peer and grant it the receive capability
 # (B's receive gate checks message.receive for A's peer id, or a verified
 # capability ticket presented by the sender):
-idfon --socket /tmp/idfon-b/idfond.sock add "$A_PID" --name alice \
+idfon --socket /tmp/idfon-b/idfond.sock peer add "$A_PID" --name alice \
   --endpoint-id "$A_EP" --endpoint-addr "$A_ADDR"
-idfon --socket /tmp/idfon-b/idfond.sock grant --subject "$A_PID" \
+idfon --socket /tmp/idfon-b/idfond.sock access grant --subject "$A_PID" \
   --capability message.receive
 ```
 
@@ -166,8 +166,8 @@ Publishers run inside the daemon and are kept in an in-memory registry
 
 ```sh
 idfon stream --file speech.wav --loop --name radio    # prints the ticket
-idfon publishers                                       # list running publishers
-idfon stop-live live-<name>                            # graceful stop
+idfon live publishers                                  # list running publishers
+idfon live stop live-<name>                            # graceful stop
 ```
 
 `stop` sends the underlying iroh session a graceful shutdown before tearing

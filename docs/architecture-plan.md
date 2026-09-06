@@ -81,7 +81,9 @@ provider remain implementation details except under `idfon debug`.
 
 ## Canonical CLI surface
 
-The initial surface should be:
+The initial surface should be (status: the noun-verb shape below is now
+implemented; see `idfon --help` for the exact flags — details like `--to`
+vs positional PEER and `session` differ):
 
 ```sh
 idfon context

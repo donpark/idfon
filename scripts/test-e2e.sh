@@ -100,10 +100,10 @@ A_ADDR=$(ctx "$A" | jq -r '.result.ticket | implode')
 B_EP=$(ctx "$B" | jq -r .result.identity.endpoint_id)
 B_PID=$(ctx "$B" | jq -r .result.identity.public_key)
 B_ADDR=$(ctx "$B" | jq -r '.result.ticket | implode')
-"$NUF" --socket "$A" add "$B_PID" --name bob --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR"
-"$NUF" --socket "$B" add "$A_PID" --name alice --endpoint-id "$A_EP" --endpoint-addr "$A_ADDR"
-"$NUF" --socket "$A" grant --subject "$B_PID" --capability message.send
-"$NUF" --socket "$B" grant --subject "$A_PID" --capability message.receive
+"$NUF" --socket "$A" peer add "$B_PID" --name bob --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR"
+"$NUF" --socket "$B" peer add "$A_PID" --name alice --endpoint-id "$A_EP" --endpoint-addr "$A_ADDR"
+"$NUF" --socket "$A" access grant --subject "$B_PID" --capability message.send
+"$NUF" --socket "$B" access grant --subject "$A_PID" --capability message.receive
 head -c 300000 /dev/urandom > "$work/signaled.bin"
 "$NUF" --socket "$B" recv > "$work/signaled.received" &
 recv_pid=$!
