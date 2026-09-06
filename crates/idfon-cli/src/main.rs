@@ -95,7 +95,7 @@ enum Command {
     Access(AccessCmd),
     /// Store stdin/FILE as a blob; prints the BlobTicket
     Put(PutArgs),
-    /// Stream a ticket (blob or live) to stdout or --out FILE
+    /// Fetch a ticket (blob or live) to stdout or --out FILE
     Get(GetArgs),
 }
 
