@@ -126,7 +126,7 @@ ticket satisfies the receive gate and materializes grants on first delivery.
 
 ## Live audio streaming
 
-`stream` publishes live audio over iroh-live; `get` consumes any ticket —
+`send --stream` (without PEER) publishes live audio over iroh-live; `get` consumes any ticket —
 blob or live (dispatched on the ticket's self-describing prefix: `blob…` vs
 `iroh-live:`). Sources and
 sinks are files — no microphone or GUI required (mic input is a later
@@ -157,8 +157,8 @@ idfon send bob --stream --file speech.wav        # blocks until the callee hangs
 ```sh
 # Publisher endpoint: streams FILE (or stdin) as a live broadcast.
 # Prints a bare live ticket (one line) on success.
-idfon stream --file speech.wav --loop > ticket.txt
-cat song.flac | idfon stream > ticket.txt        # stdin is spooled by the CLI
+idfon send --stream --file speech.wav --loop > ticket.txt
+cat song.flac | idfon send --stream > ticket.txt # stdin is spooled by the CLI
 
 # Consumer endpoint: records the broadcast to stdout (or --out FILE).
 idfon get "$(cat ticket.txt)" > copy.wav
@@ -168,9 +168,9 @@ idfon get "$(cat ticket.txt)" --out copy.wav --seconds 30
 - The live ticket embeds the publisher's endpoint and broadcast name; it is
   the subscriber capability. No pairing, grants, or side channel needed —
   distribute it over any channel (chat, SSH, QR).
-- `--loop` repeats the source indefinitely; without it the broadcast ends
+- `send --stream --loop` repeats the source indefinitely; without it the broadcast ends
   when the file does (the publisher stays reachable until stopped).
-- `--name NAME` sets a stable broadcast name; default is
+- `send --stream --name NAME` sets a stable broadcast name; default is
   `idfon-live-<nanos>`.
 - `get --seconds N` (live tickets) caps the capture window (default 15, max
   600); the request returns when the window ends or the broadcast ends.
@@ -191,8 +191,8 @@ Publishers run inside the daemon and are kept in an in-memory registry
 
 ```sh
 idfon stream --file speech.wav --loop --name radio    # prints the ticket
-idfon stream --list                                    # list running publishers
-idfon stream --stop live-<name>                        # graceful stop
+idfon send --stream --list                             # list running publishers
+idfon send --stream --stop live-<name>                 # graceful stop
 ```
 
 `stop` sends the underlying iroh session a graceful shutdown before tearing

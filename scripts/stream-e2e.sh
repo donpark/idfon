@@ -116,7 +116,7 @@ EOF
 run_case() { # label stream-args...
   label=$1; shift
   echo "case: $label"
-  stream_json=$("$NUF" --socket "$A" stream --json "$@" > "$work/stream.json" && cat "$work/stream.json")
+  stream_json=$("$NUF" --socket "$A" send --stream --json "$@" > "$work/stream.json" && cat "$work/stream.json")
   ticket=$(printf '%s' "$stream_json" | jq -r .result.ticket)
   p0_wall_ms=$(printf '%s' "$stream_json" | jq -r .result.wall_ms)
   # Publisher needs a moment before its first pkarr/discovery publish lands.
@@ -129,8 +129,8 @@ run_case() { # label stream-args...
     || { echo "FAIL: $label (analysis above)" >&2; exit 1; }
 }
 
-run_case "stream --file --loop" --file "$work/pip.wav" --loop
-run_case "stream via stdin pipe" --loop < "$work/pip.wav"
+run_case "send --stream --file --loop (broadcast)" --file "$work/pip.wav" --loop
+run_case "send --stream via stdin pipe" --loop < "$work/pip.wav"
 
 # 1:1 session-scoped call: no ticket exists — the MoQ session is the
 # capability. A dials bob's endpoint via send --stream, publishes on the

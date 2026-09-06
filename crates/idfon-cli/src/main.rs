@@ -48,7 +48,7 @@ fn find_daemon_binary() -> Option<PathBuf> {
     name = "idfon",
     version,
     about = "Control the idfond daemon: identity, peers, messaging, data transfer, live audio",
-    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send PEER --file < FILE  |  idfon recv > copy\nLive broadcast: idfon stream --file FILE --loop  ->  ticket;  idfon get TICKET > copy.wav\n1:1 call:       idfon send PEER --stream --file FILE  |  idfon recv --stream --out copy.wav"
+    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send PEER --file < FILE  |  idfon recv > copy\nLive broadcast: idfon send --stream --file FILE --loop  ->  ticket;  idfon get TICKET > copy.wav\n1:1 call:       idfon send PEER --stream --file FILE  |  idfon recv --stream --out copy.wav"
 )]
 struct Cli {
     /// Daemon socket path
@@ -79,7 +79,7 @@ enum Command {
     /// Manage peers
     #[command(subcommand)]
     Peer(PeerCmd),
-    /// Send to a peer: --text chat, --file signaled blob, --stream 1:1 live
+    /// Send content: --text chat, --file blob, --stream live (PEER = 1:1, no PEER = broadcast)
     Send(SendArgs),
     /// Receive a peer push: signaled blob (--file mode) or 1:1 stream (--stream)
     Recv(RecvArgs),
@@ -97,8 +97,6 @@ enum Command {
     Put(PutArgs),
     /// Stream a ticket (blob or live) to stdout or --out FILE
     Get(GetArgs),
-    /// Publish FILE (or stdin) as live audio; --list/--stop manage publishers
-    Stream(StreamArgs),
 }
 
 #[derive(Subcommand)]
@@ -163,23 +161,39 @@ enum PeerCmd {
 
 #[derive(clap::Args)]
 struct SendArgs {
+    /// Dial target. Present = 1:1 session-scoped stream / peer-directed push;
+    /// absent = broadcast publish (only valid with --stream)
     #[arg(value_name = "PEER")]
-    peer: String,
-    /// Text to send (chat path; pass --idempotency-key to dedupe deliberate resends)
+    peer: Option<String>,
+    /// Text to send (chat path; requires PEER; pass --idempotency-key to
+    /// dedupe deliberate resends)
     #[arg(long)]
     text: Option<String>,
-    /// Send FILE (or stdin) as a signaled blob transfer; prints the BlobTicket on delivery
+    /// Send FILE (or stdin) as a signaled blob transfer (requires PEER); prints the BlobTicket on delivery
     #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "-")]
     file: Option<String>,
-    /// Stream FILE (or stdin) to the peer as a 1:1 session (no ticket); blocks until they hang up
+    /// Stream FILE (or stdin) as live audio: with PEER a 1:1 session (blocks
+    /// until they hang up), without PEER a broadcast printing the live ticket
     #[arg(long)]
     stream: bool,
+    /// Stream mode only: list running live publishers
+    #[arg(long, conflicts_with_all = ["peer", "text", "file", "stop", "name", "loop_playback"])]
+    list: bool,
+    /// Stream mode only: gracefully stop a live publisher by id
+    #[arg(long, conflicts_with_all = ["peer", "text", "file", "list", "name", "loop_playback"])]
+    stop: Option<String>,
     /// Stream mode only: give up if the peer never hangs up (seconds)
     #[arg(long)]
     seconds: Option<u64>,
+    /// Stream mode only: repeat the source indefinitely (broadcast only)
+    #[arg(long = "loop")]
+    loop_playback: bool,
     /// Stream mode only: forbid relayed connections
     #[arg(long = "no-relay")]
     no_relay: bool,
+    /// Stream mode only: stable broadcast name
+    #[arg(long)]
+    name: Option<String>,
     #[arg(long = "idempotency-key")]
     idempotency_key: Option<String>,
     #[arg(long = "capability-ticket")]
@@ -300,24 +314,6 @@ struct GetArgs {
     no_relay: bool,
 }
 
-#[derive(clap::Args)]
-struct StreamArgs {
-    #[arg(long)]
-    file: Option<String>,
-    /// List running live publishers instead of publishing
-    #[arg(long, conflicts_with_all = ["file", "loop_playback", "name", "stop"])]
-    list: bool,
-    /// Gracefully stop a live publisher by id instead of publishing
-    #[arg(long, conflicts_with_all = ["file", "loop_playback", "name"])]
-    stop: Option<String>,
-    #[arg(long = "loop")]
-    loop_playback: bool,
-    #[arg(long = "no-relay")]
-    no_relay: bool,
-    #[arg(long)]
-    name: Option<String>,
-}
-
 fn main() {
     if let Err(error) = run() {
         eprintln!("idfon: {error}");
@@ -395,17 +391,6 @@ fn run() -> io::Result<()> {
                 )
             }
         }
-        Command::Stream(args) => cmd_stream(
-            socket,
-            args.list,
-            args.stop.as_deref(),
-            args.file.as_ref(),
-            args.loop_playback,
-            !args.no_relay,
-            args.name.as_deref(),
-            json,
-            identity,
-        ),
         Command::Events(args) => {
             cmd_events(socket, args.follow, args.after, args.event_type, json, identity)
         }
@@ -528,55 +513,89 @@ fn run() -> io::Result<()> {
         ),
         Command::Send(args) => {
             if args.stream {
-                // 1:1 session-scoped stream to the peer; blocks until they
-                // hang up (or --seconds). No ticket exists.
-                let file = resolve_stream_file(args.file.as_ref())?;
-                let mut params = json!({"to": args.peer, "file": file, "relay": !args.no_relay});
-                if let Some(seconds) = args.seconds {
-                    params["seconds"] = seconds.into();
+                match (args.peer.as_deref(), args.list, args.stop.as_deref()) {
+                    (Some(peer), false, None) => {
+                        // 1:1 session-scoped stream to the peer; blocks until
+                        // they hang up (or --seconds). No ticket exists.
+                        let file = resolve_stream_file(args.file.as_ref())?;
+                        let mut params =
+                            json!({"to": peer, "file": file, "relay": !args.no_relay});
+                        if let Some(seconds) = args.seconds {
+                            params["seconds"] = seconds.into();
+                        }
+                        let response = ipc(socket, "media.live.dial", params, identity)?;
+                        if !response.ok {
+                            return Err(io::Error::other(request_error(&response)));
+                        }
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&response).map_err(io::Error::other)?
+                            );
+                        } else {
+                            let held = result_str(&response, "held_ms");
+                            println!("streamed to {peer} for {held} ms");
+                        }
+                        Ok(())
+                    }
+                    (None, true, _) => finish(
+                        send_rpc(
+                            socket,
+                            "media.live.publishers",
+                            json!({}),
+                            identity,
+                            cli.stdin_json,
+                        )?,
+                        json,
+                    ),
+                    (None, false, Some(id)) => {
+                        let response = ipc(socket, "media.live.stop", json!({"id": id}), identity)?;
+                        if !response.ok {
+                            return Err(io::Error::other(request_error(&response)));
+                        }
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&response).map_err(io::Error::other)?
+                            );
+                        } else {
+                            println!("stopped {}", result_str(&response, "id"));
+                        }
+                        Ok(())
+                    }
+                    (None, false, None) => {
+                        // Broadcast publish: prints the live ticket.
+                        let file = resolve_stream_file(args.file.as_ref())?;
+                        let mut params =
+                            json!({"file": file, "loop": args.loop_playback, "relay": !args.no_relay});
+                        if let Some(name) = args.name.as_deref() {
+                            params["name"] = name.into();
+                        }
+                        let response = ipc(socket, "media.live.publish", params, identity)?;
+                        if !response.ok {
+                            return Err(io::Error::other(request_error(&response)));
+                        }
+                        if json {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&response).map_err(io::Error::other)?
+                            );
+                            return Ok(());
+                        }
+                        println!("{}", result_str(&response, "ticket"));
+                        Ok(())
+                    }
+                    _ => Err(io::Error::other(
+                        "--list/--stop cannot be combined with a PEER",
+                    )),
                 }
-                let response = ipc(socket, "media.live.dial", params, identity)?;
-                if !response.ok {
-                    return Err(io::Error::other(request_error(&response)));
-                }
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::to_string(&response).map_err(io::Error::other)?
-                    );
-                } else {
-                    let held = result_str(&response, "held_ms");
-                    println!("streamed to {} for {held} ms", args.peer);
-                }
-                return Ok(());
-            }
-            if let Some(file) = &args.file {
-                let file = if file == "-" { None } else { Some(file) };
-                cmd_send_data(socket, &args.peer, file, args.retries, json, identity)
             } else {
-                // Per-invocation key by default: unique across the daemon's
-                // persisted operations, so retries (handled within one
-                // operation) stay exactly-once. Pass --idempotency-key only
-                // for deliberate cross-invocation dedup of the same message.
-                let key = args.idempotency_key.clone().unwrap_or_else(|| {
-                    format!(
-                        "idfon-text-{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .expect("clock before epoch")
-                            .as_nanos()
-                    )
-                });
-                finish(
-                    send_rpc(
-                        socket,
-                        "message.send",
-                        json!({"to": args.peer, "text": args.text, "idempotency_key": key, "capability_ticket": args.capability_ticket, "retries": args.retries}),
-                        identity,
-                        cli.stdin_json,
-                    )?,
-                    json,
-                )
+                let Some(peer) = args.peer.as_deref() else {
+                    return Err(io::Error::other(
+                        "PEER required without --stream (broadcast publish is send --stream)",
+                    ));
+                };
+                send_payload(socket, cli.stdin_json, &args, peer, json, identity)
             }
         }
         Command::Operation(OperationCmd::Get {
@@ -1035,6 +1054,45 @@ fn fetch_to(
 /// `idfon send-data PEER`: stores stdin/FILE as a blob, then signals the
 /// ticket to the peer through the message path (IDFON-DATA/1 envelope).
 /// Prints the bare BlobTicket once delivery is acknowledged.
+/// Text and signaled-blob modes of `send` (PEER required).
+fn send_payload(
+    socket: &str,
+    stdin_json: bool,
+    args: &SendArgs,
+    peer: &str,
+    json: bool,
+    identity: Option<&str>,
+) -> io::Result<()> {
+    if let Some(file) = &args.file {
+        let file = if file == "-" { None } else { Some(file) };
+        cmd_send_data(socket, peer, file, args.retries, json, identity)
+    } else {
+        // Per-invocation key by default: unique across the daemon's
+        // persisted operations, so retries (handled within one
+        // operation) stay exactly-once. Pass --idempotency-key only
+        // for deliberate cross-invocation dedup of the same message.
+        let key = args.idempotency_key.clone().unwrap_or_else(|| {
+            format!(
+                "idfon-text-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock before epoch")
+                    .as_nanos()
+            )
+        });
+        finish(
+            send_rpc(
+                socket,
+                "message.send",
+                json!({"to": peer, "text": args.text, "idempotency_key": key, "capability_ticket": args.capability_ticket, "retries": args.retries}),
+                identity,
+                stdin_json,
+            )?,
+            json,
+        )
+    }
+}
+
 fn cmd_send_data(
     socket: &str,
     peer: &str,
@@ -1238,58 +1296,6 @@ fn resolve_stream_file(file: Option<&String>) -> io::Result<String> {
         }
         Some(path) => Ok(path.clone()),
     }
-}
-
-fn cmd_stream(
-    socket: &str,
-    list: bool,
-    stop: Option<&str>,
-    file: Option<&String>,
-    loop_playback: bool,
-    relay: bool,
-    name: Option<&str>,
-    json: bool,
-    identity: Option<&str>,
-) -> io::Result<()> {
-    if list {
-        return finish(
-            send_rpc(socket, "media.live.publishers", json!({}), identity, false)?,
-            json,
-        );
-    }
-    if let Some(id) = stop {
-        let response = ipc(socket, "media.live.stop", json!({"id": id}), identity)?;
-        if !response.ok {
-            return Err(io::Error::other(request_error(&response)));
-        }
-        if json {
-            println!(
-                "{}",
-                serde_json::to_string(&response).map_err(io::Error::other)?
-            );
-        } else {
-            println!("stopped {}", result_str(&response, "id"));
-        }
-        return Ok(());
-    }
-    let file = resolve_stream_file(file)?;
-    let mut params = json!({"file": file, "loop": loop_playback, "relay": relay});
-    if let Some(name) = name {
-        params["name"] = name.into();
-    }
-    let response = ipc(socket, "media.live.publish", params, identity)?;
-    if !response.ok {
-        return Err(io::Error::other(request_error(&response)));
-    }
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string(&response).map_err(io::Error::other)?
-        );
-        return Ok(());
-    }
-    println!("{}", result_str(&response, "ticket"));
-    Ok(())
 }
 
 /// `idfon listen TICKET`: records a remote live broadcast for --seconds
