@@ -174,7 +174,7 @@ enum PeerCmd {
 struct SendArgs {
     #[arg(value_name = "PEER")]
     peer: String,
-    /// Text to send (chat path; requires --idempotency-key)
+    /// Text to send (chat path; pass --idempotency-key to dedupe deliberate resends)
     #[arg(long)]
     text: Option<String>,
     /// Send FILE (or stdin) as a signaled blob transfer; prints the BlobTicket on delivery
@@ -601,10 +601,19 @@ fn run() -> io::Result<()> {
                 let file = if file == "-" { None } else { Some(file) };
                 cmd_send_data(socket, &args.peer, file, args.retries, json, identity)
             } else {
-                let key = args
-                    .idempotency_key
-                    .as_deref()
-                    .ok_or_else(|| io::Error::other("send --text requires --idempotency-key"))?;
+                // Per-invocation key by default: unique across the daemon's
+                // persisted operations, so retries (handled within one
+                // operation) stay exactly-once. Pass --idempotency-key only
+                // for deliberate cross-invocation dedup of the same message.
+                let key = args.idempotency_key.clone().unwrap_or_else(|| {
+                    format!(
+                        "idfon-text-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("clock before epoch")
+                            .as_nanos()
+                    )
+                });
                 finish(
                     send_rpc(
                         socket,
