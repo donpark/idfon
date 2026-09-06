@@ -5,7 +5,7 @@ set -eu
 # driven through the idfon CLI (no microphone, no GUI):
 #
 #   idfond (endpoint A) -- idfon stream --file pip.wav --loop --> live ticket
-#   idfond (endpoint B) -- idfon listen TICKET --out rec.wav
+#   idfond (endpoint B) -- idfon get TICKET --out rec.wav
 #
 # The source is a "pip" pattern (100ms 1kHz tone every 2s), so the decoded
 # recording measures the live path: pip count, decode jitter, packet-arrival
@@ -121,7 +121,7 @@ run_case() { # label stream-args...
   p0_wall_ms=$(printf '%s' "$stream_json" | jq -r .result.wall_ms)
   # Publisher needs a moment before its first pkarr/discovery publish lands.
   sleep 2
-  "$NUF" --socket "$B" listen "$ticket" --out "$work/rec.wav" --seconds 15 --json \
+  "$NUF" --socket "$B" get "$ticket" --out "$work/rec.wav" --seconds 15 --json \
     | jq --argjson p0 "$p0_wall_ms" '.result + {p0_wall_ms: $p0} | del(.out)' > "$work/listen.json"
   cat "$work/listen.json" | jq -c 'del(.p0_wall_ms)'
   analyze "$work/rec.wav" "$work/listen.json" \
@@ -132,4 +132,4 @@ run_case() { # label stream-args...
 run_case "stream --file --loop" --file "$work/pip.wav" --loop
 run_case "stream via stdin pipe" --loop < "$work/pip.wav"
 
-echo "PASS: idfon stream/listen live audio over two daemon endpoints"
+echo "PASS: idfon stream/get live audio over two daemon endpoints"

@@ -4,7 +4,7 @@ set -eu
 # Audio quality round trip through the live path:
 #
 #   macOS `say` TTS -> 48k mono WAV -> idfon stream (--loop) -> iroh-live
-#   -> idfon listen (Opus decode) -> WAV -> alignment + objective metrics
+#   -> idfon get (Opus decode) -> WAV -> alignment + objective metrics
 #
 # Metrics (source vs decoded, time-aligned via envelope + sample-domain
 # cross-correlation):
@@ -71,7 +71,7 @@ done
 ticket=$(target/release/idfon --socket "$A" stream --file "$work/speech.wav" --loop)
 sleep 2   # let the first announce land
 
-target/release/idfon --socket "$B" listen "$ticket" --out "$work/rec.wav" \
+target/release/idfon --socket "$B" get "$ticket" --out "$work/rec.wav" \
   --seconds "$seconds" --json > "$work/listen.json"
 echo "recorded $(jq -r .result.duration_ms "$work/listen.json")ms, $(jq -r .result.packets "$work/listen.json") packets"
 

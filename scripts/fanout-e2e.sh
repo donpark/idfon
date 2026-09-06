@@ -2,7 +2,7 @@
 set -eu
 
 # Fan-out scalability test: one idfon stream publisher, N concurrent
-# idfon listen subscribers, all direct P2P (runs with --no-relay: no relay
+# idfon get subscribers, all direct P2P (runs with --no-relay: no relay
 # transport, subscribers connect straight to the publisher endpoint via the
 # ticket's direct addresses — no n0 public relay traffic, no rate limits).
 #
@@ -74,7 +74,7 @@ for n in $SIZES; do
   echo "=== N=$n concurrent listeners ==="
   before=$(echo "$pids" | wc -w | tr -d ' ')
   for i in $(seq 1 "$n"); do
-    "$NUF" --socket "$B" listen "$ticket" --out "$work/rec-$n-$i.wav" \
+    "$NUF" --socket "$B" get "$ticket" --out "$work/rec-$n-$i.wav" \
       --seconds "$LISTEN_SECONDS" --no-relay --json > "$work/listen-$n-$i.json" &
     pids="$pids $!"
   done

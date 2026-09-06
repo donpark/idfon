@@ -48,7 +48,7 @@ fn find_daemon_binary() -> Option<PathBuf> {
     name = "idfon",
     version,
     about = "Control the idfond daemon: identity, peers, messaging, data transfer, live audio",
-    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send-data PEER < FILE  |  idfon recv > copy\nLive audio:     idfon stream --file FILE --loop  ->  live ticket;  idfon listen TICKET > copy.wav"
+    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send-data PEER < FILE  |  idfon recv > copy\nLive audio:     idfon stream --file FILE --loop  ->  live ticket;  idfon get TICKET > copy.wav"
 )]
 struct Cli {
     /// Daemon socket path
@@ -101,12 +101,10 @@ enum Command {
     Ticket(TicketArgs),
     /// Store stdin/FILE as a blob; prints the BlobTicket
     Put(PutArgs),
-    /// Stream a blob to stdout or --out FILE
+    /// Stream a ticket (blob or live) to stdout or --out FILE
     Get(GetArgs),
     /// Publish FILE (or stdin) as live audio; prints the live ticket
     Stream(StreamArgs),
-    /// Record a live broadcast to --out FILE or stdout
-    Listen(ListenArgs),
     /// Live broadcast management
     #[command(subcommand)]
     Live(LiveCmd),
@@ -286,6 +284,12 @@ struct GetArgs {
     ticket: String,
     #[arg(long)]
     out: Option<String>,
+    /// Live tickets only: cap the capture window (seconds)
+    #[arg(long)]
+    seconds: Option<u64>,
+    /// Live tickets only: forbid relayed connections
+    #[arg(long = "no-relay")]
+    no_relay: bool,
 }
 
 #[derive(clap::Args)]
@@ -298,17 +302,6 @@ struct StreamArgs {
     no_relay: bool,
     #[arg(long)]
     name: Option<String>,
-}
-
-#[derive(clap::Args)]
-struct ListenArgs {
-    ticket: String,
-    #[arg(long)]
-    out: Option<String>,
-    #[arg(long)]
-    seconds: Option<u64>,
-    #[arg(long = "no-relay")]
-    no_relay: bool,
 }
 
 #[derive(Subcommand)]
@@ -357,7 +350,23 @@ fn run() -> io::Result<()> {
             Ok(())
         }
         Command::Put(args) => cmd_put(socket, args.file.as_ref(), args.resource_id, json, identity),
-        Command::Get(args) => cmd_get(socket, &args.ticket, args.out.as_ref(), identity),
+        Command::Get(args) => {
+            // Tickets are self-describing: live tickets carry an "iroh-live:"
+            // scheme prefix, blob tickets start with "blob".
+            if args.ticket.starts_with("iroh-live:") {
+                cmd_listen(
+                    socket,
+                    &args.ticket,
+                    args.out.as_ref(),
+                    args.seconds,
+                    !args.no_relay,
+                    json,
+                    identity,
+                )
+            } else {
+                cmd_get(socket, &args.ticket, args.out.as_ref(), identity)
+            }
+        }
         Command::SendData(args) => cmd_send_data(
             socket,
             &args.peer,
@@ -379,15 +388,6 @@ fn run() -> io::Result<()> {
             args.loop_playback,
             !args.no_relay,
             args.name.as_deref(),
-            json,
-            identity,
-        ),
-        Command::Listen(args) => cmd_listen(
-            socket,
-            &args.ticket,
-            args.out.as_ref(),
-            args.seconds,
-            !args.no_relay,
             json,
             identity,
         ),

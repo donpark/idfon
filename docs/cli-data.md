@@ -125,7 +125,9 @@ ticket satisfies the receive gate and materializes grants on first delivery.
 
 ## Live audio streaming
 
-`stream`/`listen` publish and consume live audio over iroh-live. Sources and
+`stream` publishes live audio over iroh-live; `get` consumes any ticket —
+blob or live (dispatched on the ticket's self-describing prefix: `blob…` vs
+`iroh-live:`). Sources and
 sinks are files — no microphone or GUI required (mic input is a later
 extension).
 
@@ -135,9 +137,9 @@ extension).
 idfon stream --file speech.wav --loop > ticket.txt
 cat song.flac | idfon stream > ticket.txt        # stdin is spooled by the CLI
 
-# Listener endpoint: records the broadcast to stdout (or --out FILE).
-idfon listen "$(cat ticket.txt)" > copy.wav
-idfon listen "$(cat ticket.txt)" --out copy.wav --seconds 30
+# Consumer endpoint: records the broadcast to stdout (or --out FILE).
+idfon get "$(cat ticket.txt)" > copy.wav
+idfon get "$(cat ticket.txt)" --out copy.wav --seconds 30
 ```
 
 - The live ticket embeds the publisher's endpoint and broadcast name; it is
@@ -147,8 +149,8 @@ idfon listen "$(cat ticket.txt)" --out copy.wav --seconds 30
   when the file does (the publisher stays reachable until stopped).
 - `--name NAME` sets a stable broadcast name; default is
   `idfon-live-<nanos>`.
-- `listen --seconds N` caps the capture window (default 15, max 600); the
-  request returns when the window ends or the broadcast ends.
+- `get --seconds N` (live tickets) caps the capture window (default 15, max
+  600); the request returns when the window ends or the broadcast ends.
 - `--no-relay` disables iroh relay transport entirely: subscribers connect
   straight to the publisher (loopback/LAN), generating no traffic on n0's
   public relays (which have unspecified rate limits). Without it, n0's
@@ -156,8 +158,8 @@ idfon listen "$(cat ticket.txt)" --out copy.wav --seconds 30
   media always flows directly, so relays never carry stream bytes in this
   mode.
 - `--json` on `stream` includes the publisher id and wall-clock anchor;
-  on `listen` it includes duration, packet count, arrival jitter, and the
-  playback-UX metrics described below.
+  on `get` of a live ticket it includes duration, packet count, arrival
+  jitter, and the playback-UX metrics described below.
 
 ### Publisher lifecycle
 
