@@ -4,7 +4,7 @@ set -eu
 # Live audio streaming between two endpoints over the real daemon protocol,
 # driven through the idfon CLI (no microphone, no GUI):
 #
-#   idfond (endpoint A) -- idfon stream --file pip.wav --loop --> live ticket
+#   idfond (endpoint A) -- idfon send --stream --file pip.wav --loop --> ticket
 #   idfond (endpoint B) -- idfon get TICKET --out rec.wav
 #
 # The source is a "pip" pattern (100ms 1kHz tone every 2s), so the decoded
@@ -178,4 +178,4 @@ assert meta['stalls_over_100ms'] == 0 and meta['missing_packets'] == 0, "UX gate
 EOF
 echo "PASS: 1:1 session-scoped send --stream / recv --stream"
 
-echo "PASS: idfon stream/get live audio over two daemon endpoints"
+echo "PASS: idfon send --stream/get live audio over two daemon endpoints"

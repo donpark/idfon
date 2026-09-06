@@ -92,7 +92,7 @@ ticket=$("$NUF" --socket "$A" put < "$work/audio.wav")
 check "audio wav" "$work/audio.wav" "$work/audio.received"
 
 # 4. Signaled transfer through the message path: pair the daemons (cross
-# peer.add with endpoint info + grants), then send-data/recv.
+# peer.add with endpoint info + grants), then send --file/recv.
 ctx() { "$NUF" --socket "$1" status --json; }
 A_EP=$(ctx "$A" | jq -r .result.identity.endpoint_id)
 A_PID=$(ctx "$A" | jq -r .result.identity.public_key)
@@ -109,6 +109,6 @@ head -c 300000 /dev/urandom > "$work/signaled.bin"
 recv_pid=$!
 "$NUF" --socket "$A" send bob --file --retries 2 < "$work/signaled.bin" > "$work/signaled.ticket"
 wait "$recv_pid"
-check "signaled send-data/recv" "$work/signaled.bin" "$work/signaled.received"
+check "signaled send --file/recv" "$work/signaled.bin" "$work/signaled.received"
 
 echo "PASS: idfon put/get end-to-end over two daemon endpoints"

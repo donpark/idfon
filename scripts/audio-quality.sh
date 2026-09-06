@@ -3,7 +3,7 @@ set -eu
 
 # Audio quality round trip through the live path:
 #
-#   macOS `say` TTS -> 48k mono WAV -> idfon stream (--loop) -> iroh-live
+#   macOS `say` TTS -> 48k mono WAV -> idfon send --stream (--loop) -> iroh-live
 #   -> idfon get (Opus decode) -> WAV -> alignment + objective metrics
 #
 # Metrics (source vs decoded, time-aligned via envelope + sample-domain
@@ -56,7 +56,7 @@ checking voice quality over a lossless peer to peer audio link. \
 The sound of the surf and the singing kettle are easy on the ear." 2>/dev/null
 sox "$work/speech.aiff" -r 48000 -c 1 "$work/speech.wav" 2>/dev/null
 
-# 2. Two daemons, publish on A (looped), listen on B.
+# 2. Two daemons, publish on A (looped), get on B.
 mkdir -p "$work/pub" "$work/sub"
 target/release/idfond --socket "$A" --data-dir "$work/pub" &
 pids="$pids $!"
@@ -68,7 +68,7 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 
-ticket=$(target/release/idfon --socket "$A" stream --file "$work/speech.wav" --loop)
+ticket=$(target/release/idfon --socket "$A" send --stream --file "$work/speech.wav" --loop)
 sleep 2   # let the first announce land
 
 target/release/idfon --socket "$B" get "$ticket" --out "$work/rec.wav" \

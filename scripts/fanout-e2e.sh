@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Fan-out scalability test: one idfon stream publisher, N concurrent
+# Fan-out scalability test: one idfon send --stream publisher, N concurrent
 # idfon get subscribers, all direct P2P (runs with --no-relay: no relay
 # transport, subscribers connect straight to the publisher endpoint via the
 # ticket's direct addresses — no n0 public relay traffic, no rate limits).
@@ -65,7 +65,7 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 
-ticket=$("$NUF" --socket "$A" stream --file "$work/pip.wav" --loop --no-relay --name fanout)
+ticket=$("$NUF" --socket "$A" send --stream --file "$work/pip.wav" --loop --no-relay --name fanout)
 sleep 2   # let the first announce land
 echo "publisher up (fanout, no relay)"
 

@@ -178,11 +178,11 @@ session handles while the legacy Native SDK local-device backend is migrated.
 daemon protocol and CLI, no GUI or capture device:
 
 1. generates (or accepts as `$1`) a WAV — by default a 1 kHz pip every 2 s;
-2. publishes it via `idfon stream [--file FILE | stdin] [--loop]`, which calls
+2. publishes it via `idfon send --stream [--file FILE | stdin] [--loop]`, which calls
    the daemon's `media.live.publish` (symphonia decode → Opus encode →
    iroh-live broadcast) and prints the live ticket — the ticket is the
    subscriber capability, no pairing needed;
-3. subscribes via `idfon listen TICKET [--out FILE] [--seconds N]`, which calls
+3. subscribes via `idfon get TICKET [--out FILE] [--seconds N]`, which calls
    `media.live.subscribe` (iroh-live subscribe with retry → Opus decode →
    48 kHz mono WAV + per-packet arrival timings);
 4. reports pip count, decode jitter, packet-arrival jitter, and a latency

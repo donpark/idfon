@@ -190,7 +190,7 @@ Publishers run inside the daemon and are kept in an in-memory registry
 (not persisted across daemon restarts):
 
 ```sh
-idfon stream --file speech.wav --loop --name radio    # prints the ticket
+idfon send --stream --file speech.wav --loop --name radio  # prints the ticket
 idfon send --stream --list                             # list running publishers
 idfon send --stream --stop live-<name>                 # graceful stop
 ```
