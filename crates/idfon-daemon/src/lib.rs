@@ -58,6 +58,26 @@ impl TransportMode {
         }
     }
 
+    /// Sync accessor for an identity's iroh transport (blocking resolve on a
+    /// throwaway runtime, same pattern as `ensure_identity`).
+    fn current_transport(
+        &self,
+        identity: &str,
+    ) -> Option<Arc<idfon_core::transport::IrohTransport>> {
+        let Self::Iroh(manager) = self else { return None };
+        let manager = manager.clone();
+        let identity = identity.to_string();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    let runtime = tokio::runtime::Runtime::new().ok()?;
+                    runtime.block_on(manager.current(&identity))
+                })
+                .join()
+                .ok()?
+        })
+    }
+
     async fn add_identity(&self, identity: &str, key: [u8; 32]) -> io::Result<String> {
         let Self::Iroh(manager) = self else { return Err(io::Error::other("fake transport has no endpoints")); };
         manager.add_identity(identity, key).await.map_err(io::Error::other)
@@ -454,6 +474,90 @@ fn spawn_receiver(
     });
 }
 
+/// Resolves the request's `identity` param to the stored identity id (same
+/// lookup as message.send; falls back to the raw ref).
+fn resolved_identity_id(request: &Request, store: &Arc<Mutex<Store>>) -> String {
+    let identity_ref =
+        request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let state = store.lock().expect("store mutex poisoned");
+    state
+        .identities
+        .iter()
+        .find(|identity| identity.id == identity_ref || identity.name == identity_ref)
+        .map(|identity| identity.id.clone())
+        .unwrap_or(identity_ref)
+}
+
+/// Resolves the dial target peer (MessageSend grant enforced, matching the
+/// message path) and hands the serialized endpoint address to the live dial
+/// handler.
+fn live_dial_dispatch(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let identity_ref =
+        request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let Some(to) = request_text(&request.params, "to").filter(|value| !value.is_empty()) else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "to is required (peer reference)".into(),
+            false,
+        );
+    };
+    let state = store.lock().expect("store mutex poisoned");
+    let identity_id = state
+        .identities
+        .iter()
+        .find(|identity| identity.id == identity_ref || identity.name == identity_ref)
+        .map(|identity| identity.id.as_str())
+        .unwrap_or("default");
+    let Some(peer) = state.peers.iter().find(|peer| {
+        peer.identity == identity_id
+            && (peer.id == to
+                || peer.name == to
+                || peer.aliases.iter().any(|alias| alias == &to)
+                || peer.endpoint_id.as_deref() == Some(&to))
+    }) else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer not found".into(),
+            false,
+        );
+    };
+    let has_grant = state.grants.iter().any(|grant| {
+        grant.identity == identity_id
+            && grant.subject == peer.id
+            && grant.capability == idfon_protocol::Capability::MessageSend
+            && grant.revoked_at.is_none()
+            && grant
+                .expires_at
+                .as_deref()
+                .is_none_or(|expires| expires > now().as_str())
+    });
+    if !has_grant {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::CapabilityDenied,
+            "media.live.dial requires a message.send grant to the peer".into(),
+            false,
+        );
+    }
+    let addr = peer.endpoint_addr.clone();
+    let Some(addr) = addr.as_deref() else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer has no endpoint address".into(),
+            false,
+        );
+    };
+    drop(state);
+    live::live_dial(request, addr)
+}
+
 fn dispatch(request: Request, store: &Arc<Mutex<Store>>) -> Response {
     let transport = Arc::new(TransportMode::Fake(FakeTransport::default()));
     dispatch_with_transport(request, store, &transport)
@@ -572,6 +676,12 @@ fn dispatch_with_transport(
         "media.resources" => media_resources(&request, store),
         "media.sessions" => media_sessions(&request, store),
         "media.live.publish" => live::live_publish(&request),
+        "media.live.dial" => live_dial_dispatch(&request, store),
+        "media.live.answer" => live::live_answer(
+            &request,
+            transport,
+            &resolved_identity_id(&request, store),
+        ),
         "media.live.stop" => live::live_stop(&request),
         "media.live.subscribe" => live::live_subscribe(&request),
         "media.live.publishers" => live::live_publishers(&request),

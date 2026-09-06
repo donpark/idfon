@@ -132,4 +132,50 @@ run_case() { # label stream-args...
 run_case "stream --file --loop" --file "$work/pip.wav" --loop
 run_case "stream via stdin pipe" --loop < "$work/pip.wav"
 
+# 1:1 session-scoped call: no ticket exists — the MoQ session is the
+# capability. A dials bob's endpoint, publishes on the session; B answers
+# and records. Dial requires the message.send grant (same as the message path).
+ctx() { "$NUF" --socket "$1" context --json; }
+A_PID=$(ctx "$A" | jq -r .result.identity.public_key)
+A_EP=$(ctx "$A" | jq -r .result.identity.endpoint_id)
+A_ADDR=$(ctx "$A" | jq -r '.result.ticket | implode')
+B_PID=$(ctx "$B" | jq -r .result.identity.public_key)
+B_EP=$(ctx "$B" | jq -r .result.identity.endpoint_id)
+B_ADDR=$(ctx "$B" | jq -r '.result.ticket | implode')
+"$NUF" --socket "$A" peer add "$B_PID" --name bob --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR" > /dev/null
+"$NUF" --socket "$A" access grant --subject "$B_PID" --capability message.send > /dev/null
+
+"$NUF" --socket "$B" answer --out "$work/call.wav" --seconds 15 --wait 30 --json > "$work/answer.json" &
+answer_pid=$!
+sleep 1
+"$NUF" --socket "$A" stream --peer bob --file "$work/pip.wav" --seconds 12 --json > "$work/dial.json"
+jq -c '.result' "$work/dial.json"
+wait "$answer_pid"
+jq -c '.result | del(.out)' "$work/answer.json"
+python3 - "$work/call.wav" "$work/answer.json" <<'EOF'
+import sys, wave, json, struct, statistics
+w = wave.open(sys.argv[1], 'rb')
+assert w.getframerate() == 48000 and w.getnchannels() == 1, "expected 48k mono WAV"
+frames = w.readframes(w.getnframes())
+pcm = struct.unpack('<%dh' % (len(frames)//2), frames)
+meta = json.load(open(sys.argv[2]))['result']
+ON, OFF = 1000, 200
+onsets, above = [], False
+for s in range(0, len(pcm) - 480, 480):
+    e = sum(abs(x) for x in pcm[s:s+480]) / 480
+    if not above and e > ON:
+        onsets.append(s / 48000); above = True
+    elif above and e < OFF:
+        above = False
+intervals = [b - a for a, b in zip(onsets, onsets[1:])]
+jitter = statistics.stdev(intervals) * 1000 if len(intervals) > 1 else 0.0
+print(f"  pips={len(onsets)} jitter={jitter:.1f}ms duration={meta['duration_ms']}ms "
+      f"stalls={meta['stalls_over_100ms']} missing={meta['missing_packets']}")
+# Caller holds 12s; the capture should end with the session, not the 15s cap.
+assert 9000 <= meta['duration_ms'] <= 14500, f"duration {meta['duration_ms']}ms not ~12s"
+assert len(onsets) >= 3, "too few pips decoded"
+assert meta['stalls_over_100ms'] == 0 and meta['missing_packets'] == 0, "UX gates failed"
+EOF
+echo "PASS: 1:1 session-scoped stream --peer/answer"
+
 echo "PASS: idfon stream/get live audio over two daemon endpoints"

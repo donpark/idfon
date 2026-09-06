@@ -2400,9 +2400,11 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "idfon-core",
  "idfon-protocol",
  "iroh",
  "iroh-live",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tracing-subscriber",

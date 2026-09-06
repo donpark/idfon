@@ -48,7 +48,7 @@ fn find_daemon_binary() -> Option<PathBuf> {
     name = "idfon",
     version,
     about = "Control the idfond daemon: identity, peers, messaging, data transfer, live audio",
-    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send-data PEER < FILE  |  idfon recv > copy\nLive audio:     idfon stream --file FILE --loop  ->  live ticket;  idfon get TICKET > copy.wav"
+    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send PEER --file < FILE  |  idfon recv > copy\nLive broadcast: idfon stream --file FILE --loop  ->  ticket;  idfon get TICKET > copy.wav\n1:1 call:       idfon stream --peer PEER --file FILE  |  idfon answer --out copy.wav"
 )]
 struct Cli {
     /// Daemon socket path
@@ -81,10 +81,8 @@ enum Command {
     /// Manage peers
     #[command(subcommand)]
     Peer(PeerCmd),
-    /// Send a text message to a peer
+    /// Send text (--text) or a signaled blob transfer (--file/stdin) to a peer
     Send(SendArgs),
-    /// Store stdin/FILE as a blob and signal the ticket to a peer; prints the BlobTicket on delivery
-    SendData(SendDataArgs),
     /// Receive a data transfer signaled by send-data; writes to stdout or --out FILE
     Recv(RecvArgs),
     /// Fetch daemon events (follow with --follow)
@@ -103,7 +101,9 @@ enum Command {
     Put(PutArgs),
     /// Stream a ticket (blob or live) to stdout or --out FILE
     Get(GetArgs),
-    /// Publish FILE (or stdin) as live audio; prints the live ticket
+    /// Wait for an inbound 1:1 call and record it to --out FILE or stdout
+    Answer(AnswerArgs),
+    /// Publish FILE (or stdin) as live audio; --peer dials a 1:1 session instead
     Stream(StreamArgs),
     /// Live broadcast management
     #[command(subcommand)]
@@ -174,10 +174,14 @@ enum PeerCmd {
 struct SendArgs {
     #[arg(value_name = "PEER")]
     peer: String,
+    /// Text to send (chat path; requires --idempotency-key)
     #[arg(long)]
-    text: String,
+    text: Option<String>,
+    /// Send FILE (or stdin) as a signaled blob transfer; prints the BlobTicket on delivery
+    #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "-")]
+    file: Option<String>,
     #[arg(long = "idempotency-key")]
-    idempotency_key: String,
+    idempotency_key: Option<String>,
     #[arg(long = "capability-ticket")]
     capability_ticket: Option<Value>,
     #[arg(long)]
@@ -185,13 +189,20 @@ struct SendArgs {
 }
 
 #[derive(clap::Args)]
-struct SendDataArgs {
-    #[arg(value_name = "PEER")]
-    peer: String,
+struct AnswerArgs {
     #[arg(long)]
-    file: Option<String>,
+    out: Option<String>,
+    /// Capture window (seconds); the call ends when the caller's audio ends
     #[arg(long)]
-    retries: Option<u32>,
+    seconds: Option<u64>,
+    /// Give up if no one calls within this many seconds
+    #[arg(long)]
+    wait: Option<u64>,
+    /// Only accept calls from this endpoint id
+    #[arg(long)]
+    from: Option<String>,
+    #[arg(long = "no-relay")]
+    no_relay: bool,
 }
 
 #[derive(clap::Args)]
@@ -296,6 +307,12 @@ struct GetArgs {
 struct StreamArgs {
     #[arg(long)]
     file: Option<String>,
+    /// Dial a peer and stream on that session only (1:1, no ticket)
+    #[arg(long)]
+    peer: Option<String>,
+    /// 1:1 mode only: give up if the peer never hangs up (seconds)
+    #[arg(long)]
+    seconds: Option<u64>,
     #[arg(long = "loop")]
     loop_playback: bool,
     #[arg(long = "no-relay")]
@@ -367,14 +384,6 @@ fn run() -> io::Result<()> {
                 cmd_get(socket, &args.ticket, args.out.as_ref(), identity)
             }
         }
-        Command::SendData(args) => cmd_send_data(
-            socket,
-            &args.peer,
-            args.file.as_ref(),
-            args.retries,
-            json,
-            identity,
-        ),
         Command::Recv(args) => cmd_recv(
             socket,
             args.out.as_ref(),
@@ -385,9 +394,21 @@ fn run() -> io::Result<()> {
         Command::Stream(args) => cmd_stream(
             socket,
             args.file.as_ref(),
+            args.peer.as_ref(),
+            args.seconds,
             args.loop_playback,
             !args.no_relay,
             args.name.as_deref(),
+            json,
+            identity,
+        ),
+        Command::Answer(args) => cmd_answer(
+            socket,
+            args.out.as_ref(),
+            args.seconds,
+            args.wait,
+            args.from.as_deref(),
+            !args.no_relay,
             json,
             identity,
         ),
@@ -551,16 +572,27 @@ fn run() -> io::Result<()> {
             send_rpc(socket, "peer.status", json!({"ref": peer_ref}), identity, cli.stdin_json)?,
             json,
         ),
-        Command::Send(args) => finish(
-            send_rpc(
-                socket,
-                "message.send",
-                json!({"to": args.peer, "text": args.text, "idempotency_key": args.idempotency_key, "capability_ticket": args.capability_ticket, "retries": args.retries}),
-                identity,
-                cli.stdin_json,
-            )?,
-            json,
-        ),
+        Command::Send(args) => {
+            if let Some(file) = &args.file {
+                let file = if file == "-" { None } else { Some(file) };
+                cmd_send_data(socket, &args.peer, file, args.retries, json, identity)
+            } else {
+                let key = args
+                    .idempotency_key
+                    .as_deref()
+                    .ok_or_else(|| io::Error::other("send --text requires --idempotency-key"))?;
+                finish(
+                    send_rpc(
+                        socket,
+                        "message.send",
+                        json!({"to": args.peer, "text": args.text, "idempotency_key": key, "capability_ticket": args.capability_ticket, "retries": args.retries}),
+                        identity,
+                        cli.stdin_json,
+                    )?,
+                    json,
+                )
+            }
+        }
         Command::Operation(OperationCmd::Get {
             operation_id,
             timeout_ms,
@@ -997,7 +1029,7 @@ fn cmd_send_data(
     socket: &str,
     peer: &str,
     file: Option<&String>,
-    retries: Option<u32>,
+    retries: Option<u64>,
     json: bool,
     identity: Option<&str>,
 ) -> io::Result<()> {
@@ -1164,6 +1196,8 @@ fn cmd_recv(
 fn cmd_stream(
     socket: &str,
     file: Option<&String>,
+    peer: Option<&String>,
+    seconds: Option<u64>,
     loop_playback: bool,
     relay: bool,
     name: Option<&str>,
@@ -1189,6 +1223,28 @@ fn cmd_stream(
             spooled.to_str().ok_or_else(|| io::Error::other("temp path not utf-8"))?
         }
     };
+    // 1:1 mode: session-scoped publish to one peer; blocks until the peer
+    // hangs up (or --seconds). No ticket exists.
+    if let Some(peer) = peer {
+        let mut params = json!({"to": peer, "file": file, "loop": loop_playback, "relay": relay});
+        if let Some(seconds) = seconds {
+            params["seconds"] = seconds.into();
+        }
+        let response = ipc(socket, "media.live.dial", params, identity)?;
+        if !response.ok {
+            return Err(io::Error::other(request_error(&response)));
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&response).map_err(io::Error::other)?
+            );
+        } else {
+            let held = result_str(&response, "held_ms");
+            println!("streamed to {peer} for {held} ms");
+        }
+        return Ok(());
+    }
     let mut params = json!({"file": file, "loop": loop_playback, "relay": relay});
     if let Some(name) = name {
         params["name"] = name.into();
@@ -1262,6 +1318,75 @@ fn cmd_listen(
         );
     } else {
         eprintln!("listen: wrote {} ({})", written_path, result_str(&response, "duration_ms") + " ms audio");
+    }
+    Ok(())
+}
+
+/// `idfon answer`: waits for an inbound 1:1 call and records it to --out
+/// (default: a temp WAV copied to stdout).
+fn cmd_answer(
+    socket: &str,
+    out: Option<&String>,
+    seconds: Option<u64>,
+    wait: Option<u64>,
+    from: Option<&str>,
+    relay: bool,
+    json: bool,
+    identity: Option<&str>,
+) -> io::Result<()> {
+    let mut params = json!({"relay": relay});
+    if let Some(seconds) = seconds {
+        params["seconds"] = seconds.into();
+    }
+    if let Some(wait) = wait {
+        params["wait"] = wait.into();
+    }
+    if let Some(from) = from {
+        params["from"] = from.into();
+    }
+    let temp;
+    if let Some(path) = out {
+        params["out"] = path.clone().into();
+    } else {
+        temp = std::env::temp_dir().join(format!(
+            "idfon-answer-{}.wav",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock before epoch")
+                .as_nanos()
+        ));
+        params["out"] = temp.display().to_string().into();
+    }
+    let response = ipc(socket, "media.live.answer", params, identity)?;
+    if !response.ok {
+        return Err(io::Error::other(request_error(&response)));
+    }
+    let written_path = match &response.body {
+        ResponseBody::Success { result, .. } => result
+            .get("out")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        _ => return Err(io::Error::other("unexpected response")),
+    };
+    if out.is_none() {
+        std::io::copy(
+            &mut std::fs::File::open(&written_path)?,
+            &mut std::io::stdout().lock(),
+        )?;
+        let _ = std::fs::remove_file(&written_path);
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&response).map_err(io::Error::other)?
+        );
+    } else {
+        eprintln!(
+            "answer: wrote {} ({})",
+            written_path,
+            result_str(&response, "duration_ms") + " ms audio"
+        );
     }
     Ok(())
 }

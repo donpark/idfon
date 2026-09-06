@@ -107,7 +107,7 @@ B_ADDR=$(ctx "$B" | jq -r '.result.ticket | implode')
 head -c 300000 /dev/urandom > "$work/signaled.bin"
 "$NUF" --socket "$B" recv > "$work/signaled.received" &
 recv_pid=$!
-"$NUF" --socket "$A" send-data --retries 2 bob < "$work/signaled.bin" > "$work/signaled.ticket"
+"$NUF" --socket "$A" send bob --file --retries 2 < "$work/signaled.bin" > "$work/signaled.ticket"
 wait "$recv_pid"
 check "signaled send-data/recv" "$work/signaled.bin" "$work/signaled.received"
 

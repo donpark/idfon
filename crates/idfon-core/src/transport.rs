@@ -4,15 +4,31 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex},
 };
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 
-use iroh::{endpoint::presets, Endpoint, EndpointAddr, SecretKey};
+use iroh::{endpoint::{presets, Connection}, Endpoint, EndpointAddr, SecretKey};
 use idfon_protocol::{
     decode_frame, encode_frame, AckStatus, MessageAck, MessageEnvelope, MAX_FRAME_BYTES,
 };
 use thiserror::Error;
 
 pub const MESSAGE_ALPN: &[u8] = b"idfon/message/1";
+
+/// Unregisters a side-channel forwarder when dropped (see
+/// [`IrohTransport::add_side_channel`]).
+pub struct SideChannelGuard {
+    alpn: Vec<u8>,
+    channels: Arc<Mutex<HashMap<Vec<u8>, mpsc::Sender<Connection>>>>,
+}
+
+impl Drop for SideChannelGuard {
+    fn drop(&mut self) {
+        self.channels
+            .lock()
+            .expect("side channels poisoned")
+            .remove(&self.alpn);
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -74,6 +90,10 @@ impl MessageTransport for FakeTransport {
 pub struct IrohTransport {
     endpoint: Endpoint,
     alpn: Vec<u8>,
+    /// Side-channel ALPN forwarders: inbound connections whose ALPN matches
+    /// a registered entry are handed to the sender instead of the message
+    /// path (e.g. MoQ sessions for 1:1 live calls).
+    side_channels: Arc<Mutex<HashMap<Vec<u8>, mpsc::Sender<Connection>>>>,
 }
 
 impl IrohTransport {
@@ -93,11 +113,34 @@ impl IrohTransport {
         Ok(Self {
             endpoint,
             alpn: MESSAGE_ALPN.to_vec(),
+            side_channels: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
+    }
+
+    /// Registers a side-channel ALPN: inbound connections speaking `alpn`
+    /// are forwarded to `sender`. The ALPN is added to the endpoint's
+    /// accepted set immediately; dropping the returned guard unregisters
+    /// the forwarder (the ALPN stays accepted — re-register on next use).
+    pub fn add_side_channel(
+        &self,
+        alpn: &[u8],
+        sender: mpsc::Sender<Connection>,
+    ) -> SideChannelGuard {
+        {
+            let mut channels = self.side_channels.lock().expect("side channels poisoned");
+            channels.insert(alpn.to_vec(), sender);
+            let mut accepted = vec![MESSAGE_ALPN.to_vec()];
+            accepted.extend(channels.keys().cloned());
+            self.endpoint.set_alpns(accepted);
+        }
+        SideChannelGuard {
+            alpn: alpn.to_vec(),
+            channels: self.side_channels.clone(),
+        }
     }
 
     pub async fn shutdown(self) {
@@ -128,6 +171,23 @@ impl IrohTransport {
             };
             let handler = handler.clone();
             let alpn = self.alpn.clone();
+            let side_channels = self.side_channels.clone();
+            // Side-channel ALPNs (e.g. live-call MoQ sessions) are handed to
+            // whoever registered them; nobody home → close. They never reach
+            // the message path below (which owns the connection).
+            let forwarder = side_channels
+                .lock()
+                .expect("side channels poisoned")
+                .get(connection.alpn())
+                .cloned();
+            if let Some(sender) = forwarder {
+                tokio::spawn(async move {
+                    if sender.send(connection).await.is_err() {
+                        tracing::warn!("side channel closed, inbound connection dropped");
+                    }
+                });
+                continue;
+            }
             tokio::spawn(async move {
                 let result = async {
                     if connection.alpn() != alpn {

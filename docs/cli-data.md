@@ -64,20 +64,21 @@ scripts/test-e2e.sh
 
 ## Signaled transfer through the message path
 
-`send-data`/`recv` close the loop: the BlobTicket travels through idfon's
+`send --file`/`recv` close the loop: the BlobTicket travels through idfon's
 own message path, so no side channel is needed.
 
 ```sh
 # Sender endpoint (paired with the receiver; see pairing below):
-cat data.bin | idfon send-data bob          # prints the BlobTicket on delivery
+cat data.bin | idfon send bob --file        # prints the BlobTicket on delivery
 # Receiver endpoint:
 idfon recv > data.bin                       # waits for the next data message
 ```
 
-- `send-data PEER` stores the data as a blob, sends a versioned
-  `IDFON-DATA/1` envelope (`ticket=`, `size=`) via `message.send`, and waits
-  for the delivery operation to reach a terminal state before printing the
-  ticket. `--retries N` covers transient connection handshakes.
+- `send PEER --file FILE` (or stdin with bare `--file`) stores the data as a
+  blob, sends a versioned `IDFON-DATA/1` envelope (`ticket=`, `size=`) via
+  `message.send`, and waits for the delivery operation to reach a terminal
+  state before printing the ticket. `--retries N` covers transient
+  connection handshakes.
 - `recv` waits (default 60 s, `--timeout-ms`) for the next data message that
   arrives after it started, fetches the blob, and streams it to stdout or
   `--out FILE`. `--from PEER_ID` filters by sender. The declared size is
@@ -121,7 +122,7 @@ prints the ticket JSON, which `send --capability-ticket` accepts; a verified
 ticket satisfies the receive gate and materializes grants on first delivery.
 
 `scripts/test-e2e.sh` exercises the whole signaled flow (pairing,
-`send-data`, `recv`) as its fourth case.
+`send --file`, `recv`) as its fourth case.
 
 ## Live audio streaming
 
@@ -130,6 +131,28 @@ blob or live (dispatched on the ticket's self-describing prefix: `blob…` vs
 `iroh-live:`). Sources and
 sinks are files — no microphone or GUI required (mic input is a later
 extension).
+
+### 1:1 calls
+
+`stream --peer PEER` dials a paired peer and publishes on that session only —
+session-scoped, so no ticket exists and no third party can subscribe. It
+requires the same `message.send` grant as the message path. The callee runs
+`answer`, which blocks waiting for an inbound call and records it:
+
+```sh
+# Callee (paired with the caller):
+idfon answer --out call.wav --seconds 15 --wait 30
+# Caller:
+idfon stream --peer bob --file speech.wav        # blocks until the callee hangs up
+```
+
+- The caller returns when the callee hangs up (its capture window ends) or
+  `--seconds` expires; the callee's capture ends when the caller's audio ends
+  or the window ends.
+- `answer --from ENDPOINT_ID` restricts callers; without it any caller that
+  reaches the endpoint is accepted (same open posture as legacy messaging).
+- Calls ride the daemon's transport endpoint (a side-channel ALPN registered
+  for the duration), so no extra port or discovery is involved.
 
 ```sh
 # Publisher endpoint: streams FILE (or stdin) as a live broadcast.
