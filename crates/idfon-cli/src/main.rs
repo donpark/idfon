@@ -48,7 +48,7 @@ fn find_daemon_binary() -> Option<PathBuf> {
     name = "idfon",
     version,
     about = "Control the idfond daemon: identity, peers, messaging, data transfer, live audio",
-    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send PEER --file < FILE  |  idfon recv > copy\nLive broadcast: idfon stream --file FILE --loop  ->  ticket;  idfon get TICKET > copy.wav\n1:1 call:       idfon stream --peer PEER --file FILE  |  idfon answer --out copy.wav"
+    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send PEER --file < FILE  |  idfon recv > copy\nLive broadcast: idfon stream --file FILE --loop  ->  ticket;  idfon get TICKET > copy.wav\n1:1 call:       idfon send PEER --stream --file FILE  |  idfon answer --out copy.wav"
 )]
 struct Cli {
     /// Daemon socket path
@@ -81,7 +81,7 @@ enum Command {
     /// Manage peers
     #[command(subcommand)]
     Peer(PeerCmd),
-    /// Send text (--text) or a signaled blob transfer (--file/stdin) to a peer
+    /// Send to a peer: --text chat, --file signaled blob, --stream 1:1 live
     Send(SendArgs),
     /// Receive a data transfer signaled by send-data; writes to stdout or --out FILE
     Recv(RecvArgs),
@@ -180,6 +180,15 @@ struct SendArgs {
     /// Send FILE (or stdin) as a signaled blob transfer; prints the BlobTicket on delivery
     #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = "-")]
     file: Option<String>,
+    /// Stream FILE (or stdin) to the peer as a 1:1 session (no ticket); blocks until they hang up
+    #[arg(long)]
+    stream: bool,
+    /// Stream mode only: give up if the peer never hangs up (seconds)
+    #[arg(long)]
+    seconds: Option<u64>,
+    /// Stream mode only: forbid relayed connections
+    #[arg(long = "no-relay")]
+    no_relay: bool,
     #[arg(long = "idempotency-key")]
     idempotency_key: Option<String>,
     #[arg(long = "capability-ticket")]
@@ -307,12 +316,6 @@ struct GetArgs {
 struct StreamArgs {
     #[arg(long)]
     file: Option<String>,
-    /// Dial a peer and stream on that session only (1:1, no ticket)
-    #[arg(long)]
-    peer: Option<String>,
-    /// 1:1 mode only: give up if the peer never hangs up (seconds)
-    #[arg(long)]
-    seconds: Option<u64>,
     #[arg(long = "loop")]
     loop_playback: bool,
     #[arg(long = "no-relay")]
@@ -394,8 +397,6 @@ fn run() -> io::Result<()> {
         Command::Stream(args) => cmd_stream(
             socket,
             args.file.as_ref(),
-            args.peer.as_ref(),
-            args.seconds,
             args.loop_playback,
             !args.no_relay,
             args.name.as_deref(),
@@ -573,6 +574,29 @@ fn run() -> io::Result<()> {
             json,
         ),
         Command::Send(args) => {
+            if args.stream {
+                // 1:1 session-scoped stream to the peer; blocks until they
+                // hang up (or --seconds). No ticket exists.
+                let file = resolve_stream_file(args.file.as_ref())?;
+                let mut params = json!({"to": args.peer, "file": file, "relay": !args.no_relay});
+                if let Some(seconds) = args.seconds {
+                    params["seconds"] = seconds.into();
+                }
+                let response = ipc(socket, "media.live.dial", params, identity)?;
+                if !response.ok {
+                    return Err(io::Error::other(request_error(&response)));
+                }
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&response).map_err(io::Error::other)?
+                    );
+                } else {
+                    let held = result_str(&response, "held_ms");
+                    println!("streamed to {} for {held} ms", args.peer);
+                }
+                return Ok(());
+            }
             if let Some(file) = &args.file {
                 let file = if file == "-" { None } else { Some(file) };
                 cmd_send_data(socket, &args.peer, file, args.retries, json, identity)
@@ -1193,58 +1217,53 @@ fn cmd_recv(
 
 /// `idfon stream`: publishes FILE (or stdin, spooled to a temp file) as a
 /// live iroh broadcast through the daemon. Prints the bare live ticket.
+/// Resolves --file to a daemon-readable path; stdin (None or "-") is spooled
+/// to a temp file because the daemon opens the path itself. Returns the path
+/// string and the temp path to keep alive for the call.
+fn spool_stdin() -> io::Result<std::path::PathBuf> {
+    let path = std::env::temp_dir().join(format!(
+        "idfon-stream-{}.wav",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos()
+    ));
+    let mut data = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::stdin(), &mut data)?;
+    std::fs::write(&path, data)?;
+    Ok(path)
+}
+
+/// Resolves --file to a daemon-readable path; stdin (None or "-") is spooled
+/// to a temp file because the daemon opens the path itself.
+fn resolve_stream_file(file: Option<&String>) -> io::Result<String> {
+    match file {
+        None => {
+            let path = spool_stdin()?;
+            path.to_str()
+                .map(str::to_string)
+                .ok_or_else(|| io::Error::other("temp path not utf-8"))
+        }
+        Some(path) if path == "-" => {
+            let path = spool_stdin()?;
+            path.to_str()
+                .map(str::to_string)
+                .ok_or_else(|| io::Error::other("temp path not utf-8"))
+        }
+        Some(path) => Ok(path.clone()),
+    }
+}
+
 fn cmd_stream(
     socket: &str,
     file: Option<&String>,
-    peer: Option<&String>,
-    seconds: Option<u64>,
     loop_playback: bool,
     relay: bool,
     name: Option<&str>,
     json: bool,
     identity: Option<&str>,
 ) -> io::Result<()> {
-    // The daemon reads the file itself, so stdin payloads need spooling.
-    let spooled;
-    let file = match file {
-        Some(path) => path.as_str(),
-        None => {
-            let path = std::env::temp_dir().join(format!(
-                "idfon-stream-{}.wav",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("clock before epoch")
-                    .as_nanos()
-            ));
-            let mut data = Vec::new();
-            std::io::Read::read_to_end(&mut std::io::stdin(), &mut data)?;
-            std::fs::write(&path, data)?;
-            spooled = path;
-            spooled.to_str().ok_or_else(|| io::Error::other("temp path not utf-8"))?
-        }
-    };
-    // 1:1 mode: session-scoped publish to one peer; blocks until the peer
-    // hangs up (or --seconds). No ticket exists.
-    if let Some(peer) = peer {
-        let mut params = json!({"to": peer, "file": file, "loop": loop_playback, "relay": relay});
-        if let Some(seconds) = seconds {
-            params["seconds"] = seconds.into();
-        }
-        let response = ipc(socket, "media.live.dial", params, identity)?;
-        if !response.ok {
-            return Err(io::Error::other(request_error(&response)));
-        }
-        if json {
-            println!(
-                "{}",
-                serde_json::to_string(&response).map_err(io::Error::other)?
-            );
-        } else {
-            let held = result_str(&response, "held_ms");
-            println!("streamed to {peer} for {held} ms");
-        }
-        return Ok(());
-    }
+    let file = resolve_stream_file(file)?;
     let mut params = json!({"file": file, "loop": loop_playback, "relay": relay});
     if let Some(name) = name {
         params["name"] = name.into();

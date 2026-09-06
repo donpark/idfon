@@ -143,7 +143,7 @@ requires the same `message.send` grant as the message path. The callee runs
 # Callee (paired with the caller):
 idfon answer --out call.wav --seconds 15 --wait 30
 # Caller:
-idfon stream --peer bob --file speech.wav        # blocks until the callee hangs up
+idfon send bob --stream --file speech.wav        # blocks until the callee hangs up
 ```
 
 - The caller returns when the callee hangs up (its capture window ends) or
