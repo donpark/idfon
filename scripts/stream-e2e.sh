@@ -134,8 +134,8 @@ run_case "stream via stdin pipe" --loop < "$work/pip.wav"
 
 # 1:1 session-scoped call: no ticket exists — the MoQ session is the
 # capability. A dials bob's endpoint via send --stream, publishes on the
-# session; B answers and records. Requires the message.send grant.
-ctx() { "$NUF" --socket "$1" context --json; }
+# session; B receives with recv --stream. Requires the message.send grant.
+ctx() { "$NUF" --socket "$1" status --json; }
 A_PID=$(ctx "$A" | jq -r .result.identity.public_key)
 A_EP=$(ctx "$A" | jq -r .result.identity.endpoint_id)
 A_ADDR=$(ctx "$A" | jq -r '.result.ticket | implode')
@@ -145,7 +145,7 @@ B_ADDR=$(ctx "$B" | jq -r '.result.ticket | implode')
 "$NUF" --socket "$A" peer add "$B_PID" --name bob --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR" > /dev/null
 "$NUF" --socket "$A" access grant --subject "$B_PID" --capability message.send > /dev/null
 
-"$NUF" --socket "$B" answer --out "$work/call.wav" --seconds 15 --wait 30 --json > "$work/answer.json" &
+"$NUF" --socket "$B" recv --stream --out "$work/call.wav" --seconds 15 --wait 30 --json > "$work/answer.json" &
 answer_pid=$!
 sleep 1
 "$NUF" --socket "$A" send bob --stream --file "$work/pip.wav" --seconds 12 --json > "$work/dial.json"
@@ -176,6 +176,6 @@ assert 9000 <= meta['duration_ms'] <= 14500, f"duration {meta['duration_ms']}ms 
 assert len(onsets) >= 3, "too few pips decoded"
 assert meta['stalls_over_100ms'] == 0 and meta['missing_packets'] == 0, "UX gates failed"
 EOF
-echo "PASS: 1:1 session-scoped send --stream/answer"
+echo "PASS: 1:1 session-scoped send --stream / recv --stream"
 
 echo "PASS: idfon stream/get live audio over two daemon endpoints"

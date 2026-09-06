@@ -48,7 +48,7 @@ fn find_daemon_binary() -> Option<PathBuf> {
     name = "idfon",
     version,
     about = "Control the idfond daemon: identity, peers, messaging, data transfer, live audio",
-    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send PEER --file < FILE  |  idfon recv > copy\nLive broadcast: idfon stream --file FILE --loop  ->  ticket;  idfon get TICKET > copy.wav\n1:1 call:       idfon send PEER --stream --file FILE  |  idfon answer --out copy.wav"
+    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send PEER --file < FILE  |  idfon recv > copy\nLive broadcast: idfon stream --file FILE --loop  ->  ticket;  idfon get TICKET > copy.wav\n1:1 call:       idfon send PEER --stream --file FILE  |  idfon recv --stream --out copy.wav"
 )]
 struct Cli {
     /// Daemon socket path
@@ -71,8 +71,6 @@ struct Cli {
 enum Command {
     /// Show daemon status
     Status,
-    /// Show daemon context
-    Context,
     /// Stop the background daemon
     Shutdown,
     /// Manage identities
@@ -83,7 +81,7 @@ enum Command {
     Peer(PeerCmd),
     /// Send to a peer: --text chat, --file signaled blob, --stream 1:1 live
     Send(SendArgs),
-    /// Receive a data transfer signaled by send-data; writes to stdout or --out FILE
+    /// Receive a peer push: signaled blob (--file mode) or 1:1 stream (--stream)
     Recv(RecvArgs),
     /// Fetch daemon events (follow with --follow)
     Events(EventsArgs),
@@ -95,19 +93,12 @@ enum Command {
     /// Check and grant capabilities
     #[command(subcommand)]
     Access(AccessCmd),
-    /// Mint a capability ticket for a peer
-    Ticket(TicketArgs),
     /// Store stdin/FILE as a blob; prints the BlobTicket
     Put(PutArgs),
     /// Stream a ticket (blob or live) to stdout or --out FILE
     Get(GetArgs),
-    /// Wait for an inbound 1:1 call and record it to --out FILE or stdout
-    Answer(AnswerArgs),
-    /// Publish FILE (or stdin) as live audio; --peer dials a 1:1 session instead
+    /// Publish FILE (or stdin) as live audio; --list/--stop manage publishers
     Stream(StreamArgs),
-    /// Live broadcast management
-    #[command(subcommand)]
-    Live(LiveCmd),
 }
 
 #[derive(Subcommand)]
@@ -198,30 +189,25 @@ struct SendArgs {
 }
 
 #[derive(clap::Args)]
-struct AnswerArgs {
-    #[arg(long)]
-    out: Option<String>,
-    /// Capture window (seconds); the call ends when the caller's audio ends
-    #[arg(long)]
-    seconds: Option<u64>,
-    /// Give up if no one calls within this many seconds
-    #[arg(long)]
-    wait: Option<u64>,
-    /// Only accept calls from this endpoint id
-    #[arg(long)]
-    from: Option<String>,
-    #[arg(long = "no-relay")]
-    no_relay: bool,
-}
-
-#[derive(clap::Args)]
 struct RecvArgs {
+    /// Receive a 1:1 live stream instead of a signaled data transfer
+    #[arg(long)]
+    stream: bool,
     #[arg(long)]
     from: Option<String>,
     #[arg(long)]
     out: Option<String>,
     #[arg(long = "timeout-ms")]
     timeout_ms: Option<u64>,
+    /// Stream mode only: capture window (seconds)
+    #[arg(long)]
+    seconds: Option<u64>,
+    /// Stream mode only: give up if no one calls within this many seconds
+    #[arg(long)]
+    wait: Option<u64>,
+    /// Stream mode only: forbid relayed connections
+    #[arg(long = "no-relay")]
+    no_relay: bool,
 }
 
 #[derive(clap::Args)]
@@ -278,6 +264,8 @@ enum AccessCmd {
         #[arg(long)]
         capability: String,
     },
+    /// Mint a capability ticket for a peer
+    Ticket(TicketArgs),
 }
 
 #[derive(clap::Args)]
@@ -316,20 +304,18 @@ struct GetArgs {
 struct StreamArgs {
     #[arg(long)]
     file: Option<String>,
+    /// List running live publishers instead of publishing
+    #[arg(long, conflicts_with_all = ["file", "loop_playback", "name", "stop"])]
+    list: bool,
+    /// Gracefully stop a live publisher by id instead of publishing
+    #[arg(long, conflicts_with_all = ["file", "loop_playback", "name"])]
+    stop: Option<String>,
     #[arg(long = "loop")]
     loop_playback: bool,
     #[arg(long = "no-relay")]
     no_relay: bool,
     #[arg(long)]
     name: Option<String>,
-}
-
-#[derive(Subcommand)]
-enum LiveCmd {
-    /// List running live publishers
-    Publishers,
-    /// Gracefully stop a live publisher
-    Stop { id: String },
 }
 
 fn main() {
@@ -387,29 +373,36 @@ fn run() -> io::Result<()> {
                 cmd_get(socket, &args.ticket, args.out.as_ref(), identity)
             }
         }
-        Command::Recv(args) => cmd_recv(
-            socket,
-            args.out.as_ref(),
-            args.from.as_deref(),
-            args.timeout_ms,
-            identity,
-        ),
+        Command::Recv(args) => {
+            if args.stream {
+                cmd_answer(
+                    socket,
+                    args.out.as_ref(),
+                    args.seconds,
+                    args.wait,
+                    args.from.as_deref(),
+                    !args.no_relay,
+                    json,
+                    identity,
+                )
+            } else {
+                cmd_recv(
+                    socket,
+                    args.out.as_ref(),
+                    args.from.as_deref(),
+                    args.timeout_ms,
+                    identity,
+                )
+            }
+        }
         Command::Stream(args) => cmd_stream(
             socket,
+            args.list,
+            args.stop.as_deref(),
             args.file.as_ref(),
             args.loop_playback,
             !args.no_relay,
             args.name.as_deref(),
-            json,
-            identity,
-        ),
-        Command::Answer(args) => cmd_answer(
-            socket,
-            args.out.as_ref(),
-            args.seconds,
-            args.wait,
-            args.from.as_deref(),
-            !args.no_relay,
             json,
             identity,
         ),
@@ -466,48 +459,8 @@ fn run() -> io::Result<()> {
             }
             finish(response, json)
         }
-        Command::Live(LiveCmd::Stop { id }) => {
-            let response = ipc(socket, "media.live.stop", json!({"id": id}), identity)?;
-            if !response.ok {
-                return Err(io::Error::other(request_error(&response)));
-            }
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&response).map_err(io::Error::other)?
-                );
-            } else {
-                println!("stopped {}", result_str(&response, "id"));
-            }
-            Ok(())
-        }
-        Command::Ticket(args) => {
-            let params = json!({
-                "subject": args.subject,
-                "capabilities": [args.capability.clone().unwrap_or_else(|| "message.receive".into())],
-                "expires_at": args.expires_at,
-            });
-            let response = send_rpc(socket, "capability.ticket", params, identity, cli.stdin_json)?;
-            if !json {
-                let ticket = match &response.body {
-                    ResponseBody::Success { result, .. } => {
-                        result.get("ticket").cloned().unwrap_or_default()
-                    }
-                    _ => Value::Null,
-                };
-                println!(
-                    "{}",
-                    serde_json::to_string(&ticket).map_err(io::Error::other)?
-                );
-                return Ok(());
-            }
-            finish(response, json)
-        }
         Command::Status => {
             finish(send_rpc(socket, "status", json!({}), identity, cli.stdin_json)?, json)
-        }
-        Command::Context => {
-            finish(send_rpc(socket, "context", json!({}), identity, cli.stdin_json)?, json)
         }
         Command::Identity(IdentityCmd::List) => {
             finish(send_rpc(socket, "identities", json!({}), identity, cli.stdin_json)?, json)
@@ -669,10 +622,28 @@ fn run() -> io::Result<()> {
             )?,
             json,
         ),
-        Command::Live(LiveCmd::Publishers) => finish(
-            send_rpc(socket, "media.live.publishers", json!({}), identity, cli.stdin_json)?,
-            json,
-        ),
+        Command::Access(AccessCmd::Ticket(args)) => {
+            let params = json!({
+                "subject": args.subject,
+                "capabilities": [args.capability.clone().unwrap_or_else(|| "message.receive".into())],
+                "expires_at": args.expires_at,
+            });
+            let response = send_rpc(socket, "capability.ticket", params, identity, cli.stdin_json)?;
+            if !json {
+                let ticket = match &response.body {
+                    ResponseBody::Success { result, .. } => {
+                        result.get("ticket").cloned().unwrap_or_default()
+                    }
+                    _ => Value::Null,
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string(&ticket).map_err(io::Error::other)?
+                );
+                return Ok(());
+            }
+            finish(response, json)
+        }
     }
 }
 
@@ -781,10 +752,16 @@ fn print_human(response: &Response) {
         idfon_protocol::ResponseBody::Success { result, .. } => {
             if response.id == "cli-1" {
                 if let Some(ready) = result.get("ready").and_then(serde_json::Value::as_bool) {
+                    let identity = result
+                        .get("identity")
+                        .and_then(|identity| identity.get("name"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("none");
                     println!(
-                        "{}: {}",
+                        "{}: {}, identity: {}",
                         response.id,
-                        if ready { "ready" } else { "not ready" }
+                        if ready { "ready" } else { "not ready" },
+                        identity
                     );
                 } else {
                     println!("{}", result);
@@ -1265,6 +1242,8 @@ fn resolve_stream_file(file: Option<&String>) -> io::Result<String> {
 
 fn cmd_stream(
     socket: &str,
+    list: bool,
+    stop: Option<&str>,
     file: Option<&String>,
     loop_playback: bool,
     relay: bool,
@@ -1272,6 +1251,27 @@ fn cmd_stream(
     json: bool,
     identity: Option<&str>,
 ) -> io::Result<()> {
+    if list {
+        return finish(
+            send_rpc(socket, "media.live.publishers", json!({}), identity, false)?,
+            json,
+        );
+    }
+    if let Some(id) = stop {
+        let response = ipc(socket, "media.live.stop", json!({"id": id}), identity)?;
+        if !response.ok {
+            return Err(io::Error::other(request_error(&response)));
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&response).map_err(io::Error::other)?
+            );
+        } else {
+            println!("stopped {}", result_str(&response, "id"));
+        }
+        return Ok(());
+    }
     let file = resolve_stream_file(file)?;
     let mut params = json!({"file": file, "loop": loop_playback, "relay": relay});
     if let Some(name) = name {

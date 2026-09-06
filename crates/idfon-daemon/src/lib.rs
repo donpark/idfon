@@ -589,15 +589,7 @@ fn dispatch_with_transport(
         "operation.cancel" => operation_cancel(&request, store),
         "events" => events(&request, store),
         "wait" => wait_event(&request, store),
-        "status" => success(
-            &request,
-            serde_json::json!({
-                "daemon": "idfond",
-                "ready": true,
-                "protocol_version": PROTOCOL_VERSION,
-            }),
-        ),
-        "context" => {
+        "status" | "context" => {
             let state = store.lock().expect("store mutex poisoned");
             let identity_ref = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
             let identity = state
@@ -611,6 +603,7 @@ fn dispatch_with_transport(
                     "identity": identity,
                     "daemon": "idfond",
                     "ready": true,
+                    "protocol_version": PROTOCOL_VERSION,
                     "ticket": transport.endpoint_ticket_for(identity_id).unwrap_or_default(),
                 }),
             )

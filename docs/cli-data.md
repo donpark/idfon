@@ -95,7 +95,7 @@ public key are the same value (hex of the Ed25519 public key), and
 
 ```sh
 # Peer info — run the same three lines against each daemon socket:
-ctx() { idfon --socket "$1" context --json; }
+ctx() { idfon --socket "$1" status --json; }
 EP=$(ctx /tmp/idfon-a/idfond.sock | jq -r .result.identity.endpoint_id)
 PID=$(ctx /tmp/idfon-a/idfond.sock | jq -r .result.identity.public_key)   # == peer id
 ADDR=$(ctx /tmp/idfon-a/idfond.sock | jq -r '.result.ticket | implode')   # EndpointAddr JSON
@@ -137,11 +137,11 @@ extension).
 `stream --peer PEER` dials a paired peer and publishes on that session only —
 session-scoped, so no ticket exists and no third party can subscribe. It
 requires the same `message.send` grant as the message path. The callee runs
-`answer`, which blocks waiting for an inbound call and records it:
+`recv --stream`, which blocks waiting for an inbound call and records it:
 
 ```sh
 # Callee (paired with the caller):
-idfon answer --out call.wav --seconds 15 --wait 30
+idfon recv --stream --out call.wav --seconds 15 --wait 30
 # Caller:
 idfon send bob --stream --file speech.wav        # blocks until the callee hangs up
 ```
@@ -149,7 +149,7 @@ idfon send bob --stream --file speech.wav        # blocks until the callee hangs
 - The caller returns when the callee hangs up (its capture window ends) or
   `--seconds` expires; the callee's capture ends when the caller's audio ends
   or the window ends.
-- `answer --from ENDPOINT_ID` restricts callers; without it any caller that
+- `recv --stream --from ENDPOINT_ID` restricts callers; without it any caller that
   reaches the endpoint is accepted (same open posture as legacy messaging).
 - Calls ride the daemon's transport endpoint (a side-channel ALPN registered
   for the duration), so no extra port or discovery is involved.
@@ -191,8 +191,8 @@ Publishers run inside the daemon and are kept in an in-memory registry
 
 ```sh
 idfon stream --file speech.wav --loop --name radio    # prints the ticket
-idfon live publishers                                  # list running publishers
-idfon live stop live-<name>                            # graceful stop
+idfon stream --list                                    # list running publishers
+idfon stream --stop live-<name>                        # graceful stop
 ```
 
 `stop` sends the underlying iroh session a graceful shutdown before tearing

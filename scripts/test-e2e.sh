@@ -93,7 +93,7 @@ check "audio wav" "$work/audio.wav" "$work/audio.received"
 
 # 4. Signaled transfer through the message path: pair the daemons (cross
 # peer.add with endpoint info + grants), then send-data/recv.
-ctx() { "$NUF" --socket "$1" context --json; }
+ctx() { "$NUF" --socket "$1" status --json; }
 A_EP=$(ctx "$A" | jq -r .result.identity.endpoint_id)
 A_PID=$(ctx "$A" | jq -r .result.identity.public_key)
 A_ADDR=$(ctx "$A" | jq -r '.result.ticket | implode')
