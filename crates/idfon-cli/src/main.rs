@@ -47,8 +47,8 @@ fn find_daemon_binary() -> Option<PathBuf> {
 #[command(
     name = "idfon",
     version,
-    disable_help_subcommand = true,
-    about = "Control the idfond daemon: identity, peers, messaging, data transfer, live audio"
+    about = "Control the idfond daemon: identity, peers, messaging, data transfer, live audio",
+    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send-data PEER < FILE  |  idfon recv > copy\nLive audio:     idfon stream --file FILE --loop  ->  live ticket;  idfon listen TICKET > copy.wav"
 )]
 struct Cli {
     /// Daemon socket path
@@ -110,8 +110,6 @@ enum Command {
     /// Live broadcast management
     #[command(subcommand)]
     Live(LiveCmd),
-    /// Print a reference topic: schema, errors, examples
-    Help { topic: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -356,10 +354,6 @@ fn run() -> io::Result<()> {
             } else {
                 println!("daemon stopped");
             }
-            Ok(())
-        }
-        Command::Help { topic } => {
-            println!("{}", help_text(topic.as_deref().unwrap_or("commands")));
             Ok(())
         }
         Command::Put(args) => cmd_put(socket, args.file.as_ref(), args.resource_id, json, identity),
@@ -1272,24 +1266,3 @@ fn cmd_listen(
     Ok(())
 }
 
-fn help_text(topic: &str) -> String {
-    match topic {
-        "schema" => "request: {version:number,id:string,method:string,params:object}; optional --identity selects the daemon identity".into(),
-        "errors" => "Stable errors: invalid_request, unauthorized, capability_denied, peer_offline, idempotency_key_conflict, cursor_too_old, timeout.".into(),
-        "examples" => "idfon status --json\nidfon --identity Bob send alice --text hello --idempotency-key hello-1 --json\nidfon --identity Alice events --follow".into(),
-        _ => "idfon commands (noun verb):\n\
-              status, context, shutdown\n\
-              identity list|use|create|delete\n\
-              peer list|add|update|remove|resolve|show|status\n\
-              send PEER, send-data PEER, recv, events, wait\n\
-              operation get|wait|cancel OPERATION_ID\n\
-              access check|grant, ticket\n\
-              put, get (data transfer), stream, listen, live publishers|stop\n\
-              \n\
-              Use --json for machine output and --stdin-json for request parameters.\n\
-              Data transfer: cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\n\
-              Signaled:      idfon send-data PEER < FILE   |   idfon recv > copy\n\
-              Live audio:    idfon stream --file FILE --loop  ->  live ticket;  idfon listen TICKET > copy.wav"
-            .to_string(),
-    }
-}
