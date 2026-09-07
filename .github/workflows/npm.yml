@@ -70,7 +70,8 @@ jobs:
             version="$(node npm/idfon/bin/idfon.js --version)"
           fi
           echo "idfon --version -> $version"
-          grep -q "0\.2\.0" <<<"$version"
+          expected="idfon $(node -p "require('./npm/idfon/package.json').version")"
+          [ "$version" = "$expected" ] || { echo "expected '$expected'"; exit 1; }
       - name: Pack platform package
         # "./" prefix: bare "npm/<pkg>" parses as a GitHub shorthand spec and
         # npm tries to clone it over ssh instead of packing the local dir.
