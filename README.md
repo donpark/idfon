@@ -1,7 +1,7 @@
 # Idfon
 
-> **Status:** experimental, pre-release. The npm install (`npx idfon`) lands
-> when this repo goes public; until then, build from source.
+> **Status:** experimental, pre-release. Distributed via npm with prebuilt
+> binaries for macOS (arm64, x64) and Linux (x64, arm64).
 
 Idfon is a peer-to-peer communication system built on
 [iroh](https://www.iroh.computer) — direct, encrypted connections between
@@ -16,7 +16,7 @@ is the CLI.
 
 ## Install
 
-**npm** (after public launch):
+**npm**:
 
 ```sh
 npx idfon status        # no install — downloads the prebuilt binary
