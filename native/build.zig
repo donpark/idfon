@@ -20,26 +20,7 @@ fn hostModule(b: *std.Build, parent: *std.Build.Module, sdk: *std.Build.Module) 
 }
 
 pub fn build(b: *std.Build) void {
-    // Mobile (iOS) targets wire the in-process daemon host module through
-    // the SDK's mobile_host seam — ignored on desktop, which keeps the
-    // patched-runner path below. The Rust c-ffi archive must be prebuilt
-    // for the simulator triple (cargo build --release --target
-    // aarch64-apple-ios-sim) before `zig build lib` runs.
-    const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{
-        .name = "Idfon",
-        .manifest = "app.json",
-        .mobile_host = .{
-            .root = b.path("src/iroh_ffi.zig"),
-            .include_dirs = &.{
-                b.path("vendor/iroh-c-ffi"),
-                // @cImport of system headers on the simulator target needs
-                // the iOS SDK include path (zig ships no libc headers for it).
-                .{ .cwd_relative = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/usr/include" },
-            },
-            .link_libc = true,
-            .object_files = &.{b.path("vendor/iroh-c-ffi/target/aarch64-apple-ios-sim/release/libiroh_c_ffi.a")},
-        },
-    });
+    const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{ .name = "Idfon", .manifest = "app.json" });
     const cargo = b.addSystemCommand(&.{ "cargo", "build", "--release", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml" });
     // The app loads the dylib from its own directory (bundle MacOS/, zig-out/bin/).
     cargo.setEnvironmentVariable("RUSTFLAGS", "-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib");
