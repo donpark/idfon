@@ -91,4 +91,6 @@ esac
 pkgdir="$root/npm/$pkg"
 mkdir -p "$pkgdir/bin"
 cp "$out/idfon" "$out/idfond" "$out/$dylib" "$pkgdir/bin/"
+# npm always packs LICENSE* from the package dir regardless of "files".
+cp "$root/LICENSE-APACHE" "$root/LICENSE-MIT" "$pkgdir/"
 echo "build-npm.sh: populated $pkgdir/bin ($target)"

@@ -2,7 +2,7 @@
   "name": "idfon-linux-x64",
   "version": "0.2.0",
   "description": "Prebuilt idfon binaries for Linux x64 (idfon, idfond, libiroh_c_ffi).",
-  "license": "UNLICENSED",
+  "license": "(MIT OR Apache-2.0)",
   "repository": "github:donpark/idfon",
   "os": [
     "linux"
@@ -11,6 +11,8 @@
     "x64"
   ],
   "files": [
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
     "bin"
   ]
 }

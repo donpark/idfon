@@ -2,12 +2,16 @@
   "name": "idfon",
   "version": "0.2.0",
   "description": "Peer-to-peer content transfer and live audio over iroh: put/get tickets, peer push, 1:1 streams.",
-  "license": "UNLICENSED",
+  "license": "(MIT OR Apache-2.0)",
   "repository": "github:donpark/idfon",
   "bin": {
     "idfon": "bin/idfon.js"
   },
   "files": [
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
     "bin",
     "README.md"
   ],

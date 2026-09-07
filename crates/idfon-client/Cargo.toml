@@ -2,6 +2,7 @@
 name = "idfon-client"
 version.workspace = true
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 idfon-protocol = { path = "../idfon-protocol" }

@@ -2,6 +2,7 @@
 name = "idfond"
 version.workspace = true
 edition = "2021"
+license.workspace = true
 build = "build.rs"
 
 # No runtime [dependencies]: the daemon core is reached through

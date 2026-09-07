@@ -4,6 +4,7 @@ members = ["crates/idfon-protocol", "crates/idfon-core", "crates/idfon-media", "
 exclude = ["native/vendor/iroh-c-ffi"]
 
 [workspace.package]
+license = "MIT OR Apache-2.0"
 version = "0.2.0"
 
 [profile.release]
