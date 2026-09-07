@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @cImport({
     @cInclude("stdio.h");
     @cInclude("unistd.h");
@@ -421,7 +422,34 @@ fn profilePaths() ProfilePaths {
     return paths;
 }
 
+var daemon_started = std.atomic.Value(bool).init(false);
+var daemon_socket_buf: [128:0]u8 = undefined;
+var daemon_data_buf: [128:0]u8 = undefined;
+
+/// iOS: fork/exec of a sibling binary is banned, so the daemon runs
+/// in-process on its own thread via idfon_daemon_run (blocking until the
+/// process exits). ponytail: no stop path — daemon lifetime == app lifetime;
+/// add a pipe-based shutdown signal if a clean socket unbind is ever needed.
+fn daemonThreadMain() void {
+    _ = ffi.idfon_daemon_run(&daemon_socket_buf, &daemon_data_buf, null);
+}
+
 fn launchDaemon(self: *Host, paths: ProfilePaths) bool {
+    if (comptime builtin.os.tag == .ios) {
+        lock(&self.daemon_lock);
+        defer self.daemon_lock.unlock();
+        if (daemon_started.load(.acquire)) return true;
+        const socket = paths.socket[0..paths.socket_len];
+        const data = paths.data[0..paths.data_len];
+        if (socket.len >= daemon_socket_buf.len or data.len >= daemon_data_buf.len) return false;
+        @memcpy(daemon_socket_buf[0..socket.len], socket);
+        @memcpy(daemon_data_buf[0..data.len], data);
+        const thread = std.Thread.spawn(.{}, daemonThreadMain, .{}) catch return false;
+        thread.detach();
+        daemon_started.store(true, .release);
+        trace("started in-process idfon daemon", .{});
+        return true;
+    }
     lock(&self.daemon_lock);
     defer self.daemon_lock.unlock();
     if (self.daemon_pid > 0) {
@@ -497,6 +525,7 @@ fn launchDaemon(self: *Host, paths: ProfilePaths) bool {
 }
 
 fn stopDaemon(self: *Host) void {
+    if (comptime builtin.os.tag == .ios) return; // in-process daemon: not a child, lives with the app
     lock(&self.daemon_lock);
     const pid = self.daemon_pid;
     self.daemon_pid = -1;
