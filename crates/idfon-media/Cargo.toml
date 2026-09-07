@@ -11,7 +11,11 @@ crate-type = ["rlib"]
 anyhow = "1"
 bytes = "1"
 iroh = "1"
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "capture"] }
+# No "capture" feature: idfon is headless audio (file source + cpal), and
+# capture drags rusty-capture -> pipewire -> libspa on Linux, which fails to
+# compile against Ubuntu 22.04/24.04 headers (needs PipeWire 1.x). Re-add only
+# if video capture is ever needed, and only on runners with pipewire >= 1.x.
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus"] }
 idfon-core = { path = "../idfon-core" }
 idfon-protocol = { path = "../idfon-protocol" }
 thiserror = "2"

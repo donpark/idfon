@@ -45,11 +45,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # iroh-live capture → cpal → PipeWire/ALSA headers must exist for the
-      # vendored dylib to build on Linux (also a runtime dep for live audio).
+      # cpal → ALSA only since the capture feature is off (no pipewire dep).
+      # alsa-sys needs libasound2 headers + pkg-config to link.
       - name: Install audio dev libs (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpipewire-0.3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - name: Build binaries into platform package
         run: ./scripts/build-npm.sh
       - name: Smoke test (resolve + spawn via shim)
@@ -58,7 +58,9 @@ jobs:
           echo "idfon --version -> $version"
           grep -q "0\.2\.0" <<<"$version"
       - name: Pack platform package
-        run: npm pack "npm/${{ matrix.pkg }}"
+        # "./" prefix: bare "npm/<pkg>" parses as a GitHub shorthand spec and
+        # npm tries to clone it over ssh instead of packing the local dir.
+        run: npm pack "./npm/${{ matrix.pkg }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.pkg }}
@@ -80,7 +82,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Pack main package
-        run: npm pack npm/idfon
+        run: npm pack ./npm/idfon
       - name: Publish all packages
         run: |
           for tgz in dist/*.tgz ./*.tgz; do
