@@ -88,9 +88,9 @@ idfon peer add <endpoint-id-or-addr> --name bob
 # chat text
 idfon send bob --text "lunch?"
 
-# signaled file: bob's `recv` prints the ticket; his `get` fetches the bytes
+# signaled file: bob runs `recv`, which writes the bytes directly
 idfon send bob --file notes.pdf
-idfon recv                        # on bob's side; prints the BlobTicket
+idfon recv --out notes.pdf       # on bob's side; writes the received file
 
 # stdin works too
 tar cz -C src . | idfon send bob --file
@@ -112,13 +112,19 @@ idfon send bob --stream --file hello.wav         # alice
 idfon recv --stream --seconds 30 --out reply.wav # bob
 
 # manage publishers
-idfon send --list
-idfon send --stop <publisher-id>
+idfon send --stream --list
+idfon send --stream --stop <publisher-id>
 ```
 
 Stream options: `--seconds` (capture window / give-up timeout), `--wait`
 (give up if nobody calls within N seconds), `--loop` (repeat source,
 broadcast only), `--no-relay` (forbid relayed connections — LAN/direct only).
+
+The two live forms differ in who may listen. A broadcast ticket is a bearer
+capability — anyone holding it tunes in, no peer setup required. A 1:1 call
+is identity-scoped: it exists only for the session, blocks until hangup, and
+prints no ticket by design. `get TICKET` consumes both kinds: blob tickets
+fetch bytes, `iroh-live:` tickets capture live audio.
 
 ### Identity and peers
 
@@ -132,24 +138,27 @@ idfon peer status bob            # connectivity: direct, relayed, offline
 
 ### Capabilities
 
-Idfon doesn't auto-trust anyone. Check what a peer may do, grant it, or hand
-out a one-shot ticket:
+Idfon doesn't auto-trust anyone. Grants live on YOUR daemon and gate YOUR
+side of each peer channel — `message.send` lets you send to the subject,
+`message.receive` lets you receive from them. SUBJECT is the peer's endpoint
+id (public key), not the peer name. Check, allow, or hand out a one-shot
+ticket:
 
 ```sh
-idfon access check --subject bob --capability message.receive
-idfon access grant --subject bob --capability message.send
-idfon access ticket --subject bob --capability message.receive --expires-at 2026-12-31
+idfon access check --subject <peer-endpoint-id> --capability message.receive
+idfon access allow --subject <peer-endpoint-id> --capability message.send
+idfon access ticket --subject <peer-endpoint-id> --capability message.receive --expires-at 2026-12-31
 ```
 
 ### Observability
 
-Every daemon event (transfers, streams, peer changes) is observable — poll,
-follow, or block:
+Message events (chat, signaled transfers) are observable — poll, follow, or
+block:
 
 ```sh
 idfon status                     # daemon state + endpoint ticket
-idfon events --follow            # stream of events as they happen
-idfon wait --type blob.fetch --timeout-ms 60000   # block until a matching event
+idfon events --follow            # message events as they happen
+idfon wait --type message.received --timeout-ms 60000   # block until a matching event
 idfon operation get <op-id>      # async operations: get / wait / cancel
 idfon shutdown                   # stop the daemon
 ```

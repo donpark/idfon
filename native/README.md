@@ -16,8 +16,8 @@ native dev          # build and run the real app (markup hot reload)
 native check        # verify core.ts (subset checker) + markup + app.json
 native build        # ReleaseFast binary in zig-out/bin/
 native test         # the app's test suite
-pnpm --filter @idfon/native launch
-                    # build with SDK runtime tracing off, package, and open
+pnpm --filter @idfon/native build:mac
+                    # build, package, and open Idfon.app (build-mac.sh)
 native package --target macos --binary "zig-out/bin/Idfon" --output "Idfon.app"
                     # (the build script already appends the idfond + dylib copies)
                     # create a Finder-launchable macOS app bundle
