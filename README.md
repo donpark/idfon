@@ -120,6 +120,12 @@ Stream options: `--seconds` (capture window / give-up timeout), `--wait`
 (give up if nobody calls within N seconds), `--loop` (repeat source,
 broadcast only), `--no-relay` (forbid relayed connections — LAN/direct only).
 
+The two live forms differ in who may listen. A broadcast ticket is a bearer
+capability — anyone holding it tunes in, no peer setup required. A 1:1 call
+is identity-scoped: it exists only for the session, blocks until hangup, and
+prints no ticket by design. `get TICKET` consumes both kinds: blob tickets
+fetch bytes, `iroh-live:` tickets capture live audio.
+
 ### Identity and peers
 
 ```sh

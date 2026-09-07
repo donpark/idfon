@@ -48,7 +48,7 @@ fn find_daemon_binary() -> Option<PathBuf> {
     name = "idfon",
     version,
     about = "Control the idfond daemon: identity, peers, messaging, data transfer, live audio",
-    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send PEER --file < FILE  |  idfon recv > copy\nLive broadcast: idfon send --stream --file FILE --loop  ->  ticket;  idfon get TICKET > copy.wav\n1:1 call:       idfon send PEER --stream --file FILE  |  idfon recv --stream --out copy.wav"
+    after_help = "Data transfer:  cat FILE | idfon put  ->  ticket;  idfon get TICKET > copy\nSignaled:       idfon send PEER --file < FILE  |  idfon recv > copy\nLive broadcast: idfon send --stream --file FILE --loop  ->  ticket;  idfon get TICKET > copy.wav\n1:1 call:       idfon send PEER --stream --file FILE  |  idfon recv --stream --out copy.wav\n                (calls are session-scoped: they block until hangup and print no ticket)\nTickets:        get TICKET fetches blob tickets; iroh-live: tickets capture live audio"
 )]
 struct Cli {
     /// Daemon socket path
@@ -80,6 +80,11 @@ enum Command {
     #[command(subcommand)]
     Peer(PeerCmd),
     /// Send content: --text chat, --file blob, --stream live (PEER = 1:1, no PEER = broadcast)
+    ///
+    /// Ticket contract: --text returns an operation id (delivery via
+    /// `operation wait`); --file prints the BlobTicket after delivery;
+    /// --stream without PEER prints a live ticket; --stream with PEER is a
+    /// 1:1 call that blocks until hangup and prints no ticket.
     Send(SendArgs),
     /// Receive a peer push: signaled blob (--file mode) or 1:1 stream (--stream)
     Recv(RecvArgs),
@@ -97,7 +102,8 @@ enum Command {
     Access(AccessCmd),
     /// Store stdin/FILE as a blob; prints the BlobTicket
     Put(PutArgs),
-    /// Fetch a ticket (blob or live) to stdout or --out FILE
+    /// Fetch a ticket to stdout or --out FILE (blob tickets fetch bytes,
+    /// iroh-live: tickets capture live audio)
     Get(GetArgs),
 }
 
