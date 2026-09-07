@@ -1,0 +1,16 @@
+{
+  "name": "idfon-linux-arm64",
+  "version": "0.2.0",
+  "description": "Prebuilt idfon binaries for Linux arm64 (idfon, idfond, libiroh_c_ffi).",
+  "license": "UNLICENSED",
+  "repository": "github:donpark/idfon",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin"
+  ]
+}

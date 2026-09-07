@@ -1,17 +1,13 @@
 {
-  "name": "idfon",
+  "name": "@idfon/monorepo",
   "version": "1.0.0",
-  "description": "",
+  "private": true,
   "type": "module",
-  "main": "index.js",
   "scripts": {
-    "native": "pnpm --filter @idfon/native"
+    "native": "pnpm --filter @idfon/native",
+    "build:npm": "scripts/build-npm.sh"
   },
-  "keywords": [],
   "author": "Don Park",
-  "license": "ISC",
-  "packageManager": "pnpm@10.30.1",
-  "dependencies": {
-    "@number0/iroh": "^1.1.0"
-  }
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.30.1"
 }

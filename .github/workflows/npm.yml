@@ -1,0 +1,90 @@
+# Build the npm distribution (npm/idfon shim + npm/idfon-* platform
+# packages) on native runners, smoke-test it, and publish on npm-v* tags.
+#
+# Publishing is gated until the repo goes public: it only fires on tags, and
+# needs NPM_TOKEN plus the platform packages are unscoped; only the name `idfon` must be free on npmjs.com beforehand.
+name: npm
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "native/vendor/iroh-c-ffi/**"
+      - "npm/**"
+      - "scripts/build-npm.sh"
+      - ".github/workflows/npm.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "native/vendor/iroh-c-ffi/**"
+      - "npm/**"
+      - "scripts/build-npm.sh"
+      - ".github/workflows/npm.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners only — no cross toolchains. If a runner name is
+          # unavailable when the repo goes public, swap it; ubuntu-24.04-arm
+          # is the fallback for ubuntu-22.04-arm (at the cost of a newer
+          # glibc floor).
+          - { os: macos-14, pkg: idfon-darwin-arm64 }
+          - { os: macos-13, pkg: idfon-darwin-x64 }
+          - { os: ubuntu-22.04, pkg: idfon-linux-x64 }
+          - { os: ubuntu-22.04-arm, pkg: idfon-linux-arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # iroh-live capture → cpal → PipeWire/ALSA headers must exist for the
+      # vendored dylib to build on Linux (also a runtime dep for live audio).
+      - name: Install audio dev libs (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpipewire-0.3-dev pkg-config
+      - name: Build binaries into platform package
+        run: ./scripts/build-npm.sh
+      - name: Smoke test (resolve + spawn via shim)
+        run: |
+          version="$(node npm/idfon/bin/idfon.js --version)"
+          echo "idfon --version -> $version"
+          grep -q "0\.2\.0" <<<"$version"
+      - name: Pack platform package
+        run: npm pack "npm/${{ matrix.pkg }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.pkg }}
+          path: "*.tgz"
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/npm-v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Pack main package
+        run: npm pack npm/idfon
+      - name: Publish all packages
+        run: |
+          for tgz in dist/*.tgz ./*.tgz; do
+            npm publish "$tgz" --access public
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

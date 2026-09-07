@@ -11,3 +11,5 @@ stream-decoded.wav
 stream-timings.json
 geo-decoded.wav
 geo-timings.json
+# npm platform packages: binaries are built by scripts/build-npm.sh, not committed
+npm/idfon-*/bin/

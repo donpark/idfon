@@ -7,13 +7,25 @@ fn main() {
     // libswift_Concurrency.dylib, release does not) — only do that if you
     // start debugging daemon code under lldb regularly.
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let lib_dir = std::path::Path::new(&manifest_dir)
-        .join("../../native/vendor/iroh-c-ffi/target/release")
-        .canonicalize()
-        .unwrap_or_else(|_| {
-            eprintln!("idfond: vendored dylib directory missing; run the native build once (zig build in native/)");
-            std::path::PathBuf::from("/nonexistent")
-        });
+    let vendor_target = std::path::Path::new(&manifest_dir)
+        .join("../../native/vendor/iroh-c-ffi/target");
+    // Cross builds (--target <triple>) place the dylib under
+    // target/<triple>/release; host builds (native/build.zig,
+    // scripts/test-*.sh, host build-npm.sh) use target/release.
+    let target = std::env::var("TARGET").unwrap();
+    let host = std::env::var("HOST").unwrap();
+    let lib_dir = if target == host {
+        vendor_target.join("release")
+    } else {
+        vendor_target.join(&target).join("release")
+    }
+    .canonicalize()
+    .unwrap_or_else(|_| {
+        eprintln!(
+            "idfond: vendored dylib for {target} missing; build it first (scripts/build-npm.sh {target} or zig build in native/)"
+        );
+        std::path::PathBuf::from("/nonexistent")
+    });
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=iroh_c_ffi");
 
