@@ -5,7 +5,8 @@
   "scripts": {
     "clean": "rm -rf .zig-cache zig-out",
     "build:mac": "bash build-mac.sh",
-    "build:ios": "bash ../scripts/build-ios-sim.sh",
+    "build:ios": "bash ../ios/build.sh",
+    "run:ios": "bash ../ios/run.sh",
     "run:app:mac": "open -n 'Idfon.app'",
     "run:bin:mac": "open -n 'zig-out/bin/Idfon'",
     "test:cli": "bash ../scripts/test-cli.sh",

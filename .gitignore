@@ -22,3 +22,7 @@ PONYTAIL-DEBT.md
 skills-lock.json
 *.wav
 .DS_Store
+
+# iOS app build artifacts
+ios/Vendor/
+ios/.derived/
