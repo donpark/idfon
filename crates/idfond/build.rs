@@ -30,16 +30,21 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=iroh_c_ffi");
 
     // Keep a copy of the dylib next to the built binary so
-    // @executable_path/libiroh_c_ffi.dylib resolves when the binary is run
-    // directly from target/<profile>/.
+    // @executable_path/libiroh_c_ffi.dylib (macOS) / $ORIGIN (Linux) resolves
+    // when the binary is run directly from target/<profile>/.
+    let dylib_name = if target.contains("apple") {
+        "libiroh_c_ffi.dylib"
+    } else {
+        "libiroh_c_ffi.so"
+    };
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let profile_dir = std::path::Path::new(&out_dir)
         .ancestors()
         .nth(3)
         .expect("OUT_DIR layout");
-    let dylib = lib_dir.join("libiroh_c_ffi.dylib");
+    let dylib = lib_dir.join(dylib_name);
     if dylib.exists() {
-        let _ = std::fs::copy(&dylib, profile_dir.join("libiroh_c_ffi.dylib"));
+        let _ = std::fs::copy(&dylib, profile_dir.join(dylib_name));
         println!("cargo:rerun-if-changed={}", dylib.display());
     }
 }
