@@ -1,5 +1,10 @@
 # Idfon Architecture Implementation Plan
 
+> **Historical document.** Command names in here (`idfon context`, `debug`,
+> `fetch`, `session info`, `access revoke`, ...) are from an earlier design
+> and do not exist in the current CLI. Run `idfon --help` for the real
+> surface; `scripts/test-cli.sh` verifies every command as documented there.
+
 ## Status
 
 Planning document. This plan is intentionally written for review before implementation.

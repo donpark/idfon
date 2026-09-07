@@ -625,7 +625,7 @@ fn run() -> io::Result<()> {
             send_rpc(
                 socket,
                 "access.check",
-                json!({"identity": Value::Null, "subject": subject, "capability": capability}),
+                json!({"subject": subject, "capability": capability}),
                 identity,
                 cli.stdin_json,
             )?,
