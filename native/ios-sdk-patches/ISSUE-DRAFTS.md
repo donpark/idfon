@@ -12,7 +12,7 @@ app fails identically.
 
 ---
 
-## 1
+## 1 — filed: https://github.com/vercel-labs/native/issues/428
 
 **Title:** `ios: native dev --target ios fails to link — zig-built archive members not 8-byte aligned for Apple ld`
 
@@ -76,7 +76,7 @@ from the individual `.o` files. Worth an assertion after any repack
 
 ---
 
-## 2
+## 2 — filed: https://github.com/vercel-labs/native/issues/429
 
 **Title:** `ios: Debug builds fail to link — core archive references UBSan runtime the host link never provides`
 
@@ -134,7 +134,7 @@ Suggested fixes, either works:
 
 ---
 
-## 3
+## 3 — filed: https://github.com/vercel-labs/native/issues/430
 
 **Title:** `ts-core: no official way to route Cmd.request into native code — patch-only on desktop, impossible on mobile`
 
