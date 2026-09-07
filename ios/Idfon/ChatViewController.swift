@@ -8,6 +8,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let composerField = UITextField()
     private let sendButton = UIButton(type: .system)
     private let composerBar = UIView()
+    private let callStatusLabel = UILabel()
+    private var autoAnswerArmed = false
 
     private var messages: [ChatMessage] = []
 
@@ -44,16 +46,34 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         sendButton.contentMode = .scaleAspectFit
         sendButton.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
 
+        navigationItem.rightBarButtonItems = [
+            UIBarButtonItem(image: UIImage(systemName: "phone"), style: .plain, target: self, action: #selector(dialTapped)),
+            UIBarButtonItem(image: UIImage(systemName: "phone.badge.waveform"), style: .plain, target: self, action: #selector(toggleAutoAnswer)),
+        ]
+
+        callStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        callStatusLabel.font = .preferredFont(forTextStyle: .callout)
+        callStatusLabel.textColor = .secondaryLabel
+        callStatusLabel.textAlignment = .center
+        callStatusLabel.isHidden = true
+
         view.addSubview(tableView)
         composerBar.addSubview(composerField)
         composerBar.addSubview(sendButton)
         view.addSubview(composerBar)
+        view.addSubview(callStatusLabel)
 
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: composerBar.topAnchor),
+
+            callStatusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            callStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            callStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            composerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
 
             composerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             composerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -70,6 +90,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         ChatStore.shared.onUpdate = { [weak self] in self?.syncMessages() }
         syncMessages()
+
+        NotificationCenter.default.addObserver(forName: .init("idfon.dial"), object: nil, queue: .main) { [weak self] note in
+            guard let ref = note.userInfo?["ref"] as? String else { return }
+            self?.dial(peerRef: ref)
+        }
+        NotificationCenter.default.addObserver(forName: .init("idfon.answer"), object: nil, queue: .main) { [weak self] _ in
+            self?.toggleAutoAnswer()
+        }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -95,6 +123,58 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         sendTapped()
         return true
+    }
+
+    // MARK: - Live call
+
+    private func showCallStatus(_ text: String?) {
+        DispatchQueue.main.async {
+            self.callStatusLabel.text = text
+            self.callStatusLabel.isHidden = text == nil
+        }
+    }
+
+    @objc private func dialTapped() {
+        dial(peerRef: peer.id)
+    }
+
+    private func dial(peerRef: String) {
+        NSLog("idfon dial: \(peerRef)")
+        showCallStatus("Calling…")
+        Task {
+            do {
+                try await LiveCall.dial(peer: peerRef, seconds: 8, client: client)
+                showCallStatus("Call ended")
+            } catch {
+                showCallStatus("Call failed: \(error.localizedDescription)")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.showCallStatus(nil) }
+        }
+    }
+
+    /// Arms auto-answer: the daemon waits (up to 120s per attempt) for an
+    /// incoming dial and records it. Disarming stops re-arming after the
+    /// current attempt returns — the blocking request cannot be cancelled.
+    @objc private func toggleAutoAnswer() {
+        autoAnswerArmed.toggle()
+        let armed = autoAnswerArmed
+        navigationItem.rightBarButtonItems?.last?.isSelected = armed
+        guard armed else { showCallStatus(nil); return }
+        showCallStatus("Auto-answer armed…")
+        Task {
+            while self.autoAnswerArmed {
+                do {
+                    let out = try await LiveCall.armAutoAnswer(waitSeconds: 120, captureSeconds: 8, client: client)
+                    guard self.autoAnswerArmed else { break }
+                    self.showCallStatus("Call recorded")
+                    NSLog("idfon call recorded to \(out)")
+                } catch {
+                    guard self.autoAnswerArmed else { break }
+                    self.showCallStatus("Answer failed: \(error.localizedDescription)")
+                }
+            }
+            if !self.autoAnswerArmed { self.showCallStatus(nil) }
+        }
     }
 
     // MARK: - Table view
