@@ -169,8 +169,9 @@ idfon shutdown                   # stop the daemon
 
 A native macOS client built on the same daemon ([Native SDK](native/)),
 covering the interactive surface the CLI doesn't aim at: live calls,
-voice notes, mailbox, and per-capability policy controls. **Experimental** —
-it tracks the daemon protocol but is not yet a release-quality product; see
+voice notes, mailbox, and per-capability policy controls. **Prototype — still
+in early development and incomplete.** It tracks the daemon protocol but
+is not yet a release-quality product; see
 [custom app launch](docs/custom-app-launch.md) for building and signing it.
 
 ## Documentation
