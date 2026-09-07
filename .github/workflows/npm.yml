@@ -113,8 +113,10 @@ jobs:
             echo "no platform tarballs in dist/" >&2
             exit 1
           fi
+          # "./" prefix: bare "<dir>/<pkg>.tgz" parses as a GitHub shorthand
+          # spec (same footgun as npm pack npm/<pkg>) and npm tries git.
           for tgz in "${tarballs[@]}"; do
-            npm publish "$tgz" --access public
+            npm publish "./$tgz" --access public
           done
           npm publish ./idfon-*.tgz --access public
         env:
