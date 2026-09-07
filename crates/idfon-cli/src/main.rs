@@ -85,12 +85,14 @@ enum Command {
     Recv(RecvArgs),
     /// Fetch daemon events (follow with --follow)
     Events(EventsArgs),
-    /// Block until a matching event arrives; prints one JSON line per event
+    /// Block until a matching event arrives (--json prints the Response envelope,
+    /// like events without --follow)
     Wait(WaitArgs),
     /// Track async operations
     #[command(subcommand)]
     Operation(OperationCmd),
-    /// Check and grant capabilities
+    /// Check and manage capabilities (grants gate YOUR side: message.send =
+    /// you may send to the subject, message.receive = you may receive from them)
     #[command(subcommand)]
     Access(AccessCmd),
     /// Store stdin/FILE as a blob; prints the BlobTicket
@@ -271,8 +273,9 @@ enum AccessCmd {
         #[arg(long)]
         capability: Option<String>,
     },
-    /// Grant a capability to a peer
-    Grant {
+    /// Allow yourself to exchange messages with a peer (stored on your
+    /// daemon; gates your own send/receive, not the peer's)
+    Allow {
         #[arg(long)]
         subject: String,
         #[arg(long)]
@@ -402,12 +405,7 @@ fn run() -> io::Result<()> {
                 identity,
                 cli.stdin_json,
             )?;
-            print_events(&response)?;
-            if response.ok {
-                Ok(())
-            } else {
-                Err(io::Error::other("request failed"))
-            }
+            finish(response, json)
         }
         Command::Operation(OperationCmd::Wait {
             operation_id,
@@ -631,7 +629,7 @@ fn run() -> io::Result<()> {
             )?,
             json,
         ),
-        Command::Access(AccessCmd::Grant { subject, capability }) => finish(
+        Command::Access(AccessCmd::Allow { subject, capability }) => finish(
             send_rpc(
                 socket,
                 "access.grant",

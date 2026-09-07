@@ -100,19 +100,19 @@ EP=$(ctx /tmp/idfon-a/idfond.sock | jq -r .result.identity.endpoint_id)
 PID=$(ctx /tmp/idfon-a/idfond.sock | jq -r .result.identity.public_key)   # == peer id
 ADDR=$(ctx /tmp/idfon-a/idfond.sock | jq -r '.result.ticket | implode')   # EndpointAddr JSON
 
-# On daemon A: register B as a peer and grant it the send capability
+# On daemon A: register B as a peer and allow the send capability
 # (A's send gate checks a local message.send grant for B's peer id):
 idfon --socket /tmp/idfon-a/idfond.sock peer add "$B_PID" --name bob \
   --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR"
-idfon --socket /tmp/idfon-a/idfond.sock access grant --subject "$B_PID" \
+idfon --socket /tmp/idfon-a/idfond.sock access allow --subject "$B_PID" \
   --capability message.send
 
-# On daemon B: register A as a peer and grant it the receive capability
+# On daemon B: register A as a peer and allow the receive capability
 # (B's receive gate checks message.receive for A's peer id, or a verified
 # capability ticket presented by the sender):
 idfon --socket /tmp/idfon-b/idfond.sock peer add "$A_PID" --name alice \
   --endpoint-id "$A_EP" --endpoint-addr "$A_ADDR"
-idfon --socket /tmp/idfon-b/idfond.sock access grant --subject "$A_PID" \
+idfon --socket /tmp/idfon-b/idfond.sock access allow --subject "$A_PID" \
   --capability message.receive
 ```
 

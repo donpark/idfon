@@ -132,13 +132,15 @@ idfon peer status bob            # connectivity: direct, relayed, offline
 
 ### Capabilities
 
-Idfon doesn't auto-trust anyone. SUBJECT is the peer's endpoint id (public
-key) — not the peer name. Check what a peer may do, grant it, or hand out a
-one-shot ticket:
+Idfon doesn't auto-trust anyone. Grants live on YOUR daemon and gate YOUR
+side of each peer channel — `message.send` lets you send to the subject,
+`message.receive` lets you receive from them. SUBJECT is the peer's endpoint
+id (public key), not the peer name. Check, allow, or hand out a one-shot
+ticket:
 
 ```sh
 idfon access check --subject <peer-endpoint-id> --capability message.receive
-idfon access grant --subject <peer-endpoint-id> --capability message.send
+idfon access allow --subject <peer-endpoint-id> --capability message.send
 idfon access ticket --subject <peer-endpoint-id> --capability message.receive --expires-at 2026-12-31
 ```
 

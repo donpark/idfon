@@ -7,7 +7,7 @@ set -eu
 #
 # Verified: status, shutdown, identity (create/use/delete/list + --identity
 # flag), peer (add/list/show/resolve/status/update/remove), access
-# (grant/check/ticket), send --text (+ --idempotency-key), send --file,
+# (allow/check/ticket), send --text (+ --idempotency-key), send --file,
 # recv (+ --out/--from), put (+ --resource-id/--json), get, events (+ --type),
 # wait, operation (get/wait/cancel), --json envelopes, and documented failure
 # paths (missing peers, bogus tickets/operations, recv timeout).
@@ -93,6 +93,9 @@ echo "PASS: identity list shows created + original"
 ok "identity use work" Q "$A" identity use work --json
 Q "$A" identity list --json | jq -e '.result.identities | map(select(.name == "work" and .active == true)) | length == 1' >/dev/null
 echo "PASS: identity use switches active"
+S=$(Q "$A" status --json)   # fresh invocation: session identity = active identity
+echo "$S" | jq -e '.result.identity.name == "work"' >/dev/null
+echo "PASS: status reflects active identity across invocations"
 S=$(Q "$A" --identity work status --json)
 echo "$S" | jq -e '.result.identity.name == "work"' >/dev/null
 echo "PASS: --identity flag selects identity"
@@ -127,9 +130,9 @@ fails "peer resolve missing" Q "$A" peer resolve nobody --json
 fails "peer status missing" Q "$A" peer status nobody --json
 
 # --- access -----------------------------------------------------------------
-ok "access grant (A->B send)" Q "$A" access grant --subject "$B_PID" --capability message.send --json
-ok "access grant (B->A send)" Q "$B" access grant --subject "$A_PID" --capability message.send --json
-ok "access grant (B->A receive)" Q "$B" access grant --subject "$A_PID" --capability message.receive --json
+ok "access allow (A->B send)" Q "$A" access allow --subject "$B_PID" --capability message.send --json
+ok "access allow (B->A send)" Q "$B" access allow --subject "$A_PID" --capability message.send --json
+ok "access allow (B->A receive)" Q "$B" access allow --subject "$A_PID" --capability message.receive --json
 S=$(Q "$A" access check --subject "$B_PID" --capability message.send --json)
 echo "$S" | jq -e '.result.allowed == true' >/dev/null
 echo "PASS: access check granted"
@@ -147,9 +150,8 @@ S=$(Q "$A" send bob --text "hello from cli test" --json)
 echo "$S" | jq -e '.ok == true and .result.operation_id != ""' >/dev/null
 echo "PASS: send --text --json"
 OPID=$(echo "$S" | jq -r .result.operation_id)
-# wait --json prints bare event lines (no envelope)
 W=$(Q "$B" wait --type message.received --after "$CURSOR" --json)
-echo "$W" | jq -e '.data.text == "hello from cli test"' >/dev/null
+echo "$W" | jq -e '.result.events[0].data.text == "hello from cli test"' >/dev/null
 echo "PASS: wait receives text event with body"
 S=$(Q "$B" events --json --type message.received)
 echo "$S" | jq -e '.result.events | length >= 1' >/dev/null
@@ -158,7 +160,7 @@ S=$(Q "$B" events --json --type test.never)
 echo "$S" | jq -e '.result.events | length == 0' >/dev/null
 echo "PASS: events --type with no matches is empty"
 W=$(Q "$B" wait --type test.never --timeout-ms 300 --json)
-[ -z "$W" ]
+echo "$W" | jq -e '.ok == true and (.result.events | length == 0)' >/dev/null
 echo "PASS: wait timeout returns empty success"
 S=$(Q "$A" operation get "$OPID" --json)
 echo "$S" | jq -e '.result.operation.status == "delivered"' >/dev/null
