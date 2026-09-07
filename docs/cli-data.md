@@ -117,7 +117,7 @@ idfon --socket /tmp/idfon-b/idfond.sock access grant --subject "$A_PID" \
 ```
 
 Alternatively, a sender can present a capability ticket issued by the
-receiver instead of a local grant: `idfon ticket --subject SENDER_PEER_ID`
+receiver instead of a local grant: `idfon access ticket --subject SENDER_PEER_ID`
 prints the ticket JSON, which `send --capability-ticket` accepts; a verified
 ticket satisfies the receive gate and materializes grants on first delivery.
 
