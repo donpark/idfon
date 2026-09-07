@@ -30,10 +30,16 @@ struct Event: Decodable {
     var messageId: String? { data["message_id"]?.stringValue }
 }
 
+enum MessageKind {
+    case text(String)
+    /// Voice message: blob ticket + duration (ms) for playback UI.
+    case recording(ticket: String, durationMs: Int, localURL: URL?)
+}
+
 struct ChatMessage: Identifiable {
     let id: String
     let peerId: String
-    let text: String
+    let kind: MessageKind
     let outgoing: Bool
 }
 

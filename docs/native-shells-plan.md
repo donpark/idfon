@@ -73,6 +73,12 @@ Milestones, on branch `ios-app`:
 - **M3 live call**: dial/answer over `media.live.dial`/answer methods;
   `CADisplayLink` waveform from `AVAudioEngine` taps; AVAudioSession
   `playAndRecord` + `NSMicrophoneUsageDescription`.
+- **M3.5 voice messages (shipped)**: Messages-style composer (growing text
+  input, mic button, record/review/send states, dotted waveform in recording
+  red and playback gray); shell records via AVAudioRecorder, sends as
+  chunked blob + IDFON-RECORDING/1 envelope; received recordings playable
+  via chunked blob fetch. Verified: 3.16s memo from simulator mic received
+  on the Mac and fetched as a valid wav.
 - **M4 device build**: aarch64-apple-ios staticlib, signing, entitlements,
   background-audio mode.
 
