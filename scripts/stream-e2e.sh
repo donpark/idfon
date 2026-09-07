@@ -143,7 +143,7 @@ B_PID=$(ctx "$B" | jq -r .result.identity.public_key)
 B_EP=$(ctx "$B" | jq -r .result.identity.endpoint_id)
 B_ADDR=$(ctx "$B" | jq -r '.result.ticket | implode')
 "$NUF" --socket "$A" peer add "$B_PID" --name bob --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR" > /dev/null
-"$NUF" --socket "$A" access grant --subject "$B_PID" --capability message.send > /dev/null
+"$NUF" --socket "$A" access allow --subject "$B_PID" --capability message.send > /dev/null
 
 "$NUF" --socket "$B" recv --stream --out "$work/call.wav" --seconds 15 --wait 30 --json > "$work/answer.json" &
 answer_pid=$!

@@ -328,7 +328,18 @@ async fn serve(
     transport: Arc<TransportMode>,
     shutdown: Arc<tokio::sync::Notify>,
 ) -> io::Result<()> {
-    let mut session_identity = String::from("default");
+    let mut session_identity = {
+        // Default to the daemon's persisted active identity so `identity use`
+        // survives across CLI invocations (each command opens a new
+        // connection); explicit --identity still overrides per request.
+        let state = store.lock().expect("store mutex poisoned");
+        state
+            .identities
+            .iter()
+            .find(|identity| identity.active)
+            .map(|identity| identity.id.clone())
+            .unwrap_or_else(|| String::from("default"))
+    };
     loop {
         let Some(frame) = read_frame(&mut stream).await? else {
             return Ok(());

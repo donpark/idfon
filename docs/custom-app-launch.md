@@ -2,7 +2,8 @@
 
 ## Status
 
-Design proposal.
+Design proposal — not implemented. Session tokens and the `session
+info/send/events` commands below do not exist in the current CLI.
 
 ## Purpose
 
