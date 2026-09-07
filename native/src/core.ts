@@ -1,4 +1,5 @@
-import { Cmd, Sub, asciiBytes, utf8Bytes } from "@native-sdk/core";
+import { Cmd, Sub, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
+import { type WindowDescriptor } from "@native-sdk/core/events";
 import { type TextInputEvent, applyTextInputEvent } from "@native-sdk/core/text";
 
 const EMPTY = new Uint8Array(0);
@@ -1207,11 +1208,19 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
   }
 }
 
-// ponytail: ios-trial stub — model-declared secondary windows are a desktop-only
-// shell capability (mobile.zig @compileError), so the chat popup window is gone
-// on mobile. Restore by splitting windows() out per-platform when the SDK grows
-// a mobile chat surface.
 export function commandMsg(name: string): Msg | null {
   return name === "chat.closed" ? { kind: "chat_closed" } : null;
 }
 
+export function windows(model: Model): readonly WindowDescriptor[] {
+  if (!model.chatOpen) return [];
+  return [windowDescriptor({
+    label: asciiBytes("chat"),
+    canvasLabel: asciiBytes("chat-canvas"),
+    title: model.selectedConnectionName,
+    width: 420,
+    height: 420,
+    closePolicy: "quit",
+    onCloseCommand: asciiBytes("chat.closed"),
+  })];
+}
