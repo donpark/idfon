@@ -25,3 +25,4 @@ skills-lock.json
 
 # iOS app build artifacts
 ios/Vendor/
+ios/.derived/
