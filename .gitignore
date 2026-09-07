@@ -15,3 +15,10 @@ geo-timings.json
 npm/idfon-*/bin/
 # generated copies of the root license files
 npm/idfon-*/LICENSE-*
+# local agent/tooling state — not repo content
+.pi/
+.agents/
+PONYTAIL-DEBT.md
+skills-lock.json
+*.wav
+.DS_Store
