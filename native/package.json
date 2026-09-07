@@ -8,6 +8,7 @@
     "build:ios": "bash ../scripts/build-ios-sim.sh",
     "run:app:mac": "open -n 'Idfon.app'",
     "run:bin:mac": "open -n 'zig-out/bin/Idfon'",
+    "test:cli": "bash ../scripts/test-cli.sh",
     "release": "bash build-mac.sh && codesign --force --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Idfon.app/Contents/MacOS/libiroh_c_ffi.dylib Idfon.app/Contents/MacOS/idfond Idfon.app && hdiutil create -srcfolder Idfon.app -volname Idfon -format ULMO -ov Idfon.dmg && codesign --timestamp -s 'Developer ID Application: WizOps LLC (RV27HPQNMF)' Idfon.dmg"
   },
   "dependencies": {
