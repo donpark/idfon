@@ -60,7 +60,15 @@ jobs:
         run: ./scripts/build-npm.sh ${{ matrix.target }}
       - name: Smoke test (resolve + spawn via shim)
         run: |
-          version="$(node npm/idfon/bin/idfon.js --version)"
+          if [ -n "${{ matrix.target }}" ]; then
+            # Cross-built: runner arch != binary arch, so the shim would
+            # resolve the wrong platform package. Spawn the built binary
+            # directly — exercises the binary + shipped dylib rpath via
+            # Rosetta. (Shim resolution is covered by the host legs.)
+            version="$(npm/${{ matrix.pkg }}/bin/idfon --version)"
+          else
+            version="$(node npm/idfon/bin/idfon.js --version)"
+          fi
           echo "idfon --version -> $version"
           grep -q "0\.2\.0" <<<"$version"
       - name: Pack platform package
