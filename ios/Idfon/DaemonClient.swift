@@ -38,6 +38,16 @@ struct ProtocolResponse: Decodable {
 struct AnyEncodable: Encodable, Decodable {
     let value: Any
 
+    subscript(key: String) -> AnyEncodable? {
+        (value as? [String: AnyEncodable])?[key]
+    }
+
+    subscript(index: Int) -> AnyEncodable? {
+        (value as? [AnyEncodable])?[index]
+    }
+
+    var asArray: [AnyEncodable]? { value as? [AnyEncodable] }
+
     init(_ value: Any) { self.value = value }
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
