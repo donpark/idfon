@@ -32,17 +32,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native runners only — no cross toolchains. If a runner name is
-          # unavailable when the repo goes public, swap it; ubuntu-24.04-arm
-          # is the fallback for ubuntu-22.04-arm (at the cost of a newer
-          # glibc floor).
+          # Native runners only — no cross toolchains, except the darwin-x64
+          # leg: x86_64-apple-darwin is a native-SDK cross (no extra tools) on
+          # arm64 macOS, which also sidesteps the macos-13 (Intel) runner
+          # queue starvation. If a runner name is unavailable, swap it;
+          # ubuntu-24.04-arm is the fallback for ubuntu-22.04-arm (at the
+          # cost of a newer glibc floor).
           - { os: macos-14, pkg: idfon-darwin-arm64 }
-          - { os: macos-13, pkg: idfon-darwin-x64 }
+          - { os: macos-14, pkg: idfon-darwin-x64, target: x86_64-apple-darwin }
           - { os: ubuntu-22.04, pkg: idfon-linux-x64 }
           - { os: ubuntu-22.04-arm, pkg: idfon-linux-arm64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # cpal → ALSA only since the capture feature is off (no pipewire dep).
@@ -50,8 +52,12 @@ jobs:
       - name: Install audio dev libs (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      # x86_64 binaries run under Rosetta on the arm64 runner (smoke test).
+      - name: Install Rosetta (darwin-x64 cross)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
       - name: Build binaries into platform package
-        run: ./scripts/build-npm.sh
+        run: ./scripts/build-npm.sh ${{ matrix.target }}
       - name: Smoke test (resolve + spawn via shim)
         run: |
           version="$(node npm/idfon/bin/idfon.js --version)"
@@ -61,7 +67,7 @@ jobs:
         # "./" prefix: bare "npm/<pkg>" parses as a GitHub shorthand spec and
         # npm tries to clone it over ssh instead of packing the local dir.
         run: npm pack "./npm/${{ matrix.pkg }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.pkg }}
           path: "*.tgz"
@@ -72,12 +78,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
