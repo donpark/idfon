@@ -99,10 +99,23 @@ jobs:
           merge-multiple: true
       - name: Pack main package
         run: npm pack ./npm/idfon
+      - name: Debug listing
+        run: |
+          pwd
+          ls -la .
+          ls -la dist || echo "no dist dir"
+          [ -n "$NODE_AUTH_TOKEN" ] && echo "NODE_AUTH_TOKEN: set" || echo "NODE_AUTH_TOKEN: EMPTY"
       - name: Publish all packages
         run: |
-          for tgz in dist/*.tgz ./*.tgz; do
+          shopt -s nullglob
+          tarballs=(dist/*.tgz)
+          if [ ${#tarballs[@]} -eq 0 ]; then
+            echo "no platform tarballs in dist/" >&2
+            exit 1
+          fi
+          for tgz in "${tarballs[@]}"; do
             npm publish "$tgz" --access public
           done
+          npm publish ./idfon-*.tgz --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
