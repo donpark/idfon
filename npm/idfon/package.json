@@ -1,6 +1,6 @@
 {
   "name": "idfon",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Peer-to-peer content transfer and live audio over iroh: put/get tickets, peer push, 1:1 streams.",
   "license": "(MIT OR Apache-2.0)",
   "repository": "github:donpark/idfon",
@@ -16,10 +16,10 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "idfon-darwin-arm64": "0.2.0",
-    "idfon-darwin-x64": "0.2.0",
-    "idfon-linux-arm64": "0.2.0",
-    "idfon-linux-x64": "0.2.0"
+    "idfon-darwin-arm64": "0.3.0",
+    "idfon-darwin-x64": "0.3.0",
+    "idfon-linux-arm64": "0.3.0",
+    "idfon-linux-x64": "0.3.0"
   },
   "engines": {
     "node": ">=18"
