@@ -24,7 +24,9 @@ idfon get "$(cat ticket.txt)" --out copy.wav
 - `--resource-id ID` names the sender-side stored resource; without it a
   unique `data-<nanos>` id is generated.
 - `--json` on `put` prints the full daemon response (includes
-  `content_hash`, `size_bytes`).
+  `content_hash`, `size_bytes`, `mime`).
+- The resource's mime type is inferred from the file extension (e.g. `video/mp4`)
+  and can be overridden with `--mime`.
 - `--socket PATH` / `--identity ID` select the daemon and identity as usual.
 
 ## Chunking
@@ -131,6 +133,10 @@ blob or live (dispatched on the ticket's self-describing prefix: `blob…` vs
 `iroh-live:`). Sources and
 sinks are files — no microphone or GUI required (mic input is a later
 extension).
+
+Video broadcasts ride the same commands with `--video` (Annex B `.h264`
+recording, `--quality` rendition selection); see
+[video-media.md](video-media.md).
 
 ### 1:1 calls
 

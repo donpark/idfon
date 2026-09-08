@@ -149,7 +149,7 @@ pub struct ListenStats {
     pub prebuffer_ms: u64,
 }
 
-async fn build_endpoint(relay: bool) -> anyhow::Result<Endpoint> {
+pub(crate) async fn build_endpoint(relay: bool) -> anyhow::Result<Endpoint> {
     // N0 preset: n0 public relays as fallback transport + DNS discovery.
     // N0DisableRelay: no relay transport at all — direct connections only
     // (loopback/LAN tests, and keeps traffic off the rate-limited public
