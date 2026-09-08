@@ -88,4 +88,34 @@ count=$(ffprobe -v error -count_frames -select_streams v -show_entries \
 echo "ffprobe: decoded $count frames"
 [ "$count" -ge 30 ] || { echo "ffprobe decoded only $count frames" >&2; exit 1; }
 
+echo "video e2e: broadcast OK"
+
+# 1:1 session-scoped video call: no ticket exists — the MoQ session is the
+# capability. A dials bob's endpoint via send --stream --video, publishes on
+# the session; B receives with recv --stream --video. Requires the
+# message.send grant.
+ctx() { "$NUF" --socket "$1" status --json; }
+A_PID=$(ctx "$A" | jq -r .result.identity.public_key)
+B_PID=$(ctx "$B" | jq -r .result.identity.public_key)
+B_EP=$(ctx "$B" | jq -r .result.identity.endpoint_id)
+B_ADDR=$(ctx "$B" | jq -r '.result.ticket | implode')
+"$NUF" --socket "$A" peer add "$B_PID" --name bob --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR" > /dev/null
+"$NUF" --socket "$A" access allow --subject "$B_PID" --capability message.send > /dev/null
+
+"$NUF" --socket "$B" recv --stream --video --out "$work/call.h264" --seconds 15 --wait 30 --json \
+  > "$work/answer.json" &
+answer_pid=$!
+sleep 1
+"$NUF" --socket "$A" send bob --stream --video --file "$work/vid.mp4" --seconds 12 --json \
+  > "$work/dial.json"
+jq -c '.result' "$work/dial.json"
+wait "$answer_pid"
+frames=$(jq -r '.result.frames' "$work/answer.json")
+echo "answer: frames=$frames"
+[ "$frames" -ge 30 ] || { echo "expected >=30 frames, got $frames" >&2; exit 1; }
+count=$(ffprobe -v error -count_frames -select_streams v -show_entries \
+  stream=nb_read_frames -of default=nw=1:nk=1 -f h264 "$work/call.h264")
+echo "ffprobe: decoded $count frames"
+[ "$count" -ge 30 ] || { echo "ffprobe decoded only $count frames" >&2; exit 1; }
+
 echo "video e2e: OK"
