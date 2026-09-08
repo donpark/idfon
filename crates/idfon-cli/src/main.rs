@@ -16,6 +16,7 @@ use std::{
     env, io,
     path::{Path, PathBuf},
     process::{Command as StdCommand, Stdio},
+    sync::OnceLock,
     time::Duration,
 };
 
@@ -26,6 +27,10 @@ use serde_json::{json, Value};
 
 const DEFAULT_SOCKET: &str = "/tmp/idfon/idfond.sock";
 const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(5);
+/// Auto-started daemons exit after this long with no connected clients.
+const DAEMON_IDLE_EXIT_SECS: &str = "600";
+/// `idfon --keep-alive`: spawned daemon never idles out.
+static KEEP_ALIVE: OnceLock<bool> = OnceLock::new();
 
 /// Locates idfond: next to the idfon binary first (cargo builds them
 /// together), then PATH.
@@ -60,6 +65,9 @@ struct Cli {
     /// Machine output: print the full Response envelope
     #[arg(long, global = true)]
     json: bool,
+    /// Auto-started daemon: disable idle shutdown (stays running until `idfon shutdown`)
+    #[arg(long, global = true)]
+    keep_alive: bool,
     /// Replace request params with a JSON document read from stdin
     #[arg(long, global = true, hide = true)]
     stdin_json: bool,
@@ -332,6 +340,7 @@ fn main() {
 
 fn run() -> io::Result<()> {
     let cli = Cli::parse();
+    KEEP_ALIVE.set(cli.keep_alive).expect("run called once");
     let socket: &str = cli.socket.as_deref().unwrap_or(DEFAULT_SOCKET);
     let identity = cli.identity.as_deref();
     let json = cli.json;
@@ -814,7 +823,9 @@ fn generated_resource_id() -> String {
 
 /// Connects to the daemon, auto-starting idfond if nothing is listening.
 /// The daemon is left running after the CLI exits (dockerd-style shared
-/// daemon, not one daemon per command).
+/// daemon, not one daemon per command), but shuts itself down after
+/// DAEMON_IDLE_EXIT_SECS with no connected clients; the next command
+/// restarts it. IDFON_IDLE_EXIT_SECS=0 disables the idle exit.
 fn connect_or_start_daemon(socket: &str) -> io::Result<Client> {
     match Client::connect(socket) {
         Ok(client) => Ok(client),
@@ -836,6 +847,15 @@ fn connect_or_start_daemon(socket: &str) -> io::Result<Client> {
                                 "--data-dir",
                                 &data_dir.to_string_lossy(),
                             ])
+                            .env(
+                                "IDFON_IDLE_EXIT_SECS",
+                                if *KEEP_ALIVE.get().unwrap_or(&false) {
+                                    "0".to_string()
+                                } else {
+                                    std::env::var("IDFON_IDLE_EXIT_SECS")
+                                        .unwrap_or_else(|_| DAEMON_IDLE_EXIT_SECS.into())
+                                },
+                            )
                             .stdin(Stdio::null())
                             .stdout(Stdio::null())
                             .stderr(Stdio::null())

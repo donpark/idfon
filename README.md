@@ -38,12 +38,37 @@ cargo build --release -p idfon-cli -p idfond
 The CLI is a thin client over a local **daemon** (`idfond`, a Unix-socket
 service). The first `idfon` command starts the daemon automatically; it holds
 the iroh endpoint, peer state, and live sessions, so commands are fast and
-state persists across invocations. `idfon shutdown` stops it.
+state persists across invocations. Auto-started daemons exit after 10 minutes
+with no connected clients and restart on the next command; `idfon shutdown`
+stops one immediately.
 
 Everything you share is addressed by a **capability ticket** — a
 self-authenticating URL like `blobabzoy2eok…`. Whoever holds a ticket can
 fetch that one thing; holding nothing grants nothing. No directory, no
 registry, no account.
+
+### Staying reachable (online vs offline)
+
+The daemon is your presence on the iroh network — it holds the endpoint,
+relay connection, and receivers. One question decides if you're online:
+**is idfond running?**
+
+- **Online:** the Idfon.app is open, or you've started a daemon that doesn't
+  idle out: `idfon --keep-alive <any command>`.
+- **Offline:** app closed and no keep-alive daemon. After plain CLI use, the
+  daemon lingers up to 10 minutes with no clients before exiting on its own;
+  run `idfon shutdown` to be offline immediately.
+- When you're offline, senders get an explicit delivery failure and can
+  resend. Messages that arrive while the daemon is up are stored by it and
+  waiting for you (`recv`, `events`) — nothing is silently dropped.
+
+**CLI and app coexist.** Both are clients of the same daemon: they share one
+socket and one profile, so identities, peers, and events are the same on both
+sides. Either may start the daemon — the other connects to it — and neither
+stops one it didn't start. Each install carries its own `idfond` (npm ships
+it next to `idfon`; the app bundles one), so upgrade both together: a daemon
+serving a client with a mismatched protocol version fails loudly, not
+silently.
 
 ---
 
@@ -57,7 +82,9 @@ Twelve verbs. One mental model:
   machine-readable envelopes on every verb.
 
 Global options (valid on every verb): `--socket <PATH>` (daemon socket,
-default `/tmp/idfon/idfond.sock`), `--identity <ID>`, `--json`.
+default `/tmp/idfon/idfond.sock`), `--identity <ID>`, `--json`,
+`--keep-alive` (auto-started daemon never idles out — see
+[staying reachable](#staying-reachable-online-vs-offline)).
 
 ### Content by ticket: `put` / `get`
 

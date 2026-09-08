@@ -3,7 +3,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     io,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
     sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 
 mod blob;
@@ -227,21 +229,35 @@ pub struct DaemonConfig {
     pub socket: PathBuf,
     pub data_dir: PathBuf,
     pub transport: Option<String>,
+    /// Exit gracefully after this long with zero connected clients.
+    /// None (default) = run until ctrl_c or `daemon.shutdown`.
+    pub idle_exit: Option<Duration>,
 }
 
 /// Blocking entry point: builds its own tokio runtime and runs the daemon
 /// until ctrl_c or an error. Used by the thin `idfond` binary through the
 /// dylib's `idfon_daemon_run` C ABI.
 pub fn run_blocking(config: DaemonConfig) -> io::Result<()> {
+    // IDFON_IDLE_EXIT_SECS lets the thin `idfond` binary / CLI-spawned
+    // daemons opt into idle shutdown without touching the C ABI. "0" = off.
+    let env_idle_exit = std::env::var("IDFON_IDLE_EXIT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|&secs| secs > 0)
+        .map(Duration::from_secs);
+    let idle_exit = config
+        .idle_exit
+        .or(env_idle_exit)
+        .filter(|duration| !duration.is_zero());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(io::Error::other)?;
-    runtime.block_on(run(config))
+    runtime.block_on(run(DaemonConfig { idle_exit, ..config }))
 }
 
 pub async fn run(config: DaemonConfig) -> io::Result<()> {
-    let DaemonConfig { socket, data_dir, transport } = config;
+    let DaemonConfig { socket, data_dir, transport, idle_exit } = config;
     let transport = transport.unwrap_or_else(|| DEFAULT_TRANSPORT.into());
     if transport != "fake" && transport != "iroh" {
         return Err(io::Error::new(
@@ -296,8 +312,29 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
     let _cleanup = SocketCleanup(socket.clone());
 
     let shutdown = Arc::new(tokio::sync::Notify::new());
+    let connections = Arc::new(AtomicUsize::new(0));
+    if let Some(idle_exit) = idle_exit {
+        let connections = Arc::clone(&connections);
+        let shutdown = Arc::clone(&shutdown);
+        tokio::spawn(async move {
+            let mut idle_since: Option<tokio::time::Instant> = None;
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if connections.load(Ordering::Relaxed) > 0 {
+                    idle_since = None;
+                } else {
+                    let since = *idle_since.get_or_insert_with(tokio::time::Instant::now);
+                    if since.elapsed() >= idle_exit {
+                        eprintln!("[idfond] no connected clients for {idle_exit:?}; shutting down");
+                        shutdown.notify_waiters();
+                        return;
+                    }
+                }
+            }
+        });
+    }
     tokio::select! {
-        result = accept_loop(listener, store, transport, Arc::clone(&shutdown)) => result,
+        result = accept_loop(listener, store, transport, Arc::clone(&shutdown), Arc::clone(&connections)) => result,
         _ = shutdown.notified() => Ok(()),
         result = tokio::signal::ctrl_c() => result.map_err(io::Error::other),
     }
@@ -308,17 +345,31 @@ async fn accept_loop(
     store: Arc<Mutex<Store>>,
     transport: Arc<TransportMode>,
     shutdown: Arc<tokio::sync::Notify>,
+    connections: Arc<AtomicUsize>,
 ) -> io::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let store = Arc::clone(&store);
         let transport = Arc::clone(&transport);
         let shutdown = Arc::clone(&shutdown);
+        let connections = Arc::clone(&connections);
+        connections.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
+            // Counts as an active client for the whole connection, which is
+            // what long-poll (`wait`) and `events --follow` hold open.
+            let _conn = ConnGuard(connections);
             if let Err(error) = serve(stream, store, transport, shutdown).await {
                 eprintln!("idfond client error: {error}");
             }
         });
+    }
+}
+
+struct ConnGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -3868,6 +3919,25 @@ mod tests {
                 ..
             }
         ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn idle_exit_shuts_down_daemon_with_no_clients() {
+        let dir = temp_dir("idle-exit");
+        let socket = dir.join("idfond.sock");
+        let handle = tokio::spawn(run(DaemonConfig {
+            socket: socket.clone(),
+            data_dir: dir.clone(),
+            transport: Some("fake".into()),
+            idle_exit: Some(Duration::from_millis(300)),
+        }));
+        let result = tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_ok());
+        assert!(!socket.exists(), "socket not cleaned up on idle exit");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

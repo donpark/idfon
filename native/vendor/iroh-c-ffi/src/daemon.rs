@@ -34,6 +34,7 @@ pub extern "C" fn idfon_daemon_run(
         socket: socket.into(),
         data_dir: data_dir.into(),
         transport: to_option(transport),
+        idle_exit: None,
     };
     match idfon_daemon::run_blocking(config) {
         Ok(()) => IDFON_DAEMON_OK,
