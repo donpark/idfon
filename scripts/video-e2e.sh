@@ -38,9 +38,10 @@ NUF="$root/target/release/idfon"
 A="$work/publisher/idfond.sock"
 B="$work/listener/idfond.sock"
 
-# Test source: 320x240 test pattern, 4s, H.264 baseline (openh264-compatible:
-# no B-frames), one fragment per keyframe (~0.5s GOPs). openh264, which
-# decodes the stream on the publish side, only supports baseline profile.
+# Test source: 320x240 test pattern, 4s, one fragment per keyframe (~0.5s
+# GOPs), H.264 baseline: the publish side decodes with openh264, which only
+# supports baseline (no B-frames). The container must be fragmented MP4
+# (CMAF). When publish switches to passthrough, these flags can go.
 ffmpeg -v error -y -f lavfi -i testsrc=duration=4:size=320x240:rate=15 \
   -pix_fmt yuv420p -c:v libx264 -profile:v baseline -level 3.0 -bf 0 \
   -g 15 -force_key_frames "expr:gte(t,n_forced*0.5)" \
