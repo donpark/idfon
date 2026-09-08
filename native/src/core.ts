@@ -1,4 +1,5 @@
 import { Cmd, Sub, asciiBytes, utf8Bytes, windowDescriptor } from "@native-sdk/core";
+import type { ImageState } from "@native-sdk/core";
 import { type WindowDescriptor } from "@native-sdk/core/events";
 import { type TextInputEvent, applyTextInputEvent } from "@native-sdk/core/text";
 
@@ -83,6 +84,10 @@ export interface Model {
   readonly liveTicket: Uint8Array;
   readonly playingTicket: Uint8Array;
   readonly liveTicketInput: Uint8Array;
+  readonly incomingVideo: boolean;
+  readonly videoWatching: boolean;
+  readonly videoFramePath: Uint8Array;
+  readonly videoFileInput: Uint8Array;
   readonly recordingStatus: Uint8Array;
   readonly recordingReady: boolean;
   readonly pendingRecordingSend: boolean;
@@ -187,6 +192,15 @@ export type Msg =
   | { readonly kind: "live_error"; readonly data: Uint8Array }
   | { readonly kind: "live_ticket_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "live_subscribe" }
+  | { readonly kind: "video_share" }
+  | { readonly kind: "video_stop" }
+  | { readonly kind: "video_file_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "video_shared"; readonly data: Uint8Array }
+  | { readonly kind: "video_share_error"; readonly data: Uint8Array }
+  | { readonly kind: "video_watch_started"; readonly data: Uint8Array }
+  | { readonly kind: "video_watch_error"; readonly data: Uint8Array }
+  | { readonly kind: "video_stopped"; readonly data: Uint8Array }
+  | { readonly kind: "video_frame_tick"; readonly at: number }
   | { readonly kind: "live_unsubscribe" }
   | { readonly kind: "live_subscribed"; readonly data: Uint8Array }
   | { readonly kind: "live_unsubscribed"; readonly data: Uint8Array }
@@ -222,11 +236,22 @@ export const viewUnbound = [
   "replyRoute", "identityName", "identityInitials", "incomingLive", "copyIdentityTicket", "identityError", "chatOpen", "receiverTicket", "capabilityTicket", "endpointId", "audioActive", "pendingRecordingSend", "subscribedRecording", "showTicket", "liveAutoAccept", "eventCursor", "eventsReady",
   "receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "events_sync_error", "poll_events", "tickAt",
   "recordingStartedAt", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "events_sync_error", "chat_closed", "banner_dismiss", "bannerExpiresAt", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready", "bitrate_edit", "set_audio_bitrate", "bitrateInput",
+"video_watch_started", "video_watch_error", "video_stopped", "video_frame_tick",
 ] as const;
+
+/// The runtime image id the live video frames register under; 0 renders
+/// nothing until the first frame lands.
+export function videoImageId(model: Model): number {
+  return model.videoWatching ? 1 : 0;
+}
 
 export function subscriptions(model: Model): Sub<Msg> {
   if (!model.receiverAvailable) return Sub.none;
-  return Sub.timer("idfond-events", 1000, "poll_events");
+  if (!model.videoWatching) return Sub.timer("idfond-events", 1000, "poll_events");
+  return Sub.batch([
+    Sub.timer("idfond-events", 1000, "poll_events"),
+    Sub.timer("video-frames", 100, "video_frame_tick"),
+  ]);
 }
 
 export function initialModel(): Model | [Model, Cmd<Msg>] {
@@ -270,6 +295,10 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     liveTicket: EMPTY,
     playingTicket: EMPTY,
     liveTicketInput: EMPTY,
+  incomingVideo: false,
+  videoWatching: false,
+  videoFramePath: EMPTY,
+  videoFileInput: EMPTY,
     recordingStatus: utf8Bytes("No recording"),
     recordingReady: false,
     pendingRecordingSend: false,
@@ -590,6 +619,30 @@ function liveInviteMessage(action: Uint8Array, ticket: Uint8Array): Uint8Array {
   return concat(utf8Bytes("IDFON-LIVE/1\naction="), concat(action, concat(utf8Bytes("\nticket="), ticket)));
 }
 
+/// idfond.request payload for media.live.publish of a video file.
+function videoPublishPayload(model: Model): Uint8Array {
+  let payload = concat(utf8Bytes('{"version":1,"id":"gui-video","method":"media.live.publish","params":{"identity":'), jsonString(model.identityName));
+  payload = concat(payload, utf8Bytes(',"file":'));
+  payload = concat(payload, jsonString(model.videoFileInput));
+  return concat(payload, utf8Bytes(',"video":true}}'));
+}
+
+/// First index of `needle` in `data`, or -1.
+function findBytes(data: Uint8Array, needle: Uint8Array): number {
+  if (needle.length === 0) return 0;
+  outer: for (let i = 0; i + needle.length <= data.length; i += 1) {
+    for (let j = 0; j < needle.length; j += 1) {
+      if (data[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+function videoInviteMessage(action: Uint8Array, ticket: Uint8Array): Uint8Array {
+  return concat(utf8Bytes("IDFON-LIVE/1\naction="), concat(action, concat(utf8Bytes("\nmedia=video\nticket="), ticket)));
+}
+
 function recordingEnvelope(model: Model): Uint8Array {
   const seconds = digitsToNumber(model.recordingDuration);
   const ms = seconds > 0 ? seconds * 1000 : 0;
@@ -884,15 +937,23 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
             if (actionEnd !== -1 && sameBytes(text.slice(actionEnd, actionEnd + ticketPrefix.length), ticketPrefix)) {
               const action = text.slice(livePrefix.length, actionEnd);
               const ticket = text.slice(actionEnd + ticketPrefix.length);
+              // Optional media kind line (audio default): media=video marks a
+              // video share so Answer starts the video frame path.
+              const mediaTag = utf8Bytes("\nmedia=");
+              const mediaEnd = byteIndex(text, 10, ticketPrefix.length + ticket.length);
+              const isVideo = mediaEnd !== -1
+                && sameBytes(text.slice(mediaEnd, mediaEnd + mediaTag.length), mediaTag)
+                && sameBytes(text.slice(mediaEnd + mediaTag.length, mediaEnd + mediaTag.length + 5), utf8Bytes("video"));
               const isStart = sameBytes(action, utf8Bytes("start"));
               const isStop = sameBytes(action, utf8Bytes("stop"));
               if ((isStart || isStop) && (!isStart || ticket.length !== 0)) {
-                const incoming = showBanner({ ...next, identitySelected: true, replyRoute: peer, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), selectedConnectionInitials: identityInitials(utf8Bytes(isStart ? "Incoming call" : "Call ended")), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart }, utf8Bytes(isStart ? "Incoming call" : "Call ended"));
+                const incoming = showBanner({ ...next, identitySelected: true, replyRoute: peer, liveTicketInput: ticket, incomingVideo: isVideo, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? (isVideo ? "Incoming video" : "Incoming call") : "Call ended"), selectedConnectionInitials: identityInitials(utf8Bytes(isStart ? (isVideo ? "Incoming video" : "Incoming call") : "Call ended")), chatOpen: true, receiverStatus: utf8Bytes(isStart ? (isVideo ? "Incoming video" : "Incoming call") : "Call ended"), incomingLive: isStart }, utf8Bytes(isStart ? (isVideo ? "Incoming video" : "Incoming call") : "Call ended"));
                 if (isStart) {
                   return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.none];
                 }
                 return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.batch([
                   Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
+                  Cmd.request("media.video.stop", EMPTY, { key: "media-video-stop", ok: "video_stopped", err: "video_watch_error" }),
                   Cmd.request("idfond.request", daemonMessagePayload(next.identityName, peer, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${next.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
                 ])];
               }
@@ -1098,6 +1159,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "live_answer": {
       if (!model.incomingLive) return model;
+      if (model.incomingVideo) {
+        return [hideBanner({ ...model, incomingLive: false, videoWatching: true, receiverStatus: utf8Bytes("Watching video") }), Cmd.batch([
+          Cmd.request("media.video.start", model.liveTicketInput, { key: "media-video-start", ok: "video_watch_started", err: "video_watch_error" }),
+          Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+        ])];
+      }
       return [hideBanner({ ...model, incomingLive: false, receiverStatus: utf8Bytes("In call") }), Cmd.batch([
         Cmd.request("media.live.subscribe", model.liveTicketInput, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
         Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
@@ -1105,7 +1172,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "live_decline": {
       if (!model.incomingLive) return model;
-      const declined = hideBanner({ ...model, incomingLive: false, liveTicketInput: EMPTY, receiverStatus: utf8Bytes("Call declined"), selectedConnectionName: utf8Bytes("Call declined") });
+      const declined = hideBanner({ ...model, incomingLive: false, incomingVideo: false, liveTicketInput: EMPTY, receiverStatus: utf8Bytes("Call declined"), selectedConnectionName: utf8Bytes("Call declined") });
       if (model.replyRoute.length === 0) return declined;
       return [declined, Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
     }
@@ -1143,6 +1210,36 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "live_ticket_edit":
       return { ...model, liveTicketInput: editText(model.liveTicketInput, msg.edit) };
+    case "video_file_edit":
+      return { ...model, videoFileInput: editText(model.videoFileInput, msg.edit) };
+    case "video_share":
+      if (model.videoFileInput.length === 0 || model.receiverId.length === 0) return model;
+      return [model, Cmd.request("idfond.request", videoPublishPayload(model), { key: "media-video-publish", ok: "video_shared", err: "video_share_error" })];
+    case "video_shared": {
+      // Response: {"ok":true,"result":{...,"ticket":"iroh-live:..."}} — pull
+      // the ticket out and signal the peer with a video invite.
+      const marker = utf8Bytes("iroh-live:");
+      const idx = findBytes(msg.data, marker);
+      if (idx === -1) return showBanner(model, utf8Bytes("Video publish failed"));
+      let end = idx;
+      while (end < msg.data.length && msg.data[end] !== 34) end += 1; // closing quote
+      const ticket = msg.data.slice(idx, end);
+      if (ticket.length === 0) return showBanner(model, utf8Bytes("Video publish failed"));
+      return [showBanner(model, utf8Bytes("Video sharing started")), Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.receiverId, videoInviteMessage(utf8Bytes("start"), ticket), utf8Bytes(`video-start-${model.history.length}`), model.capabilityTicket), { key: "media-video-signal", ok: "sender_ready", err: "sender_error" })];
+    }
+    case "video_share_error":
+      return showBanner(model, msg.data);
+    case "video_watch_started":
+      return { ...model, videoFramePath: msg.data };
+    case "video_watch_error":
+      return showBanner(model, msg.data);
+    case "video_stop":
+      return [model, Cmd.request("media.video.stop", EMPTY, { key: "media-video-stop", ok: "video_stopped", err: "video_watch_error" })];
+    case "video_stopped":
+      return { ...model, videoWatching: false, videoFramePath: EMPTY };
+    case "video_frame_tick":
+      if (!model.videoWatching || model.videoFramePath.length === 0) return model;
+      return model;
     case "live_subscribe":
       if (model.liveTicketInput.length === 0) return model;
       return [model, Cmd.request("media.live.subscribe", model.liveTicketInput, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" })];

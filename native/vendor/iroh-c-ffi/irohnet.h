@@ -915,6 +915,22 @@ void
 media_shutdown (void);
 
 /** \brief
+ *  Starts the video subscription for `ticket`: subscribes, enables network
+ *  adaptation, and writes decoded frames to `video-frame.jpg` under the
+ *  media directory (see `media_path`). Returns the absolute frame path for
+ *  `Cmd.imageLoad`, or an empty string on failure.
+ */
+char *
+media_video_start (
+    char const * ticket);
+
+/** \brief
+ *  Stops the video subscription and frame writing.
+ */
+void
+media_video_stop (void);
+
+/** \brief
  *  Returns the public key as a base32 string.
  *
  *  Result must be freed using `rust_free_string`

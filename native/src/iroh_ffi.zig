@@ -158,6 +158,8 @@ fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8)
         std.mem.eql(u8, name, "media.live.subscribe") or
         std.mem.eql(u8, name, "media.live.unsubscribe") or
         std.mem.eql(u8, name, "media.live.recording.store") or
+        std.mem.eql(u8, name, "media.video.start") or
+        std.mem.eql(u8, name, "media.video.stop") or
         std.mem.eql(u8, name, "media.blob.fetch");
     if (!std.mem.eql(u8, name, "idfond.request") and !is_media_audio and
         !std.mem.eql(u8, name, "media.set_scope") and
@@ -375,6 +377,17 @@ fn mediaAudioWorker(job: *Job) void {
             @memcpy(result[duration.len + 1 ..][0..text.len], text);
             self.complete(job.key, true, result[0 .. duration.len + 1 + text.len]);
         }
+    } else if (std.mem.eql(u8, name, "media.video.start")) {
+        var ticket: [max_payload + 1]u8 = undefined;
+        @memcpy(ticket[0..job.len], job.bytes[0..job.len]); ticket[job.len] = 0;
+        const path = ffi.media_video_start(&ticket);
+        defer ffi.rust_free_string(path);
+        const text = std.mem.span(path);
+        if (text.len == 0) self.complete(job.key, false, "video_start_failed")
+        else self.complete(job.key, true, text);
+    } else if (std.mem.eql(u8, name, "media.video.stop")) {
+        ffi.media_video_stop();
+        self.complete(job.key, true, "video_stopped");
     } else if (std.mem.eql(u8, name, "media.blob.fetch")) {
         var ticket: [max_payload + 1]u8 = undefined;
         @memcpy(ticket[0..job.len], job.bytes[0..job.len]);

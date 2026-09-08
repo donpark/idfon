@@ -129,6 +129,20 @@
       <spacer width="12" />
     </row>
   </if>
+  <if test="{videoWatching}">
+    <!-- Live video watch: the decoded adaptive stream renders through the
+         runtime image registry (host writes JPEG frames to app-data). -->
+    <row cross="center">
+      <image image="{videoImageId}" width="320" height="180" label="Live video" />
+      <button variant="destructive" on-press="video_stop" label="Stop video">Stop video</button>
+    </row>
+  </if>
+  <else>
+    <row gap="8" cross="center">
+      <text-field text="{videoFileInput}" label="Video file to share" placeholder="Path to a fragmented MP4" on-input="video_file_edit" />
+      <button variant="secondary" on-press="video_share" label="Share video">Share video</button>
+    </row>
+  </else>
   <!-- Messages-style composer: + on the left, one pill field, record/send
        swap on the field's right edge (record when empty, send when typing). -->
   <if test="{composerIdle}">

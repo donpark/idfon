@@ -163,7 +163,7 @@ fn broadcast_name() -> String {
     name
 }
 
-fn media_path(name: &str) -> std::path::PathBuf {
+pub(crate) fn media_path(name: &str) -> std::path::PathBuf {
     media_dir().join(name)
 }
 
