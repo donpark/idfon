@@ -726,7 +726,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return next;
     }
     case "daemon_error":
-      return { ...model, receiverStatus: msg.data, receiverAvailable: false };
+      // clearing syncingEvents lets the 1s poll adopt an interrupted drain
+      return { ...model, receiverStatus: msg.data, receiverAvailable: false, syncingEvents: false };
     case "capability_ticket_edit":
       return { ...model, capabilityTicketInput: editText(model.capabilityTicketInput, msg.edit), capabilityTicket: editText(model.capabilityTicketInput, msg.edit) };
     case "issue_capability_ticket":
@@ -757,6 +758,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (identities[identityIndex].active) activeName = identities[identityIndex].name;
         identityIndex += 1;
       }
+      if (model.syncingEvents) {
+        // identity_used already kicked off the context/peers/events drain for
+        // this identity; a second events(EMPTY) chain here would let a stale
+        // page replay as a live message once the first chain finishes.
+        return { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName };
+      }
       const next = { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true };
       return [next, Cmd.batch([
         Cmd.request("idfond.request", contextPayload(activeName), { key: "idfond-context", ok: "daemon_ready", err: "daemon_error" }),
@@ -765,6 +772,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ])];
     }
     case "identity_selected":
+      // A double-click fires two presses; a second identity.use would start a
+      // second events-drain chain whose stale pages replay as live messages
+      // (phantom "Incoming recording" chat + failed blob fetch) once the
+      // first chain finishes and flips eventsReady.
+      if (model.syncingEvents && sameBytes(model.identityName, msg.name)) return model;
       return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, copyIdentityTicket: true }, Cmd.request("idfond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "idfond-identity-use", ok: "identity_used", err: "identity_use_error" })];
     case "show_add_identity":
       return { ...model, showAddIdentity: true, newIdentityName: EMPTY };
@@ -787,7 +799,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("idfond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "idfond-identities", ok: "identities_loaded", err: "daemon_error" }),
       ])];
     case "identity_use_error":
-      return { ...model, receiverStatus: msg.data };
+      return { ...model, receiverStatus: msg.data, syncingEvents: false };
     case "events_sync_error":
       // End the swallow so the 1s poll can retry; eventsReady stays false so
       // the retry page still isn't rendered as live.
@@ -800,7 +812,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       const pad = ss < 10 ? "0" : "";
       const expired = model.bannerVisible && msg.at >= model.bannerExpiresAt;
       const base = expired ? hideBanner(model) : model;
-      return [{ ...base, tickAt: msg.at, recordingElapsed: utf8Bytes(`${mm}:${pad}${ss}`), waveform: waveformBars(seconds) }, Cmd.request("idfond.request", daemonEventsPayload(base.identityName, base.eventCursor), { key: "idfond-events", ok: "events_loaded", err: "daemon_error" })];
+      const ticked = { ...base, tickAt: msg.at, recordingElapsed: utf8Bytes(`${mm}:${pad}${ss}`), waveform: waveformBars(seconds) };
+      // events drain in flight: the drain chain owns fetching, and a poll
+      // page built from a mid-drain cursor could replay stale events
+      if (ticked.syncingEvents) return ticked;
+      return [ticked, Cmd.request("idfond.request", daemonEventsPayload(ticked.identityName, ticked.eventCursor), { key: "idfond-events", ok: "events_loaded", err: "daemon_error" })];
     }
     case "banner_dismiss":
       return { ...model, bannerVisible: false };
