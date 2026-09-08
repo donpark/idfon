@@ -5,6 +5,7 @@ pub mod daemon;
 pub mod endpoint;
 pub mod key;
 pub mod media;
+pub mod video;
 pub mod stream;
 pub mod util;
 
