@@ -26,6 +26,8 @@ use iroh_live::media::{
     traits::{VideoDecoder, VideoSource},
     transport::{MoqPacketSource, PacketSource},
 };
+use iroh::protocol::ProtocolHandler as _;
+use iroh::{EndpointAddr, EndpointId};
 use iroh_live::ticket::LiveTicket;
 use iroh_live::Live;
 
@@ -217,6 +219,50 @@ async fn decode_loop(
     }
 }
 
+/// Builds a broadcast that simulcasts `path`'s video as H.264 renditions.
+/// The returned `VideoImport` must stay alive for the stream's lifetime
+/// (dropping it strips the renditions from the catalog).
+///
+/// `rx` is the receiving end of the frame channel the caller wires to
+/// [`decode_loop`] (spawned separately with the import's source/config).
+async fn build_video_broadcast(
+    path: &Path,
+    presets: Vec<VideoPreset>,
+    rx: mpsc::Receiver<VideoFrame>,
+) -> anyhow::Result<(LocalBroadcast, VideoImport)> {
+    let import = import_file(path).await?;
+    // Renditions above the source resolution would upscale; drop
+    // them but always keep at least the smallest preset.
+    let height = import.config.coded_height.unwrap_or(u32::MAX);
+    let mut presets = presets;
+    presets.retain(|preset| preset.height() <= height);
+    if presets.is_empty() {
+        presets = [VideoPreset::P180].to_vec();
+    }
+    let format = VideoFormat {
+        // DecodeConfig::default() outputs RGBA; match it.
+        pixel_format: PixelFormat::Rgba,
+        dimensions: [
+            import.config.coded_width.unwrap_or(640),
+            import.config.coded_height.unwrap_or(360),
+        ],
+    };
+    let broadcast = LocalBroadcast::new();
+    broadcast
+        .video()
+        .set(VideoInput::new(
+            VideoFileSource {
+                name: format!("file:{}", path.display()),
+                format,
+                rx,
+            },
+            codec::VideoCodec::H264,
+            presets.iter().copied(),
+        ))
+        .map_err(|err| anyhow::anyhow!("video setup: {err:#}"))?;
+    Ok((broadcast, import))
+}
+
 /// A running video-file publisher. Holds the live endpoint, router, and
 /// broadcast; the tokio runtime is owned by this struct (see
 /// [`crate::live::LivePublisher`] for why). Call [`VideoPublisher::stop`]
@@ -257,36 +303,7 @@ impl VideoPublisher {
         let result: anyhow::Result<(Arc<Live>, String, LocalBroadcast)> = runtime.block_on(async {
             let endpoint = build_endpoint(relay).await?;
             let live = Arc::new(Live::builder(endpoint).with_router().spawn());
-            let import = import_file(&path).await?;
-            // Renditions above the source resolution would upscale; drop
-            // them but always keep at least the smallest preset.
-            let height = import.config.coded_height.unwrap_or(u32::MAX);
-            let mut presets = presets;
-            presets.retain(|preset| preset.height() <= height);
-            if presets.is_empty() {
-                presets = [VideoPreset::P180].to_vec();
-            }
-            let format = VideoFormat {
-                // DecodeConfig::default() outputs RGBA; match it.
-                pixel_format: PixelFormat::Rgba,
-                dimensions: [
-                    import.config.coded_width.unwrap_or(640),
-                    import.config.coded_height.unwrap_or(360),
-                ],
-            };
-            let broadcast = LocalBroadcast::new();
-            broadcast
-                .video()
-                .set(VideoInput::new(
-                    VideoFileSource {
-                        name: format!("file:{}", path.display()),
-                        format,
-                        rx,
-                    },
-                    codec::VideoCodec::H264,
-                    presets.iter().copied(),
-                ))
-                .map_err(|err| anyhow::anyhow!("video setup: {err:#}"))?;
+            let (broadcast, import) = build_video_broadcast(&path, presets, rx).await?;
             // Feed the encode pipelines from the decode loop; when the file
             // ends the sender drops and the source reports "video ended".
             tokio::spawn(decode_loop(import.source, import.config, tx));
@@ -297,11 +314,14 @@ impl VideoPublisher {
             Ok((live, ticket, broadcast))
         });
         let (live, ticket, broadcast) = result?;
-        Ok((Self {
-            runtime,
-            live,
-            _broadcast: broadcast,
-        }, ticket))
+        Ok((
+            Self {
+                runtime,
+                live,
+                _broadcast: broadcast,
+            },
+            ticket,
+        ))
     }
 
     /// Graceful shutdown: keeps the endpoint alive until the router drains.
@@ -315,6 +335,162 @@ impl VideoPublisher {
         })
         .join();
     }
+}
+
+/// Dials `peer_addr` (a serde_json-serialized iroh `EndpointAddr`, as stored
+/// in the daemon's peer registry) and publishes `path`'s video on the 1:1
+/// session only — session-scoped, so no ticket exists. Blocks until the peer
+/// hangs up (its subscribe session closes) or `seconds` elapses (`None` =
+/// wait for hangup). Returns wall-clock time held open in milliseconds.
+pub fn dial_to_peer(
+    path: &Path,
+    peer_addr: &str,
+    seconds: Option<u64>,
+    relay: bool,
+) -> anyhow::Result<u64> {
+    let path = path.to_path_buf();
+    let peer_addr = peer_addr.to_string();
+    // Multi-thread runtime: decode_loop's blocking channel sends must not
+    // stall the executor driving the connect handshake.
+    let handle = std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()?
+            .block_on(dial_peer(&path, &peer_addr, seconds, relay))
+    });
+    handle.join().map_err(|_| anyhow::anyhow!("caller thread panicked"))?
+}
+
+async fn dial_peer(
+    path: &Path,
+    peer_addr: &str,
+    seconds: Option<u64>,
+    relay: bool,
+) -> anyhow::Result<u64> {
+    let addr: EndpointAddr = serde_json::from_str(peer_addr)
+        .map_err(|err| anyhow::anyhow!("invalid peer endpoint address: {err}"))?;
+    let endpoint = build_endpoint(relay).await?;
+    // Outbound-only session: a bare Moq on a fresh endpoint, no inbound path.
+    let moq = iroh_live::moq::Moq::new(endpoint);
+    let (tx, rx) = mpsc::sync_channel(FRAME_QUEUE);
+    let (broadcast, import) = build_video_broadcast(path, Vec::new(), rx).await?;
+    tokio::spawn(decode_loop(import.source, import.config, tx));
+    let session = moq
+        .connect(addr)
+        .await
+        .map_err(|err| anyhow::anyhow!("connect to peer: {err:#}"))?;
+    session.publish(crate::live::CALL_BROADCAST, broadcast.consume());
+    let base = Instant::now();
+    // The receiver controls the call length: it hangs up when its capture
+    // window ends, which closes the session and releases us. `seconds` is a
+    // safety cap for callers nobody hangs up on.
+    match seconds {
+        Some(cap) => tokio::time::sleep(Duration::from_secs(cap)).await,
+        None => {
+            let _ = session.conn().closed().await;
+        }
+    }
+    let held_ms = base.elapsed().as_millis() as u64;
+    Ok(held_ms)
+}
+
+/// Waits up to `wait` seconds for an inbound 1:1 video call on the daemon's
+/// transport endpoint (the MoQ side-channel ALPN is registered for the
+/// duration), accepts it, and records the caller's video rendition to an
+/// Annex B `.h264` file, ending when the caller's broadcast ends or
+/// `seconds` elapse. With `from` set, calls from any other endpoint are
+/// rejected. `quality` selects the rendition to record (default highest).
+pub fn answer_to_h264(
+    transport: std::sync::Arc<idfon_core::transport::IrohTransport>,
+    out: &Path,
+    seconds: u64,
+    wait: u64,
+    from: Option<&str>,
+    quality: Option<Quality>,
+) -> anyhow::Result<VideoStats> {
+    let out = out.to_path_buf();
+    let from = from.map(str::to_string);
+    // Multi-thread runtime for the same reason as dial_to_peer.
+    let handle = std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()?.block_on(answer_h264(
+            &transport,
+            &out,
+            seconds,
+            wait,
+            from.as_deref(),
+            quality,
+        ))
+    });
+    handle.join().map_err(|_| anyhow::anyhow!("answer thread panicked"))?
+}
+
+async fn answer_h264(
+    transport: &idfon_core::transport::IrohTransport,
+    out: &Path,
+    seconds: u64,
+    wait: u64,
+    from: Option<&str>,
+    quality: Option<Quality>,
+) -> anyhow::Result<VideoStats> {
+    use crate::live::CALL_BROADCAST;
+    let from_id: Option<EndpointId> = match from {
+        Some(id) => Some(id.parse().map_err(|err| anyhow::anyhow!("invalid --from endpoint id: {err}"))?),
+        None => None,
+    };
+    // MoQ rides the daemon's transport endpoint via a side-channel ALPN: the
+    // accept loop hands us raw connections, the handler turns them into
+    // sessions, and the session stream is what `answer` waits on.
+    let moq = iroh_live::moq::Moq::new(transport.endpoint().clone());
+    let handler = moq.protocol_handler();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<iroh::endpoint::Connection>(8);
+    let _side = transport.add_side_channel(iroh_live::moq::ALPN, tx);
+    tokio::spawn(async move {
+        while let Some(connection) = rx.recv().await {
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let _ = handler.accept(connection).await;
+            });
+        }
+    });
+    let mut incoming = moq.incoming_sessions();
+    let mut session = tokio::time::timeout(Duration::from_secs(wait), async {
+        loop {
+            let Some(call) = incoming.next().await else {
+                anyhow::bail!("live transport shut down");
+            };
+            match from_id {
+                Some(want) if call.remote_id() != want => call.reject(),
+                _ => break Ok::<_, anyhow::Error>(call.accept()),
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("no incoming call within {wait}s"))??;
+    let mut last_err = String::new();
+    const SUBSCRIBE_ATTEMPTS: u32 = 3;
+    const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(8);
+    let remote = {
+        let mut result = None;
+        for _attempt in 0..SUBSCRIBE_ATTEMPTS {
+            match tokio::time::timeout(SUBSCRIBE_TIMEOUT, session.subscribe(CALL_BROADCAST)).await {
+                Ok(Ok(consumer)) => {
+                    result = Some(
+                        RemoteBroadcast::new(CALL_BROADCAST, consumer)
+                            .await
+                            .map_err(|err| anyhow::anyhow!("remote broadcast: {err:#}"))?,
+                    );
+                    break;
+                }
+                Ok(Err(err)) => last_err = format!("{err:#}"),
+                Err(_) => last_err = "timed out waiting for the call broadcast to be announced".into(),
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        result.ok_or_else(|| anyhow::anyhow!("subscribe to caller failed after retries: {last_err}"))?
+    };
+    let stats = record_remote(&remote, out, seconds, 0, true, quality).await?;
+    drop(remote);
+    drop(session);
+    drop(_side); // unregister the side channel
+    Ok(stats)
 }
 
 /// Result of a [`listen_to_h264`] capture.
@@ -428,6 +604,25 @@ async fn listen_h264(
     };
     let subscribe_ms = base.elapsed().as_millis() as u64;
     let broadcast = sub.broadcast();
+    let stats = record_remote(broadcast, out, seconds, subscribe_ms, false, quality).await?;
+    drop(sub);
+    let _ = live.shutdown().await;
+    Ok(stats)
+}
+
+/// Records `broadcast`'s selected video rendition to an Annex B `.h264`
+/// file, ending when the broadcast ends, the caller hangs up (`hangup_ends`),
+/// a few consecutive read timeouts pass, or `seconds` elapse. Shared by the
+/// ticket path and the 1:1 answer path.
+async fn record_remote(
+    broadcast: &RemoteBroadcast,
+    out: &Path,
+    seconds: u64,
+    subscribe_ms: u64,
+    hangup_ends: bool,
+    quality: Option<Quality>,
+) -> anyhow::Result<VideoStats> {
+    let base = Instant::now();
     let rendition = broadcast
         .catalog()
         .select_video_rendition(quality.unwrap_or(Quality::Highest))
@@ -467,6 +662,9 @@ async fn listen_h264(
             }
             Ok(Ok(None)) => break,
             Ok(Err(err)) => {
+                if hangup_ends {
+                    break; // the caller hanging up is a normal end
+                }
                 eprintln!("video track read error, stopping: {err:#}");
                 break;
             }
@@ -481,8 +679,6 @@ async fn listen_h264(
         }
     }
     file.flush()?;
-    drop(sub);
-    let _ = live.shutdown().await;
     Ok(VideoStats {
         out: out.display().to_string(),
         frames,

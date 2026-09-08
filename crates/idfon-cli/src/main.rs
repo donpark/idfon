@@ -194,7 +194,7 @@ struct SendArgs {
     stream: bool,
     /// Stream mode only (broadcast only): publish video with an adaptive
     /// rendition ladder instead of audio
-    #[arg(long, conflicts_with_all = ["peer", "text", "loop_playback"])]
+    #[arg(long, conflicts_with_all = ["text", "loop_playback"])]
     video: bool,
     /// Stream mode only: list running live publishers
     #[arg(long, conflicts_with_all = ["peer", "text", "file", "stop", "name", "loop_playback"])]
@@ -239,6 +239,12 @@ struct RecvArgs {
     /// Stream mode only: give up if no one calls within this many seconds
     #[arg(long)]
     wait: Option<u64>,
+    /// Stream mode only: record encoded video (Annex B .h264) instead of audio
+    #[arg(long)]
+    video: bool,
+    /// Stream mode only: rendition quality (low, mid, high, highest)
+    #[arg(long)]
+    quality: Option<String>,
     /// Stream mode only: forbid relayed connections
     #[arg(long = "no-relay")]
     no_relay: bool,
@@ -418,6 +424,8 @@ fn run() -> io::Result<()> {
                     args.seconds,
                     args.wait,
                     args.from.as_deref(),
+                    args.video,
+                    args.quality.as_deref(),
                     !args.no_relay,
                     json,
                     identity,
@@ -554,8 +562,7 @@ fn run() -> io::Result<()> {
                         // 1:1 session-scoped stream to the peer; blocks until
                         // they hang up (or --seconds). No ticket exists.
                         let file = resolve_stream_file(args.file.as_ref())?;
-                        let mut params =
-                            json!({"to": peer, "file": file, "relay": !args.no_relay});
+                        let mut params = json!({"to": peer, "file": file, "video": args.video, "relay": !args.no_relay});
                         if let Some(seconds) = args.seconds {
                             params["seconds"] = seconds.into();
                         }
@@ -1462,18 +1469,25 @@ fn cmd_listen(
 }
 
 /// `idfon answer`: waits for an inbound 1:1 call and records it to --out
-/// (default: a temp WAV copied to stdout).
+/// (default: a temp file copied to stdout). With --video, records the
+/// selected rendition's encoded H.264 (Annex B).
 fn cmd_answer(
     socket: &str,
     out: Option<&String>,
     seconds: Option<u64>,
     wait: Option<u64>,
     from: Option<&str>,
+    video: bool,
+    quality: Option<&str>,
     relay: bool,
     json: bool,
     identity: Option<&str>,
 ) -> io::Result<()> {
-    let mut params = json!({"relay": relay});
+    let ext = if video { "h264" } else { "wav" };
+    let mut params = json!({"relay": relay, "video": video});
+    if let Some(quality) = quality {
+        params["quality"] = quality.into();
+    }
     if let Some(seconds) = seconds {
         params["seconds"] = seconds.into();
     }
@@ -1488,7 +1502,7 @@ fn cmd_answer(
         params["out"] = path.clone().into();
     } else {
         temp = std::env::temp_dir().join(format!(
-            "idfon-answer-{}.wav",
+            "idfon-answer-{}.{ext}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock before epoch")
