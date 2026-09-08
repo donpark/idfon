@@ -54,14 +54,12 @@ fn detect_format(path: &Path) -> anyhow::Result<FramedFormat> {
         .unwrap_or_default();
     Ok(match ext.as_str() {
         // moq-mux's fmp4 importer parses both fragmented (CMAF) and plain
-        // MP4s with a readable moov; exotic profiles may still fail.
+        // MP4s with a readable moov; exotic profiles may still fail. Other
+        // containers are plumbed but untested — error loudly until verified.
         "mp4" | "m4v" | "mov" | "cmfv" => FramedFormat::Fmp4,
-        "mkv" | "webm" => FramedFormat::Mkv,
-        "ts" | "m2ts" | "mts" => FramedFormat::Ts,
-        "flv" => FramedFormat::Flv,
-        "h264" | "avc" | "avc3" | "264" => FramedFormat::Avc3,
         other => anyhow::bail!(
-            "unsupported video extension .{other} (supported: mp4, mkv, webm, ts, flv, h264)"
+            "unsupported video file type .{other} (supported: fragmented MP4; \
+             re-mux with `ffmpeg -i in -c copy -movflags +frag_keyframe+empty_moov+default_base_moof out.mp4`)"
         ),
     })
 }
@@ -698,10 +696,6 @@ mod tests {
         assert!(matches!(
             detect_format(Path::new("a/b.MP4")).unwrap(),
             FramedFormat::Fmp4
-        ));
-        assert!(matches!(
-            detect_format(Path::new("x.webm")).unwrap(),
-            FramedFormat::Mkv
         ));
         assert!(detect_format(Path::new("x.txt")).is_err());
     }
