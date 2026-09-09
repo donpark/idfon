@@ -171,6 +171,16 @@ pub(crate) fn media_path(name: &str) -> std::path::PathBuf {
     media_dir().join(name)
 }
 
+/// Sets the rotation (degrees CW: 0/90/180/270) applied to iOS camera frames
+/// before encoding, so portrait-held phones render upright. No-op on macOS.
+#[ffi_export]
+pub fn media_video_set_rotation(deg: u32) {
+    #[cfg(target_os = "ios")]
+    nokhwa::backends::capture::set_ios_rotation(deg);
+    #[cfg(not(target_os = "ios"))]
+    let _ = deg;
+}
+
 /// Persists a recording ticket once in the active conversation's ledger.
 #[ffi_export]
 pub fn media_recording_persist(ticket: char_p::Ref<'_>) -> u8 {
@@ -990,11 +1000,12 @@ pub fn media_audio_set_bitrate(bitrate: u32) -> u8 {
 
 /// Starts the live broadcast (mic, plus camera for video calls) and returns
 /// its iroh-live ticket.
-/// Requests macOS camera access (TCC prompt) if not yet determined.
+/// Requests camera access (TCC prompt on macOS, in-app prompt on iOS) if
+/// not yet determined.
 /// nokhwa's device query does not trigger the prompt, so without this the
 /// camera list comes back empty and the video broadcast fails to start.
 /// Denial is tolerated: audio still publishes, video vends black frames.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn ensure_camera_access() {
     use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaType};
     let media_type: &AVMediaType = unsafe { objc2_av_foundation::AVMediaTypeVideo.unwrap() };
@@ -1034,10 +1045,28 @@ fn start_live(with_video: bool) -> char_p::Box {
         broadcast.audio().set_renditions(renditions)?;
         if with_video {
             ensure_camera_access();
-            let camera = CameraCapturer::new()?;
+            // Prefer the front camera for video calls (enumeration order
+            // returns the rear camera first on iPhones).
+            let camera = {
+                let cams = CameraCapturer::list().unwrap_or_default();
+                let chosen = cams
+                    .iter()
+                    .find(|c| c.name.to_lowercase().contains("front"))
+                    .or_else(|| cams.first());
+                match chosen {
+                    Some(info) => CameraCapturer::open(
+                        Some(info.backend),
+                        Some(info.id.as_str()),
+                        &Default::default(),
+                    )?,
+                    None => CameraCapturer::new()?,
+                }
+            };
+            // 360p (500 kbps) + 720p (2 Mbps) ladder: receiver-driven
+            // adaptation picks the rendition that fits the network.
             broadcast
                 .video()
-                .set_source(camera, VideoCodec::H264, [VideoPreset::P360])?;
+                .set_source(camera, VideoCodec::H264, [VideoPreset::P360, VideoPreset::P720])?;
         }
         let broadcast_name = broadcast_name();
         live.publish(&broadcast_name, &broadcast).await?;

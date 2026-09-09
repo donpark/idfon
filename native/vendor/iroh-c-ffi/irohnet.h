@@ -877,6 +877,14 @@ media_live_unsubscribe (void);
 char *
 media_live_video_start (void);
 
+/** rief
+ *  Sets the rotation (degrees CW: 0/90/180/270) applied to iOS camera frames
+ *  before encoding. No-op on macOS.
+ */
+void
+media_video_set_rotation (
+    uint32_t deg);
+
 /** \brief
  *  Returns the duration of the most recently finalized local recording.
  */

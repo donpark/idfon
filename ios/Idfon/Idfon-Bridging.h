@@ -22,6 +22,23 @@ void idfon_client_result_free(uint8_t *ptr, uintptr_t len);
 // idfon_client_socket_path(profile, out, cap) exists too; the app passes its
 // own sandboxed socket path instead.
 
+// Media pipeline (native/vendor/iroh-c-ffi src/media.rs + src/video.rs).
+// Declared here instead of including irohnet.h (1338 lines); the static lib
+// is the single source of truth. String results are heap-owned and freed
+// with rust_free_string. Empty string return = failure (see
+// media_live_last_error for the cause).
+char *media_live_video_start(void);          // publish mic+camera, returns ticket
+void media_live_stop(void);                  // stop own publish
+uint8_t media_live_subscribe(char const *ticket); // hear the peer (decodes + plays)
+void media_live_unsubscribe(void);
+char *media_video_start(char const *ticket); // watch peer video -> video-frame.jpg path
+void media_video_stop(void);
+char *media_live_last_error(void);           // last publish failure ("" if none)
+void media_video_set_rotation(uint32_t deg); // iOS camera frame rotation (0/90/180/270 CW)
+void media_shutdown(void);
+void iroh_enable_tracing(void);              // tracing -> /tmp/idfon-<pid>.log (IROH_C_LOG filter)
+void rust_free_string(char *ptr);
+
 #define IDFON_OK 0
 #define IDFON_EARG -1
 #define IDFON_EREQUEST -2

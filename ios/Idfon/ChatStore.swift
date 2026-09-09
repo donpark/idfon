@@ -1,5 +1,4 @@
 import Foundation
-
 /// In-memory message store tailing the daemon event stream.
 ///
 /// The event cursor is persisted so a relaunch (or foreground after
@@ -37,6 +36,12 @@ final class ChatStore {
     /// Delivers an event (new or replayed) into the store. Main queue.
     private func ingest(_ event: Event) {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
+        // Call-control traffic (live invites, call_started/stopped) routes
+        // to the video-call state machine; never shown as chat history.
+        if LiveInvite.parse(text) != nil || text == "call_started" || text == "call_stopped" {
+            DispatchQueue.main.async { VideoCall.shared.handleEnvelope(peer: peerId, text) }
+            return
+        }
         let kind = Self.parseKind(text)
         messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false))
         NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")

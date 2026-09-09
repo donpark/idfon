@@ -51,6 +51,9 @@ idfon-protocol = { path = "../../../crates/idfon-protocol" }
 idfon-client = { path = "../../../crates/idfon-client" }
 idfon-daemon = { path = "../../../crates/idfon-daemon" }
 
+[dependencies.nokhwa]
+path = "../nokhwa"
+
 [features]
 # generate headers
 headers = ["safer-ffi/headers"]
@@ -68,3 +71,8 @@ strip = "symbols"
 [patch.crates-io]
 nokhwa-bindings-macos = { path = "../nokhwa-bindings-macos" }
 block = { path = "../block" }
+# Vendored nokhwa: upstream gates its AVFoundation wrapper (and bindings
+# calls) to macOS only, leaving an `unimplemented!()` stub for iOS; the
+# vendored bindings fork compiles for iOS, so unlock the wrapper there too.
+# Also a direct dependency (rotation FFI touches the wrapper directly).
+nokhwa = { path = "../nokhwa" }

@@ -5,9 +5,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         DaemonBootstrap.start()
         ChatStore.shared.start()
+        setVideoRotation()
+        NotificationCenter.default.addObserver(forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main) { _ in
+            self.setVideoRotation()
+        }
         smokeCheckStatus()
         handleLaunchArguments()
         return true
+    }
+
+    /// The camera buffer is landscape-sensor-native; tell the media layer how
+    /// to rotate it so portrait-held phones render upright.
+    private func setVideoRotation() {
+        let deg: UInt32 = switch UIDevice.current.orientation {
+        case .portrait: 90
+        case .portraitUpsideDown: 270
+        case .landscapeLeft: 0
+        case .landscapeRight: 180
+        default: 90
+        }
+        media_video_set_rotation(deg)
     }
 
     /// Automation channel (simctl launch app.idfon -dial <ref> / -answer);
@@ -36,6 +53,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                     NSLog("idfon answer failed: \(error.localizedDescription)")
                 }
             }
+        }
+        if let i = args.firstIndex(of: "-videodial"), args.count > i + 1 {
+            VideoCall.shared.dial(args[i + 1])
+        }
+        if let i = args.firstIndex(of: "-pair"), args.count > i + 1 {
+            pairPeer(ticketJSON: args[i + 1], name: args.count > i + 2 ? args[i + 2] : "mac")
+        }
+        // Debug: NSLog the tail of the daemon tracing log (see iroh_enable_tracing).
+        if args.contains("-dumplog") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { Self.dumpLog() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { Self.dumpLog() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { Self.dumpLog() }
         }
         if let i = args.firstIndex(of: "-memo"), args.count > i + 2, let seconds = TimeInterval(args[i + 1]) {
             let ref = args[i + 2]
@@ -71,6 +100,72 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// Device pairing automation (no peer-add UI on iOS): launch with
+    /// `-pair <endpointAddrJSON> [name]`. Adds the peer, grants message
+    /// send/receive both ways, and logs this daemon's own connection ticket
+    /// (`idfon self ticket:`) so the remote side can be paired from console
+    /// output.
+    private func pairPeer(ticketJSON: String, name: String) {
+        Task {
+            let client = DaemonClient()
+            do {
+                // Canonical identity id (name may differ, e.g. id "default"
+                // vs name "Default" — grants and peer.add must use the id).
+                let identity: String
+                if let raw = try? await client.request(method: "status") {
+                    identity = raw["identity"]?["id"]?.stringValue ?? raw["identity"]?["name"]?.stringValue ?? "default"
+                } else {
+                    identity = "default"
+                }
+                // Log our own ticket so `devicectl launch --console` captures it.
+                if let raw = try? await client.request(method: "status"),
+                   let ticketBytes = raw["ticket"]?.asArray {
+                    let data = Data(ticketBytes.compactMap { enc -> UInt8? in
+                        guard let v = enc.intValue, v > 0, v < 256 else { return nil }
+                        return UInt8(v)
+                    })
+                    NSLog("idfon self ticket: \(String(data: data, encoding: .utf8) ?? "?")")
+                }
+                guard let addr = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any],
+                      let endpointId = addr["id"] as? String, !endpointId.isEmpty else {
+                    NSLog("idfon pair failed: invalid endpoint addr JSON")
+                    return
+                }
+                _ = try await client.request(method: "peer.add", params: [
+                    "id": AnyEncodable(endpointId),
+                    "name": AnyEncodable(name),
+                    "endpoint_id": AnyEncodable(endpointId),
+                    "endpoint_addr": AnyEncodable(ticketJSON),
+                    "identity": AnyEncodable(identity),
+                ])
+                for capability in ["message.send", "message.receive", "live_audio_subscribe"] {
+                    _ = try await client.request(method: "access.grant", params: [
+                        "identity": AnyEncodable(identity),
+                        "subject": AnyEncodable(endpointId),
+                        "capability": AnyEncodable(capability),
+                    ])
+                }
+                NSLog("idfon paired: peer \(endpointId.prefix(16)) as \(name), identity \(identity)")
+            } catch {
+                NSLog("idfon pair failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private static func dumpLog() {
+        // Rust's /tmp resolves to the app sandbox tmp on iOS (std::env::temp_dir).
+        let tmp = FileManager.default.temporaryDirectory
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? []
+        NSLog("idfon dumplog: tmp has \(files.sorted())")
+        let path = tmp.appendingPathComponent("idfon-\(ProcessInfo.processInfo.processIdentifier).log").path
+        guard let lines = try? String(contentsOfFile: path, encoding: .utf8).split(separator: "\n") else {
+            NSLog("idfon dumplog: no log at \(path)")
+            return
+        }
+        NSLog("idfon dumplog: \(lines.count) lines total, tail:")
+        for line in lines.suffix(40) { NSLog("| \(line)") }
     }
 
     func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {

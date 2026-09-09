@@ -49,6 +49,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         navigationItem.rightBarButtonItems = [
             UIBarButtonItem(image: UIImage(systemName: "phone"), style: .plain, target: self, action: #selector(dialTapped)),
+            UIBarButtonItem(image: UIImage(systemName: "video"), style: .plain, target: self, action: #selector(videoCallTapped)),
             UIBarButtonItem(image: UIImage(systemName: "phone.badge.waveform"), style: .plain, target: self, action: #selector(toggleAutoAnswer)),
         ]
 
@@ -342,6 +343,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     @objc private func dialTapped() {
         dial(peerRef: peer.id)
+    }
+
+    @objc private func videoCallTapped() {
+        VideoCall.shared.dial(peer.id)
     }
 
     private func dial(peerRef: String) {
