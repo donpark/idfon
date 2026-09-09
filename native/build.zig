@@ -23,7 +23,11 @@ pub fn build(b: *std.Build) void {
     const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{ .name = "Idfon", .manifest = "app.json" });
     const cargo = b.addSystemCommand(&.{ "cargo", "build", "--release", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml" });
     // The app loads the dylib from its own directory (bundle MacOS/, zig-out/bin/).
-    cargo.setEnvironmentVariable("RUSTFLAGS", "-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib");
+    // -A unexpected_cfgs: the legacy objc/cocoa crates in the nokhwa camera
+    // stack use the old `#[cfg(feature = "cargo-clippy")]` idiom ~300x per
+    // pass (see .cargo/config.toml); env RUSTFLAGS overrides config rustflags,
+    // so the lint is silenced in both places.
+    cargo.setEnvironmentVariable("RUSTFLAGS", "-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib -A unexpected_cfgs");
     const daemon = b.addSystemCommand(&.{ "cargo", "build", "--release", "-p", "idfond" });
     // The thin idfond links the dylib (see crates/idfond/build.rs), so it
     // must only be linked once the dylib exists.
@@ -80,9 +84,18 @@ pub fn build(b: *std.Build) void {
     const runner = app.module.root_source_file orelse @panic("Generated runner missing");
     const patch = b.addSystemCommand(&.{ "python3", "patch_ts_runner.py" });
     patch.addFileArg(runner);
-    // Re-run the patch when the script itself changes (the runner input is
-    // otherwise content-cached across builds).
+    // Re-run the patch when the script itself or any app icon changes (the
+    // runner input is otherwise content-cached across builds); the script
+    // inlines assets/icons/*.svg into the runner.
     patch.addFileArg(b.path("patch_ts_runner.py"));
+    var icons_dir = std.Io.Dir.cwd().openDir(b.graph.io, "assets/icons", .{ .iterate = true }) catch @panic("assets/icons missing");
+    defer icons_dir.close(b.graph.io);
+    var icons_it = icons_dir.iterate();
+    while (true) {
+        const icon_entry = (icons_it.next(b.graph.io) catch break) orelse break;
+        if (icon_entry.kind != .file or !std.mem.endsWith(u8, icon_entry.name, ".svg")) continue;
+        patch.addFileArg(b.path(b.fmt("assets/icons/{s}", .{icon_entry.name})));
+    }
     app.compile.step.dependOn(&patch.step);
     artifacts.tests.step.dependOn(&patch.step);
 }

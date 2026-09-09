@@ -1009,6 +1009,9 @@ fn send_message(
             && operation.idempotency_key.as_deref() == Some(&key)
     }) {
         if existing.request_fingerprint.as_deref() != Some(fingerprint.as_str()) {
+            // Log it: clients reuse keys after restarts and a silent conflict
+            // looks like a vanished message (found via a stuck video call).
+            eprintln!("[idfond] message send idempotency conflict identity={} key={} existing_operation={}", identity.id, key, existing.operation_id);
             return error_response(
                 request.id.clone(),
                 &request.method,
@@ -3124,6 +3127,10 @@ fn compact_events(store: &Arc<Mutex<Store>>, after: Option<&str>, identity: Opti
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("")
                 .as_bytes(),
+            // 6th field (epoch seconds): lets the GUI surface only fresh
+            // invites from the initial drain instead of replaying calls from
+            // past sessions (app relaunches reset the GUI cursor).
+            event.timestamp.as_bytes(),
         ];
         if fields.iter().any(|value| value.len() > u16::MAX as usize) {
             // ponytail: skipped rather than wedging the stream; pathological

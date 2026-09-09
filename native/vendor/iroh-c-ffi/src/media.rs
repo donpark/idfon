@@ -17,8 +17,9 @@ use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as 
 use iroh_live::{
     media::{
         audio_backend::InputStream,
-        codec::OpusEncoder,
-        format::{AudioEncoderConfig, AudioFormat, AudioPreset, PlaybackConfig},
+        capture::CameraCapturer,
+        codec::{OpusEncoder, VideoCodec},
+        format::{AudioEncoderConfig, AudioFormat, AudioPreset, PlaybackConfig, VideoPreset},
         publish::{AudioRenditions, LocalBroadcast},
         subscribe::MediaTracks,
         traits::{
@@ -46,6 +47,9 @@ static SUBSCRIBER: Mutex<Option<Subscriber>> = Mutex::new(None);
 // usage dips below this on silence). Sender-configurable via
 // media_audio_set_bitrate; applies to the next live publisher start.
 static BITRATE: AtomicU64 = AtomicU64::new(32_000);
+// Last live-publisher failure (formatted), surfaced to the GUI so a failed
+// video call shows the real cause instead of a generic live_start_failed.
+static LAST_LIVE_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static BLOB_PROVIDER: Mutex<Option<BlobProvider>> = Mutex::new(None);
 static LOCAL_RECORDING: Mutex<Option<LocalRecording>> = Mutex::new(None);
 static LAST_RECORDING_DURATION_MS: AtomicU64 = AtomicU64::new(0);
@@ -984,10 +988,33 @@ pub fn media_audio_set_bitrate(bitrate: u32) -> u8 {
     0
 }
 
-/// Starts an Opus microphone broadcast and returns its iroh-live ticket.
-#[ffi_export]
-pub fn media_live_start() -> char_p::Box {
-    tracing::info!("live publisher start requested");
+/// Starts the live broadcast (mic, plus camera for video calls) and returns
+/// its iroh-live ticket.
+/// Requests macOS camera access (TCC prompt) if not yet determined.
+/// nokhwa's device query does not trigger the prompt, so without this the
+/// camera list comes back empty and the video broadcast fails to start.
+/// Denial is tolerated: audio still publishes, video vends black frames.
+#[cfg(target_os = "macos")]
+fn ensure_camera_access() {
+    use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaType};
+    let media_type: &AVMediaType = unsafe { objc2_av_foundation::AVMediaTypeVideo.unwrap() };
+    if unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) } == AVAuthorizationStatus::Authorized {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    unsafe {
+        let handler = block2::RcBlock::new(move |_granted: objc2::runtime::Bool| {
+            let _ = tx.send(());
+        });
+        AVCaptureDevice::requestAccessForMediaType_completionHandler(media_type, &handler);
+    }
+    // Block until the user answers the dialog; timing out (ignored call) is
+    // acceptable — capture proceeds either way, just without frames.
+    let _ = rx.recv_timeout(Duration::from_secs(120));
+}
+
+fn start_live(with_video: bool) -> char_p::Box {
+    tracing::info!(video = with_video, "live publisher start requested");
     let result = tokio_executor(async {
         let input = match INPUT.lock().expect("audio capture mutex poisoned").take() {
             Some(input) => input,
@@ -1005,6 +1032,13 @@ pub fn media_live_start() -> char_p::Box {
             move |_format| OpusEncoder::with_config(encoder_config.clone()),
         );
         broadcast.audio().set_renditions(renditions)?;
+        if with_video {
+            ensure_camera_access();
+            let camera = CameraCapturer::new()?;
+            broadcast
+                .video()
+                .set_source(camera, VideoCodec::H264, [VideoPreset::P360])?;
+        }
         let broadcast_name = broadcast_name();
         live.publish(&broadcast_name, &broadcast).await?;
         let ticket = LiveTicket::new(live.endpoint().addr(), &broadcast_name).serialize();
@@ -1019,13 +1053,43 @@ pub fn media_live_start() -> char_p::Box {
     match result {
         Ok(ticket) => {
             tracing::info!(ticket_len = ticket.len(), "live publisher started");
+            *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = None;
             ticket.try_into().expect("live ticket conversion failed")
         }
         Err(err) => {
-            tracing::warn!("failed to start live audio: {err:#}");
+            let text = format!("{err:#}");
+            tracing::warn!("failed to start live publisher: {text}");
+            *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = Some(text);
             String::new().try_into().expect("empty ticket conversion")
         }
     }
+}
+
+/// Starts the live microphone broadcast (audio call) and returns its ticket.
+#[ffi_export]
+pub fn media_live_start() -> char_p::Box {
+    start_live(false)
+}
+
+/// Starts the live microphone + camera broadcast (video call) and returns
+/// its ticket. One broadcast carries both tracks; the callee subscribes
+/// audio via media.live.subscribe and video via media.video.start.
+#[ffi_export]
+pub fn media_live_video_start() -> char_p::Box {
+    start_live(true)
+}
+
+/// Returns the last live-publisher failure (empty string if none), so the
+/// GUI can show the real cause instead of a generic start-failed message.
+#[ffi_export]
+pub fn media_live_last_error() -> char_p::Box {
+    LAST_LIVE_ERROR
+        .lock()
+        .expect("live error mutex poisoned")
+        .clone()
+        .unwrap_or_default()
+        .try_into()
+        .expect("live error conversion failed")
 }
 
 /// Stops the live microphone broadcast.

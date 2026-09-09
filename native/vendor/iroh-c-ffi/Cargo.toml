@@ -23,7 +23,17 @@ buf-list = "1.1"
 iroh = "1.0.0"
 iroh-tickets = "1.0.0"
 iroh-blobs = "0.103.0"
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "capture-camera"] }
+# Enables rusty-capture's nokhwa backend: the native AVFoundation camera
+# backend in this iroh-live rev is an unimplemented stub that always errors
+# ("AVFoundation camera capture is not yet implemented"). Same source as
+# iroh-live's internal moq-media dep, so features unify.
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["nokhwa"] }
+# macOS camera permission request (nokhwa's device query does not trigger
+# the TCC prompt); features unify with rusty-capture's objc2-av-foundation.
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+block2 = "0.6"
 once_cell = "1.21"
 jpeg-encoder = "0.6"
 rand = "0.10"
@@ -50,3 +60,11 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# Lock-rejection tolerance for multi-process camera sharing (see
+# vendor/nokhwa-bindings-macos set_all): another process streaming the
+# camera holds the system-exclusive config lock; without this the second
+# instance's camera open fails (two app instances on one Mac).
+[patch.crates-io]
+nokhwa-bindings-macos = { path = "../nokhwa-bindings-macos" }
+block = { path = "../block" }
