@@ -1,0 +1,9 @@
+# Vendor-dylib builds run from this directory (build.zig invokes
+# `cargo build --manifest-path vendor/iroh-c-ffi/Cargo.toml` with cwd=native/).
+# The legacy objc/cocoa crates pulled in by the nokhwa camera stack use the
+# old `#[cfg(feature = "cargo-clippy")]` idiom ~300x per pass, which modern
+# rustc flags as unexpected_cfgs. Correct at runtime; suppress the lint here
+# so build output stays readable. Scoped to native/ — workspace builds
+# (repo root) don't pull these crates.
+[build]
+rustflags = ["-A", "unexpected_cfgs"]

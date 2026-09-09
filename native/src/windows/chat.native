@@ -17,6 +17,7 @@
       <button variant="destructive" on-press="live_stop">End call</button>
     </if>
     <else>
+      <button size="icon" variant="primary" icon="app:video" on-press="video_call_start" label="Start video call"></button>
       <button size="icon" variant="primary" icon="app:phone" on-press="live_start" label="Start call"></button>
     </else>
   </else>
