@@ -69,6 +69,19 @@ const Host = struct {
             .bind_services_fn = bindServices, .shutdown_fn = shutdown };
     }
 
+    /// Fetched live-publisher failure text for job completions.
+    fn last_live_error(self: *Host) []const u8 {
+        _ = self;
+        const err = ffi.media_live_last_error();
+        defer ffi.rust_free_string(err);
+        const text = std.mem.span(err);
+        // Copy before the defer frees: complete() runs after we return, and
+        // reading the freed buffer was rendering heap garbage in the banner.
+        if (text.len == 0 or text.len >= live_error_buf.len) return "live_start_failed";
+        @memcpy(live_error_buf[0..text.len], text);
+        return live_error_buf[0..text.len];
+    }
+
     fn complete(self: *Host, key: u64, ok: bool, bytes: []const u8) void {
         while (true) {
             lock(&self.queue_lock);
@@ -99,6 +112,12 @@ const Host = struct {
 };
 
 var host: Host = .{};
+
+/// Scratch for last_live_error(): the Rust string is freed before the caller's
+/// complete() copies it, so it must be copied out here first. Single GUI error
+/// string at a time — a static buffer is enough.
+var live_error_buf: [512]u8 = undefined;
+
 var trace_lock: std.atomic.Mutex = .unlocked;
 
 fn trace(comptime format: []const u8, args: anytype) void {
@@ -154,10 +173,13 @@ fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8)
         std.mem.eql(u8, name, "media.audio.input_count") or
         std.mem.eql(u8, name, "media.audio.probe") or
         std.mem.eql(u8, name, "media.live.start") or
+        std.mem.eql(u8, name, "media.live.video_start") or
         std.mem.eql(u8, name, "media.live.stop") or
         std.mem.eql(u8, name, "media.live.subscribe") or
         std.mem.eql(u8, name, "media.live.unsubscribe") or
         std.mem.eql(u8, name, "media.live.recording.store") or
+        std.mem.eql(u8, name, "media.video.start") or
+        std.mem.eql(u8, name, "media.video.stop") or
         std.mem.eql(u8, name, "media.blob.fetch");
     if (!std.mem.eql(u8, name, "idfond.request") and !is_media_audio and
         !std.mem.eql(u8, name, "media.set_scope") and
@@ -349,7 +371,13 @@ fn mediaAudioWorker(job: *Job) void {
         const ticket = ffi.media_live_start();
         defer ffi.rust_free_string(ticket);
         const text = std.mem.span(ticket);
-        if (text.len == 0) self.complete(job.key, false, "live_start_failed")
+        if (text.len == 0) self.complete(job.key, false, self.last_live_error())
+        else self.complete(job.key, true, text);
+    } else if (std.mem.eql(u8, name, "media.live.video_start")) {
+        const ticket = ffi.media_live_video_start();
+        defer ffi.rust_free_string(ticket);
+        const text = std.mem.span(ticket);
+        if (text.len == 0) self.complete(job.key, false, self.last_live_error())
         else self.complete(job.key, true, text);
     } else if (std.mem.eql(u8, name, "media.live.stop")) {
         ffi.media_live_stop();
@@ -375,6 +403,17 @@ fn mediaAudioWorker(job: *Job) void {
             @memcpy(result[duration.len + 1 ..][0..text.len], text);
             self.complete(job.key, true, result[0 .. duration.len + 1 + text.len]);
         }
+    } else if (std.mem.eql(u8, name, "media.video.start")) {
+        var ticket: [max_payload + 1]u8 = undefined;
+        @memcpy(ticket[0..job.len], job.bytes[0..job.len]); ticket[job.len] = 0;
+        const path = ffi.media_video_start(&ticket);
+        defer ffi.rust_free_string(path);
+        const text = std.mem.span(path);
+        if (text.len == 0) self.complete(job.key, false, "video_start_failed")
+        else self.complete(job.key, true, text);
+    } else if (std.mem.eql(u8, name, "media.video.stop")) {
+        ffi.media_video_stop();
+        self.complete(job.key, true, "video_stopped");
     } else if (std.mem.eql(u8, name, "media.blob.fetch")) {
         var ticket: [max_payload + 1]u8 = undefined;
         @memcpy(ticket[0..job.len], job.bytes[0..job.len]);

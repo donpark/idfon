@@ -825,6 +825,13 @@ void
 media_emergency_stop (void);
 
 /** \brief
+ *  Returns the last live-publisher failure (empty string if none), so the
+ *  GUI can show the real cause instead of a generic start-failed message.
+ */
+char *
+media_live_last_error (void);
+
+/** \brief
  *  Returns the number of decoded frames written to the subscriber WAV file.
  */
 size_t
@@ -838,7 +845,7 @@ char *
 media_live_recording_store (void);
 
 /** \brief
- *  Starts an Opus microphone broadcast and returns its iroh-live ticket.
+ *  Starts the live microphone broadcast (audio call) and returns its ticket.
  */
 char *
 media_live_start (void);
@@ -861,6 +868,14 @@ media_live_subscribe (
  */
 void
 media_live_unsubscribe (void);
+
+/** \brief
+ *  Starts the live microphone + camera broadcast (video call) and returns
+ *  its ticket. One broadcast carries both tracks; the callee subscribes
+ *  audio via media.live.subscribe and video via media.video.start.
+ */
+char *
+media_live_video_start (void);
 
 /** \brief
  *  Returns the duration of the most recently finalized local recording.
@@ -913,6 +928,22 @@ media_set_scope (
  */
 void
 media_shutdown (void);
+
+/** \brief
+ *  Starts the video subscription for `ticket`: subscribes, enables network
+ *  adaptation, and writes decoded frames to `video-frame.jpg` under the
+ *  media directory (see `media_path`). Returns the absolute frame path for
+ *  `Cmd.imageLoad`, or an empty string on failure.
+ */
+char *
+media_video_start (
+    char const * ticket);
+
+/** \brief
+ *  Stops the video subscription and frame writing.
+ */
+void
+media_video_stop (void);
 
 /** \brief
  *  Returns the public key as a base32 string.

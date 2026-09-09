@@ -62,3 +62,29 @@ and every subsequent daemon start failed with
 (`crates/idfond/src/main.rs`): the lock file records the holder's PID, and a
 new daemon now takes the lock over when that PID is dead. See the
 `data_lock_recovers_stale_lock_from_dead_pid` test.
+
+## Garbage text in the call-error banner (2026-09-09)
+
+**Symptom.** Pressing the video-call button showed a banner of mojibake
+(white tofu blocks with printable fragments like `al%R`) instead of the
+failure reason. The banner length was correct; only the contents were garbage.
+
+**Diagnosis path.**
+
+1. GUI trace log (`/tmp/idfon-<pid>.log`) showed the sequence:
+   `media.session.start` OK, then `media.live.video_start` completing
+   `ok=false bytes=24` — 24 bytes matches the real error
+   "input stream not running", so the failure text itself was fine.
+2. That text comes from `media_live_last_error()` (Rust,
+   `native/vendor/iroh-c-ffi/src/media.rs`), fetched by `last_live_error()`
+   in `native/src/iroh_ffi.zig`.
+
+**Root cause.** Use-after-free. `last_live_error()` had
+`defer ffi.rust_free_string(err)` and returned the span **into** the caller,
+which only then called `complete(...)` — the `defer` ran first, so
+`complete()` copied freed heap memory. Correct length, garbage bytes.
+
+**Fix.** `last_live_error()` now copies the string into a module-level buffer
+before the `defer` frees it. Rule of thumb: an FFI helper that returns a
+span into Rust-owned memory must not free that memory itself when the
+consumer runs after the return.

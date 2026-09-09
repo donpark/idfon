@@ -1009,6 +1009,9 @@ fn send_message(
             && operation.idempotency_key.as_deref() == Some(&key)
     }) {
         if existing.request_fingerprint.as_deref() != Some(fingerprint.as_str()) {
+            // Log it: clients reuse keys after restarts and a silent conflict
+            // looks like a vanished message (found via a stuck video call).
+            eprintln!("[idfond] message send idempotency conflict identity={} key={} existing_operation={}", identity.id, key, existing.operation_id);
             return error_response(
                 request.id.clone(),
                 &request.method,
@@ -2098,6 +2101,9 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             true,
         );
     }
+    if let Some(error) = write_resource_mime(request, &path) {
+        return error;
+    }
     let blob_ticket = match blob::run_put(state.data_dir.join("blobs"), data.clone()) {
         Ok((ticket, _)) => ticket.to_string(),
         Err(error) => {
@@ -2112,8 +2118,26 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
     };
     success(
         request,
-        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": data.len(), "content_hash": blake3::hash(&data).to_hex().to_string(), "blob_ticket": blob_ticket}),
+        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": data.len(), "content_hash": blake3::hash(&data).to_hex().to_string(), "blob_ticket": blob_ticket, "mime": stored_mime(&path)}),
     )
+}
+
+/// Persists the optional `mime` param next to the resource bytes. Returns an
+/// error response on I/O failure.
+fn write_resource_mime(request: &Request, path: &std::path::Path) -> Option<Response> {
+    let mime = request_text(&request.params, "mime")?;
+    let mut sidecar = path.as_os_str().to_owned();
+    sidecar.push(".mime");
+    match std::fs::write(std::path::PathBuf::from(sidecar), mime) {
+        Ok(()) => None,
+        Err(error) => Some(error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        )),
+    }
 }
 
 fn media_resource_append(
@@ -2148,6 +2172,9 @@ fn media_resource_append(
                     error.to_string(),
                     true,
                 );
+            }
+            if let Some(error) = write_resource_mime(request, path) {
+                return error;
             }
             let size_bytes = file.metadata().map(|meta| meta.len()).unwrap_or(0);
             success(
@@ -2208,8 +2235,18 @@ fn media_resource_finish(
     };
     success(
         request,
-        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": bytes.len(), "content_hash": blake3::hash(&bytes).to_hex().to_string(), "blob_ticket": blob_ticket}),
+        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": bytes.len(), "content_hash": blake3::hash(&bytes).to_hex().to_string(), "blob_ticket": blob_ticket, "mime": stored_mime(path)}),
     )
+}
+
+/// Reads the optional mime sidecar written by `media.resource.put`.
+fn stored_mime(path: &std::path::Path) -> Option<String> {
+    let mut sidecar = path.as_os_str().to_owned();
+    sidecar.push(".mime");
+    std::fs::read_to_string(std::path::PathBuf::from(sidecar))
+        .ok()
+        .map(|mime| mime.trim().to_string())
+        .filter(|mime| !mime.is_empty())
 }
 
 /// Decodes the `bytes` JSON array into a `Vec<u8>`, rejecting non-byte values.
@@ -3090,6 +3127,10 @@ fn compact_events(store: &Arc<Mutex<Store>>, after: Option<&str>, identity: Opti
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("")
                 .as_bytes(),
+            // 6th field (epoch seconds): lets the GUI surface only fresh
+            // invites from the initial drain instead of replaying calls from
+            // past sessions (app relaunches reset the GUI cursor).
+            event.timestamp.as_bytes(),
         ];
         if fields.iter().any(|value| value.len() > u16::MAX as usize) {
             // ponytail: skipped rather than wedging the stream; pathological
