@@ -41,6 +41,8 @@
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Idfon uses the microphone for live calls.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Idfon uses the camera for video calls.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

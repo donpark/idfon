@@ -17,7 +17,9 @@ enum DaemonPaths {
         #if targetEnvironment(simulator)
         return "/tmp/idfon-ios.sock"
         #else
-        return dataDir.appendingPathComponent("idfond.sock").path
+        // No idfond subdir: the data-container path plus tmp/idfond/idfond.sock
+        // exceeds SUN_LEN (104) on device — the flat tmp path fits.
+        return FileManager.default.temporaryDirectory.appendingPathComponent("idfond.sock").path
         #endif
     }
 }
@@ -28,6 +30,11 @@ enum DaemonBootstrap {
     static func start() {
         let socket = DaemonPaths.socketPath
         let dataDir = DaemonPaths.dataDir.path
+        // Rust media paths fall back to literal /tmp (absent in the iOS
+        // sandbox): point NATIVE_SDK_APP_DATA_DIR at the sandbox tmp so
+        // video-frame.jpg / received.wav land somewhere writable.
+        setenv("NATIVE_SDK_APP_DATA_DIR", dataDir, 1)
+        iroh_enable_tracing()
         let thread = Thread {
             let result = idfon_daemon_run(socket, dataDir, nil)
             if result != IDFON_DAEMON_OK {

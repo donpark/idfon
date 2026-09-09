@@ -179,6 +179,7 @@ fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8)
         std.mem.eql(u8, name, "media.live.unsubscribe") or
         std.mem.eql(u8, name, "media.live.recording.store") or
         std.mem.eql(u8, name, "media.video.start") or
+        std.mem.eql(u8, name, "media.video.start") or
         std.mem.eql(u8, name, "media.video.stop") or
         std.mem.eql(u8, name, "media.blob.fetch");
     if (!std.mem.eql(u8, name, "idfond.request") and !is_media_audio and

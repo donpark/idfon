@@ -46,4 +46,5 @@ struct ChatMessage: Identifiable {
 extension AnyEncodable {
     var stringValue: String? { value as? String }
     var boolValue: Bool? { value as? Bool }
+    var intValue: Int? { value as? Int }
 }

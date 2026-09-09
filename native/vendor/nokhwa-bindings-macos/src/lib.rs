@@ -131,6 +131,20 @@ mod internal {
             ) -> *mut std::os::raw::c_void;
 
             pub fn CVPixelBufferGetPixelFormatType(pixelBuffer: CVPixelBufferRef) -> OSType;
+
+            // iOS NV12 buffers: 2 planes, rows may be stride-padded.
+            pub fn CVPixelBufferGetWidth(pixelBuffer: CVPixelBufferRef) -> std::os::raw::c_ulong;
+            pub fn CVPixelBufferGetHeight(pixelBuffer: CVPixelBufferRef) -> std::os::raw::c_ulong;
+            pub fn CVPixelBufferGetPlaneCount(pixelBuffer: CVPixelBufferRef) -> std::os::raw::c_ulong;
+            pub fn CVPixelBufferGetBytesPerRow(pixelBuffer: CVPixelBufferRef) -> std::os::raw::c_ulong;
+            pub fn CVPixelBufferGetBaseAddressOfPlane(
+                pixelBuffer: CVPixelBufferRef,
+                planeIndex: std::os::raw::c_ulong,
+            ) -> *mut std::os::raw::c_void;
+            pub fn CVPixelBufferGetBytesPerRowOfPlane(
+                pixelBuffer: CVPixelBufferRef,
+                planeIndex: std::os::raw::c_ulong,
+            ) -> std::os::raw::c_ulong;
         }
 
         #[repr(C)]
@@ -213,6 +227,12 @@ mod internal {
         CMVideoFormatDescriptionGetDimensions, CVImageBufferRef, CVPixelBufferGetBaseAddress,
         CVPixelBufferGetDataSize, CVPixelBufferLockBaseAddress, CVPixelBufferUnlockBaseAddress,
         NSObject, OSType,
+    };
+    #[cfg(target_os = "ios")]
+    use crate::core_media::{
+        CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRow,
+        CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType,
+        CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth,
     };
 
     use block::ConcreteBlock;
@@ -403,9 +423,21 @@ mod internal {
             }
             kCMVideoCodecType_JPEG | kCMVideoCodecType_JPEG_OpenDML => Some(FrameFormat::MJPEG),
             kCMPixelFormat_8IndexedGray_WhiteIsZero => Some(FrameFormat::GRAY),
+            // iPhone cameras vend biplanar NV12 ('420v'/'420f'); labeling it
+            // YUYV (the macOS mapping) makes the frame decode fail on length
+            // mismatch (1.5 vs 2 bytes/pixel).
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
             | kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-            | kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange => Some(FrameFormat::YUYV),
+            | kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange => {
+                #[cfg(target_os = "ios")]
+                {
+                    Some(FrameFormat::NV12)
+                }
+                #[cfg(not(target_os = "ios"))]
+                {
+                    Some(FrameFormat::YUYV)
+                }
+            }
             kCMPixelFormat_24RGB => Some(FrameFormat::RAWRGB),
             _ => None,
         }
@@ -448,18 +480,44 @@ mod internal {
             ) {
                 let image_buffer: CVImageBufferRef =
                     unsafe { CMSampleBufferGetImageBuffer(didOutputSampleBuffer) };
+                // Copy-out only: read-only lock is the correct flag and lets
+                // AVFoundation reuse the buffer for capture immediately.
+                const K_CV_PIXEL_BUFFER_LOCK_READ_ONLY: std::os::raw::c_ulong = 1;
                 unsafe {
-                    CVPixelBufferLockBaseAddress(image_buffer, 0);
+                    CVPixelBufferLockBaseAddress(image_buffer, K_CV_PIXEL_BUFFER_LOCK_READ_ONLY);
                 };
 
-                let buffer_length = unsafe { CVPixelBufferGetDataSize(image_buffer) };
-                let buffer_ptr = unsafe { CVPixelBufferGetBaseAddress(image_buffer) };
+                // iOS vends biplanar '420v'/'420f'. GetBaseAddress points at
+                // the CVPlanarPixelBufferInfo header and GetBytesPerRow /
+                // GetDataSize describe the allocation, not the planes —
+                // always go through the per-plane accessors.
+                #[cfg(target_os = "ios")]
                 let buffer_as_vec = unsafe {
+                    let w = CVPixelBufferGetWidth(image_buffer) as usize;
+                    let h = CVPixelBufferGetHeight(image_buffer) as usize;
+                    debug_assert_eq!(CVPixelBufferGetPlaneCount(image_buffer), 2);
+                    let mut out = Vec::with_capacity(w * h * 3 / 2);
+                    // plane 0 = Y (h rows), plane 1 = interleaved CbCr (h/2 rows, w bytes/row)
+                    for (plane, rows) in [(0u64, h), (1u64, h / 2)] {
+                        let base = CVPixelBufferGetBaseAddressOfPlane(image_buffer, plane) as *const u8;
+                        let stride = CVPixelBufferGetBytesPerRowOfPlane(image_buffer, plane) as usize;
+                        for r in 0..rows {
+                            out.extend_from_slice(std::slice::from_raw_parts(base.add(r * stride), w));
+                        }
+                    }
+                    out
+                };
+                #[cfg(not(target_os = "ios"))]
+                let buffer_as_vec = unsafe {
+                    let buffer_length = CVPixelBufferGetDataSize(image_buffer);
+                    let buffer_ptr = CVPixelBufferGetBaseAddress(image_buffer);
                     std::slice::from_raw_parts_mut(buffer_ptr as *mut u8, buffer_length as usize)
                         .to_vec()
                 };
 
-                unsafe { CVPixelBufferUnlockBaseAddress(image_buffer, 0) };
+                unsafe {
+                    CVPixelBufferUnlockBaseAddress(image_buffer, K_CV_PIXEL_BUFFER_LOCK_READ_ONLY);
+                };
 
                 // CMSampleBufferGetPresentationTimeStamp returns the sensor
                 // capture instant on a monotonic clock (mach_absolute_time
@@ -2347,6 +2405,15 @@ mod internal {
         }
 
         pub fn set_frame_format(&self, format: FrameFormat) -> Result<(), NokhwaError> {
+            // iPhone AVCaptureVideoDataOutput only accepts its native biplanar
+            // pixel formats ('420v'/'420f'/BGRA) — setting macOS constants
+            // ('yuvs', 24RGB) raises NSInvalidArgumentException. Map every
+            // request to 420v; the frame callback's format label is already
+            // fixed (see capture_out_callback), so this only affects what
+            // AVFoundation vends, matching what the device natively produces.
+            #[cfg(target_os = "ios")]
+            let cmpixelfmt = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+            #[cfg(not(target_os = "ios"))]
             let cmpixelfmt = match format {
                 FrameFormat::YUYV => kCMPixelFormat_422YpCbCr8_yuvs,
                 FrameFormat::MJPEG => kCMVideoCodecType_JPEG,
@@ -2445,6 +2512,17 @@ mod internal {
 
         pub fn start(&self) -> Result<(), NokhwaError> {
             let start_stream_fn = || {
+                // iOS sessions default to the .high preset (720p), which
+                // downscales delivery below the device activeFormat and
+                // breaks the frame size contract (w*h*3/2). inputPriority
+                // makes the session deliver at the activeFormat resolution.
+                #[cfg(target_os = "ios")]
+                unsafe {
+                    let _: objc::runtime::BOOL = msg_send![
+                        self.inner,
+                        setSessionPreset: str_to_nsstr("AVCaptureSessionPresetInputPriority")
+                    ];
+                }
                 let _: () = unsafe { msg_send![self.inner, startRunning] };
             };
 

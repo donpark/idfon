@@ -40,7 +40,13 @@ pub fn rust_buffer_free(buf: vec::Vec<u8>) {
 /// Log level can be controlled using the env variable `IROH_C_LOG`.
 #[ffi_export]
 pub fn iroh_enable_tracing() {
+    // iOS has no literal /tmp inside the app sandbox — open() fails and the
+    // writer silently falls back to /dev/null. Use the sandbox tmp there.
+    #[cfg(target_os = "ios")]
+    let path = std::env::temp_dir().join(format!("idfon-{}.log", std::process::id()));
+    #[cfg(not(target_os = "ios"))]
     let path = PathBuf::from(format!("/tmp/idfon-{}.log", std::process::id()));
+    eprintln!("[idfond] tracing init -> {:?}", path);
     let writer = move || {
         OpenOptions::new()
             .create(true)
