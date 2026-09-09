@@ -192,6 +192,10 @@ struct SendArgs {
     /// until they hang up), without PEER a broadcast printing the live ticket
     #[arg(long)]
     stream: bool,
+    /// Stream mode only (broadcast only): publish video with an adaptive
+    /// rendition ladder instead of audio
+    #[arg(long, conflicts_with_all = ["text", "loop_playback"])]
+    video: bool,
     /// Stream mode only: list running live publishers
     #[arg(long, conflicts_with_all = ["peer", "text", "file", "stop", "name", "loop_playback"])]
     list: bool,
@@ -235,6 +239,12 @@ struct RecvArgs {
     /// Stream mode only: give up if no one calls within this many seconds
     #[arg(long)]
     wait: Option<u64>,
+    /// Stream mode only: record encoded video (Annex B .h264) instead of audio
+    #[arg(long)]
+    video: bool,
+    /// Stream mode only: rendition quality (low, mid, high, highest)
+    #[arg(long)]
+    quality: Option<String>,
     /// Stream mode only: forbid relayed connections
     #[arg(long = "no-relay")]
     no_relay: bool,
@@ -316,6 +326,10 @@ struct PutArgs {
     file: Option<String>,
     #[arg(long = "resource-id")]
     resource_id: Option<String>,
+    /// Mime type to tag the resource with (inferred from the file extension
+    /// when omitted, e.g. video/mp4 for .mp4)
+    #[arg(long)]
+    mime: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -326,6 +340,12 @@ struct GetArgs {
     /// Live tickets only: cap the capture window (seconds)
     #[arg(long)]
     seconds: Option<u64>,
+    /// Live tickets only: record encoded video (Annex B .h264) instead of audio
+    #[arg(long)]
+    video: bool,
+    /// Video only: rendition quality (low, mid, high, highest)
+    #[arg(long)]
+    quality: Option<String>,
     /// Live tickets only: forbid relayed connections
     #[arg(long = "no-relay")]
     no_relay: bool,
@@ -369,7 +389,14 @@ fn run() -> io::Result<()> {
             }
             Ok(())
         }
-        Command::Put(args) => cmd_put(socket, args.file.as_ref(), args.resource_id, json, identity),
+        Command::Put(args) => cmd_put(
+            socket,
+            args.file.as_ref(),
+            args.resource_id,
+            args.mime.as_ref(),
+            json,
+            identity,
+        ),
         Command::Get(args) => {
             // Tickets are self-describing: live tickets carry an "iroh-live:"
             // scheme prefix, blob tickets start with "blob".
@@ -379,6 +406,8 @@ fn run() -> io::Result<()> {
                     &args.ticket,
                     args.out.as_ref(),
                     args.seconds,
+                    args.video,
+                    args.quality.as_deref(),
                     !args.no_relay,
                     json,
                     identity,
@@ -395,6 +424,8 @@ fn run() -> io::Result<()> {
                     args.seconds,
                     args.wait,
                     args.from.as_deref(),
+                    args.video,
+                    args.quality.as_deref(),
                     !args.no_relay,
                     json,
                     identity,
@@ -531,8 +562,7 @@ fn run() -> io::Result<()> {
                         // 1:1 session-scoped stream to the peer; blocks until
                         // they hang up (or --seconds). No ticket exists.
                         let file = resolve_stream_file(args.file.as_ref())?;
-                        let mut params =
-                            json!({"to": peer, "file": file, "relay": !args.no_relay});
+                        let mut params = json!({"to": peer, "file": file, "video": args.video, "relay": !args.no_relay});
                         if let Some(seconds) = args.seconds {
                             params["seconds"] = seconds.into();
                         }
@@ -578,6 +608,23 @@ fn run() -> io::Result<()> {
                     }
                     (None, false, None) => {
                         // Broadcast publish: prints the live ticket.
+                        if args.video {
+                            let file = resolve_stream_file(args.file.as_ref())?;
+                            let mut params = json!({"file": file, "video": true, "relay": !args.no_relay});
+                            if let Some(name) = args.name.as_deref() {
+                                params["name"] = name.into();
+                            }
+                            let response = ipc(socket, "media.live.publish", params, identity)?;
+                            if !response.ok {
+                                return Err(io::Error::other(request_error(&response)));
+                            }
+                            if json {
+                                println!("{}", serde_json::to_string(&response).map_err(io::Error::other)?);
+                                return Ok(());
+                            }
+                            println!("{}", result_str(&response, "ticket"));
+                            return Ok(());
+                        }
                         let file = resolve_stream_file(args.file.as_ref())?;
                         let mut params =
                             json!({"file": file, "loop": args.loop_playback, "relay": !args.no_relay});
@@ -912,6 +959,28 @@ fn ipc(
         .map_err(io::Error::other)
 }
 
+/// Infers a mime type from the file extension for common audio/video types.
+fn guess_mime(path: &str) -> Option<String> {
+    let ext = std::path::Path::new(path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "mp4" | "m4v" | "cmfv" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "mov" => "video/quicktime",
+        "ts" | "m2ts" | "mts" => "video/mp2t",
+        "avi" => "video/x-msvideo",
+        "opus" => "audio/opus",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        _ => return None,
+    }
+    .to_string())
+}
+
 fn response_bytes(result: &Value) -> io::Result<Vec<u8>> {
     result
         .get("bytes")
@@ -932,6 +1001,7 @@ fn put_data(
     socket: &str,
     file: Option<&String>,
     resource_id: Option<String>,
+    mime: Option<&String>,
     identity: Option<&str>,
 ) -> io::Result<Response> {
     let data = match file {
@@ -944,13 +1014,15 @@ fn put_data(
         }
     };
     let resource_id = resource_id.unwrap_or_else(generated_resource_id);
+    let mime = mime
+        .cloned()
+        .or_else(|| file.and_then(|path| guess_mime(path)));
     let put = |chunk: &[u8], append: bool, finish: bool| {
-        ipc(
-            socket,
-            "media.resource.put",
-            json!({"resource_id": resource_id, "bytes": chunk, "append": append, "finish": finish}),
-            identity,
-        )
+        let mut params = json!({"resource_id": resource_id, "bytes": chunk, "append": append, "finish": finish});
+        if let Some(ref mime) = mime {
+            params["mime"] = mime.clone().into();
+        }
+        ipc(socket, "media.resource.put", params, identity)
     };
     let mut response = None;
     let mut offset = 0;
@@ -1004,10 +1076,11 @@ fn cmd_put(
     socket: &str,
     file: Option<&String>,
     resource_id: Option<String>,
+    mime: Option<&String>,
     json: bool,
     identity: Option<&str>,
 ) -> io::Result<()> {
-    let response = put_data(socket, file, resource_id, identity)?;
+    let response = put_data(socket, file, resource_id, mime, identity)?;
     if json {
         println!(
             "{}",
@@ -1125,7 +1198,7 @@ fn cmd_send_data(
     json: bool,
     identity: Option<&str>,
 ) -> io::Result<()> {
-    let response = put_data(socket, file, None, identity)?;
+    let response = put_data(socket, file, None, None, identity)?;
     let ticket = result_str(&response, "blob_ticket");
     let size = result_usize(&response, "size_bytes");
     let text = format!("IDFON-DATA/1\nticket={ticket}\nsize={size}");
@@ -1323,26 +1396,34 @@ fn resolve_stream_file(file: Option<&String>) -> io::Result<String> {
 }
 
 /// `idfon listen TICKET`: records a remote live broadcast for --seconds
-/// (default 15) into --out (default: a temp WAV copied to stdout).
+/// (default 15) into --out (default: a temp file copied to stdout). With
+/// --video, records the selected rendition's encoded H.264 (Annex B).
+#[allow(clippy::too_many_arguments)]
 fn cmd_listen(
     socket: &str,
     ticket: &str,
     out: Option<&String>,
     seconds: Option<u64>,
+    video: bool,
+    quality: Option<&str>,
     relay: bool,
     json: bool,
     identity: Option<&str>,
 ) -> io::Result<()> {
-    let mut params = json!({"ticket": ticket, "relay": relay});
+    let ext = if video { "h264" } else { "wav" };
+    let mut params = json!({"ticket": ticket, "relay": relay, "video": video});
     if let Some(seconds) = seconds {
         params["seconds"] = seconds.into();
+    }
+    if let Some(quality) = quality {
+        params["quality"] = quality.into();
     }
     let temp;
     if let Some(path) = out {
         params["out"] = path.clone().into();
     } else {
         temp = std::env::temp_dir().join(format!(
-            "idfon-listen-{}.wav",
+            "idfon-listen-{}.{ext}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock before epoch")
@@ -1374,6 +1455,13 @@ fn cmd_listen(
             "{}",
             serde_json::to_string(&response).map_err(io::Error::other)?
         );
+    } else if video {
+        eprintln!(
+            "listen: wrote {} ({} frames, {} ms)",
+            written_path,
+            result_str(&response, "frames"),
+            result_str(&response, "duration_ms"),
+        );
     } else {
         eprintln!("listen: wrote {} ({})", written_path, result_str(&response, "duration_ms") + " ms audio");
     }
@@ -1381,18 +1469,25 @@ fn cmd_listen(
 }
 
 /// `idfon answer`: waits for an inbound 1:1 call and records it to --out
-/// (default: a temp WAV copied to stdout).
+/// (default: a temp file copied to stdout). With --video, records the
+/// selected rendition's encoded H.264 (Annex B).
 fn cmd_answer(
     socket: &str,
     out: Option<&String>,
     seconds: Option<u64>,
     wait: Option<u64>,
     from: Option<&str>,
+    video: bool,
+    quality: Option<&str>,
     relay: bool,
     json: bool,
     identity: Option<&str>,
 ) -> io::Result<()> {
-    let mut params = json!({"relay": relay});
+    let ext = if video { "h264" } else { "wav" };
+    let mut params = json!({"relay": relay, "video": video});
+    if let Some(quality) = quality {
+        params["quality"] = quality.into();
+    }
     if let Some(seconds) = seconds {
         params["seconds"] = seconds.into();
     }
@@ -1407,7 +1502,7 @@ fn cmd_answer(
         params["out"] = path.clone().into();
     } else {
         temp = std::env::temp_dir().join(format!(
-            "idfon-answer-{}.wav",
+            "idfon-answer-{}.{ext}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock before epoch")

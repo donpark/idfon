@@ -26,7 +26,7 @@ use iroh_live::media::subscribe::RemoteBroadcast;
 
 /// Broadcast name used on a 1:1 MoQ session (session-scoped: only the
 /// connected peer can see it — there is no ticket to share).
-const CALL_BROADCAST: &str = "call";
+pub(crate) const CALL_BROADCAST: &str = "call";
 
 /// A running file-source publisher. Holds the live endpoint, router, and
 /// broadcast; the tokio runtime is owned by this struct (a runtime dropped
@@ -149,7 +149,7 @@ pub struct ListenStats {
     pub prebuffer_ms: u64,
 }
 
-async fn build_endpoint(relay: bool) -> anyhow::Result<Endpoint> {
+pub(crate) async fn build_endpoint(relay: bool) -> anyhow::Result<Endpoint> {
     // N0 preset: n0 public relays as fallback transport + DNS discovery.
     // N0DisableRelay: no relay transport at all — direct connections only
     // (loopback/LAN tests, and keeps traffic off the rate-limited public

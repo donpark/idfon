@@ -1,5 +1,7 @@
 # Audio media status
 
+> Video is documented separately in [video-media.md](video-media.md).
+
 Idfon has a Rust media backend behind the Native SDK app's Zig host and C ABI.
 The daemon owns network media sessions, blob providers, resource transfer, and
 authorization. The Native SDK application remains TypeScript + Native markup;

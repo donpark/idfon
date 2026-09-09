@@ -15,7 +15,15 @@ iroh = "1"
 # capture drags rusty-capture -> pipewire -> libspa on Linux, which fails to
 # compile against Ubuntu 22.04/24.04 headers (needs PipeWire 1.x). Re-add only
 # if video capture is ever needed, and only on runners with pipewire >= 1.x.
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus"] }
+# "h264" enables the video codec stack (openh264 software encode/decode on
+# every platform) for video file streaming.
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
+# fMP4/MKV/TS/FLV/H.264 import (video file demuxing) and the in-memory
+# broadcast pair used to replay imported tracks. Versions must stay in lock
+# with what iroh-live resolves to (see Cargo.lock).
+moq-mux = "0.5.6"
+moq-lite = { package = "moq-net", version = "0.1.18" }
+hang = "0.19.5"
 idfon-core = { path = "../idfon-core" }
 idfon-protocol = { path = "../idfon-protocol" }
 thiserror = "2"

@@ -9,11 +9,28 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::TransportMode;
 use idfon_media::live::{listen_to_wav, LivePublisher};
+use idfon_media::video::{listen_to_h264, VideoPublisher};
 use idfon_protocol::{ErrorCode, Request, Response};
 
-static LIVE_PUBLISHERS: OnceLock<Mutex<HashMap<String, LivePublisher>>> = OnceLock::new();
+/// A running file-source publisher, audio or video. Live sessions are not
+/// persisted; entries live in an in-memory registry until stopped.
+enum Publisher {
+    Audio(LivePublisher),
+    Video(VideoPublisher),
+}
 
-fn publishers() -> &'static Mutex<HashMap<String, LivePublisher>> {
+impl Publisher {
+    fn stop(self) {
+        match self {
+            Publisher::Audio(publisher) => publisher.stop(),
+            Publisher::Video(publisher) => publisher.stop(),
+        }
+    }
+}
+
+static LIVE_PUBLISHERS: OnceLock<Mutex<HashMap<String, Publisher>>> = OnceLock::new();
+
+fn publishers() -> &'static Mutex<HashMap<String, Publisher>> {
     LIVE_PUBLISHERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -28,7 +45,9 @@ fn error(id: &str, method: &str, message: impl Into<String>) -> Response {
 }
 
 /// `media.live.publish` — publish a media file as a live broadcast.
-/// Params: `file` (required), `loop` (bool, default false), `name` (optional).
+/// Params: `file` (required), `loop` (bool, default false, audio only),
+/// `name` (optional), `video` (bool, default false), `presets`
+/// (optional video quality ladder, e.g. ["180p", "360p", "720p"]).
 /// Result: `{id, ticket}` — the live ticket is the subscriber capability.
 pub fn live_publish(request: &Request) -> Response {
     let method = &request.method;
@@ -69,9 +88,25 @@ pub fn live_publish(request: &Request) -> Response {
     if !path.is_file() {
         return error(&request.id, method, format!("file not found: {file}"));
     }
-    let (publisher, ticket) = match LivePublisher::start(&path, loop_playback, &name, relay) {
-        Ok(result) => result,
-        Err(err) => return error(&request.id, method, format!("live publish failed: {err:#}")),
+    let video = request
+        .params
+        .get("video")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let (publisher, ticket, kind) = if video {
+        let presets = match video_presets(&request) {
+            Ok(presets) => presets,
+            Err(message) => return error(&request.id, method, message),
+        };
+        match VideoPublisher::start(&path, &name, relay, presets) {
+            Ok((publisher, ticket)) => (Publisher::Video(publisher), ticket, "video"),
+            Err(err) => return error(&request.id, method, format!("live publish failed: {err:#}")),
+        }
+    } else {
+        match LivePublisher::start(&path, loop_playback, &name, relay) {
+            Ok((publisher, ticket)) => (Publisher::Audio(publisher), ticket, "audio"),
+            Err(err) => return error(&request.id, method, format!("live publish failed: {err:#}")),
+        }
     };
     let id = format!("live-{}", name.trim_start_matches("idfon-live-"));
     publishers()
@@ -80,9 +115,33 @@ pub fn live_publish(request: &Request) -> Response {
         .insert(id.clone(), publisher);
     ok(
         &request.id,
-        serde_json::json!({"id": id, "name": name, "ticket": ticket, "file": file, "loop": loop_playback,
+        serde_json::json!({"id": id, "name": name, "ticket": ticket, "file": file, "kind": kind,
             "wall_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock before epoch").as_millis() as u64}),
     )
+}
+
+/// Parses the optional video quality ladder (`presets: ["180p", ...]`).
+fn video_presets(request: &Request) -> Result<Vec<idfon_media::video::VideoPreset>, String> {
+    use std::str::FromStr;
+    match request.params.get("presets").and_then(serde_json::Value::as_array) {
+        None => Ok(vec![
+            idfon_media::video::VideoPreset::P180,
+            idfon_media::video::VideoPreset::P360,
+            idfon_media::video::VideoPreset::P720,
+        ]),
+        Some(values) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| "presets must be strings".to_string())
+                    .and_then(|s| {
+                        idfon_media::video::VideoPreset::from_str(s)
+                            .map_err(|_| format!("unknown preset '{s}' (expected 180p, 360p, 720p, 1080p)"))
+                    })
+            })
+            .collect(),
+    }
 }
 
 /// `media.live.stop` — stop a publisher and remove it from the registry.
@@ -109,9 +168,12 @@ pub fn live_stop(request: &Request) -> Response {
     ok(&request.id, serde_json::json!({"id": id, "stopped": true}))
 }
 
-/// `media.live.subscribe` — record a remote broadcast to a WAV file.
+/// `media.live.subscribe` — record a remote broadcast to a file.
 /// Params: `ticket` (required), `seconds` (default 15, capped at 600),
-/// `out` (optional WAV path; defaults to a temp file).
+/// `out` (optional path; defaults to a temp file), `relay` (bool), `video`
+/// (bool, default false), `quality` ("low"|"mid"|"high"|"highest", video
+/// only). Audio records WAV; video records Annex B H.264 (`.h264`),
+/// playable with ffplay/mpv.
 /// Blocking by design: the response arrives when the capture window ends.
 pub fn live_subscribe(request: &Request) -> Response {
     let Some(ticket) = request
@@ -133,6 +195,12 @@ pub fn live_subscribe(request: &Request) -> Response {
         .get("relay")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
+    let video = request
+        .params
+        .get("video")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let default_ext = if video { "h264" } else { "wav" };
     let out = match request
         .params
         .get("out")
@@ -141,14 +209,48 @@ pub fn live_subscribe(request: &Request) -> Response {
     {
         Some(path) => PathBuf::from(path),
         None => std::env::temp_dir().join(format!(
-            "idfon-live-{}.wav",
+            "idfon-live-{}.{default_ext}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock before epoch")
                 .as_nanos()
         )),
     };
-    match listen_to_wav(ticket, &out, seconds, relay) {
+    if video {
+        let quality = request
+            .params
+            .get("quality")
+            .and_then(serde_json::Value::as_str)
+            .map(|q| match q {
+                "low" => Ok(idfon_media::video::Quality::Low),
+                "mid" | "medium" => Ok(idfon_media::video::Quality::Mid),
+                "high" => Ok(idfon_media::video::Quality::High),
+                "highest" => Ok(idfon_media::video::Quality::Highest),
+                other => Err(format!(
+                    "unknown quality '{other}' (expected low, mid, high, highest)"
+                )),
+            })
+            .transpose();
+        let quality = match quality {
+            Ok(quality) => quality,
+            Err(message) => return error(&request.id, &request.method, message),
+        };
+        match listen_to_h264(ticket, &out, seconds, relay, quality) {
+            Ok(stats) => ok(
+                &request.id,
+                serde_json::json!({
+                    "out": stats.out,
+                    "kind": "video",
+                    "frames": stats.frames,
+                    "bytes": stats.bytes,
+                    "duration_ms": stats.duration_ms,
+                    "subscribe_ms": stats.subscribe_ms,
+                }),
+            ),
+            Err(err) => error(&request.id, &request.method, format!("live subscribe failed: {err:#}")),
+        }
+    } else {
+        match listen_to_wav(ticket, &out, seconds, relay) {
         Ok(stats) => ok(
             &request.id,
             serde_json::json!({
@@ -166,6 +268,7 @@ pub fn live_subscribe(request: &Request) -> Response {
             }),
         ),
         Err(err) => error(&request.id, &request.method, format!("live subscribe failed: {err:#}")),
+        }
     }
 }
 
@@ -197,6 +300,23 @@ pub fn live_dial(request: &Request, peer_addr: &str) -> Response {
     let path = PathBuf::from(file);
     if !path.is_file() {
         return error(&request.id, method, format!("file not found: {file}"));
+    }
+    let video = request
+        .params
+        .get("video")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if video {
+        if loop_playback {
+            return error(&request.id, method, "loop is not supported for video dial");
+        }
+        return match idfon_media::video::dial_to_peer(&path, peer_addr, seconds, relay) {
+            Ok(held_ms) => ok(
+                &request.id,
+                serde_json::json!({"held_ms": held_ms, "session_scoped": true, "kind": "video"}),
+            ),
+            Err(err) => error(&request.id, method, format!("live dial failed: {err:#}")),
+        };
     }
     match idfon_media::live::stream_to_peer(&path, loop_playback, peer_addr, seconds, relay) {
         Ok(held_ms) => ok(
@@ -239,6 +359,12 @@ pub fn live_answer(
         .get("from")
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.is_empty());
+    let video = request
+        .params
+        .get("video")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let default_ext = if video { "h264" } else { "wav" };
     let out = match request
         .params
         .get("out")
@@ -247,13 +373,48 @@ pub fn live_answer(
     {
         Some(path) => PathBuf::from(path),
         None => std::env::temp_dir().join(format!(
-            "idfon-call-{}.wav",
+            "idfon-call-{}.{default_ext}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock before epoch")
                 .as_nanos()
         )),
     };
+    if video {
+        let quality = request
+            .params
+            .get("quality")
+            .and_then(serde_json::Value::as_str)
+            .map(|q| match q {
+                "low" => Ok(idfon_media::video::Quality::Low),
+                "mid" | "medium" => Ok(idfon_media::video::Quality::Mid),
+                "high" => Ok(idfon_media::video::Quality::High),
+                "highest" => Ok(idfon_media::video::Quality::Highest),
+                other => Err(format!(
+                    "unknown quality '{other}' (expected low, mid, high, highest)"
+                )),
+            })
+            .transpose();
+        let quality = match quality {
+            Ok(quality) => quality,
+            Err(message) => return error(&request.id, method, message),
+        };
+        return match idfon_media::video::answer_to_h264(transport, &out, seconds, wait, from, quality)
+        {
+            Ok(stats) => ok(
+                &request.id,
+                serde_json::json!({
+                    "out": stats.out,
+                    "kind": "video",
+                    "frames": stats.frames,
+                    "bytes": stats.bytes,
+                    "duration_ms": stats.duration_ms,
+                    "subscribe_ms": stats.subscribe_ms,
+                }),
+            ),
+            Err(err) => error(&request.id, method, format!("live answer failed: {err:#}")),
+        };
+    }
     match idfon_media::live::answer_to_wav(transport, &out, seconds, wait, from) {
         Ok(stats) => ok(
             &request.id,
