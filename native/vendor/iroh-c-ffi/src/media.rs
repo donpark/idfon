@@ -1129,12 +1129,6 @@ pub fn media_live_start() -> char_p::Box {
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 static PUSHED_FRAME: Mutex<Option<(u32, u32, iroh_live::media::format::VideoFrame)>> = Mutex::new(None);
 
-/// Push/pop counters for the periodic push-path health log.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-static PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-static POP_COUNT: AtomicU64 = AtomicU64::new(0);
-
 /// Consumes frames pushed over FFI (media_video_push_frame). Stateless: the
 /// slot is shared, start/stop just clear it. The encoder thread polls
 /// pop_frame; when no frame is waiting it gets None (encoder idles until the
@@ -1195,10 +1189,11 @@ impl SourceTrait for PushFrameSource {
         Ok(())
     }
     fn pop_frame(&mut self) -> anyhow::Result<Option<iroh_live::media::format::VideoFrame>> {
-        let popped = POP_COUNT.fetch_add(1, Ordering::Relaxed);
-        if popped % 900 == 0 {
-            tracing::info!(popped = popped + 1, pushed = PUSH_COUNT.load(Ordering::Relaxed), "push source drain");
-        }
+        // ponytail: no per-call logging here — upstream moq's shared-source
+        // driver thread spins on Ok(None) (~25M polls/s during a call), so
+        // even a modulo-throttled log floods the tracing file (300 MB per
+        // 100 s call). Frame-flow evidence lives in the subscriber-side
+        // video-frame.jpg rewrites instead.
         Ok(PUSHED_FRAME
             .lock()
             .expect("pushed frame mutex poisoned")
@@ -1227,10 +1222,6 @@ pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u
         Duration::from_millis(pts_ms),
     );
     *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = Some((width, height, frame));
-    let pushed = PUSH_COUNT.fetch_add(1, Ordering::Relaxed);
-    if pushed % 60 == 0 {
-        tracing::info!(pushed = pushed + 1, width, height, "camera frame pushed");
-    }
 }
 
 /// Starts the live microphone + camera broadcast (video call) and returns
