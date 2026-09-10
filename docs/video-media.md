@@ -4,6 +4,36 @@ Idfon streams live video alongside its audio path. The pipeline is headless
 first (file-driven, like the audio file streaming in
 [cli-data.md](cli-data.md)); GUI rendering and camera capture come later.
 
+## Live camera capture (iOS → any receiver)
+
+iOS captures through `ios/Idfon/CameraPusher.swift`: a headless
+`AVCaptureSession` (no preview layer) delivers BGRA frames on a serial
+delegate queue and pushes each frame over the `media_video_push_frame` FFI
+into `PushFrameSource` (`native/vendor/iroh-c-ffi/src/media.rs`), which feeds
+the same H.264 encoder ladder / MoQ broadcast as the file path. `VideoCall`
+starts/stops the pusher around `media_live_video_start()`/`media_live_stop()`.
+
+Key invariants (break these and capture silently stops or distorts):
+
+- **Start only while the app is foregroundActive.** iOS capture arbitration
+  denies frames to sessions born inactive — no error, no notification, and
+  rebuilding the same session never recovers. `CameraPusher.start()` defers
+  to `didBecomeActive` when needed; launch-arg automation (`-camprobe`,
+  `-videodial`) must go through the same gate. See
+  [troubleshooting.md](troubleshooting.md) for the full post-mortem.
+- **Orientation at capture.** `connection.videoOrientation = .portrait`
+  rotates in the capture pipeline; pushed frames are 720x1280 upright.
+  `PushFrameSource::format()` must declare `[720, 1280]` — the encoder is
+  initialized from the declared dimensions and never re-reads them.
+- **Drop-latest handoff.** Pushed frames overwrite a shared slot; the
+  encoder polls and takes the newest (a slow encoder skips frames instead of
+  backing up capture).
+
+The receiver renders by subscribing to the adaptive decoded track
+(`media_video_start` in `native/vendor/iroh-c-ffi/src/video.rs` writes
+`video-frame.jpg` atomically ~15fps; the GUI re-loads it on a timer through
+the image registry with dynamic width/height binding).
+
 ## Verified pipeline
 
 ```text
@@ -59,8 +89,8 @@ GUI video view; the headless recorder uses fixed-rendition selection.
 
 ## Not yet
 
-- 1:1 video dial/answer (the audio `stream`/`answer` path with a video track)
-- GUI video rendering and camera/screen capture (per-OS feature gates)
+- macOS camera capture via the Swift path (macOS GUI still uses the
+  vendored-nokhwa path; the nokhwa iOS branches are now dead code to delete)
 - File audio (AAC→Opus transcode) alongside the video track
 - Hardware codecs (rusty-codecs has a VideoToolbox feature for macOS)
 - Passthrough single-rendition publishing (zero-CPU mode for weak senders)

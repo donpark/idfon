@@ -6,26 +6,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         DaemonBootstrap.start()
         ChatStore.shared.start()
         setVideoRotation()
-        NotificationCenter.default.addObserver(forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main) { _ in
-            self.setVideoRotation()
-        }
         smokeCheckStatus()
         handleLaunchArguments()
         return true
     }
 
-    /// The camera buffer is landscape-sensor-native; tell the media layer how
-    /// to rotate it so portrait-held phones render upright.
-    private func setVideoRotation() {
-        let deg: UInt32 = switch UIDevice.current.orientation {
-        case .portrait: 90
-        case .portraitUpsideDown: 270
-        case .landscapeLeft: 0
-        case .landscapeRight: 180
-        default: 90
-        }
-        media_video_set_rotation(deg)
-    }
+    /// Legacy nokhwa rotation hook; the Swift CameraPusher path rotates
+    /// natively via connection.videoOrientation. No-op kept for the bridging
+    /// header until the legacy path is deleted.
+    private func setVideoRotation() {}
 
     /// Automation channel (simctl launch app.idfon -dial <ref> / -answer);
     /// launch arguments bypass the system "Open in app?" confirmation that
@@ -56,6 +45,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         if let i = args.firstIndex(of: "-videodial"), args.count > i + 1 {
             VideoCall.shared.dial(args[i + 1])
+        }
+        if args.contains("-camprobe") {
+            CameraPusher.shared.start()
         }
         if let i = args.firstIndex(of: "-pair"), args.count > i + 1 {
             pairPeer(ticketJSON: args[i + 1], name: args.count > i + 2 ? args[i + 2] : "mac")

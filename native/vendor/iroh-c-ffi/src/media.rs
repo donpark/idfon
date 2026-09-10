@@ -17,7 +17,6 @@ use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as 
 use iroh_live::{
     media::{
         audio_backend::InputStream,
-        capture::CameraCapturer,
         codec::{OpusEncoder, VideoCodec},
         format::{AudioEncoderConfig, AudioFormat, AudioPreset, PlaybackConfig, VideoPreset},
         publish::{AudioRenditions, LocalBroadcast},
@@ -31,7 +30,14 @@ use iroh_live::{
     ticket::LiveTicket,
     Live, Subscription,
 };
+#[cfg(not(target_os = "ios"))]
+use iroh_live::media::capture::CameraCapturer;
 use n0_future::boxed::BoxFuture;
+#[cfg(target_os = "ios")]
+use iroh_live::media::{
+    format::{PixelFormat, VideoFormat as SourceVideoFormat},
+    traits::VideoSource as SourceTrait,
+};
 use ogg::reading::PacketReader;
 use safer_ffi::prelude::*;
 
@@ -173,6 +179,9 @@ pub(crate) fn media_path(name: &str) -> std::path::PathBuf {
 
 /// Sets the rotation (degrees CW: 0/90/180/270) applied to iOS camera frames
 /// before encoding, so portrait-held phones render upright. No-op on macOS.
+/// Legacy nokhwa path — the iOS capture now comes from Swift via
+/// media_video_push_frame (which orients natively); kept until the device
+/// verifies the new path, then deleted with the vendored-nokhwa iOS code.
 #[ffi_export]
 pub fn media_video_set_rotation(deg: u32) {
     #[cfg(target_os = "ios")]
@@ -1045,8 +1054,14 @@ fn start_live(with_video: bool) -> char_p::Box {
         broadcast.audio().set_renditions(renditions)?;
         if with_video {
             ensure_camera_access();
+            // iOS: Swift's AVCaptureSession (CameraPusher.swift) pushes BGRA
+            // frames via media_video_push_frame; the encoder drains them
+            // through PushFrameSource. Replaces the vendored-nokhwa capture.
+            #[cfg(target_os = "ios")]
+            let camera = PushFrameSource;
             // Prefer the front camera for video calls (enumeration order
             // returns the rear camera first on iPhones).
+            #[cfg(not(target_os = "ios"))]
             let camera = {
                 let cams = CameraCapturer::list().unwrap_or_default();
                 let chosen = cams
@@ -1098,6 +1113,82 @@ fn start_live(with_video: bool) -> char_p::Box {
 #[ffi_export]
 pub fn media_live_start() -> char_p::Box {
     start_live(false)
+}
+
+// --- iOS: Swift AVCaptureSession -> PushFrameSource camera path ---
+
+/// Latest camera frame pushed from Swift (BGRA, rows tightly packed).
+#[cfg(target_os = "ios")]
+static PUSHED_FRAME: Mutex<Option<iroh_live::media::format::VideoFrame>> = Mutex::new(None);
+
+/// Push/pop counters for the periodic push-path health log.
+#[cfg(target_os = "ios")]
+static PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "ios")]
+static POP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Consumes frames pushed over FFI (media_video_push_frame). Stateless: the
+/// slot is shared, start/stop just clear it. The encoder thread polls
+/// pop_frame; when no frame is waiting it gets None (encoder idles until the
+/// next push), so Swift may start pushing before or after start_live.
+#[cfg(target_os = "ios")]
+struct PushFrameSource;
+
+#[cfg(target_os = "ios")]
+impl SourceTrait for PushFrameSource {
+    fn name(&self) -> &str {
+        "ios-camera"
+    }
+    fn format(&self) -> SourceVideoFormat {
+        SourceVideoFormat {
+            pixel_format: PixelFormat::Bgra,
+            // Portrait: Swift locks the capture connection to .portrait, so
+            // frames arrive 720x1280 upright. Must match the pushed frames —
+            // the H.264 encoder is initialized from these dimensions and
+            // never re-reads them per frame.
+            dimensions: [720, 1280],
+        }
+    }
+    fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn stop(&mut self) -> anyhow::Result<()> {
+        *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
+        Ok(())
+    }
+    fn pop_frame(&mut self) -> anyhow::Result<Option<iroh_live::media::format::VideoFrame>> {
+        let popped = POP_COUNT.fetch_add(1, Ordering::Relaxed);
+        if popped % 900 == 0 {
+            tracing::info!(popped = popped + 1, pushed = PUSH_COUNT.load(Ordering::Relaxed), "push source drain");
+        }
+        Ok(PUSHED_FRAME.lock().expect("pushed frame mutex poisoned").take())
+    }
+}
+
+/// Pushes one camera frame (BGRA, 4 bytes/pixel, rows tightly packed) from
+/// Swift's AVCaptureSession into the slot drained by PushFrameSource.
+/// Drop-latest: an unconsumed frame is overwritten. Malformed sizes and
+/// short buffers are ignored (trusted in-process caller; belt for stride
+/// math mistakes).
+#[cfg(target_os = "ios")]
+#[ffi_export]
+pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u32, pts_ms: u64) {
+    if data.is_null() || width == 0 || height == 0 || len < width as usize * height as usize * 4 {
+        return;
+    }
+    let payload = unsafe { std::slice::from_raw_parts(data, len) };
+    let frame = iroh_live::media::format::VideoFrame::new_packed(
+        Bytes::copy_from_slice(payload),
+        width,
+        height,
+        PixelFormat::Bgra,
+        Duration::from_millis(pts_ms),
+    );
+    *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = Some(frame);
+    let pushed = PUSH_COUNT.fetch_add(1, Ordering::Relaxed);
+    if pushed % 60 == 0 {
+        tracing::info!(pushed = pushed + 1, width, height, "camera frame pushed");
+    }
 }
 
 /// Starts the live microphone + camera broadcast (video call) and returns

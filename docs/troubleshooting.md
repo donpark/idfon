@@ -88,3 +88,44 @@ which only then called `complete(...)` — the `defer` ran first, so
 before the `defer` frees it. Rule of thumb: an FFI helper that returns a
 span into Rust-owned memory must not free that memory itself when the
 consumer runs after the return.
+
+## iOS camera capture migration: silent AVCaptureVideoDataOutput (2026-09-09, FIXED)
+
+**Symptom.** After migrating iOS camera capture from vendored-nokhwa to Swift
+AVCaptureSession (`ios/Idfon/CameraPusher.swift` -> `media_video_push_frame`
+FFI -> `PushFrameSource` in `native/vendor/iroh-c-ffi/src/media.rs`), iPhone->
+Mac video calls published audio but no video: the Swift session looked
+healthy by every observable (running, connection active+enabled, TCC
+authorized, no error/interruption notifications) yet `captureOutput` never
+fired — not once, for fully vanilla rebuilt sessions, surviving a reboot.
+
+**Root cause.** The session was started while the app was NOT active
+(foregroundInactive=1, from `didFinishLaunching` on a `devicectl` launch).
+iOS capture arbitration denies frame delivery to non-active clients: the
+session reports `isRunning=true` with an active connection and NO error
+notification — there was no state transition, the session was born
+ineligible. Diagnostics that mislead: `scenes=[1]` is foregroundInactive
+(UISceneActivationState.foregroundActive = 0), and read-back
+`PixelFormatType 1111970369` is `'BGRA'`, not `'420f'`. A session denied this
+way never recovers; rebuilding on the same AVCaptureSession object keeps the
+state.
+
+**Fix (CameraPusher.swift).** `start()` checks `UIApplication.shared
+.applicationState`; when inactive it defers to
+`UIApplication.didBecomeActiveNotification`. The rebuild ladder constructs a
+FRESH `AVCaptureSession` per attempt. `start()` logs `applicationState` at
+request and at `startRunning`.
+
+**Orientation.** Sensor frames are landscape-native; capture rotates in
+hardware via `connection.videoOrientation = .portrait`, so pushed frames are
+720x1280 upright and `PushFrameSource::format()` must declare `[720, 1280]`
+(the H.264 encoder initializes from the declared dimensions and squashes
+frames otherwise — never re-reads per frame). The legacy
+`media_video_set_rotation`/nokhwa rotation path is dead. On the Mac side the
+`<image>` element binds dynamic `videoWidth`/`videoHeight` model fields
+(updated from the image-load result's real dimensions in
+`video_image_event`), so any sender orientation renders with correct aspect.
+
+**Lesson for scripting launches.** `devicectl ... launch` with launch args
+runs automation before the app is active; anything camera-adjacent must wait
+for `didBecomeActive` (or be triggered from the UI after launch).

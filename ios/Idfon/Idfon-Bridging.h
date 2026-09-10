@@ -34,7 +34,8 @@ void media_live_unsubscribe(void);
 char *media_video_start(char const *ticket); // watch peer video -> video-frame.jpg path
 void media_video_stop(void);
 char *media_live_last_error(void);           // last publish failure ("" if none)
-void media_video_set_rotation(uint32_t deg); // iOS camera frame rotation (0/90/180/270 CW)
+void media_video_set_rotation(uint32_t deg); // legacy nokhwa rotation (0/90/180/270 CW); superseded by push path
+void media_video_push_frame(const void *data, uintptr_t len, uint32_t width, uint32_t height, uint64_t pts_ms); // BGRA frame -> live encoder
 void media_shutdown(void);
 void iroh_enable_tracing(void);              // tracing -> /tmp/idfon-<pid>.log (IROH_C_LOG filter)
 void rust_free_string(char *ptr);
