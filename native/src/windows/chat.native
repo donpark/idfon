@@ -134,7 +134,7 @@
     <!-- Live video watch: the decoded adaptive stream renders through the
          runtime image registry (host writes JPEG frames to app-data). -->
     <row cross="center">
-      <image image="{videoImageId}" width="320" height="180" label="Live video" />
+      <image image="{videoImageId}" width="{videoWidth}" height="{videoHeight}" label="Live video" />
       <button variant="destructive" on-press="video_stop" label="Stop video">Stop video</button>
     </row>
   </if>

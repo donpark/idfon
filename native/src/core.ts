@@ -90,6 +90,11 @@ export interface Model {
   readonly incomingVideoCall: boolean;
   readonly videoWatching: boolean;
   readonly videoFramePath: Uint8Array;
+  /// Actual dimensions of the last loaded video frame (from
+  /// video_image_event); the <image> element binds to these so any
+  /// sender orientation/resolution displays with correct aspect.
+  readonly videoWidth: number;
+  readonly videoHeight: number;
   readonly videoFileInput: Uint8Array;
   readonly recordingStatus: Uint8Array;
   readonly recordingReady: boolean;
@@ -253,6 +258,7 @@ export const viewUnbound = [
   "recordingStartedAt", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "events_sync_error", "chat_closed", "banner_dismiss", "bannerExpiresAt", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready", "bitrate_edit", "set_audio_bitrate", "bitrateInput",
 "video_watch_started", "video_watch_error", "video_stopped", "video_frame_tick",
 "video_call_start", "video_media_session_ready", "video_call_started", "video_call_error", "video_image_event",
+"videoWidth", "videoHeight",
 ] as const;
 
 /// The runtime image id the live video frames register under; 0 renders
@@ -315,6 +321,11 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
   incomingVideoCall: false,
   videoWatching: false,
   videoFramePath: EMPTY,
+  // Division keeps these slots float-classed (NS1016: division results are
+  // the float domain), so the host-supplied frame dimensions store as f64
+  // with no integer wholeness attestation to discharge.
+  videoWidth: 1280 / 4,
+  videoHeight: 720 / 4,
   videoFileInput: EMPTY,
     recordingStatus: utf8Bytes("No recording"),
     recordingReady: false,
@@ -1370,15 +1381,19 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "video_stop":
       return [model, Cmd.request("media.video.stop", EMPTY, { key: "media-video-stop", ok: "video_stopped", err: "video_watch_error" })];
     case "video_stopped":
-      return { ...model, videoWatching: false, videoFramePath: EMPTY };
+      return { ...model, videoWatching: false, videoFramePath: EMPTY, videoWidth: 1280 / 4, videoHeight: 720 / 4 };
     case "video_frame_tick":
       if (!model.videoWatching || model.videoFramePath.length === 0) return model;
       // Re-load onto the stable image id: the FFI rewrites video-frame.jpg
       // atomically ~15fps; without this the registry shows the first (empty)
       // frame forever.
       return [model, Cmd.imageLoad(1, { path: model.videoFramePath }, { event: "video_image_event" })];
-    case "video_image_event":
+    case "video_image_event": {
+      if (msg.width > 0 && msg.height > 0) {
+        return { ...model, videoWidth: msg.width * 1.0, videoHeight: msg.height * 1.0 };
+      }
       return model;
+    }
     case "live_subscribe":
       if (model.liveTicketInput.length === 0) return model;
       return [model, Cmd.request("media.live.subscribe", model.liveTicketInput, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" })];

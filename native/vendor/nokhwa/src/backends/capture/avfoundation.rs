@@ -34,7 +34,9 @@ use nokhwa_core::{pixel_format::RgbFormat, types::RequestedFormatType};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use std::{ffi::CString, sync::Arc, time::Duration};
 
-use std::{borrow::Cow, collections::HashMap, sync::atomic::{AtomicU32, Ordering}};
+use std::{borrow::Cow, collections::HashMap};
+#[cfg(target_os = "ios")]
+use std::sync::atomic::{AtomicU32, Ordering};
 
 // iPhone camera buffers are landscape-sensor-native. When the phone is held
 // portrait the frame must be rotated 90° CW (or 270°) to appear upright.
@@ -154,6 +156,8 @@ impl AVFoundationCaptureDevice {
 
         // device.lock()?;
         let formats = device.supported_formats()?;
+        // mut only on iOS (720p-cap reassignment below); macOS never reassigns.
+        #[cfg_attr(not(target_os = "ios"), allow(unused_mut))]
         let mut camera_fmt = req_fmt.fulfill(&formats).ok_or_else(|| {
             NokhwaError::OpenDeviceError("Cannot fulfill request".to_string(), req_fmt.to_string())
         })?;
