@@ -38,7 +38,15 @@ final class ChatStore {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
         // Call-control traffic (live invites, call_started/stopped) routes
         // to the video-call state machine; never shown as chat history.
-        if LiveInvite.parse(text) != nil || text == "call_started" || text == "call_stopped" {
+        // Invites replayed from the event backlog are stale (the call they
+        // belonged to already happened) — never ring on them, else every
+        // hangup resurrects a ghost call.
+        if LiveInvite.parse(text) != nil {
+            if isStaleInvite(event) { return }
+            DispatchQueue.main.async { VideoCall.shared.handleEnvelope(peer: peerId, text) }
+            return
+        }
+        if text == "call_started" || text == "call_stopped" {
             DispatchQueue.main.async { VideoCall.shared.handleEnvelope(peer: peerId, text) }
             return
         }
@@ -46,6 +54,12 @@ final class ChatStore {
         messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false))
         NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")
         DispatchQueue.main.async { self.onUpdate?() }
+    }
+
+    /// Replayed invites older than 60s are from past calls; never ring.
+    private func isStaleInvite(_ event: Event) -> Bool {
+        guard let ts = Double(event.timestamp), ts > 0 else { return false }
+        return Date().timeIntervalSince1970 - ts > 60
     }
 
     /// Parses message text into text vs recording envelope kinds.

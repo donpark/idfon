@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "native": "pnpm --filter @idfon/native",
+    "ios": "pnpm --filter @idfon/ios",
+    "mac": "pnpm --filter @idfon/mac",
     "build:npm": "scripts/build-npm.sh"
   },
   "author": "Don Park",

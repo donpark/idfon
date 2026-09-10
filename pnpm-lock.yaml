@@ -8,6 +8,10 @@ importers:
 
   .: {}
 
+  ios: {}
+
+  mac: {}
+
   native:
     dependencies:
       '@native-sdk/core':

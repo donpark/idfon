@@ -23,14 +23,23 @@ buf-list = "1.1"
 iroh = "1.0.0"
 iroh-tickets = "1.0.0"
 iroh-blobs = "0.103.0"
+# Camera capture is shell-pushed on Apple platforms (Swift AVCaptureSession
+# -> media_video_push_frame -> PushFrameSource); the nokhwa-backed capture
+# path is only needed where no Swift shell exists (Linux/v4l), and comes
+# transitively from iroh-live's capture-camera feature (crates.io nokhwa —
+# the vendored fork is deleted: its patches were Apple-only). The deps are
+# split per-target so Apple builds don't compile any nokhwa tree.
+# Note: in this iroh-live rev the native AVFoundation capture backend is an
+# unimplemented stub, hence capture-camera/nokhwa features on Linux only.
+[target.'cfg(target_os = "linux")'.dependencies]
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "capture-camera"] }
-# Enables rusty-capture's nokhwa backend: the native AVFoundation camera
-# backend in this iroh-live rev is an unimplemented stub that always errors
-# ("AVFoundation camera capture is not yet implemented"). Same source as
-# iroh-live's internal moq-media dep, so features unify.
 moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["nokhwa"] }
-# macOS camera permission request (nokhwa's device query does not trigger
-# the TCC prompt); features unify with rusty-capture's objc2-av-foundation.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false }
+# macOS camera permission request (camera access is also requested from the
+# Swift shells; this covers daemon-side starts); features unify with
+# rusty-capture's objc2-av-foundation.
 objc2 = "0.6"
 objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 block2 = "0.6"
@@ -51,9 +60,6 @@ idfon-protocol = { path = "../../../crates/idfon-protocol" }
 idfon-client = { path = "../../../crates/idfon-client" }
 idfon-daemon = { path = "../../../crates/idfon-daemon" }
 
-[dependencies.nokhwa]
-path = "../nokhwa"
-
 [features]
 # generate headers
 headers = ["safer-ffi/headers"]
@@ -64,15 +70,7 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
-# Lock-rejection tolerance for multi-process camera sharing (see
-# vendor/nokhwa-bindings-macos set_all): another process streaming the
-# camera holds the system-exclusive config lock; without this the second
-# instance's camera open fails (two app instances on one Mac).
+# Vendored nokhwa: the Linux-gated direct dep already points at this path,
+# so no patch is needed for it; keep the entry only if a transitive dep ever
+# pulls crates.io nokhwa again.
 [patch.crates-io]
-nokhwa-bindings-macos = { path = "../nokhwa-bindings-macos" }
-block = { path = "../block" }
-# Vendored nokhwa: upstream gates its AVFoundation wrapper (and bindings
-# calls) to macOS only, leaving an `unimplemented!()` stub for iOS; the
-# vendored bindings fork compiles for iOS, so unlock the wrapper there too.
-# Also a direct dependency (rotation FFI touches the wrapper directly).
-nokhwa = { path = "../nokhwa" }

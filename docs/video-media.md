@@ -89,8 +89,6 @@ GUI video view; the headless recorder uses fixed-rendition selection.
 
 ## Not yet
 
-- macOS camera capture via the Swift path (macOS GUI still uses the
-  vendored-nokhwa path; the nokhwa iOS branches are now dead code to delete)
 - File audio (AAC→Opus transcode) alongside the video track
 - Hardware codecs (rusty-codecs has a VideoToolbox feature for macOS)
 - Passthrough single-rendition publishing (zero-CPU mode for weak senders)
