@@ -6,6 +6,7 @@
     "clean": "rm -rf .derived",
     "build": "bash build.sh",
     "build:deps": "bash build-deps.sh",
-    "run": "bash run.sh"
+    "device": "bash device.sh",
+    "start": "bash start.sh"
   }
 }
