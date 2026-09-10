@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install + launch the Debug simulator app on the booted simulator.
 # Extra arguments are passed to the app as launch arguments
-# (e.g. ios/run.sh -dial mac, ios/run.sh -answer, ios/run.sh -memo 3 mac).
+# (e.g. ios/start.sh -dial mac, ios/start.sh -answer, ios/start.sh -memo 3 mac).
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ios_dir="$root/ios"
