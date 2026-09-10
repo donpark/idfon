@@ -116,16 +116,45 @@ state.
 FRESH `AVCaptureSession` per attempt. `start()` logs `applicationState` at
 request and at `startRunning`.
 
-**Orientation.** Sensor frames are landscape-native; capture rotates in
+**Orientation.** Sensor frames are landscape-native; on iOS capture rotates in
 hardware via `connection.videoOrientation = .portrait`, so pushed frames are
-720x1280 upright and `PushFrameSource::format()` must declare `[720, 1280]`
-(the H.264 encoder initializes from the declared dimensions and squashes
-frames otherwise — never re-reads per frame). The legacy
-`media_video_set_rotation`/nokhwa rotation path is dead. On the Mac side the
-`<image>` element binds dynamic `videoWidth`/`videoHeight` model fields
-(updated from the image-load result's real dimensions in
+720x1280 upright. `PushFrameSource::format()` reads the dimensions of the
+last pushed frame (waiting up to 1.5s for capture to start; falls back to
+720x1280 on iOS / 1280x720 on macOS) — the H.264 encoder initializes from
+the declared dimensions and squashes frames otherwise, never re-reading per
+frame. macOS presets are advisory (a 1080p camera ignores `.hd1280x720`),
+so `mac/.../CameraPusher.swift` also pins `device.activeFormat` to 1280x720
+when offered, and starts pushing BEFORE `media_live_video_start` so the real
+dimensions are known at encoder init. The legacy
+`media_video_set_rotation`/nokhwa rotation path is dead (FFI deleted). On
+the Mac side the `<image>` element binds dynamic `videoWidth`/`videoHeight`
+model fields (updated from the image-load result's real dimensions in
 `video_image_event`), so any sender orientation renders with correct aspect.
+
+**nokhwa removal (2026-09-09).** Apple platforms no longer compile nokhwa at
+all: `iroh-c-ffi/Cargo.toml` gates the capture deps to Linux targets, and
+the vendored forks (`vendor/nokhwa`, `vendor/nokhwa-bindings-macos`,
+`vendor/block`) are deleted — their patches (iOS unlock, macOS camera-lock
+tolerance) only mattered for the nokhwa-on-Apple path. Linux capture uses
+crates.io nokhwa transitively via iroh-live's `capture-camera` feature.
 
 **Lesson for scripting launches.** `devicectl ... launch` with launch args
 runs automation before the app is active; anything camera-adjacent must wait
 for `didBecomeActive` (or be triggered from the UI after launch).
+
+## OS mic indicator stays on after a call ends (2026-09-09, FIXED)
+
+**Symptom.** After hanging up (mac and iOS), the OS microphone-in-use
+indicator stayed lit indefinitely; camera capture stopped correctly.
+
+**Root cause.** moq-media's audio driver opens the cpal input device once
+and keeps it hot for the process lifetime: `RemoveStream` only detaches the
+ring-buffer consumer, it never closes the device. With no release path in
+the FFI, the mic stayed open after the first call.
+
+**Fix.** `AUDIO` in `media.rs` is now a droppable `Mutex<Option<AudioBackend>>`;
+`media_live_stop` calls `release_audio()` after the encode pipelines shut
+down. The driver thread holds only a `weak_tx`, so once the backend and all
+streams are dropped the thread exits and cpal closes the device. Next call
+re-creates the backend on demand. Safe to call while streams exist — the
+driver only exits when every strong sender is gone.

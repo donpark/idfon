@@ -1,0 +1,11 @@
+{
+  "name": "@idfon/ios",
+  "description": "UIKit version of Idfon (iPhone/simulator).",
+  "private": true,
+  "scripts": {
+    "clean": "rm -rf .derived",
+    "build": "bash build.sh",
+    "build:deps": "bash build-deps.sh",
+    "run": "bash run.sh"
+  }
+}

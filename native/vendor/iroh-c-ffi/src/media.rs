@@ -5,7 +5,7 @@ use std::{
     io::{Seek, SeekFrom, Write},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -30,10 +30,10 @@ use iroh_live::{
     ticket::LiveTicket,
     Live, Subscription,
 };
-#[cfg(not(target_os = "ios"))]
+#[cfg(all(not(target_os = "ios"), not(target_os = "macos")))]
 use iroh_live::media::capture::CameraCapturer;
 use n0_future::boxed::BoxFuture;
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 use iroh_live::media::{
     format::{PixelFormat, VideoFormat as SourceVideoFormat},
     traits::VideoSource as SourceTrait,
@@ -43,7 +43,11 @@ use safer_ffi::prelude::*;
 
 use crate::util::tokio_executor;
 
-static AUDIO: OnceLock<AudioBackend> = OnceLock::new();
+// Held until no call needs audio; dropping the last clone ends the driver
+// thread, which drops the cpal streams and releases the mic (the OS mic
+// indicator otherwise stays on forever — the driver never closes the input
+// device on its own, it only detaches consumers).
+static AUDIO: Mutex<Option<AudioBackend>> = Mutex::new(None);
 static MEDIA_SCOPE: Mutex<Option<String>> = Mutex::new(None);
 static RECORDING_HISTORY: Mutex<()> = Mutex::new(());
 static INPUT: Mutex<Option<InputStream>> = Mutex::new(None);
@@ -118,8 +122,16 @@ impl AudioSource for MuteSource {
     }
 }
 
-fn audio() -> &'static AudioBackend {
-    let backend = AUDIO.get_or_init(AudioBackend::default);
+fn audio() -> AudioBackend {
+    let mut backend = AUDIO
+        .lock()
+        .expect("audio backend mutex poisoned")
+        .get_or_insert_with(|| {
+            let backend = AudioBackend::default();
+            backend.set_aec_enabled(false);
+            backend
+        })
+        .clone();
     // ponytail: AEC disabled — sonora's EchoRemover panics (slice index OOB,
     // panic=abort → SIGABRT) on the CoreAudio IO thread when a mono output
     // stream (48k/1 opus live track) joins the 2ch-configured AEC. The input
@@ -128,6 +140,12 @@ fn audio() -> &'static AudioBackend {
     // handles channel-count mismatches; echo risk until then.
     backend.set_aec_enabled(false);
     backend
+}
+
+/// Releases the audio driver so the mic/speaker devices close. Safe to call
+/// while streams are alive: the driver only exits once every stream is gone.
+fn release_audio() {
+    *AUDIO.lock().expect("audio backend mutex poisoned") = None;
 }
 
 fn media_dir() -> std::path::PathBuf {
@@ -175,19 +193,6 @@ fn broadcast_name() -> String {
 
 pub(crate) fn media_path(name: &str) -> std::path::PathBuf {
     media_dir().join(name)
-}
-
-/// Sets the rotation (degrees CW: 0/90/180/270) applied to iOS camera frames
-/// before encoding, so portrait-held phones render upright. No-op on macOS.
-/// Legacy nokhwa path — the iOS capture now comes from Swift via
-/// media_video_push_frame (which orients natively); kept until the device
-/// verifies the new path, then deleted with the vendored-nokhwa iOS code.
-#[ffi_export]
-pub fn media_video_set_rotation(deg: u32) {
-    #[cfg(target_os = "ios")]
-    nokhwa::backends::capture::set_ios_rotation(deg);
-    #[cfg(not(target_os = "ios"))]
-    let _ = deg;
 }
 
 /// Persists a recording ticket once in the active conversation's ledger.
@@ -1054,14 +1059,16 @@ fn start_live(with_video: bool) -> char_p::Box {
         broadcast.audio().set_renditions(renditions)?;
         if with_video {
             ensure_camera_access();
-            // iOS: Swift's AVCaptureSession (CameraPusher.swift) pushes BGRA
-            // frames via media_video_push_frame; the encoder drains them
-            // through PushFrameSource. Replaces the vendored-nokhwa capture.
-            #[cfg(target_os = "ios")]
+            // iOS + macOS: the shell's AVCaptureSession (CameraPusher.swift)
+            // pushes BGRA frames via media_video_push_frame; the encoder
+            // drains them through PushFrameSource. Replaces vendored-nokhwa
+            // capture on Apple platforms.
+            #[cfg(any(target_os = "ios", target_os = "macos"))]
             let camera = PushFrameSource;
-            // Prefer the front camera for video calls (enumeration order
-            // returns the rear camera first on iPhones).
-            #[cfg(not(target_os = "ios"))]
+            // Other platforms (Linux): nokhwa-backed capture (v4l). Prefer
+            // the front camera for video calls (enumeration order returns
+            // the rear camera first).
+            #[cfg(all(not(target_os = "ios"), not(target_os = "macos")))]
             let camera = {
                 let cams = CameraCapturer::list().unwrap_or_default();
                 let chosen = cams
@@ -1115,40 +1122,71 @@ pub fn media_live_start() -> char_p::Box {
     start_live(false)
 }
 
-// --- iOS: Swift AVCaptureSession -> PushFrameSource camera path ---
+// --- Swift AVCaptureSession -> PushFrameSource camera path (iOS + macOS) ---
 
-/// Latest camera frame pushed from Swift (BGRA, rows tightly packed).
-#[cfg(target_os = "ios")]
-static PUSHED_FRAME: Mutex<Option<iroh_live::media::format::VideoFrame>> = Mutex::new(None);
+/// Latest camera frame pushed from Swift (BGRA, rows tightly packed) with
+/// its actual dimensions.
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+static PUSHED_FRAME: Mutex<Option<(u32, u32, iroh_live::media::format::VideoFrame)>> = Mutex::new(None);
 
 /// Push/pop counters for the periodic push-path health log.
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 static PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 static POP_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Consumes frames pushed over FFI (media_video_push_frame). Stateless: the
 /// slot is shared, start/stop just clear it. The encoder thread polls
 /// pop_frame; when no frame is waiting it gets None (encoder idles until the
 /// next push), so Swift may start pushing before or after start_live.
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 struct PushFrameSource;
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+impl PushFrameSource {
+    // iOS: CameraPusher locks the capture connection to portrait, so
+    // frames arrive 720x1280 upright.
+    // macOS: native sensor orientation, nominally 1280x720 landscape.
+    fn default_dimensions() -> [u32; 2] {
+        #[cfg(target_os = "ios")]
+        return [720, 1280];
+        #[cfg(target_os = "macos")]
+        return [1280, 720];
+    }
+}
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 impl SourceTrait for PushFrameSource {
     fn name(&self) -> &str {
-        "ios-camera"
+        "swift-camera"
     }
     fn format(&self) -> SourceVideoFormat {
+        // The H.264 encoder is initialized from these dimensions and never
+        // re-reads them per frame, so they must match the pushed frames.
+        // macOS session presets are advisory (a 1080p FaceTime camera
+        // ignores .hd1280x720), so prefer the actual dimensions of the
+        // last pushed frame, waiting briefly for capture to start; fall
+        // back to the per-OS default when nothing arrives (camera denied
+        // -> no video anyway).
+        let mut dimensions = Self::default_dimensions();
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        loop {
+            if let Some((w, h, _)) = &*PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") {
+                dimensions = [*w, *h];
+                break;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
         SourceVideoFormat {
             pixel_format: PixelFormat::Bgra,
-            // Portrait: Swift locks the capture connection to .portrait, so
-            // frames arrive 720x1280 upright. Must match the pushed frames —
-            // the H.264 encoder is initialized from these dimensions and
-            // never re-reads them per frame.
-            dimensions: [720, 1280],
+            dimensions,
         }
     }
+
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
     fn start(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1161,7 +1199,11 @@ impl SourceTrait for PushFrameSource {
         if popped % 900 == 0 {
             tracing::info!(popped = popped + 1, pushed = PUSH_COUNT.load(Ordering::Relaxed), "push source drain");
         }
-        Ok(PUSHED_FRAME.lock().expect("pushed frame mutex poisoned").take())
+        Ok(PUSHED_FRAME
+            .lock()
+            .expect("pushed frame mutex poisoned")
+            .take()
+            .map(|(_, _, frame)| frame))
     }
 }
 
@@ -1170,7 +1212,7 @@ impl SourceTrait for PushFrameSource {
 /// Drop-latest: an unconsumed frame is overwritten. Malformed sizes and
 /// short buffers are ignored (trusted in-process caller; belt for stride
 /// math mistakes).
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 #[ffi_export]
 pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u32, pts_ms: u64) {
     if data.is_null() || width == 0 || height == 0 || len < width as usize * height as usize * 4 {
@@ -1184,7 +1226,7 @@ pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u
         PixelFormat::Bgra,
         Duration::from_millis(pts_ms),
     );
-    *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = Some(frame);
+    *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = Some((width, height, frame));
     let pushed = PUSH_COUNT.fetch_add(1, Ordering::Relaxed);
     if pushed % 60 == 0 {
         tracing::info!(pushed = pushed + 1, width, height, "camera frame pushed");
@@ -1223,6 +1265,9 @@ pub fn media_live_stop() {
     } else {
         tracing::info!("live publisher stop ignored: no active publisher");
     }
+    // Encode pipelines are dead now; dropping the backend ends the driver
+    // thread and closes the mic/speaker devices (kills the OS mic indicator).
+    release_audio();
 }
 
 /// Subscribes to a live ticket and records decoded audio in the app-data directory.
@@ -1572,6 +1617,7 @@ pub fn media_shutdown() {
         .expect("blob provider mutex poisoned")
         .take();
     *INPUT.lock().expect("audio capture mutex poisoned") = None;
+    release_audio();
 }
 
 /// Stops the live audio subscription and finalizes its WAV recording.

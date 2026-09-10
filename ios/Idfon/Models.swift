@@ -18,11 +18,13 @@ struct Event: Decodable {
     let eventId: String
     let cursor: String
     let type: String
+    /// Epoch seconds as a string (daemon Event.timestamp).
+    let timestamp: String
     let data: [String: AnyEncodable]
 
     enum CodingKeys: String, CodingKey {
         case eventId = "event_id"
-        case cursor, type, data
+        case cursor, type, timestamp, data
     }
 
     var messageText: String? { data["text"]?.stringValue }
