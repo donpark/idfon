@@ -4,7 +4,7 @@ Idfon streams live video alongside its audio path. The pipeline is headless
 first (file-driven, like the audio file streaming in
 [cli-data.md](cli-data.md)); GUI rendering and camera capture come later.
 
-## Live camera capture (iOS → any receiver)
+## Live camera capture (iOS + macOS → any receiver)
 
 iOS captures through `ios/Idfon/CameraPusher.swift`: a headless
 `AVCaptureSession` (no preview layer) delivers BGRA frames on a serial
@@ -12,6 +12,12 @@ delegate queue and pushes each frame over the `media_video_push_frame` FFI
 into `PushFrameSource` (`native/vendor/iroh-c-ffi/src/media.rs`), which feeds
 the same H.264 encoder ladder / MoQ broadcast as the file path. `VideoCall`
 starts/stops the pusher around `media_live_video_start()`/`media_live_stop()`.
+
+macOS mirrors the same pattern (`mac/Sources/Idfon/CameraPusher.swift`):
+no orientation lock (sensor-native landscape, declared 1280x720), the session
+preset is advisory on macOS so `device.activeFormat` is pinned to 1280x720
+when the camera offers it, and capture starts before
+`media_live_video_start()` so the encoder's format probe sees real frames.
 
 Key invariants (break these and capture silently stops or distorts):
 

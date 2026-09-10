@@ -43,11 +43,11 @@ final class ChatStore {
         // hangup resurrects a ghost call.
         if LiveInvite.parse(text) != nil {
             if isStaleInvite(event) { return }
-            DispatchQueue.main.async { VideoCall.shared.handleEnvelope(peer: peerId, text) }
+            DispatchQueue.main.async { Task { @MainActor in VideoCall.shared.handleEnvelope(peer: peerId, text) } }
             return
         }
         if text == "call_started" || text == "call_stopped" {
-            DispatchQueue.main.async { VideoCall.shared.handleEnvelope(peer: peerId, text) }
+            DispatchQueue.main.async { Task { @MainActor in VideoCall.shared.handleEnvelope(peer: peerId, text) } }
             return
         }
         let kind = Self.parseKind(text)
