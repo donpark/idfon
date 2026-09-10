@@ -50,6 +50,13 @@ struct LiveInvite {
 /// Media runs through the vendored c-ffi FFI (camera, H.264 publish, peer
 /// video decoded to video-frame.jpg ~15fps); signaling goes over the daemon
 /// socket (message.send) like every other chat message.
+///
+/// @MainActor: the frame-polling Timer.scheduledTimer attaches to the
+/// current run loop — join()/answer() hop into Tasks that would otherwise
+/// land on the cooperative pool (no run loop), where the timer never fires
+/// and the remote video pane stays black while the FFI decodes fine
+/// (mac's Calls.swift carries the same annotation for the same reason).
+@MainActor
 final class VideoCall: NSObject {
     static let shared = VideoCall()
 
@@ -257,12 +264,16 @@ final class VideoCall: NSObject {
     /// size changed (cheap change detection, matches core.ts re-issue).
     private func startFramePolling() {
         frameTimer?.invalidate()
+        // Timer fires on the main runloop; hop through the main actor for
+        // the MainActor-isolated state (mirrors Calls.swift startFramePolling).
         frameTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self, let path = self.framePath else { return }
-            let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
-            guard size != self.lastFrameSize, size > 0 else { return }
-            self.lastFrameSize = size
-            self.onFrame?(UIImage(contentsOfFile: path))
+            Task { @MainActor in
+                guard let self, let path = self.framePath else { return }
+                let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
+                guard size != self.lastFrameSize, size > 0 else { return }
+                self.lastFrameSize = size
+                self.onFrame?(UIImage(contentsOfFile: path))
+            }
         }
     }
 

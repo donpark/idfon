@@ -142,6 +142,36 @@ crates.io nokhwa transitively via iroh-live's `capture-camera` feature.
 runs automation before the app is active; anything camera-adjacent must wait
 for `didBecomeActive` (or be triggered from the UI after launch).
 
+## mac→iPhone video call shows a black remote pane (2026-09-10, FIXED)
+
+**Symptom.** After the macOS camera shell-push rewrite, mac→iPhone video
+calls connected fine (audio both ways, remote subscribe accepted) but the
+iPhone's remote pane stayed black. Reverse direction (iPhone→mac) worked.
+The FFI decoded mac's stream fine the whole time — the phone's
+`video-frame.jpg` (pullable via `xcrun devicectl device copy from
+--domain-type appDataContainer --domain-identifier app.idfon`) was a
+perfect 1280x720 frame of the mac's camera, rewritten until hangup.
+
+**Root cause.** `ios/Idfon/VideoCall.swift` was not `@MainActor`, so
+`answer()`'s `Task { await join(ticket:) }` ran on the cooperative pool.
+`startFramePolling()` calls `Timer.scheduledTimer`, which attaches to the
+CURRENT thread's run loop — a cooperative-pool thread has none, so the
+10 Hz frame-poll timer never fired and `CallViewController.videoView.image`
+never received a frame. Same shape as the mac AppKit port's
+`Calls.swift`, which carries `@MainActor` for exactly this reason.
+
+**Fix.** `@MainActor final class VideoCall` on iOS (mirroring mac), the
+timer body hops through `Task { @MainActor in … }`, and ChatStore's two
+`DispatchQueue.main.async { VideoCall.shared.handleEnvelope(…) }` sites hop
+with `Task { @MainActor in … }` (synchronous @MainActor calls from
+non-isolated closures don't compile).
+
+**Rule of thumb.** A `Task {}` spawned from a non-actor-isolated class runs
+on the global executor, not the main thread — anything that needs the main
+run loop (Timers, UI) must hop explicitly, or the enclosing class must be
+`@MainActor` so Tasks inherit it. `Timer.scheduledTimer` on a thread without
+a running run loop fails silently.
+
 ## OS mic indicator stays on after a call ends (2026-09-09, FIXED)
 
 **Symptom.** After hanging up (mac and iOS), the OS microphone-in-use
