@@ -83,7 +83,7 @@ final class LiveWaveformView: UIView {
     }
 
     override func draw(_ rect: CGRect) {
-        guard let context = UIGraphicsGetCurrentContext() else { return }
+        guard UIGraphicsGetCurrentContext() != nil else { return }
         lock.lock()
         let snapshot: [Float]
         switch mode {
@@ -146,7 +146,7 @@ final class AudioMeter {
         session.requestRecordPermission { [weak self] granted in
             guard granted, let self, !self.running else { return }
             do {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
                 try session.setActive(true)
                 let input = self.engine.inputNode
                 let format = input.outputFormat(forBus: 0)

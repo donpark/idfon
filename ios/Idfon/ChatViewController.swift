@@ -114,7 +114,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         sendButton.translatesAutoresizingMaskIntoConstraints = false
         sendButton.setImage(UIImage(systemName: "arrow.up.circle.fill"), for: .normal)
-        sendButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+        sendButton.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
         sendButton.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
 
         callStatusLabel.translatesAutoresizingMaskIntoConstraints = false
