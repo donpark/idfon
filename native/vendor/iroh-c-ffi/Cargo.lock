@@ -2322,7 +2322,6 @@ dependencies = [
  "iroh-mdns-address-lookup",
  "iroh-tickets",
  "jpeg-encoder",
- "moq-media",
  "n0-future",
  "objc2",
  "objc2-av-foundation",
