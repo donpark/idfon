@@ -31,19 +31,15 @@ iroh-blobs = "0.103.0"
 # (missing AV1/VP9 stateless controls).
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
 # macOS camera permission request (camera access is also requested from the
-# Swift shells; this covers daemon-side starts).
-# ponytail: keep every other dep unconditional — a 4f94b3e regression put
-# them inside a not(linux) target section and silently broke the Linux dylib
-# (tokio without rt-multi-thread -> iroh-blobs fs-store failed to compile).
-objc2 = "0.6"
-objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
-block2 = "0.6"
+# Swift shells; this covers daemon-side starts). objc2 hard-fails to compile
+# on non-Apple platforms, hence the target gate; ensure_camera_access is
+# cfg(any(macos, ios)) so nothing references these on Linux.
+tokio = { version = "1.45.1", features = ["rt-multi-thread"] }
 once_cell = "1.21"
 jpeg-encoder = "0.6"
 rand = "0.10"
 safer-ffi = { version = "0.1.13" ,features = ["async-fn"]}
 socket2 = "0.6.1"
-tokio = { version = "1.45.1", features = ["rt-multi-thread"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 url = "2.5"
@@ -55,6 +51,16 @@ idfon-protocol = { path = "../../../crates/idfon-protocol" }
 idfon-client = { path = "../../../crates/idfon-client" }
 idfon-daemon = { path = "../../../crates/idfon-daemon" }
 
+# objc2 hard-fails to compile on non-Apple platforms, hence the target gate.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+block2 = "0.6"
+
+# ponytail note: a 4f94b3e regression put tokio and the idfon-* deps inside
+# a not(linux) target section and silently broke the Linux dylib (tokio
+# without rt-multi-thread -> iroh-blobs fs-store failed to compile). Keep
+# everything except objc2 unconditional.
 [features]
 # generate headers
 headers = ["safer-ffi/headers"]
