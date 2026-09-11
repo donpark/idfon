@@ -11,10 +11,10 @@ stream-decoded.wav
 stream-timings.json
 geo-decoded.wav
 geo-timings.json
-# npm platform packages: binaries are built by scripts/build-npm.sh, not committed
-npm/idfon-*/bin/
+# cli platform packages: binaries are built by scripts/build-cli.sh, not committed
+cli/idfon-*/bin/
 # generated copies of the root license files
-npm/idfon-*/LICENSE-*
+cli/idfon-*/LICENSE-*
 # local agent/tooling state — not repo content
 .pi/
 .agents/

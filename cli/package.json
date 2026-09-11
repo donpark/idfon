@@ -1,0 +1,9 @@
+{
+  "name": "@idfon/cli",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Build the idfon CLI + idfond daemon and populate the npm platform packages.",
+  "scripts": {
+    "build": "../scripts/build-cli.sh"
+  }
+}

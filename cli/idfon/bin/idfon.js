@@ -33,8 +33,8 @@ try {
     "idfon"
   );
 } catch (err) {
-  // Repo-layout fallback: platform packages sitting at npm/* without a
-  // node_modules install (dev use, scripts/build-npm.sh output).
+  // Repo-layout fallback: platform packages sitting at cli/* without a
+  // node_modules install (dev use, scripts/build-cli.sh output).
   const devBin = path.join(__dirname, "..", "..", pkg, "bin", "idfon");
   if (fs.existsSync(devBin)) {
     bin = devBin;

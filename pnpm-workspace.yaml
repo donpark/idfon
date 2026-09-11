@@ -2,5 +2,5 @@ packages:
   - 'native'
   - 'ios'
   - 'mac'
-  - 'npm'
+  - 'cli'
   

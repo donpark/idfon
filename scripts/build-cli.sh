@@ -3,8 +3,8 @@
 # platform package (bin/: idfon, idfond, libiroh_c_ffi dylib).
 #
 # Usage:
-#   scripts/build-npm.sh          # host target (what CI runs: one runner per target)
-#   scripts/build-npm.sh TARGET   # cross build:
+#   scripts/build-cli.sh          # host target (what CI runs: one runner per target)
+#   scripts/build-cli.sh TARGET   # cross build:
 #                                   x86_64-apple-darwin / aarch64-apple-darwin
 #                                     (native macOS SDK cross, no extra tools)
 #                                   x86_64-unknown-linux-gnu / aarch64-unknown-linux-gnu
@@ -29,7 +29,7 @@ case "$target" in
   x86_64-unknown-linux-gnu) pkg=idfon-linux-x64; dylib=libiroh_c_ffi.so ;;
   aarch64-unknown-linux-gnu) pkg=idfon-linux-arm64; dylib=libiroh_c_ffi.so ;;
   *)
-    echo "build-npm.sh: unsupported target: $target" >&2
+    echo "build-cli.sh: unsupported target: $target" >&2
     exit 1
     ;;
 esac
@@ -47,7 +47,7 @@ if [ "$target" != "$host" ]; then
       # Linux sysroot (docker-based cargo-zigbuild image) or a native Linux
       # machine/runner, where the apt deps are installed by CI.
       command -v cargo-zigbuild >/dev/null 2>&1 || {
-        echo "build-npm.sh: linux cross needs cargo-zigbuild (brew install zig cargo-zigbuild)" >&2
+        echo "build-cli.sh: linux cross needs cargo-zigbuild (brew install zig cargo-zigbuild)" >&2
         exit 1
       }
       build="cargo zigbuild"
@@ -88,9 +88,9 @@ case "$target" in
     ;;
 esac
 
-pkgdir="$root/npm/$pkg"
+pkgdir="$root/cli/$pkg"
 mkdir -p "$pkgdir/bin"
 cp "$out/idfon" "$out/idfond" "$out/$dylib" "$pkgdir/bin/"
 # npm always packs LICENSE* from the package dir regardless of "files".
 cp "$root/LICENSE-APACHE" "$root/LICENSE-MIT" "$pkgdir/"
-echo "build-npm.sh: populated $pkgdir/bin ($target)"
+echo "build-cli.sh: populated $pkgdir/bin ($target)"
