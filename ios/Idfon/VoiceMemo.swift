@@ -63,7 +63,8 @@ final class VoiceMemo: NSObject, AVAudioRecorderDelegate {
     }
 
     /// Downsamples a wav file into normalized amplitudes for a static waveform.
-    static func amplitudes(url: URL, count: Int = 64) -> [Float] {
+    /// nonisolated: called from detached decode tasks.
+    nonisolated static func amplitudes(url: URL, count: Int = 64) -> [Float] {
         guard let file = try? AVAudioFile(forReading: url) else { return .init(repeating: 0, count: count) }
         let frames = AVAudioFrameCount(file.length)
         guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames) else {

@@ -110,11 +110,17 @@ actor DaemonClient {
         }
     }
 
-    func request(method: String, params: [String: AnyEncodable] = [:]) throws -> AnyEncodable? {
-        try rawRequest(method: method, params: params, connectTimeoutMs: 5_000)
+    /// The blocking C call hops off the actor's executor onto a detached task:
+    /// requests can block for seconds (connect timeout) to 30s+ (wait/blob
+    /// fetch), and a sync blocking call inside an actor pins a
+    /// cooperative-pool thread, starving other async work on slow networks.
+    nonisolated func request(method: String, params: [String: AnyEncodable] = [:]) async throws -> AnyEncodable? {
+        try await Task.detached(priority: .userInitiated) {
+            try self.rawRequest(method: method, params: params, connectTimeoutMs: 5_000)
+        }.value
     }
 
-    private func rawRequest(method: String, params: [String: AnyEncodable], connectTimeoutMs: UInt32) throws -> AnyEncodable? {
+    private nonisolated func rawRequest(method: String, params: [String: AnyEncodable], connectTimeoutMs: UInt32) throws -> AnyEncodable? {
         let payload = try JSONSerialization.data(
             withJSONObject: JSONSerialization.jsonObject(with: JSONEncoder().encode(ProtocolRequest(method: method, params: params)))
         )
@@ -138,12 +144,16 @@ actor DaemonClient {
     }
 
     /// Request with one daemon-launch retry on connect failure.
-    func requestWithLaunch(method: String, params: [String: AnyEncodable] = [:]) throws -> AnyEncodable? {
+    nonisolated func requestWithLaunch(method: String, params: [String: AnyEncodable] = [:]) async throws -> AnyEncodable? {
         do {
-            return try rawRequest(method: method, params: params, connectTimeoutMs: 500)
+            return try await Task.detached(priority: .userInitiated) {
+                try self.rawRequest(method: method, params: params, connectTimeoutMs: 500)
+            }.value
         } catch DaemonError.connect {
             DaemonRuntime.launchIfNeeded()
-            return try rawRequest(method: method, params: params, connectTimeoutMs: 10_000)
+            return try await Task.detached(priority: .userInitiated) {
+                try self.rawRequest(method: method, params: params, connectTimeoutMs: 10_000)
+            }.value
         }
     }
 }

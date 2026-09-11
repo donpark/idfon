@@ -565,9 +565,17 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             play.isBordered = false
             let wave = WaveformView(frame: NSRect(x: 0, y: 0, width: 180, height: 28))
             wave.style = .playback
-            reviewSamples = WaveformView.amplitudes(url: url)
-            wave.setStatic(samples: reviewSamples, progress: 0)
             reviewWave = wave
+            // Downsample decodes the whole file; keep it off the main thread.
+            wave.setStatic(samples: .init(repeating: 0, count: 64), progress: 0)
+            Task.detached(priority: .userInitiated) { [weak self] in
+                guard let self else { return }
+                let samples = WaveformView.amplitudes(url: url)
+                await MainActor.run {
+                    self.reviewSamples = samples
+                    self.reviewWave?.setStatic(samples: samples, progress: 0)
+                }
+            }
             let label = NSTextField(labelWithString: "Voice message · \(durationLabel(Int(memoDuration * 1000)))")
             label.textColor = .secondaryLabelColor
             let discard = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Discard")!,
@@ -722,8 +730,26 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             play.identifier = NSUserInterfaceItemIdentifier(message.id)
             let wave = WaveformView(frame: NSRect(x: 0, y: 0, width: 140, height: 26))
             if let url = store.recordingURLs[ticket] {
-                wave.setStatic(samples: WaveformView.amplitudes(url: url), progress: 0)
                 staticWaves[message.id] = wave
+                if let samples = staticWavesSamples[message.id] {
+                    wave.setStatic(samples: samples, progress: 0)
+                } else {
+                    // Decode once, off the main thread; cell renders flat
+                    // until the samples land (guard against duplicate decodes
+                    // on cell reuse).
+                    wave.setStatic(samples: .init(repeating: 0, count: 32), progress: 0)
+                    if decodingWaves.insert(message.id).inserted {
+                        Task.detached(priority: .userInitiated) { [weak self] in
+                            guard let self else { return }
+                            let samples = WaveformView.amplitudes(url: url)
+                            await MainActor.run {
+                                self.staticWavesSamples[message.id] = samples
+                                self.staticWaves[message.id]?.setStatic(samples: samples, progress: 0)
+                                self.decodingWaves.remove(message.id)
+                            }
+                        }
+                    }
+                }
             } else {
                 wave.setStatic(samples: .init(repeating: 0, count: 32), progress: 0)
             }
@@ -919,15 +945,20 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             player.stop()
             return
         }
-        guard let newPlayer = try? AVAudioPlayer(contentsOf: url) else { return }
-        newPlayer.delegate = self
-        newPlayer.play()
-        player = newPlayer
-        progressTimer?.invalidate()
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, let player = self.player else { return }
-                self.reviewWave?.setStatic(samples: self.reviewSamples, progress: player.currentTime / max(player.duration, 0.001))
+        Task { @MainActor in
+            // AVAudioPlayer init decodes the file; keep it off the main thread.
+            let newPlayer = await Task.detached(priority: .userInitiated) { try? AVAudioPlayer(contentsOf: url) }.value
+            guard let newPlayer else { return }
+            newPlayer.delegate = self
+            newPlayer.play()
+            player = newPlayer
+            // Progress on the bubble's static waveform.
+            progressTimer?.invalidate()
+            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, let player = self.player else { return }
+                    self.reviewWave?.setStatic(samples: self.reviewSamples, progress: player.currentTime / max(player.duration, 0.001))
+                }
             }
         }
     }
@@ -1080,28 +1111,33 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             return
         }
         player?.stop()
-        guard let newPlayer = try? AVAudioPlayer(contentsOf: file) else {
-            showBanner("Cannot play this recording format")
-            return
-        }
-        newPlayer.delegate = self
-        newPlayer.play()
-        player = newPlayer
-        playingMessageId = messageId
-        // Progress on the bubble's static waveform.
-        progressTimer?.invalidate()
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, let player = self.player else { return }
-                self.staticWaves[messageId]?.setStatic(
-                    samples: self.staticWavesSamples[messageId] ?? .init(repeating: 0, count: 32),
-                    progress: player.currentTime / max(player.duration, 0.001))
+        Task { @MainActor in
+            let newPlayer = await Task.detached(priority: .userInitiated) { try? AVAudioPlayer(contentsOf: file) }.value
+            guard let newPlayer else {
+                showBanner("Cannot play this recording format")
+                return
             }
+            newPlayer.delegate = self
+            newPlayer.play()
+            player = newPlayer
+            playingMessageId = messageId
+            // Progress on the bubble's static waveform.
+            progressTimer?.invalidate()
+            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, let player = self.player else { return }
+                    self.staticWaves[messageId]?.setStatic(
+                        samples: self.staticWavesSamples[messageId] ?? .init(repeating: 0, count: 32),
+                        progress: player.currentTime / max(player.duration, 0.001))
+                }
+            }
+            table.reloadData()
         }
-        table.reloadData()
     }
 
     private var staticWavesSamples: [String: [Float]] = [:]
+    /// Message ids whose waveform samples are currently being decoded.
+    private var decodingWaves: Set<String> = []
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor in

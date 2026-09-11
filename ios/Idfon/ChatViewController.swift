@@ -315,7 +315,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         memo = nil
         mode = .review
         reviewWaveform.style = .playback
-        reviewWaveform.setStatic(samples: VoiceMemo.amplitudes(url: result.url), progress: 0)
+        // Downsample decodes the whole file; keep it off the main thread.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            let samples = VoiceMemo.amplitudes(url: result.url)
+            await MainActor.run { self.reviewWaveform.setStatic(samples: samples, progress: 0) }
+        }
         elapsedLabel.text = Self.format(result.duration)
         elapsedLabel.isHidden = false // duration label doubles as review duration
     }
@@ -336,8 +341,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return
         }
         if reviewPlayer == nil {
-            reviewPlayer = try? AVAudioPlayer(contentsOf: url)
-            reviewPlayer?.delegate = self
+            // AVAudioPlayer init decodes the file; keep it off the main thread.
+            Task { @MainActor in
+                let p = await Task.detached(priority: .userInitiated) { try? AVAudioPlayer(contentsOf: url) }.value
+                guard reviewPlayer == nil else { return } // replayed while decoding
+                reviewPlayer = p
+                reviewPlayer?.delegate = self
+            }
         }
         reviewPlayer?.play()
         playButton.setImage(UIImage(systemName: "pause.fill"), for: .normal)
@@ -501,14 +511,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         Task {
             do {
                 let data: Data
-                if let localURL, let cached = try? Data(contentsOf: localURL) {
-                    data = cached
+                if let localURL {
+                    // Local cache read off the main actor too (this Task
+                    // inherits MainActor from the view controller).
+                    let cached = await Task.detached(priority: .userInitiated) {
+                        try? Data(contentsOf: localURL)
+                    }.value
+                    if let cached {
+                        data = cached
+                    } else {
+                        data = try await client.fetchBlob(ticket)
+                    }
                 } else {
                     data = try await client.fetchBlob(ticket)
                 }
                 let url = FileManager.default.temporaryDirectory.appendingPathComponent("rec-\(ticket.prefix(12)).wav")
-                try data.write(to: url)
-                let player = try AVAudioPlayer(contentsOf: url)
+                // File write + audio decode off the main actor (this Task
+                // inherits MainActor from the view controller).
+                let player = try await Task.detached(priority: .userInitiated) {
+                    try data.write(to: url)
+                    return try AVAudioPlayer(contentsOf: url)
+                }.value
                 player.play()
                 players[ticket] = player
                 tableView.reloadRows(at: [IndexPath(row: sender.tag, section: 0)], with: .none)
