@@ -272,7 +272,14 @@ final class VideoCall: NSObject {
                 let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
                 guard size != self.lastFrameSize, size > 0 else { return }
                 self.lastFrameSize = size
-                self.onFrame?(UIImage(contentsOfFile: path))
+                // JPEG decode off the main thread: a 720×1280 decode ~10x/s
+                // would otherwise eat main-thread time for the whole call.
+                // preparingForDisplay decodes eagerly on the calling thread.
+                Task.detached(priority: .userInitiated) { [weak self] in
+                    guard let self else { return }
+                    let image = UIImage(contentsOfFile: path)?.preparingForDisplay()
+                    await MainActor.run { self.onFrame?(image) }
+                }
             }
         }
     }

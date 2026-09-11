@@ -5,13 +5,13 @@ extension DaemonClient {
     /// Chunked blob store (media.resource.put; mirrors the CLI's put_data:
     /// single-chunk puts carry finish=false and the ticket comes back in that
     /// response; multi-chunk sends a trailing empty finish=true).
-    func putData(_ data: Data, resourceId: String) throws -> String {
+    func putData(_ data: Data, resourceId: String) async throws -> String {
         let chunkSize = 200_000
         var offset = 0
         var ticket = ""
         while offset < data.count {
             let end = min(offset + chunkSize, data.count)
-            let response = try request(method: "media.resource.put", params: [
+            let response = try await request(method: "media.resource.put", params: [
                 "resource_id": AnyEncodable(resourceId),
                 "bytes": AnyEncodable(data[offset..<end].map { AnyEncodable(Int($0)) }),
                 "append": AnyEncodable(offset > 0),
@@ -21,7 +21,7 @@ extension DaemonClient {
             offset = end
         }
         if data.count > chunkSize {
-            let response = try request(method: "media.resource.put", params: [
+            let response = try await request(method: "media.resource.put", params: [
                 "resource_id": AnyEncodable(resourceId),
                 "bytes": AnyEncodable([]),
                 "append": AnyEncodable(false),
@@ -33,13 +33,13 @@ extension DaemonClient {
     }
 
     /// Chunked blob fetch by ticket. Returns the raw bytes.
-    func fetchBlob(_ ticket: String) throws -> Data {
+    func fetchBlob(_ ticket: String) async throws -> Data {
         let trackingId = "ios-\(UUID().uuidString)"
         var result = Data()
         var offset = 0
         let chunkSize = 200_000
         while true {
-            let response = try request(method: "media.resource.fetch", params: [
+            let response = try await request(method: "media.resource.fetch", params: [
                 "resource_id": AnyEncodable(trackingId),
                 "blob_ticket": AnyEncodable(ticket),
                 "offset": AnyEncodable(offset),

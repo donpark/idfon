@@ -107,7 +107,17 @@ actor DaemonClient {
         }
     }
 
-    func request(method: String, params: [String: AnyEncodable] = [:]) throws -> AnyEncodable? {
+    /// The blocking C call hops off the actor's executor onto a detached task:
+    /// requests can block for seconds (connect timeout) to 30s+ (wait/blob
+    /// fetch), and a sync blocking call inside an actor pins a
+    /// cooperative-pool thread, starving other async work on slow networks.
+    nonisolated func request(method: String, params: [String: AnyEncodable] = [:]) async throws -> AnyEncodable? {
+        try await Task.detached(priority: .userInitiated) {
+            try self.blockingRequest(method: method, params: params)
+        }.value
+    }
+
+    private nonisolated func blockingRequest(method: String, params: [String: AnyEncodable]) throws -> AnyEncodable? {
         let payload = try JSONSerialization.data(
             withJSONObject: JSONSerialization.jsonObject(with: JSONEncoder().encode(ProtocolRequest(method: method, params: params)))
         )

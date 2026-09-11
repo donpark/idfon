@@ -481,8 +481,24 @@ final class VideoCall {
                 let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
                 guard size != self.lastFrameSize, size > 0 else { return }
                 self.lastFrameSize = size
-                self.lastFrame = NSImage(contentsOfFile: path)
-                self.onFrame?(self.lastFrame)
+                // Decode off the main thread: a JPEG decode ~10x/s would
+                // otherwise eat main-thread time for the whole call.
+                // kCGImageSourceShouldCacheImmediately forces eager decode
+                // on the calling thread; NSImage(contentsOfFile:) defers it
+                // to first draw (main).
+                Task.detached(priority: .userInitiated) { [weak self] in
+                    guard let self else { return }
+                    let url = URL(fileURLWithPath: path) as CFURL
+                    let src = CGImageSourceCreateWithURL(url, nil)
+                    let cg = src.flatMap {
+                        CGImageSourceCreateImageAtIndex($0, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+                    }
+                    let image = cg.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
+                    await MainActor.run {
+                        self.lastFrame = image
+                        self.onFrame?(image)
+                    }
+                }
             }
         }
     }
