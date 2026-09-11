@@ -4,7 +4,7 @@
     "name": "Idfon",
     "display_name": "Idfon",
     "description": "A native Idfon communication app.",
-    "version": "0.2.0",
+    "version": "0.4.0",
     "icons": ["assets/icon.png"],
     "platforms": ["macos"],
     "permissions": ["view", "command", "microphone", "camera", "notifications"],

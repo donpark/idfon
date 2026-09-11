@@ -1,7 +1,7 @@
 .{
     .name = .iroh_echo,
     .fingerprint = 0xede6b3b35a707070,
-    .version = "0.1.0",
+    .version = "0.4.0",
     .minimum_zig_version = "0.16.0",
     .dependencies = .{ .native_sdk = .{ .path = "../../../.nvm/versions/node/v24.20.0/lib/node_modules/@native-sdk/cli" } },
     .paths = .{ "build.zig", "build.zig.zon", "src", "assets", "app.json" },
