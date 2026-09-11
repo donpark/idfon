@@ -29,14 +29,12 @@ iroh-blobs = "0.103.0"
 # so capture-camera/rusty-capture/v4l2r/nokhwa are compiled nowhere: the
 # v4l2r 0.0.7 bindgen also fails against Ubuntu 22.04 kernel headers
 # (missing AV1/VP9 stateless controls).
-[target.'cfg(target_os = "linux")'.dependencies]
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
-moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false }
 # macOS camera permission request (camera access is also requested from the
-# Swift shells; this covers daemon-side starts); features unify with
-# rusty-capture's objc2-av-foundation.
+# Swift shells; this covers daemon-side starts).
+# ponytail: keep every other dep unconditional — a 4f94b3e regression put
+# them inside a not(linux) target section and silently broke the Linux dylib
+# (tokio without rt-multi-thread -> iroh-blobs fs-store failed to compile).
 objc2 = "0.6"
 objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 block2 = "0.6"
