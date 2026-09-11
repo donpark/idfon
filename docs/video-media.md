@@ -40,6 +40,42 @@ The receiver renders by subscribing to the adaptive decoded track
 `video-frame.jpg` atomically ~15fps; the GUI re-loads it on a timer through
 the image registry with dynamic width/height binding).
 
+## Live-call UI (hybrid: inline stage, tap to expand)
+
+Live streams are ephemeral within a chat — only descriptions of the call
+activity are written to the message history — so they render outside the
+message list, in a stage below the chat control bar. All three shells share
+the same shape:
+
+- **Inline by default.** An audio call shows a status pill with a live
+  waveform; a video call/watch shows the stream frames. Native GUI: the
+  `liveInline` bar in `native/src/windows/chat.native` (audio → the
+  `{waveform}` chart, video → `{videoImageId}`). mac: `liveBar` pill + the
+  inline video panel in `mac/Sources/Idfon/ChatViewController.swift` (tap or
+  the expand button goes fullscreen). iOS: the 180pt video bar under the nav
+  bar in `ios/Idfon/ChatViewController.swift`; SceneDelegate auto-presents
+  the ringing screen only on `.incoming` — active calls stay inline until
+  expanded.
+- **Tap to expand fullscreen.** The stage replaces the chat (native GUI:
+  `liveFullscreen` if/else around the whole layout; mac:
+  `fullscreenOverlay` over the container; iOS: the existing full-screen
+  `CallViewController` with a chevron-down collapse that dismisses while the
+  call keeps running). End-call/stop-video controls ride in the stage.
+- **Auto-collapse on call end** — `settle()` clears `liveFullscreen` (GUI),
+  and `updateLiveUI()` drops out when the call state goes idle (mac).
+- mac mic metering: `AudioMeter` (WaveformView.swift) taps the input once
+  and fans out to every attached waveform (`add(view:)`) — the inline bar,
+  fullscreen stage, and in-call recording bar share the tap; a second engine
+  tap would race the mic.
+
+Layout traps hit while building this (see git history): the fullscreen
+overlay must be added to the container BEFORE its constraints activate
+(orphan-view constraints throw `NSGenericException` and — on mac — abort
+`loadView` mid-flight, silently blanking the whole chat detail pane), and a
+fullscreen builder must never read `self.view` inside `loadView` (lazy view
+re-entry → infinite recursion → SIGSEGV). Same rule on iOS: a new view
+needs its `addSubview` even when only its constraints were edited.
+
 ## Verified pipeline
 
 ```text

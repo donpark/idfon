@@ -9,6 +9,7 @@ final class CallViewController: UIViewController {
     private let hangUpButton = UIButton(type: .system)
     private let answerButton = UIButton(type: .system)
     private let declineButton = UIButton(type: .system)
+    private let collapseButton = UIButton(type: .system)
     private var observers: [NSObjectProtocol] = []
 
     override func viewDidLoad() {
@@ -35,6 +36,12 @@ final class CallViewController: UIViewController {
         round(hangUpButton, "phone.down.fill", .systemRed)
         round(answerButton, "phone.fill", .systemGreen)
         round(declineButton, "phone.down.fill", .systemRed)
+        collapseButton.translatesAutoresizingMaskIntoConstraints = false
+        collapseButton.setImage(UIImage(systemName: "chevron.down"), for: .normal)
+        collapseButton.tintColor = .white
+        collapseButton.backgroundColor = UIColor.white.withAlphaComponent(0.15)
+        collapseButton.layer.cornerRadius = 20
+        collapseButton.addTarget(self, action: #selector(collapseTapped), for: .touchUpInside)
         hangUpButton.addTarget(self, action: #selector(hangUpTapped), for: .touchUpInside)
         answerButton.addTarget(self, action: #selector(answerTapped), for: .touchUpInside)
         declineButton.addTarget(self, action: #selector(declineTapped), for: .touchUpInside)
@@ -44,6 +51,7 @@ final class CallViewController: UIViewController {
         view.addSubview(hangUpButton)
         view.addSubview(answerButton)
         view.addSubview(declineButton)
+        view.addSubview(collapseButton)
 
         NSLayoutConstraint.activate([
             videoView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -68,6 +76,11 @@ final class CallViewController: UIViewController {
             hangUpButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -32),
             answerButton.bottomAnchor.constraint(equalTo: hangUpButton.bottomAnchor),
             declineButton.bottomAnchor.constraint(equalTo: hangUpButton.bottomAnchor),
+
+            collapseButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            collapseButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            collapseButton.widthAnchor.constraint(equalToConstant: 40),
+            collapseButton.heightAnchor.constraint(equalToConstant: 40),
         ])
 
         let center = NotificationCenter.default
@@ -100,6 +113,8 @@ final class CallViewController: UIViewController {
         hangUpButton.isHidden = call.state == .incoming || call.state == .idle
         answerButton.isHidden = call.state != .incoming
         declineButton.isHidden = call.state != .incoming
+        // Collapse back to the inline chat view while calling/in call.
+        collapseButton.isHidden = !(call.state == .calling || call.state == .inCall)
         if call.state == .idle, let error = call.lastError, !error.isEmpty {
             statusLabel.text = error
         }
@@ -108,4 +123,6 @@ final class CallViewController: UIViewController {
     @objc private func hangUpTapped() { VideoCall.shared.hangUp() }
     @objc private func answerTapped() { VideoCall.shared.answer() }
     @objc private func declineTapped() { VideoCall.shared.decline() }
+    /// Collapse to the inline chat video bar; the call keeps running.
+    @objc private func collapseTapped() { dismiss(animated: true) }
 }

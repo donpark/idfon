@@ -35,6 +35,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var messages: [ChatMessage] = []
     private var players: [String: AVAudioPlayer] = [:] // ticket -> player
 
+    // inline live-video bar (tap to expand the fullscreen call screen)
+    private let videoBar = UIView()
+    private var videoBarHeight: NSLayoutConstraint!
+    private var inlineVideoImage: UIImageView?
+    private var videoObservers: [NSObjectProtocol] = []
+
     init(peer: Peer) {
         self.peer = peer
         super.init(nibName: nil, bundle: nil)
@@ -64,11 +70,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         NotificationCenter.default.addObserver(forName: .init("idfon.answer"), object: nil, queue: .main) { [weak self] _ in
             self?.toggleAutoAnswer()
         }
+        videoObservers.append(NotificationCenter.default.addObserver(forName: .idfonVideoChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.syncVideoBar()
+        })
+        videoObservers.append(NotificationCenter.default.addObserver(forName: .idfonVideoFrame, object: nil, queue: .main) { [weak self] note in
+            if let image = note.object as? UIImage { self?.inlineVideoImage?.image = image }
+        })
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         ChatStore.shared.onUpdate = nil
+        videoObservers.forEach(NotificationCenter.default.removeObserver)
+        videoObservers = []
     }
 
     // MARK: - Views
@@ -131,6 +145,29 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         reviewWaveform.translatesAutoresizingMaskIntoConstraints = false
 
+        // Inline live-video bar: tap to expand the fullscreen call screen.
+        videoBar.translatesAutoresizingMaskIntoConstraints = false
+        videoBar.backgroundColor = .secondarySystemBackground
+        videoBar.isUserInteractionEnabled = true
+        let videoImage = UIImageView()
+        videoImage.translatesAutoresizingMaskIntoConstraints = false
+        videoImage.contentMode = .scaleAspectFit
+        videoImage.clipsToBounds = true
+        videoBar.addSubview(videoImage)
+        inlineVideoImage = videoImage
+        let expand = UIButton(type: .system)
+        expand.translatesAutoresizingMaskIntoConstraints = false
+        expand.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right"), for: .normal)
+        expand.tintColor = .white
+        expand.backgroundColor = UIColor.black.withAlphaComponent(0.4)
+        expand.layer.cornerRadius = 16
+        expand.addTarget(self, action: #selector(expandVideoTapped), for: .touchUpInside)
+        videoBar.addSubview(expand)
+        videoBar.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(expandVideoTapped)))
+        videoBar.isHidden = true
+        videoBarHeight = videoBar.heightAnchor.constraint(equalToConstant: 0)
+
+        view.addSubview(videoBar)
         view.addSubview(tableView)
         view.addSubview(callStatusLabel)
         view.addSubview(waveformView)
@@ -147,7 +184,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composerHeight = composerText.heightAnchor.constraint(equalToConstant: 40)
 
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            videoBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            videoBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            videoBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            videoBarHeight,
+            videoImage.topAnchor.constraint(equalTo: videoBar.topAnchor, constant: 4),
+            videoImage.bottomAnchor.constraint(equalTo: videoBar.bottomAnchor, constant: -4),
+            videoImage.leadingAnchor.constraint(equalTo: videoBar.leadingAnchor, constant: 4),
+            videoImage.trailingAnchor.constraint(equalTo: videoBar.trailingAnchor, constant: -4),
+            expand.topAnchor.constraint(equalTo: videoBar.topAnchor, constant: 8),
+            expand.trailingAnchor.constraint(equalTo: videoBar.trailingAnchor, constant: -8),
+            expand.widthAnchor.constraint(equalToConstant: 32),
+            expand.heightAnchor.constraint(equalToConstant: 32),
+
+            tableView.topAnchor.constraint(equalTo: videoBar.bottomAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: waveformView.topAnchor),
@@ -339,6 +389,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             self.waveformView.isHidden = !showWave
             if showWave { self.audioMeter.start() } else { self.audioMeter.stop() }
         }
+    }
+
+    // MARK: - Inline live-video bar (hybrid: inline by default, tap expands)
+
+    private func syncVideoBar() {
+        let call = VideoCall.shared
+        let active = call.state == .inCall || call.state == .calling
+        videoBar.isHidden = !active
+        videoBarHeight.constant = active ? 180 : 0
+        if !active { inlineVideoImage?.image = nil }
+        view.layoutIfNeeded()
+    }
+
+    @objc private func expandVideoTapped() {
+        guard presentedViewController == nil else { return }
+        present(CallViewController(), animated: true)
     }
 
     @objc private func dialTapped() {

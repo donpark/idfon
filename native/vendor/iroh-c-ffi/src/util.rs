@@ -1,4 +1,7 @@
-use std::{fs::OpenOptions, path::PathBuf};
+use std::fs::OpenOptions;
+// PathBuf is only used on the non-iOS tracing path (iOS uses temp_dir().join).
+#[cfg(not(target_os = "ios"))]
+use std::path::PathBuf;
 
 use once_cell::sync::Lazy;
 use safer_ffi::{prelude::*, vec};

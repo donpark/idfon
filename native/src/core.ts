@@ -89,6 +89,10 @@ export interface Model {
   readonly incomingVideo: boolean;
   readonly incomingVideoCall: boolean;
   readonly videoWatching: boolean;
+  // Hybrid live-call stage: inline bar under the header by default, the
+  // fullscreen stage replaces the chat while expanded. Auto-collapses
+  // (settle) when the call ends.
+  readonly liveFullscreen: boolean;
   readonly videoFramePath: Uint8Array;
   /// Actual dimensions of the last loaded video frame (from
   /// video_image_event); the <image> element binds to these so any
@@ -201,6 +205,8 @@ export type Msg =
   | { readonly kind: "live_decline" }
   | { readonly kind: "live_start" }
   | { readonly kind: "live_stop" }
+  | { readonly kind: "live_expand" }
+  | { readonly kind: "live_collapse" }
   | { readonly kind: "live_started"; readonly data: Uint8Array }
   | { readonly kind: "copy_live_ticket" }
   | { readonly kind: "live_stopped"; readonly data: Uint8Array }
@@ -267,6 +273,18 @@ export function videoImageId(model: Model): number {
   return model.videoWatching ? 1 : 0;
 }
 
+/// Inline live bar is visible while a call/watch is active and not expanded
+/// (markup <if> has no negation, so this is an explicit predicate).
+export function liveInline(model: Model): boolean {
+  return (model.callActive || model.videoWatching) && !model.liveFullscreen;
+}
+
+/// The video-share row only makes sense while not already watching (no
+/// negation in markup predicates).
+export function videoIdle(model: Model): boolean {
+  return !model.videoWatching;
+}
+
 export function subscriptions(model: Model): Sub<Msg> {
   if (!model.receiverAvailable) return Sub.none;
   if (!model.videoWatching) return Sub.timer("idfond-events", 1000, "poll_events");
@@ -320,6 +338,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
   incomingVideo: false,
   incomingVideoCall: false,
   videoWatching: false,
+  liveFullscreen: false,
   videoFramePath: EMPTY,
   // Division keeps these slots float-classed (NS1016: division results are
   // the float domain), so the host-supplied frame dimensions store as f64
@@ -802,8 +821,11 @@ function waveformBars(phase: number): readonly number[] {
 function settle(model: Model): Model {
   const c = model.comms;
   const callActive = c.live || c.subscribed;
+  const liveActiveNow = callActive || model.videoWatching;
   return {
     ...model,
+    // a call ending while expanded drops back to the chat automatically
+    liveFullscreen: model.liveFullscreen && liveActiveNow,
     audioActive: c.audio,
     liveActive: c.live,
     subscribedActive: c.subscribed,
@@ -1381,7 +1403,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "video_stop":
       return [model, Cmd.request("media.video.stop", EMPTY, { key: "media-video-stop", ok: "video_stopped", err: "video_watch_error" })];
     case "video_stopped":
-      return { ...model, videoWatching: false, videoFramePath: EMPTY, videoWidth: 1280 / 4, videoHeight: 720 / 4 };
+      return { ...model, videoWatching: false, liveFullscreen: false, videoFramePath: EMPTY, videoWidth: 1280 / 4, videoHeight: 720 / 4 };
+    case "live_expand":
+      if (!model.callActive && !model.videoWatching) return model;
+      return { ...model, liveFullscreen: true };
+    case "live_collapse":
+      return { ...model, liveFullscreen: false };
     case "video_frame_tick":
       if (!model.videoWatching || model.videoFramePath.length === 0) return model;
       // Re-load onto the stable image id: the FFI rewrites video-frame.jpg
