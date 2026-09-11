@@ -140,3 +140,100 @@ Rather than ringing the target user via a full-screen lock sheet, the system imm
 * **Background Execution Limits (iOS Sandbox):** If the app is terminated or in the background when the request arrives, a standard silent notification (`content-available: 1`) will wake the app, but iOS **strictly limits background execution time** (typically ~30 seconds). The app must immediately connect to the RTC session and start playing audio via `AVAudioSession` before the system suspends it again.
 * **Lock-Screen Limitations:** Without CallKit, you **cannot render custom full-screen UI over the iOS lock screen**. If the device is locked when an auto-connect session arrives, you can only play audio through the speaker/headphones and display a standard notification banner (`UNNotificationRequest`).
 * **Session Ownership:** CallKit handles native call precedence (e.g., pausing music, handling incoming phone calls, audio interruption recovery). When bypassing CallKit, your app must manually manage `AVAudioSession.Category.playAndRecord` and subscribe to `AVAudioSessionInterruptionNotification` to manage audio state when a native phone call arrives.
+
+===
+
+Over years of real-world implementation, developers working with VoIP and WebRTC on iOS have documented a set of distinct, well-verified CallKit bugs and technical edge cases.
+
+---
+
+### **1. Audio & Media Pipeline Bugs**
+
+* **The "One-Way Audio" Race Condition (`AVAudioSession` Misalignment):**
+* **Issue:** When a user accepts a call via CallKit, the app must wait for iOS to execute the `provider(_:didActivate:)` delegate method *before* starting the WebRTC or audio engine. If the app activates the `AVAudioSession` too early, iOS revokes audio access, causing one or both callers to hear complete silence.
+
+
+* **Microphone State desynchronization:**
+* **Issue:** Toggling mute on the native CallKit lock screen often desynchronizes from the app’s internal mute state. If a user unmutes via a connected Bluetooth headset, CallKit may reflect the unmuted state while the app’s internal WebRTC audio track remains muted.
+
+
+* **Bluetooth & AirPlay Route Hijacking:**
+* **Issue:** During an active CallKit session, connecting or disconnecting a Bluetooth device (like AirPods) can cause CallKit to drop the audio route entirely rather than defaulting back to the iPhone speaker or receiver.
+
+
+
+---
+
+### **2. Notification & System-Enforced Crashes**
+
+* **PushKit 1:1 Execution Requirement (`NSInternalInconsistencyException`):**
+* **Issue:** Introduced in iOS 13, Apple requires developers to call `reportNewIncomingCall` on the same thread/runloop as an incoming PushKit VoIP notification.
+* **Impact:** If network latency causes a delay in fetching caller info, or if the push was sent merely to update data rather than start a call, iOS terminates the app process instantly.
+
+
+* **"Ghost Call" Loop on Quick Disconnects:**
+* **Issue:** If a caller rings and immediately hangs up, the recipient’s app receives the push notification and *must* report the call to CallKit to avoid being terminated by iOS. This creates a race condition where the native incoming call screen briefly flashes on the screen before the app can execute a `CXEndCallAction` to dismiss it.
+
+
+
+---
+
+### **3. Transaction & State Synchronization Failures**
+
+* **`CXErrorCodeRequestTransactionError` Code 4 (`unknownCallUUID`):**
+* **Issue:** A commonly reported error on the [Apple Developer Forums](https://developer.apple.com/forums/tags/callkit). If the app attempts to update or end a call using a `UUID` before the system has fully finished registering the initial `CXStartCallAction` or `CXAnswerCallAction`, CallKit loses track of the transaction and rejects all subsequent commands.
+
+
+* **Stuck "In-Call" System Banners:**
+* **Issue:** If an app crashes or suffers an unhandled exception while a CallKit session is active, iOS sometimes fails to clear the native call state. The green "In-Call" indicator remains in the Status Bar/Dynamic Island indefinitely until the user hard-reboots the iPhone.
+
+
+
+---
+
+### **4. UI & Ecosystem Conflicts**
+
+* **Cellular Call Interruption Priority:**
+* **Issue:** When an incoming carrier cellular call arrives during an active VoIP CallKit session, iOS automatically prioritizes the cellular call. CallKit puts the VoIP call on hold, but frequently fails to send the proper `provider(_:didDeactivate:)` callback when the cellular call finishes, leaving the VoIP app frozen in a "Held" state.
+
+
+* **Dual-SIM / Identity Mapping Glitches:**
+* **Issue:** On Dual-SIM iPhones, initiating an outgoing call via CallKit often ignores the app's specified handle and forces iOS to prompt the user to choose a SIM line, breaking seamless programmatic dialing.
+
+
+
+---
+
+### **5. App Store & Regional Compliance**
+
+* **App Store Rejections via the Chinese App Store:**
+* **Issue:** The Chinese Ministry of Industry and Information Technology (MIIT) bans CallKit due to VoIP encryption regulations.
+* **Impact:** Including the CallKit framework in an app binary submitted to the App Store in China results in an immediate, hard rejection by App Review. Developers are forced to build runtime geo-fencing checks or maintain separate build targets to strip CallKit dependencies entirely.
+
+===
+
+Signal’s codebase on [GitHub](https://github.com/signalapp/Signal-iOS) is widely studied by iOS developers who want to build production-grade VoIP apps. Examining how Signal handles CallKit reveals several critical implementation strategies:
+
+**1. "Fake" Names to Protect Privacy**
+To prevent CallKit from leaking sensitive contacts into the user's system call log or syncing them to iCloud, Signal obfuscates names at the CallKit boundary.
+
+* **The Strategy:** Signal handles call parameters by passing generic placeholders like *"Signal User"* or localized strings to the `CXHandle` and `CXCallUpdate` objects.
+* **The Result:** iOS gets the structural events it needs to display the native UI, but Apple's system logging tools never store actual contact names or phone numbers.
+
+**2. Synchronous PushKit-to-CallKit Firing**
+Apple enforces a zero-tolerance policy: when a PushKit payload hits the device, `reportNewIncomingCall(with:update:completion:)` must execute immediately.
+
+* **The Strategy:** Signal doesn't wait to fetch full user profiles, verify cryptographic keys, or negotiate WebRTC session descriptors over the network before showing the call screen.
+* **The Execution:** It reports the call to CallKit instantly with placeholder metadata, waken up the app process, and fetches the required payload *while* the native lock screen is ringing.
+
+**3. Graceful De-escalation of Cancelled Calls**
+One of the hardest CallKit edge cases is when a caller hangs up before the receiver answers.
+
+* **The Problem:** If the push notification arrives, the app must report a call to CallKit—even if the caller already canceled.
+* **The Strategy:** Signal tracks call tokens. If the system reports an incoming call that was canceled mid-flight, Signal immediately invokes `CXEndCallAction` in the same execution block. This satisfies Apple’s requirement to report the push, but dismisses the native UI before the phone rings visibly.
+
+**4. Explicit Audio Session Handshakes (`AVAudioSession`)**
+The most common CallKit failure point is the "silent mic" bug, which happens when the app tries to route WebRTC audio before iOS delegates permission.
+
+* **The Strategy:** Signal never configures or activates its audio hardware on its own. It defers hardware control entirely to the `CXProviderDelegate` protocol method `provider(_:didActivate:)`.
+* **The Execution:** Only after CallKit fires that explicit delegate callback does Signal spin up its WebRTC audio tracks, preventing broken audio channels.
