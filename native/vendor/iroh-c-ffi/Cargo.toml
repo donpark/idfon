@@ -24,16 +24,13 @@ iroh = "1.0.0"
 iroh-tickets = "1.0.0"
 iroh-blobs = "0.103.0"
 # Camera capture is shell-pushed on Apple platforms (Swift AVCaptureSession
-# -> media_video_push_frame -> PushFrameSource); the nokhwa-backed capture
-# path is only needed where no Swift shell exists (Linux/v4l), and comes
-# transitively from iroh-live's capture-camera feature (crates.io nokhwa —
-# the vendored fork is deleted: its patches were Apple-only). The deps are
-# split per-target so Apple builds don't compile any nokhwa tree.
-# Note: in this iroh-live rev the native AVFoundation capture backend is an
-# unimplemented stub, hence capture-camera/nokhwa features on Linux only.
+# -> media_video_push_frame -> PushFrameSource). No C-FFI consumer captures
+# on Linux (the CLI's idfond publishes video from files via idfon-media),
+# so capture-camera/rusty-capture/v4l2r/nokhwa are compiled nowhere: the
+# v4l2r 0.0.7 bindgen also fails against Ubuntu 22.04 kernel headers
+# (missing AV1/VP9 stateless controls).
 [target.'cfg(target_os = "linux")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "capture-camera"] }
-moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["nokhwa"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
 moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false }

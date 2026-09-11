@@ -30,8 +30,6 @@ use iroh_live::{
     ticket::LiveTicket,
     Live, Subscription,
 };
-#[cfg(all(not(target_os = "ios"), not(target_os = "macos")))]
-use iroh_live::media::capture::CameraCapturer;
 use n0_future::boxed::BoxFuture;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use iroh_live::media::{
@@ -1062,28 +1060,13 @@ fn start_live(with_video: bool) -> char_p::Box {
             // iOS + macOS: the shell's AVCaptureSession (CameraPusher.swift)
             // pushes BGRA frames via media_video_push_frame; the encoder
             // drains them through PushFrameSource. Replaces vendored-nokhwa
-            // capture on Apple platforms.
+            // capture on Apple platforms. Other platforms have no C-FFI
+            // camera consumer — refuse rather than publish a black stream.
             #[cfg(any(target_os = "ios", target_os = "macos"))]
             let camera = PushFrameSource;
-            // Other platforms (Linux): nokhwa-backed capture (v4l). Prefer
-            // the front camera for video calls (enumeration order returns
-            // the rear camera first).
-            #[cfg(all(not(target_os = "ios"), not(target_os = "macos")))]
-            let camera = {
-                let cams = CameraCapturer::list().unwrap_or_default();
-                let chosen = cams
-                    .iter()
-                    .find(|c| c.name.to_lowercase().contains("front"))
-                    .or_else(|| cams.first());
-                match chosen {
-                    Some(info) => CameraCapturer::open(
-                        Some(info.backend),
-                        Some(info.id.as_str()),
-                        &Default::default(),
-                    )?,
-                    None => CameraCapturer::new()?,
-                }
-            };
+            #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+            anyhow::bail!("live video capture is macOS/iOS only (shell-pushed frames)");
+            #[cfg(any(target_os = "ios", target_os = "macos"))]
             // 360p (500 kbps) + 720p (2 Mbps) ladder: receiver-driven
             // adaptation picks the rendition that fits the network.
             broadcast
