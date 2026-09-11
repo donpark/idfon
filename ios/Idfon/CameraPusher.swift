@@ -180,7 +180,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             let src = base.assumingMemoryBound(to: UInt8.self)
             for row in 0..<height {
                 packed.withUnsafeMutableBytes { dst in
-                    memcpy(dst.baseAddress! + row * expected, src + row * bytesPerRow, expected)
+                    _ = memcpy(dst.baseAddress! + row * expected, src + row * bytesPerRow, expected)
                 }
             }
             packed.withUnsafeBytes { raw in

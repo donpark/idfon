@@ -22,7 +22,7 @@ enum LiveCall {
     /// Configure the audio session before any daemon audio starts.
     static func activateAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try? session.setActive(true)
     }
 
