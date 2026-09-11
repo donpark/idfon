@@ -7,7 +7,7 @@
     "native": "pnpm --filter @idfon/native",
     "ios": "pnpm --filter @idfon/ios",
     "mac": "pnpm --filter @idfon/mac",
-    "build:npm": "scripts/build-npm.sh"
+    "cli": "pnpm --filter @idfon/cli"
   },
   "author": "Don Park",
   "license": "(MIT OR Apache-2.0)",

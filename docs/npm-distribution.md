@@ -7,7 +7,7 @@ one main package wrapping per-platform packages that contain prebuilt binaries.
 ## Layout
 
 ```
-npm/
+cli/
 ├─ idfon/                      main package, unscoped name `idfon` (the npx entry)
 │  ├─ bin/idfon.js             ~60-line launcher: platform map → resolve → spawn
 │  └─ package.json             optionalDependencies pin exact versions of the 4 pkgs below
@@ -18,9 +18,9 @@ npm/
 ```
 
 All packages are unscoped (no npm org needed). Platform-package binaries are
-gitignored; they are built by `scripts/build-npm.sh` into the right package
+gitignored; they are built by `scripts/build-cli.sh` into the right package
 before packing. The launcher resolves the platform package from `node_modules`
-when installed, with a repo-layout fallback (`npm/idfon-<os>-<arch>`) for
+when installed, with a repo-layout fallback (`cli/idfon-<os>-<arch>`) for
 running straight from a checkout.
 
 The CLI (`idfon`) is a thin client over the `idfond` daemon's Unix socket;
@@ -32,10 +32,10 @@ next to its own binary) just works. The daemon links the vendored
 ## Building
 
 ```sh
-pnpm run build:npm                              # host target
-scripts/build-npm.sh x86_64-apple-darwin        # Intel Mac — native SDK cross, no extra tools
-scripts/build-npm.sh x86_64-unknown-linux-gnu   # linux cross: needs a Linux sysroot (see below)
-scripts/build-npm.sh aarch64-unknown-linux-gnu
+pnpm cli build                                  # host target
+scripts/build-cli.sh x86_64-apple-darwin        # Intel Mac — native SDK cross, no extra tools
+scripts/build-cli.sh x86_64-unknown-linux-gnu   # linux cross: needs a Linux sysroot (see below)
+scripts/build-cli.sh aarch64-unknown-linux-gnu
 ```
 
 Platform notes:
@@ -55,9 +55,9 @@ Platform notes:
 ## Verifying locally
 
 ```sh
-node npm/idfon/bin/idfon.js --version    # exercises shim → binary resolution
-node npm/idfon/bin/idfon.js status       # daemon auto-spawn with dylib
-node npm/idfon/bin/idfon.js shutdown
+node cli/idfon/bin/idfon.js --version    # exercises shim → binary resolution
+node cli/idfon/bin/idfon.js status       # daemon auto-spawn with dylib
+node cli/idfon/bin/idfon.js shutdown
 npm pack                                  # per package; check tarball contents/exec bits
 ```
 
@@ -68,12 +68,12 @@ pin exact versions, so a partial publish breaks installs on platforms whose
 package is missing (optional deps that fail to resolve are silently skipped,
 and the launcher then errors at first command).
 
-- **CI** (default): push tag `npm-v*` → `.github/workflows/npm.yml` builds all
+- **CI** (default): push tag `npm-v*` → `.github/workflows/cli.yml` builds all
   four targets on native runners, smoke-tests, packs, and publishes all five.
   Requires the `NPM_TOKEN` repo secret. Re-runs are idempotent via npm's
   duplicate-version rejection.
 - **Local**: `npm login` once, then
-  `npm publish` in `npm/idfon` and each `npm/idfon-*` dir.
+  `npm publish` in `cli/idfon` and each `cli/idfon-*` dir.
 
 Launch gate: the repo goes public first; `npm view idfon` confirmed the name
 free (2026-09-06). Platform packages use the same 0.2.0 version as the Cargo

@@ -11,7 +11,7 @@ fn main() {
         .join("../../native/vendor/iroh-c-ffi/target");
     // Cross builds (--target <triple>) place the dylib under
     // target/<triple>/release; host builds (native/build.zig,
-    // scripts/test-*.sh, host build-npm.sh) use target/release.
+    // scripts/test-*.sh, host build-cli.sh) use target/release.
     let target = std::env::var("TARGET").unwrap();
     let host = std::env::var("HOST").unwrap();
     let lib_dir = if target == host {
@@ -22,7 +22,7 @@ fn main() {
     .canonicalize()
     .unwrap_or_else(|_| {
         eprintln!(
-            "idfond: vendored dylib for {target} missing; build it first (scripts/build-npm.sh {target} or zig build in native/)"
+            "idfond: vendored dylib for {target} missing; build it first (scripts/build-cli.sh {target} or zig build in native/)"
         );
         std::path::PathBuf::from("/nonexistent")
     });
