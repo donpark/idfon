@@ -160,11 +160,19 @@ private extension WaveformView.Mode {
 /// minus AVAudioSession (doesn't exist on macOS).
 final class AudioMeter {
     private let engine = AVAudioEngine()
-    private weak var view: WaveformView?
+    // One engine tap fans out to every attached waveform (inline call bar +
+    // in-call recording bar share it; a second engine tap would race the mic).
+    private struct WeakWave { weak var view: WaveformView? }
+    private var views: [WeakWave] = []
     private(set) var running = false
 
     init(view: WaveformView) {
-        self.view = view
+        views = [WeakWave(view: view)]
+    }
+
+    /// Attach another waveform to the same meter.
+    func add(view: WaveformView) {
+        views.append(WeakWave(view: view))
     }
 
     func start() {
@@ -176,7 +184,7 @@ final class AudioMeter {
                 let format = input.outputFormat(forBus: 0)
                 input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                     let rms = Self.rms(buffer)
-                    self?.view?.add(amplitude: Float(min(rms * 12, 1)))
+                    for wave in self?.views ?? [] { wave.view?.add(amplitude: Float(min(rms * 12, 1))) }
                 }
                 do {
                     try self.engine.start()

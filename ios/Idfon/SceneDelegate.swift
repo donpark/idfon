@@ -22,20 +22,21 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         URLContexts.forEach(handleURL)
     }
 
-    /// Presents the full-screen call UI whenever a call is active.
+    /// Presents the ringing screen on incoming calls; active calls stay
+    /// inline in the chat (video bar) until the user expands them.
     private func syncCallScreen() {
         guard let window else { return }
         let root = window.rootViewController
         var top = root
         while let next = top?.presentedViewController { top = next }
         let call = VideoCall.shared
-        if call.state != .idle {
+        if call.state == .incoming {
             if !(top is CallViewController) {
                 let callVC = CallViewController()
                 callVC.modalPresentationStyle = .fullScreen
                 top?.present(callVC, animated: true)
             }
-        } else if let callVC = top as? CallViewController, !(callVC.isBeingDismissed) {
+        } else if call.state == .idle, let callVC = top as? CallViewController, !(callVC.isBeingDismissed) {
             callVC.dismiss(animated: true)
         }
     }

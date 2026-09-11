@@ -34,6 +34,17 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private let videoView = NSImageView()
     private let videoSpinner = NSProgressIndicator()
 
+    // live call UI (hybrid: inline stage under the header, tap to expand)
+    private var liveBar: NSStackView?
+    private var liveWaveView: WaveformView?
+    private var callMeter: AudioMeter?
+    private var fullscreenOverlay: NSView?
+    private let fullscreenVideoView = NSImageView()
+    private var fullscreenWaveView: WaveformView?
+    private var fullscreenStatusLabel: NSTextField?
+    private var fullscreenControls: NSStackView?
+    private var isLiveFullscreen = false
+
     // composer
     private var composerMode: Mode = .normal
     enum Mode {
@@ -57,7 +68,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     // in-call recording state (daemon-side opus)
     private var callRecordingActive = false
-    private var callRecordingMeter: AudioMeter?
     private var callRecordingWaveView: WaveformView?
     private var pendingCallRecording: (durationMs: Int, ticket: String)?
 
@@ -90,6 +100,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
         buildBanner()
         buildVideoPanel()
+        buildLiveBar()
         buildMessageTable()
 
         composer = NSStackView()
@@ -98,7 +109,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         composer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 10, right: 12)
         rebuildComposer()
 
-        let outer = NSStackView(views: [headerRow, bannerBox, videoPanel ?? NSView(), tableScrollView, composer])
+        let outer = NSStackView(views: [headerRow, liveBar ?? NSView(), bannerBox, videoPanel ?? NSView(), tableScrollView, composer])
         outer.orientation = .vertical
         outer.spacing = 0
         outer.edgeInsets = NSEdgeInsets()
@@ -106,6 +117,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         // (header/banner/video/composer) keep their own constraints.
         tableScrollView.setContentHuggingPriority(.defaultLow, for: .vertical)
         headerRow.setContentCompressionResistancePriority(.required, for: .vertical)
+        liveBar?.setContentCompressionResistancePriority(.required, for: .vertical)
         composer.setContentCompressionResistancePriority(.required, for: .vertical)
         // Container as the VC's view; the stack fills it.
         let container = NSView()
@@ -118,6 +130,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             outer.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         view = container
+        // Overlay rides above the chat stack; built AFTER view exists — it
+        // must never touch self.view itself (lazy view would re-enter
+        // loadView and recurse: buildFullscreenOverlay -> view -> loadView).
+        buildFullscreenOverlay(container: container)
     }
 
     
@@ -248,25 +264,208 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         panel.translatesAutoresizingMaskIntoConstraints = false
         panel.addSubview(videoView)
         panel.addSubview(videoSpinner)
+        // Inline video stage: tap anywhere (or the expand button) to go fullscreen.
+        let expand = headerSymbolButton("arrow.up.left.and.arrow.down.right", #selector(liveExpandTapped), "Expand call")
+        expand.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(expand)
+        panel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(liveExpandTapped)))
         NSLayoutConstraint.activate([
-            panel.heightAnchor.constraint(equalToConstant: 260),
+            panel.heightAnchor.constraint(equalToConstant: 180),
             videoView.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
             videoView.trailingAnchor.constraint(equalTo: panel.trailingAnchor),
             videoView.topAnchor.constraint(equalTo: panel.topAnchor),
             videoView.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
             videoSpinner.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
             videoSpinner.centerYAnchor.constraint(equalTo: panel.centerYAnchor),
+            expand.topAnchor.constraint(equalTo: panel.topAnchor, constant: 8),
+            expand.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
         ])
         videoPanel = panel
         panel.isHidden = true
     }
 
     private func updateVideoPanelVisibility() {
-        let active = (video.state == .inCall || video.state == .watching || video.state == .calling)
+        updateLiveUI()
+    }
+
+    // MARK: - Live call stage (inline bar + fullscreen overlay)
+
+    private func videoActive() -> Bool {
+        (video.state == .inCall || video.state == .watching || video.state == .calling)
             && video.activePeer == peer.id
-        videoPanel?.isHidden = !active
-        if active, video.lastFrame == nil { videoSpinner.startAnimation(nil) }
+    }
+
+    private func audioActive() -> Bool {
+        live.state == .inCall(peer: peer.id) || live.state == .calling(peer: peer.id)
+    }
+
+    /// Single updater for the hybrid live stage: inline audio bar under the
+    /// header, inline video panel, and the fullscreen overlay swap by state.
+    private func updateLiveUI() {
+        let active = videoActive() || audioActive()
+        guard active else {
+            isLiveFullscreen = false
+            liveBar?.isHidden = true
+            videoPanel?.isHidden = true
+            fullscreenOverlay?.isHidden = true
+            stopCallMeter()
+            return
+        }
+        videoPanel?.isHidden = !(videoActive() && !isLiveFullscreen)
+        if videoActive(), video.lastFrame == nil { videoSpinner.startAnimation(nil) }
         else { videoSpinner.stopAnimation(nil) }
+        // Audio pill only when there is no video stage taking the inline slot.
+        let showBar = audioActive() && !videoActive()
+        liveBar?.isHidden = !showBar
+        if showBar {
+            _ = ensureCallMeter()
+            if let wave = liveWaveView, wave.superview == nil {
+                wave.translatesAutoresizingMaskIntoConstraints = false
+                liveBar?.insertView(wave, at: 0, in: .leading)
+                NSLayoutConstraint.activate([
+                    wave.heightAnchor.constraint(equalToConstant: 22),
+                    wave.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
+                ])
+            }
+            liveStatusLabel()?.stringValue = live.state == .calling(peer: peer.id) ? "Calling…" : "In call"
+        }
+        rebuildFullscreenContent()
+        fullscreenOverlay?.isHidden = !isLiveFullscreen
+    }
+
+    /// Shared mic meter for the live bar + in-call recording waveform.
+    private func ensureCallMeter() -> AudioMeter {
+        if let callMeter { return callMeter }
+        let wave = liveWaveView ?? WaveformView(frame: NSRect(x: 0, y: 0, width: 160, height: 22))
+        wave.startLive()
+        liveWaveView = wave
+        let meter = AudioMeter(view: wave)
+        if let fullscreenWaveView { meter.add(view: fullscreenWaveView) }
+        meter.start()
+        callMeter = meter
+        return meter
+    }
+
+    private func stopCallMeter() {
+        callMeter?.stop()
+        callMeter = nil
+        liveWaveView?.removeFromSuperview()
+        liveWaveView = nil
+    }
+
+    private func buildLiveBar() {
+        let bar = NSStackView()
+        bar.orientation = .horizontal
+        bar.spacing = 10
+        bar.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        let status = NSTextField(labelWithString: "")
+        status.font = NSFont.systemFont(ofSize: 12)
+        status.textColor = .secondaryLabelColor
+        status.identifier = NSUserInterfaceItemIdentifier("liveStatus")
+        let expand = headerSymbolButton("arrow.up.left.and.arrow.down.right", #selector(liveExpandTapped), "Expand call")
+        bar.addArrangedSubview(status)
+        bar.addArrangedSubview(expand)
+        liveBar = bar
+        bar.isHidden = true
+    }
+
+    private func liveStatusLabel() -> NSTextField? {
+        liveBar?.arrangedSubviews.first(where: { $0.identifier?.rawValue == "liveStatus" }) as? NSTextField
+    }
+
+    private func buildFullscreenOverlay(container: NSView) {
+        let overlay = NSView()
+        overlay.wantsLayer = true
+        overlay.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.9).cgColor
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.isHidden = true
+
+        let status = NSTextField(labelWithString: "")
+        status.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        status.textColor = .white
+        fullscreenStatusLabel = status
+        let collapse = headerSymbolButton("chevron.down", #selector(liveCollapseTapped), "Back to chat")
+        let top = NSStackView(views: [status, collapse])
+        top.orientation = .horizontal
+        top.spacing = 8
+
+        fullscreenVideoView.imageScaling = .scaleProportionallyUpOrDown
+        fullscreenVideoView.translatesAutoresizingMaskIntoConstraints = false
+        let wave = WaveformView(frame: NSRect(x: 0, y: 0, width: 400, height: 72))
+        wave.translatesAutoresizingMaskIntoConstraints = false
+        fullscreenWaveView = wave
+
+        let controls = NSStackView()
+        controls.orientation = .horizontal
+        controls.spacing = 8
+        fullscreenControls = controls
+
+        overlay.addSubview(top)
+        overlay.addSubview(fullscreenVideoView)
+        overlay.addSubview(wave)
+        overlay.addSubview(controls)
+        for sub in [top, fullscreenVideoView, wave, controls] {
+            sub.translatesAutoresizingMaskIntoConstraints = false
+        }
+        container.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            overlay.topAnchor.constraint(equalTo: container.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            top.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 12),
+            top.topAnchor.constraint(equalTo: overlay.topAnchor, constant: 12),
+            fullscreenVideoView.leadingAnchor.constraint(equalTo: overlay.leadingAnchor),
+            fullscreenVideoView.trailingAnchor.constraint(equalTo: overlay.trailingAnchor),
+            fullscreenVideoView.topAnchor.constraint(equalTo: top.bottomAnchor),
+            fullscreenVideoView.bottomAnchor.constraint(equalTo: controls.topAnchor),
+            wave.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            wave.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+            wave.widthAnchor.constraint(equalToConstant: 420),
+            wave.heightAnchor.constraint(equalToConstant: 72),
+            controls.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            controls.bottomAnchor.constraint(equalTo: overlay.bottomAnchor, constant: -20),
+        ])
+        fullscreenOverlay = overlay
+    }
+
+    /// Rebuilds the fullscreen stage contents for the current call state.
+    private func rebuildFullscreenContent() {
+        let showVideo = videoActive()
+        fullscreenVideoView.isHidden = !showVideo
+        fullscreenVideoView.image = showVideo ? videoView.image : nil
+        fullscreenWaveView?.isHidden = showVideo
+        var buttons: [NSButton] = []
+        var title = ""
+        if audioActive() {
+            switch live.state {
+            case .inCall:
+                title = "In call"
+                buttons = [headerButton("End call", #selector(liveHangUpTapped), destructive: true),
+                           headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
+            case .calling:
+                title = "Calling…"
+                buttons = [headerButton("Cancel", #selector(liveHangUpTapped))]
+            default: break
+            }
+        } else if showVideo {
+            switch video.state {
+            case .inCall:
+                title = "In video call"
+                buttons = [headerButton("End call", #selector(videoHangUpTapped), destructive: true),
+                           headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
+            case .watching:
+                title = "Watching video"
+                buttons = [headerButton("Stop watching", #selector(videoHangUpTapped), destructive: true)]
+            case .calling:
+                title = "Calling…"
+                buttons = [headerButton("Cancel", #selector(videoHangUpTapped))]
+            default: break
+            }
+        }
+        fullscreenStatusLabel?.stringValue = title
+        fullscreenControls?.arrangedSubviews.forEach { fullscreenControls?.removeArrangedSubview($0); $0.removeFromSuperview() }
+        buttons.forEach { fullscreenControls?.addArrangedSubview($0) }
     }
 
     // MARK: - Message table
@@ -431,19 +630,24 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         VideoCall.shared.onFrame = nil
         VideoCall.shared.onState = nil
         LiveCall.shared.onState = nil
+        stopCallMeter()
         memoTimer?.invalidate()
         bannerTimer?.invalidate()
         player?.stop()
     }
 
     private func refreshHeaderSoon() {
-        DispatchQueue.main.async { [weak self] in self?.refreshHeader() }
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshHeader()
+            self?.updateLiveUI()
+        }
     }
 
     private func updateVideoFrame(_ image: NSImage?) {
         videoSpinner.stopAnimation(nil)
         videoView.image = image
-        updateVideoPanelVisibility()
+        fullscreenVideoView.image = image
+        updateLiveUI()
     }
 
     // MARK: - NSTableView
@@ -592,6 +796,18 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc private func videoAnswerTapped() { video.answer(); refreshHeaderSoon() }
     @objc private func videoDeclineTapped() { video.decline(); refreshHeaderSoon() }
     @objc private func videoHangUpTapped() { video.hangUp(); refreshHeaderSoon() }
+
+    // MARK: - Live stage expand/collapse
+
+    @objc private func liveExpandTapped() {
+        isLiveFullscreen = true
+        updateLiveUI()
+    }
+
+    @objc private func liveCollapseTapped() {
+        isLiveFullscreen = false
+        updateLiveUI()
+    }
 
     // MARK: - One-way video share (GUI's video_share)
 
@@ -766,9 +982,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             let meterWave = WaveformView(frame: NSRect(x: 0, y: 0, width: 200, height: 28))
             meterWave.startLive()
             callRecordingWaveView = meterWave
-            let meter = AudioMeter(view: meterWave)
-            meter.start()
-            callRecordingMeter = meter
+            // Same display-only mic tap as the inline call bar (two engine
+            // taps would race the input node).
+            let meter = ensureCallMeter()
+            meter.add(view: meterWave)
             // Swap the composer into a live recording bar.
             composer.arrangedSubviews.forEach { composer.removeArrangedSubview($0); $0.removeFromSuperview() }
             let dot = NSTextField(labelWithString: "●")
@@ -792,8 +1009,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             refreshHeader()
         } else {
             callRecordingActive = false
-            callRecordingMeter?.stop()
-            callRecordingMeter = nil
+            // Shared call meter keeps running — the call itself does.
             recordingElapsedLabel = nil
             Task {
                 let stored = await Task.detached(priority: .userInitiated) { () -> String in

@@ -123,7 +123,7 @@ impl AudioSource for MuteSource {
 }
 
 fn audio() -> AudioBackend {
-    let mut backend = AUDIO
+    let backend = AUDIO
         .lock()
         .expect("audio backend mutex poisoned")
         .get_or_insert_with(|| {
