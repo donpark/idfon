@@ -1056,6 +1056,7 @@ fn start_live(with_video: bool) -> char_p::Box {
         );
         broadcast.audio().set_renditions(renditions)?;
         if with_video {
+            #[cfg(any(target_os = "ios", target_os = "macos"))]
             ensure_camera_access();
             // iOS + macOS: the shell's AVCaptureSession (CameraPusher.swift)
             // pushes BGRA frames via media_video_push_frame; the encoder
