@@ -1,6 +1,6 @@
 {
   "name": "idfon-darwin-arm64",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Prebuilt idfon binaries for macOS arm64 (idfon, idfond, libiroh_c_ffi).",
   "license": "(MIT OR Apache-2.0)",
   "repository": "github:donpark/idfon",

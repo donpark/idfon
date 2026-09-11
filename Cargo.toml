@@ -5,7 +5,7 @@ exclude = ["native/vendor/iroh-c-ffi"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
-version = "0.3.0"
+version = "0.4.0"
 
 [profile.release]
 lto = "fat"
