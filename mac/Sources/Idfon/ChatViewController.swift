@@ -618,7 +618,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        store.onUpdate = { [weak self] in self?.syncMessages() }
+        store.addObserver(self)
         DispatchQueue.main.async { [weak self] in
             self?.view.window?.makeFirstResponder(self?.composerTextView)
         }
@@ -633,7 +633,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     override func viewDidDisappear() {
-        store.onUpdate = nil
         store.onBanner = nil
         VideoCall.shared.onFrame = nil
         VideoCall.shared.onState = nil
@@ -1168,4 +1167,8 @@ final class ComposerTextView: NSTextView {
             onEnter?()
         }
     }
+}
+
+extension ChatViewController: ChatStoreObserver {
+    func chatStoreDidUpdate() { syncMessages() }
 }
