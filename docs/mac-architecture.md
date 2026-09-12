@@ -10,7 +10,8 @@ mac/
 ├── Sources/Idfon/
 │   ├── IdfonApp.swift         # @main; AppDelegate, AppModel (identity mgmt),
 │   │                          #   DetailContainerViewController, window + overlay wiring
-│   ├── SidebarViewController.swift  # identity/status, sectioned list + search, actions
+│   ├── SidebarViewController.swift  # identity/status, tabbed peer lists, actions
+│   ├── PeerTabsViewController.swift # Favorites/Recents/Contacts tabs, per-tab search
 │   ├── ChatViewController.swift     # chat table + composer (text/file/memo),
 │   │                          #   fullscreen call stage
 │   ├── LiveActivityBar.swift  # the Bar surface + value-type model (expanded / pill)
@@ -101,9 +102,9 @@ Key facts:
   with that argument and asserts the `idfon tray:` / `idfon file:` markers — no
   simulator, no device, no install step.
 - **Host-run checks**: `mac/Checks/*` compile with plain `swiftc` and run on the
-  host (`MessageKindParseCheck`, `LiveActivityBarCheck`). AppKit views can be
-  built without a running app, so per-state visibility and intent wiring are
-  checked for real.
+  host (`MessageKindParseCheck`, `LiveActivityBarCheck`, `PeerTabsCheck`). AppKit
+  views can be built without a running app, so per-state visibility, intent
+  wiring and per-tab search are checked for real.
 
 See also: [ui-design-notes.md](ui-design-notes.md) (UX spec),
 [live-activity-bar-layout.md](live-activity-bar-layout.md) (Bar layout + mac

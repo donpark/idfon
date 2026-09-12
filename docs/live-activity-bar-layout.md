@@ -233,8 +233,11 @@ implement the same model, intents and tray rows. The differences are mechanical:
 - **No idle chrome**: mac has no navigation stack and the chat header owns idle actions
   (`Call`, share video, peer details), so the Bar renders only while a call or a transfer is
   in flight. “Owning thread” is just the selected peer.
-- **Sections instead of tabs**: the sidebar's Favorites / Recents / Contacts list replaces
-  the iOS `UITabBarController`.
+- **Tabs, not one list**: Favorites / Recents / Contacts are an `NSTabViewController`
+  (`tabStyle = .segmentedControlOnTop`) — the closest AppKit analogue of the iOS
+  `UITabBarController`. Each tab owns its own search field, because a single section can
+  get long enough to need searching on its own, and a shared box would also filter the
+  other sections out of view.
 - **`.watching`**: a mac-only phase for the one-way video share. It publishes nothing, so
   `audioAvailable`/`videoAvailable` are false, the toggles hide, and the verb is Stop.
 - **Verification**: `mac/Checks/LiveActivityBarCheck` runs on the host with plain `swiftc`
