@@ -43,6 +43,7 @@ final class TransferCenter {
         items.append(Entry(
             transfer: Transfer(id: id, peerId: peerId, name: name, fraction: 0, bytesPerSecond: 0),
             cancel: cancel))
+        NSLog("idfon tray: begin peer=\(peerId) name=\(name) id=\(id)")
         onChange?()
     }
 
@@ -55,13 +56,17 @@ final class TransferCenter {
 
     func finish(id: String) {
         guard let index = items.firstIndex(where: { $0.transfer.id == id }) else { return }
+        let name = items[index].transfer.name
         items.remove(at: index)
+        NSLog("idfon tray: finish name=\(name) id=\(id)")
         onChange?()
     }
 
     /// Asks the producer to stop. The row stays until it calls `finish(id:)`.
     func cancel(id: String) {
-        items.first { $0.transfer.id == id }?.cancel()
+        guard let entry = items.first(where: { $0.transfer.id == id }) else { return }
+        NSLog("idfon tray: cancel name=\(entry.transfer.name) id=\(id)")
+        entry.cancel()
     }
 
     /// Tray rows for one peer. Row ids are the transfer ids, so a Cancel intent

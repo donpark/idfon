@@ -79,6 +79,9 @@ final class ChatStore {
             return
         }
         let kind = MessageKind.parse(text)
+        if case .file(_, let name, let sizeBytes, _) = kind {
+            NSLog("idfon file: received name=\(name) size=\(sizeBytes)")
+        }
         let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
         messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, timestamp: timestamp))
         NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")

@@ -466,6 +466,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 """
                 try await client.sendText(to: peer.id, envelope)
                 ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .file(ticket: ticket, name: safeName, sizeBytes: size, localURL: nil), outgoing: true, timestamp: Date()))
+                NSLog("idfon file: sent name=\(safeName) size=\(size) ticket=\(ticket)")
                 TransferCenter.shared.finish(id: transferId)
                 self.showCallStatus(nil)
             } catch is CancellationError {
@@ -477,6 +478,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             }
         }
     }
+
+    /// Automation entry (Automation.swift): sends through the same path the
+    /// attachment picker reaches, so the harness exercises the real wiring.
+    func automateSendFile(at url: URL) { sendFile(at: url, name: url.lastPathComponent) }
 
     /// Fetch-on-demand for a received file, then offer it. Deliberately not part
     /// of ingest: a large file isn't pulled down until the recipient asks.
