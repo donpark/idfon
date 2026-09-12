@@ -17,6 +17,7 @@ mac/
 │   ├── DaemonClient.swift     # JSON IPC request/response over Unix socket
 │   ├── DaemonClient+Methods.swift   # status/peers/sendText/waitMessages/events
 │   ├── Calls.swift            # LiveCall (audio) + VideoCall state machines
+│   │                         #   (two-way via return-leg invites; CallKit is iOS-only)
 │   ├── CameraPusher.swift     # AVCapture → FFI push_frame (1280x720 landscape)
 │   ├── VoiceMemo.swift        # AVAudioRecorder memo + amplitudes
 │   ├── WaveformView.swift     # mic-level visualization

@@ -1,0 +1,360 @@
+import UIKit
+
+/// Owns the Live Activity Bar's window host for one scene and translates the
+/// active call machine's state (`LiveCall` or `VideoCall`) into Bar models and
+/// intents. Exactly one machine can be non-idle at a time.
+///
+/// Bar mode is the default in-app call surface until CallKit lands
+/// (docs/ui-design-notes.md §6, §7.1): incoming calls ring inline in the Bar
+/// — there is no fullscreen ringing screen. `CallViewController` remains the
+/// expanded video surface, presented from the chat's inline video bar.
+@MainActor
+final class LiveActivityController {
+    /// The overlay window. Strong here (the scene holds this controller); an
+    /// unreferenced `UIWindow` deallocates silently.
+    let overlay: OverlayWindow
+
+    /// The nav controller hosting content, used for clearance/insets and for
+    /// `.open` navigation. Weak: the root nav controller outlives nothing else.
+    weak var navigationController: AppNavigationController? {
+        didSet {
+            navigationController?.onVisibleControllerChanged = { [weak self] in self?.render() }
+            // Nav is now known, so density/clearance can be resolved.
+            render()
+        }
+    }
+
+    private let client = DaemonClient()
+
+    private var phase: LiveActivityBarModel.Phase = .idle
+    /// The in-call Bar's toggle state. Mirrored from the active machine on
+    /// phase entry and after each toggle, so the Bar always shows what the
+    /// call is really sending (and hides toggles for absent tracks).
+    private var micOn = false
+    private var camOn = false
+
+    /// Per-peer pre-call staging (§3 State 2). Applied only while idle; a
+    /// call's mic/cam come from the call phase, never from here.
+    private struct Staging { var mic = false; var cam = false }
+    private var staging: [String: Staging] = [:]
+    /// The peer of the call that just ended, so its staging is dropped when
+    /// the call returns to idle (peer is already nil by then).
+    private var activeCallPeer: String?
+
+    /// Body of the idle Bar's `.ping`: placeholder for the spec's ephemeral
+    /// "Free to talk?" notification (the protocol has no ephemeral envelope).
+    private static let pingMessage = "Free to talk?"
+
+    private var elapsed: TimeInterval = 0
+    private var startedAt: Date?
+    private var timer: Timer?
+
+    /// The call machine owning the Bar. Exactly one can be non-idle: an
+    /// audio invite carries no `media` line and a `media=video-call` invite
+    /// belongs to `VideoCall`; each machine ignores the other's envelopes.
+    @MainActor
+    private enum ActiveMachine {
+        case audio(LiveCall)
+        case video(VideoCall)
+
+        /// Non-nil while a call is in flight on either machine.
+        static var current: ActiveMachine? {
+            if LiveCall.shared.state != .idle { return .audio(LiveCall.shared) }
+            if VideoCall.shared.state != .idle { return .video(VideoCall.shared) }
+            return nil
+        }
+
+        var peer: String? {
+            switch self {
+            case .audio(let call): return call.activePeer
+            case .video(let call): return call.activePeer
+            }
+        }
+
+        /// What the session carries — immutable for the call's life, so the
+        /// Bar hides a toggle for a track this call does not publish (§3).
+        var audioAvailable: Bool {
+            switch self {
+            case .audio(let call): return call.audioAvailable
+            case .video(let call): return call.audioAvailable
+            }
+        }
+
+        var videoAvailable: Bool {
+            switch self {
+            case .audio(let call): return call.videoAvailable
+            case .video(let call): return call.videoAvailable
+            }
+        }
+
+        /// Whether each stream is currently being sent (mute/unmute, camera
+        /// on/off) — send/no-send gating, never track attach/detach.
+        var audioEnabled: Bool {
+            switch self {
+            case .audio(let call): return call.audioEnabled
+            case .video(let call): return call.audioEnabled
+            }
+        }
+
+        var videoEnabled: Bool {
+            switch self {
+            case .audio(let call): return call.videoEnabled
+            case .video(let call): return call.videoEnabled
+            }
+        }
+
+        func setAudioEnabled(_ enabled: Bool) {
+            switch self {
+            case .audio(let call): call.setAudioEnabled(enabled)
+            case .video(let call): call.setAudioEnabled(enabled)
+            }
+        }
+
+        func setVideoEnabled(_ enabled: Bool) {
+            switch self {
+            case .audio(let call): call.setVideoEnabled(enabled)
+            case .video(let call): call.setVideoEnabled(enabled)
+            }
+        }
+
+        var phase: LiveActivityBarModel.Phase {
+            switch self {
+            case .audio(let call): return Self.phase(for: call.state)
+            case .video(let call): return Self.phase(for: call.state)
+            }
+        }
+
+        func answer() {
+            switch self {
+            case .audio(let call): call.answer()
+            case .video(let call): call.answer()
+            }
+        }
+
+        func decline() {
+            switch self {
+            case .audio(let call): call.decline()
+            case .video(let call): call.decline()
+            }
+        }
+
+        func hangUp() {
+            switch self {
+            case .audio(let call): call.hangUp()
+            case .video(let call): call.hangUp()
+            }
+        }
+
+        private static func phase(for state: LiveCall.State) -> LiveActivityBarModel.Phase {
+            switch state {
+            case .idle: return .idle
+            case .calling: return .calling
+            case .incoming: return .incoming
+            case .inCall: return .inCall
+            }
+        }
+
+        private static func phase(for state: VideoCall.State) -> LiveActivityBarModel.Phase {
+            switch state {
+            case .idle: return .idle
+            case .calling: return .calling
+            case .incoming: return .incoming
+            case .inCall: return .inCall
+            }
+        }
+    }
+
+    init(windowScene: UIWindowScene) {
+        overlay = OverlayWindow(windowScene: windowScene)
+        overlay.onIntent = { [weak self] peerId, intent in
+            self?.handle(intent, peerId: peerId)
+        }
+        // Take ownership of both machines' state hooks (the scene delegate no
+        // longer sets them); the Bar renders whichever one is non-idle.
+        LiveCall.shared.onState = { [weak self] in self?.sync() }
+        VideoCall.shared.onState = { [weak self] in self?.sync() }
+        // Render the state as it is now: a call can already be in flight before
+        // this controller exists (launch-argument dial, scene reconnection).
+        sync()
+        // Prime the per-connection incoming-call modes (§6); refreshed after a
+        // mode change too. Incoming invites before this lands fall back to Bar.
+        Task { await IncomingCallRouter.shared.refreshModes() }
+    }
+
+    deinit { timer?.invalidate() }
+
+    /// Re-derives the Bar from call state; called on every state change and
+    /// on the ≤1 Hz in-call tick (the view itself holds no timer).
+    private func sync() {
+        let previous = phase
+        let machine = ActiveMachine.current
+        let next = machine?.phase ?? .idle
+
+        // Entering a phase (re)initialises the toggles from the machine's
+        // real send state. A call only publishes its staged tracks (dial) or
+        // both (answer), and an unanswered incoming call is not sending yet,
+        // so the Bar reads the truth instead of assuming mic-on/cam-on.
+        if next != previous, next != .idle {
+            micOn = machine?.audioEnabled ?? false
+            camOn = machine?.videoEnabled ?? false
+        }
+        phase = next
+
+        if next == .inCall {
+            if startedAt == nil {
+                startedAt = Date()
+                startTimer()
+            }
+        } else {
+            startedAt = nil
+            elapsed = 0
+            stopTimer()
+        }
+
+        // Staging is idle chrome, not call state: drop the ended call's
+        // staging so its thread returns to State 1 (mic/cam off).
+        if next == .idle {
+            if let ended = activeCallPeer { staging[ended] = nil; activeCallPeer = nil }
+        } else if let peer = machine?.peer, !peer.isEmpty {
+            activeCallPeer = peer
+        }
+        render()
+    }
+
+    /// Produces up to two models: the visible thread's own chrome first, then
+    /// the call's (docs/ui-design-notes.md §3, §6).
+    ///
+    /// - Idle: the visible thread's expanded State 1/2 chrome; nothing on any
+    ///   other screen (no Bar on the Peers list).
+    /// - In a call with C: C expanded when its thread is visible; when another
+    ///   thread P is visible, P's expanded idle chrome plus C's compact pill;
+    ///   with no thread visible, C's compact pill only.
+    private func render() {
+        let visiblePeer = (navigationController?.visibleViewController as? ChatViewController)?.peer.id
+        let machine = ActiveMachine.current
+        let callPeer = (machine?.peer ?? nil).flatMap { $0.isEmpty ? nil : $0 }
+
+        var models: [LiveActivityBarModel] = []
+        if phase == .idle {
+            if let peerId = visiblePeer { models.append(idleModel(for: peerId)) }
+        } else if let callPeer {
+            if let peerId = visiblePeer, peerId != callPeer {
+                models.append(idleModel(for: peerId))
+            }
+            var model = LiveActivityBarModel(peerId: callPeer, handle: "@\(callPeer)")
+            model.phase = phase
+            model.micOn = micOn
+            model.camOn = camOn
+            model.audioAvailable = machine?.audioAvailable ?? true
+            model.videoAvailable = machine?.videoAvailable ?? true
+            model.elapsed = elapsed
+            // Expanded only while the visible thread is the call peer's —
+            // that thread owns the call; every other screen shows the pill.
+            model.density = visiblePeer == callPeer ? .expanded : .compact
+            models.append(model)
+        }
+        overlay.render(models)
+    }
+
+    /// State 1 chrome for `peerId`: `.idle` phase with this peer's staging
+    /// toggles. The Bar derives State 2 (`isStaging`) from `phase == .idle &&
+    /// (mic || cam)` — no separate phase.
+    private func idleModel(for peerId: String) -> LiveActivityBarModel {
+        let stage = staging[peerId] ?? Staging()
+        var model = LiveActivityBarModel(peerId: peerId, handle: "@\(peerId)")
+        model.phase = .idle
+        model.micOn = stage.mic
+        model.camOn = stage.cam
+        model.density = .expanded
+        return model
+    }
+
+    // MARK: - Elapsed timer
+
+    private func startTimer() {
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        }
+    }
+
+    private func stopTimer() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func tick() {
+        guard let startedAt else { return }
+        elapsed = Date().timeIntervalSince(startedAt)
+        render()
+    }
+
+    // MARK: - Intents
+
+    private func handle(_ intent: LiveActivityBarIntent, peerId: String) {
+        switch intent {
+        case .answer: ActiveMachine.current?.answer()
+        case .decline: ActiveMachine.current?.decline()
+        case .end: ActiveMachine.current?.hangUp()
+        case .open: openPeerThread(peerId)
+        case .toggleMic: toggleMicOrStaging(peerId: peerId, mic: true)
+        case .toggleCam: toggleMicOrStaging(peerId: peerId, mic: false)
+        // Placeholder for §3's ephemeral "Free to talk?" ping: the protocol
+        // has no ephemeral envelope, so this is an ordinary low-priority text
+        // (delivered to the peer's thread, it does not ring like a call).
+        case .ping: Task { try? await client.sendText(to: peerId, Self.pingMessage) }
+        // Staged Call picks the machine and the tracks the session publishes
+        // (§3 State 2): microphone only = audio call, camera only = video-only
+        // (camera, no audio), both = audio + video.
+        case .call:
+            let stage = staging[peerId] ?? Staging()
+            switch (stage.mic, stage.cam) {
+            case (true, false): LiveCall.shared.dial(peerId)
+            case (false, true): VideoCall.shared.dial(peerId, audio: false, video: true)
+            default: VideoCall.shared.dial(peerId, audio: true, video: true)
+            }
+        // Session Tray actions: no transfers or streams in the model yet.
+        case .cancelRow, .togglePauseRow: break
+        }
+    }
+
+    /// In-call toggles gate the active machine's outgoing streams (send/no-send
+    /// — §3 State 3); idle toggles stage the peer's State 2 state. The machine
+    /// reports back after the call, so a toggle for an absent track cannot
+    /// desync the Bar.
+    private func toggleMicOrStaging(peerId: String, mic: Bool) {
+        if phase != .idle, let machine = ActiveMachine.current, peerId == (machine.peer ?? nil) {
+            if mic { machine.setAudioEnabled(!machine.audioEnabled) } else { machine.setVideoEnabled(!machine.videoEnabled) }
+            micOn = machine.audioEnabled
+            camOn = machine.videoEnabled
+        } else {
+            var stage = staging[peerId] ?? Staging()
+            if mic { stage.mic.toggle() } else { stage.cam.toggle() }
+            staging[peerId] = stage
+        }
+        render()
+    }
+
+    /// Best-effort jump to the peer's thread: an already-pushed thread is
+    /// popped to; otherwise resolve the peer and push a new one.
+    private func openPeerThread(_ peerId: String) {
+        guard let navigationController else { return }
+        if let existing = navigationController.viewControllers
+            .compactMap({ $0 as? ChatViewController })
+            .first(where: { $0.peer.id == peerId }) {
+            navigationController.popToViewController(existing, animated: true)
+            return
+        }
+        Task {
+            let peer = await resolvePeer(peerId)
+            navigationController.pushViewController(ChatViewController(peer: peer), animated: true)
+        }
+    }
+
+    private func resolvePeer(_ peerId: String) async -> Peer {
+        if let match = (try? await client.peers())?.first(where: { $0.id == peerId || $0.name == peerId }) {
+            return match
+        }
+        return Peer(id: peerId, name: nil, endpointId: nil, aliases: nil, callMode: nil)
+    }
+}

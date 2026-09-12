@@ -1,45 +1,62 @@
 # iOS App Architecture
 
-The iOS app (`ios/Idfon/`, ~2.3K lines Swift) is a UIKit app with programmatic UI that
+The iOS app (`ios/Idfon/`, ~3.4K lines Swift) is a UIKit app with programmatic UI that
 talks to an **in-process Rust daemon** (`idfond`, via the `libiroh_c_ffi.a` static lib).
 
 ```text
 ios/
 ├── Idfon/                    # Swift app (UIKit, programmatic UI)
-│   ├── AppDelegate.swift     # app lifecycle, starts daemon + audio session
-│   ├── SceneDelegate.swift   # window, auto-presents ringing screen on .incoming
+│   ├── AppDelegate.swift     # app lifecycle, starts daemon + audio session, launch-arg automation
+│   ├── SceneDelegate.swift   # window + Live Activity Bar overlay wiring
+│   ├── AppNavigationController.swift # nav-bar clearance + content-shift for the Bar
 │   ├── PeerListViewController.swift  # peer picker → chat
 │   ├── ChatViewController.swift      # chat table + composer (text/record/review)
-│   │                         #   + inline live-video bar (tap → expand)
-│   ├── CallViewController.swift      # fullscreen call UI (answer/decline/hangup/collapse)
+│   │                         #   + inline live-video pane, incoming-call-mode menu
+│   ├── CallViewController.swift      # fullscreen video surface (presented on demand, not on ring)
+│   ├── LiveActivityBar.swift # the Bar surface + value-type model (expanded / compact pill)
+│   ├── OverlayWindow.swift   # window-level Bar host (pass-through hitTest)
+│   ├── LiveActivityController.swift  # maps call state → Bar models, routes Bar intents
+│   ├── IncomingCallRouter.swift      # per-connection Bar-vs-CallKit incoming routing seam
 │   ├── ChatStore.swift       # polling event loop: waitMessages → notifications
-│   ├── Models.swift          # Peer / Message / Event
-│   ├── VideoCall.swift       # call state machine (dial/answer/route events)
-│   ├── LiveCall.swift        # live audio dial + auto-answer helpers
+│   ├── Models.swift          # Peer / Message / Event / IncomingCallMode
+│   ├── VideoCall.swift       # video-call state machine (dial/answer/route events)
+│   ├── LiveCall.swift        # audio-call state machine + LiveCallHarness (WAV test path)
 │   ├── CameraPusher.swift    # AVCapture → FFI push_frame (BGRA 720x1280)
 │   ├── VoiceMemo.swift       # AVAudioRecorder memo + waveform amplitudes
 │   ├── LiveWaveformView.swift# mic-level visualization
 │   ├── BlobTransfer.swift    # put/fetch blobs (memo & photo exchange)
 │   ├── DaemonClient.swift    # JSON IPC request/response (5s timeout)
-│   ├── DaemonClient+Methods.swift    # status/peers/sendText/waitMessages/events
+│   ├── DaemonClient+Methods.swift    # status/peers/sendText/waitMessages/events/call-mode
 │   ├── DaemonBootstrap.swift # spawns idfond on background thread, socket paths
 │   └── Idfon-Bridging.h      # C ABI surface (daemon_run, client_request, media_*)
+├── Checks/                   # headless simulator checks (not in the Xcode target)
 └── Vendor/                   # libiroh_c_ffi.a static lib (Rust, gitignored)
 ```
+
+The app's central UI is the **Live Activity Bar** (`docs/ui-design-notes.md`,
+`docs/live-activity-bar-layout.md`): one window-level overlay that docks below nav
+chrome, persists across navigation, gates the outgoing audio/video streams, and owns
+in-app incoming calls.
 
 ```mermaid
 flowchart TD
     subgraph Swift["Swift UI layer (main thread)"]
         PL[PeerListViewController] --> CV[ChatViewController]
         CV --> CVC[CallViewController]
-        CVC --> VC[VideoCall<br/>call state machine]
         CV --> WM[VoiceMemo]
         CV --> CAMP[CameraPusher<br/>AVCapture frames]
         CV --> CS[ChatStore<br/>event poll loop]
+        CS -->|invite envelopes| R[IncomingCallRouter<br/>per-connection mode]
+        R -->|Bar| LC[LiveCall<br/>audio machine]
+        R -->|Bar| VC[VideoCall<br/>video machine]
+        R -->|CallKit| CK[CallKitIncomingPresenter<br/>stub · isAvailable=false]
+        LC & VC --> LAC[LiveActivityController]
+        LAC --> OW[OverlayWindow → LiveActivityBar]
+        NAV[AppNavigationController] -.->|clearance, content inset| OW
     end
     subgraph Services["App services"]
         CS --> DC[DaemonClient<br/>+ Methods, BlobTransfer]
-        VC --> FFI1[media_live_video_start / subscribe]
+        LC & VC --> FFI1[media_live_start(audio,video)<br/>set_audio/video_enabled]
         CAMP --> FFI2[media_video_push_frame]
         WM --> FFI3[blob put/fetch]
         CS --> FFI4[idfon_client_request]
@@ -54,11 +71,29 @@ Key facts:
 
 - **Daemon is in-process**: `AppDelegate` → `DaemonBootstrap.start()` runs
   `idfon_daemon_run` on a background `Thread` (16MB stack); it lives until process
-  exit. No separate daemon binary.
+  exit. No separate daemon binary. A Rust change therefore means rebuilding the
+  vendored `ios/Vendor/{device,sim}` libs.
 - **One IPC channel, two usages**: JSON requests/responses (`idfon_client_request`
   over Unix socket, each call its own connection) for chat/events/peers, and direct C
   media functions that bypass IPC entirely (zero-copy frame push).
-- **Events are polled**: `ChatStore` long-polls `waitMessages` (30s) and forwards to
-  `VideoCall`/UI via notifications on the main queue.
+- **Events are polled**: `ChatStore` long-polls `waitMessages` (30s). Invite
+  envelopes go through `IncomingCallRouter` (per-connection Bar-vs-CallKit mode);
+  `call_started`/`call_stopped` go direct to both machines, since the mode governs
+  presentation, not teardown.
+- **The Bar is a window-level overlay** (`OverlayWindow`, one per scene, held by
+  `LiveActivityController`): `windowLevel` above content but below the keyboard,
+  `hitTest` passes through outside the Bar, and `AppNavigationController` feeds it
+  the nav-bar clearance and applies the returned content inset to the visible
+  controller's `additionalSafeAreaInsets.top`.
+- **Calls are two machines, one Bar model**: `LiveCall` (audio) and `VideoCall`
+  (video/video-only) are disjoint — separated by the invite's `media` value — and
+  `LiveActivityController` renders whichever is non-idle. Mic/cam buttons gate
+  whether each published stream is *sent*; the stream set is chosen at dial time.
 - **Sim vs device socket path**: sim uses `/tmp/idfon-ios.sock` (sandbox paths exceed
   the 104-byte `SUN_LEN`), device uses flat tmp path.
+
+See also: [ui-design-notes.md](ui-design-notes.md) (UX spec),
+[live-activity-bar-layout.md](live-activity-bar-layout.md) (Bar layout + integration
+contract), [callkit-integration.md](callkit-integration.md) (CallKit notes),
+[protocol.md](protocol.md) (IPC), [audio-media.md](audio-media.md),
+[video-media.md](video-media.md).

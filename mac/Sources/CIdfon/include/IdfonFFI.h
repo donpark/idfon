@@ -31,9 +31,12 @@ void idfon_client_result_free(uint8_t *ptr, size_t len);
 // holds the cause). Camera capture is shell-pushed: the app's
 // AVCaptureSession (CameraPusher.swift) feeds BGRA frames via
 // media_video_push_frame; the dylib encodes/publishes them.
-char *media_live_start(void);                // publish microphone (cpal)
-char *media_live_video_start(void);          // publish microphone + camera (shell-pushed)
+char *media_live_start(uint8_t audio, uint8_t video); // publish the selected tracks (cpal/camera); (0,0) rejected
 void media_live_stop(void);                  // stop own publish
+// Enable/disable the outgoing audio (0 = send silence) or video (0 = send no
+// frames) stream; the session and its negotiation stay intact.
+uint8_t media_live_set_audio_enabled(uint8_t enabled);
+uint8_t media_live_set_video_enabled(uint8_t enabled);
 uint8_t media_live_subscribe(char const *ticket); // hear/watch a peer (decodes + plays)
 void media_live_unsubscribe(void);
 // Push one camera frame from the shell's AVCaptureSession into the dylib's

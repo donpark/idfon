@@ -7,6 +7,29 @@ Because they perform separate roles, they can be wired together to build a nativ
 
 ---
 
+## Implemented seam in this repo
+
+The dual-mode decision is captured in `docs/ui-design-notes.md` §6 and is already wired
+end-to-end short of CallKit itself:
+
+* Each daemon peer record carries `call_mode` (`"bar"` | `"call_kit"`, default `"bar"`),
+  settable via `peer.add` / `peer.update` and the CLI (`idfon peer add|update --call-mode`).
+  See `docs/protocol.md`.
+* `ios/Idfon/IncomingCallRouter.swift` is the single routing point: an incoming invite
+  resolves the **sending connection's** mode, then either hands it to the CallKit presenter
+  or to the Bar path (`LiveCall` + `VideoCall`).
+* `CallKitIncomingPresenter.isAvailable` is `false` — the one gate that flips when CallKit
+  integration lands. Until then a connection configured for `call_kit` is presented in the
+  Bar and the deferral is logged once per peer (explicit, never a silent mode switch). The
+  per-chat "Incoming calls" menu shows CallKit disabled with "Not available yet", so a
+  connection cannot be configured into a mode that cannot be served.
+* CallKit is iOS-only: macOS has no `CXProvider`, so mac always presents in-app and needs no
+  routing seam.
+
+Not implemented: `CXProvider`/`CXProviderDelegate`, PushKit VoIP registration and token
+handling, the APNs payload split, and audio-session handoff to CallKit. The I/O notes below
+still apply to that work.
+
 **Integration Architecture**
 
 **1. Foreign Function Interface (FFI)**

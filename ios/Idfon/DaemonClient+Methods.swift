@@ -16,6 +16,24 @@ extension DaemonClient {
         return try JSONDecoder().decode([Peer].self, from: data)
     }
 
+    /// Canonical identity id, which is what peer records are keyed by
+    /// (`status` reports the identity's name, which may differ).
+    func identityId() async throws -> String {
+        let raw = try await request(method: "status")
+        return raw?["identity"]?["id"]?.stringValue ?? "default"
+    }
+
+    /// `peer.update` with only `call_mode`: absent params are left untouched
+    /// (docs/protocol.md). Requires the owning identity plus the peer ref.
+    func setIncomingCallMode(ref: String, _ mode: IncomingCallMode) async throws {
+        let identity = (try? await identityId()) ?? "default"
+        _ = try await request(method: "peer.update", params: [
+            "ref": AnyEncodable(ref),
+            "identity": AnyEncodable(identity),
+            "call_mode": AnyEncodable(mode.wireValue),
+        ])
+    }
+
     func sendText(to peer: String, _ text: String) async throws {
         _ = try await request(method: "message.send", params: [
             "to": AnyEncodable(peer),

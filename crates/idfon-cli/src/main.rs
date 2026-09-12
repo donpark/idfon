@@ -141,6 +141,9 @@ enum PeerCmd {
         endpoint_id: Option<String>,
         #[arg(long = "endpoint-addr")]
         endpoint_addr: Option<String>,
+        /// Incoming-call surface for this connection: bar | call_kit
+        #[arg(long = "call-mode", value_name = "MODE")]
+        call_mode: Option<String>,
     },
     /// Update a peer
     Update {
@@ -152,6 +155,9 @@ enum PeerCmd {
         endpoint_id: Option<String>,
         #[arg(long = "endpoint-addr")]
         endpoint_addr: Option<String>,
+        /// Incoming-call surface for this connection: bar | call_kit
+        #[arg(long = "call-mode", value_name = "MODE")]
+        call_mode: Option<String>,
     },
     /// Remove a peer
     Remove {
@@ -514,11 +520,12 @@ fn run() -> io::Result<()> {
             name,
             endpoint_id,
             endpoint_addr,
+            call_mode,
         }) => finish(
             send_rpc(
                 socket,
                 "peer.add",
-                json!({"ref": peer_ref, "id": peer_ref, "name": name, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "aliases": []}),
+                json!({"ref": peer_ref, "id": peer_ref, "name": name, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "aliases": [], "call_mode": call_mode}),
                 identity,
                 cli.stdin_json,
             )?,
@@ -529,11 +536,12 @@ fn run() -> io::Result<()> {
             name,
             endpoint_id,
             endpoint_addr,
+            call_mode,
         }) => finish(
             send_rpc(
                 socket,
                 "peer.update",
-                json!({"ref": peer_ref, "id": peer_ref, "name": name, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "aliases": []}),
+                json!({"ref": peer_ref, "id": peer_ref, "name": name, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "aliases": [], "call_mode": call_mode}),
                 identity,
                 cli.stdin_json,
             )?,

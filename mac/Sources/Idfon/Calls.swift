@@ -43,9 +43,12 @@ struct LiveInvite {
 
 /// Live audio-call state machine: the caller publishes their microphone
 /// through the c-ffi (cpal capture inside the dylib) and sends an invite
-/// carrying its ticket; the callee subscribes (decoded playback) and sends
-/// call_started. Mirrors the tested flow in native/src/core.ts
-/// (live_start / live_answer audio branch / live_stop).
+/// carrying its ticket; the callee subscribes (decoded playback), publishes
+/// its own mic, and sends an audio return-leg invite carrying its ticket —
+/// so audio is two-way and the caller leaves `.calling` (parity with
+/// VideoCall). `call_started` is still sent as informational parity. Mirrors
+/// native/src/core.ts's video flow; the native audio `live_answer` branch is
+/// still subscribe-only (known interop gap).
 @MainActor
 final class LiveCall {
     static let shared = LiveCall()
@@ -85,10 +88,16 @@ final class LiveCall {
                     "kind": AnyEncodable("live_audio"),
                     "mode": AnyEncodable("record"),
                 ])
-                let ticket = await ffiString { media_live_start() }
+                let ticket = await ffiString { media_live_start(1, 0) } // audio only
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
+                    return
+                }
+                // Hung up while the publish was in flight: stop it rather than
+                // leaking it and ringing the peer.
+                guard case .calling = state else {
+                    Task.detached(priority: .userInitiated) { media_live_stop() }
                     return
                 }
                 published = true
@@ -109,6 +118,21 @@ final class LiveCall {
         Task {
             do {
                 await join(ticket: pending.ticket)
+                // Torn down while subscribing (`fail` already ended the call):
+                // never publish into a dead session.
+                guard case .inCall = state else { return }
+                // Publish our own mic so audio is two-way, then send the
+                // return-leg invite (own ticket) that makes the caller join us.
+                let own = await ffiString { media_live_start(1, 0) } // audio only
+                guard !own.isEmpty else {
+                    let err = await ffiString { media_live_last_error() }
+                    fail(err.isEmpty ? "live start failed" : err)
+                    return
+                }
+                published = true
+                // Audio invite: no media line (audio is the default).
+                try await client.sendText(to: pending.peer, "IDFON-LIVE/1\naction=start\nticket=\(own)")
+                // Informational parity with core.ts's video answer branch.
                 try await client.sendText(to: pending.peer, "call_started")
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
@@ -149,6 +173,23 @@ final class LiveCall {
             return
         }
         guard invite.isStart, invite.media == nil, !invite.ticket.isEmpty else { return }
+        // Return leg: the peer we called answered and is publishing its mic.
+        // Subscribe non-fatally (a failed subscribe must not tear down a call
+        // we are already publishing into); `.calling` → `.inCall`. Another
+        // peer's invite while busy is ignored (no steal).
+        switch state {
+        case .calling, .inCall:
+            guard activePeer == peerID else { return }
+            Task {
+                if await !subscribe(ticket: invite.ticket) {
+                    NSLog("idfon live call: return-leg subscribe failed")
+                }
+                if case .calling = state { state = .inCall(peer: peerID); notify() }
+            }
+            return
+        case .incoming, .idle:
+            break
+        }
         guard case .idle = state else { return } // video-call invites route to VideoCall
         pendingInvite = (peerID, invite.ticket)
         state = .incoming(peer: peerID)
@@ -173,11 +214,15 @@ final class LiveCall {
         notify()
     }
 
-    private func join(ticket: String) async {
-        let subscribed = await Task.detached(priority: .userInitiated) { () -> Bool in
+    /// Subscribes to a peer ticket without tearing the call down on failure.
+    private func subscribe(ticket: String) async -> Bool {
+        await Task.detached(priority: .userInitiated) { () -> Bool in
             media_live_subscribe(ticket) == 1
         }.value
-        guard subscribed else {
+    }
+
+    private func join(ticket: String) async {
+        guard await subscribe(ticket: ticket) else {
             fail("live subscribe failed")
             return
         }
@@ -322,7 +367,7 @@ final class VideoCall {
                 // Start capture first so the dylib sees the real camera
                 // dimensions when it configures the H.264 encoder.
                 CameraPusher.shared.start()
-                let ticket = await ffiString { media_live_video_start() }
+                let ticket = await ffiString { media_live_start(1, 1) } // mic + camera
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
@@ -360,7 +405,7 @@ final class VideoCall {
                 // Start capture first so the dylib sees the real camera
                 // dimensions when it configures the H.264 encoder.
                 CameraPusher.shared.start()
-                let own = await ffiString { media_live_video_start() }
+                let own = await ffiString { media_live_start(1, 1) }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
