@@ -415,9 +415,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 self.showCallStatus(nil)
             } catch is CancellationError {
                 TransferCenter.shared.finish(id: transferId)
+                NSLog("idfon file: memo cancelled")
                 self.showCallStatus("Voice message cancelled")
             } catch {
                 TransferCenter.shared.finish(id: transferId)
+                NSLog("idfon file: memo failed \(error.localizedDescription)")
                 self.showCallStatus("Send failed: \(error.localizedDescription)")
             }
         }
@@ -471,9 +473,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 self.showCallStatus(nil)
             } catch is CancellationError {
                 TransferCenter.shared.finish(id: transferId)
+                NSLog("idfon file: send cancelled name=\(name)")
                 self.showCallStatus("Send cancelled")
             } catch {
                 TransferCenter.shared.finish(id: transferId)
+                NSLog("idfon file: send failed \(error.localizedDescription)")
                 self.showCallStatus("Send failed: \(error.localizedDescription)")
             }
         }
@@ -507,6 +511,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 ChatStore.shared.attachFile(at: url, to: message.id)
                 self.share(url: url, source: sender)
             } catch {
+                NSLog("idfon file: download failed \(error.localizedDescription)")
                 self.showCallStatus("Download failed: \(error.localizedDescription)")
             }
         }
