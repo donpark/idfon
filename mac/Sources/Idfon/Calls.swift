@@ -481,6 +481,7 @@ final class VideoCall {
                 // dimensions when it configures the H.264 encoder. A mic-first
                 // call skips this; `setVideoEnabled(true)` starts it later.
                 if cameraOn { CameraPusher.shared.start() }
+                Self.dropStaleCameraFrame()
                 let ticket = await ffiString { media_live_start(1, 1) } // mic + camera
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -525,6 +526,7 @@ final class VideoCall {
                     return
                 }
                 // Mic-first: capture stays down until `setVideoEnabled(true)`.
+                Self.dropStaleCameraFrame()
                 let own = await ffiString { media_live_start(1, 1) }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -638,6 +640,18 @@ final class VideoCall {
         NSLog("idfon video call failed: \(message)")
         lastError = message
         terminate(local: false) // surfaces lastError via state change
+    }
+
+    /// Clears the shared camera frame slot before publishing.
+    ///
+    /// `media_live_stop` does not clear it, and `start_live` re-opens the camera
+    /// gate unconditionally — so without this the previous call's last frame is
+    /// sent as this call's first video frame (an audio-only call leaks one
+    /// frame), and it pins the encoder's dimensions to that stale size.
+    /// `set_video_enabled(0)` is the documented way to drop a queued frame;
+    /// `start_live` re-enables the gate immediately afterwards.
+    private static func dropStaleCameraFrame() {
+        _ = media_live_set_video_enabled(0)
     }
 
     /// Rewrites the remote frame into the UI ~10x/s. The FFI renames a new
