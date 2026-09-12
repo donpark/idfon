@@ -1,5 +1,12 @@
 import Foundation
 
+/// A screen that renders live message state. `ChatStore` fans out to every
+/// registered observer, so more than one chat can be live at once.
+@MainActor
+protocol ChatStoreObserver: AnyObject {
+    func chatStoreDidUpdate()
+}
+
 /// In-memory message store tailing the daemon event stream.
 ///
 /// The event cursor is persisted per identity so a relaunch replays
@@ -20,10 +27,22 @@ final class ChatStore {
     /// Active identity id (cursor keys are per-identity).
     private(set) var identityId = "default"
 
-    /// Fired on the main queue whenever messages/recordingURLs change.
-    var onUpdate: (() -> Void)?
+    /// Registered screens, held weakly so a deallocated one drops out without
+    /// an explicit unregister. Main-actor isolated, like the store.
+    private let observers = NSHashTable<AnyObject>.weakObjects()
+
     /// Fired with a transient notice for the chat banner.
     var onBanner: ((String) -> Void)?
+
+    func addObserver(_ observer: ChatStoreObserver) {
+        observers.add(observer)
+    }
+
+    private func notifyObservers() {
+        for case let observer as ChatStoreObserver in observers.allObjects {
+            observer.chatStoreDidUpdate()
+        }
+    }
 
     private var cursor: String? {
         get { UserDefaults.standard.string(forKey: Self.cursorKey(identityId)) }
@@ -63,7 +82,7 @@ final class ChatStore {
             } catch {
                 onBanner?("Identity switch failed: \(error.localizedDescription)")
             }
-            onUpdate?()
+            notifyObservers()
         }
     }
 
@@ -85,34 +104,21 @@ final class ChatStore {
             VideoCall.shared.handleEnvelope(peer: peerId, text)
             return
         }
-        let kind = Self.parseKind(text)
-        let message = ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, status: nil)
+        let kind = MessageKind.parse(text)
+        let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
+        let message = ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, status: nil, timestamp: timestamp)
         messages.append(message)
         if case .recording(let ticket, _) = kind {
             onBanner?("Received voice message")
             fetchRecording(ticket: ticket)
         }
-        onUpdate?()
+        notifyObservers()
     }
 
     /// Replayed invites older than 60s are from past sessions; never ring.
     private func isStaleInvite(_ event: Event) -> Bool {
         guard let ts = Double(event.timestamp), ts > 0 else { return false }
         return Date().timeIntervalSince1970 - ts > 60
-    }
-
-    /// Parses message text into text vs recording envelope kinds.
-    /// Envelope: IDFON-RECORDING/1\nid=..\ncodec=..\nduration_ms=..\nsender_id=..\nticket=..
-    static func parseKind(_ text: String) -> MessageKind {
-        guard text.hasPrefix("IDFON-RECORDING/1\n") else { return .text(text) }
-        var fields: [String: String] = [:]
-        for line in text.dropFirst("IDFON-RECORDING/1\n".count).split(separator: "\n") {
-            let pair = line.split(separator: "=", maxSplits: 1)
-            if pair.count == 2 { fields[String(pair[0])] = String(pair[1]) }
-        }
-        guard let ticket = fields["ticket"], !ticket.isEmpty else { return .text(text) }
-        let durationMs = Int(fields["duration_ms"] ?? "") ?? 0
-        return .recording(ticket: ticket, durationMs: durationMs)
     }
 
     /// Fetches a recording blob to a tmp file so it can be played.
@@ -129,25 +135,25 @@ final class ChatStore {
             try? data.write(to: url)
             await MainActor.run {
                 ChatStore.shared.recordingURLs[ticket] = url
-                ChatStore.shared.onUpdate?()
+                ChatStore.shared.notifyObservers()
             }
         }
     }
 
     func appendOutgoing(_ message: ChatMessage) {
         messages.append(message)
-        onUpdate?()
+        notifyObservers()
     }
 
     func updateMessage(id: String, _ mutate: (inout ChatMessage) -> Void) {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
         mutate(&messages[index])
-        onUpdate?()
+        notifyObservers()
     }
 
     func cacheRecording(_ ticket: String, url: URL) {
         recordingURLs[ticket] = url
-        onUpdate?()
+        notifyObservers()
     }
 
     private func runLoop() async {
