@@ -22,6 +22,8 @@ final class ChatStore {
     /// Local playback files for recording tickets (tmp; populated by the
     /// eager fetch on ingest).
     private(set) var recordingURLs: [String: URL] = [:]
+    /// Local copies of received files (saved to ~/Downloads on ingest).
+    private(set) var fileURLs: [String: URL] = [:]
     /// Our endpoint id (public key), for IDFON-RECORDING/1 envelopes.
     private(set) var selfPeerId = "unknown"
     /// Active identity id (cursor keys are per-identity).
@@ -70,6 +72,7 @@ final class ChatStore {
     func switchIdentity(to name: String) {
         messages = []
         recordingURLs = [:]
+        fileURLs = [:]
         Task {
             do {
                 let raw = try await client.request(method: "identity.use", params: ["name": AnyEncodable(name)])
@@ -112,6 +115,10 @@ final class ChatStore {
             onBanner?("Received voice message")
             fetchRecording(ticket: ticket)
         }
+        if case .file(let ticket, let name, let sizeBytes) = kind {
+            onBanner?("Received file")
+            fetchFile(ticket: ticket, name: name, sizeBytes: sizeBytes)
+        }
         notifyObservers()
     }
 
@@ -153,6 +160,42 @@ final class ChatStore {
 
     func cacheRecording(_ ticket: String, url: URL) {
         recordingURLs[ticket] = url
+        notifyObservers()
+    }
+
+    /// Fetches a received file straight to ~/Downloads, so §5's "saved to the
+    /// recipient's device" holds without the user having to ask.
+    private func fetchFile(ticket: String, name: String, sizeBytes: Int) {
+        Task.detached(priority: .userInitiated) { [client] in
+            guard let data = try? await client.fetchBlob(ticket), !data.isEmpty else {
+                await MainActor.run { ChatStore.shared.onBanner?("Could not receive file") }
+                return
+            }
+            let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            // The sender's name is untrusted: never let it escape Downloads.
+            let safe = (name as NSString).lastPathComponent
+            var url = dir.appendingPathComponent(safe)
+            if FileManager.default.fileExists(atPath: url.path) {
+                url = dir.appendingPathComponent("\(UUID().uuidString.prefix(8))-\(safe)")
+            }
+            let saved = url
+            do {
+                try data.write(to: saved)
+            } catch {
+                await MainActor.run { ChatStore.shared.onBanner?("Could not save file") }
+                return
+            }
+            await MainActor.run {
+                ChatStore.shared.fileURLs[ticket] = saved
+                ChatStore.shared.notifyObservers()
+            }
+            NSLog("idfon file: received name=\(safe) size=\(sizeBytes)")
+        }
+    }
+
+    func cacheFile(_ ticket: String, url: URL) {
+        fileURLs[ticket] = url
         notifyObservers()
     }
 

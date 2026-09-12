@@ -44,13 +44,24 @@ enum MessageKind {
     case text(String)
     /// Voice message: blob ticket + duration (ms) for playback UI.
     case recording(ticket: String, durationMs: Int)
+    /// File transfer (§5): blob ticket + display name/size. The downloaded file
+    /// lives in `ChatStore.fileURLs[ticket]`.
+    case file(ticket: String, name: String, sizeBytes: Int)
 
     static let recordingPrefix = "IDFON-RECORDING/1\n"
+    static let filePrefix = "IDFON-FILE/1\n"
 
     /// Parses a message body into plain text or an `IDFON-*/1` envelope.
     /// Kept here (not in `ChatStore`) so it stays Foundation-only and testable
     /// by `mac/Checks/MessageKindParseCheck`.
     static func parse(_ text: String) -> MessageKind {
+        if text.hasPrefix(filePrefix) {
+            let fields = envelopeFields(text, prefix: filePrefix)
+            guard let ticket = fields["ticket"], !ticket.isEmpty else { return .text(text) }
+            return .file(ticket: ticket,
+                         name: fields["name"] ?? "file",
+                         sizeBytes: Int(fields["size"] ?? "") ?? 0)
+        }
         guard text.hasPrefix(recordingPrefix) else { return .text(text) }
         let fields = envelopeFields(text, prefix: recordingPrefix)
         guard let ticket = fields["ticket"], !ticket.isEmpty else { return .text(text) }
@@ -85,6 +96,7 @@ struct ChatMessage: Identifiable {
         switch kind {
         case .text(let text): return text
         case .recording: return "Voice message"
+        case .file(_, let name, _): return name
         }
     }
 }

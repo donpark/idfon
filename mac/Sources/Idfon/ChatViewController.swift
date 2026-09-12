@@ -70,6 +70,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private var callRecordingActive = false
     private var callRecordingWaveView: WaveformView?
     private var pendingCallRecording: (durationMs: Int, ticket: String)?
+    /// The in-flight file upload (§5), so the tray's Cancel can abort it.
+    private var fileTask: Task<Void, Never>?
 
     // playback
     private var player: AVAudioPlayer?
@@ -484,14 +486,20 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             send.bezelStyle = .regularSquare
             send.isBordered = false
 
+            let attach = NSButton(image: NSImage(systemSymbolName: "plus.circle", accessibilityDescription: "Send a file")!,
+                                  target: self, action: #selector(attachTapped))
+            attach.bezelStyle = .regularSquare
+            attach.isBordered = false
+
             text.delegate = self
+            composer.addArrangedSubview(attach)
             composer.addArrangedSubview(scroll)
             composer.addArrangedSubview(mic)
             composer.addArrangedSubview(send)
             scroll.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
                 scroll.heightAnchor.constraint(equalToConstant: 36),
-                scroll.widthAnchor.constraint(equalTo: composer.widthAnchor, constant: -90),
+                scroll.widthAnchor.constraint(equalTo: composer.widthAnchor, constant: -120),
             ])
         case .memoRecording:
             let dot = NSTextField(labelWithString: "●")
@@ -622,6 +630,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         switch message.kind {
         case .recording:
             return 46
+        case .file:
+            return 46
         case .text(let text):
             return textHeight(for: message, text: text)
         }
@@ -726,6 +736,33 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 duration.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
                 duration.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
             ])
+        case .file(let ticket, let name, let sizeBytes):
+            let icon = NSImageView()
+            icon.image = NSImage(systemSymbolName: "doc.fill", accessibilityDescription: "File")
+            icon.contentTintColor = .secondaryLabelColor
+            let saved = store.fileURLs[ticket] != nil
+            let label = NSTextField(labelWithString: "\(name)\n\(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file))\(saved ? "  · saved to Downloads" : "")")
+            label.font = NSFont.systemFont(ofSize: 12)
+            label.maximumNumberOfLines = 2
+            label.lineBreakMode = .byTruncatingMiddle
+            let reveal = NSButton(title: "Show", target: self, action: #selector(revealFileTapped(_:)))
+            reveal.bezelStyle = .rounded
+            reveal.identifier = NSUserInterfaceItemIdentifier(message.id)
+            for view in [icon, label, reveal] {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                bubble.addSubview(view)
+            }
+            NSLayoutConstraint.activate([
+                icon.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
+                icon.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                icon.widthAnchor.constraint(equalToConstant: 18),
+                label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+                label.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                label.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+                reveal.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
+                reveal.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                reveal.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+            ])
         }
 
         row.addSubview(bubble)
@@ -775,6 +812,111 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc private func endCallTapped() {
         if case .idle = live.state { video.hangUp() } else { live.hangUp() }
         refreshHeaderSoon()
+    }
+
+    // MARK: - §5 file send
+
+    private static let streamableExtensions: Set<String> = ["mp4", "mkv", "mp3", "flac"]
+
+    /// Picks a file and routes it per §5: streamable media prompts
+    /// Stream-vs-Send, everything else goes straight to a transfer.
+    @objc private func attachTapped() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let name = url.lastPathComponent
+        guard Self.streamableExtensions.contains(url.pathExtension.lowercased()) else {
+            sendFile(at: url, name: name)
+            return
+        }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        let alert = NSAlert()
+        alert.messageText = "Handle Large Media"
+        alert.informativeText = "\(name) (\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))"
+        alert.addButton(withTitle: "Send File")
+        let stream = alert.addButton(withTitle: "Stream Content")
+        stream.isEnabled = false // §5 stream branch: not built yet
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        sendFile(at: url, name: name)
+    }
+
+    /// Starts a P2P file transfer (§5 "Send File"): streamed chunked upload +
+    /// ticket envelope, tracked in the Session Tray. The blob streams from disk,
+    /// so large files never sit in memory.
+    private func sendFile(at url: URL, name: String) {
+        let transferId = UUID().uuidString
+        let started = Date()
+        TransferCenter.shared.begin(id: transferId, peerId: peer.id, name: name) { [weak self] in
+            self?.fileTask?.cancel()
+        }
+        fileTask = Task {
+            do {
+                let ticket = try await client.putFile(at: url, resourceId: "file-\(UUID().uuidString)") { sent, total in
+                    let fraction = total > 0 ? Double(sent) / Double(total) : 1
+                    let rate = Double(sent) / max(Date().timeIntervalSince(started), 0.001)
+                    Task { @MainActor in
+                        TransferCenter.shared.update(id: transferId, fraction: fraction, bytesPerSecond: rate)
+                    }
+                }
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                // A newline would split the envelope's key=value lines.
+                let safeName = name.replacingOccurrences(of: "\n", with: " ")
+                let envelope = """
+                IDFON-FILE/1
+                id=\(UUID().uuidString)
+                name=\(safeName)
+                size=\(size)
+                sender_id=\(store.selfPeerId)
+                ticket=\(ticket)
+                """
+                try await client.sendText(to: peer.id, envelope)
+                store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: peer.id,
+                                                 kind: .file(ticket: ticket, name: safeName, sizeBytes: size),
+                                                 outgoing: true, status: "Sent"))
+                TransferCenter.shared.finish(id: transferId)
+                NSLog("idfon file: sent name=\(safeName) size=\(size) ticket=\(ticket)")
+            } catch is CancellationError {
+                TransferCenter.shared.finish(id: transferId)
+                NSLog("idfon file: send cancelled name=\(name)")
+            } catch {
+                TransferCenter.shared.finish(id: transferId)
+                NSLog("idfon file: send failed \(error.localizedDescription)")
+                showBanner("Send failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Reveals a received file in Finder, fetching it first if the eager ingest
+    /// fetch hasn't landed.
+    @objc private func revealFileTapped(_ sender: NSButton) {
+        guard let messageId = sender.identifier?.rawValue,
+              let message = history.first(where: { $0.id == messageId }),
+              case .file(let ticket, let name, _) = message.kind else { return }
+        if let url = store.fileURLs[ticket] {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return
+        }
+        Task {
+            do {
+                let data = try await client.fetchBlob(ticket)
+                let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                    ?? FileManager.default.temporaryDirectory
+                // Untrusted sender name: never let it escape Downloads.
+                let safe = (name as NSString).lastPathComponent
+                var url = dir.appendingPathComponent(safe)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    url = dir.appendingPathComponent("\(UUID().uuidString.prefix(8))-\(safe)")
+                }
+                try data.write(to: url)
+                store.cacheFile(ticket, url: url)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                showBanner("Download failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: - Live stage expand/collapse
