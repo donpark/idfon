@@ -219,3 +219,24 @@ Not verified: on-device visuals, VoiceOver traversal order, accessibility-size w
 (needs a `UIWindowScene`, which the headless spawn does not have — the clearance anchor and
 `contentInset` reporting are verified only by typecheck and reasoning). The wiring is now in
 place (§8); exercising it on device is the remaining step.
+
+## 10. mac (AppKit) mapping
+
+`mac/Sources/Idfon/{LiveActivityBar,OverlayPanel,LiveActivityController,TransferCenter}.swift`
+implement the same model, intents and tray rows. The differences are mechanical:
+
+- **Host**: a borderless, non-activating `NSPanel` at `.floating`, not a second `UIWindow`.
+  It is **sized to exactly the bars**, so the pass-through `hitTest` iOS needs is
+  unnecessary — there is no transparent area to forward.
+- **Docking**: under the window's title bar. The panel reports its height and the window
+  applies it through a top spacer; AppKit has no `additionalSafeAreaInsets` equivalent.
+- **No idle chrome**: mac has no navigation stack and the chat header owns idle actions
+  (`Call`, share video, peer details), so the Bar renders only while a call or a transfer is
+  in flight. “Owning thread” is just the selected peer.
+- **Sections instead of tabs**: the sidebar's Favorites / Recents / Contacts list replaces
+  the iOS `UITabBarController`.
+- **`.watching`**: a mac-only phase for the one-way video share. It publishes nothing, so
+  `audioAvailable`/`videoAvailable` are false, the toggles hide, and the verb is Stop.
+- **Verification**: `mac/Checks/LiveActivityBarCheck` runs on the host with plain `swiftc`
+  (AppKit views build without a running app), asserting per-state visibility and intent
+  wiring; the iOS check needs Mac Catalyst for the same job.
