@@ -1054,6 +1054,13 @@ fn start_live(audio: bool, video: bool) -> char_p::Box {
     // A fresh publisher always starts sending both gated streams.
     MIC_MUTED.store(false, Ordering::Relaxed);
     CAMERA_ENABLED.store(true, Ordering::Relaxed);
+    // Drop any frame left queued by a previous session before the gate opens:
+    // otherwise it is sent as this call's first video frame (an audio-only call
+    // would leak one frame of whatever the camera last saw).
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    {
+        *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
+    }
     let result = tokio_executor(async {
         let live = Live::from_env().await?.with_router().spawn();
         let broadcast = LocalBroadcast::new();
@@ -1184,27 +1191,17 @@ impl SourceTrait for PushFrameSource {
     }
     fn format(&self) -> SourceVideoFormat {
         // The H.264 encoder is initialized from these dimensions and never
-        // re-reads them per frame, so they must match the pushed frames.
-        // macOS session presets are advisory (a 1080p FaceTime camera
-        // ignores .hd1280x720), so prefer the actual dimensions of the
-        // last pushed frame, waiting briefly for capture to start; fall
-        // back to the per-OS default when nothing arrives (camera denied
-        // -> no video anyway).
-        let mut dimensions = Self::default_dimensions();
-        let deadline = Instant::now() + Duration::from_millis(1500);
-        loop {
-            if let Some((w, h, _)) = &*PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") {
-                dimensions = [*w, *h];
-                break;
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
+        // re-reads them per frame, so every pushed frame must match. Both
+        // shells normalise their frames to exactly this size (CameraPusher +
+        // VideoScaling) instead of trusting the camera: macOS session presets
+        // are advisory and the activeFormat pin can fail silently.
+        //
+        // Deliberately no probing/waiting for a pushed frame: a mic-first call
+        // has no frame to learn from, and stalling call setup to discover a
+        // size the shells already guarantee would be pure latency.
         SourceVideoFormat {
             pixel_format: PixelFormat::Bgra,
-            dimensions,
+            dimensions: Self::default_dimensions(),
         }
     }
 
@@ -1286,6 +1283,12 @@ pub fn media_live_stop() {
     // Encode pipelines are dead now; dropping the backend ends the driver
     // thread and closes the mic/speaker devices (kills the OS mic indicator).
     release_audio();
+    // The shell-pushed camera slot is a plain static and outlives the publisher;
+    // clear it here as well, so nothing stale survives into the next call.
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    {
+        *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
+    }
 }
 
 /// Subscribes to a live ticket and records decoded audio in the app-data directory.
