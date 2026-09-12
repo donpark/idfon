@@ -164,8 +164,11 @@ true, so every call publishes them. The host fills them from the active machine'
    other contacts' pills beneath (§6 Bob/Jane case). Daemon supports one call, so ≤2 in
    practice.
 
-Not resolved (not layout-blocking): Stream-vs-Send trigger (§5 modal), call-end-mid-transfer
-(model already allows rows with `phase == .idle`, so "transfer continues" needs no layout work).
+Resolved since: **Stream-vs-Send trigger** — §5 Send File routes by file extension
+(`streamableExtensions` in `ChatViewController`). The Intent Modal is a `UIAlertController`
+with the Stream action present but **disabled**, because the Stream branch itself is not
+built (it needs a live-media mount subsystem). Still open: call-end-mid-transfer (rows
+already render with `phase == .idle`, so "transfer continues" needs no layout work).
 
 ## 8. Integration contract (implemented)
 

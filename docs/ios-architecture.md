@@ -1,6 +1,6 @@
 # iOS App Architecture
 
-The iOS app (`ios/Idfon/`, ~3.8K lines Swift) is a UIKit app with programmatic UI that
+The iOS app (`ios/Idfon/`, ~4.2K lines Swift) is a UIKit app with programmatic UI that
 talks to an **in-process Rust daemon** (`idfond`, via the `libiroh_c_ffi.a` static lib).
 
 ```text
@@ -8,6 +8,7 @@ ios/
 ├── Idfon/                    # Swift app (UIKit, programmatic UI)
 │   ├── AppDelegate.swift     # app lifecycle, starts daemon + audio session, launch-arg automation
 │   ├── SceneDelegate.swift   # window, 3-tab root, Live Activity Bar overlay wiring
+│   ├── Automation.swift      # -sendfile launch-arg entry + idfon-auto: markers (device harness)
 │   ├── AppNavigationController.swift # per-tab nav clearance + content-shift for the Bar
 │   ├── PeerListViewController.swift  # Contacts tab: searchable peer list → chat
 │   ├── PlaceholderViewController.swift # empty-state tab (Favorites, Recents)
@@ -25,12 +26,13 @@ ios/
 │   ├── CameraPusher.swift    # AVCapture → FFI push_frame (BGRA 720x1280)
 │   ├── VoiceMemo.swift       # AVAudioRecorder memo + waveform amplitudes
 │   ├── LiveWaveformView.swift# mic-level visualization
-│   ├── BlobTransfer.swift    # put/fetch blobs (memo & photo exchange)
+│   ├── BlobTransfer.swift    # chunked put/fetch (memos; putFile streams from disk for §5)
+│   ├── TransferCenter.swift  # Session Tray registry: transfer rows for the Bar
 │   ├── DaemonClient.swift    # JSON IPC request/response (5s timeout)
 │   ├── DaemonClient+Methods.swift    # status/peers/sendText/waitMessages/events/call-mode
 │   ├── DaemonBootstrap.swift # spawns idfond on background thread, socket paths
 │   └── Idfon-Bridging.h      # C ABI surface (daemon_run, client_request, media_*)
-├── Checks/                   # host-run checks via Mac Catalyst (not in the Xcode target)
+├── Checks/                   # host-run checks, no simulator (not in the Xcode target)
 └── Vendor/                   # libiroh_c_ffi.a static lib (Rust, gitignored)
 ```
 
@@ -90,8 +92,10 @@ Key facts:
   re-anchors on tab switch (a call whose thread is behind another tab renders as a pill).
 - **Calls are two machines, one Bar model**: `LiveCall` (audio) and `VideoCall`
   (video/video-only) are disjoint — separated by the invite's `media` value — and
-  `LiveActivityController` renders whichever is non-idle. Mic/cam buttons gate
-  whether each published stream is *sent*; the stream set is chosen at dial time.
+  `LiveActivityController` renders whichever is non-idle. A call starts from the thread's
+  nav-bar `Call` button, publishes both tracks, and begins **mic-only** (camera off until
+  the Bar's `Cam` toggle); in-call Mic/Cam buttons gate whether each published stream is
+  *sent*.
 - **Sim vs device socket path**: sim uses `/tmp/idfon-ios.sock` (sandbox paths exceed
   the 104-byte `SUN_LEN`), device uses flat tmp path.
 - **On-device automation**: `ios/device.sh` builds/installs/launches on a physical
