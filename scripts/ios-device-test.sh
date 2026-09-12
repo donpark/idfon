@@ -75,7 +75,7 @@ xcrun devicectl device copy to --device "$device" \
 log=$(mktemp /tmp/idfon-device-test.XXXXXX)
 echo "== launching -sendfile $peer $name (timeout ${timeout_s}s, log $log)"
 xcrun devicectl device process launch --device "$device" --terminate-existing --console \
-  "$bundle_id" -sendfile "$peer" "$name" >"$log" 2>&1 &
+  "$bundle_id" -- -sendfile "$peer" "$name" >"$log" 2>&1 &
 launcher=$!
 trap 'kill "$launcher" 2>/dev/null || true' EXIT
 
@@ -83,7 +83,7 @@ trap 'kill "$launcher" 2>/dev/null || true' EXIT
 deadline=$(( $(date +%s) + timeout_s ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
   kill -0 "$launcher" 2>/dev/null || break
-  grep -q "idfon tray: finish" "$log" 2>/dev/null && break
+  if grep -q "idfon tray: finish" "$log" 2>/dev/null; then break; fi
   sleep 1
 done
 kill "$launcher" 2>/dev/null || true

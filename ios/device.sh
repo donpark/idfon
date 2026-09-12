@@ -29,4 +29,6 @@ echo "== installing to $device"
 xcrun devicectl device install app --device "$device" "$app"
 
 echo "== launching"
-xcrun devicectl device process launch --terminate-existing --device "$device" app.idfon "$@"
+# `--` stops devicectl from parsing the app's own -flags (e.g. -dial) as its
+# own options; without it every launch argument fails with "Unknown option".
+xcrun devicectl device process launch --terminate-existing --device "$device" app.idfon -- "$@"
