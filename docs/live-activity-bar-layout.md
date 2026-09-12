@@ -71,9 +71,13 @@ LiveActivityBar (UIView; .secondarySystemBackground, continuous corners, soft sh
 - Corner radius: expanded 16; compact `height/2` (set in `layoutSubviews`).
 
 **Measured (iPhone 393pt, default text size)**: expanded header + 2 tray rows = 377×148,
-header 60 tall. In-call header budget: margins 20 + controls 44·8·44·8·≈87 (End) + spacing 12
-→ identity 154 → **handle budget ≈136pt** (`@janedoe` = 78pt), timer 41pt on its own line.
-Compact pill for `03:42 @janedoe — 1 transfer, 1 stream` + End = 319×52.
+header 60 tall. In-call header budget: margins 20 + controls 44·8·44·8·≈44 (End, icon only) +
+spacing 12 → identity ≈197 → **handle budget ≈179pt** (`@janedoe` = 78pt), timer 41pt on its
+own line. Compact pill for `03:42 @janedoe — 1 transfer, 1 stream` + End = 319×52.
+
+End is **icon only** (`showsTitle: false`): the label wrapped and broke the control row, and
+the icon alone is unambiguous next to the red fill. The Bar shows a callee *name* when the
+peer-id → name map has one, else a shortened id — never the raw public key.
 
 ## 4. State → layout mapping
 

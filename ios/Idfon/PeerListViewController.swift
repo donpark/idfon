@@ -14,6 +14,7 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Contacts"
+        navigationItem.backButtonDisplayMode = .generic // show "Back", not the callee's name
         navigationController?.navigationBar.prefersLargeTitles = true
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "peer")
         refreshControl = UIRefreshControl()

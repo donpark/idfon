@@ -256,7 +256,8 @@ final class LiveActivityBar: UIView {
         case .idle:
             setVerb("bell", "Ping", .tintColor)
         case .calling, .inCall, .incoming:
-            setVerb("phone.down.fill", "End", .systemRed)
+            // Icon only: the "End" label wrapped and broke the control row (#2).
+            setVerb("phone.down.fill", "End", .systemRed, showsTitle: false)
         }
         verbButton.showsMenuAsPrimaryAction = compact && model.phase != .idle
         // Idle pill (rows only, no call) has no verb: its rows are the activity.
@@ -278,10 +279,11 @@ final class LiveActivityBar: UIView {
         setNeedsLayout()
     }
 
-    private func setVerb(_ symbol: String, _ title: String, _ color: UIColor) {
+    private func setVerb(_ symbol: String, _ title: String, _ color: UIColor, showsTitle: Bool = true) {
         verbButton.configuration?.image = UIImage(systemName: symbol)
-        verbButton.configuration?.title = model.density == .compact ? nil : title
-        verbButton.configuration?.imagePadding = model.density == .compact ? 0 : 6
+        let titled = showsTitle && model.density == .expanded
+        verbButton.configuration?.title = titled ? title : nil
+        verbButton.configuration?.imagePadding = titled ? 6 : 0
         verbButton.configuration?.baseBackgroundColor = color
         verbButton.accessibilityLabel = title
     }

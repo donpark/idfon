@@ -103,6 +103,9 @@ final class VideoCall: NSObject {
     /// Stop/start outgoing video: disabled sends no frames.
     func setVideoEnabled(_ enabled: Bool) {
         guard videoAvailable else { return }
+        // Camera comes up on demand: a mic-first call publishes the video track
+        // but doesn't start capture until the toggle is switched on.
+        if enabled { CameraPusher.shared.start() }
         videoEnabled = enabled
         applySendState()
         notify()
@@ -152,12 +155,16 @@ final class VideoCall: NSObject {
     /// own publish, invite to the peer. `audio`/`video` are the staged stream
     /// set (§3 State 2); both false is rejected by the FFI. The peer's answer
     /// triggers the return leg in handleEnvelope.
-    func dial(_ peerRef: String, audio: Bool = true, video: Bool = true) {
+    ///
+    /// `cameraOn: false` still publishes the video track but sends no frames
+    /// until the Bar's camera toggle is switched on — the default for calls
+    /// started from the nav bar (mic first).
+    func dial(_ peerRef: String, audio: Bool = true, video: Bool = true, cameraOn: Bool = true) {
         guard state == .idle, audio || video else { return }
         audioAvailable = audio
         videoAvailable = video
         audioEnabled = audio
-        videoEnabled = video
+        videoEnabled = video && cameraOn
         peer = peerRef
         state = .calling
         notify()
@@ -189,7 +196,7 @@ final class VideoCall: NSObject {
                     "mode": AnyEncodable("record"),
                 ])
                 activateAudioSession()
-                if video { CameraPusher.shared.start() }
+                if video && cameraOn { CameraPusher.shared.start() }
                 let ticket = await ffiString { media_live_start(audio ? 1 : 0, video ? 1 : 0) }
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -215,16 +222,16 @@ final class VideoCall: NSObject {
         pendingInvite = nil
         peer = pending.peer
         state = .inCall
-        // The callee always publishes both tracks.
+        // The callee always publishes both tracks, but starts mic-only — the
+        // Bar turns the camera on.
         audioAvailable = true
         videoAvailable = true
         audioEnabled = true
-        videoEnabled = true
+        videoEnabled = false
         notify()
         Task {
             do {
                 activateAudioSession()
-                CameraPusher.shared.start()
                 await join(ticket: pending.ticket)
                 let own = await ffiString { media_live_start(1, 1) }
                 guard !own.isEmpty else {

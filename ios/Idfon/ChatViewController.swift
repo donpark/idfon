@@ -64,9 +64,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         title = peer.displayName
         view.backgroundColor = .systemBackground
 
+        // One call entry (#4 feedback): the Bar owns mute / camera / End, so the
+        // nav bar no longer duplicates them with separate audio/video buttons.
+        // `.generic` keeps the back button reading "Back" instead of the
+        // callee's name when a thread is stacked on another.
+        navigationItem.backButtonDisplayMode = .generic
         navigationItem.rightBarButtonItems = [
-            UIBarButtonItem(image: UIImage(systemName: "phone"), style: .plain, target: self, action: #selector(dialTapped)),
-            UIBarButtonItem(image: UIImage(systemName: "video"), style: .plain, target: self, action: #selector(videoCallTapped)),
+            UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"), style: .plain, target: self, action: #selector(callTapped)),
             UIBarButtonItem(image: UIImage(systemName: "phone.badge.waveform"), style: .plain, target: self, action: #selector(toggleAutoAnswer)),
             incomingModeItem,
         ]
@@ -592,13 +596,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         present(CallViewController(), animated: true)
     }
 
-    @objc private func dialTapped() {
-        // Nav-bar phone = real audio call (the Bar renders it inline).
-        LiveCall.shared.dial(peer.id)
-    }
-
-    @objc private func videoCallTapped() {
-        VideoCall.shared.dial(peer.id)
+    @objc private func callTapped() {
+        // Publishes audio + video but starts mic-only: the Bar's camera toggle
+        // turns video on, so there is one call entry instead of two (#4).
+        VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)
     }
 
     /// Automation entry (`idfon://dial` + the `idfon.dial` notification): the
