@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.surfaceIncoming(peerID: peerID, label: watchOnly ? "Incoming video" : "Incoming video call")
         }
         Task { await app.refresh() }
+        runAutomationIfRequested()
     }
 
     private func surfaceIncoming(peerID: String, label: String) {
@@ -47,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Controller's sidebar item sizing fought with our root views.)
         let sidebar = SidebarViewController(app: app)
         let detail = DetailContainerViewController(app: app)
+        self.detail = detail
         let split = NSViewController()
         split.view = NSView()
         split.view.addSubview(sidebar.view)
@@ -110,7 +112,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var window: NSWindow?
     private var topInsetHeight: NSLayoutConstraint?
+    private var detail: DetailContainerViewController?
     private let liveActivity = LiveActivityController()
+
+    /// `-sendfile <peer> <path>` drives the real attachment path with no clicks
+    /// (see `Automation.swift` / `scripts/mac-e2e.sh`).
+    private func runAutomationIfRequested() {
+        guard let pending = Automation.pendingSendFile else { return }
+        Task { @MainActor in
+            // Let the window and daemon settle before touching media/threads.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            Automation.mark("sendfile start peer=\(pending.peer) file=\(pending.path)")
+            let url = URL(fileURLWithPath: pending.path)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                Automation.mark("sendfile FAIL missing \(pending.path)")
+                return
+            }
+            // Fall back to a synthetic peer, so the plumbing (thread -> tray ->
+            // transfer) is still exercised when the ref names nobody.
+            let match = app.peers.first(where: { $0.id == pending.peer || $0.name == pending.peer })
+                ?? Peer(id: pending.peer, name: nil, endpointId: nil, aliases: nil)
+            app.select(match)
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let chat = detail?.currentChat else {
+                Automation.mark("sendfile FAIL no chat")
+                return
+            }
+            chat.automateSendFile(at: url)
+        }
+    }
 
     /// Minimal menu bar with Quit and an Emergency Stop (halts all media).
     private func buildMenu() {
@@ -250,6 +280,9 @@ final class AppModel: NSObject {
 final class DetailContainerViewController: NSViewController {
     private let app: AppModel
     private var chat: ChatViewController?
+
+    /// The chat currently shown, for automation (`Automation.swift`).
+    var currentChat: ChatViewController? { chat }
 
     init(app: AppModel) {
         self.app = app

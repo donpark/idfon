@@ -889,6 +889,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         }
     }
 
+    /// Automation entry (`Automation.swift`): sends through the same path the
+    /// attachment panel reaches, so the harness exercises the real wiring.
+    func automateSendFile(at url: URL) { sendFile(at: url, name: url.lastPathComponent) }
+
     /// Reveals a received file in Finder, fetching it first if the eager ingest
     /// fetch hasn't landed.
     @objc private func revealFileTapped(_ sender: NSButton) {
