@@ -8,15 +8,14 @@ call/daemon wiring is integration work (see "Integration contract").
 
 ```swift
 struct LiveActivityBarModel: Equatable {
-    enum Phase { case idle, calling, incoming, inCall }     // §3 states; staging is derived
+    enum Phase { case idle, calling, incoming, inCall }     // §3 states (State 2 removed)
     enum Density { case expanded, compact }                 // §6 densities
     struct Row { id; name; kind: .transfer(fraction, bytesPerSecond) | .stream(position, duration, paused) }
     let peerId: String; var handle: String                  // "@janedoe"
     var phase; var micOn; var camOn; var elapsed: TimeInterval; var rows: [Row]; var density
     var audioAvailable: Bool; var videoAvailable: Bool      // tracks the session carries (§3 State 3)
-    var isStaging: Bool { phase == .idle && (micOn || camOn) }   // §3 State 2
 }
-enum LiveActivityBarIntent { toggleMic, toggleCam, ping, call, end, answer, decline,
+enum LiveActivityBarIntent { toggleMic, toggleCam, ping, end, answer, decline,
                              cancelRow(id), togglePauseRow(id), open }
 ```
 
@@ -83,14 +82,13 @@ peer-id → name map has one, else a shortened id — never the raw public key.
 
 | Phase / density | dot | title / status | mic · cam | verb slot | tray |
 | --- | --- | --- | --- | --- | --- |
-| idle, expanded | hidden | `@janedoe` / — | shown, off = slashed glyph, gray | **Ping** (bell, tint) | rows if any |
-| idle + mic∨cam, expanded (staging) | hidden | `@janedoe` / — | on = filled glyph, tint | **Call** (phone, green) | rows if any |
+| idle, expanded | hidden | `@janedoe` / — | hidden | **Ping** (bell, tint) | rows if any |
 | calling, expanded | orange | `@janedoe` / `Calling…` | shown | **End** (red) | rows if any |
 | incoming, expanded | orange | `@janedoe` / `Incoming call` | shown (pre-answer staging) | **Decline** (red) **Answer** (green); verb hidden | rows if any |
 | inCall, expanded | red | `@janedoe` / `03:42` | shown, live toggles | **End** (red) | rows if any |
 | any, compact | phase color | `● 03:42 @janedoe — 1 transfer` (one label; tap → `.open`) | hidden | End (icon only, **menu confirm**) or Decline/Answer; hidden when idle | hidden (summarised in label) |
 
-Verb tap: idle → `.ping` / `.call` (by `isStaging`); calling/inCall → `.end`. Compact End
+Verb tap: idle → `.ping`; calling/inCall → `.end`. Compact End
 uses `showsMenuAsPrimaryAction` with a single destructive "End Call" `UIAction` — the §6
 confirmation with zero alert plumbing. Tray rows: transfer → `Cancel` → `.cancelRow(id)`;
 stream → play/pause → `.togglePauseRow(id)`, `Stop` → `.cancelRow(id)`.
@@ -104,8 +102,7 @@ that stream at all. A call only publishes the tracks it was started with, so
 the Bar **hides** a toggle whose track is absent (`model.audioAvailable ==
 false` → no mic button in either density; `videoAvailable == false` → no cam
 button): showing it would promise an unmute the call cannot do. Both default
-true, so idle staging (which can pick either) and every pre-existing call site
-keep both toggles. The host fills them from the active machine's
+true, so every call publishes them. The host fills them from the active machine's
 `audioAvailable`/`videoAvailable`; `micOn`/`camOn` come from its
 `audioEnabled`/`videoEnabled` on phase entry, and a toggle calls
 `setAudioEnabled`/`setVideoEnabled` on that machine.
@@ -206,9 +203,10 @@ Not resolved (not layout-blocking): Stream-vs-Send trigger (§5 modal), call-end
 ## 9. Verification
 
 `ios/Checks/LiveActivityBarCheck/main.swift` — headless simulator run (command in file
-header): model formatting, staging derivation, expanded fill width, handle/timer untruncated
+header): model formatting, expanded fill width, handle/timer untruncated
 and stacked with the header held at 60pt, pill hugging + capsule radius, per-state button
-visibility, intent routing. Passes on iPhone 17 simulator.
+visibility (idle hides Mic/Cam, in-call shows them), intent routing. Passes on iPhone 17
+simulator.
 
 Typecheck the sources at the deployment target (`-target arm64-apple-ios17.0-simulator`).
 Not verified: on-device visuals, VoiceOver traversal order, accessibility-size wrapping

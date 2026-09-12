@@ -61,14 +61,6 @@ final class LiveActivityController: NSObject {
     private var micOn = false
     private var camOn = false
 
-    /// Per-peer pre-call staging (§3 State 2). Applied only while idle; a
-    /// call's mic/cam come from the call phase, never from here.
-    private struct Staging { var mic = false; var cam = false }
-    private var staging: [String: Staging] = [:]
-    /// The peer of the call that just ended, so its staging is dropped when
-    /// the call returns to idle (peer is already nil by then).
-    private var activeCallPeer: String?
-
     /// Body of the idle Bar's `.ping`: placeholder for the spec's ephemeral
     /// "Free to talk?" notification (the protocol has no ephemeral envelope).
     private static let pingMessage = "Free to talk?"
@@ -243,13 +235,6 @@ final class LiveActivityController: NSObject {
             stopTimer()
         }
 
-        // Staging is idle chrome, not call state: drop the ended call's
-        // staging so its thread returns to State 1 (mic/cam off).
-        if next == .idle {
-            if let ended = activeCallPeer { staging[ended] = nil; activeCallPeer = nil }
-        } else if let peer = machine?.peer, !peer.isEmpty {
-            activeCallPeer = peer
-        }
         // Answering an incoming call takes you into the callee's thread, so the
         // inline call surface is already on screen without a tap (#1).
         if previous == .incoming, next == .inCall, let peer = machine?.peer, !peer.isEmpty {
@@ -317,15 +302,10 @@ final class LiveActivityController: NSObject {
         overlay.render(models)
     }
 
-    /// State 1 chrome for `peerId`: `.idle` phase with this peer's staging
-    /// toggles. The Bar derives State 2 (`isStaging`) from `phase == .idle &&
-    /// (mic || cam)` — no separate phase.
+    /// State 1 chrome for `peerId`: idle phase, Ping verb, no stream toggles.
     private func idleModel(for peerId: String) -> LiveActivityBarModel {
-        let stage = staging[peerId] ?? Staging()
         var model = LiveActivityBarModel(peerId: peerId, handle: barHandle(for: peerId))
         model.phase = .idle
-        model.micOn = stage.mic
-        model.camOn = stage.cam
         model.density = .expanded
         return model
     }
@@ -358,22 +338,12 @@ final class LiveActivityController: NSObject {
         case .decline: ActiveMachine.current?.decline()
         case .end: ActiveMachine.current?.hangUp()
         case .open: openPeerThread(peerId)
-        case .toggleMic: toggleMicOrStaging(peerId: peerId, mic: true)
-        case .toggleCam: toggleMicOrStaging(peerId: peerId, mic: false)
+        case .toggleMic: toggleSendState(peerId: peerId, mic: true)
+        case .toggleCam: toggleSendState(peerId: peerId, mic: false)
         // Placeholder for §3's ephemeral "Free to talk?" ping: the protocol
         // has no ephemeral envelope, so this is an ordinary low-priority text
         // (delivered to the peer's thread, it does not ring like a call).
         case .ping: Task { try? await client.sendText(to: peerId, Self.pingMessage) }
-        // Staged Call picks the machine and the tracks the session publishes
-        // (§3 State 2): microphone only = audio call, camera only = video-only
-        // (camera, no audio), both = audio + video.
-        case .call:
-            let stage = staging[peerId] ?? Staging()
-            switch (stage.mic, stage.cam) {
-            case (true, false): LiveCall.shared.dial(peerId)
-            case (false, true): VideoCall.shared.dial(peerId, audio: false, video: true)
-            default: VideoCall.shared.dial(peerId, audio: true, video: true)
-            }
         // Session Tray actions (§4): Cancel aborts the transfer; pause/Stop is
         // for media streams, which have no producer yet.
         case .cancelRow(let id): TransferCenter.shared.cancel(id: id)
@@ -382,19 +352,13 @@ final class LiveActivityController: NSObject {
     }
 
     /// In-call toggles gate the active machine's outgoing streams (send/no-send
-    /// — §3 State 3); idle toggles stage the peer's State 2 state. The machine
-    /// reports back after the call, so a toggle for an absent track cannot
-    /// desync the Bar.
-    private func toggleMicOrStaging(peerId: String, mic: Bool) {
-        if phase != .idle, let machine = ActiveMachine.current, peerId == (machine.peer ?? nil) {
-            if mic { machine.setAudioEnabled(!machine.audioEnabled) } else { machine.setVideoEnabled(!machine.videoEnabled) }
-            micOn = machine.audioEnabled
-            camOn = machine.videoEnabled
-        } else {
-            var stage = staging[peerId] ?? Staging()
-            if mic { stage.mic.toggle() } else { stage.cam.toggle() }
-            staging[peerId] = stage
-        }
+    /// — §3 State 3). The machine reports back, so a toggle for an absent track
+    /// cannot desync the Bar.
+    private func toggleSendState(peerId: String, mic: Bool) {
+        guard let machine = ActiveMachine.current, peerId == (machine.peer ?? nil) else { return }
+        if mic { machine.setAudioEnabled(!machine.audioEnabled) } else { machine.setVideoEnabled(!machine.videoEnabled) }
+        micOn = machine.audioEnabled
+        camOn = machine.videoEnabled
         render()
     }
 
