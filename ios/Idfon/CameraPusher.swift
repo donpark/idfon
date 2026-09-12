@@ -172,9 +172,10 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
 
         let ptsMs = UInt64(max(0, CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)) * 1000))
-        if bytesPerRow == expected {
+        let canonical = width == VideoScaling.width && height == VideoScaling.height
+        if canonical && bytesPerRow == expected {
             media_video_push_frame(base.assumingMemoryBound(to: UInt8.self), UInt(expected * height), UInt32(width), UInt32(height), ptsMs)
-        } else {
+        } else if canonical {
             // Padded stride: copy rows into a tightly packed buffer first.
             var packed = [UInt8](repeating: 0, count: expected * height)
             let src = base.assumingMemoryBound(to: UInt8.self)
@@ -185,6 +186,19 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             }
             packed.withUnsafeBytes { raw in
                 media_video_push_frame(raw.baseAddress!.assumingMemoryBound(to: UInt8.self), UInt(packed.count), UInt32(width), UInt32(height), ptsMs)
+            }
+        } else {
+            // Not the size the encoder was configured for (the connection did not
+            // rotate to portrait, or the preset was ignored). Normalise rather
+            // than push frames the encoder would drop.
+            guard let scaled = VideoScaling.canonicalBGRA(
+                base: base, width: width, height: height, bytesPerRow: bytesPerRow) else {
+                NSLog("idfon camera push: normalise \(width)x\(height) -> \(VideoScaling.width)x\(VideoScaling.height) failed")
+                return
+            }
+            scaled.withUnsafeBytes { raw in
+                media_video_push_frame(raw.baseAddress!.assumingMemoryBound(to: UInt8.self), UInt(scaled.count),
+                                       UInt32(VideoScaling.width), UInt32(VideoScaling.height), ptsMs)
             }
         }
     }

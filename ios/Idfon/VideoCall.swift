@@ -151,18 +151,6 @@ final class VideoCall: NSObject {
 
     // MARK: - Dialer
 
-    /// Clears the shared camera frame slot before publishing.
-    ///
-    /// `media_live_stop` does not clear it, and `start_live` re-opens the camera
-    /// gate unconditionally — so without this the previous call's last frame is
-    /// sent as this call's first video frame (an audio-only call leaks one
-    /// frame), and it pins the encoder's dimensions to that stale size.
-    /// `set_video_enabled(0)` is the documented way to drop a queued frame;
-    /// `start_live` re-enables the gate immediately afterwards.
-    private static func dropStaleCameraFrame() {
-        _ = media_live_set_video_enabled(0)
-    }
-
     /// Starts a call publishing the selected tracks: session registry entry,
     /// own publish, invite to the peer. `audio`/`video` are the staged stream
     /// set (§3 State 2); both false is rejected by the FFI. The peer's answer
@@ -209,7 +197,6 @@ final class VideoCall: NSObject {
                 ])
                 activateAudioSession()
                 if video && cameraOn { CameraPusher.shared.start() }
-                Self.dropStaleCameraFrame()
                 let ticket = await ffiString { media_live_start(audio ? 1 : 0, video ? 1 : 0) }
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -245,7 +232,6 @@ final class VideoCall: NSObject {
         Task {
             do {
                 activateAudioSession()
-                Self.dropStaleCameraFrame()
                 await join(ticket: pending.ticket)
                 let own = await ffiString { media_live_start(1, 1) }
                 guard !own.isEmpty else {
