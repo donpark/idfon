@@ -53,33 +53,29 @@ The interface relies on a single persistent thread per contact, anchored by the 
 
 ## 3. Live Activity Bar State Logic
 
-The Bar replaces standard dialer screens with an inline control bar that evolves through three primary operational states. (Incoming-call handling is per-connection — CallKit or the Bar, with the Bar as the interim default until CallKit lands; see §6, Incoming-call handling. Outgoing-pending presentation remains open.)
+The Bar replaces standard dialer screens with an inline control bar that evolves through two primary operational states — Idle and Active Call (a third, pre-call staging, was removed; see State 2). (Incoming-call handling is per-connection — CallKit or the Bar, with the Bar as the interim default until CallKit lands; see §6, Incoming-call handling. Outgoing-pending presentation remains open.)
 
 ### State 1: Idle (Not in Call)
 
 ```
 +-----------------------------------------------------------------------+
-|  [<] @janedoe                       [ Mic OFF ]  [ Cam OFF ]  [ Ping ]|
+|  [<] @janedoe                                                 [ Ping ]|
 +-----------------------------------------------------------------------+
 
 ```
 
-* **Default Condition:** Both `Mic` and `Cam` are toggled `OFF`.
+* **Default Condition:** No stream toggles. A call always begins mic-only, so there is
+  nothing to stage before dialing — see State 2.
 * **Primary Action:** `[Ping]`. Tapping sends an ephemeral, low-priority "Free to talk?" notification to the recipient’s chat thread without causing the receiving device to ring loudly.
 
-### State 2: Pre-Call Staging
+### State 2: Pre-Call Staging — removed
 
-```
-+-----------------------------------------------------------------------+
-|  [<] @janedoe                       [ Mic ON  ]  [ Cam OFF ]  [ Call ]|
-+-----------------------------------------------------------------------+
-
-```
-
-* **Trigger:** Enabling either `[Mic ON]` or `[Cam ON]` staging toggles.
-* **Primary Action:** Instantly transforms `[Ping]` into `[Call]`.
-* **Staged stream set:** The staging toggles choose which outgoing streams the call carries — `Mic` only (audio call), `Cam` only (video-only: camera with no audio), or both (audio + video). Both off stays Idle (`[Ping]`).
-* **Benefit:** Allows users to establish their audio/video entry states *before* initiating connection, preventing accidental background-noise intros.
+The Bar no longer carries pre-call `Mic`/`Cam` toggles. Staging let a caller open a session
+camera-on, so a callee could answer into a video call (and a live microphone) they were not
+ready for. A call is now started from the thread's nav-bar `Call` button and **always begins
+mic-only**: both tracks are published, the camera stays off until the Bar's `Cam` toggle.
+Idle chrome is the handle plus `[Ping]`. State 1 and State 3 keep their numbers because
+other sections reference them.
 
 ### State 3: Active Call
 
@@ -203,7 +199,7 @@ ringing screen on the Bar path). Outgoing-pending presentation remains open (cur
 
 ### Two visual densities, one state machine
 
-* **Expanded (owning thread):** contact header, staging/active toggles, tray rows — as specified in §2–§4.
+* **Expanded (owning thread):** contact header, in-call toggles, tray rows — as specified in §2–§4.
 * **Compact pill (any other screen):** e.g. `● 03:42 @janedoe — 1 transfer` — tap jumps to the owning thread.
-* Activities from other contacts render as compact pills while the current thread's own Bar state renders inline (e.g., in a call with Jane, Bob's thread shows its Idle/Staging chrome plus Jane's pill).
+* Activities from other contacts render as compact pills while the current thread's own Bar state renders inline (e.g., in a call with Jane, Bob's thread shows its Idle chrome plus Jane's pill).
 * **End from the compact pill requires confirmation** — a tap that spans screens must not silently end a call. (Draggable-bubble physics à la WhatsApp/FaceTime is optional polish; a docked pill ships fine.)

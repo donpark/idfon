@@ -283,8 +283,8 @@ final class VideoCall: NSObject {
             Task { await join(ticket: invite.ticket) }
         } else if state == .idle {
             pendingInvite = (peerID, invite.ticket)
-            // Answering publishes both tracks, so the pre-answer staging
-            // toggles (§3 State 2) are live and both stay visible.
+            // Answering publishes both tracks but starts mic-only (camera off
+            // until the Bar's toggle), so there is nothing to pre-stage.
             audioAvailable = true
             videoAvailable = true
             state = .incoming

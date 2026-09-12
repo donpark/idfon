@@ -22,9 +22,6 @@ m.density = .compact
 check(m.compactText == "03:42 @janedoe — 1 transfer", "compact text: \(m.compactText)")
 m.rows.append(.init(id: "r2", name: "Demo.mp3", kind: .stream(position: 105, duration: 200, paused: false)))
 check(m.compactText == "03:42 @janedoe — 1 transfer, 1 stream", "compact mixed: \(m.compactText)")
-check(!m.isStaging, "inCall not staging")
-var idle = LiveActivityBarModel(peerId: "p1", handle: "@janedoe"); idle.micOn = true
-check(idle.isStaging, "idle+mic = staging")
 
 // layout: expanded bar with tray at 393pt (iPhone) width
 let bar = LiveActivityBar()
@@ -78,18 +75,22 @@ check(inc.contains("Answer") && inc.contains("Decline") && !inc.contains("End"),
 m.phase = .idle; m.micOn = false; m.camOn = false; bar.apply(m)
 check(bar.subviews.count > 0, "idle ok")
 
-// §3 State 2: idle + a staging toggle → verb morphs Ping→Call
+// Idle has no stream toggles and the Ping verb: a call starts from the thread's
+// nav bar and always begins mic-only, so there is nothing to stage.
 func visibleLabels() -> [String] {
     buttons(bar).filter { b in var v: UIView? = b; while let x = v { if x.isHidden { return false }; v = x.superview }; return true }
         .map { $0.accessibilityLabel ?? $0.configuration?.title ?? "?" }
 }
-m.phase = .idle; m.micOn = true; m.camOn = false; m.density = .expanded; bar.apply(m); host.layoutIfNeeded()
-let staged = visibleLabels()
-print("staging buttons:", staged)
-check(staged.contains("Call") && !staged.contains("Ping"), "staging shows Call not Ping: \(staged)")
-m.micOn = false; bar.apply(m); host.layoutIfNeeded()
-let unstaged = visibleLabels()
-check(unstaged.contains("Ping") && !unstaged.contains("Call"), "idle shows Ping not Call: \(unstaged)")
+m.phase = .idle; m.micOn = false; m.camOn = false; m.density = .expanded; bar.apply(m); host.layoutIfNeeded()
+let idleButtons = visibleLabels()
+print("idle buttons:", idleButtons)
+check(idleButtons.contains("Ping") && !idleButtons.contains("Call"), "idle verb is Ping: \(idleButtons)")
+check(!idleButtons.contains("Microphone") && !idleButtons.contains("Camera"), "idle hides mic/cam: \(idleButtons)")
+// In a call the toggles are present (both tracks published).
+m.phase = .inCall; bar.apply(m); host.layoutIfNeeded()
+let callButtons = visibleLabels()
+print("in-call buttons:", callButtons)
+check(callButtons.contains("Microphone") && callButtons.contains("Camera"), "in-call shows mic/cam: \(callButtons)")
 
 // §3 State 3: a call only carries the tracks it was published with, so a
 // toggle for an absent track is hidden (both tracks shown otherwise).

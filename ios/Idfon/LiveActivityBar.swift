@@ -4,7 +4,9 @@ import UIKit
 /// §3 states, §4 tray, §6 densities). Pure value: the host maps call/transfer
 /// state into it and re-renders on every change; the view holds no other state.
 struct LiveActivityBarModel: Equatable {
-    /// §3 phases. Staging (State 2) is derived: idle + a staging toggle on.
+    /// §3 phases. There is no staging phase: a call is started from the
+    /// thread's nav bar and always begins mic-only, so idle has no stream
+    /// toggles to derive a staging state from.
     /// `.incoming` is only ever set on the Bar path — when CallKit owns the
     /// ring the host never produces it (§6 "must not double-present").
     enum Phase: Equatable { case idle, calling, incoming, inCall }
@@ -28,15 +30,13 @@ struct LiveActivityBarModel: Equatable {
     var camOn = false
     /// Stream set the session actually carries (§3 State 3): a call can only
     /// toggle the tracks it was started with, so a toggle for an absent track
-    /// is hidden rather than shown as if it worked. Staging (idle) can pick
-    /// either, so both default true.
+    /// is hidden rather than shown as if it worked. Calls publish both, so
+    /// both default true.
     var audioAvailable = true
     var videoAvailable = true
     var elapsed: TimeInterval = 0 // in-call timer; host advances and re-renders
     var rows: [Row] = []
     var density: Density = .expanded
-
-    var isStaging: Bool { phase == .idle && (micOn || camOn) }
 
     /// Compact pill text, e.g. `03:42 @janedoe — 1 transfer` (dot is a view).
     var compactText: String {
@@ -59,7 +59,7 @@ struct LiveActivityBarModel: Equatable {
 }
 
 enum LiveActivityBarIntent: Equatable {
-    case toggleMic, toggleCam, ping, call, end, answer, decline
+    case toggleMic, toggleCam, ping, end, answer, decline
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill tapped: navigate to the owning thread.
     case open
@@ -235,10 +235,13 @@ final class LiveActivityBar: UIView {
         openTap.isEnabled = compact
         titleLabel.accessibilityTraits = compact ? .button : .staticText
 
-        // Controls. A call only carries the streams it was published with, so
-        // a toggle for an absent track is hidden (compact hides both anyway).
-        micButton.isHidden = compact || !model.audioAvailable
-        camButton.isHidden = compact || !model.videoAvailable
+        // Controls. Idle has no stream toggles: a call starts from the nav
+        // bar and always begins mic-only, so there is nothing to stage there.
+        // In a call, a toggle for an absent track is hidden (compact hides
+        // both anyway).
+        let idle = model.phase == .idle
+        micButton.isHidden = compact || idle || !model.audioAvailable
+        camButton.isHidden = compact || idle || !model.videoAvailable
         micButton.configuration?.image = UIImage(systemName: model.micOn ? "mic.fill" : "mic.slash.fill")
         camButton.configuration?.image = UIImage(systemName: model.camOn ? "video.fill" : "video.slash.fill")
         micButton.configuration?.baseForegroundColor = model.micOn ? .tintColor : .secondaryLabel
@@ -251,8 +254,6 @@ final class LiveActivityBar: UIView {
         answerButton.isHidden = !incoming
         verbButton.isHidden = incoming
         switch model.phase {
-        case .idle where model.isStaging:
-            setVerb("phone.fill", "Call", .systemGreen)
         case .idle:
             setVerb("bell", "Ping", .tintColor)
         case .calling, .inCall, .incoming:
@@ -305,7 +306,7 @@ final class LiveActivityBar: UIView {
     @objc private func openTapped() { onIntent?(.open) }
     @objc private func verbTapped() {
         switch model.phase {
-        case .idle: onIntent?(model.isStaging ? .call : .ping)
+        case .idle: onIntent?(.ping)
         case .calling, .inCall: onIntent?(.end)
         case .incoming: break
         }
