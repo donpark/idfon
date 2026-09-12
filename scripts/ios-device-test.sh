@@ -47,8 +47,13 @@ done
 [ -f "$file" ] || { echo "no such file: $file" >&2; exit 2; }
 
 if [ -z "$device" ]; then
-  device=$(xcrun devicectl list devices 2>/dev/null \
-    | grep "available" | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
+  # The device can report as busy for a moment after a previous run's teardown.
+  for _ in 1 2 3 4 5; do
+    device=$(xcrun devicectl list devices 2>/dev/null \
+      | grep "available" | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
+    if [ -n "$device" ]; then break; fi
+    sleep 2
+  done
 fi
 [ -n "$device" ] || { echo "no paired iPhone found (set --device)" >&2; exit 2; }
 

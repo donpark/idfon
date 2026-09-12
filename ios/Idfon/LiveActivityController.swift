@@ -50,6 +50,10 @@ final class LiveActivityController: NSObject {
 
     private let client = DaemonClient()
 
+    /// peer-id → display name, so the Bar shows a callee name instead of the
+    /// raw iroh public key (#3). Refreshed on call start and on resolution.
+    private var peerNames: [String: String] = [:]
+
     private var phase: LiveActivityBarModel.Phase = .idle
     /// The in-call Bar's toggle state. Mirrored from the active machine on
     /// phase entry and after each toggle, so the Bar always shows what the
@@ -206,6 +210,7 @@ final class LiveActivityController: NSObject {
         // Prime the per-connection incoming-call modes (§6); refreshed after a
         // mode change too. Incoming invites before this lands fall back to Bar.
         Task { await IncomingCallRouter.shared.refreshModes() }
+        Task { await refreshPeerNames() }
     }
 
     deinit { timer?.invalidate() }
@@ -245,6 +250,15 @@ final class LiveActivityController: NSObject {
         } else if let peer = machine?.peer, !peer.isEmpty {
             activeCallPeer = peer
         }
+        // Answering an incoming call takes you into the callee's thread, so the
+        // inline call surface is already on screen without a tap (#1).
+        if previous == .incoming, next == .inCall, let peer = machine?.peer, !peer.isEmpty {
+            openPeerThreadIfNeeded(peer)
+        }
+        // A fresh incoming invite's peer may not be in the name cache yet.
+        if next != previous, next != .idle {
+            Task { await refreshPeerNames() }
+        }
         render()
     }
 
@@ -278,7 +292,7 @@ final class LiveActivityController: NSObject {
                 model.rows = transfers.rows(for: peerId)
                 models.append(model)
             }
-            var model = LiveActivityBarModel(peerId: callPeer, handle: "@\(callPeer)")
+            var model = LiveActivityBarModel(peerId: callPeer, handle: barHandle(for: callPeer))
             model.phase = phase
             model.micOn = micOn
             model.camOn = camOn
@@ -295,7 +309,7 @@ final class LiveActivityController: NSObject {
         // so leaving the thread never hides in-flight work.
         let modeled = Set(models.map(\.peerId))
         for peerId in transfers.activePeerIds where !modeled.contains(peerId) {
-            var model = LiveActivityBarModel(peerId: peerId, handle: "@\(peerId)")
+            var model = LiveActivityBarModel(peerId: peerId, handle: barHandle(for: peerId))
             model.density = .compact
             model.rows = transfers.rows(for: peerId)
             models.append(model)
@@ -308,7 +322,7 @@ final class LiveActivityController: NSObject {
     /// (mic || cam)` — no separate phase.
     private func idleModel(for peerId: String) -> LiveActivityBarModel {
         let stage = staging[peerId] ?? Staging()
-        var model = LiveActivityBarModel(peerId: peerId, handle: "@\(peerId)")
+        var model = LiveActivityBarModel(peerId: peerId, handle: barHandle(for: peerId))
         model.phase = .idle
         model.micOn = stage.mic
         model.camOn = stage.cam
@@ -411,8 +425,32 @@ final class LiveActivityController: NSObject {
         return chat
     }
 
+    /// Opens the peer's thread unless it is already the visible one.
+    private func openPeerThreadIfNeeded(_ peerId: String) {
+        let visible = (visibleNavigationController?.visibleViewController as? ChatViewController)?.peer.id
+        guard visible != peerId else { return }
+        openPeerThread(peerId)
+    }
+
+    /// Refreshes the peer-id → display-name map the Bar renders with.
+    private func refreshPeerNames() async {
+        guard let peers = try? await client.peers() else { return }
+        peerNames = peers.reduce(into: [:]) { names, peer in
+            if let name = peer.name, !name.isEmpty { names[peer.id] = name }
+        }
+        render()
+    }
+
+    /// Bar title for a peer: the display name when known, else a shortened id —
+    /// never the full public key (#3).
+    private func barHandle(for peerId: String) -> String {
+        if let name = peerNames[peerId] { return "@\(name)" }
+        return peerId.count > 13 ? "@\(peerId.prefix(8))…" : "@\(peerId)"
+    }
+
     private func resolvePeer(_ peerId: String) async -> Peer {
         if let match = (try? await client.peers())?.first(where: { $0.id == peerId || $0.name == peerId }) {
+            if let name = match.name, !name.isEmpty { peerNames[match.id] = name }
             return match
         }
         return Peer(id: peerId, name: nil, endpointId: nil, aliases: nil, callMode: nil)

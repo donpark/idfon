@@ -19,6 +19,7 @@ final class PlaceholderViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
+        navigationItem.backButtonDisplayMode = .generic // show "Back", not a callee name
         var config = UIContentUnavailableConfiguration.empty()
         config.image = UIImage(systemName: symbol)
         config.text = title

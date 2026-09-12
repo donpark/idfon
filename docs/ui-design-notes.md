@@ -93,6 +93,11 @@ The Bar replaces standard dialer screens with an inline control bar that evolves
 * **Active Elements:** Displays live call timer, active audio/video toggles, and a prominent red `[End]` button.
 * **Live In-Call Toggling:** `Mic` and `Cam` independently gate whether each outgoing stream is **sent** or **withheld** — mute/unmute and camera on/off — without tearing down the VoIP session. This is send/no-send gating, **not** track attach/detach: the session and its negotiation stay intact. A muted mic sends silence (capture stays open, unmute is instant); a disabled camera sends no frames (the peer holds the last frame). A call can only toggle streams it was started with: turning the camera on during an audio-only call, or vice versa, would require renegotiation and is out of scope.
 
+**Voice-first entry:** the thread's nav-bar `Call` button is the one call entry — it publishes
+both tracks with **mic on and camera off**, so the Bar's `Cam` toggle turns video on when
+wanted. There is no separate video-call button (it duplicated the Bar's camera control), and
+answering an incoming call also starts mic-only.
+
 ---
 
 ## 4. Session Tray (File Transfers & Streaming)
