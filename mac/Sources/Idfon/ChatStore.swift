@@ -199,6 +199,17 @@ final class ChatStore {
         notifyObservers()
     }
 
+    /// Peer ids ordered by most recent message (newest first) — feeds the
+    /// sidebar's Recents section. Session-only: message bodies are memory-only.
+    var recentPeerIds: [String] {
+        var latest: [String: Date] = [:]
+        for message in messages {
+            if let current = latest[message.peerId], current >= message.timestamp { continue }
+            latest[message.peerId] = message.timestamp
+        }
+        return latest.sorted { $0.value > $1.value }.map(\.key)
+    }
+
     private func runLoop() async {
         while true {
             do {
