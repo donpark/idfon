@@ -1,4 +1,12 @@
 import Foundation
+
+/// A screen that renders live message state. `ChatStore` fans out to every
+/// registered observer, so several can be live at once (one peer's thread
+/// reachable from more than one tab route).
+protocol ChatStoreObserver: AnyObject {
+    func chatStoreDidUpdate()
+}
+
 /// In-memory message store tailing the daemon event stream.
 ///
 /// The event cursor is persisted so a relaunch (or foreground after
@@ -14,8 +22,20 @@ final class ChatStore {
     private let queue = DispatchQueue(label: "app.idfon.chatstore")
 
     private(set) var messages: [ChatMessage] = []
-    /// Fired on the main queue whenever messages change.
-    var onUpdate: (() -> Void)?
+
+    /// Registered screens, held weakly so a deallocated one drops out without
+    /// an explicit unregister. Touched on the main queue only.
+    private let observers = NSHashTable<AnyObject>.weakObjects()
+
+    func addObserver(_ observer: ChatStoreObserver) {
+        observers.add(observer)
+    }
+
+    private func notifyObservers() {
+        for case let observer as ChatStoreObserver in observers.allObjects {
+            observer.chatStoreDidUpdate()
+        }
+    }
 
     private var cursor: String? {
         get { UserDefaults.standard.string(forKey: Self.cursorKey) }
@@ -59,9 +79,10 @@ final class ChatStore {
             return
         }
         let kind = Self.parseKind(text)
-        messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false))
+        let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
+        messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, timestamp: timestamp))
         NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")
-        DispatchQueue.main.async { self.onUpdate?() }
+        DispatchQueue.main.async { self.notifyObservers() }
     }
 
     /// Replayed invites older than 60s are from past calls; never ring.
@@ -86,7 +107,7 @@ final class ChatStore {
 
     func appendOutgoing(_ message: ChatMessage) {
         messages.append(message)
-        DispatchQueue.main.async { self.onUpdate?() }
+        DispatchQueue.main.async { self.notifyObservers() }
     }
 
     private func runLoop() async {

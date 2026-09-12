@@ -10,15 +10,27 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         // Bar mode (the default call surface): the overlay is the in-app
-        // incoming/active-call UI; content shifts down below it.
-        let nav = AppNavigationController(rootViewController: PeerListViewController())
+        // incoming/active-call UI; content shifts down below it. Each tab is
+        // its own nav stack; the Bar renders through whichever is selected.
+        let favorites = Self.tab(
+            PlaceholderViewController(title: "Favorites", symbol: "star",
+                                      message: "Favorites you add will appear here."),
+            title: "Favorites", symbol: "star")
+        let recents = Self.tab(
+            PlaceholderViewController(title: "Recents", symbol: "clock",
+                                      message: "People you talk to will appear here."),
+            title: "Recents", symbol: "clock")
+        let contacts = Self.tab(PeerListViewController(), title: "Contacts", symbol: "person.crop.circle")
+
+        let tabs = UITabBarController()
+        tabs.viewControllers = [favorites, recents, contacts]
+
         let activity = LiveActivityController(windowScene: windowScene)
-        nav.overlay = activity.overlay
-        activity.navigationController = nav
+        activity.tabBarController = tabs
         liveActivity = activity
 
         window = UIWindow(windowScene: windowScene)
-        window?.rootViewController = nav
+        window?.rootViewController = tabs
         window?.makeKeyAndVisible()
 
         // Forward decoded peer frames to the inline video surfaces.
@@ -31,6 +43,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         URLContexts.forEach(handleURL)
+    }
+
+    /// One tab: a nav stack with a tab-bar item. Every tab is an
+    /// `AppNavigationController` so the Bar's clearance/inset applies to all.
+    private static func tab(_ root: UIViewController, title: String, symbol: String) -> AppNavigationController {
+        let nav = AppNavigationController(rootViewController: root)
+        nav.tabBarItem = UITabBarItem(title: title, image: UIImage(systemName: symbol), tag: 0)
+        return nav
     }
 
     /// Deep links for call testing/automation:

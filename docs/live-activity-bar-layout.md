@@ -141,8 +141,9 @@ keep both toggles. The host fills them from the active machine's
 
 1. **Incoming surface = inline Answer/Decline in the Bar, not a fullscreen ringing screen.**
    §6's own rationale for the Bar path ("doesn't hijack the screen") rules out fullscreen;
-   Mic/Cam stay visible so the callee can stage before answering. `SceneDelegate`'s current
-   fullscreen `CallViewController` on `.incoming` should be retired at integration time.
+   Mic/Cam stay visible so the callee can stage before answering. The `.incoming` fullscreen
+   present was retired when the Bar was integrated; `CallViewController` now exists only as
+   the expanded video surface, presented from the chat's inline video bar.
 2. **Outgoing-pending = `Calling…` status + red End (cancels).** Smallest possible state:
    same chrome as in-call minus the timer; no extra screen.
 3. **Idle-state tray = identical rows under the Idle chrome.** Rows are state-independent
@@ -164,30 +165,39 @@ keep both toggles. The host fills them from the active machine's
 Not resolved (not layout-blocking): Stream-vs-Send trigger (§5 modal), call-end-mid-transfer
 (model already allows rows with `phase == .idle`, so "transfer continues" needs no layout work).
 
-## 8. Integration contract (later step, not done here)
+## 8. Integration contract (implemented)
 
-- `SceneDelegate`: `overlay = OverlayWindow(windowScene:)`, keep a strong reference,
-  `overlay.render([...])` on every state/transfer/timer change, route `overlay.onIntent`
-  to `VideoCall` / transfer code / navigation (`.open` → push the peer's thread).
-- **Nav clearance + content shift (one place: a `UINavigationController` subclass or its
-  delegate, not per screen):**
-  - In the nav controller's `viewDidLayoutSubviews` (fires on push/pop, rotation and
-    large-title collapse, since the nav bar is its subview):
-    `overlay.topClearance = navigationBar.frame.maxY` (root nav controller ⇒ window points;
-    otherwise `navigationBar.convert(navigationBar.bounds, to: nil).maxY`).
-  - `overlay.onContentInsetChange = { inset in nav.viewControllers.forEach {
-    $0.additionalSafeAreaInsets.top = inset } }`, and re-apply the current
-    `overlay.contentInset` to a newly pushed controller in `didShow`. Children of a nav
-    controller already have nav bar + status bar in their safe area, so the addition is
-    exactly the Bar's height + gutters; scroll views and Auto Layout content follow the
-    safe area for free.
+- `SceneDelegate`: builds a `UITabBarController` (Favorites / Recents / Contacts), each tab
+  an `AppNavigationController`, then `LiveActivityController(windowScene:)` and
+  `activity.tabBarController = tabs`. The controller owns the overlay and the strong
+  scene-level reference; `overlay.onIntent` routes to `LiveCall` / `VideoCall` / transfer
+  code / navigation (`.open` → push the peer's thread on the selected tab).
+- **Tab awareness:** the controller is the `UITabBarControllerDelegate`. It resolves the
+  selected tab's nav for density and `topClearance`, and re-anchors on tab switch, so a call
+  whose thread is behind another tab renders as a compact pill.
+- **Nav clearance + content shift (one owner: `LiveActivityController`, fanned out to every
+  tab):**
+  - `AppNavigationController` exposes `topClearance` (`navigationBar.frame.maxY`; a root
+    tab's nav view shares the window origin, so this is already in window points),
+    `applyContentInset(_:)`, and two callbacks: `onLayout` (fired in
+    `viewDidLayoutSubviews` — push/pop, rotation, large-title collapse) and
+    `onVisibleControllerChanged` (fired in `didShow`).
+  - `LiveActivityController` sets `overlay.onContentInsetChange` **once** and fans the inset
+    out to every tab's nav, and applies the current `overlay.contentInset` to a newly pushed
+    controller in `didShow`. Each nav remembers its own inset so a push re-applies it.
+    Children already have nav bar + status bar in their safe area, so the addition is exactly
+    the Bar's height + gutters; scroll views and Auto Layout content follow the safe area for
+    free.
+  - Only the selected tab's `topClearance` is written (`syncClearance()`); an offscreen
+    tab's layout pass reads the selected nav, so a stale write cannot move the Bar.
   - Modals: a sheet leaves the presenting nav bar in place, so clearance is unchanged. A
     full-screen presentation (e.g. `CallViewController`) has no nav bar; the host either
     hides the overlay (`render([])`) or sets `topClearance = 0` (Bar falls back to
-    `safeArea.top + 8`). Decide at integration; both are one line.
+    `safeArea.top + 8`). Still undecided; both are one line.
 - Density rule: `.expanded` for the currently visible thread's peer, `.compact` otherwise.
-- Retire `ChatViewController.videoBar` and the `.incoming` fullscreen present in
-  `SceneDelegate.syncCallScreen`; `CallViewController` remains the expanded video surface.
+- The `.incoming` fullscreen present was retired (see §7.1). `ChatViewController.videoBar`
+  is **retained** — the inline video bar is the intended design (tap to expand) — so the
+  earlier "retire it" line is superseded.
 
 ## 9. Verification
 
@@ -200,5 +210,5 @@ Typecheck the sources at the deployment target (`-target arm64-apple-ios17.0-sim
 Not verified: on-device visuals, VoiceOver traversal order, accessibility-size wrapping
 (logic only), context-menu presentation from a non-key window, and `OverlayWindow` itself
 (needs a `UIWindowScene`, which the headless spawn does not have — the clearance anchor and
-`contentInset` reporting are verified only by typecheck and reasoning; exercise them in the
-SceneDelegate wiring step).
+`contentInset` reporting are verified only by typecheck and reasoning). The wiring is now in
+place (§8); exercising it on device is the remaining step.

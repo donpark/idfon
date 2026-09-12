@@ -1,15 +1,16 @@
 # iOS App Architecture
 
-The iOS app (`ios/Idfon/`, ~3.4K lines Swift) is a UIKit app with programmatic UI that
+The iOS app (`ios/Idfon/`, ~3.8K lines Swift) is a UIKit app with programmatic UI that
 talks to an **in-process Rust daemon** (`idfond`, via the `libiroh_c_ffi.a` static lib).
 
 ```text
 ios/
 ├── Idfon/                    # Swift app (UIKit, programmatic UI)
 │   ├── AppDelegate.swift     # app lifecycle, starts daemon + audio session, launch-arg automation
-│   ├── SceneDelegate.swift   # window + Live Activity Bar overlay wiring
-│   ├── AppNavigationController.swift # nav-bar clearance + content-shift for the Bar
-│   ├── PeerListViewController.swift  # peer picker → chat
+│   ├── SceneDelegate.swift   # window, 3-tab root, Live Activity Bar overlay wiring
+│   ├── AppNavigationController.swift # per-tab nav clearance + content-shift for the Bar
+│   ├── PeerListViewController.swift  # Contacts tab: searchable peer list → chat
+│   ├── PlaceholderViewController.swift # empty-state tab (Favorites, Recents)
 │   ├── ChatViewController.swift      # chat table + composer (text/record/review)
 │   │                         #   + inline live-video pane, incoming-call-mode menu
 │   ├── CallViewController.swift      # fullscreen video surface (presented on demand, not on ring)
@@ -41,7 +42,8 @@ in-app incoming calls.
 ```mermaid
 flowchart TD
     subgraph Swift["Swift UI layer (main thread)"]
-        PL[PeerListViewController] --> CV[ChatViewController]
+        TB[UITabBarController<br/>Favorites · Recents · Contacts] --> PL[PeerListViewController]
+        PL --> CV[ChatViewController]
         CV --> CVC[CallViewController]
         CV --> WM[VoiceMemo]
         CV --> CAMP[CameraPusher<br/>AVCapture frames]
@@ -52,7 +54,7 @@ flowchart TD
         R -->|CallKit| CK[CallKitIncomingPresenter<br/>stub · isAvailable=false]
         LC & VC --> LAC[LiveActivityController]
         LAC --> OW[OverlayWindow → LiveActivityBar]
-        NAV[AppNavigationController] -.->|clearance, content inset| OW
+        LAC -.->|clearance, content inset, per tab| NAV[AppNavigationController ×3]
     end
     subgraph Services["App services"]
         CS --> DC[DaemonClient<br/>+ Methods, BlobTransfer]
@@ -81,10 +83,11 @@ Key facts:
   `call_started`/`call_stopped` go direct to both machines, since the mode governs
   presentation, not teardown.
 - **The Bar is a window-level overlay** (`OverlayWindow`, one per scene, held by
-  `LiveActivityController`): `windowLevel` above content but below the keyboard,
-  `hitTest` passes through outside the Bar, and `AppNavigationController` feeds it
-  the nav-bar clearance and applies the returned content inset to the visible
-  controller's `additionalSafeAreaInsets.top`.
+  `LiveActivityController`): `windowLevel` above content but below the keyboard, and
+  `hitTest` passes through outside the Bar. The controller is the
+  `UITabBarControllerDelegate`: it reads clearance from the selected tab's
+  `AppNavigationController`, fans the Bar's content inset out to **every** tab's nav, and
+  re-anchors on tab switch (a call whose thread is behind another tab renders as a pill).
 - **Calls are two machines, one Bar model**: `LiveCall` (audio) and `VideoCall`
   (video/video-only) are disjoint — separated by the invite's `media` value — and
   `LiveActivityController` renders whichever is non-idle. Mic/cam buttons gate

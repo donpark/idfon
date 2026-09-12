@@ -67,6 +67,9 @@ struct ChatMessage: Identifiable {
     let peerId: String
     let kind: MessageKind
     let outgoing: Bool
+    /// Event time for received messages; `Date()` for locally-sent ones.
+    /// Nothing renders it yet — Recents ordering will consume it.
+    let timestamp: Date
 }
 
 extension AnyEncodable {

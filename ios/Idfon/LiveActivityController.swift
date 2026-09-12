@@ -9,19 +9,43 @@ import UIKit
 /// — there is no fullscreen ringing screen. `CallViewController` remains the
 /// expanded video surface, presented from the chat's inline video bar.
 @MainActor
-final class LiveActivityController {
+final class LiveActivityController: NSObject {
     /// The overlay window. Strong here (the scene holds this controller); an
     /// unreferenced `UIWindow` deallocates silently.
     let overlay: OverlayWindow
 
-    /// The nav controller hosting content, used for clearance/insets and for
-    /// `.open` navigation. Weak: the root nav controller outlives nothing else.
-    weak var navigationController: AppNavigationController? {
+    /// The tab root. The Bar renders through whichever tab is selected; every
+    /// tab's nav gets the clearance/inset wiring. Weak: the window owns it.
+    weak var tabBarController: UITabBarController? {
         didSet {
-            navigationController?.onVisibleControllerChanged = { [weak self] in self?.render() }
-            // Nav is now known, so density/clearance can be resolved.
+            tabBarController?.delegate = self
+            // One overlay callback fans out to every tab's nav.
+            overlay.onContentInsetChange = { [weak self] inset in
+                self?.navigationControllers.forEach { $0.applyContentInset(inset) }
+            }
+            navigationControllers.forEach {
+                $0.onVisibleControllerChanged = { [weak self] in self?.render() }
+                $0.onLayout = { [weak self] in self?.syncClearance() }
+            }
+            navigationControllers.forEach { $0.applyContentInset(overlay.contentInset) }
+            syncClearance()
             render()
         }
+    }
+
+    /// Every tab is an `AppNavigationController`; clearance and inset apply to
+    /// all of them, density and `topClearance` follow the selected one.
+    private var navigationControllers: [AppNavigationController] {
+        (tabBarController?.viewControllers ?? []).compactMap { $0 as? AppNavigationController }
+    }
+
+    /// The selected tab's nav, which owns `topClearance` and density.
+    private var visibleNavigationController: AppNavigationController? {
+        tabBarController?.selectedViewController as? AppNavigationController
+    }
+
+    private func syncClearance() {
+        overlay.topClearance = visibleNavigationController?.topClearance ?? 0
     }
 
     private let client = DaemonClient()
@@ -166,6 +190,7 @@ final class LiveActivityController {
 
     init(windowScene: UIWindowScene) {
         overlay = OverlayWindow(windowScene: windowScene)
+        super.init()
         overlay.onIntent = { [weak self] peerId, intent in
             self?.handle(intent, peerId: peerId)
         }
@@ -230,7 +255,7 @@ final class LiveActivityController {
     ///   thread P is visible, P's expanded idle chrome plus C's compact pill;
     ///   with no thread visible, C's compact pill only.
     private func render() {
-        let visiblePeer = (navigationController?.visibleViewController as? ChatViewController)?.peer.id
+        let visiblePeer = (visibleNavigationController?.visibleViewController as? ChatViewController)?.peer.id
         let machine = ActiveMachine.current
         let callPeer = (machine?.peer ?? nil).flatMap { $0.isEmpty ? nil : $0 }
 
@@ -338,7 +363,7 @@ final class LiveActivityController {
     /// Best-effort jump to the peer's thread: an already-pushed thread is
     /// popped to; otherwise resolve the peer and push a new one.
     private func openPeerThread(_ peerId: String) {
-        guard let navigationController else { return }
+        guard let navigationController = visibleNavigationController else { return }
         if let existing = navigationController.viewControllers
             .compactMap({ $0 as? ChatViewController })
             .first(where: { $0.peer.id == peerId }) {
@@ -356,5 +381,14 @@ final class LiveActivityController {
             return match
         }
         return Peer(id: peerId, name: nil, endpointId: nil, aliases: nil, callMode: nil)
+    }
+}
+
+/// Tab changes re-anchor the Bar to the newly selected tab and re-evaluate
+/// density, so a call whose thread is behind another tab shows as a pill.
+extension LiveActivityController: UITabBarControllerDelegate {
+    func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) {
+        syncClearance()
+        render()
     }
 }
