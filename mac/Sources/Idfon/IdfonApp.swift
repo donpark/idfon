@@ -56,17 +56,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for child in [sidebar.view, detail.view] {
             child.translatesAutoresizingMaskIntoConstraints = false
         }
+        // Spacer that absorbs the Live Activity Bar's height, so content shifts
+        // down under the overlay instead of hiding behind it. Height 0 = no bar.
+        let topInset = NSView()
+        topInset.translatesAutoresizingMaskIntoConstraints = false
+        split.view.addSubview(topInset)
+        let topInsetHeight = topInset.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
+            topInset.topAnchor.constraint(equalTo: split.view.topAnchor),
+            topInset.leadingAnchor.constraint(equalTo: split.view.leadingAnchor),
+            topInset.trailingAnchor.constraint(equalTo: split.view.trailingAnchor),
+            topInsetHeight,
             sidebar.view.leadingAnchor.constraint(equalTo: split.view.leadingAnchor),
-            sidebar.view.topAnchor.constraint(equalTo: split.view.topAnchor),
+            sidebar.view.topAnchor.constraint(equalTo: topInset.bottomAnchor),
             sidebar.view.bottomAnchor.constraint(equalTo: split.view.bottomAnchor),
             sidebar.view.widthAnchor.constraint(equalToConstant: 280),
             detail.view.leadingAnchor.constraint(equalTo: sidebar.view.trailingAnchor, constant: 1),
             detail.view.trailingAnchor.constraint(equalTo: split.view.trailingAnchor),
-            detail.view.topAnchor.constraint(equalTo: split.view.topAnchor),
+            detail.view.topAnchor.constraint(equalTo: topInset.bottomAnchor),
             detail.view.bottomAnchor.constraint(equalTo: split.view.bottomAnchor),
             detail.view.widthAnchor.constraint(greaterThanOrEqualToConstant: 420),
         ])
+        self.topInsetHeight = topInsetHeight
 
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -81,9 +92,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.window = window // retain: a window not owned by the delegate can be released
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // The Live Activity Bar overlay: anchored under the title bar, reporting
+        // the space it needs so the split shifts down.
+        liveActivity.selectedPeerId = { [weak app] in app?.selectedPeer?.id }
+        liveActivity.onOpenPeer = { [weak self] peerId in
+            guard let self, let match = self.app.peers.first(where: { $0.id == peerId || $0.name == peerId })
+            else { return }
+            self.app.select(match)
+            self.window?.makeKeyAndOrderFront(nil)
+        }
+        liveActivity.onContentInsetChange = { [weak self] inset in
+            self?.topInsetHeight?.constant = inset
+        }
+        liveActivity.attach(to: window)
     }
 
     private var window: NSWindow?
+    private var topInsetHeight: NSLayoutConstraint?
+    private let liveActivity = LiveActivityController()
 
     /// Minimal menu bar with Quit and an Emergency Stop (halts all media).
     private func buildMenu() {

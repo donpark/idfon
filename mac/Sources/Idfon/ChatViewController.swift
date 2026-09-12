@@ -34,8 +34,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private let videoView = NSImageView()
     private let videoSpinner = NSProgressIndicator()
 
-    // live call UI (hybrid: inline stage under the header, tap to expand)
-    private var liveBar: NSStackView?
+    // live call UI (fullscreen stage; the Live Activity Bar owns the inline
+    // call chrome, so there is no in-chat live bar any more)
     private var liveWaveView: WaveformView?
     private var callMeter: AudioMeter?
     private var fullscreenOverlay: NSView?
@@ -100,7 +100,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
         buildBanner()
         buildVideoPanel()
-        buildLiveBar()
         buildMessageTable()
 
         composer = NSStackView()
@@ -109,7 +108,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         composer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 10, right: 12)
         rebuildComposer()
 
-        let outer = NSStackView(views: [headerRow, liveBar ?? NSView(), bannerBox, videoPanel ?? NSView(), tableScrollView, composer])
+        let outer = NSStackView(views: [headerRow, bannerBox, videoPanel ?? NSView(), tableScrollView, composer])
         outer.orientation = .vertical
         outer.spacing = 0
         outer.edgeInsets = NSEdgeInsets()
@@ -117,7 +116,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         // (header/banner/video/composer) keep their own constraints.
         tableScrollView.setContentHuggingPriority(.defaultLow, for: .vertical)
         headerRow.setContentCompressionResistancePriority(.required, for: .vertical)
-        liveBar?.setContentCompressionResistancePriority(.required, for: .vertical)
         composer.setContentCompressionResistancePriority(.required, for: .vertical)
         // Container as the VC's view; the stack fills it.
         let container = NSView()
@@ -169,37 +167,30 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private func refreshHeader() {
         var buttons: [NSButton] = []
         var status = ""
+        // The Live Activity Bar owns Answer/Decline/End and the stream toggles
+        // (§4 feedback: no duplicated call controls); the header keeps only the
+        // call entry, the mac-only extras, and the status line.
         switch live.state {
         case .incoming(let p) where p == peer.id:
-            buttons = [headerButton("Answer", #selector(liveAnswerTapped), prominent: true),
-                       headerButton("Decline", #selector(liveDeclineTapped))]
             status = "Incoming call"
         case .inCall(let p) where p == peer.id:
-            buttons = [headerButton("End call", #selector(liveHangUpTapped), destructive: true),
-                       headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
+            buttons = [headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
             status = "In call"
         case .calling(let p) where p == peer.id:
-            buttons = [headerButton("Cancel", #selector(liveHangUpTapped))]
             status = "Calling…"
         default:
             switch video.state {
             case .incoming where video.pendingPeer == peer.id:
-                buttons = [headerButton(video.pendingWatchOnly ? "Watch" : "Answer video", #selector(videoAnswerTapped), prominent: true),
-                           headerButton("Decline", #selector(videoDeclineTapped))]
                 status = video.pendingWatchOnly ? "Incoming video" : "Incoming video call"
             case .inCall where video.activePeer == peer.id:
-                buttons = [headerButton("End call", #selector(videoHangUpTapped), destructive: true),
-                           headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
+                buttons = [headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
                 status = "In video call"
             case .watching where video.activePeer == peer.id:
-                buttons = [headerButton("Stop watching", #selector(videoHangUpTapped), destructive: true)]
                 status = "Watching video"
             case .calling where video.activePeer == peer.id:
-                buttons = [headerButton("Cancel", #selector(videoHangUpTapped))]
                 status = "Calling…"
             default:
-                buttons = [headerSymbolButton("phone", #selector(liveCallTapped), "Start audio call"),
-                           headerSymbolButton("video", #selector(videoCallTapped), "Start video call"),
+                buttons = [headerSymbolButton("phone.arrow.up.right", #selector(callTapped), "Start call"),
                            headerSymbolButton("arrow.down.doc", #selector(shareVideoTapped), "Share a video file"),
                            headerSymbolButton("person.crop.circle", #selector(peerDetailsTapped), "Peer details")]
             }
@@ -305,7 +296,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let active = videoActive() || audioActive()
         guard active else {
             isLiveFullscreen = false
-            liveBar?.isHidden = true
             videoPanel?.isHidden = true
             fullscreenOverlay?.isHidden = true
             stopCallMeter()
@@ -314,21 +304,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         videoPanel?.isHidden = !(videoActive() && !isLiveFullscreen)
         if videoActive(), video.lastFrame == nil { videoSpinner.startAnimation(nil) }
         else { videoSpinner.stopAnimation(nil) }
-        // Audio pill only when there is no video stage taking the inline slot.
-        let showBar = audioActive() && !videoActive()
-        liveBar?.isHidden = !showBar
-        if showBar {
-            _ = ensureCallMeter()
-            if let wave = liveWaveView, wave.superview == nil {
-                wave.translatesAutoresizingMaskIntoConstraints = false
-                liveBar?.insertView(wave, at: 0, in: .leading)
-                NSLayoutConstraint.activate([
-                    wave.heightAnchor.constraint(equalToConstant: 22),
-                    wave.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
-                ])
-            }
-            liveStatusLabel()?.stringValue = live.state == .calling(peer: peer.id) ? "Calling…" : "In call"
-        }
+        // The Live Activity Bar owns the inline call chrome now; the fullscreen
+        // stage still needs the meter for its waveform.
+        _ = ensureCallMeter()
         rebuildFullscreenContent()
         fullscreenOverlay?.isHidden = !isLiveFullscreen
     }
@@ -351,26 +329,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         callMeter = nil
         liveWaveView?.removeFromSuperview()
         liveWaveView = nil
-    }
-
-    private func buildLiveBar() {
-        let bar = NSStackView()
-        bar.orientation = .horizontal
-        bar.spacing = 10
-        bar.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-        let status = NSTextField(labelWithString: "")
-        status.font = NSFont.systemFont(ofSize: 12)
-        status.textColor = .secondaryLabelColor
-        status.identifier = NSUserInterfaceItemIdentifier("liveStatus")
-        let expand = headerSymbolButton("arrow.up.left.and.arrow.down.right", #selector(liveExpandTapped), "Expand call")
-        bar.addArrangedSubview(status)
-        bar.addArrangedSubview(expand)
-        liveBar = bar
-        bar.isHidden = true
-    }
-
-    private func liveStatusLabel() -> NSTextField? {
-        liveBar?.arrangedSubviews.first(where: { $0.identifier?.rawValue == "liveStatus" }) as? NSTextField
     }
 
     private func buildFullscreenOverlay(container: NSView) {
@@ -441,25 +399,25 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             switch live.state {
             case .inCall:
                 title = "In call"
-                buttons = [headerButton("End call", #selector(liveHangUpTapped), destructive: true),
+                buttons = [headerButton("End call", #selector(endCallTapped), destructive: true),
                            headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
             case .calling:
                 title = "Calling…"
-                buttons = [headerButton("Cancel", #selector(liveHangUpTapped))]
+                buttons = [headerButton("Cancel", #selector(endCallTapped))]
             default: break
             }
         } else if showVideo {
             switch video.state {
             case .inCall:
                 title = "In video call"
-                buttons = [headerButton("End call", #selector(videoHangUpTapped), destructive: true),
+                buttons = [headerButton("End call", #selector(endCallTapped), destructive: true),
                            headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
             case .watching:
                 title = "Watching video"
-                buttons = [headerButton("Stop watching", #selector(videoHangUpTapped), destructive: true)]
+                buttons = [headerButton("Stop watching", #selector(endCallTapped), destructive: true)]
             case .calling:
                 title = "Calling…"
-                buttons = [headerButton("Cancel", #selector(videoHangUpTapped))]
+                buttons = [headerButton("Cancel", #selector(endCallTapped))]
             default: break
             }
         }
@@ -623,8 +581,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             self?.view.window?.makeFirstResponder(self?.composerTextView)
         }
         store.onBanner = { [weak self] text in self?.showBanner(text) }
-        LiveCall.shared.onState = { [weak self] in self?.refreshHeaderSoon() }
-        VideoCall.shared.onState = { [weak self] in self?.refreshHeaderSoon() }
+        LiveCall.shared.addStateObserver(self)
+        VideoCall.shared.addStateObserver(self)
         VideoCall.shared.onFrame = { [weak self] image in self?.updateVideoFrame(image) }
         syncMessages()
         // Media artifacts (video-frame.jpg, recordings) for this conversation.
@@ -635,8 +593,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     override func viewDidDisappear() {
         store.onBanner = nil
         VideoCall.shared.onFrame = nil
-        VideoCall.shared.onState = nil
-        LiveCall.shared.onState = nil
         stopCallMeter()
         memoTimer?.invalidate()
         bannerTimer?.invalidate()
@@ -813,14 +769,13 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     // MARK: - Calls
 
-    @objc private func liveCallTapped() { live.dial(peer.id) }
-    @objc private func videoCallTapped() { video.dial(peer.id) }
-    @objc private func liveAnswerTapped() { live.answer(); refreshHeaderSoon() }
-    @objc private func liveDeclineTapped() { live.decline(); refreshHeaderSoon() }
-    @objc private func liveHangUpTapped() { live.hangUp(); refreshHeaderSoon() }
-    @objc private func videoAnswerTapped() { video.answer(); refreshHeaderSoon() }
-    @objc private func videoDeclineTapped() { video.decline(); refreshHeaderSoon() }
-    @objc private func videoHangUpTapped() { video.hangUp(); refreshHeaderSoon() }
+    @objc private func callTapped() { video.dial(peer.id, cameraOn: false) }
+
+    /// Ends whichever machine owns the call (fullscreen stage + Bar).
+    @objc private func endCallTapped() {
+        if case .idle = live.state { video.hangUp() } else { live.hangUp() }
+        refreshHeaderSoon()
+    }
 
     // MARK: - Live stage expand/collapse
 
@@ -1171,4 +1126,8 @@ final class ComposerTextView: NSTextView {
 
 extension ChatViewController: ChatStoreObserver {
     func chatStoreDidUpdate() { syncMessages() }
+}
+
+extension ChatViewController: CallStateObserver {
+    func callStateDidChange() { refreshHeaderSoon() }
 }

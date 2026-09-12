@@ -2,6 +2,14 @@ import AppKit
 import Foundation
 import CIdfon
 
+/// A screen that renders call state. Both call machines fan out to every
+/// registered observer, so the Bar and the chat header can coexist without
+/// clobbering each other's callback.
+@MainActor
+protocol CallStateObserver: AnyObject {
+    func callStateDidChange()
+}
+
 /// Parsed IDFON-LIVE/1 invite envelope (native/src/core.ts parseLiveInvite).
 /// Shape: "IDFON-LIVE/1\naction=start\nmedia=video-call\nticket=<ticket>"
 struct LiveInvite {
@@ -63,11 +71,16 @@ final class LiveCall {
     private(set) var state: State = .idle
     private(set) var lastError: String?
 
-    /// Observed on the main queue whenever state (or error) changed.
-    var onState: (() -> Void)?
     /// Fired on the main queue when an incoming invite arrives (GUI parity:
     /// banner + auto-open regardless of open chat).
     var onIncoming: ((_ peerID: String) -> Void)?
+
+    private let stateObservers = NSHashTable<AnyObject>.weakObjects()
+
+    /// Registers a screen to be told when call state changes; held weakly.
+    func addStateObserver(_ observer: CallStateObserver) {
+        stateObservers.add(observer)
+    }
 
     private let client = DaemonClient()
 
@@ -75,6 +88,7 @@ final class LiveCall {
 
     func dial(_ peerId: String) {
         guard case .idle = state else { return }
+        audioEnabled = true // this session carries audio from the start
         state = .calling(peer: peerId)
         notify()
         Task {
@@ -101,6 +115,7 @@ final class LiveCall {
                     return
                 }
                 published = true
+                applySendState()
                 // Audio invite: no media line (audio is the default).
                 try await client.sendText(to: peerId, "IDFON-LIVE/1\naction=start\nticket=\(ticket)")
             } catch {
@@ -113,6 +128,7 @@ final class LiveCall {
 
     func answer() {
         guard case .incoming(let peer) = state, let pending = pendingInvite else { return }
+        audioEnabled = true
         state = .inCall(peer: peer)
         notify()
         Task {
@@ -130,6 +146,7 @@ final class LiveCall {
                     return
                 }
                 published = true
+                applySendState()
                 // Audio invite: no media line (audio is the default).
                 try await client.sendText(to: pending.peer, "IDFON-LIVE/1\naction=start\nticket=\(own)")
                 // Informational parity with core.ts's video answer branch.
@@ -197,6 +214,42 @@ final class LiveCall {
         onIncoming?(peerID)
     }
 
+    // MARK: - Send gating (§3 State 3)
+
+    /// This machine carries audio only; video is never available here.
+    let audioAvailable = true
+    let videoAvailable = false
+    /// Whether each stream is currently *sent* (send/no-send gating, never
+    /// track attach/detach).
+    private(set) var audioEnabled = false
+    private(set) var videoEnabled = false
+
+    /// Mute/unmute outgoing audio: disabled sends silence, capture stays open.
+    func setAudioEnabled(_ enabled: Bool) {
+        guard audioAvailable else { return }
+        audioEnabled = enabled
+        applySendState()
+        notify()
+    }
+
+    /// No-op on this machine: there is no video track to gate.
+    func setVideoEnabled(_ enabled: Bool) {
+        guard videoAvailable else { return }
+        videoEnabled = enabled
+        applySendState()
+        notify()
+    }
+
+    /// Pushes the current send state to the published session (no-op while the
+    /// publish is still in flight, or after it stopped).
+    private func applySendState() {
+        guard published else { return }
+        let audio: UInt8 = audioEnabled ? 1 : 0
+        Task.detached(priority: .userInitiated) {
+            _ = media_live_set_audio_enabled(audio)
+        }
+    }
+
     // MARK: - Internals
 
     private var pendingInvite: (peer: String, ticket: String)?
@@ -238,6 +291,8 @@ final class LiveCall {
             }
         }
         published = false
+        audioEnabled = false
+        videoEnabled = false
         pendingInvite = nil
         Task.detached(priority: .userInitiated) {
             media_live_stop()
@@ -254,7 +309,9 @@ final class LiveCall {
     }
 
     private func notify() {
-        onState?()
+        for case let observer as CallStateObserver in stateObservers.allObjects {
+            observer.callStateDidChange()
+        }
     }
 
     private func ffiString(_ body: @escaping () -> UnsafeMutablePointer<CChar>?) async -> String {
@@ -288,11 +345,16 @@ final class VideoCall {
     private(set) var lastError: String?
     /// Decoded peer frames (~10fps), main queue.
     var onFrame: ((NSImage?) -> Void)?
-    /// Observed on the main queue whenever state (or error) changed.
-    var onState: (() -> Void)?
     /// Fired on the main queue when an incoming invite arrives; bool = one-way
     /// video share (GUI parity: banner + auto-open).
     var onIncoming: ((_ peerID: String, _ watchOnly: Bool) -> Void)?
+
+    private let stateObservers = NSHashTable<AnyObject>.weakObjects()
+
+    /// Registers a screen to be told when call state changes; held weakly.
+    func addStateObserver(_ observer: CallStateObserver) {
+        stateObservers.add(observer)
+    }
 
     private let client = DaemonClient()
     private var frameTimer: Timer?
@@ -317,6 +379,51 @@ final class VideoCall {
         notify()
     }
 
+    // MARK: - Send gating (§3 State 3)
+
+    /// What the session carries: both tracks for a call, none for a watch-only
+    /// session (which never publishes).
+    private(set) var audioAvailable = false
+    private(set) var videoAvailable = false
+    /// Whether each stream is currently *sent* (send/no-send gating, never
+    /// track attach/detach).
+    private(set) var audioEnabled = false
+    private(set) var videoEnabled = false
+    /// The own-media publish exists (set after `media_live_start` succeeds).
+    private var published = false
+
+    /// Mute/unmute outgoing audio: disabled sends silence, capture stays open.
+    func setAudioEnabled(_ enabled: Bool) {
+        guard audioAvailable else { return }
+        audioEnabled = enabled
+        applySendState()
+        notify()
+    }
+
+    /// Stop/start outgoing video: disabled sends no frames. Enabling also brings
+    /// the camera up, since a mic-first call never started capture.
+    func setVideoEnabled(_ enabled: Bool) {
+        guard videoAvailable else { return }
+        if enabled { CameraPusher.shared.start() }
+        videoEnabled = enabled
+        applySendState()
+        notify()
+    }
+
+    /// Pushes the current send state to the published session (no-op while the
+    /// publish is still in flight, or after it stopped).
+    private func applySendState() {
+        guard published else { return }
+        let audio: UInt8 = audioEnabled ? 1 : 0
+        let video: UInt8 = videoEnabled ? 1 : 0
+        let hasAudio = audioAvailable
+        let hasVideo = videoAvailable
+        Task.detached(priority: .userInitiated) {
+            if hasAudio { _ = media_live_set_audio_enabled(audio) }
+            if hasVideo { _ = media_live_set_video_enabled(video) }
+        }
+    }
+
     // MARK: - FFI wrappers (blocking C calls must leave the main thread)
 
     private func ffiString(_ body: @escaping () -> UnsafeMutablePointer<CChar>?) async -> String {
@@ -332,8 +439,14 @@ final class VideoCall {
     /// Starts a video call: session registry entry, own mic+camera publish,
     /// invite to the peer. The peer's answer triggers the return leg in
     /// handleEnvelope.
-    func dial(_ peerRef: String) {
+    func dial(_ peerRef: String, cameraOn: Bool = true) {
         guard state == .idle else { return }
+        // Both tracks are published; a mic-first call keeps the camera off until
+        // the Bar's toggle calls `setVideoEnabled(true)`.
+        audioAvailable = true
+        videoAvailable = true
+        audioEnabled = true
+        videoEnabled = cameraOn
         peer = peerRef
         state = .calling
         notify()
@@ -365,14 +478,17 @@ final class VideoCall {
                     "mode": AnyEncodable("record"),
                 ])
                 // Start capture first so the dylib sees the real camera
-                // dimensions when it configures the H.264 encoder.
-                CameraPusher.shared.start()
+                // dimensions when it configures the H.264 encoder. A mic-first
+                // call skips this; `setVideoEnabled(true)` starts it later.
+                if cameraOn { CameraPusher.shared.start() }
                 let ticket = await ffiString { media_live_start(1, 1) } // mic + camera
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
                     return
                 }
+                published = true
+                applySendState()
                 try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
                 if case .calling = state { /* still waiting for the return leg */ }
             } catch {
@@ -393,6 +509,12 @@ final class VideoCall {
         peer = pending.peer
         state = watchOnly ? .watching : .inCall
         watching = watchOnly
+        // A call publishes both tracks but starts mic-only; a watch-only session
+        // has no own publish at all, so its toggles stay hidden.
+        audioAvailable = !watchOnly
+        videoAvailable = !watchOnly
+        audioEnabled = !watchOnly
+        videoEnabled = false
         notify()
         Task {
             do {
@@ -402,15 +524,15 @@ final class VideoCall {
                     try? await client.sendText(to: pending.peer, "call_started")
                     return
                 }
-                // Start capture first so the dylib sees the real camera
-                // dimensions when it configures the H.264 encoder.
-                CameraPusher.shared.start()
+                // Mic-first: capture stays down until `setVideoEnabled(true)`.
                 let own = await ffiString { media_live_start(1, 1) }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
                     return
                 }
+                published = true
+                applySendState()
                 try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true))
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
@@ -494,6 +616,11 @@ final class VideoCall {
         watching = false
         lastFrame = nil
         lastFrame = nil
+        published = false
+        audioAvailable = false
+        videoAvailable = false
+        audioEnabled = false
+        videoEnabled = false
         Task.detached(priority: .userInitiated) {
             media_live_stop()
             media_video_stop()
@@ -549,6 +676,8 @@ final class VideoCall {
     }
 
     private func notify() {
-        onState?()
+        for case let observer as CallStateObserver in stateObservers.allObjects {
+            observer.callStateDidChange()
+        }
     }
 }
