@@ -71,9 +71,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             button("Add Connection…", #selector(addConnectionTapped)),
             button("Create Identity…", #selector(createIdentityTapped)),
             button("Issue Receive Ticket…", #selector(issueTicketTapped)),
-            button("Subscribe to Live Ticket…", #selector(subscribeTapped)),
             button("Audio Settings…", #selector(audioSettingsTapped)),
-            button("Emergency Stop", #selector(emergencyStopTapped)),
         ])
         actions.orientation = .vertical
         actions.spacing = 4
@@ -322,23 +320,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         }
     }
 
-    @objc private func subscribeTapped() {
-        let field = NSTextField(string: "")
-        field.placeholderString = "iroh-live:… ticket"
-        presentAlert(title: "Subscribe to Live Audio",
-                     message: "Paste a live ticket to hear a broadcast directly (GUI's manual subscribe).",
-                     accessory: field, okTitle: "Subscribe") {
-            let ticket = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !ticket.isEmpty else { return }
-            Task.detached(priority: .userInitiated) {
-                let ok = media_live_subscribe(ticket) == 1
-                await MainActor.run {
-                    ChatStore.shared.onBanner?(ok ? "Live audio subscribed" : "Live subscribe failed")
-                }
-            }
-        }
-    }
-
     @objc private func audioSettingsTapped() {
         let settings = AudioSettingsViewController()
         if let window = view.window {
@@ -352,11 +333,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
                 if response == .alertFirstButtonReturn { settings.apply() }
             }
         }
-    }
-
-    @objc private func emergencyStopTapped() {
-        Task.detached(priority: .userInitiated) { media_emergency_stop() }
-        ChatStore.shared.onBanner?("Emergency stop")
     }
 
     /// Simple informational sheet (no OK handler).
