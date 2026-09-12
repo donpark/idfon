@@ -5,11 +5,16 @@ extension DaemonClient {
     /// Chunked blob store (media.resource.put; mirrors the CLI's put_data:
     /// single-chunk puts carry finish=false and the ticket comes back in that
     /// response; multi-chunk sends a trailing empty finish=true).
-    func putData(_ data: Data, resourceId: String) async throws -> String {
+    /// `onProgress` receives (bytesSent, totalBytes) after each chunk; it is
+    /// called on whatever executor this runs on. Cancelling the enclosing task
+    /// aborts at the next chunk boundary.
+    func putData(_ data: Data, resourceId: String,
+                 onProgress: ((Int, Int) -> Void)? = nil) async throws -> String {
         let chunkSize = 200_000
         var offset = 0
         var ticket = ""
         while offset < data.count {
+            try Task.checkCancellation()
             let end = min(offset + chunkSize, data.count)
             let response = try await request(method: "media.resource.put", params: [
                 "resource_id": AnyEncodable(resourceId),
@@ -19,8 +24,10 @@ extension DaemonClient {
             ])
             ticket = response?["blob_ticket"]?.stringValue ?? ticket
             offset = end
+            onProgress?(offset, data.count)
         }
         if data.count > chunkSize {
+            try Task.checkCancellation()
             let response = try await request(method: "media.resource.put", params: [
                 "resource_id": AnyEncodable(resourceId),
                 "bytes": AnyEncodable([]),

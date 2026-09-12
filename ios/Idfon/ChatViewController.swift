@@ -31,6 +31,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let closeButton = UIButton(type: .system)
     private let playButton = UIButton(type: .system)
     private var reviewPlayer: AVAudioPlayer?
+    /// The in-flight memo upload, so the Session Tray's Cancel can abort it.
+    private var memoTask: Task<Void, Never>?
 
     private var autoAnswerArmed = false
     private var messages: [ChatMessage] = []
@@ -363,10 +365,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let url = memoURL else { return }
         let durationMs = Int(memoDuration * 1000)
         showCallStatus("Sending voice message…")
-        Task {
+        // §4: the upload rides the Session Tray while it's in flight, and its
+        // Cancel aborts the chunked put.
+        let transferId = UUID().uuidString
+        let started = Date()
+        TransferCenter.shared.begin(id: transferId, peerId: peer.id, name: "Voice message") { [weak self] in
+            self?.memoTask?.cancel()
+        }
+        memoTask = Task {
             do {
                 let data = try Data(contentsOf: url)
-                let ticket = try await client.putData(data, resourceId: "memo-\(UUID().uuidString)")
+                let ticket = try await client.putData(data, resourceId: "memo-\(UUID().uuidString)") { sent, total in
+                    let fraction = total > 0 ? Double(sent) / Double(total) : 1
+                    let rate = Double(sent) / max(Date().timeIntervalSince(started), 0.001)
+                    Task { @MainActor in
+                        TransferCenter.shared.update(id: transferId, fraction: fraction, bytesPerSecond: rate)
+                    }
+                }
                 let envelope = """
                 IDFON-RECORDING/1
                 id=\(UUID().uuidString)
@@ -379,11 +394,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 try await client.sendText(to: peer.id, envelope)
                 ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .recording(ticket: ticket, durationMs: durationMs, localURL: url), outgoing: true, timestamp: Date()))
                 try? FileManager.default.removeItem(at: url)
+                TransferCenter.shared.finish(id: transferId)
                 self.memoURL = nil
                 self.reviewPlayer = nil
                 self.mode = .normal
                 self.showCallStatus(nil)
+            } catch is CancellationError {
+                TransferCenter.shared.finish(id: transferId)
+                self.showCallStatus("Voice message cancelled")
             } catch {
+                TransferCenter.shared.finish(id: transferId)
                 self.showCallStatus("Send failed: \(error.localizedDescription)")
             }
         }
