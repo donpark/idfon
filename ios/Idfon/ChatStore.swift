@@ -78,7 +78,7 @@ final class ChatStore {
             } }
             return
         }
-        let kind = Self.parseKind(text)
+        let kind = MessageKind.parse(text)
         let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
         messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, timestamp: timestamp))
         NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")
@@ -91,22 +91,17 @@ final class ChatStore {
         return Date().timeIntervalSince1970 - ts > 60
     }
 
-    /// Parses message text into text vs recording envelope kinds.
-    /// Envelope: IDFON-RECORDING/1\nid=..\ncodec=..\nsample_rate=..\nduration_ms=..\nsender_id=..\nticket=..
-    static func parseKind(_ text: String) -> MessageKind {
-        guard text.hasPrefix("IDFON-RECORDING/1\n") else { return .text(text) }
-        var fields: [String: String] = [:]
-        for line in text.dropFirst("IDFON-RECORDING/1\n".count).split(separator: "\n") {
-            let pair = line.split(separator: "=", maxSplits: 1)
-            if pair.count == 2 { fields[String(pair[0])] = String(pair[1]) }
-        }
-        guard let ticket = fields["ticket"], !ticket.isEmpty else { return .text(text) }
-        let durationMs = Int(fields["duration_ms"] ?? "") ?? 0
-        return .recording(ticket: ticket, durationMs: durationMs, localURL: nil)
-    }
-
     func appendOutgoing(_ message: ChatMessage) {
         messages.append(message)
+        DispatchQueue.main.async { self.notifyObservers() }
+    }
+
+    /// Attaches a downloaded file to its message so the cell can offer it
+    /// directly instead of re-fetching.
+    func attachFile(at url: URL, to messageId: String) {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }),
+              case .file(let ticket, let name, let sizeBytes, _) = messages[index].kind else { return }
+        messages[index].kind = .file(ticket: ticket, name: name, sizeBytes: sizeBytes, localURL: url)
         DispatchQueue.main.async { self.notifyObservers() }
     }
 

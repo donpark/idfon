@@ -1,5 +1,6 @@
 import UIKit
 import AVFAudio
+import UniformTypeIdentifiers
 
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UITextViewDelegate {
     /// Read by the Live Activity Bar coordinator (density + `.open` routing).
@@ -11,6 +12,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let composerText = UITextView()
     private let micButton = UIButton(type: .system)
     private let sendButton = UIButton(type: .system)
+    private let attachButton = UIButton(type: .system)
     private let callStatusLabel = UILabel()
     private let waveformView = LiveWaveformView(frame: .zero)
     private var waveformHeight: NSLayoutConstraint!
@@ -33,6 +35,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var reviewPlayer: AVAudioPlayer?
     /// The in-flight memo upload, so the Session Tray's Cancel can abort it.
     private var memoTask: Task<Void, Never>?
+    /// The in-flight file upload (§5), cancelled the same way.
+    private var fileTask: Task<Void, Never>?
 
     private var autoAnswerArmed = false
     private var messages: [ChatMessage] = []
@@ -125,6 +129,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         sendButton.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
         sendButton.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
 
+        attachButton.translatesAutoresizingMaskIntoConstraints = false
+        attachButton.setImage(UIImage(systemName: "plus.circle"), for: .normal)
+        attachButton.tintColor = .secondaryLabel
+        attachButton.addTarget(self, action: #selector(attachTapped), for: .touchUpInside)
+
         callStatusLabel.translatesAutoresizingMaskIntoConstraints = false
         callStatusLabel.font = .preferredFont(forTextStyle: .callout)
         callStatusLabel.textColor = .secondaryLabel
@@ -181,6 +190,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         view.addSubview(waveformView)
         view.addSubview(composerBar)
         composerBar.addSubview(composerText)
+        composerBar.addSubview(attachButton)
         composerBar.addSubview(micButton)
         composerBar.addSubview(sendButton)
         composerBar.addSubview(elapsedLabel)
@@ -221,8 +231,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
             composerText.topAnchor.constraint(equalTo: composerBar.topAnchor),
             composerText.bottomAnchor.constraint(equalTo: composerBar.bottomAnchor),
-            composerText.leadingAnchor.constraint(equalTo: composerBar.leadingAnchor, constant: 10),
+            composerText.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 6),
             composerHeight,
+
+            attachButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
+            attachButton.leadingAnchor.constraint(equalTo: composerBar.leadingAnchor, constant: 10),
+            attachButton.widthAnchor.constraint(equalToConstant: 28),
 
             micButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
             micButton.leadingAnchor.constraint(equalTo: composerText.trailingAnchor),
@@ -258,7 +272,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func applyMode() {
         let recording = mode == .recording
         let review = mode == .review
-        [composerText, micButton, sendButton].forEach { $0.isHidden = recording || review }
+        [composerText, micButton, sendButton, attachButton].forEach { $0.isHidden = recording || review }
         [elapsedLabel, stopButton].forEach { $0.isHidden = !recording }
         elapsedLabel.isHidden = !recording && !review
         [closeButton, playButton, reviewWaveform].forEach { $0.isHidden = !review }
@@ -407,6 +421,97 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 self.showCallStatus("Send failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    // MARK: - File send (§5)
+
+    @objc private func attachTapped() {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    private static let streamableExtensions: Set<String> = ["mp4", "mkv", "mp3", "flac"]
+
+    /// Starts a P2P file transfer (§5 "Send File"): chunked upload + ticket
+    /// envelope, tracked in the Session Tray. The blob streams from disk, so
+    /// large files never sit in memory.
+    private func sendFile(at url: URL, name: String) {
+        showCallStatus("Sending \(name)…")
+        let transferId = UUID().uuidString
+        let started = Date()
+        TransferCenter.shared.begin(id: transferId, peerId: peer.id, name: name) { [weak self] in
+            self?.fileTask?.cancel()
+        }
+        fileTask = Task {
+            do {
+                let ticket = try await client.putFile(at: url, resourceId: "file-\(UUID().uuidString)") { sent, total in
+                    let fraction = total > 0 ? Double(sent) / Double(total) : 1
+                    let rate = Double(sent) / max(Date().timeIntervalSince(started), 0.001)
+                    Task { @MainActor in
+                        TransferCenter.shared.update(id: transferId, fraction: fraction, bytesPerSecond: rate)
+                    }
+                }
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                // A newline would split the envelope's key=value lines.
+                let safeName = name.replacingOccurrences(of: "\n", with: " ")
+                let envelope = """
+                IDFON-FILE/1
+                id=\(UUID().uuidString)
+                name=\(safeName)
+                size=\(size)
+                sender_id=\(ChatStore.shared.selfPeerId)
+                ticket=\(ticket)
+                """
+                try await client.sendText(to: peer.id, envelope)
+                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .file(ticket: ticket, name: safeName, sizeBytes: size, localURL: nil), outgoing: true, timestamp: Date()))
+                TransferCenter.shared.finish(id: transferId)
+                self.showCallStatus(nil)
+            } catch is CancellationError {
+                TransferCenter.shared.finish(id: transferId)
+                self.showCallStatus("Send cancelled")
+            } catch {
+                TransferCenter.shared.finish(id: transferId)
+                self.showCallStatus("Send failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Fetch-on-demand for a received file, then offer it. Deliberately not part
+    /// of ingest: a large file isn't pulled down until the recipient asks.
+    @objc private func fileTapped(_ sender: UIButton) {
+        let message = messages[sender.tag]
+        guard case .file(let ticket, let name, _, let localURL) = message.kind else { return }
+        if let localURL {
+            share(url: localURL, source: sender)
+            return
+        }
+        sender.isEnabled = false
+        Task {
+            defer { sender.isEnabled = true }
+            do {
+                let data = try await client.fetchBlob(ticket)
+                let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("Downloads", isDirectory: true)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                // The sender's name is untrusted input: never let it escape
+                // the Downloads directory.
+                let url = dir.appendingPathComponent((name as NSString).lastPathComponent)
+                try data.write(to: url)
+                ChatStore.shared.attachFile(at: url, to: message.id)
+                self.share(url: url, source: sender)
+            } catch {
+                self.showCallStatus("Download failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func share(url: URL, source: UIView) {
+        let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        activity.popoverPresentationController?.sourceView = source
+        activity.popoverPresentationController?.sourceRect = source.bounds
+        present(activity, animated: true)
     }
 
     private static func format(_ seconds: TimeInterval) -> String {
@@ -558,6 +663,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             button.addTarget(self, action: #selector(playRecordingTapped(_:)), for: .touchUpInside)
             button.tag = indexPath.row
             cell.accessoryView = button
+        case .file(_, let name, let sizeBytes, let localURL):
+            config.text = "\(name) (\(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)))"
+            config.textProperties.color = .link
+            let button = UIButton(type: .system)
+            button.setImage(UIImage(systemName: localURL == nil ? "arrow.down.circle" : "square.and.arrow.up"), for: .normal)
+            button.addTarget(self, action: #selector(fileTapped(_:)), for: .touchUpInside)
+            button.tag = indexPath.row
+            cell.accessoryView = button
         }
         cell.contentConfiguration = config
         cell.isUserInteractionEnabled = true
@@ -602,6 +715,35 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 NSLog("idfon recording fetch failed: \(error.localizedDescription)")
             }
         }
+    }
+}
+
+/// §5 intent routing: non-streamable files bypass the modal; streamable media
+/// prompts Stream-vs-Send (the Stream branch isn't built yet, so its action is
+/// present but disabled).
+extension ChatViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        let name = (url.lastPathComponent as NSString).lastPathComponent
+        guard Self.streamableExtensions.contains(url.pathExtension.lowercased()) else {
+            sendFile(at: url, name: name)
+            return
+        }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        let alert = UIAlertController(
+            title: "Handle Large Media",
+            message: "\(name) (\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))",
+            preferredStyle: .actionSheet)
+        let stream = UIAlertAction(title: "Stream Content", style: .default) { _ in }
+        stream.isEnabled = false // §5 stream branch: not built yet
+        alert.addAction(stream)
+        alert.addAction(UIAlertAction(title: "Send File", style: .default) { [weak self] _ in
+            self?.sendFile(at: url, name: name)
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.popoverPresentationController?.sourceView = attachButton
+        alert.popoverPresentationController?.sourceRect = attachButton.bounds
+        present(alert, animated: true)
     }
 }
 

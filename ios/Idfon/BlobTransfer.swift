@@ -10,23 +10,44 @@ extension DaemonClient {
     /// aborts at the next chunk boundary.
     func putData(_ data: Data, resourceId: String,
                  onProgress: ((Int, Int) -> Void)? = nil) async throws -> String {
+        try await put(total: data.count, resourceId: resourceId, onProgress: onProgress) { start, end in
+            data.subdata(in: start..<end)
+        }
+    }
+
+    /// Same put, reading one chunk at a time from disk so large files never sit
+    /// in memory.
+    func putFile(at url: URL, resourceId: String,
+                 onProgress: ((Int, Int) -> Void)? = nil) async throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let total = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        return try await put(total: total, resourceId: resourceId, onProgress: onProgress) { start, end in
+            try handle.seek(toOffset: UInt64(start))
+            return try handle.read(upToCount: end - start) ?? Data()
+        }
+    }
+
+    private func put(total: Int, resourceId: String, onProgress: ((Int, Int) -> Void)?,
+                     read: (Int, Int) throws -> Data) async throws -> String {
         let chunkSize = 200_000
         var offset = 0
         var ticket = ""
-        while offset < data.count {
+        while offset < total {
             try Task.checkCancellation()
-            let end = min(offset + chunkSize, data.count)
+            let end = min(offset + chunkSize, total)
+            let chunk = try read(offset, end)
             let response = try await request(method: "media.resource.put", params: [
                 "resource_id": AnyEncodable(resourceId),
-                "bytes": AnyEncodable(data[offset..<end].map { AnyEncodable(Int($0)) }),
+                "bytes": AnyEncodable(chunk.map { AnyEncodable(Int($0)) }),
                 "append": AnyEncodable(offset > 0),
                 "finish": AnyEncodable(false),
             ])
             ticket = response?["blob_ticket"]?.stringValue ?? ticket
             offset = end
-            onProgress?(offset, data.count)
+            onProgress?(offset, total)
         }
-        if data.count > chunkSize {
+        if total > chunkSize {
             try Task.checkCancellation()
             let response = try await request(method: "media.resource.put", params: [
                 "resource_id": AnyEncodable(resourceId),
@@ -40,6 +61,8 @@ extension DaemonClient {
     }
 
     /// Chunked blob fetch by ticket. Returns the raw bytes.
+    /// ponytail: whole blob in memory; stream to disk if multi-hundred-MB
+    /// receives become real.
     func fetchBlob(_ ticket: String) async throws -> Data {
         let trackingId = "ios-\(UUID().uuidString)"
         var result = Data()
