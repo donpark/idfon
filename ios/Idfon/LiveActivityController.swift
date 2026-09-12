@@ -194,6 +194,8 @@ final class LiveActivityController: NSObject {
         overlay.onIntent = { [weak self] peerId, intent in
             self?.handle(intent, peerId: peerId)
         }
+        // Session Tray rows refresh whenever a transfer progresses (§4).
+        TransferCenter.shared.onChange = { [weak self] in self?.render() }
         // Take ownership of both machines' state hooks (the scene delegate no
         // longer sets them); the Bar renders whichever one is non-idle.
         LiveCall.shared.onState = { [weak self] in self?.sync() }
@@ -246,25 +248,35 @@ final class LiveActivityController: NSObject {
         render()
     }
 
-    /// Produces up to two models: the visible thread's own chrome first, then
-    /// the call's (docs/ui-design-notes.md §3, §6).
+    /// Produces up to three models: the visible thread's own chrome first,
+    /// then the call's, then pills for peers with only tray activity
+    /// (docs/ui-design-notes.md §3, §4, §6).
     ///
-    /// - Idle: the visible thread's expanded State 1/2 chrome; nothing on any
-    ///   other screen (no Bar on the Peers list).
+    /// - Idle: the visible thread's expanded State 1/2 chrome plus its Session
+    ///   Tray rows; nothing on any other screen unless it has a transfer.
     /// - In a call with C: C expanded when its thread is visible; when another
     ///   thread P is visible, P's expanded idle chrome plus C's compact pill;
     ///   with no thread visible, C's compact pill only.
+    /// - A transfer to/from a peer with no Bar becomes its own compact pill, so
+    ///   leaving the thread never hides in-flight work.
     private func render() {
         let visiblePeer = (visibleNavigationController?.visibleViewController as? ChatViewController)?.peer.id
         let machine = ActiveMachine.current
         let callPeer = (machine?.peer ?? nil).flatMap { $0.isEmpty ? nil : $0 }
 
+        let transfers = TransferCenter.shared
         var models: [LiveActivityBarModel] = []
         if phase == .idle {
-            if let peerId = visiblePeer { models.append(idleModel(for: peerId)) }
+            if let peerId = visiblePeer {
+                var model = idleModel(for: peerId)
+                model.rows = transfers.rows(for: peerId)
+                models.append(model)
+            }
         } else if let callPeer {
             if let peerId = visiblePeer, peerId != callPeer {
-                models.append(idleModel(for: peerId))
+                var model = idleModel(for: peerId)
+                model.rows = transfers.rows(for: peerId)
+                models.append(model)
             }
             var model = LiveActivityBarModel(peerId: callPeer, handle: "@\(callPeer)")
             model.phase = phase
@@ -273,9 +285,19 @@ final class LiveActivityController: NSObject {
             model.audioAvailable = machine?.audioAvailable ?? true
             model.videoAvailable = machine?.videoAvailable ?? true
             model.elapsed = elapsed
+            model.rows = transfers.rows(for: callPeer)
             // Expanded only while the visible thread is the call peer's —
             // that thread owns the call; every other screen shows the pill.
             model.density = visiblePeer == callPeer ? .expanded : .compact
+            models.append(model)
+        }
+        // §4/§6: a transaction whose peer has no Bar renders as a compact pill,
+        // so leaving the thread never hides in-flight work.
+        let modeled = Set(models.map(\.peerId))
+        for peerId in transfers.activePeerIds where !modeled.contains(peerId) {
+            var model = LiveActivityBarModel(peerId: peerId, handle: "@\(peerId)")
+            model.density = .compact
+            model.rows = transfers.rows(for: peerId)
             models.append(model)
         }
         overlay.render(models)
@@ -338,8 +360,10 @@ final class LiveActivityController: NSObject {
             case (false, true): VideoCall.shared.dial(peerId, audio: false, video: true)
             default: VideoCall.shared.dial(peerId, audio: true, video: true)
             }
-        // Session Tray actions: no transfers or streams in the model yet.
-        case .cancelRow, .togglePauseRow: break
+        // Session Tray actions (§4): Cancel aborts the transfer; pause/Stop is
+        // for media streams, which have no producer yet.
+        case .cancelRow(let id): TransferCenter.shared.cancel(id: id)
+        case .togglePauseRow: break
         }
     }
 

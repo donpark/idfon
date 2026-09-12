@@ -4,7 +4,7 @@
 //   SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
 //   xcrun swiftc -sdk $SDK -target arm64-apple-ios17.0-simulator -o /tmp/labcheck-bin \
 //     ios/Idfon/LiveActivityBar.swift ios/Idfon/OverlayWindow.swift ios/Idfon/LiveWaveformView.swift \
-//     ios/Checks/LiveActivityBarCheck/main.swift
+//     ios/Idfon/TransferCenter.swift ios/Checks/LiveActivityBarCheck/main.swift
 //   xcrun simctl boot <udid>; xcrun simctl spawn <udid> /tmp/labcheck
 //
 // Prints "ALL OK" or the first failing assertion (exit 1).
@@ -105,4 +105,32 @@ check(videoLess.contains("Microphone") && !videoLess.contains("Camera"), "video-
 m.audioAvailable = true; m.videoAvailable = true; bar.apply(m); host.layoutIfNeeded()
 let bothTracks = visibleLabels()
 check(bothTracks.contains("Microphone") && bothTracks.contains("Camera"), "both toggles visible with both tracks: \(bothTracks)")
+
+// §4 Session Tray registry (TransferCenter): begin/update/finish, per-peer rows,
+// cancel routing, fraction clamping. The registry is @MainActor; the check runs
+// on the main thread, so assume that isolation.
+MainActor.assumeIsolated {
+    let center = TransferCenter.shared
+    var cancelled: [String] = []
+    center.begin(id: "t1", peerId: "p1", name: "Voice message") { cancelled.append("t1") }
+    center.begin(id: "t2", peerId: "p2", name: "Archive.zip") { cancelled.append("t2") }
+    check(center.activePeerIds == ["p1", "p2"], "two peers active: \(center.activePeerIds)")
+    center.update(id: "t1", fraction: 0.42, bytesPerSecond: 12_000_000)
+    let t1 = center.rows(for: "p1")
+    check(t1.count == 1 && t1[0].id == "t1" && t1[0].kind == .transfer(fraction: 0.42, bytesPerSecond: 12_000_000),
+          "rows map a transfer: \(t1)")
+    check(center.rows(for: "p3").isEmpty, "no rows for an uninvolved peer")
+    center.update(id: "t1", fraction: 1.5, bytesPerSecond: 0)
+    check(center.rows(for: "p1")[0].kind == .transfer(fraction: 1, bytesPerSecond: 0), "fraction clamped to 1")
+    center.cancel(id: "t1")
+    check(cancelled == ["t1"], "cancel routed to the producer: \(cancelled)")
+    check(center.transfers.count == 2, "row stays until the producer finishes")
+    center.finish(id: "t1")
+    check(center.activePeerIds == ["p2"], "finish drops the peer: \(center.activePeerIds)")
+    check(center.rows(for: "p2")[0].name == "Archive.zip", "other transfer untouched")
+    center.finish(id: "t2")
+    check(center.transfers.isEmpty, "all finished")
+    center.finish(id: "t2")
+    check(center.transfers.isEmpty, "finishing twice is a no-op")
+}
 print("ALL OK")
