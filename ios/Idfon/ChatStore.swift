@@ -37,17 +37,25 @@ final class ChatStore {
     private func ingest(_ event: Event) {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
         // Call-control traffic (live invites, call_started/stopped) routes
-        // to the video-call state machine; never shown as chat history.
+        // to the call state machines (each ignores the other's envelopes);
+        // never shown as chat history. Invites go through the per-connection
+        // incoming-call router (Bar vs CallKit presentation); teardown goes
+        // direct to both machines, since the mode governs presentation only.
         // Invites replayed from the event backlog are stale (the call they
         // belonged to already happened) — never ring on them, else every
         // hangup resurrects a ghost call.
         if LiveInvite.parse(text) != nil {
             if isStaleInvite(event) { return }
-            DispatchQueue.main.async { Task { @MainActor in VideoCall.shared.handleEnvelope(peer: peerId, text) } }
+            DispatchQueue.main.async { Task { @MainActor in
+                IncomingCallRouter.shared.route(peerId: peerId, envelope: text)
+            } }
             return
         }
         if text == "call_started" || text == "call_stopped" {
-            DispatchQueue.main.async { Task { @MainActor in VideoCall.shared.handleEnvelope(peer: peerId, text) } }
+            DispatchQueue.main.async { Task { @MainActor in
+                LiveCall.shared.handleControl(peer: peerId, text)
+                VideoCall.shared.handleEnvelope(peer: peerId, text)
+            } }
             return
         }
         let kind = Self.parseKind(text)

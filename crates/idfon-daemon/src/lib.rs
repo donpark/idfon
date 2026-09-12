@@ -2783,6 +2783,24 @@ fn identity_delete(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     success(request, serde_json::json!({"deleted": id}))
 }
 
+/// `call_mode` param for `peer.add`/`peer.update`; `Ok(None)` when absent.
+fn requested_call_mode(
+    request: &Request,
+) -> Result<Option<idfon_protocol::IncomingCallMode>, Response> {
+    let Some(value) = request.params.get("call_mode").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    serde_json::from_value(value.clone()).map(Some).map_err(|_| {
+        error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "call_mode must be \"bar\" or \"call_kit\"".into(),
+            false,
+        )
+    })
+}
+
 fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<TransportMode>) -> Response {
     let Some(id) = request
         .params
@@ -2804,6 +2822,10 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<Transp
         .and_then(serde_json::Value::as_str)
         .unwrap_or(id);
     let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let call_mode = match requested_call_mode(request) {
+        Ok(mode) => mode.unwrap_or_default(),
+        Err(response) => return response,
+    };
     let mut state = store.lock().expect("store mutex poisoned");
     if state
         .peers
@@ -2844,6 +2866,7 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<Transp
                     .collect()
             })
             .unwrap_or_default(),
+        call_mode,
     };
     state.peers.retain(|candidate| !(candidate.identity == peer.identity && candidate.id == peer.id));
     state.peers.push(peer.clone());
@@ -2856,6 +2879,7 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<Transp
                 endpoint_id: source.endpoint_id.clone(),
                 endpoint_addr: transport.endpoint_ticket_for(&source.id).and_then(|bytes| String::from_utf8(bytes).ok()),
                 aliases: Vec::new(),
+                call_mode: idfon_protocol::IncomingCallMode::default(),
             };
             if !reciprocal.id.is_empty() {
                 state.peers.retain(|candidate| !(candidate.identity == reciprocal.identity && candidate.id == reciprocal.id));
@@ -2964,6 +2988,13 @@ fn peer_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             .filter_map(serde_json::Value::as_str)
             .map(str::to_owned)
             .collect();
+    }
+    let call_mode = match requested_call_mode(request) {
+        Ok(mode) => mode,
+        Err(response) => return response,
+    };
+    if let Some(call_mode) = call_mode {
+        peer.call_mode = call_mode;
     }
     let updated = peer.clone();
     let data_dir = state.data_dir.clone();
@@ -3421,6 +3452,7 @@ mod tests {
             endpoint_id: Some("endpoint-a".into()),
             endpoint_addr: None,
             aliases: Vec::new(),
+            call_mode: idfon_protocol::IncomingCallMode::default(),
         });
         state.grants.push(idfon_protocol::CapabilityGrant {
             capability: idfon_protocol::Capability::MessageReceive,
@@ -3478,7 +3510,7 @@ mod tests {
         let receiver_key = store.lock().unwrap().identity_key("default").unwrap();
         let sender_id = idfon_core::peer_id(&sender_key);
         // Cross-daemon pairing: peer exists, but no grants at all.
-        store.lock().unwrap().peers.push(idfon_protocol::Peer { id: sender_id.clone(), identity: "default".into(), name: "Alice".into(), endpoint_id: Some("endpoint-a".into()), endpoint_addr: None, aliases: Vec::new() });
+        store.lock().unwrap().peers.push(idfon_protocol::Peer { id: sender_id.clone(), identity: "default".into(), name: "Alice".into(), endpoint_id: Some("endpoint-a".into()), endpoint_addr: None, aliases: Vec::new(), call_mode: idfon_protocol::IncomingCallMode::default() });
         let ticket = idfon_core::issue_capability_ticket(&receiver_key, None, vec![idfon_protocol::Capability::MessageReceive, idfon_protocol::Capability::LiveAudioSubscribe], None, "tk-bootstrap");
         let message = idfon_core::sign_message_with_ticket(&sender_key, "endpoint-a", "msg-boot", idfon_protocol::MessageContent::Text { text: "hello".into() }, "key-boot", None, Some(ticket)).unwrap();
         let response = dispatch(
@@ -3515,7 +3547,7 @@ mod tests {
         let receiver_key = store.lock().unwrap().identity_key("default").unwrap();
         let sender_id = idfon_core::peer_id(&sender_key);
         let mut state = store.lock().unwrap();
-        state.peers.push(idfon_protocol::Peer { id: sender_id.clone(), identity: "default".into(), name: "Alice".into(), endpoint_id: Some("endpoint-a".into()), endpoint_addr: None, aliases: Vec::new() });
+        state.peers.push(idfon_protocol::Peer { id: sender_id.clone(), identity: "default".into(), name: "Alice".into(), endpoint_id: Some("endpoint-a".into()), endpoint_addr: None, aliases: Vec::new(), call_mode: idfon_protocol::IncomingCallMode::default() });
         state.grants.push(idfon_protocol::CapabilityGrant { capability: idfon_protocol::Capability::MessageReceive, identity: "default".into(), subject: sender_id.clone(), conversation: None, active_at: "0".into(), expires_at: None, revision: 1, revoked_at: None });
         drop(state);
         let rejected = |ticket: idfon_protocol::CapabilityTicket, message_id: &str| {
@@ -3543,6 +3575,7 @@ mod tests {
             endpoint_id: Some("ep".into()),
             endpoint_addr: None,
             aliases: vec![],
+            call_mode: idfon_protocol::IncomingCallMode::default(),
         });
         state.grants.push(idfon_protocol::CapabilityGrant {
             capability: idfon_protocol::Capability::MessageReceive,
@@ -3637,6 +3670,56 @@ mod tests {
     }
 
     #[test]
+    fn peer_call_mode_defaults_persists_updates_and_rejects_invalid() {
+        use idfon_protocol::IncomingCallMode;
+        let dir = temp_dir("call-mode");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let send = |id: &str, method: &str, params: serde_json::Value| {
+            dispatch(
+                Request {
+                    version: PROTOCOL_VERSION,
+                    id: id.into(),
+                    method: method.into(),
+                    params,
+                },
+                &store,
+            )
+        };
+
+        // absent call_mode -> bar
+        assert!(send("add-1", "peer.add", serde_json::json!({"id": "peer-1", "name": "Alice"})).ok);
+        assert_eq!(Store::load(&dir).unwrap().peers[0].call_mode, IncomingCallMode::Bar);
+
+        // explicit call_kit is persisted and surfaced by `peers`
+        let added = send("add-2", "peer.add", serde_json::json!({"id": "peer-2", "name": "Bob", "call_mode": "call_kit"}));
+        assert!(added.ok);
+        let ResponseBody::Success { result, .. } = &added.body else { panic!("peer.add failed") };
+        assert_eq!(result["peer"]["call_mode"], serde_json::json!("call_kit"));
+        let stored = |name: &str| Store::load(&dir).unwrap().peers.iter().find(|peer| peer.name == name).unwrap().call_mode;
+        assert_eq!(stored("Bob"), IncomingCallMode::CallKit);
+
+        // update flips it
+        assert!(send("upd-1", "peer.update", serde_json::json!({"ref": "peer-2", "call_mode": "bar"})).ok);
+        assert_eq!(stored("Bob"), IncomingCallMode::Bar);
+
+        // update without call_mode leaves it alone
+        assert!(send("upd-2", "peer.update", serde_json::json!({"ref": "peer-2", "name": "Bobby"})).ok);
+        assert_eq!(stored("Bobby"), IncomingCallMode::Bar);
+
+        // invalid values are rejected, not defaulted
+        for response in [
+            send("add-bad", "peer.add", serde_json::json!({"id": "peer-3", "name": "Carol", "call_mode": "telephone"})),
+            send("upd-bad", "peer.update", serde_json::json!({"ref": "peer-2", "call_mode": "telephone"})),
+        ] {
+            assert!(matches!(
+                response.body,
+                ResponseBody::Failure { error: ApiError { code: ErrorCode::InvalidRequest, .. }, .. }
+            ));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn sending_to_own_identity_is_rejected() {
         let dir = temp_dir("self-send");
         let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
@@ -3651,6 +3734,7 @@ mod tests {
                 endpoint_id: Some("self-endpoint".into()),
                 endpoint_addr: Some("{}".into()),
                 aliases: Vec::new(),
+                call_mode: idfon_protocol::IncomingCallMode::default(),
             });
             identity.public_key.unwrap()
         };
@@ -3840,6 +3924,7 @@ mod tests {
                 let _peer = read_u16_field(&payload, &mut offset);
                 let _message = read_u16_field(&payload, &mut offset);
                 let _text = read_u16_field(&payload, &mut offset);
+                let _timestamp = read_u16_field(&payload, &mut offset);
             }
             assert_eq!(offset, payload.len());
             if count == 0 {
@@ -4031,6 +4116,7 @@ mod tests {
             endpoint_id: Some("ep-1".into()),
             endpoint_addr: None,
             aliases: vec!["alice@work".into()],
+            call_mode: idfon_protocol::IncomingCallMode::default(),
         });
         store.save(&dir).unwrap();
         let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
@@ -4062,6 +4148,7 @@ mod tests {
                 endpoint_id: None,
                 endpoint_addr: None,
                 aliases: Vec::new(),
+                call_mode: idfon_protocol::IncomingCallMode::default(),
             });
         }
         store.save(&dir).unwrap();

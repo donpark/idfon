@@ -2,15 +2,26 @@ import UIKit
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
+    /// Strong scene-level reference: the Live Activity Bar's overlay window
+    /// and the call-state coordinator (docs/ui-design-notes.md §6).
+    private var liveActivity: LiveActivityController?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
+
+        // Bar mode (the default call surface): the overlay is the in-app
+        // incoming/active-call UI; content shifts down below it.
+        let nav = AppNavigationController(rootViewController: PeerListViewController())
+        let activity = LiveActivityController(windowScene: windowScene)
+        nav.overlay = activity.overlay
+        activity.navigationController = nav
+        liveActivity = activity
+
         window = UIWindow(windowScene: windowScene)
-        window?.rootViewController = UINavigationController(rootViewController: PeerListViewController())
+        window?.rootViewController = nav
         window?.makeKeyAndVisible()
 
-        // Present/dismiss the call screen with call state; forward frames.
-        VideoCall.shared.onState = { [weak self] in self?.syncCallScreen() }
+        // Forward decoded peer frames to the inline video surfaces.
         VideoCall.shared.onFrame = { image in
             NotificationCenter.default.post(name: .idfonVideoFrame, object: image)
         }
@@ -20,25 +31,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         URLContexts.forEach(handleURL)
-    }
-
-    /// Presents the ringing screen on incoming calls; active calls stay
-    /// inline in the chat (video bar) until the user expands them.
-    private func syncCallScreen() {
-        guard let window else { return }
-        let root = window.rootViewController
-        var top = root
-        while let next = top?.presentedViewController { top = next }
-        let call = VideoCall.shared
-        if call.state == .incoming {
-            if !(top is CallViewController) {
-                let callVC = CallViewController()
-                callVC.modalPresentationStyle = .fullScreen
-                top?.present(callVC, animated: true)
-            }
-        } else if call.state == .idle, let callVC = top as? CallViewController, !(callVC.isBeingDismissed) {
-            callVC.dismiss(animated: true)
-        }
     }
 
     /// Deep links for call testing/automation:

@@ -845,10 +845,30 @@ char *
 media_live_recording_store (void);
 
 /** \brief
- *  Starts the live microphone broadcast (audio call) and returns its ticket.
+ *  Enables/disables the outgoing audio stream. Disabled sends silence while
+ *  capture stays open (instant re-enable, OS mic indicator stays on); it does
+ *  not release the input device. Returns 0.
+ */
+uint8_t
+media_live_set_audio_enabled (
+    uint8_t enabled);
+
+/** \brief
+ *  Enables/disables the outgoing video stream. Disabled sends no frames and
+ *  drops any queued frame. Returns 0.
+ */
+uint8_t
+media_live_set_video_enabled (
+    uint8_t enabled);
+
+/** \brief
+ *  Starts the live broadcast and returns its ticket. `audio` and `video`
+ *  select which tracks to publish; both zero is rejected (nothing to send).
  */
 char *
-media_live_start (void);
+media_live_start (
+    uint8_t audio,
+    uint8_t video);
 
 /** \brief
  *  Stops the live microphone broadcast.
@@ -868,22 +888,6 @@ media_live_subscribe (
  */
 void
 media_live_unsubscribe (void);
-
-/** \brief
- *  Starts the live microphone + camera broadcast (video call) and returns
- *  its ticket. One broadcast carries both tracks; the callee subscribes
- *  audio via media.live.subscribe and video via media.video.start.
- */
-char *
-media_live_video_start (void);
-
-/** rief
- *  Sets the rotation (degrees CW: 0/90/180/270) applied to iOS camera frames
- *  before encoding. No-op on macOS.
- */
-void
-media_video_set_rotation (
-    uint32_t deg);
 
 /** \brief
  *  Returns the duration of the most recently finalized local recording.
@@ -936,6 +940,21 @@ media_set_scope (
  */
 void
 media_shutdown (void);
+
+/** \brief
+ *  Pushes one camera frame (BGRA, 4 bytes/pixel, rows tightly packed) from
+ *  Swift's AVCaptureSession into the slot drained by PushFrameSource.
+ *  Drop-latest: an unconsumed frame is overwritten. Malformed sizes and
+ *  short buffers are ignored (trusted in-process caller; belt for stride
+ *  math mistakes).
+ */
+void
+media_video_push_frame (
+    uint8_t const * data,
+    size_t len,
+    uint32_t width,
+    uint32_t height,
+    uint64_t pts_ms);
 
 /** \brief
  *  Starts the video subscription for `ticket`: subscribes, enables network

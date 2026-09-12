@@ -60,10 +60,16 @@ include `invalid_request`, `capability_denied`, `cursor_too_old`,
 
 `ref` in every method matches peer id, name, alias, or endpoint id.
 
+`call_mode` selects how a shell surfaces an incoming call for that connection:
+`"bar"` (Live Activity Bar) or `"call_kit"` (CallKit). It defaults to `bar` on
+`peer.add` when omitted, and any other value is rejected with `invalid_request`.
+`peer.update` only changes it when the param is present. The auto-created
+reciprocal peer always takes the default.
+
 | method | params | result |
 |---|---|---|
-| `peers` | — | `{ peers: [Peer] }`; Peer = `{id, identity, name, aliases, endpoint_id, endpoint_addr, ...}` |
-| `peer.add` | `{ ref, id, name, endpoint_id, endpoint_addr, aliases }` | `{ peer }` |
+| `peers` | — | `{ peers: [Peer] }`; Peer = `{id, identity, name, aliases, endpoint_id, endpoint_addr, call_mode, ...}` |
+| `peer.add` | `{ ref, id, name, endpoint_id, endpoint_addr, aliases, call_mode? }` | `{ peer }` |
 | `peer.update` | same as add | `{ peer }` |
 | `peer.remove` | `{ ref }` | `{}` |
 | `peer.resolve` | `{ ref }` | live connection info |

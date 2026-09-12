@@ -224,6 +224,16 @@ pub struct Identity {
     pub active: bool,
 }
 
+/// How an incoming call for this connection is surfaced by the shell.
+/// Default is `Bar` (Live Activity Bar) until CallKit is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IncomingCallMode {
+    #[default]
+    Bar,
+    CallKit,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Peer {
     pub id: String,
@@ -234,6 +244,8 @@ pub struct Peer {
     #[serde(default)]
     pub endpoint_addr: Option<String>,
     pub aliases: Vec<String>,
+    #[serde(default)]
+    pub call_mode: IncomingCallMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

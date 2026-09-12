@@ -369,13 +369,13 @@ fn mediaAudioWorker(job: *Job) void {
         };
         self.complete(job.key, true, text);
     } else if (std.mem.eql(u8, name, "media.live.start")) {
-        const ticket = ffi.media_live_start();
+        const ticket = ffi.media_live_start(1, 0); // audio only
         defer ffi.rust_free_string(ticket);
         const text = std.mem.span(ticket);
         if (text.len == 0) self.complete(job.key, false, self.last_live_error())
         else self.complete(job.key, true, text);
     } else if (std.mem.eql(u8, name, "media.live.video_start")) {
-        const ticket = ffi.media_live_video_start();
+        const ticket = ffi.media_live_start(1, 1); // mic + camera
         defer ffi.rust_free_string(ticket);
         const text = std.mem.span(ticket);
         if (text.len == 0) self.complete(job.key, false, self.last_live_error())

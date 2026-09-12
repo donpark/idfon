@@ -1,17 +1,41 @@
 import Foundation
 
+/// How an incoming call is presented for one connection
+/// (docs/ui-design-notes.md §6, docs/protocol.md). Bar is the interim
+/// default.
+///
+/// Decoded leniently: an unrecognized wire value resolves to `.bar` rather
+/// than throwing, so a future daemon mode iOS does not know never breaks
+/// decoding of the whole `peers` array.
+enum IncomingCallMode: String, Decodable {
+    case bar = "bar"
+    case callKit = "call_kit"
+
+    var wireValue: String { rawValue }
+
+    init(from decoder: Decoder) throws {
+        let raw = try? decoder.singleValueContainer().decode(String.self)
+        self = raw.flatMap(IncomingCallMode.init(rawValue:)) ?? .bar
+    }
+}
+
 struct Peer: Decodable, Identifiable {
     let id: String
     let name: String?
     let endpointId: String?
     let aliases: [String]?
+    let callMode: IncomingCallMode?
 
     enum CodingKeys: String, CodingKey {
         case id, name, aliases
         case endpointId = "endpoint_id"
+        case callMode = "call_mode"
     }
 
     var displayName: String { name ?? id }
+
+    /// Absent or unrecognized `call_mode` resolves to the Bar (interim default).
+    var incomingCallMode: IncomingCallMode { callMode ?? .bar }
 }
 
 struct Event: Decodable {

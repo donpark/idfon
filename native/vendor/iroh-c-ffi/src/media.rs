@@ -62,6 +62,12 @@ static BLOB_PROVIDER: Mutex<Option<BlobProvider>> = Mutex::new(None);
 static LOCAL_RECORDING: Mutex<Option<LocalRecording>> = Mutex::new(None);
 static LAST_RECORDING_DURATION_MS: AtomicU64 = AtomicU64::new(0);
 static PLAYBACK: Mutex<Option<Playback>> = Mutex::new(None);
+// Send-gating for the outgoing streams, adjustable mid-call by the shell.
+// Disabling audio sends silence (capture stays open, so re-enable is
+// instant, and the OS mic indicator stays on); disabling video withholds
+// frames. Both reset to enabled on every start_live.
+static MIC_MUTED: AtomicBool = AtomicBool::new(false);
+static CAMERA_ENABLED: AtomicBool = AtomicBool::new(true);
 
 struct LiveSession {
     _live: Live,
@@ -107,10 +113,11 @@ impl AudioSource for MuteSource {
     }
     fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
         let result = self.inner.pop_samples(buf);
-        if LOCAL_RECORDING
-            .lock()
-            .expect("recording mutex poisoned")
-            .is_some()
+        if MIC_MUTED.load(Ordering::Relaxed)
+            || LOCAL_RECORDING
+                .lock()
+                .expect("recording mutex poisoned")
+                .is_some()
         {
             for sample in buf.iter_mut() {
                 *sample = 0.0;
@@ -1036,26 +1043,39 @@ fn ensure_camera_access() {
     let _ = rx.recv_timeout(Duration::from_secs(120));
 }
 
-fn start_live(with_video: bool) -> char_p::Box {
-    tracing::info!(video = with_video, "live publisher start requested");
+fn start_live(audio: bool, video: bool) -> char_p::Box {
+    tracing::info!(audio, video, "live publisher start requested");
+    if !audio && !video {
+        let text = "live publisher start rejected: no audio or video track".to_owned();
+        tracing::warn!("{text}");
+        *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = Some(text);
+        return String::new().try_into().expect("empty ticket conversion");
+    }
+    // A fresh publisher always starts sending both gated streams.
+    MIC_MUTED.store(false, Ordering::Relaxed);
+    CAMERA_ENABLED.store(true, Ordering::Relaxed);
     let result = tokio_executor(async {
-        let input = match INPUT.lock().expect("audio capture mutex poisoned").take() {
-            Some(input) => input,
-            None => audio().default_input().await?,
-        };
         let live = Live::from_env().await?.with_router().spawn();
         let broadcast = LocalBroadcast::new();
-        let bitrate = BITRATE.load(Ordering::Relaxed);
-        let encoder_config = AudioEncoderConfig::from_preset(AudioFormat::mono_48k(), AudioPreset::Hq).bitrate(bitrate);
-        let catalog = OpusEncoder::config_for(&encoder_config);
-        let mut renditions = AudioRenditions::empty(MuteSource { inner: input });
-        renditions.add_with_callback::<OpusEncoder>(
-            format!("audio/opus-{bitrate}"),
-            catalog.into(),
-            move |_format| OpusEncoder::with_config(encoder_config.clone()),
-        );
-        broadcast.audio().set_renditions(renditions)?;
-        if with_video {
+        if audio {
+            let input = match INPUT.lock().expect("audio capture mutex poisoned").take() {
+                Some(input) => input,
+                None => self::audio().default_input().await?,
+            };
+            let bitrate = BITRATE.load(Ordering::Relaxed);
+            let encoder_config =
+                AudioEncoderConfig::from_preset(AudioFormat::mono_48k(), AudioPreset::Hq)
+                    .bitrate(bitrate);
+            let catalog = OpusEncoder::config_for(&encoder_config);
+            let mut renditions = AudioRenditions::empty(MuteSource { inner: input });
+            renditions.add_with_callback::<OpusEncoder>(
+                format!("audio/opus-{bitrate}"),
+                catalog.into(),
+                move |_format| OpusEncoder::with_config(encoder_config.clone()),
+            );
+            broadcast.audio().set_renditions(renditions)?;
+        }
+        if video {
             #[cfg(any(target_os = "ios", target_os = "macos"))]
             ensure_camera_access();
             // iOS + macOS: the shell's AVCaptureSession (CameraPusher.swift)
@@ -1100,10 +1120,34 @@ fn start_live(with_video: bool) -> char_p::Box {
     }
 }
 
-/// Starts the live microphone broadcast (audio call) and returns its ticket.
+/// Starts the live broadcast and returns its ticket. `audio` and `video`
+/// select which tracks to publish; both zero is rejected (nothing to send).
 #[ffi_export]
-pub fn media_live_start() -> char_p::Box {
-    start_live(false)
+pub fn media_live_start(audio: u8, video: u8) -> char_p::Box {
+    start_live(audio != 0, video != 0)
+}
+
+/// Enables/disables the outgoing audio stream. Disabled sends silence while
+/// capture stays open (instant re-enable, OS mic indicator stays on); it does
+/// not release the input device. Returns 0.
+#[ffi_export]
+pub fn media_live_set_audio_enabled(enabled: u8) -> u8 {
+    MIC_MUTED.store(enabled == 0, Ordering::Relaxed);
+    0
+}
+
+/// Enables/disables the outgoing video stream. Disabled sends no frames and
+/// drops any queued frame. Returns 0.
+#[ffi_export]
+pub fn media_live_set_video_enabled(enabled: u8) -> u8 {
+    CAMERA_ENABLED.store(enabled != 0, Ordering::Relaxed);
+    if enabled == 0 {
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
+        }
+    }
+    0
 }
 
 // --- Swift AVCaptureSession -> PushFrameSource camera path (iOS + macOS) ---
@@ -1178,6 +1222,10 @@ impl SourceTrait for PushFrameSource {
         // even a modulo-throttled log floods the tracing file (300 MB per
         // 100 s call). Frame-flow evidence lives in the subscriber-side
         // video-frame.jpg rewrites instead.
+        if !CAMERA_ENABLED.load(Ordering::Relaxed) {
+            *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
+            return Ok(None);
+        }
         Ok(PUSHED_FRAME
             .lock()
             .expect("pushed frame mutex poisoned")
@@ -1194,6 +1242,9 @@ impl SourceTrait for PushFrameSource {
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 #[ffi_export]
 pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u32, pts_ms: u64) {
+    if !CAMERA_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     if data.is_null() || width == 0 || height == 0 || len < width as usize * height as usize * 4 {
         return;
     }
@@ -1206,14 +1257,6 @@ pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u
         Duration::from_millis(pts_ms),
     );
     *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = Some((width, height, frame));
-}
-
-/// Starts the live microphone + camera broadcast (video call) and returns
-/// its ticket. One broadcast carries both tracks; the callee subscribes
-/// audio via media.live.subscribe and video via media.video.start.
-#[ffi_export]
-pub fn media_live_video_start() -> char_p::Box {
-    start_live(true)
 }
 
 /// Returns the last live-publisher failure (empty string if none), so the
@@ -1268,12 +1311,12 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
         let subscription = live
             .subscribe(ticket.endpoint, &ticket.broadcast_name)
             .await?;
+        // A video-only broadcast has no audio rendition; MediaTracks then
+        // carries audio: None and no output device is opened. That is a valid
+        // call (its video arrives via media_video_start), so do not reject.
         let tracks = subscription
             .media(&backend, PlaybackConfig::default())
             .await?;
-        if tracks.audio.is_none() {
-            anyhow::bail!("live broadcast has no audio track");
-        }
         anyhow::Ok((live, subscription, tracks, recorder))
     });
     match result {

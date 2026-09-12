@@ -27,14 +27,15 @@ void idfon_client_result_free(uint8_t *ptr, uintptr_t len);
 // is the single source of truth. String results are heap-owned and freed
 // with rust_free_string. Empty string return = failure (see
 // media_live_last_error for the cause).
-char *media_live_video_start(void);          // publish mic+camera, returns ticket
+char *media_live_start(uint8_t audio, uint8_t video); // publish the selected tracks; (0,0) rejected. Returns ticket.
 void media_live_stop(void);                  // stop own publish
 uint8_t media_live_subscribe(char const *ticket); // hear the peer (decodes + plays)
 void media_live_unsubscribe(void);
 char *media_video_start(char const *ticket); // watch peer video -> video-frame.jpg path
 void media_video_stop(void);
+uint8_t media_live_set_audio_enabled(uint8_t enabled); // 0 = send silence (capture stays open)
+uint8_t media_live_set_video_enabled(uint8_t enabled); // 0 = send no frames
 char *media_live_last_error(void);           // last publish failure ("" if none)
-void media_video_set_rotation(uint32_t deg); // legacy nokhwa rotation (0/90/180/270 CW); superseded by push path
 void media_video_push_frame(const void *data, uintptr_t len, uint32_t width, uint32_t height, uint64_t pts_ms); // BGRA frame -> live encoder
 void media_shutdown(void);
 void iroh_enable_tracing(void);              // tracing -> /tmp/idfon-<pid>.log (IROH_C_LOG filter)

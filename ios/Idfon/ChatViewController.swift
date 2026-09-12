@@ -2,7 +2,8 @@ import UIKit
 import AVFAudio
 
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UITextViewDelegate {
-    private let peer: Peer
+    /// Read by the Live Activity Bar coordinator (density + `.open` routing).
+    let peer: Peer
     private let client = DaemonClient()
 
     private let tableView = UITableView()
@@ -35,6 +36,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var messages: [ChatMessage] = []
     private var players: [String: AVAudioPlayer] = [:] // ticket -> player
 
+    /// Per-connection incoming-call mode (§6): a config affordance, not a
+    /// settings screen.
+    private let incomingModeItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), style: .plain, target: nil, action: nil)
+
     // inline live-video bar (tap to expand the fullscreen call screen)
     private let videoBar = UIView()
     private var videoBarHeight: NSLayoutConstraint!
@@ -57,7 +62,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             UIBarButtonItem(image: UIImage(systemName: "phone"), style: .plain, target: self, action: #selector(dialTapped)),
             UIBarButtonItem(image: UIImage(systemName: "video"), style: .plain, target: self, action: #selector(videoCallTapped)),
             UIBarButtonItem(image: UIImage(systemName: "phone.badge.waveform"), style: .plain, target: self, action: #selector(toggleAutoAnswer)),
+            incomingModeItem,
         ]
+        syncIncomingModeMenu()
 
         buildViews()
         ChatStore.shared.onUpdate = { [weak self] in self?.syncMessages() }
@@ -388,6 +395,40 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 
+    // MARK: - Incoming-call mode (§6)
+
+    /// Nav-bar ellipsis → "Incoming calls" → Bar / CallKit, reflecting the
+    /// peer's current mode. CallKit stays visible but disabled while its
+    /// presenter is unavailable: a connection must not be configurable into a
+    /// mode that cannot be served.
+    private func syncIncomingModeMenu() {
+        let current = IncomingCallRouter.shared.mode(for: peer.id)
+        func modeAction(_ mode: IncomingCallMode, _ title: String) -> UIAction {
+            UIAction(title: title, state: current == mode ? .on : .off) { [weak self] _ in
+                self?.setIncomingMode(mode)
+            }
+        }
+        let callKit = modeAction(.callKit, "CallKit")
+        if !IncomingCallRouter.CallKitIncomingPresenter.isAvailable {
+            callKit.attributes = .disabled
+            callKit.subtitle = "Not available yet"
+        }
+        incomingModeItem.menu = UIMenu(children: [
+            UIMenu(title: "Incoming calls", children: [modeAction(.bar, "Bar"), callKit]),
+        ])
+    }
+
+    private func setIncomingMode(_ mode: IncomingCallMode) {
+        Task {
+            do {
+                try await IncomingCallRouter.shared.setMode(mode, for: peer.id)
+            } catch {
+                NSLog("idfon incoming-call mode update failed: \(error.localizedDescription)")
+            }
+            syncIncomingModeMenu()
+        }
+    }
+
     // MARK: - Live call
 
     private func showCallStatus(_ text: String?) {
@@ -418,19 +459,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func dialTapped() {
-        dial(peerRef: peer.id)
+        // Nav-bar phone = real audio call (the Bar renders it inline).
+        LiveCall.shared.dial(peer.id)
     }
 
     @objc private func videoCallTapped() {
         VideoCall.shared.dial(peer.id)
     }
 
+    /// Automation entry (`idfon://dial` + the `idfon.dial` notification): the
+    /// daemon-side WAV harness, not the real audio state machine.
     private func dial(peerRef: String) {
         NSLog("idfon dial: \(peerRef)")
         showCallStatus("Calling…")
         Task {
             do {
-                try await LiveCall.dial(peer: peerRef, seconds: 8, client: client)
+                try await LiveCallHarness.dial(peer: peerRef, seconds: 8, client: client)
                 showCallStatus("Call ended")
             } catch {
                 showCallStatus("Call failed: \(error.localizedDescription)")
@@ -451,7 +495,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         Task {
             while self.autoAnswerArmed {
                 do {
-                    let out = try await LiveCall.armAutoAnswer(waitSeconds: 120, captureSeconds: 8, client: client)
+                    let out = try await LiveCallHarness.armAutoAnswer(waitSeconds: 120, captureSeconds: 8, client: client)
                     guard self.autoAnswerArmed else { break }
                     self.showCallStatus("Call recorded")
                     NSLog("idfon call recorded to \(out)")
