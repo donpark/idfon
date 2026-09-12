@@ -67,7 +67,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         syncIncomingModeMenu()
 
         buildViews()
-        ChatStore.shared.onUpdate = { [weak self] in self?.syncMessages() }
+        ChatStore.shared.addObserver(self)
         syncMessages()
 
         NotificationCenter.default.addObserver(forName: .init("idfon.dial"), object: nil, queue: .main) { [weak self] note in
@@ -87,7 +87,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        ChatStore.shared.onUpdate = nil
         videoObservers.forEach(NotificationCenter.default.removeObserver)
         videoObservers = []
     }
@@ -286,7 +285,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let text = composerText.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
         composerText.text = ""
         textViewDidChange(composerText)
-        ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .text(text), outgoing: true))
+        ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .text(text), outgoing: true, timestamp: Date()))
         Task { try? await client.sendText(to: peer.id, text) }
     }
 
@@ -378,7 +377,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 ticket=\(ticket)
                 """
                 try await client.sendText(to: peer.id, envelope)
-                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .recording(ticket: ticket, durationMs: durationMs, localURL: url), outgoing: true))
+                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .recording(ticket: ticket, durationMs: durationMs, localURL: url), outgoing: true, timestamp: Date()))
                 try? FileManager.default.removeItem(at: url)
                 self.memoURL = nil
                 self.reviewPlayer = nil
@@ -584,6 +583,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             }
         }
     }
+}
+
+extension ChatViewController: ChatStoreObserver {
+    func chatStoreDidUpdate() { syncMessages() }
 }
 
 extension ChatViewController: AVAudioPlayerDelegate {

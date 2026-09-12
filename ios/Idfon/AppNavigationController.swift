@@ -1,54 +1,46 @@
 import UIKit
 
-/// Root navigation controller that owns the Live Activity Bar's clearance and
-/// content-shift contract (docs/live-activity-bar-layout.md §8). The two
-/// numbers live in one place: the navigation bar's bottom edge is reported to
-/// `overlay.topClearance` (so the Bar docks below chrome, never over it), and
-/// the overlay's `contentInset` is added to each child's
-/// `additionalSafeAreaInsets.top` (so content shifts down under the Bar).
+/// Navigation controller for one tab. It reports the bottom edge of its
+/// navigation chrome (`topClearance`) and accepts the Live Activity Bar's
+/// content inset, applied to every controller it hosts.
+///
+/// The wiring lives in `LiveActivityController`, which fans both numbers out
+/// to every tab and reads `topClearance` from the selected one
+/// (docs/live-activity-bar-layout.md §8).
 final class AppNavigationController: UINavigationController, UINavigationControllerDelegate {
-    /// The Bar's window host, wired by the scene delegate once both exist.
-    /// Weak: the scene's `LiveActivityController` owns the overlay window.
-    weak var overlay: OverlayWindow? {
-        didSet {
-            overlay?.onContentInsetChange = { [weak self] inset in
-                self?.applyContentInset(inset)
-            }
-            applyClearance()
-            applyContentInset(overlay?.contentInset ?? 0)
-        }
-    }
-
-    /// Fired after each push/pop so the Bar can re-evaluate its density
-    /// (expanded only while the visible thread is the call peer's).
+    /// Fired after any layout that can move the navigation bar (push/pop,
+    /// rotation, large-title collapse) so the Bar can re-anchor.
+    var onLayout: (() -> Void)?
+    /// Fired after a push/pop so the Bar can re-evaluate its density.
     var onVisibleControllerChanged: (() -> Void)?
+
+    /// Bottom edge of the navigation chrome, in window points. A root tab's
+    /// navigation view shares the window origin, so its frame is already in
+    /// window points.
+    var topClearance: CGFloat { navigationBar.frame.maxY }
+
+    private var contentInset: CGFloat = 0
 
     override func viewDidLoad() {
         super.viewDidLoad()
         delegate = self
-        applyClearance()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // Fires on push/pop, rotation and large-title collapse: the nav bar
-        // is this controller's own subview, so its height changes land here.
-        applyClearance()
+        onLayout?()
     }
 
-    private func applyClearance() {
-        guard let overlay else { return }
-        // Root nav controller: `navigationBar.frame` is in window points.
-        overlay.topClearance = navigationBar.frame.maxY
-    }
-
-    private func applyContentInset(_ top: CGFloat) {
+    /// Top inset the Bar occupies; applied to every hosted controller so
+    /// scroll views and Auto Layout content follow the safe area for free.
+    func applyContentInset(_ top: CGFloat) {
+        contentInset = top
         viewControllers.forEach { $0.additionalSafeAreaInsets.top = top }
     }
 
     func navigationController(_ navigationController: UINavigationController, didShow viewController: UIViewController, animated: Bool) {
         // A newly pushed controller hasn't seen any contentInset change yet.
-        viewController.additionalSafeAreaInsets.top = overlay?.contentInset ?? 0
+        viewController.additionalSafeAreaInsets.top = contentInset
         onVisibleControllerChanged?()
     }
 }
