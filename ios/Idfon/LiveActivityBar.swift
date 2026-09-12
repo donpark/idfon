@@ -235,13 +235,13 @@ final class LiveActivityBar: UIView {
         openTap.isEnabled = compact
         titleLabel.accessibilityTraits = compact ? .button : .staticText
 
-        // Controls. Idle has no stream toggles: a call starts from the nav
-        // bar and always begins mic-only, so there is nothing to stage there.
-        // In a call, a toggle for an absent track is hidden (compact hides
-        // both anyway).
-        let idle = model.phase == .idle
-        micButton.isHidden = compact || idle || !model.audioAvailable
-        camButton.isHidden = compact || idle || !model.videoAvailable
+        // Controls. Stream toggles appear only once a call exists (calling /
+        // inCall): an idle Bar has nothing to stage, and the ringing Bar has
+        // nothing to answer with — calls always begin mic-only. A toggle for
+        // an absent track is hidden too (compact hides both anyway).
+        let togglesActive = model.phase == .calling || model.phase == .inCall
+        micButton.isHidden = compact || !togglesActive || !model.audioAvailable
+        camButton.isHidden = compact || !togglesActive || !model.videoAvailable
         micButton.configuration?.image = UIImage(systemName: model.micOn ? "mic.fill" : "mic.slash.fill")
         camButton.configuration?.image = UIImage(systemName: model.camOn ? "video.fill" : "video.slash.fill")
         micButton.configuration?.baseForegroundColor = model.micOn ? .tintColor : .secondaryLabel

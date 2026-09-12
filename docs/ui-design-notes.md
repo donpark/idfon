@@ -74,8 +74,9 @@ The Bar no longer carries pre-call `Mic`/`Cam` toggles. Staging let a caller ope
 camera-on, so a callee could answer into a video call (and a live microphone) they were not
 ready for. A call is now started from the thread's nav-bar `Call` button and **always begins
 mic-only**: both tracks are published, the camera stays off until the Bar's `Cam` toggle.
-Idle chrome is the handle plus `[Ping]`. State 1 and State 3 keep their numbers because
-other sections reference them.
+Idle chrome is the handle plus `[Ping]`. Stream toggles appear only once a call exists, so
+the ringing Bar is the handle, "Incoming call", `[Decline]` and `[Answer]` — nothing to
+stage. State 1 and State 3 keep their numbers because other sections reference them.
 
 ### State 3: Active Call
 

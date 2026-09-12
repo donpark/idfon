@@ -30,7 +30,7 @@ ios/
 │   ├── DaemonClient+Methods.swift    # status/peers/sendText/waitMessages/events/call-mode
 │   ├── DaemonBootstrap.swift # spawns idfond on background thread, socket paths
 │   └── Idfon-Bridging.h      # C ABI surface (daemon_run, client_request, media_*)
-├── Checks/                   # headless simulator checks (not in the Xcode target)
+├── Checks/                   # host-run checks via Mac Catalyst (not in the Xcode target)
 └── Vendor/                   # libiroh_c_ffi.a static lib (Rust, gitignored)
 ```
 

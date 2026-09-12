@@ -1,11 +1,18 @@
 // Runnable layout/model check for LiveActivityBar (not part of the Xcode target).
-// Compiles against the simulator SDK and runs headless via simctl:
 //
-//   SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
-//   xcrun swiftc -sdk $SDK -target arm64-apple-ios17.0-simulator -o /tmp/labcheck-bin \
-//     ios/Idfon/LiveActivityBar.swift ios/Idfon/OverlayWindow.swift ios/Idfon/LiveWaveformView.swift \
-//     ios/Idfon/TransferCenter.swift ios/Checks/LiveActivityBarCheck/main.swift
-//   xcrun simctl boot <udid>; xcrun simctl spawn <udid> /tmp/labcheck
+// Runs natively via Mac Catalyst — **no simulator**:
+//
+//   SDK=$(xcrun --sdk macosx --show-sdk-path)
+//   xcrun swiftc -target arm64-apple-ios17.0-macabi -sdk "$SDK" \
+//     -F "$SDK/System/iOSSupport/System/Library/Frameworks" \
+//     -I "$SDK/System/iOSSupport/usr/lib/swift" -o /tmp/labcheck \
+//     ios/Idfon/LiveActivityBar.swift ios/Idfon/OverlayWindow.swift \
+//     ios/Idfon/LiveWaveformView.swift ios/Idfon/TransferCenter.swift \
+//     ios/Checks/LiveActivityBarCheck/main.swift
+//   /tmp/labcheck
+//
+// (Historically it ran through `simctl`; the Catalyst binary exercises the same
+// UIKit layout code on the host.)
 //
 // Prints "ALL OK" or the first failing assertion (exit 1).
 import UIKit
@@ -72,14 +79,17 @@ m.phase = .incoming; m.density = .expanded; bar.apply(m); host.layoutIfNeeded()
 let inc = buttons(bar).filter { b in var v: UIView? = b; while let x = v { if x.isHidden { return false }; v = x.superview }; return true }.map { $0.accessibilityLabel ?? $0.configuration?.title ?? "?" }
 print("incoming buttons:", inc)
 check(inc.contains("Answer") && inc.contains("Decline") && !inc.contains("End"), "incoming shows Answer/Decline")
+check(!inc.contains("Microphone") && !inc.contains("Camera"), "incoming hides mic/cam: \(inc)")
 m.phase = .idle; m.micOn = false; m.camOn = false; bar.apply(m)
 check(bar.subviews.count > 0, "idle ok")
 
 // Idle has no stream toggles and the Ping verb: a call starts from the thread's
 // nav bar and always begins mic-only, so there is nothing to stage.
-func visibleLabels() -> [String] {
+func visibleButtons() -> [UIButton] {
     buttons(bar).filter { b in var v: UIView? = b; while let x = v { if x.isHidden { return false }; v = x.superview }; return true }
-        .map { $0.accessibilityLabel ?? $0.configuration?.title ?? "?" }
+}
+func visibleLabels() -> [String] {
+    visibleButtons().map { $0.accessibilityLabel ?? $0.configuration?.title ?? "?" }
 }
 m.phase = .idle; m.micOn = false; m.camOn = false; m.density = .expanded; bar.apply(m); host.layoutIfNeeded()
 let idleButtons = visibleLabels()
@@ -106,6 +116,11 @@ check(videoLess.contains("Microphone") && !videoLess.contains("Camera"), "video-
 m.audioAvailable = true; m.videoAvailable = true; bar.apply(m); host.layoutIfNeeded()
 let bothTracks = visibleLabels()
 check(bothTracks.contains("Microphone") && bothTracks.contains("Camera"), "both toggles visible with both tracks: \(bothTracks)")
+// Present *and* wired: the in-call Mic/Cam buttons emit their toggles.
+intents.removeAll()
+fire(visibleButtons().first { $0.accessibilityLabel == "Microphone" }!)
+fire(visibleButtons().first { $0.accessibilityLabel == "Camera" }!)
+check(intents == [.toggleMic, .toggleCam], "in-call mic/cam emit toggles: \(intents)")
 
 // §4 Session Tray registry (TransferCenter): begin/update/finish, per-peer rows,
 // cancel routing, fraction clamping. The registry is @MainActor; the check runs
