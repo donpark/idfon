@@ -400,6 +400,17 @@ final class LiveActivityController: NSObject {
         }
     }
 
+    // MARK: - Automation (scripts/ios-device-test.sh)
+
+    /// Opens `peerRef`'s thread and hands back the controller, so a headless run
+    /// can drive the same path a tap would. Returns nil without a scene.
+    func automateOpenThread(peerRef: String) async -> ChatViewController? {
+        guard let navigationController = visibleNavigationController else { return nil }
+        let chat = ChatViewController(peer: await resolvePeer(peerRef))
+        navigationController.pushViewController(chat, animated: false)
+        return chat
+    }
+
     private func resolvePeer(_ peerId: String) async -> Peer {
         if let match = (try? await client.peers())?.first(where: { $0.id == peerId || $0.name == peerId }) {
             return match

@@ -39,6 +39,27 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         connectionOptions.urlContexts.forEach(handleURL)
+
+        // On-device automation (scripts/ios-device-test.sh): drive the real
+        // attachment path with no taps. Runs after a short delay so the scene
+        // is active before the thread is pushed and the send begins.
+        if let pending = Automation.pendingSendFile {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                Automation.mark("sendfile start peer=\(pending.peer) file=\(pending.file)")
+                let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let url = documents.appendingPathComponent(pending.file)
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    Automation.mark("sendfile FAIL missing Documents/\(pending.file)")
+                    return
+                }
+                guard let chat = await activity.automateOpenThread(peerRef: pending.peer) else {
+                    Automation.mark("sendfile FAIL no visible thread")
+                    return
+                }
+                chat.automateSendFile(at: url)
+            }
+        }
     }
 
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {

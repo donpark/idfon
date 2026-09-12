@@ -94,6 +94,13 @@ Key facts:
   whether each published stream is *sent*; the stream set is chosen at dial time.
 - **Sim vs device socket path**: sim uses `/tmp/idfon-ios.sock` (sandbox paths exceed
   the 104-byte `SUN_LEN`), device uses flat tmp path.
+- **On-device automation**: `ios/device.sh` builds/installs/launches on a physical
+  iPhone via `devicectl`; launch arguments drive no-tap flows (`-dial`, `-answer`,
+  `-videodial`, `-camprobe`, `-memo`, `-pair`). `-sendfile <peer> <fileName>`
+  (`Automation.swift`) opens the thread and calls the same `sendFile` the attachment
+  picker reaches; `scripts/ios-device-test.sh` stages a file in the app container and
+  asserts the `idfon tray:` / `idfon file:` markers. Purely visual behavior (tabs, Bar
+  docking, the Files picker) stays manual — there is no XCUITest target.
 
 See also: [ui-design-notes.md](ui-design-notes.md) (UX spec),
 [live-activity-bar-layout.md](live-activity-bar-layout.md) (Bar layout + integration
