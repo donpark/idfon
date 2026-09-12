@@ -47,8 +47,11 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
 
     private func applyFilter() {
         let query = (search.searchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Match everything the row displays, endpoint id included.
         shownPeers = query.isEmpty ? peers : peers.filter {
-            $0.displayName.lowercased().contains(query) || $0.id.lowercased().contains(query)
+            $0.displayName.lowercased().contains(query)
+                || $0.id.lowercased().contains(query)
+                || ($0.endpointId?.lowercased().contains(query) ?? false)
         }
         tableView.reloadData()
     }

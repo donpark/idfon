@@ -1,28 +1,22 @@
 import AppKit
 import CIdfon
 
-/// Left pane: daemon status, identity switching, peer list, and the action
-/// buttons (add connection, create identity, capability ticket, live
-/// subscribe, audio settings, emergency stop).
-final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+/// Left pane: daemon status, identity switching, the tabbed peer lists, and the
+/// action buttons (add connection, create identity, capability ticket, audio
+/// settings).
+final class SidebarViewController: NSViewController {
     private let app: AppModel
-    private let table = NSTableView()
+    private let tabs: PeerTabsViewController
     private let statusLabel = NSTextField(labelWithString: "Connecting")
     private let identityPopup = NSPopUpButton()
-    private let searchField = NSSearchField()
-    private var peers: [Peer] = []
-    /// Flat render list: section headers, peers, and per-section empty states.
-    private enum Row {
-        case header(String)
-        case peer(Peer)
-        case empty(String)
-    }
-    private var rows: [Row] = []
-    private var query = ""
     private var suppressPopupSync = false
 
     init(app: AppModel) {
         self.app = app
+        self.tabs = PeerTabsViewController(
+            peersProvider: { [weak app] in app?.peers ?? [] },
+            recentPeerIds: { ChatStore.shared.recentPeerIds },
+            onSelect: { [weak app] peer in app?.select(peer) })
         super.init(nibName: nil, bundle: nil)
         app.onUpdate = { [weak self] in self?.sync() }
         ChatStore.shared.addObserver(self)
@@ -41,31 +35,9 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // Peer table
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("peer"))
-        column.title = "Connections"
-        table.addTableColumn(column)
-        table.headerView = nil
-        table.dataSource = self
-        table.delegate = self
-        table.rowHeight = 44
-        table.style = .plain
-        table.target = self
-        table.action = #selector(peerClicked)
-        table.translatesAutoresizingMaskIntoConstraints = false
-
-        let scroll = NSScrollView()
-        scroll.documentView = table
-        scroll.hasVerticalScroller = true
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-
-        // Search narrows the list; sections mirror the iOS tab root
-        // (Favorites / Recents / Contacts).
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.placeholderString = "Search contacts"
-        searchField.sendsSearchStringImmediately = true
-        searchField.target = self
-        searchField.action = #selector(searchChanged)
+        // Favorites / Recents / Contacts tabs, each with its own search field.
+        addChild(tabs)
+        tabs.view.translatesAutoresizingMaskIntoConstraints = false
 
         let actions = NSStackView(views: [
             button("Add Connection…", #selector(addConnectionTapped)),
@@ -80,8 +52,7 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
 
         view.addSubview(identityPopup)
         view.addSubview(statusLabel)
-        view.addSubview(searchField)
-        view.addSubview(scroll)
+        view.addSubview(tabs.view)
         view.addSubview(actions)
         NSLayoutConstraint.activate([
             identityPopup.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
@@ -89,14 +60,11 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             identityPopup.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             statusLabel.topAnchor.constraint(equalTo: identityPopup.bottomAnchor, constant: 4),
             statusLabel.leadingAnchor.constraint(equalTo: identityPopup.leadingAnchor),
-            searchField.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
-            searchField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
-            searchField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
-            // Peer list stretches between search and the action buttons.
-            scroll.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -8),
+            // The tabbed lists stretch between the status line and the actions.
+            tabs.view.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
+            tabs.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tabs.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tabs.view.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -8),
             actions.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             actions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12),
             actions.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
@@ -115,7 +83,6 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
     }
 
     private func refreshData() {
-        peers = app.peers
         statusLabel.stringValue = app.statusText
         suppressPopupSync = true
         identityPopup.removeAllItems()
@@ -126,141 +93,12 @@ final class SidebarViewController: NSViewController, NSTableViewDataSource, NSTa
             identityPopup.selectItem(withTitle: active.name)
         }
         suppressPopupSync = false
-        rebuildRows()
-        table.reloadData()
-    }
-
-    /// Sections mirror the iOS tab root (Favorites / Recents / Contacts); a
-    /// search query collapses them into one Results section.
-    private func rebuildRows() {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        var out: [Row] = []
-        if !q.isEmpty {
-            out.append(.header("Results"))
-            let hits = peers.filter {
-                $0.displayName.lowercased().contains(q) || $0.id.lowercased().contains(q)
-            }
-            if hits.isEmpty { out.append(.empty("No matches")) } else { hits.forEach { out.append(.peer($0)) } }
-            rows = out
-            return
-        }
-        // Favorites has no backing store yet (same placeholder as the iOS tab).
-        out.append(.header("Favorites"))
-        out.append(.empty("None yet"))
-        // Recents: peers with message history, newest first (session-only).
-        let recent = ChatStore.shared.recentPeerIds.compactMap { id in peers.first { $0.id == id } }
-        out.append(.header("Recents"))
-        if recent.isEmpty { out.append(.empty("None yet")) } else { recent.forEach { out.append(.peer($0)) } }
-        out.append(.header("Contacts"))
-        if peers.isEmpty { out.append(.empty("No connections")) } else { peers.forEach { out.append(.peer($0)) } }
-        rows = out
-    }
-
-    @objc private func searchChanged() {
-        query = searchField.stringValue
-        rebuildRows()
-        table.reloadData()
+        tabs.refresh()
     }
 
     @objc private func identityPicked() {
         guard !suppressPopupSync, let name = identityPopup.titleOfSelectedItem else { return }
         Task { await app.useIdentity(name) }
-    }
-
-    @objc private func peerClicked() {
-        let row = table.clickedRow >= 0 ? table.clickedRow : table.selectedRow
-        guard row >= 0, row < rows.count, case .peer(let peer) = rows[row] else { return }
-        app.select(peer)
-    }
-
-    // MARK: - NSTableView
-
-    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-
-    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
-        if case .header = rows[row] { return true }
-        return false
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        let row = table.selectedRow
-        guard row >= 0, row < rows.count, case .peer(let peer) = rows[row] else { return }
-        app.select(peer)
-    }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        switch rows[row] {
-        case .header(let title):
-            let cell = tableView.makeView(withIdentifier: .init("headerCell"), owner: self) as? NSTableCellView
-                ?? NSTableCellView()
-            cell.identifier = .init("headerCell")
-            if cell.subviews.isEmpty {
-                let label = NSTextField(labelWithString: "")
-                label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-                label.textColor = .secondaryLabelColor
-                cell.addSubview(label)
-                cell.textField = label
-                label.translatesAutoresizingMaskIntoConstraints = false
-                NSLayoutConstraint.activate([
-                    label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 14),
-                    label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                ])
-            }
-            cell.textField?.stringValue = title.uppercased()
-            return cell
-        case .empty(let text):
-            let cell = tableView.makeView(withIdentifier: .init("emptyCell"), owner: self) as? NSTableCellView
-                ?? NSTableCellView()
-            cell.identifier = .init("emptyCell")
-            if cell.subviews.isEmpty {
-                let label = NSTextField(labelWithString: "")
-                label.font = NSFont.systemFont(ofSize: 11)
-                label.textColor = .tertiaryLabelColor
-                cell.addSubview(label)
-                cell.textField = label
-                label.translatesAutoresizingMaskIntoConstraints = false
-                NSLayoutConstraint.activate([
-                    label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 16),
-                    label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                ])
-            }
-            cell.textField?.stringValue = text
-            return cell
-        case .peer(let peer):
-            let cell = tableView.makeView(withIdentifier: .init("peerCell"), owner: self) as? NSTableCellView
-                ?? NSTableCellView()
-            cell.identifier = .init("peerCell")
-
-            let labels: [NSTextField]
-            if cell.subviews.isEmpty {
-                let name = NSTextField(labelWithString: "")
-                let endpoint = NSTextField(labelWithString: "")
-                cell.addSubview(name)
-                cell.addSubview(endpoint)
-                cell.textField = name
-                for subview in cell.subviews { subview.translatesAutoresizingMaskIntoConstraints = false }
-                NSLayoutConstraint.activate([
-                    name.topAnchor.constraint(equalTo: cell.topAnchor, constant: 6),
-                    name.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
-                    name.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
-                    endpoint.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 2),
-                    endpoint.leadingAnchor.constraint(equalTo: name.leadingAnchor),
-                    endpoint.trailingAnchor.constraint(equalTo: name.trailingAnchor),
-                ])
-                labels = [name, endpoint]
-            } else {
-                labels = cell.subviews.compactMap { $0 as? NSTextField }
-            }
-            labels[0].stringValue = peer.displayName
-            labels[0].font = NSFont.systemFont(ofSize: 13, weight: .medium)
-            labels[0].lineBreakMode = .byTruncatingTail
-            labels[1].stringValue = peer.endpointId ?? peer.id
-            labels[1].font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-            labels[1].textColor = .secondaryLabelColor
-            labels[1].lineBreakMode = .byTruncatingMiddle
-            labels[1].isSelectable = true
-            return cell
-        }
     }
 
     // MARK: - Actions
@@ -420,11 +258,10 @@ private extension Array {
     }
 }
 
-/// Recents is derived from message history, so the sidebar re-renders when the
-/// store changes (newest-first ordering).
+/// Recents is derived from message history, so the lists re-read when the store
+/// changes (newest-first ordering).
 extension SidebarViewController: ChatStoreObserver {
     func chatStoreDidUpdate() {
-        rebuildRows()
-        table.reloadData()
+        tabs.refresh()
     }
 }
