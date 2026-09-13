@@ -377,6 +377,9 @@ fn mediaAudioWorker(job: *Job) void {
     } else if (std.mem.eql(u8, name, "media.live.video_start")) {
         const ticket = ffi.media_live_start(1, 1); // mic + camera
         defer ffi.rust_free_string(ticket);
+        // start_live opens mic-open, camera-closed; open the gate explicitly so
+        // a failed/raced shell does not leave the video track silent.
+        _ = ffi.media_live_set_video_enabled(1);
         const text = std.mem.span(ticket);
         if (text.len == 0) self.complete(job.key, false, self.last_live_error())
         else self.complete(job.key, true, text);

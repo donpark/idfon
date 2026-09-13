@@ -651,7 +651,19 @@ final class VideoCall {
             Task { @MainActor in
                 guard let self, let path = self.framePath else { return }
                 let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
-                guard size != self.lastFrameSize, size > 0 else { return }
+                guard size > 0 else {
+                    // No frame written yet, or the FFI removed the stale JPEG
+                    // (new subscription / peer camera off). Drop any frame
+                    // still on screen so a paused stream cannot masquerade as
+                    // live video.
+                    if self.lastFrame != nil {
+                        self.lastFrame = nil
+                        self.onFrame?(nil)
+                    }
+                    self.lastFrameSize = -1
+                    return
+                }
+                guard size != self.lastFrameSize else { return }
                 self.lastFrameSize = size
                 // Decode off the main thread: a JPEG decode ~10x/s would
                 // otherwise eat main-thread time for the whole call.
