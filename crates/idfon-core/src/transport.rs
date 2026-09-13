@@ -6,7 +6,7 @@ use std::{
 };
 use tokio::sync::{mpsc, RwLock};
 
-use iroh::{endpoint::{presets, Connection}, Endpoint, EndpointAddr, SecretKey};
+use iroh::{endpoint::{presets, Connection, RecvStream, SendStream}, Endpoint, EndpointAddr, SecretKey};
 use idfon_protocol::{
     decode_frame, encode_frame, AckStatus, MessageAck, MessageEnvelope, MAX_FRAME_BYTES,
 };
@@ -145,6 +145,27 @@ impl IrohTransport {
 
     pub async fn shutdown(self) {
         self.endpoint.close().await;
+    }
+
+    /// Dials `target` on an arbitrary ALPN and opens one bi-stream. The message
+    /// path's `send` hardcodes [`MESSAGE_ALPN`]; side-channel consumers (e.g. the
+    /// MCP bridge) use this to speak their own ALPN. Byte framing is the
+    /// caller's concern.
+    pub async fn open_bi_stream(
+        &self,
+        target: &EndpointAddr,
+        alpn: &[u8],
+    ) -> Result<(Connection, SendStream, RecvStream), TransportError> {
+        let connection = self
+            .endpoint
+            .connect(target.clone(), alpn)
+            .await
+            .map_err(|error| TransportError::Failed(error.to_string()))?;
+        let (send, recv) = connection
+            .open_bi()
+            .await
+            .map_err(|error| TransportError::Failed(error.to_string()))?;
+        Ok((connection, send, recv))
     }
 
     /// Accepts authenticated message frames and returns application acknowledgments.

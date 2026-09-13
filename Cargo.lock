@@ -2084,6 +2084,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "idfon-mcp"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "idfon-core",
+ "iroh",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "idfon-media"
 version = "0.4.0"
 dependencies = [

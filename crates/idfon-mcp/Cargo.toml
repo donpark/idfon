@@ -1,0 +1,17 @@
+[package]
+name = "idfon-mcp"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[[bin]]
+name = "idfon-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+idfon-core = { path = "../idfon-core" }
+iroh = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "process", "signal"] }
