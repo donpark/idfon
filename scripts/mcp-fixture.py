@@ -145,9 +145,9 @@ class LineReader:
         return line
 
 
-def run_drive(binary, peer, key_file):
+def run_drive(connect_args):
     proc = subprocess.Popen(
-        [binary, "connect", "--peer", peer, "--key-file", key_file],
+        connect_args,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         bufsize=0,
@@ -228,9 +228,14 @@ def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "server":
         run_server()
     elif len(sys.argv) == 5 and sys.argv[1] == "drive":
-        run_drive(sys.argv[2], sys.argv[3], sys.argv[4])
+        run_drive([sys.argv[2], "connect", "--peer", sys.argv[3], "--key-file", sys.argv[4]])
+    elif len(sys.argv) == 4 and sys.argv[1] == "drive-uds":
+        run_drive([sys.argv[2], "connect", "--uds", sys.argv[3]])
     else:
-        print("usage: mcp-fixture.py server | drive BIN PEER KEY", file=sys.stderr)
+        print(
+            "usage: mcp-fixture.py server | drive BIN PEER KEY | drive-uds BIN SOCKET",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
 

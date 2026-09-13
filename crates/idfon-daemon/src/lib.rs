@@ -10,6 +10,7 @@ use std::{
 
 mod blob;
 mod live;
+mod mcp;
 
 use idfon_core::transport::{FakeTransport, MessageTransport};
 use idfon_media::service::MediaService;
@@ -297,9 +298,26 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
         let data_dir = state.data_dir.clone();
         state.save(&data_dir)?;
     }
+    // M2 user-side relay: a configured local MCP server is spliced to any
+    // inbound `idfon/mcp/1` stream when the peer holds an `mcp.transport`
+    // grant. The env var keeps the C ABI unchanged (same precedent as
+    // IDFON_IDLE_EXIT_SECS).
+    let mcp_command = std::env::var("IDFON_MCP_COMMAND")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
     if let TransportMode::Iroh(iroh) = transport.as_ref() {
-        for (identity, _) in identity_keys {
-            spawn_receiver(Arc::clone(iroh), Arc::clone(&store), identity);
+        for (identity, _) in &identity_keys {
+            spawn_receiver(Arc::clone(iroh), Arc::clone(&store), identity.clone());
+            if let Some(command) = &mcp_command {
+                mcp::spawn_inbound(
+                    Arc::clone(iroh),
+                    Arc::clone(&store),
+                    identity.clone(),
+                    command.clone(),
+                )
+                .await;
+            }
         }
     }
     prepare_socket(&socket)?;
@@ -715,6 +733,7 @@ fn dispatch_with_transport(
                 ),
             }
         }
+        "mcp.listen" => mcp::listen(&request, store, transport),
         "access.grant" => access_grant(&request, store),
         "capability.ticket" => capability_ticket_issue(&request, store),
         "capability.ticket.revoke" => capability_ticket_revoke(&request, store),
@@ -1495,6 +1514,26 @@ fn capability(value: &str) -> Option<idfon_protocol::Capability> {
     serde_json::from_value(serde_json::Value::String(value.replace('.', "_"))).ok()
 }
 
+/// One grant predicate shared by `access.check` and the MCP relay: an active,
+/// unexpired, unrevoked grant of `capability` from `identity` to `subject`.
+fn has_grant(
+    state: &Store,
+    identity: &str,
+    subject: &str,
+    capability: &idfon_protocol::Capability,
+) -> bool {
+    state.grants.iter().any(|grant| {
+        grant.identity == identity
+            && grant.subject == subject
+            && &grant.capability == capability
+            && grant.revoked_at.is_none()
+            && grant
+                .expires_at
+                .as_deref()
+                .is_none_or(|expires| expires > now().as_str())
+    })
+}
+
 fn capability_ticket_issue(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let subject = request_text(&request.params, "subject");
@@ -1728,16 +1767,7 @@ fn access_check(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         );
     };
     let state = store.lock().expect("store mutex poisoned");
-    let allowed = state.grants.iter().any(|grant| {
-        grant.identity == identity
-            && grant.subject == subject
-            && grant.capability == value
-            && grant.revoked_at.is_none()
-            && grant
-                .expires_at
-                .as_deref()
-                .is_none_or(|expires| expires > now().as_str())
-    });
+    let allowed = has_grant(&state, identity, subject, &value);
     success(
         request,
         serde_json::json!({"allowed": allowed, "identity": identity, "subject": subject, "capability": value}),

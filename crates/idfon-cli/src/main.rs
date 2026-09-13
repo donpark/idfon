@@ -108,6 +108,9 @@ enum Command {
     /// you may send to the subject, message.receive = you may receive from them)
     #[command(subcommand)]
     Access(AccessCmd),
+    /// MCP transport relay (user side): open a local socket to a peer's MCP server
+    #[command(subcommand)]
+    Mcp(McpCmd),
     /// Store stdin/FILE as a blob; prints the BlobTicket
     Put(PutArgs),
     /// Fetch a ticket to stdout or --out FILE (blob tickets fetch bytes,
@@ -313,6 +316,17 @@ enum AccessCmd {
     },
     /// Mint a capability ticket for a peer
     Ticket(TicketArgs),
+}
+
+#[derive(Subcommand)]
+enum McpCmd {
+    /// Open a per-peer local socket, spliced to the peer's idfon/mcp/1 stream
+    /// (connect with `idfon-mcp connect --uds <socket>`); requires an
+    /// `mcp.transport` grant for the peer
+    Listen {
+        #[arg(long, value_name = "PEER")]
+        to: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -704,6 +718,16 @@ fn run() -> io::Result<()> {
                 socket,
                 "access.grant",
                 json!({"subject": subject, "capability": capability}),
+                identity,
+                cli.stdin_json,
+            )?,
+            json,
+        ),
+        Command::Mcp(McpCmd::Listen { to }) => finish(
+            send_rpc(
+                socket,
+                "mcp.listen",
+                json!({ "to": to }),
                 identity,
                 cli.stdin_json,
             )?,

@@ -1,10 +1,14 @@
 use std::{
     collections::HashMap,
     future::Future,
+    io,
     pin::Pin,
     sync::{Arc, Mutex},
 };
-use tokio::sync::{mpsc, RwLock};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    sync::{mpsc, RwLock},
+};
 
 use iroh::{endpoint::{presets, Connection, RecvStream, SendStream}, Endpoint, EndpointAddr, SecretKey};
 use idfon_protocol::{
@@ -13,6 +17,18 @@ use idfon_protocol::{
 use thiserror::Error;
 
 pub const MESSAGE_ALPN: &[u8] = b"idfon/message/1";
+
+/// Copies `reader` to `writer` verbatim until EOF, then half-closes the writer.
+/// Used by the byte-stream side channels (MCP bridge, daemon relay); it does not
+/// parse, re-frame, or re-serialize the bytes.
+pub async fn pump<R, W>(mut reader: R, mut writer: W) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    tokio::io::copy(&mut reader, &mut writer).await?;
+    writer.shutdown().await
+}
 
 /// Unregisters a side-channel forwarder when dropped (see
 /// [`IrohTransport::add_side_channel`]).
