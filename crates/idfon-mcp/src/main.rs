@@ -4,16 +4,13 @@
 //! iroh bi-stream speaking `idfon/mcp/1`. The stream profile is a pure byte
 //! pump: it never parses MCP, never re-frames, and never rewrites JSON.
 
-use std::{io, path::Path, process::Stdio};
+use std::{path::Path, process::Stdio};
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use idfon_core::transport::{IrohTransport, TransportError};
+use idfon_core::transport::{pump, IrohTransport, TransportError};
 use iroh::{endpoint::Connection, EndpointAddr, EndpointId};
-use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    process::Command,
-};
+use tokio::process::Command;
 
 const MCP_ALPN: &[u8] = b"idfon/mcp/1";
 
@@ -38,8 +35,11 @@ enum Mode {
     /// Dial a peer and splice the bi-stream to this process's stdio.
     Connect {
         /// Peer ticket (JSON `EndpointAddr`) or bare endpoint id.
-        #[arg(long, value_name = "TICKET|ID")]
-        peer: String,
+        #[arg(long, value_name = "TICKET|ID", conflicts_with = "uds")]
+        peer: Option<String>,
+        /// Local socket opened by `idfon mcp listen` (stdio ↔ daemon shim).
+        #[arg(long, value_name = "PATH")]
+        uds: Option<std::path::PathBuf>,
     },
 }
 
@@ -53,7 +53,7 @@ fn main() -> Result<()> {
         .block_on(async {
             match cli.mode {
                 Mode::Serve { mcp_command } => serve(key, mcp_command).await,
-                Mode::Connect { peer } => connect(key, peer).await,
+                Mode::Connect { peer, uds } => connect(key, peer, uds).await,
             }
         })
 }
@@ -165,7 +165,27 @@ async fn serve_connection(connection: Connection, mcp_command: String) -> Result
     Ok(())
 }
 
-async fn connect(key: [u8; 32], peer: String) -> Result<()> {
+async fn connect(
+    key: [u8; 32],
+    peer: Option<String>,
+    uds: Option<std::path::PathBuf>,
+) -> Result<()> {
+    // Daemon-relay shim: the daemon owns the peer stream and exposes a local
+    // socket; this process only bridges stdio to it.
+    if let Some(path) = uds {
+        let stream = tokio::net::UnixStream::connect(&path)
+            .await
+            .with_context(|| format!("connect {}", path.display()))?;
+        let (read, write) = stream.into_split();
+        let (up, down) = tokio::join!(
+            pump(tokio::io::stdin(), write),
+            pump(read, tokio::io::stdout()),
+        );
+        up.context("stdin -> daemon")?;
+        down.context("daemon -> stdout")?;
+        return Ok(());
+    }
+    let peer = peer.ok_or_else(|| anyhow!("--peer or --uds is required"))?;
     let target = parse_peer(&peer)?;
     let transport = IrohTransport::bind_with_key(Some(key))
         .await
@@ -193,14 +213,4 @@ fn parse_peer(peer: &str) -> Result<EndpointAddr> {
     }
     let id: EndpointId = peer.parse().context("parse endpoint id")?;
     Ok(EndpointAddr::new(id))
-}
-
-/// Byte pump. No MCP parsing, no re-serialization; EOF half-closes the writer.
-async fn pump<R, W>(mut reader: R, mut writer: W) -> io::Result<()>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    tokio::io::copy(&mut reader, &mut writer).await?;
-    writer.shutdown().await
 }

@@ -281,6 +281,10 @@ pub enum Capability {
     LiveAudioSubscribe,
     RecordingFetch,
     RecordingRetain,
+    /// May use the peer's `idfon/mcp/1` transport (grants gate each
+    /// direction). Wire name: `mcp.transport` (the dispatch normalises
+    /// `.` to `_`).
+    McpTransport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

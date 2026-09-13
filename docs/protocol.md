@@ -124,8 +124,22 @@ this daemon may receive from the subject. Subjects are peer endpoint ids
 | `capability.ticket` | `{ subject, capabilities: [..], expires_at? }` | `{ ticket }` (signed, subject-bound; a verified ticket satisfies the receive gate) |
 | `capability.ticket.revoke` | `{ ticket_id }` | `{ ticket_id, issuer, revoked }` |
 
-Capabilities: `message.send`, `message.receive`, plus media capabilities
-(`recording.fetch`, `live.audio.subscribe`, ...).
+Capabilities: `message.send`, `message.receive`, `mcp.transport`, plus media
+capabilities (`recording.fetch`, `live.audio.subscribe`, ...).
+
+### MCP transport
+
+User-side relay for the MCP transport binding. The daemon stays generic —
+ALPN → configured local command, or peer bi-stream → local Unix socket — and
+never parses MCP.
+
+| method | params | result |
+|---|---|---|
+| `mcp.listen` | `{ to }` | `{ socket, peer, direction: "outbound" }` — opens `<data_dir>/mcp/<hash>.sock`, then splices the first local connection to the peer's `idfon/mcp/1` bi-stream. Requires an `mcp.transport` grant for the peer. |
+
+Inbound `idfon/mcp/1` connections are spliced to the command in the daemon's
+`IDFON_MCP_COMMAND` environment variable, provided the remote endpoint has an
+`mcp.transport` grant. `idfon-mcp connect --uds SOCKET` is the stdio shim.
 
 ### Media (resources/blobs)
 
