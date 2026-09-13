@@ -69,7 +69,11 @@ reciprocal peer always takes the default.
 | method | params | result |
 |---|---|---|
 | `peers` | — | `{ peers: [Peer] }`; Peer = `{id, identity, name, aliases, endpoint_id, endpoint_addr, call_mode, ...}` |
-| `peer.add` | `{ ref, id, name, endpoint_id, endpoint_addr, aliases, call_mode? }` | `{ peer }` |
+| `peer.add` | `{ ref, id, name, endpoint_id, endpoint_addr, aliases, call_mode?, mcp_ticket? }` | `{ peer }` |
+
+`mcp_ticket` (M3) is an MCP contact ticket; when present it fills any omitted
+`id`/`endpoint_id`/`endpoint_addr`/`name` and caches the ticket's
+`server/discover` result. See the MCP transport section.
 | `peer.update` | same as add | `{ peer }` |
 | `peer.remove` | `{ ref }` | `{}` |
 | `peer.resolve` | `{ ref }` | live connection info |
@@ -140,6 +144,13 @@ never parses MCP.
 Inbound `idfon/mcp/1` connections are spliced to the command in the daemon's
 `IDFON_MCP_COMMAND` environment variable, provided the remote endpoint has an
 `mcp.transport` grant. `idfon-mcp connect --uds SOCKET` is the stdio shim.
+
+**Contact ticket (M3).** `idfon-mcp serve --contact` mints an
+`McpContactTicket { transport, peer, discover? }` — the dial address, the peer
+endpoint id, and a cached `server/discover` the bridge probed from the local
+server. `idfon peer add --mcp-ticket <json>` adds the peer offline. The cached
+`discover` is a hint only: refresh it with a live `server/discover` (respect
+`ttlMs`/`cacheScope`), and treat `serverInfo` as unverified display data.
 
 ### Media (resources/blobs)
 

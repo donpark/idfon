@@ -139,6 +139,8 @@ struct Store {
     #[serde(default)]
     revoked_tickets: Vec<String>,
     #[serde(default)]
+    mcp_discovery: Vec<idfon_protocol::McpDiscoveryRecord>,
+    #[serde(default)]
     resources: Vec<idfon_protocol::MediaResource>,
     #[serde(default)]
     sessions: Vec<idfon_protocol::MediaSession>,
@@ -172,6 +174,7 @@ impl Store {
                     grants: Vec::new(),
                     policies: Vec::new(),
                     revoked_tickets: Vec::new(),
+                    mcp_discovery: Vec::new(),
                     resources: Vec::new(),
                     sessions: Vec::new(),
                     data_dir: data_dir.to_path_buf(),
@@ -720,10 +723,17 @@ fn dispatch_with_transport(
                 })
             });
             match peer {
-                Some(peer) => success(
-                    &request,
-                    serde_json::json!({"peer": peer, "status": "known"}),
-                ),
+                Some(peer) => {
+                    let discovery = state
+                        .mcp_discovery
+                        .iter()
+                        .find(|record| record.identity == peer.identity && record.peer_id == peer.id)
+                        .map(|record| record.discover.clone());
+                    success(
+                        &request,
+                        serde_json::json!({"peer": peer, "status": "known", "mcp_discovery": discovery}),
+                    )
+                }
                 None => error_response(
                     request.id,
                     &request.method,
@@ -2831,26 +2841,62 @@ fn requested_call_mode(
     })
 }
 
+/// Parses an M3 contact ticket passed as a JSON object or a JSON string.
+fn parse_contact_ticket(
+    value: &serde_json::Value,
+) -> Result<idfon_protocol::McpContactTicket, String> {
+    match value {
+        serde_json::Value::String(text) => serde_json::from_str(text).map_err(|error| error.to_string()),
+        other => serde_json::from_value(other.clone()).map_err(|error| error.to_string()),
+    }
+}
+
 fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<TransportMode>) -> Response {
-    let Some(id) = request
+    // An M3 contact ticket carries the dial address, endpoint id, and an
+    // optional cached `server/discover`; it fills any omitted fields.
+    let contact = match request.params.get("mcp_ticket").filter(|value| !value.is_null()) {
+        Some(value) => match parse_contact_ticket(value) {
+            Ok(contact) => Some(contact),
+            Err(message) => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    format!("invalid mcp ticket: {message}"),
+                    false,
+                )
+            }
+        },
+        None => None,
+    };
+    let id = match request
         .params
         .get("id")
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.is_empty())
-    else {
-        return error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::InvalidRequest,
-            "id is required".into(),
-            false,
-        );
+        .map(str::to_owned)
+    {
+        Some(id) => id,
+        None => match &contact {
+            Some(contact) => contact.peer.endpoint_id.clone(),
+            None => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    "id is required".into(),
+                    false,
+                )
+            }
+        },
     };
     let name = request
         .params
         .get("name")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or(id);
+        .map(str::to_owned)
+        .or_else(|| contact.as_ref().and_then(|contact| contact.peer.name.clone()))
+        .unwrap_or_else(|| id.clone());
     let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let call_mode = match requested_call_mode(request) {
         Ok(mode) => mode.unwrap_or_default(),
@@ -2873,17 +2919,19 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<Transp
     let peer = idfon_protocol::Peer {
         id: id.into(),
         identity,
-        name: name.into(),
+        name,
         endpoint_id: request
             .params
             .get("endpoint_id")
             .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
+            .map(str::to_owned)
+            .or_else(|| contact.as_ref().map(|contact| contact.peer.endpoint_id.clone())),
         endpoint_addr: request
             .params
             .get("endpoint_addr")
             .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
+            .map(str::to_owned)
+            .or_else(|| contact.as_ref().map(|contact| contact.transport.clone())),
         aliases: request
             .params
             .get("aliases")
@@ -2900,6 +2948,16 @@ fn peer_add(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<Transp
     };
     state.peers.retain(|candidate| !(candidate.identity == peer.identity && candidate.id == peer.id));
     state.peers.push(peer.clone());
+    if let Some(discover) = contact.and_then(|contact| contact.discover) {
+        state.mcp_discovery.retain(|record| {
+            !(record.identity == peer.identity && record.peer_id == peer.id)
+        });
+        state.mcp_discovery.push(idfon_protocol::McpDiscoveryRecord {
+            peer_id: peer.id.clone(),
+            identity: peer.identity.clone(),
+            discover,
+        });
+    }
     if let Some(remote) = state.identities.iter().find(|candidate| candidate.endpoint_id.as_deref() == peer.endpoint_id.as_deref()).cloned() {
         if let Some(source) = state.identities.iter().find(|candidate| candidate.id == peer.identity).cloned() {
             let reciprocal = idfon_protocol::Peer {
