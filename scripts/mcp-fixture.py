@@ -224,6 +224,70 @@ def run_drive(connect_args):
             proc.wait()
 
 
+def run_server_drive(binary, socket):
+    """Drive `idfon-mcp-server` (the M4 adapter) as an MCP client."""
+    proc = subprocess.Popen(
+        [binary, "--socket", socket],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        bufsize=0,
+    )
+    reader = LineReader(proc.stdout.fileno())
+
+    def request(obj):
+        proc.stdin.write((json.dumps(obj, separators=(",", ":")) + "\n").encode())
+        proc.stdin.flush()
+        line = reader.readline(timeout=15)
+        if line is None:
+            raise AssertionError(f"adapter closed before {obj.get('method')}")
+        return json.loads(line)
+
+    def call(name, arguments):
+        response = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }
+        )
+        assert "error" not in response, response
+        result = response["result"]
+        return result.get("isError", False), result["content"][0]["text"]
+
+    try:
+        discover = request({"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}})
+        assert PROTOCOL in discover["result"]["supportedVersions"], discover
+        assert "tools" in discover["result"]["capabilities"], discover
+
+        listing = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        names = [tool["name"] for tool in listing["result"]["tools"]]
+        assert "idfon.put_blob" in names and "idfon.send_message" in names, names
+
+        is_error, text = call("idfon.list_peers", {})
+        assert not is_error and "bob" in text, text
+
+        is_error, text = call("idfon.put_blob", {"text": "hello blob"})
+        assert not is_error, text
+        assert json.loads(text).get("blob_ticket"), text
+
+        # Consent is the daemon's: bob is granted, carol is not.
+        is_error, text = call("idfon.send_message", {"to": "carol", "text": "nope"})
+        assert is_error and "capability" in text.lower(), text
+
+        is_error, text = call("idfon.send_message", {"to": "bob", "text": "hi from mcp"})
+        assert not is_error, text
+        assert json.loads(text).get("operation_id"), text
+    finally:
+        if proc.stdin:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "server":
         run_server()
@@ -231,9 +295,11 @@ def main():
         run_drive([sys.argv[2], "connect", "--peer", sys.argv[3], "--key-file", sys.argv[4]])
     elif len(sys.argv) == 4 and sys.argv[1] == "drive-uds":
         run_drive([sys.argv[2], "connect", "--uds", sys.argv[3]])
+    elif len(sys.argv) == 4 and sys.argv[1] == "drive-server":
+        run_server_drive(sys.argv[2], sys.argv[3])
     else:
         print(
-            "usage: mcp-fixture.py server | drive BIN PEER KEY | drive-uds BIN SOCKET",
+            "usage: mcp-fixture.py server | drive BIN PEER KEY | drive-uds BIN SOCKET | drive-server BIN DAEMON_SOCKET",
             file=sys.stderr,
         )
         sys.exit(2)
