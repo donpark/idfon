@@ -12,7 +12,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iroh_live::media::{adaptive::AdaptiveConfig, format::DecodeConfig};
 use iroh_live::ticket::LiveTicket;
@@ -42,6 +42,11 @@ pub fn media_video_start(ticket: char_p::Ref<'_>) -> char_p::Box {
     let stop_loop = stop.clone();
     let frame_path = media_path("video-frame.jpg");
     let tmp_path = media_path("video-frame.jpg.tmp");
+    // Drop any frame left over from a previous session before the caller starts
+    // polling the path: otherwise the previous call's last frame is shown as
+    // this call's "live" video even when the peer's camera is off.
+    let _ = std::fs::remove_file(&frame_path);
+    let _ = std::fs::remove_file(&tmp_path);
     let return_path = frame_path.to_str().unwrap_or("").to_string();
 
     // Multi-thread runtime on a dedicated thread: the loop runs for the
@@ -120,12 +125,21 @@ async fn video_loop(ticket: &str, frame_path: &std::path::Path, tmp_path: &std::
         DecodeConfig::default(),
     );
 
+    // How long the stream may go silent before the last frame is treated as
+    // stale. The peer gates video per frame, so a real camera delivers every
+    // ~33 ms; this many frames of silence means it is off or stalled.
+    const STALE_AFTER: Duration = Duration::from_millis(2000);
+    let started_at = Instant::now();
+    let mut last_frame_at: Option<Instant> = None;
+    let mut stale_cleared = false;
     loop {
         if stop.load(Ordering::Relaxed) {
             return;
         }
         match tokio::time::timeout(Duration::from_millis(500), track.next_frame()).await {
             Ok(Some(frame)) => {
+                last_frame_at = Some(Instant::now());
+                stale_cleared = false;
                 let rgba = frame.rgba_image();
                 let mut jpeg = Vec::with_capacity((rgba.width() as usize) * (rgba.height() as usize) / 4);
                 let encoder = jpeg_encoder::Encoder::new(&mut jpeg, 80);
@@ -148,8 +162,22 @@ async fn video_loop(ticket: &str, frame_path: &std::path::Path, tmp_path: &std::
             // Track closed (stream ended): keep polling until stopped so a
             // late-restarting broadcast is picked up... it will not; exit.
             Ok(None) => return,
-            // No frame in the window: loop re-checks the stop flag.
-            Err(_) => {}
+            // No frame in the window: a peer whose camera is off sends nothing.
+            // Once the stream has been silent long enough, drop the frame file
+            // so the shell clears the surface instead of showing a frozen image
+            // as if it were live.
+            Err(_) => {
+                // `last_frame_at` is None when the peer never sent a frame this
+                // session; fall back to the session start so a stale write that
+                // raced the startup delete is cleaned up too.
+                if !stale_cleared
+                    && last_frame_at.unwrap_or(started_at).elapsed() >= STALE_AFTER
+                {
+                    let _ = std::fs::remove_file(frame_path);
+                    let _ = std::fs::remove_file(tmp_path);
+                    stale_cleared = true;
+                }
+            }
         }
     }
 }

@@ -65,9 +65,11 @@ static PLAYBACK: Mutex<Option<Playback>> = Mutex::new(None);
 // Send-gating for the outgoing streams, adjustable mid-call by the shell.
 // Disabling audio sends silence (capture stays open, so re-enable is
 // instant, and the OS mic indicator stays on); disabling video withholds
-// frames. Both reset to enabled on every start_live.
+// frames. start_live opens the mic and closes the camera gate: the shells
+// publish the video track up front and open the gate only once the camera is
+// actually on.
 static MIC_MUTED: AtomicBool = AtomicBool::new(false);
-static CAMERA_ENABLED: AtomicBool = AtomicBool::new(true);
+static CAMERA_ENABLED: AtomicBool = AtomicBool::new(false);
 
 struct LiveSession {
     _live: Live,
@@ -1051,9 +1053,13 @@ fn start_live(audio: bool, video: bool) -> char_p::Box {
         *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = Some(text);
         return String::new().try_into().expect("empty ticket conversion");
     }
-    // A fresh publisher always starts sending both gated streams.
+    // A fresh publisher starts mic-open, camera-closed. Opening the camera
+    // gate here and letting the shell disable it asynchronously left a window
+    // where a frame still being pushed by a running capture session leaked as
+    // the call's first video frame; the shell now opens the gate explicitly
+    // once its send state is known.
     MIC_MUTED.store(false, Ordering::Relaxed);
-    CAMERA_ENABLED.store(true, Ordering::Relaxed);
+    CAMERA_ENABLED.store(false, Ordering::Relaxed);
     // Drop any frame left queued by a previous session before the gate opens:
     // otherwise it is sent as this call's first video frame (an audio-only call
     // would leak one frame of whatever the camera last saw).
@@ -1380,6 +1386,42 @@ mod tests {
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    /// The camera gate is the only thing standing between a running capture
+    /// session and a leaked frame: a frame pushed while disabled must never
+    /// enter the slot, and disabling must drop whatever is already queued.
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    #[test]
+    fn camera_gate_drops_frames_pushed_while_disabled() {
+        let pixels = [0u8; 2 * 2 * 4];
+        let mut source = PushFrameSource;
+
+        CAMERA_ENABLED.store(false, Ordering::Relaxed);
+        *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
+        media_video_push_frame(pixels.as_ptr(), pixels.len(), 2, 2, 0);
+        assert!(
+            PUSHED_FRAME.lock().expect("pushed frame mutex poisoned").is_none(),
+            "disabled gate must not queue a frame"
+        );
+
+        CAMERA_ENABLED.store(true, Ordering::Relaxed);
+        media_video_push_frame(pixels.as_ptr(), pixels.len(), 2, 2, 0);
+        assert!(
+            source.pop_frame().unwrap().is_some(),
+            "enabled gate must deliver the queued frame"
+        );
+
+        media_video_push_frame(pixels.as_ptr(), pixels.len(), 2, 2, 0);
+        CAMERA_ENABLED.store(false, Ordering::Relaxed);
+        assert!(
+            source.pop_frame().unwrap().is_none(),
+            "disabling must drop the queued frame"
+        );
+        assert!(
+            PUSHED_FRAME.lock().expect("pushed frame mutex poisoned").is_none(),
+            "disabling must clear the slot"
+        );
+    }
 
     #[test]
     fn ogg_opus_writes_headers_and_audio_page() {

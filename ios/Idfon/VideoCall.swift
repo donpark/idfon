@@ -134,6 +134,8 @@ final class VideoCall: NSObject {
     private var frameTimer: Timer?
     private var framePath: String?
     private var lastFrameSize = -1
+    /// True while a decoded peer frame is on screen (for clearing it).
+    private var peerFrameVisible = false
 
     // MARK: - FFI wrappers (blocking C calls must leave the main thread)
 
@@ -334,6 +336,7 @@ final class VideoCall: NSObject {
         videoAvailable = false
         audioEnabled = false
         videoEnabled = false
+        peerFrameVisible = false
         notify()
         onFrame?(nil)
     }
@@ -355,7 +358,18 @@ final class VideoCall: NSObject {
             Task { @MainActor in
                 guard let self, let path = self.framePath else { return }
                 let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
-                guard size != self.lastFrameSize, size > 0 else { return }
+                guard size > 0 else {
+                    // No frame written yet, or the FFI removed the stale JPEG
+                    // (new subscription / peer camera off): clear the surface
+                    // so a paused stream cannot masquerade as live video.
+                    if self.peerFrameVisible {
+                        self.peerFrameVisible = false
+                        self.onFrame?(nil)
+                    }
+                    self.lastFrameSize = -1
+                    return
+                }
+                guard size != self.lastFrameSize else { return }
                 self.lastFrameSize = size
                 // JPEG decode off the main thread: a 720×1280 decode ~10x/s
                 // would otherwise eat main-thread time for the whole call.
@@ -363,7 +377,10 @@ final class VideoCall: NSObject {
                 Task.detached(priority: .userInitiated) { [weak self] in
                     guard let self else { return }
                     let image = UIImage(contentsOfFile: path)?.preparingForDisplay()
-                    await MainActor.run { self.onFrame?(image) }
+                    await MainActor.run {
+                        self.peerFrameVisible = image != nil
+                        self.onFrame?(image)
+                    }
                 }
             }
         }
