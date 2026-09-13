@@ -258,6 +258,52 @@ pub struct CapabilityTicket {
     pub signature: String,
 }
 
+/// Net-new contact ticket: everything the user side needs to add an agent as a
+/// contact without a live connection. `discover` is an optional cache of the
+/// agent's `server/discover` result; the bridge fills it, the daemon stores it
+/// opaquely and never parses JSON-RPC itself.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpContactTicket {
+    /// Peer endpoint address as JSON text (iroh `EndpointAddr`), used to dial.
+    pub transport: String,
+    pub peer: McpPeer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discover: Option<McpDiscover>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpPeer {
+    pub endpoint_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Cached `server/discover` result. `serverInfo` is **unverified** (reported by
+/// the agent, not attested) and must only ever be displayed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDiscover {
+    #[serde(default)]
+    pub supported_versions: Vec<String>,
+    #[serde(default)]
+    pub capabilities: serde_json::Value,
+    #[serde(default)]
+    pub server_info: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_scope: Option<String>,
+    #[serde(default)]
+    pub cached_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpDiscoveryRecord {
+    pub peer_id: String,
+    pub identity: String,
+    pub discover: McpDiscover,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CapabilityGrant {
     pub capability: Capability,

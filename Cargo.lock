@@ -2090,6 +2090,7 @@ dependencies = [
  "anyhow",
  "clap",
  "idfon-core",
+ "idfon-protocol",
  "iroh",
  "serde_json",
  "tokio",

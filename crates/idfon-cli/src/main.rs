@@ -137,7 +137,7 @@ enum PeerCmd {
     /// Add a peer
     Add {
         #[arg(value_name = "REF")]
-        peer_ref: String,
+        peer_ref: Option<String>,
         #[arg(long)]
         name: Option<String>,
         #[arg(long = "endpoint-id")]
@@ -147,6 +147,10 @@ enum PeerCmd {
         /// Incoming-call surface for this connection: bar | call_kit
         #[arg(long = "call-mode", value_name = "MODE")]
         call_mode: Option<String>,
+        /// Add from an MCP contact ticket (JSON): fills ref/endpoint fields
+        /// and caches the ticket's server/discover offline
+        #[arg(long = "mcp-ticket", value_name = "JSON")]
+        mcp_ticket: Option<String>,
     },
     /// Update a peer
     Update {
@@ -535,11 +539,12 @@ fn run() -> io::Result<()> {
             endpoint_id,
             endpoint_addr,
             call_mode,
+            mcp_ticket,
         }) => finish(
             send_rpc(
                 socket,
                 "peer.add",
-                json!({"ref": peer_ref, "id": peer_ref, "name": name, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "aliases": [], "call_mode": call_mode}),
+                json!({"ref": peer_ref, "id": peer_ref, "name": name, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "aliases": [], "call_mode": call_mode, "mcp_ticket": mcp_ticket}),
                 identity,
                 cli.stdin_json,
             )?,

@@ -9,8 +9,12 @@ use std::{path::Path, process::Stdio};
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use idfon_core::transport::{pump, IrohTransport, TransportError};
+use idfon_protocol::{McpContactTicket, McpDiscover, McpPeer};
 use iroh::{endpoint::Connection, EndpointAddr, EndpointId};
-use tokio::process::Command;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::Command,
+};
 
 const MCP_ALPN: &[u8] = b"idfon/mcp/1";
 
@@ -31,6 +35,10 @@ enum Mode {
         /// Local MCP server command line (run through `sh -c`).
         #[arg(long, value_name = "CMD")]
         mcp_command: String,
+        /// Print an M3 contact ticket (transport + peer + a probed
+        /// server/discover cache) instead of the bare endpoint ticket.
+        #[arg(long)]
+        contact: bool,
     },
     /// Dial a peer and splice the bi-stream to this process's stdio.
     Connect {
@@ -52,7 +60,7 @@ fn main() -> Result<()> {
         .context("build tokio runtime")?
         .block_on(async {
             match cli.mode {
-                Mode::Serve { mcp_command } => serve(key, mcp_command).await,
+                Mode::Serve { mcp_command, contact } => serve(key, mcp_command, contact).await,
                 Mode::Connect { peer, uds } => connect(key, peer, uds).await,
             }
         })
@@ -86,7 +94,7 @@ fn load_key(key_file: Option<&Path>) -> Result<[u8; 32]> {
     }
 }
 
-async fn serve(key: [u8; 32], mcp_command: String) -> Result<()> {
+async fn serve(key: [u8; 32], mcp_command: String, contact: bool) -> Result<()> {
     let transport = std::sync::Arc::new(
         IrohTransport::bind_with_key(Some(key))
             .await
@@ -120,11 +128,26 @@ async fn serve(key: [u8; 32], mcp_command: String) -> Result<()> {
         transport.endpoint().online(),
     )
     .await;
-    println!(
-        "{}",
-        serde_json::to_string(&transport.endpoint().addr())
-            .context("serialize endpoint ticket")?
-    );
+    let address = transport.endpoint().addr();
+    // The bridge is the only place that parses JSON-RPC, and only for the
+    // optional M3 discovery cache; everything else is a byte pump.
+    let ticket = if contact {
+        match probe_discover(&mcp_command).await {
+            Ok(discover) => serde_json::to_string(&McpContactTicket {
+                transport: serde_json::to_string(&address).unwrap_or_default(),
+                peer: McpPeer { endpoint_id: address.id.to_string(), name: None },
+                discover: Some(discover),
+            })
+            .context("serialize contact ticket")?,
+            Err(error) => {
+                eprintln!("[idfon-mcp] server/discover probe failed: {error:#}");
+                serde_json::to_string(&address).context("serialize endpoint ticket")?
+            }
+        }
+    } else {
+        serde_json::to_string(&address).context("serialize endpoint ticket")?
+    };
+    println!("{ticket}");
     eprintln!("[idfon-mcp] serving as {}", transport.endpoint().id());
 
     while let Some(connection) = rx.recv().await {
@@ -204,6 +227,55 @@ async fn connect(
     down.context("peer -> stdout")?;
     connection.close(0u32.into(), b"client done");
     Ok(())
+}
+
+/// Spawns the local MCP server once and asks it for `server/discover`. This is
+/// the one JSON-RPC message the bridge understands, and only to fill the M3
+/// ticket cache; a failure just omits the cache.
+async fn probe_discover(mcp_command: &str) -> Result<McpDiscover> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(mcp_command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn mcp command: {mcp_command}"))?;
+    let mut stdin = child.stdin.take().context("piped stdin")?;
+    let stdout = child.stdout.take().context("piped stdout")?;
+    stdin
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{}}\n")
+        .await?;
+    stdin.flush().await?;
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        reader.read_line(&mut line),
+    )
+    .await;
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    read.map_err(|_| anyhow!("server/discover timed out"))??;
+    let value: serde_json::Value =
+        serde_json::from_str(line.trim()).context("parse server/discover")?;
+    let result = value.get("result").cloned().unwrap_or(serde_json::Value::Null);
+    let cached_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs().to_string())
+        .unwrap_or_default();
+    Ok(McpDiscover {
+        supported_versions: result
+            .get("supportedVersions")
+            .and_then(|versions| versions.as_array())
+            .map(|versions| versions.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+            .unwrap_or_default(),
+        capabilities: result.get("capabilities").cloned().unwrap_or(serde_json::Value::Null),
+        server_info: result.get("serverInfo").cloned().unwrap_or(serde_json::Value::Null),
+        ttl_ms: result.get("ttlMs").and_then(serde_json::Value::as_u64),
+        cache_scope: result.get("cacheScope").and_then(serde_json::Value::as_str).map(str::to_owned),
+        cached_at,
+    })
 }
 
 fn parse_peer(peer: &str) -> Result<EndpointAddr> {
