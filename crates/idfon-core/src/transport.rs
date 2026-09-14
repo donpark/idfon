@@ -10,7 +10,7 @@ use tokio::{
     sync::{mpsc, RwLock},
 };
 
-use iroh::{endpoint::{presets, Connection, RecvStream, SendStream}, Endpoint, EndpointAddr, SecretKey};
+use iroh::{endpoint::{presets, Connection, RecvStream, SendStream}, Endpoint, EndpointAddr, EndpointId, SecretKey};
 use idfon_protocol::{
     decode_frame, encode_frame, AckStatus, MessageAck, MessageEnvelope, MAX_FRAME_BYTES,
 };
@@ -190,6 +190,18 @@ impl IrohTransport {
         F: Fn(MessageEnvelope) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<MessageAck, TransportError>> + Send + 'static,
     {
+        self.serve_with_peer(move |message, _remote_id| handler(message))
+            .await
+    }
+
+    /// Like [`Self::serve`], but also gives the handler Iroh's authenticated
+    /// remote endpoint ID. Protocols that carry a signed endpoint ID should
+    /// compare it with this value before accepting the message.
+    pub async fn serve_with_peer<F, Fut>(&self, handler: F) -> Result<(), TransportError>
+    where
+        F: Fn(MessageEnvelope, EndpointId) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<MessageAck, TransportError>> + Send + 'static,
+    {
         loop {
             let incoming = self
                 .endpoint
@@ -206,6 +218,7 @@ impl IrohTransport {
                     continue;
                 }
             };
+            let remote_id = connection.remote_id();
             let handler = handler.clone();
             let alpn = self.alpn.clone();
             let side_channels = self.side_channels.clone();
@@ -241,7 +254,7 @@ impl IrohTransport {
                     let message: MessageEnvelope = decode_frame(&frame).map_err(|error| {
                         TransportError::Failed(format!("invalid message: {error}"))
                     })?;
-                    let ack = handler(message).await?;
+                    let ack = handler(message, remote_id).await?;
                     let ack_frame =
                         encode_frame(&ack).map_err(|_| TransportError::MessageTooLarge)?;
                     send.write_all(&ack_frame)
