@@ -1,6 +1,7 @@
 # AI Agents in Idfon — Design Report
 
-> **Status:** design findings, no code. Written 2026-09-13 during prototyping.
+> **Status:** design findings; implemented in M1–M5
+> (`docs/mcp-implementation-plan.md`). Written 2026-09-13 during prototyping.
 > Companion to `docs/mcp-transport.md` (the concrete binding).
 > Idofn is in prototyping; legacy/migration compatibility is explicitly not a
 > constraint.

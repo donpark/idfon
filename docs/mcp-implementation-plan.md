@@ -1,11 +1,11 @@
 # MCP Integration — Implementation Plan
 
-> **Status:** implementation handoff for `docs/mcp-transport.md` and
-> `docs/mcp-agent-report.md`. Prototyping stage: no legacy or migration
-> constraints. Pin MCP revision **2026-07-28**.
+> **Status:** implemented (M1–M5) on branch `mcp` (2026-09-13). Prototyping
+> stage: no legacy or migration constraints. MCP revision **2026-07-28**.
 >
-> Read the two companion docs first. This plan resolves their open decisions
-> into defaults and scopes milestone 1.
+> Read the two companion docs first (`docs/mcp-transport.md`,
+> `docs/mcp-agent-report.md`). This plan resolved their open decisions into
+> defaults; each milestone below is implemented and has an acceptance script.
 
 ## How to use this
 
@@ -17,6 +17,25 @@ and grants. Do not pull later milestones into M1.
 
 Unless stated otherwise, a milestone is done when its acceptance check runs
 green and is committed as a script, in the style of `scripts/test-cli.sh`.
+
+## Implementation status
+
+All five milestones are implemented (2026-09-13). Commit and acceptance
+script per milestone:
+
+| milestone | commit | acceptance |
+|---|---|---|
+| docs (this plan + companions) | `cfc0322` | — |
+| M1 transport bridge | `284fe8e` | `scripts/mcp-e2e.sh` |
+| M2 daemon relay | `0652d2b` | `scripts/mcp-daemon-e2e.sh` |
+| M3 contact ticket + discovery cache | `20878e6` | `scripts/mcp-ticket-e2e.sh` |
+| M4 idfon as an MCP server | `ac1140e` | `scripts/mcp-server-e2e.sh` |
+| M5 open capability names | `72bfe84` | `scripts/test-cli.sh` (+ M1–M4 scripts) |
+
+Verification at completion: `cargo test -p idfon-protocol -p idfon-core
+-p idfon-daemon` (8/7/20), `scripts/test-cli.sh` green, all four MCP e2e
+scripts green, and the user-side frontends (macOS and iOS Swift, and the
+`native/` TypeScript host) build/check clean against protocol version 2.
 
 ## Resolved decisions
 
