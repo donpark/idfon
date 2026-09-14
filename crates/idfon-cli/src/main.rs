@@ -229,7 +229,7 @@ struct SendArgs {
     name: Option<String>,
     #[arg(long = "idempotency-key")]
     idempotency_key: Option<String>,
-    #[arg(long = "capability-ticket")]
+    #[arg(long = "capability-ticket", value_parser = parse_json_value)]
     capability_ticket: Option<Value>,
     #[arg(long)]
     retries: Option<u64>,
@@ -1117,6 +1117,10 @@ fn result_usize(response: &Response, key: &str) -> usize {
             .unwrap_or(0) as usize,
         _ => 0,
     }
+}
+
+fn parse_json_value(value: &str) -> Result<Value, String> {
+    serde_json::from_str(value).map_err(|error| format!("invalid JSON: {error}"))
 }
 
 fn request_error(response: &Response) -> String {
