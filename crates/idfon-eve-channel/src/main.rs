@@ -15,9 +15,13 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
 use idfon_core::transport::{IrohTransport, MessageTransport, TransportError};
-use idfon_core::{peer_id, sign_message, verify_capability_ticket, verify_message, AuthError};
+use idfon_core::{
+    peer_id, sign_message, sign_message_with_ticket, verify_capability_ticket, verify_message,
+    AuthError,
+};
 use idfon_protocol::{
-    AckStatus, Capability, MessageAck, MessageContent, MessageEnvelope, MAX_FRAME_BYTES,
+    AckStatus, Capability, CapabilityTicket, MessageAck, MessageContent, MessageEnvelope,
+    MAX_FRAME_BYTES,
 };
 use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket};
@@ -59,6 +63,9 @@ enum Mode {
         /// Local cache for blobs fetched from incoming blob tickets.
         #[arg(long, default_value = "blobs")]
         blob_dir: PathBuf,
+        /// JSON capability ticket to attach to outbound replies.
+        #[arg(long, value_name = "FILE")]
+        reply_ticket_file: Option<PathBuf>,
     },
     /// Issue a holder-signed message.receive ticket for initial provisioning.
     Ticket {
@@ -87,6 +94,8 @@ enum IpcFrame {
         blob_ticket: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         size_bytes: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        a2a_depth: Option<u8>,
     },
     #[serde(rename = "reply.out")]
     ReplyOut {
@@ -125,6 +134,24 @@ enum IpcFrame {
         message_id: String,
         status: String,
     },
+    #[serde(rename = "peer.send")]
+    PeerSendOut {
+        request_id: String,
+        peer_id: String,
+        endpoint_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+        text: String,
+        capability_ticket: serde_json::Value,
+        #[serde(default)]
+        a2a_depth: u8,
+    },
+    #[serde(rename = "peer.ack")]
+    PeerSendAck {
+        request_id: String,
+        message_id: String,
+        status: String,
+    },
     #[serde(rename = "blob.fetch")]
     BlobFetch { request_id: String, ticket: String },
     #[serde(rename = "blob.result")]
@@ -142,6 +169,7 @@ struct ReplyTarget {
     peer_id: String,
     endpoint_id: String,
     conversation: Option<String>,
+    a2a_depth: Option<u8>,
 }
 
 type Targets = Arc<Mutex<HashMap<String, ReplyTarget>>>;
@@ -157,9 +185,13 @@ async fn main() -> Result<()> {
             allow,
             ephemeral,
             blob_dir,
+            reply_ticket_file,
         } => {
             let key = load_key(key_file.as_deref(), ephemeral)?;
-            serve(socket, allow, key, blob_dir).await
+            let reply_ticket = reply_ticket_file
+                .map(|path| load_ticket(&path))
+                .transpose()?;
+            serve(socket, allow, key, blob_dir, reply_ticket).await
         }
         Mode::Ticket {
             subject,
@@ -181,6 +213,13 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn load_ticket(path: &Path) -> Result<CapabilityTicket> {
+    serde_json::from_slice(
+        &std::fs::read(path).with_context(|| format!("read ticket {}", path.display()))?,
+    )
+    .with_context(|| format!("parse ticket {}", path.display()))
 }
 
 fn load_key(path: Option<&Path>, ephemeral: bool) -> Result<SigningKey> {
@@ -209,6 +248,7 @@ async fn serve(
     allow: Vec<String>,
     key: SigningKey,
     blob_dir: PathBuf,
+    reply_ticket: Option<CapabilityTicket>,
 ) -> Result<()> {
     if socket.exists() {
         std::fs::remove_file(&socket)
@@ -276,7 +316,15 @@ async fn serve(
     while let Some(frame) = reply_rx.recv().await {
         let result = match frame {
             IpcFrame::ReplyOut { .. } => {
-                handle_reply(frame, &key, &transport, &targets, out_tx.clone()).await
+                handle_reply(
+                    frame,
+                    &key,
+                    &transport,
+                    &targets,
+                    reply_ticket.as_ref(),
+                    out_tx.clone(),
+                )
+                .await
             }
             IpcFrame::BlobFetch { request_id, ticket } => {
                 handle_blob_fetch(request_id, ticket, &blob_dir, out_tx.clone()).await
@@ -294,6 +342,29 @@ async fn serve(
                     endpoint_id,
                     conversation,
                     requests,
+                    &key,
+                    &transport,
+                    out_tx.clone(),
+                )
+                .await
+            }
+            IpcFrame::PeerSendOut {
+                request_id,
+                peer_id,
+                endpoint_id,
+                conversation,
+                text,
+                capability_ticket,
+                a2a_depth,
+            } => {
+                handle_peer_send(
+                    request_id,
+                    peer_id,
+                    endpoint_id,
+                    conversation,
+                    text,
+                    capability_ticket,
+                    a2a_depth,
                     &key,
                     &transport,
                     out_tx.clone(),
@@ -344,9 +415,12 @@ async fn handle_message(
             .await;
         return Err(TransportError::Failed(error.to_string()));
     }
-    let text = match &message.content {
+    let wire_text = match &message.content {
         MessageContent::Text { text } => text.clone(),
     };
+    let (text, a2a_depth) = parse_a2a_envelope(&wire_text)
+        .map(|(depth, text)| (text, Some(depth)))
+        .unwrap_or((wire_text.clone(), None));
     let attachment = parse_data_envelope(&text);
     let key = (
         message.sender.peer_id.clone(),
@@ -355,7 +429,7 @@ async fn handle_message(
     {
         let mut seen_guard = seen.lock().await;
         if let Some(existing) = seen_guard.get(&key) {
-            if existing != &text {
+            if existing != &wire_text {
                 let error = HolderError::IdempotencyConflict;
                 let _ = out_tx
                     .send(IpcFrame::Error {
@@ -370,7 +444,7 @@ async fn handle_message(
                 status: AckStatus::Duplicate,
             });
         }
-        seen_guard.insert(key, text.clone());
+        seen_guard.insert(key, wire_text);
     }
 
     if let Some(responses) = parse_input_response(&text) {
@@ -396,6 +470,7 @@ async fn handle_message(
             peer_id: message.sender.peer_id.clone(),
             endpoint_id: remote_endpoint_id.clone(),
             conversation: message.conversation.clone(),
+            a2a_depth,
         },
     );
     out_tx
@@ -411,6 +486,7 @@ async fn handle_message(
                 .unwrap_or(text),
             blob_ticket: attachment.as_ref().map(|(ticket, _)| ticket.clone()),
             size_bytes: attachment.as_ref().and_then(|(_, size)| *size),
+            a2a_depth,
         })
         .await
         .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -425,6 +501,7 @@ async fn handle_reply(
     key: &SigningKey,
     transport: &IrohTransport,
     targets: &Targets,
+    reply_ticket: Option<&CapabilityTicket>,
     out_tx: mpsc::Sender<IpcFrame>,
 ) -> Result<()> {
     let IpcFrame::ReplyOut {
@@ -450,13 +527,21 @@ async fn handle_reply(
         "eve_reply_{}",
         NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed)
     );
-    let envelope = sign_message(
+    let text = target
+        .a2a_depth
+        .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text))
+        .unwrap_or(text);
+    let reply_ticket = reply_ticket
+        .filter(|ticket| ticket.issuer == target.peer_id)
+        .cloned();
+    let envelope = sign_message_with_ticket(
         key,
         peer_id(key),
         message_id.clone(),
         MessageContent::Text { text },
         idempotency_key.unwrap_or_else(|| format!("eve-reply-{in_reply_to}")),
         target.conversation,
+        reply_ticket,
     )
     .map_err(|error| anyhow!("sign reply: {error}"))?;
     let ack = transport
@@ -517,6 +602,30 @@ async fn handle_input(
     Ok(())
 }
 
+fn encode_a2a_envelope(depth: u8, text: &str) -> String {
+    format!(
+        "IDFON-A2A/1\ndepth={depth}\npayload={}\n",
+        BASE64.encode(text.as_bytes())
+    )
+}
+
+fn parse_a2a_envelope(text: &str) -> Option<(u8, String)> {
+    let mut depth = None;
+    let mut payload = None;
+    for line in text.strip_prefix("IDFON-A2A/1\n")?.lines() {
+        let (key, value) = line.split_once('=')?;
+        match key {
+            "depth" => depth = value.parse().ok(),
+            "payload" => payload = Some(value),
+            _ => {}
+        }
+    }
+    Some((
+        depth?,
+        String::from_utf8(BASE64.decode(payload?).ok()?).ok()?,
+    ))
+}
+
 fn parse_input_response(text: &str) -> Option<serde_json::Value> {
     let encoded = text
         .strip_prefix("IDFON-HITL-RESPONSE/1\n")?
@@ -524,6 +633,56 @@ fn parse_input_response(text: &str) -> Option<serde_json::Value> {
         .find_map(|line| line.strip_prefix("payload="))?;
     let payload = BASE64.decode(encoded).ok()?;
     serde_json::from_slice(&payload).ok()
+}
+
+async fn handle_peer_send(
+    request_id: String,
+    target_peer_id: String,
+    endpoint_id: String,
+    conversation: Option<String>,
+    text: String,
+    capability_ticket: serde_json::Value,
+    a2a_depth: u8,
+    key: &SigningKey,
+    transport: &IrohTransport,
+    out_tx: mpsc::Sender<IpcFrame>,
+) -> Result<()> {
+    let endpoint_id: EndpointId = endpoint_id
+        .parse()
+        .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
+    let ticket = if capability_ticket.is_null() {
+        None
+    } else {
+        Some(
+            serde_json::from_value(capability_ticket)
+                .context("decode outbound capability ticket")?,
+        )
+    };
+    let message_id = format!("eve_peer_{}", NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed));
+    let text = encode_a2a_envelope(a2a_depth, &text);
+    let envelope = sign_message_with_ticket(
+        key,
+        peer_id(key),
+        message_id.clone(),
+        MessageContent::Text { text },
+        format!("eve-peer-{request_id}"),
+        conversation,
+        ticket,
+    )
+    .map_err(|error| anyhow!("sign peer message: {error}"))?;
+    let ack = transport
+        .send(&EndpointAddr::new(endpoint_id), &envelope)
+        .await
+        .map_err(|error| anyhow!("send peer message to {target_peer_id}: {error}"))?;
+    out_tx
+        .send(IpcFrame::PeerSendAck {
+            request_id,
+            message_id,
+            status: format!("{:?}", ack.status).to_lowercase(),
+        })
+        .await
+        .map_err(|_| anyhow!("IPC client disconnected"))?;
+    Ok(())
 }
 
 fn parse_data_envelope(text: &str) -> Option<(String, Option<u64>)> {
@@ -844,6 +1003,16 @@ mod tests {
         assert_eq!(parse_data_envelope("hello"), None);
     }
 
+    #[test]
+    fn a2a_envelope_round_trips_and_rejects_plain_text() {
+        let encoded = encode_a2a_envelope(1, "hello\npeer");
+        assert_eq!(
+            parse_a2a_envelope(&encoded),
+            Some((1, "hello\npeer".into()))
+        );
+        assert_eq!(parse_a2a_envelope("hello"), None);
+    }
+
     #[tokio::test]
     async fn ipc_frame_round_trips_with_little_endian_length() {
         let frame = IpcFrame::TurnIn {
@@ -855,6 +1024,7 @@ mod tests {
             text: "hello".into(),
             blob_ticket: None,
             size_bytes: None,
+            a2a_depth: None,
         };
         let (mut writer, mut reader) = duplex(4096);
         write_frame(&mut writer, &frame).await.unwrap();

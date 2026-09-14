@@ -12,6 +12,7 @@ type TurnIn = {
   text: string;
   blob_ticket?: string;
   size_bytes?: number;
+  a2a_depth?: number;
 };
 
 type SessionTarget = {
@@ -63,6 +64,9 @@ export default defineChannel({
         return Response.json({ error: "invalid turn" }, { status: 400 });
       }
       const completeTurn = turn as TurnIn;
+      if (completeTurn.a2a_depth !== undefined && completeTurn.a2a_depth > 1) {
+        return Response.json({ ignored: true, reason: "a2a_loop_guard" });
+      }
       const address = completeTurn.conversation
         ? `${completeTurn.peer_id}:${completeTurn.conversation}`
         : completeTurn.peer_id;
@@ -129,7 +133,7 @@ export default defineChannel({
   events: {
     async "message.completed"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
-      if (!target || event.message == null) return;
+      if (!target || !event.message) return;
       await bridge("/reply", {
         in_reply_to: target.messageId,
         peer_id: target.peerId,
