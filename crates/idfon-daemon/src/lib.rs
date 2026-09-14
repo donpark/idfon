@@ -140,6 +140,10 @@ struct Store {
     revoked_tickets: Vec<String>,
     #[serde(default)]
     mcp_discovery: Vec<idfon_protocol::McpDiscoveryRecord>,
+    /// Local MCP server command the inbound `idfon/mcp/1` relay splices to
+    /// (set by `mcp.configure`; `IDFON_MCP_COMMAND` overrides).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mcp_command: Option<String>,
     #[serde(default)]
     resources: Vec<idfon_protocol::MediaResource>,
     #[serde(default)]
@@ -175,6 +179,7 @@ impl Store {
                     policies: Vec::new(),
                     revoked_tickets: Vec::new(),
                     mcp_discovery: Vec::new(),
+                    mcp_command: None,
                     resources: Vec::new(),
                     sessions: Vec::new(),
                     data_dir: data_dir.to_path_buf(),
@@ -215,6 +220,22 @@ impl Store {
         let value = std::fs::read_to_string(path)?;
         idfon_core::decode_signing_key(value.trim())
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid identity key"))
+    }
+
+    /// The inbound MCP relay command: `IDFON_MCP_COMMAND` (per-process, keeps
+    /// the C ABI unchanged) overrides the persisted `mcp.configure` value.
+    fn configured_mcp_command(&self) -> Option<String> {
+        std::env::var("IDFON_MCP_COMMAND")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                self.mcp_command
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            })
     }
 
     fn save(&self, data_dir: &Path) -> io::Result<()> {
@@ -301,26 +322,16 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
         let data_dir = state.data_dir.clone();
         state.save(&data_dir)?;
     }
-    // M2 user-side relay: a configured local MCP server is spliced to any
-    // inbound `idfon/mcp/1` stream when the peer holds an `mcp.transport`
-    // grant. The env var keeps the C ABI unchanged (same precedent as
-    // IDFON_IDLE_EXIT_SECS).
-    let mcp_command = std::env::var("IDFON_MCP_COMMAND")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty());
+    // M2 user-side relay: any inbound `idfon/mcp/1` stream is spliced to the
+    // configured local MCP server when the peer holds an `mcp.transport`
+    // grant. The relay is registered for every identity at startup and reads
+    // its command per connection (env overrides the persisted `mcp.configure`
+    // value), so runtime configuration needs no re-registration. The env var
+    // keeps the C ABI unchanged (same precedent as IDFON_IDLE_EXIT_SECS).
     if let TransportMode::Iroh(iroh) = transport.as_ref() {
         for (identity, _) in &identity_keys {
             spawn_receiver(Arc::clone(iroh), Arc::clone(&store), identity.clone());
-            if let Some(command) = &mcp_command {
-                mcp::spawn_inbound(
-                    Arc::clone(iroh),
-                    Arc::clone(&store),
-                    identity.clone(),
-                    command.clone(),
-                )
-                .await;
-            }
+            mcp::spawn_inbound(Arc::clone(iroh), Arc::clone(&store), identity.clone()).await;
         }
     }
     prepare_socket(&socket)?;
@@ -729,9 +740,20 @@ fn dispatch_with_transport(
                         .iter()
                         .find(|record| record.identity == peer.identity && record.peer_id == peer.id)
                         .map(|record| record.discover.clone());
+                    let mcp_transport = has_grant(
+                        &state,
+                        &peer.identity,
+                        &peer.id,
+                        &idfon_protocol::Capability::McpTransport,
+                    );
                     success(
                         &request,
-                        serde_json::json!({"peer": peer, "status": "known", "mcp_discovery": discovery}),
+                        serde_json::json!({
+                            "peer": peer,
+                            "status": "known",
+                            "mcp_discovery": discovery,
+                            "mcp_transport_granted": mcp_transport,
+                        }),
                     )
                 }
                 None => error_response(
@@ -744,6 +766,7 @@ fn dispatch_with_transport(
             }
         }
         "mcp.listen" => mcp::listen(&request, store, transport),
+        "mcp.configure" => mcp_configure(&request, store),
         "access.grant" => access_grant(&request, store),
         "capability.ticket" => capability_ticket_issue(&request, store),
         "capability.ticket.revoke" => capability_ticket_revoke(&request, store),
@@ -1522,6 +1545,35 @@ fn operation_wait(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
 
 fn capability(value: &str) -> Option<idfon_protocol::Capability> {
     (!value.is_empty()).then(|| idfon_protocol::Capability::new(value))
+}
+
+/// `mcp.configure` — persist the local command the inbound `idfon/mcp/1`
+/// relay splices to. An empty/absent command disables it; `IDFON_MCP_COMMAND`
+/// still overrides per process. The relay is registered at startup, so no
+/// transport work is needed here: the next inbound connection reads the new
+/// value.
+fn mcp_configure(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let command = request
+        .params
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let mut state = store.lock().expect("store mutex poisoned");
+    state.mcp_command = command;
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    let effective = state.configured_mcp_command();
+    success(request, serde_json::json!({"command": effective}))
 }
 
 /// One grant predicate shared by `access.check` and the MCP relay: an active,

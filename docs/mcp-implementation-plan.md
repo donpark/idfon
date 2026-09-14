@@ -37,6 +37,27 @@ Verification at completion: `cargo test -p idfon-protocol -p idfon-core
 scripts green, and the user-side frontends (macOS and iOS Swift, and the
 `native/` TypeScript host) build/check clean against protocol version 2.
 
+### Follow-ups (2026-09-13)
+
+- **Spec conformance.** `idfon-mcp-server` now validates the required
+  per-request `_meta` (`protocolVersion`, `clientCapabilities`; `-32602` when
+  missing, `-32022` with `supported`/`requested` on mismatch) and returns
+  `serverInfo` under `_meta["io.modelcontextprotocol/serverInfo"]`. The
+  bridge's `server/discover` probe sends the metadata a strict server
+  requires. The fixture was spec-inaccurate (unqualified
+  `_meta.protocolVersion`, top-level `serverInfo`, a non-standard
+  `subscriptions/event` notification) and is fixed;
+  `scripts/mcp-e2e.sh` / `scripts/mcp-server-e2e.sh` now assert the correct
+  shapes, including the `notifications/subscriptions/acknowledged` handshake.
+- **Runtime configuration.** `mcp.configure` (CLI `idfon mcp configure
+  --command`) persists the inbound relay's local MCP command. The relay now
+  registers for every identity at startup and resolves its command per
+  connection, so configuring it needs no restart; `IDFON_MCP_COMMAND` still
+  overrides per process. `peer.show` reports `mcp_transport_granted`.
+- **Conversation plane.** Scoped (not implemented) in
+  `docs/agent-conversation-plane.md`: users talking to an agent is peer
+  messaging plus an external agent runtime, not a new transport.
+
 ## Resolved decisions
 
 | decision (from report) | default | note |

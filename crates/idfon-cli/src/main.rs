@@ -331,6 +331,13 @@ enum McpCmd {
         #[arg(long, value_name = "PEER")]
         to: String,
     },
+    /// Set the local MCP server that inbound idfon/mcp/1 streams are spliced
+    /// to (persisted; `IDFON_MCP_COMMAND` still overrides per process). Pass
+    /// an empty command to disable the relay.
+    Configure {
+        #[arg(long, value_name = "CMD", default_value = "")]
+        command: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -733,6 +740,16 @@ fn run() -> io::Result<()> {
                 socket,
                 "mcp.listen",
                 json!({ "to": to }),
+                identity,
+                cli.stdin_json,
+            )?,
+            json,
+        ),
+        Command::Mcp(McpCmd::Configure { command }) => finish(
+            send_rpc(
+                socket,
+                "mcp.configure",
+                json!({ "command": command }),
                 identity,
                 cli.stdin_json,
             )?,

@@ -243,8 +243,23 @@ async fn probe_discover(mcp_command: &str) -> Result<McpDiscover> {
         .with_context(|| format!("spawn mcp command: {mcp_command}"))?;
     let mut stdin = child.stdin.take().context("piped stdin")?;
     let stdout = child.stdout.take().context("piped stdout")?;
+    // Every MCP 2026-07-28 request carries its version and client
+    // capabilities in `_meta`; a strict server rejects a bare request.
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "server/discover",
+        "params": {"_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+                "name": "idfon-bridge",
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }},
+    });
     stdin
-        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{}}\n")
+        .write_all(format!("{request}\n").as_bytes())
         .await?;
     stdin.flush().await?;
     let mut reader = BufReader::new(stdout);
@@ -271,7 +286,11 @@ async fn probe_discover(mcp_command: &str) -> Result<McpDiscover> {
             .map(|versions| versions.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
             .unwrap_or_default(),
         capabilities: result.get("capabilities").cloned().unwrap_or(serde_json::Value::Null),
-        server_info: result.get("serverInfo").cloned().unwrap_or(serde_json::Value::Null),
+        server_info: result
+            .get("_meta")
+            .and_then(|meta| meta.get("io.modelcontextprotocol/serverInfo"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
         ttl_ms: result.get("ttlMs").and_then(serde_json::Value::as_u64),
         cache_scope: result.get("cacheScope").and_then(serde_json::Value::as_str).map(str::to_owned),
         cached_at,
