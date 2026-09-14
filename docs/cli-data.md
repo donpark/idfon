@@ -103,11 +103,13 @@ PID=$(ctx /tmp/idfon-a/idfond.sock | jq -r .result.identity.public_key)   # == p
 ADDR=$(ctx /tmp/idfon-a/idfond.sock | jq -r '.result.ticket | implode')   # EndpointAddr JSON
 
 # On daemon A: register B as a peer and allow the send capability
-# (A's send gate checks a local message.send grant for B's peer id):
+# On daemon A: register B as a peer and allow sending and live audio:
 idfon --socket /tmp/idfon-a/idfond.sock peer add "$B_PID" --name bob \
   --endpoint-id "$B_EP" --endpoint-addr "$B_ADDR"
 idfon --socket /tmp/idfon-a/idfond.sock access allow --subject "$B_PID" \
   --capability message.send
+idfon --socket /tmp/idfon-a/idfond.sock access allow --subject "$B_PID" \
+  --capability live_audio.subscribe
 
 # On daemon B: register A as a peer and allow the receive capability
 # (B's receive gate checks message.receive for A's peer id, or a verified
@@ -116,6 +118,8 @@ idfon --socket /tmp/idfon-b/idfond.sock peer add "$A_PID" --name alice \
   --endpoint-id "$A_EP" --endpoint-addr "$A_ADDR"
 idfon --socket /tmp/idfon-b/idfond.sock access allow --subject "$A_PID" \
   --capability message.receive
+idfon --socket /tmp/idfon-b/idfond.sock access allow --subject "$A_PID" \
+  --capability live_audio.subscribe
 ```
 
 Alternatively, a sender can present a capability ticket issued by the
@@ -140,9 +144,9 @@ recording, `--quality` rendition selection); see
 
 ### 1:1 calls
 
-`stream --peer PEER` dials a paired peer and publishes on that session only —
+`send PEER --stream` dials a paired peer and publishes on that session only —
 session-scoped, so no ticket exists and no third party can subscribe. It
-requires the same `message.send` grant as the message path. The callee runs
+requires an explicit `live_audio.subscribe` grant for the peer. The callee runs
 `recv --stream`, which blocks waiting for an inbound call and records it:
 
 ```sh
@@ -155,10 +159,11 @@ idfon send bob --stream --file speech.wav        # blocks until the callee hangs
 - The caller returns when the callee hangs up (its capture window ends) or
   `--seconds` expires; the callee's capture ends when the caller's audio ends
   or the window ends.
-- `recv --stream --from ENDPOINT_ID` restricts callers; without it any caller that
-  reaches the endpoint is accepted (same open posture as legacy messaging).
-- Calls ride the daemon's transport endpoint (a side-channel ALPN registered
-  for the duration), so no extra port or discovery is involved.
+- `recv --stream --from ENDPOINT_ID` filters callers by endpoint id. Without it,
+  the endpoint does not apply that client-side filter; the daemon's
+  `live_audio.subscribe` grant check still applies.
+- Calls ride the daemon's transport endpoint through a side-channel ALPN, so
+  they do not require a separate port.
 
 ```sh
 # Publisher endpoint: streams FILE (or stdin) as a live broadcast.

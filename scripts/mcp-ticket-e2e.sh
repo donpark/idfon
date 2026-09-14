@@ -36,7 +36,7 @@ Q() { "$NUF" --socket "$A" "${@:2}"; }
 "$root/target/release/idfon-mcp" serve \
   --contact \
   --key-file "$work/agent.key" \
-  --mcp-command "python3 $root/scripts/mcp-fixture.py server" \
+  --command "python3 $root/scripts/mcp-fixture.py server" \
   >"$work/agent.out" 2>"$work/agent.err" &
 pids="$pids $!"
 
