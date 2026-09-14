@@ -233,5 +233,11 @@ for _ in $(seq 1 200); do
   sleep 0.1
 done
 grep -q "M4_TOOL_EXECUTED" "$work/eve.log"
-grep -q "reply from eve: approve" "$work/events.log"
+for _ in $(seq 1 100); do
+  if "$NUF" --socket "$A" events --type message.received --json 2>/dev/null |
+      grep -q 'reply from eve: approve'; then break; fi
+  sleep 0.1
+done
+"$NUF" --socket "$A" events --type message.received --json 2>/dev/null |
+  grep -q 'reply from eve: approve'
 echo "PASS: idfon HITL request, deny, approve, and durable resume"

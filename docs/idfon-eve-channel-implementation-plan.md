@@ -1,6 +1,6 @@
 # idfon Eve Channel — Implementation Plan
 
-> **Status:** M0–M3 files-in implemented; M4 HITL in progress. Design:
+> **Status:** M0–M5 agent messaging implemented; M3 files-in is complete; M4 authorization flows and M3 files-out/live streams remain deferred. Design:
 > MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5, implemented).
 > Prototyping stage: no legacy or migration constraints. Eve channel contract as
 > of 2026-09-14 (`defineChannel`, routes/events, `from(address).send`,
@@ -28,9 +28,9 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | M2 Eve channel provider | `8c1e757` | `scripts/eve-channel-e2e.sh` |
 | M3 media — files in | `efdcf73` | `scripts/eve-channel-media-e2e.sh` |
 | M3 media — files out + live streams | — | not started |
-| M4 HITL — approvals/input | uncommitted | `scripts/eve-channel-hitl-e2e.sh` |
+| M4 HITL — approvals/input | `890071a` | `scripts/eve-channel-hitl-e2e.sh` |
 | M4 HITL — authorization flows | — | not started |
-| M5 agent-to-agent + isolation | — | `scripts/eve-channel-a2a-e2e.sh` |
+| M5 agent-to-agent + isolation | `6a46734` | `scripts/eve-channel-a2a-e2e.sh` |
 
 ## Resolved decisions
 
@@ -45,6 +45,8 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | address | **`peer_id` (+ `conversation`)** | peer+thread → `sessionId`, persisted by the channel |
 | auth | **per-message `verify_message` + capability ticket** | holder verifies before the channel sees the turn |
 | default `turnPolicy` | **`queue`** (configurable) | remote peers expect turn-ordered replies; Eve channel default is `steer` |
+| A2A outbound | **`idfon__send` tool** | uses the holder's authenticated endpoint and a caller-supplied capability ticket; it is separate from channel ingress |
+| A2A loop bound | **depth 1** | replies increment the signed text envelope depth; the channel ignores depth > 1 |
 | media wire shape | **decide in M3** | `MessageContent` is Text-only; either extend it or keep the daemon's out-of-band ticket envelope |
 | streaming replies | **coalesce per turn** | token deltas deferred; a stream ticket can carry live media separately |
 | node in-process addon | **later** | no Node iroh binding exists; do not build speculatively |
@@ -297,11 +299,17 @@ A second agent (an idfon peer) can drive the agent, safely.
 
 ### In scope
 
-- Per-peer session isolation (already the address model) plus per-peer rate/loop
-  limits and depth guards to stop agent↔agent loops.
-- A way for an agent to be an idfon peer outbound (its holder's `message.send`,
-  surfaced as a tool or a `receive` hook) — decide which; do not conflate with
-  the ingress channel.
+- Per-peer session isolation (already the address model) plus a bounded A2A depth
+  guard to stop agent↔agent loops.
+- An `idfon__send` Eve tool backed by the holder's authenticated `peer.send`
+  frame. The tool requires the destination endpoint and capability ticket, and
+  supports the existing optional conversation address.
+- `IDFON-A2A/1` text envelopes carried inside signed messages. Replies
+  increment depth, preserving ordinary idfon message authentication and
+  idempotency underneath.
+- Optional reply-ticket provisioning for holder-to-holder replies. A holder
+  only attaches its configured reply ticket when its issuer matches the target
+  peer; daemon peers continue to receive legacy ticketless replies.
 - Grants: distinct policy for agent peers vs human peers if needed.
 
 ### Out of scope (M5)
@@ -310,10 +318,12 @@ Act-as-user delegation; multi-agent orchestration; a global agent directory.
 
 ### Acceptance — `scripts/eve-channel-a2a-e2e.sh`
 
-1. Two Eve agents, each with an idfon channel provider, as peers.
-2. Agent A sends to agent B; B replies; assert the exchange and distinct
-   sessions.
-3. Assert loop guard trips on a self-referential reply chain (bounded depth).
+1. Start two Eve agents with the idfon channel and a third fixture peer for
+   the initial turn.
+2. Agent A invokes `idfon__send` to agent B with B's capability ticket; B
+   replies and the fixture peer receives A's result.
+3. Deliver a depth-2 turn and assert the channel returns `a2a_loop_guard`;
+   assert B's depth-1 reply is received by A without another outbound loop.
 
 ## Later (do not start)
 
