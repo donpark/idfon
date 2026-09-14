@@ -266,7 +266,7 @@ final class AppModel: NSObject {
             let identity = try await client.identityId()
             let result: AnyEncodable? = try await client.request(method: "capability.ticket", params: [
                 "identity": AnyEncodable(identity),
-                "capabilities": AnyEncodable([AnyEncodable("message_receive"), AnyEncodable("live_audio_subscribe")]),
+                "capabilities": AnyEncodable([AnyEncodable("message.receive"), AnyEncodable("live.audio.subscribe")]),
             ])
             return result?["ticket"]?.stringValue
         } catch {

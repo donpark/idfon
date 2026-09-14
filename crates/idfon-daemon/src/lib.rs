@@ -1521,7 +1521,7 @@ fn operation_wait(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
 }
 
 fn capability(value: &str) -> Option<idfon_protocol::Capability> {
-    serde_json::from_value(serde_json::Value::String(value.replace('.', "_"))).ok()
+    (!value.is_empty()).then(|| idfon_protocol::Capability::new(value))
 }
 
 /// One grant predicate shared by `access.check` and the MCP relay: an active,
@@ -1857,9 +1857,10 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
                     .is_none_or(|expires| expires > now().as_str())
         })
     };
-    let allowed = match capability {
-        idfon_protocol::Capability::LiveAudioSubscribe => granted(&capability),
-        _ => granted(&capability) || granted(&idfon_protocol::Capability::MessageSend),
+    let allowed = if capability == idfon_protocol::Capability::LiveAudioSubscribe {
+        granted(&capability)
+    } else {
+        granted(&capability) || granted(&idfon_protocol::Capability::MessageSend)
     };
     if !allowed {
         eprintln!("[idfond] media session start rejected: capability denied identity={} peer={} capability={:?}", identity, peer, capability);

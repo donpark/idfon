@@ -71,7 +71,7 @@ extension DaemonClient {
             "endpoint_addr": AnyEncodable(ticketJSON),
             "identity": AnyEncodable(identity),
         ])
-        for capability in ["message.send", "message.receive", "live_audio_subscribe"] {
+        for capability in ["message.send", "message.receive", "live.audio.subscribe"] {
             _ = try await requestWithLaunch(method: "access.grant", params: [
                 "identity": AnyEncodable(identity),
                 "subject": AnyEncodable(endpointId),

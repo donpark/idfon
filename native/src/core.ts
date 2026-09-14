@@ -380,7 +380,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     eventsReady: false,
     syncingEvents: false,
   };
-  return [model, Cmd.request("idfond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "idfond-identities", ok: "identities_loaded", err: "daemon_error" })];
+  return [model, Cmd.request("idfond.request", asciiBytes('{"version":2,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "idfond-identities", ok: "identities_loaded", err: "daemon_error" })];
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -504,7 +504,7 @@ function jsonString(data: Uint8Array): Uint8Array {
 }
 
 function capabilityTicketPayload(identity: Uint8Array): Uint8Array {
-  return concat(concat(utf8Bytes('{"version":1,"id":"gui-capability-ticket","method":"capability.ticket","params":{"identity":'), jsonString(identity)), utf8Bytes(',"capabilities":["message_receive","live_audio_subscribe"]}}'));
+  return concat(concat(utf8Bytes('{"version":2,"id":"gui-capability-ticket","method":"capability.ticket","params":{"identity":'), jsonString(identity)), utf8Bytes(',"capabilities":["message.receive","live.audio.subscribe"]}}'));
 }
 
 function extractTicket(data: Uint8Array): Uint8Array {
@@ -525,15 +525,15 @@ function extractTicket(data: Uint8Array): Uint8Array {
 }
 
 function contextPayload(identity: Uint8Array): Uint8Array {
-  return concat(concat(utf8Bytes('{"version":1,"id":"gui-context","method":"context","params":{"identity":'), jsonString(identity)), utf8Bytes('}}'));
+  return concat(concat(utf8Bytes('{"version":2,"id":"gui-context","method":"context","params":{"identity":'), jsonString(identity)), utf8Bytes('}}'));
 }
 
 function peersPayload(identity: Uint8Array): Uint8Array {
-  return concat(concat(utf8Bytes('{"version":1,"id":"gui-peers","method":"peers.compact","params":{"identity":'), jsonString(identity)), utf8Bytes('}}'));
+  return concat(concat(utf8Bytes('{"version":2,"id":"gui-peers","method":"peers.compact","params":{"identity":'), jsonString(identity)), utf8Bytes('}}'));
 }
 
 function identityPayload(method: Uint8Array, name: Uint8Array): Uint8Array {
-  return concat(concat(concat(concat(utf8Bytes('{"version":1,"id":"gui-identity","method":"'), method), utf8Bytes('","params":{"name":')), jsonString(name)), utf8Bytes('}}'));
+  return concat(concat(concat(concat(utf8Bytes('{"version":2,"id":"gui-identity","method":"'), method), utf8Bytes('","params":{"name":')), jsonString(name)), utf8Bytes('}}'));
 }
 
 function ticketEndpointId(ticket: Uint8Array): Uint8Array {
@@ -551,7 +551,7 @@ function ticketEndpointId(ticket: Uint8Array): Uint8Array {
 
 function peerAddPayload(identity: Uint8Array, name: Uint8Array, ticket: Uint8Array): Uint8Array {
   const id = ticketEndpointId(ticket);
-  let payload = concat(utf8Bytes('{"version":1,"id":"gui-peer-add","method":"peer.add","params":{"identity":'), jsonString(identity));
+  let payload = concat(utf8Bytes('{"version":2,"id":"gui-peer-add","method":"peer.add","params":{"identity":'), jsonString(identity));
   payload = concat(payload, utf8Bytes(',"id":'));
   payload = concat(payload, jsonString(id));
   payload = concat(payload, utf8Bytes(',"name":'));
@@ -577,21 +577,21 @@ function byteArrayJson(data: Uint8Array): Uint8Array {
 }
 
 function mediaSessionStartPayload(model: Model, kind: string): Uint8Array {
-  let payload = concat(utf8Bytes('{"version":1,"id":"gui-live","method":"media.session.start","params":{"identity":'), jsonString(model.identityName));
+  let payload = concat(utf8Bytes('{"version":2,"id":"gui-live","method":"media.session.start","params":{"identity":'), jsonString(model.identityName));
   payload = concat(payload, utf8Bytes(',"peer_bytes":'));
   payload = concat(payload, byteArrayJson(model.receiverId));
   return concat(payload, concat(utf8Bytes(',"kind":"'), concat(utf8Bytes(kind), utf8Bytes('","mode":"record"}}'))));
 }
 
 function daemonEventsPayload(identity: Uint8Array, cursor: Uint8Array): Uint8Array {
-  let payload = concat(utf8Bytes('{"version":1,"id":"gui-events","method":"events.compact","params":{"identity":'), jsonString(identity));
+  let payload = concat(utf8Bytes('{"version":2,"id":"gui-events","method":"events.compact","params":{"identity":'), jsonString(identity));
   payload = concat(payload, utf8Bytes(',"after_bytes":'));
   payload = concat(payload, byteArrayJson(cursor));
   return concat(payload, utf8Bytes('}}'));
 }
 
 function daemonMessagePayload(identity: Uint8Array, to: Uint8Array, text: Uint8Array, key: Uint8Array, capabilityTicket: Uint8Array): Uint8Array {
-  let payload = concat(utf8Bytes('{"version":1,"id":"gui-send","method":"message.send","params":{"identity":'), jsonString(identity));
+  let payload = concat(utf8Bytes('{"version":2,"id":"gui-send","method":"message.send","params":{"identity":'), jsonString(identity));
   payload = concat(payload, utf8Bytes(',"to_bytes":'));
   payload = concat(payload, byteArrayJson(to));
   payload = concat(payload, utf8Bytes(',"text_bytes":'));
@@ -673,7 +673,7 @@ function liveInviteMessage(action: Uint8Array, ticket: Uint8Array): Uint8Array {
 
 /// idfond.request payload for media.live.publish of a video file.
 function videoPublishPayload(model: Model): Uint8Array {
-  let payload = concat(utf8Bytes('{"version":1,"id":"gui-video","method":"media.live.publish","params":{"identity":'), jsonString(model.identityName));
+  let payload = concat(utf8Bytes('{"version":2,"id":"gui-video","method":"media.live.publish","params":{"identity":'), jsonString(model.identityName));
   payload = concat(payload, utf8Bytes(',"file":'));
   payload = concat(payload, jsonString(model.videoFileInput));
   return concat(payload, utf8Bytes(',"video":true}}'));
@@ -947,7 +947,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         Cmd.request("idfond.request", contextPayload(model.newIdentityName), { key: "idfond-context", ok: "daemon_ready", err: "daemon_error" }),
         Cmd.request("idfond.request", peersPayload(model.newIdentityName), { key: "idfond-peers", ok: "peers_loaded", err: "daemon_error" }),
         Cmd.request("idfond.request", daemonEventsPayload(model.newIdentityName, EMPTY), { key: "idfond-events", ok: "events_loaded", err: "daemon_error" }),
-        Cmd.request("idfond.request", asciiBytes('{"version":1,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "idfond-identities", ok: "identities_loaded", err: "daemon_error" }),
+        Cmd.request("idfond.request", asciiBytes('{"version":2,"id":"gui-identities","method":"identities.compact","params":{}}'), { key: "idfond-identities", ok: "identities_loaded", err: "daemon_error" }),
       ])];
     case "identity_use_error":
       return { ...model, receiverStatus: msg.data, syncingEvents: false };

@@ -3,7 +3,7 @@ import CIdfon
 
 /// JSON IPC protocol types (idfon-protocol). Contract: docs/protocol.md.
 enum Protocol {
-    static let version = 1
+    static let version = 2
 }
 
 struct ProtocolRequest: Encodable {

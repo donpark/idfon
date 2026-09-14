@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 pub type RequestId = String;
@@ -316,21 +316,54 @@ pub struct CapabilityGrant {
     pub revoked_at: Option<String>,
 }
 
+/// An open, namespaced capability. Wire names are dotted strings (e.g.
+/// `message.send`, `mcp.transport`); a provider may define its own without a
+/// protocol change. The associated constants are the built-in names.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(transparent)]
+pub struct Capability(pub std::borrow::Cow<'static, str>);
+
+#[allow(non_upper_case_globals)]
+impl Capability {
+    pub const MessageSend: Capability = Capability(std::borrow::Cow::Borrowed("message.send"));
+    pub const MessageReceive: Capability =
+        Capability(std::borrow::Cow::Borrowed("message.receive"));
+    pub const VoiceMessageSend: Capability =
+        Capability(std::borrow::Cow::Borrowed("voice.message.send"));
+    pub const VoiceMessageReceive: Capability =
+        Capability(std::borrow::Cow::Borrowed("voice.message.receive"));
+    pub const LiveAudioPublish: Capability =
+        Capability(std::borrow::Cow::Borrowed("live.audio.publish"));
+    pub const LiveAudioSubscribe: Capability =
+        Capability(std::borrow::Cow::Borrowed("live.audio.subscribe"));
+    pub const RecordingFetch: Capability =
+        Capability(std::borrow::Cow::Borrowed("recording.fetch"));
+    pub const RecordingRetain: Capability =
+        Capability(std::borrow::Cow::Borrowed("recording.retain"));
+    /// May use the peer's `idfon/mcp/1` transport (grants gate each direction).
+    pub const McpTransport: Capability =
+        Capability(std::borrow::Cow::Borrowed("mcp.transport"));
+
+    pub fn new(value: impl Into<String>) -> Self {
+        Capability(std::borrow::Cow::Owned(value.into()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The one shared vocabulary for an invoked capability's result. Kept
+/// deliberately small: text, a rendered view, a blob or stream ticket, or an
+/// error.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Capability {
-    MessageSend,
-    MessageReceive,
-    VoiceMessageSend,
-    VoiceMessageReceive,
-    LiveAudioPublish,
-    LiveAudioSubscribe,
-    RecordingFetch,
-    RecordingRetain,
-    /// May use the peer's `idfon/mcp/1` transport (grants gate each
-    /// direction). Wire name: `mcp.transport` (the dispatch normalises
-    /// `.` to `_`).
-    McpTransport,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InvocationResult {
+    Text { text: String },
+    Render { view: serde_json::Value },
+    BlobTicket { blob_ticket: String },
+    StreamTicket { stream_ticket: String },
+    Error { message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -455,15 +488,40 @@ mod tests {
     #[test]
     fn rejects_wrong_version() {
         let request = Request {
-            version: 2,
+            version: PROTOCOL_VERSION + 1,
             id: "r".into(),
             method: "status".into(),
             params: serde_json::Value::Null,
         };
         assert_eq!(
             validate_request(&request),
-            Err(ProtocolError::InvalidVersion(2))
+            Err(ProtocolError::InvalidVersion(PROTOCOL_VERSION + 1))
         );
+    }
+
+    #[test]
+    fn capability_names_are_open_and_round_trip() {
+        let built_in = Capability::MessageSend;
+        assert_eq!(encode_json(&built_in).unwrap(), br#""message.send""#);
+        assert_eq!(
+            serde_json::from_str::<Capability>("\"vendor.custom.thing\"").unwrap(),
+            Capability::new("vendor.custom.thing")
+        );
+        assert_eq!(built_in.as_str(), "message.send");
+    }
+
+    #[test]
+    fn invocation_result_vocabulary_round_trips() {
+        for result in [
+            InvocationResult::Text { text: "hi".into() },
+            InvocationResult::Render { view: serde_json::json!({"kind": "card"}) },
+            InvocationResult::BlobTicket { blob_ticket: "blob1".into() },
+            InvocationResult::StreamTicket { stream_ticket: "stream1".into() },
+            InvocationResult::Error { message: "nope".into() },
+        ] {
+            let json = encode_json(&result).unwrap();
+            assert_eq!(serde_json::from_slice::<InvocationResult>(&json).unwrap(), result);
+        }
     }
 
     #[test]
