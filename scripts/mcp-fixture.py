@@ -5,13 +5,16 @@ Two modes:
 
   server            a minimal newline-delimited JSON-RPC MCP server implementing
                     server/discover, tools/list, tools/call (echo), and
-                    subscriptions/listen (one notification, then idle)
+                    subscriptions/listen (acknowledged + one list_changed
+                    notification, then idle)
 
   drive BIN PEER KEY  spawn `BIN connect --peer PEER --key-file KEY` and speak
                     MCP over its stdio, asserting the M1 acceptance checks
 
-The server is a fixture, not a spec implementation: the bridge under test is a
-byte pump, so this only has to be MCP-shaped enough to prove framing.
+The server is a fixture, not a full spec implementation, but it follows the
+2026-07-28 `_meta` rules (required per-request version/capabilities,
+`serverInfo` under `_meta`, the `subscriptions/listen` acknowledgment) so the
+tests exercise a conformant counterpart rather than a home-grown shape.
 """
 
 import json
@@ -23,6 +26,34 @@ import time
 
 PROTOCOL = "2026-07-28"
 UNSUPPORTED_VERSION = -32022
+INVALID_PARAMS = -32602
+
+# Reserved `_meta` keys (MCP 2026-07-28, basic/index#_meta).
+META_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+META_SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId"
+
+
+def client_meta():
+    """The `_meta` every client request MUST carry."""
+    return {
+        META_VERSION: PROTOCOL,
+        META_CLIENT_INFO: {"name": "idfon-fixture", "version": "0.1.0"},
+        META_CLIENT_CAPABILITIES: {},
+    }
+
+
+def server_meta():
+    return {META_SERVER_INFO: {"name": "idfon-mcp-fixture", "version": "0.1.0"}}
+
+
+def meta_error(req, code, message, data=None):
+    error = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": req.get("id"), "error": error}
 
 
 def send(obj):
@@ -39,19 +70,30 @@ def run_server():
         rid = req.get("id")
         method = req.get("method")
         params = req.get("params") or {}
-        version = (params.get("_meta") or {}).get("protocolVersion")
-        # Fixture policy: reject an explicit unsupported version on any request.
-        # Version rejection is the server's job; the bridge only relays it.
-        if version is not None and version != PROTOCOL:
+        if rid is None:
+            # Notification; nothing to answer.
+            continue
+        meta = params.get("_meta") or {}
+        # Missing required `_meta` is malformed; wrong version is -32022. Both
+        # are the server's decision: the bridge only relays them.
+        if META_VERSION not in meta or META_CLIENT_CAPABILITIES not in meta:
             send(
-                {
-                    "jsonrpc": "2.0",
-                    "id": rid,
-                    "error": {
-                        "code": UNSUPPORTED_VERSION,
-                        "message": f"Unsupported protocol version: {version}",
-                    },
-                }
+                meta_error(
+                    req,
+                    INVALID_PARAMS,
+                    "missing required _meta fields (protocolVersion, clientCapabilities)",
+                )
+            )
+            continue
+        version = meta.get(META_VERSION)
+        if version != PROTOCOL:
+            send(
+                meta_error(
+                    req,
+                    UNSUPPORTED_VERSION,
+                    "Unsupported protocol version",
+                    {"supported": [PROTOCOL], "requested": version},
+                )
             )
             continue
         if method == "server/discover":
@@ -63,7 +105,7 @@ def run_server():
                         "resultType": "complete",
                         "supportedVersions": [PROTOCOL],
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "idfon-mcp-fixture", "version": "0.1.0"},
+                        "_meta": server_meta(),
                     },
                 }
             )
@@ -85,6 +127,7 @@ def run_server():
                                 },
                             }
                         ],
+                        "_meta": server_meta(),
                     },
                 }
             )
@@ -97,19 +140,35 @@ def run_server():
                     "result": {
                         "resultType": "complete",
                         "content": [{"type": "text", "text": str(arguments.get("text", ""))}],
+                        "_meta": server_meta(),
                     },
                 }
             )
         elif method == "subscriptions/listen":
-            # Streaming request: emit one notification and stay open (no
-            # result) until the peer closes the stream.
+            # Streaming request. The server MUST acknowledge first, then it MAY
+            # stream notifications the client asked for; all carry the
+            # subscription id in `_meta`. Stay open (no result) until the peer
+            # closes the stream.
+            requested = params.get("notifications") or {}
+            acknowledged = {k: requested[k] for k in ("toolsListChanged",) if requested.get(k)}
             send(
                 {
                     "jsonrpc": "2.0",
-                    "method": "subscriptions/event",
-                    "params": {"event": "ready"},
+                    "method": "notifications/subscriptions/acknowledged",
+                    "params": {
+                        "_meta": {META_SUBSCRIPTION_ID: rid},
+                        "notifications": acknowledged,
+                    },
                 }
             )
+            if requested.get("toolsListChanged"):
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/tools/list_changed",
+                        "params": {"_meta": {META_SUBSCRIPTION_ID: rid}},
+                    }
+                )
         else:
             send(
                 {
@@ -155,6 +214,8 @@ def run_drive(connect_args):
     reader = LineReader(proc.stdout.fileno())
 
     def request(obj):
+        params = obj.setdefault("params", {})
+        params.setdefault("_meta", client_meta())
         proc.stdin.write((json.dumps(obj, separators=(",", ":")) + "\n").encode())
         proc.stdin.flush()
         line = reader.readline(timeout=15)
@@ -163,17 +224,19 @@ def run_drive(connect_args):
         return json.loads(line)
 
     try:
-        # server/discover
+        # server/discover (result identity lives under `_meta`).
         discover = request({"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}})
         result = discover["result"]
         assert PROTOCOL in result["supportedVersions"], result
         assert result["resultType"] == "complete", result
         assert "tools" in result["capabilities"], result
+        assert result["_meta"][META_SERVER_INFO]["name"] == "idfon-mcp-fixture", result
 
         # tools/list
         listing = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         names = [tool["name"] for tool in listing["result"]["tools"]]
         assert "echo" in names, names
+        assert listing["result"]["_meta"][META_SERVER_INFO]["name"] == "idfon-mcp-fixture", listing
 
         # tools/call — the payload carries an escaped newline and quote, so a
         # re-framing pump would split the line and this read would break.
@@ -188,33 +251,66 @@ def run_drive(connect_args):
         )
         assert echoed["result"]["content"][0]["text"] == text, echoed
 
-        # version mismatch -> relayed -32022
-        mismatch = request(
+        # missing required `_meta` -> -32602, malformed
+        malformed = request(
             {
                 "jsonrpc": "2.0",
                 "id": 4,
                 "method": "tools/list",
-                "params": {"_meta": {"protocolVersion": "1999-01-01"}},
+                "params": {"_meta": {}},
+            }
+        )
+        assert malformed["error"]["code"] == INVALID_PARAMS, malformed
+
+        # version mismatch -> relayed -32022 with the supported list
+        mismatch = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/list",
+                "params": {
+                    "_meta": {
+                        META_VERSION: "1999-01-01",
+                        META_CLIENT_CAPABILITIES: {},
+                    }
+                },
             }
         )
         assert mismatch["error"]["code"] == UNSUPPORTED_VERSION, mismatch
+        assert mismatch["error"]["data"]["requested"] == "1999-01-01", mismatch
+        assert PROTOCOL in mismatch["error"]["data"]["supported"], mismatch
 
-        # subscriptions/listen — notification arrives, then the stream closes.
+        # subscriptions/listen — ack first, then a requested notification, both
+        # tagged with the subscription id.
         proc.stdin.write(
             (
                 json.dumps(
-                    {"jsonrpc": "2.0", "id": 5, "method": "subscriptions/listen", "params": {}},
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 6,
+                        "method": "subscriptions/listen",
+                        "params": {
+                            "_meta": client_meta(),
+                            "notifications": {"toolsListChanged": True},
+                        },
+                    },
                     separators=(",", ":"),
                 )
                 + "\n"
             ).encode()
         )
         proc.stdin.flush()
+        ack_line = reader.readline(timeout=15)
+        assert ack_line is not None, "stream closed before the ack"
+        ack = json.loads(ack_line)
+        assert ack["method"] == "notifications/subscriptions/acknowledged", ack
+        assert ack["params"]["_meta"][META_SUBSCRIPTION_ID] == 6, ack
+        assert ack["params"]["notifications"]["toolsListChanged"] is True, ack
         notification_line = reader.readline(timeout=15)
         assert notification_line is not None, "stream closed before the notification"
         notification = json.loads(notification_line)
-        assert notification.get("method") == "subscriptions/event", notification
-        assert notification["params"]["event"] == "ready", notification
+        assert notification["method"] == "notifications/tools/list_changed", notification
+        assert notification["params"]["_meta"][META_SUBSCRIPTION_ID] == 6, notification
 
         proc.stdin.close()
         assert proc.wait(timeout=15) == 0, f"connect exited with {proc.returncode}"
@@ -235,6 +331,8 @@ def run_server_drive(binary, socket):
     reader = LineReader(proc.stdout.fileno())
 
     def request(obj):
+        params = obj.setdefault("params", {})
+        params.setdefault("_meta", client_meta())
         proc.stdin.write((json.dumps(obj, separators=(",", ":")) + "\n").encode())
         proc.stdin.flush()
         line = reader.readline(timeout=15)
@@ -259,10 +357,28 @@ def run_server_drive(binary, socket):
         discover = request({"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}})
         assert PROTOCOL in discover["result"]["supportedVersions"], discover
         assert "tools" in discover["result"]["capabilities"], discover
+        assert discover["result"]["_meta"][META_SERVER_INFO]["name"] == "idfon-mcp-server", discover
 
         listing = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         names = [tool["name"] for tool in listing["result"]["tools"]]
         assert "idfon.put_blob" in names and "idfon.send_message" in names, names
+        assert listing["result"]["_meta"][META_SERVER_INFO]["name"] == "idfon-mcp-server", listing
+
+        # Conformance: missing required `_meta` -> -32602; wrong version -> -32022.
+        malformed = request(
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {"_meta": {}}}
+        )
+        assert malformed["error"]["code"] == INVALID_PARAMS, malformed
+        mismatched = request(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/list",
+                "params": {"_meta": {META_VERSION: "1999-01-01", META_CLIENT_CAPABILITIES: {}}},
+            }
+        )
+        assert mismatched["error"]["code"] == UNSUPPORTED_VERSION, mismatched
+        assert PROTOCOL in mismatched["error"]["data"]["supported"], mismatched
 
         is_error, text = call("idfon.list_peers", {})
         assert not is_error and "bob" in text, text

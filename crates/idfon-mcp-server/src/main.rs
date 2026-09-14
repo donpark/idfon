@@ -16,6 +16,13 @@ use serde_json::{json, Value};
 const MCP_PROTOCOL: &str = "2026-07-28";
 const FETCH_CHUNK: u64 = 64 * 1024;
 
+// Reserved `_meta` keys (MCP 2026-07-28, basic/index#_meta).
+const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
+const ERR_INVALID_PARAMS: i64 = -32602;
+const ERR_UNSUPPORTED_VERSION: i64 = -32022;
+
 #[derive(Parser)]
 #[command(name = "idfon-mcp-server", about = "Expose idfon capabilities as MCP tools")]
 struct Cli {
@@ -66,6 +73,9 @@ fn write_line(stdout: &mut std::io::Stdout, value: &Value) -> Result<()> {
 fn handle(cli: &Cli, request: &Value) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
+    if let Some(error) = validate_request_meta(request) {
+        return error;
+    }
     match method {
         "server/discover" => json!({
             "jsonrpc": "2.0",
@@ -74,13 +84,13 @@ fn handle(cli: &Cli, request: &Value) -> Value {
                 "resultType": "complete",
                 "supportedVersions": [MCP_PROTOCOL],
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "idfon-mcp-server", "version": env!("CARGO_PKG_VERSION")},
+                "_meta": server_meta(),
             }
         }),
         "tools/list" => json!({
             "jsonrpc": "2.0",
             "id": id,
-            "result": {"resultType": "complete", "tools": tools()},
+            "result": {"resultType": "complete", "tools": tools(), "_meta": server_meta()},
         }),
         "tools/call" => tool_call(cli, &id, request),
         other => json!({
@@ -89,6 +99,44 @@ fn handle(cli: &Cli, request: &Value) -> Value {
             "error": {"code": -32601, "message": format!("Method not found: {other}")},
         }),
     }
+}
+
+/// Every request MUST carry `_meta` with the protocol version and client
+/// capabilities (MCP 2026-07-28). Missing required fields are `-32602`; an
+/// unsupported version is `-32022` with the versions this server does support.
+fn validate_request_meta(request: &Value) -> Option<Value> {
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let error = |code, message: &str, data: Option<Value>| {
+        let mut error = json!({"code": code, "message": message});
+        if let Some(data) = data {
+            error["data"] = data;
+        }
+        json!({"jsonrpc": "2.0", "id": id, "error": error})
+    };
+    let Some(meta) = request.get("params").and_then(|params| params.get("_meta")) else {
+        return Some(error(ERR_INVALID_PARAMS, "missing required _meta", None));
+    };
+    if meta.get(META_VERSION).is_none() || meta.get(META_CLIENT_CAPABILITIES).is_none() {
+        return Some(error(
+            ERR_INVALID_PARAMS,
+            "missing required _meta fields (protocolVersion, clientCapabilities)",
+            None,
+        ));
+    }
+    let requested = meta.get(META_VERSION).and_then(Value::as_str).unwrap_or_default();
+    if requested != MCP_PROTOCOL {
+        return Some(error(
+            ERR_UNSUPPORTED_VERSION,
+            "Unsupported protocol version",
+            Some(json!({"supported": [MCP_PROTOCOL], "requested": requested})),
+        ));
+    }
+    None
+}
+
+/// Servers SHOULD identify themselves in every result's `_meta`.
+fn server_meta() -> Value {
+    json!({META_SERVER_INFO: {"name": "idfon-mcp-server", "version": env!("CARGO_PKG_VERSION")}})
 }
 
 /// Each tool maps to an idfon capability; the required grant is stated in the
@@ -211,6 +259,7 @@ fn tool_call(cli: &Cli, id: &Value, request: &Value) -> Value {
             "resultType": "complete",
             "content": [{"type": "text", "text": text}],
             "isError": is_error,
+            "_meta": server_meta(),
         }
     })
 }

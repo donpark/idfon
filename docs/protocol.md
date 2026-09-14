@@ -156,10 +156,12 @@ never parses MCP.
 | method | params | result |
 |---|---|---|
 | `mcp.listen` | `{ to }` | `{ socket, peer, direction: "outbound" }` — opens `<data_dir>/mcp/<hash>.sock`, then splices the first local connection to the peer's `idfon/mcp/1` bi-stream. Requires an `mcp.transport` grant for the peer. |
+| `mcp.configure` | `{ command }` | `{ command }` — persists the local MCP server command inbound `idfon/mcp/1` streams are spliced to. Empty/absent disables it; `IDFON_MCP_COMMAND` still overrides per process. |
 
-Inbound `idfon/mcp/1` connections are spliced to the command in the daemon's
-`IDFON_MCP_COMMAND` environment variable, provided the remote endpoint has an
-`mcp.transport` grant. `idfon-mcp connect --uds SOCKET` is the stdio shim.
+Inbound `idfon/mcp/1` connections are spliced to the configured command
+(`IDFON_MCP_COMMAND`, else the `mcp.configure` value), provided the remote
+endpoint has an `mcp.transport` grant. `idfon-mcp connect --uds SOCKET` is the
+stdio shim. `peer.show` reports `mcp_transport_granted` for the peer.
 
 **Contact ticket (M3).** `idfon-mcp serve --contact` mints an
 `McpContactTicket { transport, peer, discover? }` — the dial address, the peer

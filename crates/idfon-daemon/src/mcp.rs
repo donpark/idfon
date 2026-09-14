@@ -26,12 +26,12 @@ use crate::{error_response, has_grant, request_text, resolved_identity_id, succe
 pub const MCP_ALPN: &[u8] = b"idfon/mcp/1";
 
 /// Registers the inbound relay on one identity's transport. Called once per
-/// identity at daemon startup when `IDFON_MCP_COMMAND` is set.
+/// identity at daemon startup; the served command is resolved per connection
+/// so `mcp.configure` takes effect without re-registering the ALPN.
 pub async fn spawn_inbound(
     manager: Arc<TransportManager>,
     store: Arc<Mutex<Store>>,
     identity: String,
-    command: String,
 ) {
     let Some(transport) = manager.current(&identity).await else {
         return;
@@ -44,9 +44,8 @@ pub async fn spawn_inbound(
         while let Some(connection) = rx.recv().await {
             let store = Arc::clone(&store);
             let identity = identity.clone();
-            let command = command.clone();
             tokio::spawn(async move {
-                if let Err(error) = inbound(connection, &store, &identity, &command).await {
+                if let Err(error) = inbound(connection, &store, &identity).await {
                     eprintln!("[idfond] mcp inbound ended: {error:#}");
                 }
             });
@@ -58,22 +57,26 @@ async fn inbound(
     connection: iroh::endpoint::Connection,
     store: &Arc<Mutex<Store>>,
     identity: &str,
-    command: &str,
 ) -> Result<()> {
     let remote = connection.remote_id().to_string();
     if !inbound_allowed(store, identity, &remote) {
         connection.close(1u32.into(), b"mcp.transport not granted");
         return Ok(());
     }
+    let command = store.lock().expect("store mutex poisoned").configured_mcp_command();
+    let Some(command) = command else {
+        connection.close(2u32.into(), b"mcp server not configured");
+        return Ok(());
+    };
     let (send, recv) = connection.accept_bi().await.context("accept bi-stream")?;
     let mut child = Command::new("sh")
         .arg("-c")
-        .arg(command)
+        .arg(&command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .with_context(|| format!("spawn IDFON_MCP_COMMAND: {command}"))?;
+        .with_context(|| format!("spawn local MCP server: {command}"))?;
     let child_stdin = child.stdin.take().expect("piped stdin");
     let child_stdout = child.stdout.take().expect("piped stdout");
     let mut up = tokio::spawn(pump(recv, child_stdin));
