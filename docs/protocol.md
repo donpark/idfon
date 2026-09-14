@@ -18,11 +18,12 @@ while it holds the request until a match or timeout).
 Request:
 
 ```json
-{ "version": 1, "id": "cli-1", "method": "peers", "params": {} }
+{ "version": 2, "id": "cli-1", "method": "peers", "params": {} }
 ```
 
-- `version`: `PROTOCOL_VERSION` (bump on any breaking shape change; daemons
-  reject mismatched versions).
+- `version`: `PROTOCOL_VERSION` (currently **2**; bump on any breaking shape
+  change; daemons reject mismatched versions). Version 2 replaced the closed
+  capability enum with open namespaced strings.
 - `id`: client-chosen, echoed in the response.
 - `params`: per-method (below). The daemon injects the session identity for
   any param that is absent — an explicit `null` defeats the injection (this
@@ -31,7 +32,7 @@ Request:
 Response:
 
 ```json
-{ "version": 1, "id": "cli-1", "ok": true, "operation": "status", "result": { } }
+{ "version": 2, "id": "cli-1", "ok": true, "operation": "status", "result": { } }
 ```
 
 Failure: `ok: false` with `error: { code, message, retryable }`. Error codes
@@ -128,8 +129,23 @@ this daemon may receive from the subject. Subjects are peer endpoint ids
 | `capability.ticket` | `{ subject, capabilities: [..], expires_at? }` | `{ ticket }` (signed, subject-bound; a verified ticket satisfies the receive gate) |
 | `capability.ticket.revoke` | `{ ticket_id }` | `{ ticket_id, issuer, revoked }` |
 
-Capabilities: `message.send`, `message.receive`, `mcp.transport`, plus media
-capabilities (`recording.fetch`, `live.audio.subscribe`, ...).
+Capabilities are **open namespaced strings**, not a closed enum: the built-ins
+are `message.send`, `message.receive`, `voice.message.send`,
+`voice.message.receive`, `live.audio.publish`, `live.audio.subscribe`,
+`recording.fetch`, `recording.retain`, and `mcp.transport`, but any dotted name
+is accepted, so a provider can define its own without a protocol change.
+
+### Invocation results
+
+One shared vocabulary for the result of an invoked capability:
+
+```json
+{ "type": "text", "text": "..." }
+{ "type": "render", "view": { } }
+{ "type": "blob_ticket", "blob_ticket": "..." }
+{ "type": "stream_ticket", "stream_ticket": "..." }
+{ "type": "error", "message": "..." }
+```
 
 ### MCP transport
 
