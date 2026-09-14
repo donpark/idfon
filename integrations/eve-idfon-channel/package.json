@@ -24,6 +24,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "eve": "0.54.5",
     "typescript": "^5.8.3"
   },

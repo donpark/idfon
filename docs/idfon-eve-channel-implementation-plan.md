@@ -1,6 +1,6 @@
 # idfon Eve Channel — Implementation Plan
 
-> **Status:** planned; no code. Design: `docs/idfon-eve-channel.md`. Reuses the
+> **Status:** M0–M2 implemented; M3 files-in in progress. Design:
 > MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5, implemented).
 > Prototyping stage: no legacy or migration constraints. Eve channel contract as
 > of 2026-09-14 (`defineChannel`, routes/events, `from(address).send`,
@@ -23,10 +23,11 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | milestone | commit | acceptance |
 |---|---|---|
 | docs (this plan + `idfon-eve-channel.md`) | — | — |
-| M0 contract spike | — | `scripts/eve-channel-spike.sh` |
-| M1 endpoint holder | — | `scripts/eve-channel-holder-e2e.sh` |
-| M2 Eve channel provider | — | `scripts/eve-channel-e2e.sh` |
-| M3 media (blob + stream) | — | `scripts/eve-channel-media-e2e.sh` |
+| M0 contract spike | `47049b0` | `scripts/eve-channel-spike.sh` |
+| M1 endpoint holder | `47049b0` | `scripts/eve-channel-holder-e2e.sh` |
+| M2 Eve channel provider | `8c1e757` | `scripts/eve-channel-e2e.sh` |
+| M3 media — files in | uncommitted | `scripts/eve-channel-media-e2e.sh` |
+| M3 media — files out + live streams | — | not started |
 | M4 human-in-the-loop | — | `scripts/eve-channel-hitl-e2e.sh` |
 | M5 agent-to-agent + isolation | — | `scripts/eve-channel-a2a-e2e.sh` |
 
@@ -232,14 +233,15 @@ image ceiling.
 
 ### In scope
 
-- **Files in**: a message referencing a blob ticket → `UserContent` file part
-  (`{ type: "file", data: <bytes>, mediaType }`), fetched via `iroh-blobs`.
-  Provide a `fetchFile` on the channel that resolves a blob ticket.
-- **Files out**: agent outputs delivered as blob tickets (store to the holder's
-  `iroh-blobs` `FsStore`, tag, send the ticket) rather than sandbox paths.
-- **Live media**: `media.live.publish`/`subscribe` via `idfon-media`, referenced
-  in the turn as a stream ticket. Live bytes ride idfon's MoQ plane, not Eve's
-  session model.
+- **Files in — implemented here**: an `IDFON-DATA/1` message referencing a blob
+  ticket becomes an Eve `UserContent` file part. The holder fetches it with
+  `iroh-blobs` and the channel's `fetchFile` resolves the `idfon-blob:` URL.
+- **Files out — next**: agent outputs delivered as blob tickets (store to the
+  holder's `iroh-blobs` `FsStore`, tag, send the ticket) rather than sandbox
+  paths.
+- **Live media — next**: `media.live.publish`/`subscribe` via `idfon-media`,
+  referenced in the turn as a stream ticket. Live bytes ride idfon's MoQ plane,
+  not Eve's session model.
 - Wire shape: extend `MessageContent` with a media/blob variant **or** continue
   the daemon's out-of-band `IDFON-DATA/1` text envelope. Choose the smaller
   change; if `MessageContent` changes, bump `PROTOCOL_VERSION` and update
@@ -253,12 +255,13 @@ Capture (microphone/camera), rendition adaptation policy, recording storage UX.
 
 ### Acceptance — `scripts/eve-channel-media-e2e.sh`
 
-1. Put a file into the peer's blob store; send a message referencing the ticket;
-   assert the agent reports the file (name/size/hash) via a tool or hook.
-2. Have the agent emit a blob ticket; `idfon get` it from the peer and compare
-   bytes.
-3. Publish a short live audio clip as a stream ticket; assert the agent receives
-   the ticket and the peer can subscribe. (Video optional; reuse
+1. **Implemented:** put a file into the peer's blob store; send an
+   `IDFON-DATA/1` ticket envelope; assert the Eve turn includes the file part and
+   `fetchFile` completes the holder fetch round trip.
+2. **Next:** have the agent emit a blob ticket; `idfon get` it from the peer
+   and compare bytes.
+3. **Next:** publish a short live audio clip as a stream ticket; assert the
+   agent receives the ticket and the peer can subscribe. (Video optional; reuse
    `scripts/video-e2e.sh`.)
 
 ## Milestone 4 — human-in-the-loop
