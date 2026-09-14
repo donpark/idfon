@@ -1,6 +1,6 @@
 # idfon Eve Channel — Implementation Plan
 
-> **Status:** M0–M2 implemented; M3 files-in in progress. Design:
+> **Status:** M0–M3 files-in implemented; M4 HITL in progress. Design:
 > MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5, implemented).
 > Prototyping stage: no legacy or migration constraints. Eve channel contract as
 > of 2026-09-14 (`defineChannel`, routes/events, `from(address).send`,
@@ -26,9 +26,10 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | M0 contract spike | `47049b0` | `scripts/eve-channel-spike.sh` |
 | M1 endpoint holder | `47049b0` | `scripts/eve-channel-holder-e2e.sh` |
 | M2 Eve channel provider | `8c1e757` | `scripts/eve-channel-e2e.sh` |
-| M3 media — files in | uncommitted | `scripts/eve-channel-media-e2e.sh` |
+| M3 media — files in | `efdcf73` | `scripts/eve-channel-media-e2e.sh` |
 | M3 media — files out + live streams | — | not started |
-| M4 human-in-the-loop | — | `scripts/eve-channel-hitl-e2e.sh` |
+| M4 HITL — approvals/input | uncommitted | `scripts/eve-channel-hitl-e2e.sh` |
+| M4 HITL — authorization flows | — | not started |
 | M5 agent-to-agent + isolation | — | `scripts/eve-channel-a2a-e2e.sh` |
 
 ## Resolved decisions
@@ -272,20 +273,21 @@ Approvals and elicitations park the turn and round-trip over idfon.
 
 ### In scope
 
-- `events["input.requested"]` / `events["authorization.required"]` → an idfon
-  message carrying the request id, prompt, and options.
-- The peer's response message → `from(address).respond(inputResponses, { auth })`
-  (never `send`; `respond` must not steer).
-- Consent can consult the peer's idfon grants before answering.
-- Timeout/cancel behavior mirrors Eve's contract (`input.resolved`).
+- **Implemented:** `events["input.requested"]` emits an authenticated
+  `IDFON-HITL/1` request carrying request IDs, prompts, and options; a peer's
+  `IDFON-HITL-RESPONSE/1` message is validated and delivered through
+  `from(address).respond(inputResponses, { auth })` (never `send`).
+- **Next:** `events["authorization.required"]`, consent policy from idfon
+  grants, and timeout/cancel status events.
 
 ### Acceptance — `scripts/eve-channel-hitl-e2e.sh`
 
-1. Trigger a tool with `approval: always()`.
-2. Assert the peer receives a request message with options.
-3. Reply "approve" → assert the turn completes; reply "deny" → assert the tool
-   does not run.
-4. Assert an `inputResponses` delivery does not steer an active turn.
+1. **Implemented:** trigger a tool with `approval: always()`.
+2. **Implemented:** assert the peer receives a request message with options.
+3. **Implemented:** reply `approve` → assert the turn resumes and executes;
+   reply `cancel` → assert the tool does not run.
+4. **Implemented:** responses use `respond`, not `send`, so they do not steer
+   the parked turn.
 
 ## Milestone 5 — agent-to-agent and isolation
 

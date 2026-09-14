@@ -101,6 +101,30 @@ enum IpcFrame {
         message_id: String,
         status: String,
     },
+    #[serde(rename = "input.out")]
+    InputOut {
+        request_id: String,
+        peer_id: String,
+        endpoint_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+        requests: serde_json::Value,
+    },
+    #[serde(rename = "input.in")]
+    InputIn {
+        message_id: String,
+        peer_id: String,
+        endpoint_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+        responses: serde_json::Value,
+    },
+    #[serde(rename = "input.ack")]
+    InputAck {
+        request_id: String,
+        message_id: String,
+        status: String,
+    },
     #[serde(rename = "blob.fetch")]
     BlobFetch { request_id: String, ticket: String },
     #[serde(rename = "blob.result")]
@@ -257,6 +281,25 @@ async fn serve(
             IpcFrame::BlobFetch { request_id, ticket } => {
                 handle_blob_fetch(request_id, ticket, &blob_dir, out_tx.clone()).await
             }
+            IpcFrame::InputOut {
+                request_id,
+                peer_id,
+                endpoint_id,
+                conversation,
+                requests,
+            } => {
+                handle_input(
+                    request_id,
+                    peer_id,
+                    endpoint_id,
+                    conversation,
+                    requests,
+                    &key,
+                    &transport,
+                    out_tx.clone(),
+                )
+                .await
+            }
             _ => Err(anyhow!("unexpected IPC frame from consumer")),
         };
         if let Err(error) = result {
@@ -328,6 +371,23 @@ async fn handle_message(
             });
         }
         seen_guard.insert(key, text.clone());
+    }
+
+    if let Some(responses) = parse_input_response(&text) {
+        out_tx
+            .send(IpcFrame::InputIn {
+                message_id: message.message_id.clone(),
+                peer_id: message.sender.peer_id.clone(),
+                endpoint_id: remote_endpoint_id,
+                conversation: message.conversation.clone(),
+                responses,
+            })
+            .await
+            .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
+        return Ok(MessageAck {
+            message_id: message.message_id,
+            status: AckStatus::Accepted,
+        });
     }
 
     targets.lock().await.insert(
@@ -412,6 +472,58 @@ async fn handle_reply(
         .await
         .map_err(|_| anyhow!("IPC client disconnected"))?;
     Ok(())
+}
+
+async fn handle_input(
+    request_id: String,
+    target_peer_id: String,
+    endpoint_id: String,
+    conversation: Option<String>,
+    requests: serde_json::Value,
+    key: &SigningKey,
+    transport: &IrohTransport,
+    out_tx: mpsc::Sender<IpcFrame>,
+) -> Result<()> {
+    let endpoint_id: EndpointId = endpoint_id
+        .parse()
+        .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
+    let payload = serde_json::to_vec(&requests).context("encode input requests")?;
+    let text = format!("IDFON-HITL/1\npayload={}\n", BASE64.encode(payload));
+    let message_id = format!(
+        "eve_input_{}",
+        NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let envelope = sign_message(
+        key,
+        peer_id(key),
+        message_id.clone(),
+        MessageContent::Text { text },
+        format!("eve-input-{request_id}"),
+        conversation,
+    )
+    .map_err(|error| anyhow!("sign input request: {error}"))?;
+    let ack = transport
+        .send(&EndpointAddr::new(endpoint_id), &envelope)
+        .await
+        .map_err(|error| anyhow!("send input request to {target_peer_id}: {error}"))?;
+    out_tx
+        .send(IpcFrame::InputAck {
+            request_id,
+            message_id,
+            status: format!("{:?}", ack.status).to_lowercase(),
+        })
+        .await
+        .map_err(|_| anyhow!("IPC client disconnected"))?;
+    Ok(())
+}
+
+fn parse_input_response(text: &str) -> Option<serde_json::Value> {
+    let encoded = text
+        .strip_prefix("IDFON-HITL-RESPONSE/1\n")?
+        .lines()
+        .find_map(|line| line.strip_prefix("payload="))?;
+    let payload = BASE64.decode(encoded).ok()?;
+    serde_json::from_slice(&payload).ok()
 }
 
 fn parse_data_envelope(text: &str) -> Option<(String, Option<u64>)> {
@@ -711,6 +823,16 @@ mod tests {
             validate_message(&expired_message, &sender_id, &[], &holder_id),
             Err(HolderError::ExpiredTicket)
         ));
+    }
+
+    #[test]
+    fn input_response_extracts_json_payload() {
+        let encoded = BASE64.encode(r#"[{"requestId":"req","optionId":"approve"}]"#);
+        let text = format!("IDFON-HITL-RESPONSE/1\npayload={encoded}");
+        assert_eq!(
+            parse_input_response(&text),
+            Some(serde_json::json!([{"requestId": "req", "optionId": "approve"}]))
+        );
     }
 
     #[test]

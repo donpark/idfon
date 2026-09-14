@@ -1,4 +1,5 @@
 import { defineChannel, POST } from "eve/channels";
+import { parseInputResponses } from "eve/client";
 
 import extension from "../extension";
 
@@ -22,7 +23,7 @@ type SessionTarget = {
 
 const sessionTargets = new Map<string, SessionTarget>();
 
-function authFor(turn: TurnIn) {
+function authFor(turn: Pick<TurnIn, "peer_id" | "endpoint_id">) {
   return {
     authenticator: "idfon",
     principalId: turn.peer_id,
@@ -86,6 +87,34 @@ export default defineChannel({
       });
       return Response.json({ sessionId: session.id, address });
     }),
+    POST("/idfon/input", async (request, { from }) => {
+      const secret = request.headers.get("x-idfon-channel-secret");
+      if (secret !== extension.config.secret) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const input = (await request.json()) as {
+        peer_id?: string;
+        endpoint_id?: string;
+        conversation?: string;
+        responses?: unknown;
+      };
+      if (!input.peer_id || !input.endpoint_id || input.responses === undefined) {
+        return Response.json({ error: "invalid input response" }, { status: 400 });
+      }
+      let responses;
+      try {
+        responses = parseInputResponses(input.responses);
+      } catch {
+        return Response.json({ error: "invalid input responses" }, { status: 400 });
+      }
+      const address = input.conversation
+        ? `${input.peer_id}:${input.conversation}`
+        : input.peer_id;
+      await from(address).respond(responses, {
+        auth: authFor({ peer_id: input.peer_id, endpoint_id: input.endpoint_id }),
+      });
+      return Response.json({ address });
+    }),
   ],
   async fetchFile(url) {
     if (!url.startsWith("idfon-blob:")) return null;
@@ -107,6 +136,18 @@ export default defineChannel({
         endpoint_id: target.endpointId,
         conversation: target.conversation,
         text: event.message,
+      });
+    },
+    async "input.requested"(event, _channel, ctx) {
+      const target = sessionTargets.get(ctx.session.id);
+      const request = event.requests[0];
+      if (!target || !request) return;
+      await bridge("/input", {
+        request_id: request.requestId,
+        peer_id: target.peerId,
+        endpoint_id: target.endpointId,
+        conversation: target.conversation,
+        requests: event.requests,
       });
     },
   },

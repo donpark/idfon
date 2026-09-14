@@ -42,13 +42,14 @@ function processFrames() {
     if (input.length < size + 4) return;
     const value = JSON.parse(input.subarray(4, size + 4));
     input = input.subarray(size + 4);
-    if (value.type === "turn.in") {
-      fetch(`${targetUrl}/idfon/turn`, {
+    if (value.type === "turn.in" || value.type === "input.in") {
+      const path = value.type === "turn.in" ? "/idfon/turn" : "/idfon/input";
+      fetch(`${targetUrl}${path}`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
-      }).catch((error) => console.error(`[idfon-eve-channel] turn delivery failed: ${error}`));
-    } else if (value.type === "reply.ack" || value.type === "blob.result") {
+      }).catch((error) => console.error(`[idfon-eve-channel] ${value.type} delivery failed: ${error}`));
+    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "input.ack") {
       const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
       const waiter = pending.get(key);
       if (waiter) {
@@ -73,7 +74,7 @@ holder.on("error", (error) => { console.error(`[idfon-eve-channel] holder IPC: $
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
-  if (request.method !== "POST" || !["/reply", "/blob"].includes(request.url)) {
+  if (request.method !== "POST" || !["/reply", "/blob", "/input"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -84,6 +85,30 @@ const server = createServer(async (request, response) => {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks));
+  if (request.url === "/input") {
+    if (typeof body.request_id !== "string" || typeof body.peer_id !== "string" ||
+        typeof body.endpoint_id !== "string" || !Array.isArray(body.requests)) {
+      response.writeHead(400); response.end("invalid input request\n"); return;
+    }
+    const resultPromise = new Promise((resolve, reject) => pending.set(body.request_id, { resolve, reject }));
+    try {
+      await write({
+        type: "input.out",
+        request_id: body.request_id,
+        peer_id: body.peer_id,
+        endpoint_id: body.endpoint_id,
+        conversation: body.conversation,
+        requests: body.requests,
+      });
+      const result = await resultPromise;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      pending.delete(body.request_id);
+      response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
   if (request.url === "/blob") {
     if (typeof body.ticket !== "string") {
       response.writeHead(400); response.end("invalid blob request\n"); return;
