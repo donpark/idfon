@@ -9,6 +9,8 @@ type TurnIn = {
   idempotency_key: string;
   conversation?: string;
   text: string;
+  blob_ticket?: string;
+  size_bytes?: number;
 };
 
 type SessionTarget = {
@@ -63,7 +65,17 @@ export default defineChannel({
       const address = completeTurn.conversation
         ? `${completeTurn.peer_id}:${completeTurn.conversation}`
         : completeTurn.peer_id;
-      const session = await from(address).send(completeTurn.text, {
+      const message = completeTurn.blob_ticket
+        ? [
+            { type: "text" as const, text: completeTurn.text },
+            {
+              type: "file" as const,
+              data: new URL(`idfon-blob:${encodeURIComponent(completeTurn.blob_ticket)}`),
+              mediaType: "application/octet-stream",
+            },
+          ]
+        : completeTurn.text;
+      const session = await from(address).send(message, {
         auth: authFor(completeTurn),
       });
       sessionTargets.set(session.id, {
@@ -75,6 +87,16 @@ export default defineChannel({
       return Response.json({ sessionId: session.id, address });
     }),
   ],
+  async fetchFile(url) {
+    if (!url.startsWith("idfon-blob:")) return null;
+    const ticket = decodeURIComponent(url.slice("idfon-blob:".length));
+    const response = await bridge("/blob", { ticket });
+    const result = (await response.json()) as { bytes_base64: string };
+    return {
+      bytes: Buffer.from(result.bytes_base64, "base64"),
+      mediaType: "application/octet-stream",
+    };
+  },
   events: {
     async "message.completed"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);

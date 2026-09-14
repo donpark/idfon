@@ -17,6 +17,7 @@ const holder = createConnection(socketPath);
 let input = Buffer.alloc(0);
 const pending = new Map();
 let writeTail = Promise.resolve();
+let nextRequestId = 1;
 
 function frame(value) {
   const payload = Buffer.from(JSON.stringify(value));
@@ -47,10 +48,11 @@ function processFrames() {
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
       }).catch((error) => console.error(`[idfon-eve-channel] turn delivery failed: ${error}`));
-    } else if (value.type === "reply.ack") {
-      const waiter = pending.get(value.in_reply_to);
+    } else if (value.type === "reply.ack" || value.type === "blob.result") {
+      const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
+      const waiter = pending.get(key);
       if (waiter) {
-        pending.delete(value.in_reply_to);
+        pending.delete(key);
         waiter.resolve(value);
       }
     } else if (value.type === "error") {
@@ -71,7 +73,7 @@ holder.on("error", (error) => { console.error(`[idfon-eve-channel] holder IPC: $
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
-  if (request.method !== "POST" || request.url !== "/reply") {
+  if (request.method !== "POST" || !["/reply", "/blob"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -82,6 +84,23 @@ const server = createServer(async (request, response) => {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks));
+  if (request.url === "/blob") {
+    if (typeof body.ticket !== "string") {
+      response.writeHead(400); response.end("invalid blob request\n"); return;
+    }
+    const requestId = `blob-${nextRequestId++}`;
+    const resultPromise = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+    try {
+      await write({ type: "blob.fetch", request_id: requestId, ticket: body.ticket });
+      const result = await resultPromise;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      pending.delete(requestId);
+      response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
   if (!body.in_reply_to || typeof body.text !== "string") {
     response.writeHead(400); response.end("invalid reply\n"); return;
   }

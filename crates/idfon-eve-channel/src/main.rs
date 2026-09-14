@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
@@ -18,7 +19,8 @@ use idfon_core::{peer_id, sign_message, verify_capability_ticket, verify_message
 use idfon_protocol::{
     AckStatus, Capability, MessageAck, MessageContent, MessageEnvelope, MAX_FRAME_BYTES,
 };
-use iroh::{EndpointAddr, EndpointId};
+use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId};
+use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -54,6 +56,9 @@ enum Mode {
         /// Permit an ephemeral identity when no key file or environment key exists.
         #[arg(long)]
         ephemeral: bool,
+        /// Local cache for blobs fetched from incoming blob tickets.
+        #[arg(long, default_value = "blobs")]
+        blob_dir: PathBuf,
     },
     /// Issue a holder-signed message.receive ticket for initial provisioning.
     Ticket {
@@ -78,6 +83,10 @@ enum IpcFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blob_ticket: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size_bytes: Option<u64>,
     },
     #[serde(rename = "reply.out")]
     ReplyOut {
@@ -91,6 +100,14 @@ enum IpcFrame {
         in_reply_to: String,
         message_id: String,
         status: String,
+    },
+    #[serde(rename = "blob.fetch")]
+    BlobFetch { request_id: String, ticket: String },
+    #[serde(rename = "blob.result")]
+    BlobResult {
+        request_id: String,
+        bytes_base64: String,
+        size_bytes: u64,
     },
     #[serde(rename = "error")]
     Error { code: String, message: String },
@@ -115,9 +132,10 @@ async fn main() -> Result<()> {
             socket,
             allow,
             ephemeral,
+            blob_dir,
         } => {
             let key = load_key(key_file.as_deref(), ephemeral)?;
-            serve(socket, allow, key).await
+            serve(socket, allow, key, blob_dir).await
         }
         Mode::Ticket {
             subject,
@@ -162,7 +180,12 @@ fn load_key(path: Option<&Path>, ephemeral: bool) -> Result<SigningKey> {
     }
 }
 
-async fn serve(socket: PathBuf, allow: Vec<String>, key: SigningKey) -> Result<()> {
+async fn serve(
+    socket: PathBuf,
+    allow: Vec<String>,
+    key: SigningKey,
+    blob_dir: PathBuf,
+) -> Result<()> {
     if socket.exists() {
         std::fs::remove_file(&socket)
             .with_context(|| format!("remove stale socket {}", socket.display()))?;
@@ -227,10 +250,19 @@ async fn serve(socket: PathBuf, allow: Vec<String>, key: SigningKey) -> Result<(
     };
 
     while let Some(frame) = reply_rx.recv().await {
-        if let Err(error) = handle_reply(frame, &key, &transport, &targets, out_tx.clone()).await {
+        let result = match frame {
+            IpcFrame::ReplyOut { .. } => {
+                handle_reply(frame, &key, &transport, &targets, out_tx.clone()).await
+            }
+            IpcFrame::BlobFetch { request_id, ticket } => {
+                handle_blob_fetch(request_id, ticket, &blob_dir, out_tx.clone()).await
+            }
+            _ => Err(anyhow!("unexpected IPC frame from consumer")),
+        };
+        if let Err(error) = result {
             let _ = out_tx
                 .send(IpcFrame::Error {
-                    code: "reply_failed".into(),
+                    code: "ipc_request_failed".into(),
                     message: error.to_string(),
                 })
                 .await;
@@ -272,6 +304,7 @@ async fn handle_message(
     let text = match &message.content {
         MessageContent::Text { text } => text.clone(),
     };
+    let attachment = parse_data_envelope(&text);
     let key = (
         message.sender.peer_id.clone(),
         message.idempotency_key.clone(),
@@ -312,7 +345,12 @@ async fn handle_message(
             endpoint_id: remote_endpoint_id,
             idempotency_key: message.idempotency_key.clone(),
             conversation: message.conversation.clone(),
-            text,
+            text: attachment
+                .as_ref()
+                .map(|(_, size)| format!("Attached file ({} bytes)", size.unwrap_or(0)))
+                .unwrap_or(text),
+            blob_ticket: attachment.as_ref().map(|(ticket, _)| ticket.clone()),
+            size_bytes: attachment.as_ref().and_then(|(_, size)| *size),
         })
         .await
         .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -374,6 +412,74 @@ async fn handle_reply(
         .await
         .map_err(|_| anyhow!("IPC client disconnected"))?;
     Ok(())
+}
+
+fn parse_data_envelope(text: &str) -> Option<(String, Option<u64>)> {
+    let mut ticket = None;
+    let mut size = None;
+    for line in text.strip_prefix("IDFON-DATA/1\n")?.lines() {
+        let (key, value) = line.split_once('=')?;
+        match key {
+            "ticket" => ticket = Some(value.to_owned()),
+            "size" => size = value.parse().ok(),
+            _ => {}
+        }
+    }
+    Some((ticket?, size))
+}
+
+async fn handle_blob_fetch(
+    request_id: String,
+    ticket: String,
+    root: &Path,
+    out_tx: mpsc::Sender<IpcFrame>,
+) -> Result<()> {
+    let ticket: BlobTicket = ticket.parse().context("parse blob ticket")?;
+    tokio::fs::create_dir_all(root).await?;
+    // The sender's first pkarr publish may still be propagating. Fresh
+    // endpoints avoid reusing a resolver poisoned by a negative lookup.
+    // ponytail: 6 attempts x 1s; await publish completion if this grows flaky.
+    let mut last_error = None;
+    let mut bytes = None;
+    for attempt in 0..6 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        let endpoint = Endpoint::bind(presets::N0).await?;
+        let result = fetch_blob_once(&ticket, &endpoint, root).await;
+        endpoint.close().await;
+        match result {
+            Ok(value) => {
+                bytes = Some(value);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let bytes = bytes.ok_or_else(|| last_error.expect("at least one blob fetch attempt"))?;
+    out_tx
+        .send(IpcFrame::BlobResult {
+            request_id,
+            size_bytes: bytes.len() as u64,
+            bytes_base64: BASE64.encode(bytes),
+        })
+        .await
+        .map_err(|_| anyhow!("IPC client disconnected"))?;
+    Ok(())
+}
+
+async fn fetch_blob_once(ticket: &BlobTicket, endpoint: &Endpoint, root: &Path) -> Result<Vec<u8>> {
+    let store = FsStore::load(root).await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        store
+            .downloader(endpoint)
+            .download(ticket.hash(), Some(ticket.addr().id)),
+    )
+    .await??;
+    let output = root.join(format!("{}.blob", ticket.hash()));
+    store.blobs().export(ticket.hash(), &output).await?;
+    Ok(tokio::fs::read(output).await?)
 }
 
 #[derive(Debug)]
@@ -607,6 +713,15 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn data_envelope_extracts_blob_ticket_and_size() {
+        assert_eq!(
+            parse_data_envelope("IDFON-DATA/1\nticket=blob-ticket\nsize=42"),
+            Some(("blob-ticket".into(), Some(42)))
+        );
+        assert_eq!(parse_data_envelope("hello"), None);
+    }
+
     #[tokio::test]
     async fn ipc_frame_round_trips_with_little_endian_length() {
         let frame = IpcFrame::TurnIn {
@@ -616,6 +731,8 @@ mod tests {
             idempotency_key: "key".into(),
             conversation: Some("thread".into()),
             text: "hello".into(),
+            blob_ticket: None,
+            size_bytes: None,
         };
         let (mut writer, mut reader) = duplex(4096);
         write_frame(&mut writer, &frame).await.unwrap();
