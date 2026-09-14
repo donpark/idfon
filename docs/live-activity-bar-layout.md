@@ -136,7 +136,7 @@ true, so every call publishes them. The host fills them from the active machine'
   models, so an empty overlay costs nothing.
 - Incoming-call surface lives **inside the Bar** (§7 PROPOSAL 1); no second ringing window,
   so the CallKit path trivially cannot double-present — the host simply never produces
-  `.incoming` for CallKit-mode connections.
+  `.incoming` for CallKit-mode channels.
 
 ## 7. Resolved open decisions (PROPOSALs)
 

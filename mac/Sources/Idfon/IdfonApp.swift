@@ -245,11 +245,11 @@ final class AppModel: NSObject {
     }
 
     @discardableResult
-    func addConnection(name: String, ticketJSON: String) async -> String? {
+    func addChannel(name: String, ticketJSON: String) async -> String? {
         addError = nil
         do {
             let identity = try await client.identityId()
-            try await client.addConnection(name: name, ticketJSON: ticketJSON, identity: identity)
+            try await client.addChannel(name: name, ticketJSON: ticketJSON, identity: identity)
             peers = try await client.peers()
         } catch {
             addError = error.localizedDescription
@@ -331,10 +331,10 @@ final class DetailContainerViewController: NSViewController {
 
 final class PlaceholderViewController: NSViewController {
     override func loadView() {
-        let label = NSTextField(labelWithString: "No connections")
+        let label = NSTextField(labelWithString: "No channels")
         label.isSelectable = false
         label.textColor = .secondaryLabelColor
-        let caption = NSTextField(labelWithString: "Add a connection with the peer's endpoint-addr ticket.")
+        let caption = NSTextField(labelWithString: "Add a channel with the peer's endpoint-addr ticket.")
         caption.font = NSFont.systemFont(ofSize: 11)
         caption.textColor = .tertiaryLabelColor
         let stack = NSStackView(views: [label, caption])

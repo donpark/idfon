@@ -2,7 +2,7 @@ import AppKit
 import CIdfon
 
 /// Left pane: daemon status, identity switching, the tabbed peer lists, and the
-/// action buttons (add connection, create identity, capability ticket, audio
+/// action buttons (add channel, create identity, capability ticket, audio
 /// settings).
 final class SidebarViewController: NSViewController {
     private let app: AppModel
@@ -40,7 +40,7 @@ final class SidebarViewController: NSViewController {
         tabs.view.translatesAutoresizingMaskIntoConstraints = false
 
         let actions = NSStackView(views: [
-            button("Add Connection…", #selector(addConnectionTapped)),
+            button("Add Channel…", #selector(addChannelTapped)),
             button("Create Identity…", #selector(createIdentityTapped)),
             button("Issue Receive Ticket…", #selector(issueTicketTapped)),
             button("Audio Settings…", #selector(audioSettingsTapped)),
@@ -103,7 +103,7 @@ final class SidebarViewController: NSViewController {
 
     // MARK: - Actions
 
-    @objc private func addConnectionTapped() {
+    @objc private func addChannelTapped() {
         let name = NSTextField(string: "")
         name.placeholderString = "Name"
         let ticketScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 110))
@@ -118,12 +118,12 @@ final class SidebarViewController: NSViewController {
         name.frame = NSRect(x: 0, y: 140, width: 320, height: 24)
         accessory.addSubview(name)
         accessory.addSubview(ticketScroll)
-        presentAlert(title: "Add Connection",
+        presentAlert(title: "Add Channel",
                      message: "Paste the peer's endpoint-addr ticket (the \"id\" field identifies the peer).",
                      accessory: accessory, okTitle: "Add") {
             Task {
-                let error = await self.app.addConnection(name: name.stringValue, ticketJSON: ticket.string)
-                if let error { await MainActor.run { self.plainSheet(title: "Add Connection Failed", message: error) } }
+                let error = await self.app.addChannel(name: name.stringValue, ticketJSON: ticket.string)
+                if let error { await MainActor.run { self.plainSheet(title: "Add Channel Failed", message: error) } }
             }
         }
     }

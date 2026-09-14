@@ -75,16 +75,16 @@ Both sides can participate in a live exchange, with explicit controls for who ma
 
 A group may have different roles and permissions. Some members may speak, some may listen, and some may be able to interrupt or moderate. Broadcasting should not be conflated with a group call.
 
-## Endpoint identity and connection context
+## Endpoint identity and channel context
 
 Idfon identities are named local contexts. Each identity owns its Iroh key and
-endpoint, and can have its own set of connections. The selected identity is
-the active context: its endpoint starts automatically and its connections are
+endpoint, and can have its own set of channels. The selected identity is
+the active context: its endpoint starts automatically and its channels are
 shown in the home view. Selecting an identity may copy its full Iroh ticket
 for sharing; the Endpoint ID remains cryptographic identity metadata rather
-than connection bootstrap data.
+than channel bootstrap data.
 
-A connection ticket identifies the remote endpoint and provides the bootstrap
+A channel ticket identifies the remote endpoint and provides the bootstrap
 information needed to connect. Possessing a ticket or endpoint ID is not, by
 itself, application authorization.
 
@@ -118,7 +118,7 @@ Always-available communication is powerful and must be obvious and reversible:
 - support expiry and scheduled availability
 - distinguish authorized access from currently active access
 - keep recording permission separate from speaking permission
-- do not treat possession of contact or connection information as authorization
+- do not treat possession of contact or channel information as authorization
 
 The default should favor user control and predictable behavior. An authorized sender may be allowed to attempt delivery, but local policy remains the final decision about playback, interruption, recording, and persistence.
 

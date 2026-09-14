@@ -33,7 +33,7 @@ bundled Info.plist usage descriptions.
 
 - **Identities**: list, create, switch (daemon `identities`/`identity.use`);
   message history and cursors reset per identity
-- **Peer connections**: add via endpoint-addr ticket with grants both ways;
+- **Channels**: add via endpoint-addr ticket with grants both ways;
   peer-details popover with copyable endpoint ID
 - **Text chat**: daemon event stream, per-identity persisted cursor,
   outgoing Sent/Failed status

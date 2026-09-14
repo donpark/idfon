@@ -1,6 +1,6 @@
 import Foundation
 
-/// How an incoming call is presented for one connection
+/// How an incoming call is presented for one channel
 /// (docs/ui-design-notes.md §6, docs/protocol.md). Bar is the interim
 /// default.
 ///

@@ -199,7 +199,7 @@ final class LiveActivityController: NSObject {
         // Render the state as it is now: a call can already be in flight before
         // this controller exists (launch-argument dial, scene reconnection).
         sync()
-        // Prime the per-connection incoming-call modes (§6); refreshed after a
+        // Prime the per-channel incoming-call modes (§6); refreshed after a
         // mode change too. Incoming invites before this lands fall back to Bar.
         Task { await IncomingCallRouter.shared.refreshModes() }
         Task { await refreshPeerNames() }

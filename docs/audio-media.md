@@ -67,7 +67,7 @@ The chat window currently provides:
 
 Chat is symmetric once a peer reaches the GUI: an inbound message, call, or
 recording adopts the sender as the send target, so the callee can reply,
-record, and call back without adding the peer as a connection first.
+record, and call back without adding the peer as a channel first.
 
 Live publisher and subscriber shutdown paths call `Live::shutdown()` before
 releasing their sessions, including replacement of an active subscriber. This

@@ -58,7 +58,7 @@ final class ChatStore {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
         // Call-control traffic (live invites, call_started/stopped) routes
         // to the call state machines (each ignores the other's envelopes);
-        // never shown as chat history. Invites go through the per-connection
+        // never shown as chat history. Invites go through the per-channel
         // incoming-call router (Bar vs CallKit presentation); teardown goes
         // direct to both machines, since the mode governs presentation only.
         // Invites replayed from the event backlog are stale (the call they

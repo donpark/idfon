@@ -96,7 +96,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     /// Device pairing automation (no peer-add UI on iOS): launch with
     /// `-pair <endpointAddrJSON> [name]`. Adds the peer, grants message
-    /// send/receive both ways, and logs this daemon's own connection ticket
+    /// send/receive both ways, and logs this daemon's own channel ticket
     /// (`idfon self ticket:`) so the remote side can be paired from console
     /// output.
     private func pairPeer(ticketJSON: String, name: String) {

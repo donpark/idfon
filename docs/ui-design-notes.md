@@ -53,7 +53,7 @@ The interface relies on a single persistent thread per contact, anchored by the 
 
 ## 3. Live Activity Bar State Logic
 
-The Bar replaces standard dialer screens with an inline control bar that evolves through two primary operational states — Idle and Active Call (a third, pre-call staging, was removed; see State 2). (Incoming-call handling is per-connection — CallKit or the Bar, with the Bar as the interim default until CallKit lands; see §6, Incoming-call handling. Outgoing-pending presentation remains open.)
+The Bar replaces standard dialer screens with an inline control bar that evolves through two primary operational states — Idle and Active Call (a third, pre-call staging, was removed; see State 2). (Incoming-call handling is per-channel — CallKit or the Bar, with the Bar as the interim default until CallKit lands; see §6, Incoming-call handling. Outgoing-pending presentation remains open.)
 
 ### State 1: Idle (Not in Call)
 
@@ -174,7 +174,7 @@ A subview in a presenting screen cannot appear above a presented modal (UIKit pr
 
 ### Incoming-call handling: two modes
 
-How an arriving call is presented is a per-connection decision, not a global app setting. Each connection carries an incoming-call mode:
+How an arriving call is presented is a per-channel decision, not a global app setting. Each channel carries an incoming-call mode:
 
 | Mode | Presentation | Notes |
 | --- | --- | --- |
@@ -183,14 +183,14 @@ How an arriving call is presented is a per-connection decision, not a global app
 
 The split follows the relationship, not the transport:
 
-* **CallKit is for reaching people who aren't here.** Connections that are offline or contacted infrequently need a ring that works when the app isn't open — the system surface reaches them on the lock screen and behaves like a phone call. Loud on purpose; the cost is PushKit/APNs and the system consuming the ring.
+* **CallKit is for reaching people who aren't here.** Channels that are offline or contacted infrequently need a ring that works when the app isn't open — the system surface reaches them on the lock screen and behaves like a phone call. Loud on purpose; the cost is PushKit/APNs and the system consuming the ring.
 * **The Bar is for people who are already here.** Agents and tight teams are continuously online and working together; a full-screen ring is disruptive and redundant when the app is already in front of them. They need a low-friction, in-app incoming surface that doesn't hijack the screen — the same reasoning behind Discord/Slack huddles and the non-CallKit auto-connect path in `docs/callkit-integration.md`.
 
-So the mode is chosen when a connection is set up, by how reachable its person is expected to be — not by what kind of call is being placed.
+So the mode is chosen when a channel is set up, by how reachable its person is expected to be — not by what kind of call is being placed.
 
-Both modes funnel into the **same call state machine** — the mode only selects who owns incoming-ring presentation. The routing point sits in front of `VideoCall`/`CallSession` `handleEnvelope`, keyed by the sending connection's configuration.
+Both modes funnel into the **same call state machine** — the mode only selects who owns incoming-ring presentation. The routing point sits in front of `VideoCall`/`CallSession` `handleEnvelope`, keyed by the sending channel's configuration.
 
-* **Interim default: Live Activity Bar.** Until CallKit integration works, every connection uses the Bar path. This is a temporary default, not a fallback policy — no connection should silently switch modes at runtime.
+* **Interim default: Live Activity Bar.** Until CallKit integration works, every channel uses the Bar path. This is a temporary default, not a fallback policy — no channel should silently switch modes at runtime.
 * **CallKit path must not double-present.** When CallKit owns the ring, the Bar stays out of the incoming state entirely (no second ringing surface) and reflects only the answered/active call.
 * **An unreachable or disabled CallKit mode must not affect the Bar path.** The two are independent; the Bar is fully functional without PushKit, APNs, or VoIP entitlements.
 

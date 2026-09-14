@@ -18,7 +18,7 @@ ios/
 │   ├── LiveActivityBar.swift # the Bar surface + value-type model (expanded / compact pill)
 │   ├── OverlayWindow.swift   # window-level Bar host (pass-through hitTest)
 │   ├── LiveActivityController.swift  # maps call state → Bar models, routes Bar intents
-│   ├── IncomingCallRouter.swift      # per-connection Bar-vs-CallKit incoming routing seam
+│   ├── IncomingCallRouter.swift      # per-channel Bar-vs-CallKit incoming routing seam
 │   ├── ChatStore.swift       # polling event loop: waitMessages → notifications
 │   ├── Models.swift          # Peer / Message / Event / IncomingCallMode
 │   ├── VideoCall.swift       # video-call state machine (dial/answer/route events)
@@ -50,7 +50,7 @@ flowchart TD
         CV --> WM[VoiceMemo]
         CV --> CAMP[CameraPusher<br/>AVCapture frames]
         CV --> CS[ChatStore<br/>event poll loop]
-        CS -->|invite envelopes| R[IncomingCallRouter<br/>per-connection mode]
+        CS -->|invite envelopes| R[IncomingCallRouter<br/>per-channel mode]
         R -->|Bar| LC[LiveCall<br/>audio machine]
         R -->|Bar| VC[VideoCall<br/>video machine]
         R -->|CallKit| CK[CallKitIncomingPresenter<br/>stub · isAvailable=false]
@@ -81,7 +81,7 @@ Key facts:
   over Unix socket, each call its own connection) for chat/events/peers, and direct C
   media functions that bypass IPC entirely (zero-copy frame push).
 - **Events are polled**: `ChatStore` long-polls `waitMessages` (30s). Invite
-  envelopes go through `IncomingCallRouter` (per-connection Bar-vs-CallKit mode);
+  envelopes go through `IncomingCallRouter` (per-channel Bar-vs-CallKit mode);
   `call_started`/`call_stopped` go direct to both machines, since the mode governs
   presentation, not teardown.
 - **The Bar is a window-level overlay** (`OverlayWindow`, one per scene, held by

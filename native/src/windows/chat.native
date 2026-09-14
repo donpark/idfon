@@ -6,8 +6,8 @@
     <column grow="1" gap="12">
       <row cross="center" gap="8">
         <stack>
-          <avatar label="{selectedConnectionName}" on-press="avatar_pressed">{selectedConnectionInitials}</avatar>
-          <tooltip anchor="above">{selectedConnectionName}</tooltip>
+          <avatar label="{selectedChannelName}" on-press="avatar_pressed">{selectedChannelInitials}</avatar>
+          <tooltip anchor="above">{selectedChannelName}</tooltip>
         </stack>
         <text foreground="text_muted">Live call</text>
         <spacer grow="1" />
@@ -44,8 +44,8 @@
   <row cross="center" gap="8">
     <stack>
       <!-- on-press opens the peer-details sheet; the press binding also makes the avatar a hit target so the tooltip's hover intent arms (avatars are otherwise not hittable). -->
-      <avatar label="{selectedConnectionName}" on-press="avatar_pressed">{selectedConnectionInitials}</avatar>
-      <tooltip anchor="above">{selectedConnectionName}</tooltip>
+      <avatar label="{selectedChannelName}" on-press="avatar_pressed">{selectedChannelInitials}</avatar>
+      <tooltip anchor="above">{selectedChannelName}</tooltip>
     </stack>
   <spacer grow="1" />
   <if test="{incomingLive}">
@@ -125,8 +125,8 @@
             <else>
               <row main="start" gap="8">
                 <stack>
-                  <avatar label="{selectedConnectionName}" on-press="avatar_pressed">{selectedConnectionInitials}</avatar>
-                  <tooltip anchor="above">{selectedConnectionName}</tooltip>
+                  <avatar label="{selectedChannelName}" on-press="avatar_pressed">{selectedChannelInitials}</avatar>
+                  <tooltip anchor="above">{selectedChannelName}</tooltip>
                 </stack>
                 <bubble>
                   <row gap="8" cross="center">
@@ -153,8 +153,8 @@
           <else>
             <row main="start" gap="8">
               <stack>
-                  <avatar label="{selectedConnectionName}" on-press="avatar_pressed">{selectedConnectionInitials}</avatar>
-                  <tooltip anchor="above">{selectedConnectionName}</tooltip>
+                  <avatar label="{selectedChannelName}" on-press="avatar_pressed">{selectedChannelInitials}</avatar>
+                  <tooltip anchor="above">{selectedChannelName}</tooltip>
                 </stack>
               <bubble><markdown source="{item.text}" on-link="open_link" /></bubble>
             </row>
@@ -226,9 +226,9 @@
     <sheet text="Peer details" width="340" on-dismiss="avatar_sheet_closed">
       <column gap="16" padding="20">
         <row gap="12" cross="center">
-          <avatar label="{selectedConnectionName}">{selectedConnectionInitials}</avatar>
+          <avatar label="{selectedChannelName}">{selectedChannelInitials}</avatar>
           <column gap="2" grow="1">
-            <text>{selectedConnectionName}</text>
+            <text>{selectedChannelName}</text>
             <text foreground="text_muted">{receiverId}</text>
           </column>
         </row>
