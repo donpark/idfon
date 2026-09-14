@@ -1,6 +1,6 @@
 # Idfon as an MCP Transport Binding
 
-> **Status:** design proposal. No code exists for this yet.
+> **Status:** implemented — see `docs/mcp-implementation-plan.md` (M1–M5).
 > Grounded in the Model Context Protocol specification revision **2026-07-28**
 > (current as of 2026-09-13). Earlier revisions (through `2025-11-25`) were
 > stateful and are not the target.

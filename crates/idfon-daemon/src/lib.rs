@@ -1391,7 +1391,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         });
     }
     // The sender presented this identity's verified ticket: materialize its
-    // capabilities as grants (message.receive, live_audio_subscribe, …) so
+    // capabilities as grants (message.receive, live.audio.subscribe, …) so
     // replies and live sessions work across daemons, where pairing creates
     // no grants (no shared store). Same dedup rule as above.
     if let Some(ticket) = &envelope.capability_ticket {
