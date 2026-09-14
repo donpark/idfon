@@ -16,13 +16,13 @@ end-to-end short of CallKit itself:
   settable via `peer.add` / `peer.update` and the CLI (`idfon peer add|update --call-mode`).
   See `docs/protocol.md`.
 * `ios/Idfon/IncomingCallRouter.swift` is the single routing point: an incoming invite
-  resolves the **sending connection's** mode, then either hands it to the CallKit presenter
+  resolves the **sending channel's** mode, then either hands it to the CallKit presenter
   or to the Bar path (`LiveCall` + `VideoCall`).
 * `CallKitIncomingPresenter.isAvailable` is `false` — the one gate that flips when CallKit
-  integration lands. Until then a connection configured for `call_kit` is presented in the
+  integration lands. Until then a channel configured for `call_kit` is presented in the
   Bar and the deferral is logged once per peer (explicit, never a silent mode switch). The
   per-chat "Incoming calls" menu shows CallKit disabled with "Not available yet", so a
-  connection cannot be configured into a mode that cannot be served.
+  channel cannot be configured into a mode that cannot be served.
 * CallKit is iOS-only: macOS has no `CXProvider`, so mac always presents in-app and needs no
   routing seam.
 

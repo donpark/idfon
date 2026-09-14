@@ -10,7 +10,7 @@ extension DaemonClient {
         return (ready, name)
     }
 
-    /// The identity's connection ticket (endpoint addr JSON) from status.
+    /// The identity's channel ticket (endpoint addr JSON) from status.
     /// Raw bytes in the result — decode as UTF-8.
     func statusTicket() async throws -> String {
         guard let raw = try await requestWithLaunch(method: "status"),
@@ -58,8 +58,8 @@ extension DaemonClient {
 
     /// Adds a peer from its endpoint-addr ticket JSON and grants the chat
     /// capabilities both ways (mirrors the iOS pair automation and the GUI's
-    /// Add Connection flow).
-    func addConnection(name: String, ticketJSON: String, identity: String) async throws {
+    /// Add Channel flow).
+    func addChannel(name: String, ticketJSON: String, identity: String) async throws {
         guard let addr = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any],
               let endpointId = addr["id"] as? String, !endpointId.isEmpty else {
             throw DaemonError.request("invalid endpoint addr JSON (needs an \"id\" field)")

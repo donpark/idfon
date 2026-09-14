@@ -42,7 +42,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var messages: [ChatMessage] = []
     private var players: [String: AVAudioPlayer] = [:] // ticket -> player
 
-    /// Per-connection incoming-call mode (§6): a config affordance, not a
+    /// Per-channel incoming-call mode (§6): a config affordance, not a
     /// settings screen.
     private let incomingModeItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), style: .plain, target: nil, action: nil)
 
@@ -537,7 +537,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// Nav-bar ellipsis → "Incoming calls" → Bar / CallKit, reflecting the
     /// peer's current mode. CallKit stays visible but disabled while its
-    /// presenter is unavailable: a connection must not be configurable into a
+    /// presenter is unavailable: a channel must not be configurable into a
     /// mode that cannot be served.
     private func syncIncomingModeMenu() {
         let current = IncomingCallRouter.shared.mode(for: peer.id)

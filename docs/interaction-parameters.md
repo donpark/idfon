@@ -368,7 +368,7 @@ identity
           └─ policy revision
 ```
 
-The current Idfon prototype keeps connections and much of its state in memory.
+The current Idfon prototype keeps channels and much of its state in memory.
 Production implementation will need persistent policy storage separate from
 transient endpoint and media state.
 

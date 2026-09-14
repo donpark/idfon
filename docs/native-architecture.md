@@ -8,7 +8,7 @@ to the same `idfond` daemon over the same Unix socket as the mac app and CLI.
 native/
 ├── app.json                   # Native SDK app manifest
 ├── src/
-│   ├── app.native             # main window markup: identities, connections,
+│   ├── app.native             # main window markup: identities, channels,
 │   │                          #   capability tickets (declarative UI)
 │   ├── windows/chat.native    # chat window markup (peer title bar, messages)
 │   ├── core.ts                # the entire app logic (~1.5K lines): model state,

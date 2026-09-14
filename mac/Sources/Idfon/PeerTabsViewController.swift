@@ -170,7 +170,7 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         switch section {
         case .favorites: return "No favorites yet"
         case .recents: return "No recent conversations"
-        case .contacts: return "No connections yet"
+        case .contacts: return "No channels yet"
         }
     }
 
