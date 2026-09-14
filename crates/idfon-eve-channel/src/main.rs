@@ -14,10 +14,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
 use idfon_core::transport::{IrohTransport, MessageTransport, TransportError};
-use idfon_core::{
-    generate_identity, issue_capability_ticket, peer_id, sign_message, sign_message_with_ticket,
-    verify_capability_ticket, verify_message, AuthError,
-};
+use idfon_core::{peer_id, sign_message, verify_capability_ticket, verify_message, AuthError};
 use idfon_protocol::{
     AckStatus, Capability, MessageAck, MessageContent, MessageEnvelope, MAX_FRAME_BYTES,
 };
@@ -535,6 +532,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idfon_core::{generate_identity, issue_capability_ticket, sign_message_with_ticket};
     use tokio::io::duplex;
 
     #[test]
