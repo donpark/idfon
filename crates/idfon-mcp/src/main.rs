@@ -33,7 +33,7 @@ enum Mode {
     /// Accept inbound `idfon/mcp/1` streams, splicing each to a local MCP server.
     Serve {
         /// Local MCP server command line (run through `sh -c`).
-        #[arg(long, value_name = "CMD")]
+        #[arg(long = "command", value_name = "CMD")]
         mcp_command: String,
         /// Print an M3 contact ticket (transport + peer + a probed
         /// server/discover cache) instead of the bare endpoint ticket.

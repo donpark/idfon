@@ -88,7 +88,7 @@ server, with the bridge in the middle doing nothing but moving bytes.
 ### In scope
 
 - A standalone binary `idfon-mcp` with two modes:
-  - `idfon-mcp serve --mcp-command "<cmd> [args...]"` — accepts inbound
+  - `idfon-mcp serve --command "<cmd> [args...]"` — accepts inbound
     `idfon/mcp/1`, splices each bi-stream to a freshly spawned local MCP
     server's stdio. Prints its endpoint ticket on startup.
   - `idfon-mcp connect --peer <ticket|endpoint-id>` — dials a peer, opens one

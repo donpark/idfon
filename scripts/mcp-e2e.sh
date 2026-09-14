@@ -33,7 +33,7 @@ printf '%064d' 1 > "$work/serve.key"
 printf '%064d' 2 > "$work/connect.key"
 
 "$BIN" serve \
-  --mcp-command "python3 $root/scripts/mcp-fixture.py server" \
+  --command "python3 $root/scripts/mcp-fixture.py server" \
   --key-file "$work/serve.key" \
   >"$work/serve.out" 2>"$work/serve.err" &
 pids="$pids $!"
