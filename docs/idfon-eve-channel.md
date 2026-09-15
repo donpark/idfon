@@ -419,6 +419,23 @@ pattern.
 - **ACP overlap.** Is the idfon channel distinct from, or layered on, Eve's ACP
   support (stdio, local)?
 
+## Chatting with an agent (CLI)
+
+`scripts/eve-channel-chat.sh` runs a real model-backed agent and chats with it
+the same way you would with a human peer — `peer add`, `access allow`, `send`.
+There are no agent-only verbs; the holder's capability ticket is the agent's
+own ingress policy, supplied by the client only because that peer demands it.
+
+```sh
+scripts/eve-channel-chat.sh --prompt "hello"          # one turn
+scripts/eve-channel-chat.sh                          # interactive, Ctrl-D to quit
+scripts/eve-channel-chat.sh --model openai/gpt-4.1-mini
+```
+
+The model is an AI Gateway id (`--model`, or `IDFON_EVE_MODEL`); unset in the
+agent app it falls back to the deterministic `mockModel` the acceptance
+scripts assert on. Turns thread to one Eve session per peer id automatically.
+
 ## References
 
 - `docs/idfon-eve-channel-implementation-plan.md` — the milestone plan.
