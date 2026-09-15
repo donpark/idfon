@@ -6,7 +6,8 @@ native clients. Identities and peer state are stored locally; connections may
 use direct paths, discovery, or relays supplied by iroh.
 
 > **Status:** experimental and pre-release. The CLI is available as an npm
-> package. The native clients are still under development.
+> package. Native clients are usable for development; the iOS ↔ Eve text-agent
+> demo remains an integration follow-up tracked in [issue #11](https://github.com/donpark/idfon/issues/11).
 
 ## CLI installation
 
@@ -134,6 +135,8 @@ release products yet.
 - [Video media](docs/video-media.md)
 - [npm distribution](docs/npm-distribution.md)
 - [MCP transport](docs/mcp-transport.md)
+- [Eve ingress channel](docs/idfon-eve-channel.md)
+- [iOS architecture](docs/ios-architecture.md)
 - [Architecture plan](docs/architecture-plan.md)
 - [Troubleshooting](docs/troubleshooting.md)
 

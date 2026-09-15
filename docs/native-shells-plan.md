@@ -1,6 +1,9 @@
 # Native App Shells: Platform Plan
 
-Status: planning → execution (iOS first).
+Status: iOS and macOS shells are implemented through text, voice messages,
+and live audio/video UI; the iOS↔Eve text-agent demo is tracked in
+[issue #11](https://github.com/donpark/idfon/issues/11). Android and
+Windows/Linux remain deferred.
 
 ## Strategy
 
@@ -23,13 +26,10 @@ protocol, then consumed by every shell.
 
 ## Platform sequence
 
-1. **iOS** — Swift + UIKit. First shell; validates the C ABI and protocol
-   contract that every later shell inherits.
-2. **Android** — Kotlin + Compose; daemon via cargo-ndk + thin JNI shim over
-   the same C ABI. Cheap once iOS has proven the surface.
-3. **macOS** — Mac Catalyst of the iOS app if UIKit-idiomatic code is kept;
-   the existing Native SDK desktop app remains the working desktop frontend
-   and the protocol's reference implementation until then.
+1. **iOS** — Swift + UIKit. Implemented shell with text, voice messages,
+   live audio/video, and in-process daemon integration.
+2. **macOS** — AppKit shell implemented against the same daemon/media layers.
+3. **Android** — Kotlin + Compose over the same C ABI; deferred.
 4. **Windows/Linux** — deferred, same pattern.
 
 ## Keystone actions

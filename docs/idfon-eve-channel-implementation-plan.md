@@ -1,10 +1,13 @@
 # idfon Eve Channel — Implementation Plan
 
-> **Status:** M0–M5 agent messaging, M4 HITL/status flows, and M3 files-in/files-out/live audio are implemented. Design:
-> MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5, implemented).
-> Prototyping stage: no legacy or migration constraints. Eve channel contract as
-> of 2026-09-14 (`defineChannel`, routes/events, `from(address).send`,
-> `sessionAuth`, `turnPolicy`, `audience`, extensions; pinned Eve `0.55.0`).
+> **Status:** M0–M5 agent messaging, M4 HITL/status flows, and M3 files-in,
+> files-out, live audio, and live video are implemented. Remaining operational
+> work, including the iOS text-agent demo, is tracked in [issue #11](https://github.com/donpark/idfon/issues/11).
+> Design: MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5,
+> implemented). Prototyping stage: no legacy or migration constraints. Eve
+> channel contract as of 2026-09-14 (`defineChannel`, routes/events,
+> `from(address).send`, `sessionAuth`, `turnPolicy`, `audience`, extensions;
+> pinned Eve `0.55.0`).
 
 ## How to use this
 
@@ -27,8 +30,8 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | M1 endpoint holder | `47049b0` | `scripts/eve-channel-holder-e2e.sh` |
 | M2 Eve channel provider | `8c1e757` | `scripts/eve-channel-e2e.sh` |
 | M3 media — files in | `efdcf73` | `scripts/eve-channel-media-e2e.sh` |
-| M3 media — files out | `7f500bb` | `scripts/eve-channel-media-out-e2e.sh` |
-| M3 media — live streams | `7f500bb` | `scripts/eve-channel-live-e2e.sh` |
+| M3 media — files out | `8976324` | `scripts/eve-channel-media-out-e2e.sh` |
+| M3 media — live streams | `8976324` | `scripts/eve-channel-live-e2e.sh` |
 | M4 HITL — approvals/input | `890071a` | `scripts/eve-channel-hitl-e2e.sh` |
 | M4 HITL — authorization/status flows | `9a1bf5b` | `scripts/eve-channel-hitl-e2e.sh` + holder IPC tests |
 | M5 agent-to-agent + isolation | `6e6592d` | `scripts/eve-channel-a2a-e2e.sh` |
@@ -38,8 +41,8 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | decision | default | note |
 |---|---|---|
 | agent-side daemon | **none** | holder embeds `idfon-core`, owns its key/endpoint, like `idfon-mcp` |
-| packaging (M1–M4) | **external sidecar** | fastest to develop/debug; managed child is M-later |
-| packaging (target) | **managed child** | extension spawns the holder; one install, coupled lifecycle |
+| packaging (M1–M5) | **managed runner** | `managed.mjs` owns the holder + bridge lifecycle today |
+| packaging (future) | **managed child** | extension spawns the holder when Eve exposes a lifecycle hook |
 | IPC | **newline-delimited JSON over a Unix socket** | same framing style as `docs/protocol.md`; no HTTP needed |
 | ALPN | **`idfon/message/1`** | the existing message plane; no new ALPN |
 | threading | **`MessageEnvelope.conversation`** | already signed and on the wire; no protocol change |
@@ -346,16 +349,18 @@ The remaining work is now operational rather than a missing milestone:
 - Expand multi-peer and multi-conversation isolation tests beyond the current
   bounded A2A fixture.
 - Decide whether the managed runner should become a future Eve lifecycle hook;
-  Eve 0.54.5 custom channels do not expose a startup hook, so
+  Eve 0.55.0 custom channels do not expose a startup hook, so
   `integrations/eve-idfon-channel/managed.mjs` is the explicit deployment
   entrypoint today.
 - Add capture-device and voice negotiation support if the product needs live
   microphone/camera input; file-backed audio/video output is covered.
+- Complete the iOS text-agent demo ticket plumbing and manual E2E in
+  [issue #11](https://github.com/donpark/idfon/issues/11).
 
 ## Later (do not start)
 
 - **Native Eve lifecycle hook**: the extension itself cannot spawn the holder
-  on Eve 0.54.5 because custom channels have no startup hook. The explicit
+  on Eve 0.55.0 because custom channels have no startup hook. The explicit
   `managed.mjs` runner now couples holder + bridge lifecycle; revisit an
   in-extension child when Eve exposes the required hook.
 - **Node N-API addon**: expose `idfon-core` to Node; drop the holder process.

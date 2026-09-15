@@ -1,6 +1,8 @@
 # The Agent Conversation Plane — Scoping
 
-> **Status:** scoping + concrete C1 shape; no code. Follow-up to
+> **Status:** framework-agnostic fallback design; no generic bridge code. The
+> Eve implementation is tracked in `docs/idfon-eve-channel.md` and issue
+> [#11](https://github.com/donpark/idfon/issues/11). Follow-up to
 > `docs/mcp-agent-report.md` (design) and `docs/mcp-implementation-plan.md`
 > (M1–M5, implemented). Written 2026-09-13.
 >
@@ -18,9 +20,10 @@
 - **Doing** — tools, remote servers, device capabilities. Covered by MCP:
   `idfon/mcp/1` transport (`crates/idfon-mcp`, daemon relay), the
   `idfon-mcp-server` adapter, contact tickets, and grants. Implemented.
-- **Talking** — turns, replies, streaming, voice. **Not implemented.** What
-  exists is a transport and a tool surface; there is no conversation model, no
-  agent runtime, no chat UI for an agent contact.
+- **Talking** — turns, replies, streaming, voice. The Eve-specific path is now
+  implemented by the idfon ingress channel. The framework-agnostic bridge
+  designed in this document remains unimplemented; voice still needs a
+  separate STT/TTS and live-audio milestone.
 
 The report called this the **Conversation** plane and proposed ACP as a
 vocabulary donor. This document scopes the smallest thing that makes "talk to

@@ -1,9 +1,10 @@
 # idfon as an Eve Ingress Channel
 
-> **Status:** design; no code. Companion to `docs/agent-conversation-plane.md`
+> **Status:** implemented through M0–M5; the iOS text-demo follow-up is tracked in [#11](https://github.com/donpark/idfon/issues/11). Companion to `docs/agent-conversation-plane.md`
 > (the framework-agnostic C1 bridge, superseded for Eve by this approach) and
 > `docs/mcp-transport.md` / `docs/mcp-agent-report.md` (idfon's tool transport).
-> Implementation planned in `docs/idfon-eve-channel-implementation-plan.md`.
+> Implementation history and acceptance coverage are tracked in
+`docs/idfon-eve-channel-implementation-plan.md`.
 > Written 2026-09-14; revised 2026-09-14 (provider-owns-endpoint framing,
 > replies-over-iroh, Slack mapping, no-public-endpoint property).
 
@@ -280,7 +281,7 @@ lifetime does. Three shapes, in order of preference:
 
 1. **Managed child (future hook).** The desired shape is for the Eve
    extension to spawn the endpoint holder (a Rust binary bundling `idfon-core`)
-   and speak a small local IPC protocol to it. Eve 0.54.5 has no custom-channel
+   and speak a small local IPC protocol to it. Eve 0.55.0 has no custom-channel
    startup hook, so the managed runner below is the current lifecycle coupling.
    Requires future Eve extension support for a bundled binary
    (`eve.extension.externalDependencies` covers native assets/SDKs).
@@ -295,7 +296,7 @@ lifetime does. Three shapes, in order of preference:
      --blob-dir ~/.local/share/idfon/eve-blobs \
      --target http://127.0.0.1:52776 --secret "$IDFON_BRIDGE_SECRET" --port 18766
    ```
-   Eve 0.54.5 does not expose a custom-channel startup hook, so this is the
+   Eve 0.55.0 does not expose a custom-channel startup hook, so this is the
    explicit deployment entrypoint rather than an in-extension spawn.
 3. **External sidecar.** An operator runs the holder; the channel connects to
    its loopback endpoint. Simplest to develop and debug; one more thing to
