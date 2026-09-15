@@ -453,7 +453,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }()
 
     private func syncMessages() {
-        history = store.messages.filter { $0.peerId == peer.id }
+        history = store.messages(for: peer.id)
         table.reloadData()
         if history.count > lastCount, history.count > 0 {
             table.scrollRowToVisible(history.count - 1)

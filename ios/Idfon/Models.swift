@@ -61,6 +61,7 @@ struct Event: Decodable {
     var messageText: String? { data["text"]?.stringValue }
     var messagePeerId: String? { data["peer_id"]?.stringValue }
     var messageId: String? { data["message_id"]?.stringValue }
+    var conversationId: String? { data["conversation"]?.stringValue }
 }
 
 enum MessageKind {
@@ -116,6 +117,20 @@ struct ChatMessage: Identifiable {
     /// Event time for received messages; `Date()` for locally-sent ones.
     /// Nothing renders it yet — Recents ordering will consume it.
     let timestamp: Date
+    /// nil is the ordinary 1:1 conversation; a room id scopes group history.
+    let conversation: String?
+
+    init(id: String, peerId: String, kind: MessageKind, outgoing: Bool, timestamp: Date, conversation: String? = nil) {
+        self.id = id; self.peerId = peerId; self.kind = kind; self.outgoing = outgoing; self.timestamp = timestamp; self.conversation = conversation
+    }
+
+    var displayText: String {
+        switch kind {
+        case .text(let text): return text
+        case .recording: return "Voice message"
+        case .file(_, let name, _, _): return name
+        }
+    }
 }
 
 extension AnyEncodable {

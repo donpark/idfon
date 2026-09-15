@@ -83,7 +83,7 @@ final class ChatStore {
             NSLog("idfon file: received name=\(name) size=\(sizeBytes)")
         }
         let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
-        messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, timestamp: timestamp))
+        messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, timestamp: timestamp, conversation: event.conversationId))
         NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")
         DispatchQueue.main.async { self.notifyObservers() }
     }
@@ -97,6 +97,14 @@ final class ChatStore {
     func appendOutgoing(_ message: ChatMessage) {
         messages.append(message)
         DispatchQueue.main.async { self.notifyObservers() }
+    }
+
+    func messages(for peerId: String, conversation: String? = nil) -> [ChatMessage] {
+        messages.filter { $0.peerId == peerId && $0.conversation == conversation }
+    }
+
+    func messages(in conversation: String) -> [ChatMessage] {
+        messages.filter { $0.conversation == conversation }
     }
 
     /// Attaches a downloaded file to its message so the cell can offer it
