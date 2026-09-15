@@ -1,6 +1,6 @@
-# Idfon Chatrooms — Design
+# Idfon Chatrooms
 
-> **Status:** design, not implemented. Companion to
+> **Status:** room UI, direct fan-out, and hybrid gossip transport are implemented. Companion to
 > `docs/communication-model.md` (group/broadcast modes) and
 > `docs/agent-conversation-plane.md` (C3: thread by peer + explicit
 > `conversation_id`). Written 2026-09-15.
@@ -33,10 +33,9 @@ Four gaps, named up front so they are not discovered late:
 
 1. **Membership.** A topic has subscribers, not members. You still need a local
    member set: who to deliver to, who to show, whose revocation matters.
-2. **Delivery.** `message.send` is strictly one peer (`to`). A room needs
-   fan-out. `iroh-gossip` 0.101.0 is **already in the dependency tree**
-   (transitive via `iroh-live` and `iroh-smol-kv`) and compiled into the
-   vendored dylib with ALPN `/iroh-gossip/1`, but no idfon code uses it yet.
+2. **Delivery.** `message.send` is strictly one peer (`to`). A room therefore
+   has two delivery paths. Small rooms use direct fan-out; larger rooms use
+   `iroh-gossip` and broadcast the same signed envelope to the room topic.
 3. **Confidentiality.** Messages are signed but **not payload-encrypted**;
    QUIC/TLS protects each hop only. Until the shared-key work lands, privacy is
    an unguessable room id alone.
@@ -70,30 +69,30 @@ or by admitting it with a `capability.ticket` bound to the room. Divergent
 member lists are expected: delivery is best-effort to *your* list, and nothing
 breaks when two peers disagree about who is present.
 
-### Delivery (v1: fan-out on the existing plane)
+### Delivery (hybrid direct fan-out + gossip)
 
-No new transport. The sender signs **one envelope per recipient** — same
-`conversation`, distinct `idempotency_key`/operation — and sends each over
-`idfon/message/1`.
+The daemon keeps direct fan-out as the baseline and automatically uses gossip
+when a room has at least five members and its topic subscription is available.
+The transport is invisible to the UI and history layer.
 
-- `O(members)` sends, each independently acknowledged and retried, so a partial
-  failure is visible per recipient.
-- Each message is signed by the author, so a recipient proves authorship without
-  trusting the sender's daemon.
-- No cross-recipient ordering; each recipient orders by its own event cursor.
-  **Total order is not promised.**
+- **Direct path:** one signed envelope per member over `idfon/message/1`, with
+  per-recipient operations, acknowledgments, retries, and partial-failure
+  visibility.
+- **Gossip path:** one signed envelope is broadcast on the room's stable gossip
+  topic. Receivers pass it through the ordinary `message.receive` validation,
+  authorization, persistence, and idempotency path.
+- **Fallback:** missing subscriptions and gossip broadcast failures fall back
+  to direct delivery using the same signed envelope.
+- **Deduplication:** `message_id`, `idempotency_key`, and `conversation` stay
+  stable across the gossip and direct paths, so receiving the same message by
+  both paths does not create a second history entry.
+- **Ordering:** gossip is eventual and neither path promises a cross-recipient
+  total order. Each daemon orders its local timeline by its event cursor.
 
-`iroh-gossip` is the right transport at larger membership. It is **already in
-the build** — transitive via `iroh-live` and `iroh-smol-kv`, present in
-`Cargo.lock`, and linked into `mac/Vendor/libiroh_c_ffi.dylib` (ALPN
-`/iroh-gossip/1`) — so adopting it is API work, not a new dependency. It is
-still a new failure surface (tree maintenance, no acks, eventual consistency).
-Defer it: fan-out is correct and testable for the small rooms that matter
-first.
-
-Note the identifier alignment: an `iroh-gossip` topic is itself a 32-byte id,
-so the room id can *be* the gossip topic id. R2 becomes a transport swap under
-the same identifier, not a re-addressing.
+Gossip topics are derived as `BLAKE3(room_id)` and use Iroh's gossip ALPN on
+the existing message endpoint. Topics are joined for persisted rooms and
+removed when a room is left. Direct fan-out remains the safe behavior for
+small rooms and when gossip is unavailable.
 
 ### Confidentiality — decided: shared room key
 
@@ -159,11 +158,12 @@ Shell surface (v1, additive; unknown fields stay ignorable):
 |---|---|---|
 | `room.create` | `{ id?, name?, members? }` | `{ room }` — generates a random id when omitted |
 | `room.list` | — | `{ rooms: [Room] }` |
-| `room.send` | `{ room, text, idempotency_key }` | `{ operation_ids: [...] }` — one per member |
+| `room.send` | `{ room, text, idempotency_key }` | `{ operation_ids: [...] }` — direct path returns one per member; gossip returns one room operation |
 | `room.leave` | `{ room }` | `{}` — local only |
 
-`room.send` is sugar over N `message.send` calls. The daemon learns nothing
-about rooms beyond a member list.
+`room.send` uses direct N-way `message.send` fan-out for small or unavailable
+rooms, and one gossip operation for eligible larger rooms. The daemon keeps the
+local member list and transport state; the wire envelope remains unchanged.
 
 ## The Eve agent seam
 
@@ -195,16 +195,12 @@ are how members talk, and the agent's ingress ticket remains its own policy.
 
 Each step is independently useful and leaves no dead surface.
 
-1. **R0 — fan-out text (no protocol change).** `conversation` and the grant
-   scope already exist. Add a member list, `room.send` fan-out, and
-   `--conversation` on the CLI send path. Acceptance: one prompt to three peers,
-   all three receive the same room id.
-2. **R1 — Eve channel rooms.** Key sessions by `conversation`, fan replies to
-   members, keep the per-message principal. Acceptance: two humans + one agent
-   in one room; both humans see the agent's reply.
-3. **R2 — gossip transport.** Wire in the already-linked `iroh-gossip` for
-   large rooms, keeping fan-out as the small-room path. Only if R0/R1 show
-   membership sizes that need it.
+1. **R0 — fan-out text (no protocol change).** Complete. `conversation`, room
+   membership, grants, and direct `room.send` fan-out are implemented.
+2. **R1 — Eve channel rooms.** Complete. Sessions are keyed by `conversation`,
+   replies fan out to members, and the signed per-message principal is kept.
+3. **R2 — hybrid gossip transport.** Complete. Rooms with at least five members
+   use gossip when subscribed, with direct delivery as the fallback.
 4. **R3 — room confidentiality (shared key).** Add an X25519 identity key, the
    `IDFON-ROOM/1` sealed-content envelope, and key wrap/rotation on membership
    change. Acceptance: a room where an outsider who learns the topic id still
