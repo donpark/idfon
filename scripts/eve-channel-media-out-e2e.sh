@@ -88,7 +88,7 @@ cat >"$app/package.json" <<EOF
   "private": true,
   "type": "module",
   "dependencies": {
-    "eve": "0.54.5",
+    "eve": "0.55.0",
     "@idfon/eve-channel": "file:$integration"
   }
 }

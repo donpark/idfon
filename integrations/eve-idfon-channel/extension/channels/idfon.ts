@@ -55,6 +55,9 @@ async function bridge(path: string, body: unknown) {
 
 export default defineChannel({
   turnPolicy: "queue",
+  audience({ auth }) {
+    return auth ? "private" : "unknown";
+  },
   routes: [
     POST("/idfon/turn", async (request, { from }) => {
       const secret = request.headers.get("x-idfon-channel-secret");

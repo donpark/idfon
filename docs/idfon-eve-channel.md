@@ -155,8 +155,10 @@ HTTP channel's continuation token use.
 
 ## Auth: peer identity as principal
 
-Eve's channel `auth` is an `AuthFn` that returns a principal (or `null`). The
-idfon channel maps a verified peer:
+Eve's channel `auth` is an `AuthFn` that returns a principal (or `null`). In
+Eve `0.55`, the channel's `audience({ auth })` hook also classifies an
+authenticated idfon session as private; missing authentication fails closed to
+unknown. The idfon channel maps a verified peer:
 
 | idfon | Eve principal |
 |---|---|
