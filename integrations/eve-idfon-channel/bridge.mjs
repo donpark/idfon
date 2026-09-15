@@ -49,7 +49,7 @@ function processFrames() {
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
       }).catch((error) => console.error(`[idfon-eve-channel] ${value.type} delivery failed: ${error}`));
-    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack") {
+    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
       const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
       const waiter = pending.get(key);
       if (waiter) {
@@ -74,7 +74,7 @@ holder.on("error", (error) => { console.error(`[idfon-eve-channel] holder IPC: $
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
-  if (request.method !== "POST" || !["/reply", "/blob", "/input", "/send", "/status"].includes(request.url)) {
+  if (request.method !== "POST" || !["/reply", "/blob", "/blob/put", "/input", "/send", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -104,6 +104,47 @@ const server = createServer(async (request, response) => {
         capability_ticket: body.capability_ticket,
         a2a_depth: body.a2a_depth ?? 0,
       });
+      const result = await resultPromise;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      pending.delete(requestId);
+      response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
+  if (request.url === "/live/publish") {
+    if (typeof body.path !== "string" || !body.path || typeof body.name !== "string" || !body.name) {
+      response.writeHead(400); response.end("invalid live publish request\n"); return;
+    }
+    const requestId = `live-publish-${nextRequestId++}`;
+    const resultPromise = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+    try {
+      await write({
+        type: "live.publish",
+        request_id: requestId,
+        path: body.path,
+        loop_playback: body.loop_playback ?? false,
+        name: body.name,
+        relay: body.relay ?? true,
+      });
+      const result = await resultPromise;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      pending.delete(requestId);
+      response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
+  if (request.url === "/live/stop") {
+    if (typeof body.id !== "string" || !body.id) {
+      response.writeHead(400); response.end("invalid live stop request\n"); return;
+    }
+    const requestId = `live-stop-${nextRequestId++}`;
+    const resultPromise = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+    try {
+      await write({ type: "live.stop", request_id: requestId, id: body.id });
       const result = await resultPromise;
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(result));
@@ -157,6 +198,23 @@ const server = createServer(async (request, response) => {
       response.end(JSON.stringify(result));
     } catch (error) {
       pending.delete(body.request_id);
+      response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
+  if (request.url === "/blob/put") {
+    if (typeof body.bytes_base64 !== "string" || !body.bytes_base64) {
+      response.writeHead(400); response.end("invalid blob data\n"); return;
+    }
+    const requestId = `blob-put-${nextRequestId++}`;
+    const resultPromise = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+    try {
+      await write({ type: "blob.put", request_id: requestId, bytes_base64: body.bytes_base64 });
+      const result = await resultPromise;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      pending.delete(requestId);
       response.writeHead(502); response.end(`${error}\n`);
     }
     return;

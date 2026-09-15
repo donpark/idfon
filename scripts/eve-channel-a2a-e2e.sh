@@ -59,11 +59,11 @@ printf '%s' "$B_TICKET" >"$work/b-reply-ticket.json"
 printf '%s' "$A_REPLY_TICKET" >"$work/a-reply-ticket.json"
 
 "$HOLDER" --key-file "$work/a-holder.key" serve --socket "$A_SOCK" \
-  --reply-ticket-file "$work/b-reply-ticket.json" \
+  --blob-dir "$work/a-blobs" --reply-ticket-file "$work/b-reply-ticket.json" \
   >"$work/a-holder.ticket" 2>"$work/a-holder.log" &
 pids="$pids $!"
 "$HOLDER" --key-file "$work/b-holder.key" serve --socket "$B_SOCK" \
-  --reply-ticket-file "$work/a-reply-ticket.json" \
+  --blob-dir "$work/b-blobs" --reply-ticket-file "$work/a-reply-ticket.json" \
   >"$work/b-holder.ticket" 2>"$work/b-holder.log" &
 pids="$pids $!"
 for _ in $(seq 1 150); do
