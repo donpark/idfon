@@ -75,6 +75,10 @@ Both sides can participate in a live exchange, with explicit controls for who ma
 
 A group may have different roles and permissions. Some members may speak, some may listen, and some may be able to interrupt or moderate. Broadcasting should not be conflated with a group call.
 
+See [`chatrooms.md`](chatrooms.md) for how group conversations are carried on the
+wire (a room is a `conversation` topic id plus local membership; 1:1 is the
+degenerate case).
+
 ## Endpoint identity and channel context
 
 Idfon identities are named local contexts. Each identity owns its Iroh key and
