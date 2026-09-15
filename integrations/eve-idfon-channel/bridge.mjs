@@ -42,14 +42,14 @@ function processFrames() {
     if (input.length < size + 4) return;
     const value = JSON.parse(input.subarray(4, size + 4));
     input = input.subarray(size + 4);
-    if (value.type === "turn.in" || value.type === "input.in") {
-      const path = value.type === "turn.in" ? "/idfon/turn" : "/idfon/input";
+    if (value.type === "turn.in" || value.type === "input.in" || value.type === "status.in") {
+      const path = value.type === "turn.in" ? "/idfon/turn" : value.type === "input.in" ? "/idfon/input" : "/idfon/status";
       fetch(`${targetUrl}${path}`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
       }).catch((error) => console.error(`[idfon-eve-channel] ${value.type} delivery failed: ${error}`));
-    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "input.ack" || value.type === "peer.ack") {
+    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack") {
       const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
       const waiter = pending.get(key);
       if (waiter) {
@@ -74,7 +74,7 @@ holder.on("error", (error) => { console.error(`[idfon-eve-channel] holder IPC: $
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
-  if (request.method !== "POST" || !["/reply", "/blob", "/input", "/send"].includes(request.url)) {
+  if (request.method !== "POST" || !["/reply", "/blob", "/input", "/send", "/status"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -105,6 +105,30 @@ const server = createServer(async (request, response) => {
         a2a_depth: body.a2a_depth ?? 0,
       });
       const result = await resultPromise;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      pending.delete(requestId);
+      response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
+  if (request.url === "/status") {
+    if (typeof body.in_reply_to !== "string" || typeof body.event !== "string" ||
+        body.data === undefined) {
+      response.writeHead(400); response.end("invalid status\n"); return;
+    }
+    const requestId = `status-${nextRequestId++}`;
+    const ack = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+    try {
+      await write({
+        type: "status.out",
+        request_id: requestId,
+        in_reply_to: body.in_reply_to,
+        event: body.event,
+        data: body.data,
+      });
+      const result = await ack;
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(result));
     } catch (error) {

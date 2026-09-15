@@ -44,7 +44,7 @@ for _ in $(seq 1 150); do
   sleep 0.1
 done
 A_PID=$("$NUF" --socket "$A" status --json | jq -r .result.identity.public_key)
-HOLDER_TICKET=$("$HOLDER" --key-file "$work/holder.key" ticket --subject "$A_PID")
+HOLDER_TICKET=$("$HOLDER" --key-file "$work/holder.key" ticket --subject "$A_PID" --capability consent.approve)
 
 "$HOLDER" --key-file "$work/holder.key" serve --socket "$HOLDER_SOCK" \
   --allow "$A_PID" >"$work/holder.ticket" 2>"$work/holder.log" &
@@ -88,7 +88,10 @@ import { z } from "zod";
 export default defineTool({
   description: "Run the approval-gated M4 action.",
   inputSchema: z.object({ value: z.string() }),
-  approval: always(),
+  approval: ({ session }) =>
+    session.auth.current?.attributes?.capabilities?.includes("consent.approve")
+      ? "user-approval"
+      : { type: "denied", reason: "idfon grant consent.approve is required" },
   async execute({ value }) {
     console.error("M4_TOOL_EXECUTED");
     await appendFile("m4-tool-executed.log", `${value}\n`);
