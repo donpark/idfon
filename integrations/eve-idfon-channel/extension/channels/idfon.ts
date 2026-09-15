@@ -25,10 +25,13 @@ type SessionMember = {
 type SessionTarget = {
   conversation?: string;
   lastPeerId: string;
+  turnMessageId: string;
   members: Map<string, SessionMember>;
 };
 
 const sessionTargets = new Map<string, SessionTarget>();
+const roomTargets = new Map<string, SessionTarget>();
+let replyTail: Promise<void> = Promise.resolve();
 
 function authFor(turn: Pick<TurnIn, "peer_id" | "endpoint_id" | "capabilities">) {
   return {
@@ -58,13 +61,30 @@ async function bridge(path: string, body: unknown) {
   return response;
 }
 
+async function bridgeJson<T>(path: string, body: unknown): Promise<T> {
+  return (await bridge(path, body)).json() as Promise<T>;
+}
+
+async function bridgeRetry(path: string, body: unknown) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await bridge(path, body);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+    }
+  }
+  throw lastError;
+}
+
 export default defineChannel({
   turnPolicy: "queue",
   audience({ auth }) {
     return auth ? "private" : "unknown";
   },
   routes: [
-    POST("/idfon/turn", async (request, { from }) => {
+    POST("/idfon/turn", async (request, { from, resolveSession, attachSession, waitUntil }) => {
       const secret = request.headers.get("x-idfon-channel-secret");
       if (secret !== extension.config.secret) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -90,22 +110,55 @@ export default defineChannel({
             },
           ]
         : completeTurn.text;
-      const session = await from(address).send(message, {
-        auth: authFor(completeTurn),
-      });
-      const target = sessionTargets.get(session.id) ?? {
-        conversation: completeTurn.conversation,
-        lastPeerId: completeTurn.peer_id,
-        members: new Map<string, SessionMember>(),
-      };
+      const auth = authFor(completeTurn);
+      const existing = completeTurn.conversation
+        ? await resolveSession(address)
+        : undefined;
+      let sessionId: string;
+      if (existing) {
+        sessionId = existing.id;
+      } else {
+        const session = await from(address).send(message, { auth });
+        sessionId = session.id;
+      }
+      const target = completeTurn.conversation
+        ? roomTargets.get(completeTurn.conversation) ?? {
+            conversation: completeTurn.conversation,
+            lastPeerId: completeTurn.peer_id,
+            turnMessageId: completeTurn.message_id,
+            members: new Map<string, SessionMember>(),
+          }
+        : sessionTargets.get(sessionId) ?? {
+            conversation: undefined,
+            lastPeerId: completeTurn.peer_id,
+            turnMessageId: completeTurn.message_id,
+            members: new Map<string, SessionMember>(),
+          };
       target.lastPeerId = completeTurn.peer_id;
+      target.turnMessageId = completeTurn.message_id;
       target.members.set(completeTurn.peer_id, {
         messageId: completeTurn.message_id,
         peerId: completeTurn.peer_id,
         endpointId: completeTurn.endpoint_id,
       });
-      sessionTargets.set(session.id, target);
-      return Response.json({ sessionId: session.id, address });
+      sessionTargets.set(sessionId, target);
+      if (completeTurn.conversation) {
+        roomTargets.set(completeTurn.conversation, target);
+        await bridge("/room/member", {
+          conversation: completeTurn.conversation,
+          peer_id: completeTurn.peer_id,
+          endpoint_id: completeTurn.endpoint_id,
+          message_id: completeTurn.message_id,
+        });
+      }
+      if (existing) {
+        waitUntil(
+          attachSession(existing.id).send(message, { auth }).catch((error) =>
+            console.error("idfon room turn failed", error)
+          )
+        );
+      }
+      return Response.json({ sessionId, address });
     }),
     POST("/idfon/status", async (request) => {
       const secret = request.headers.get("x-idfon-channel-secret");
@@ -171,15 +224,33 @@ export default defineChannel({
     async "message.completed"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
       if (!target || !event.message) return;
-      await Promise.all([...target.members.values()].map((member) =>
-        bridge("/reply", {
-          in_reply_to: member.messageId,
-          peer_id: member.peerId,
-          endpoint_id: member.endpointId,
-          conversation: target.conversation,
-          text: event.message,
-        })
-      ));
+      const roomMembers = target.conversation
+        ? new Map(
+            (await bridgeJson<{ members: Array<{ message_id: string; peer_id: string; endpoint_id: string }> }>(
+              "/room/members",
+              { conversation: target.conversation }
+            )).members.map((member) => [member.peer_id, {
+              messageId: member.message_id,
+              peerId: member.peer_id,
+              endpointId: member.endpoint_id,
+            }] as const)
+          )
+        : target.members;
+      const delivery = replyTail.then(async () => {
+        for (const member of roomMembers.values()) {
+          await bridgeRetry("/reply", {
+            // The holder uses this as the IPC correlation key. Add the recipient
+            // so fan-out replies from one Eve turn cannot collide.
+            in_reply_to: `${member.messageId}|${target.turnMessageId}|${member.peerId}`,
+            peer_id: member.peerId,
+            endpoint_id: member.endpointId,
+            conversation: target.conversation,
+            text: event.message,
+          });
+        }
+      });
+      replyTail = delivery.catch(() => {});
+      await delivery;
     },
     async "input.requested"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
