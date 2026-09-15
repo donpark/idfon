@@ -1,5 +1,12 @@
 import Foundation
 
+struct Room: Decodable, Identifiable, Hashable {
+    let id: String
+    let identity: String
+    let name: String?
+    let members: [String]
+}
+
 struct Peer: Decodable, Identifiable, Hashable {
     let id: String
     let name: String?
