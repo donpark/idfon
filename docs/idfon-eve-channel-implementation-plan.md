@@ -4,7 +4,7 @@
 > MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5, implemented).
 > Prototyping stage: no legacy or migration constraints. Eve channel contract as
 > of 2026-09-14 (`defineChannel`, routes/events, `from(address).send`,
-> `sessionAuth`, `turnPolicy`, extensions).
+> `sessionAuth`, `turnPolicy`, `audience`, extensions; pinned Eve `0.55.0`).
 
 ## How to use this
 
@@ -45,6 +45,7 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | threading | **`MessageEnvelope.conversation`** | already signed and on the wire; no protocol change |
 | address | **`peer_id` (+ `conversation`)** | peer+thread → `sessionId`, persisted by the channel |
 | auth | **per-message `verify_message` + capability ticket** | holder verifies before the channel sees the turn |
+| audience | **authenticated idfon sessions are private** | Eve `0.55` `audience({ auth })` classifies the session; unauthenticated context fails closed to unknown |
 | default `turnPolicy` | **`queue`** (configurable) | remote peers expect turn-ordered replies; Eve channel default is `steer` |
 | A2A outbound | **`idfon__send` tool** | uses the holder's authenticated endpoint and a caller-supplied capability ticket; it is separate from channel ingress |
 | A2A authorization | **`agent.receive`** | A2A envelopes require this grant in addition to `message.receive`; ordinary peer turns remain human/agent-neutral |
