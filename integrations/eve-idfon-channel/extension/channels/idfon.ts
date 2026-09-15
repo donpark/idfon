@@ -16,11 +16,16 @@ type TurnIn = {
   capabilities?: string[];
 };
 
-type SessionTarget = {
+type SessionMember = {
   messageId: string;
   peerId: string;
   endpointId: string;
+};
+
+type SessionTarget = {
   conversation?: string;
+  lastPeerId: string;
+  members: Map<string, SessionMember>;
 };
 
 const sessionTargets = new Map<string, SessionTarget>();
@@ -72,9 +77,9 @@ export default defineChannel({
       if (completeTurn.a2a_depth !== undefined && completeTurn.a2a_depth > 1) {
         return Response.json({ ignored: true, reason: "a2a_loop_guard" });
       }
-      const address = completeTurn.conversation
-        ? `${completeTurn.peer_id}:${completeTurn.conversation}`
-        : completeTurn.peer_id;
+      // A room is one Eve session shared by all senders. Keep 1:1 sessions
+      // keyed by peer id, while a room session is keyed by conversation.
+      const address = completeTurn.conversation || completeTurn.peer_id;
       const message = completeTurn.blob_ticket
         ? [
             { type: "text" as const, text: completeTurn.text },
@@ -88,12 +93,18 @@ export default defineChannel({
       const session = await from(address).send(message, {
         auth: authFor(completeTurn),
       });
-      sessionTargets.set(session.id, {
+      const target = sessionTargets.get(session.id) ?? {
+        conversation: completeTurn.conversation,
+        lastPeerId: completeTurn.peer_id,
+        members: new Map<string, SessionMember>(),
+      };
+      target.lastPeerId = completeTurn.peer_id;
+      target.members.set(completeTurn.peer_id, {
         messageId: completeTurn.message_id,
         peerId: completeTurn.peer_id,
         endpointId: completeTurn.endpoint_id,
-        conversation: completeTurn.conversation,
       });
+      sessionTargets.set(session.id, target);
       return Response.json({ sessionId: session.id, address });
     }),
     POST("/idfon/status", async (request) => {
@@ -160,58 +171,65 @@ export default defineChannel({
     async "message.completed"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
       if (!target || !event.message) return;
-      await bridge("/reply", {
-        in_reply_to: target.messageId,
-        peer_id: target.peerId,
-        endpoint_id: target.endpointId,
-        conversation: target.conversation,
-        text: event.message,
-      });
+      await Promise.all([...target.members.values()].map((member) =>
+        bridge("/reply", {
+          in_reply_to: member.messageId,
+          peer_id: member.peerId,
+          endpoint_id: member.endpointId,
+          conversation: target.conversation,
+          text: event.message,
+        })
+      ));
     },
     async "input.requested"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
+      const member = target?.members.get(target.lastPeerId);
       const request = event.requests[0];
-      if (!target || !request) return;
+      if (!member || !request) return;
       await bridge("/input", {
         request_id: request.requestId,
-        peer_id: target.peerId,
-        endpoint_id: target.endpointId,
-        conversation: target.conversation,
+        peer_id: member.peerId,
+        endpoint_id: member.endpointId,
+        conversation: target?.conversation,
         requests: event.requests,
       });
     },
     async "authorization.required"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
-      if (!target) return;
+      const member = target?.members.get(target.lastPeerId);
+      if (!member) return;
       await bridge("/status", {
-        in_reply_to: target.messageId,
+        in_reply_to: member.messageId,
         event: "authorization.required",
         data: event,
       });
     },
     async "authorization.completed"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
-      if (!target) return;
+      const member = target?.members.get(target.lastPeerId);
+      if (!member) return;
       await bridge("/status", {
-        in_reply_to: target.messageId,
+        in_reply_to: member.messageId,
         event: "authorization.completed",
         data: event,
       });
     },
     async "turn.cancelled"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
-      if (!target) return;
+      const member = target?.members.get(target.lastPeerId);
+      if (!member) return;
       await bridge("/status", {
-        in_reply_to: target.messageId,
+        in_reply_to: member.messageId,
         event: "turn.cancelled",
         data: event,
       });
     },
     async "turn.failed"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
-      if (!target) return;
+      const member = target?.members.get(target.lastPeerId);
+      if (!member) return;
       await bridge("/status", {
-        in_reply_to: target.messageId,
+        in_reply_to: member.messageId,
         event: "turn.failed",
         data: event,
       });
