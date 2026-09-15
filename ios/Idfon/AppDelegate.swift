@@ -52,6 +52,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let i = args.firstIndex(of: "-pair"), args.count > i + 1 {
             pairPeer(ticketJSON: args[i + 1], name: args.count > i + 2 ? args[i + 2] : "mac")
         }
+        if let i = args.firstIndex(of: "-pair-ticket"), args.count > i + 2 {
+            storeCapabilityTicket(peer: args[i + 1], jsonOrPath: args[i + 2])
+        }
         // Debug: NSLog the tail of the daemon tracing log (see iroh_enable_tracing).
         if args.contains("-dumplog") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { Self.dumpLog() }
@@ -144,6 +147,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 NSLog("idfon pair failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// `-pair-ticket <agent-peer-id> <ticket-json|ticket-file>`: persist a
+    /// ticket minted by the peer's holder (`idfon-eve-channel ticket --subject
+    /// <this-app's-peer-id>`) so outbound turns pass its ingress gate. The id
+    /// must be the one the app paired the agent under — the `id` field of the
+    /// `-pair` EndpointAddr JSON, which is what `sendText` passes as `to`.
+    private func storeCapabilityTicket(peer: String, jsonOrPath: String) {
+        let json: String
+        if jsonOrPath.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") {
+            json = jsonOrPath
+        } else if let contents = try? String(contentsOfFile: jsonOrPath, encoding: .utf8) {
+            json = contents
+        } else {
+            NSLog("idfon ticket failed: not JSON or a readable file")
+            return
+        }
+        guard CapabilityTickets.store(json, for: peer) else {
+            NSLog("idfon ticket failed: not a JSON object")
+            return
+        }
+        NSLog("idfon ticket stored for peer \(peer.prefix(16))")
     }
 
     private static func dumpLog() {

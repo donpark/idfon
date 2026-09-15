@@ -100,7 +100,7 @@ Key facts:
   the 104-byte `SUN_LEN`), device uses flat tmp path.
 - **On-device automation**: `ios/device.sh` builds/installs/launches on a physical
   iPhone via `devicectl`; launch arguments drive no-tap flows (`-dial`, `-answer`,
-  `-videodial`, `-camprobe`, `-memo`, `-pair`). `-sendfile <peer> <fileName>`
+  `-videodial`, `-camprobe`, `-memo`, `-pair`, `-pair-ticket`). `-sendfile <peer> <fileName>`
   (`Automation.swift`) opens the thread and calls the same `sendFile` the attachment
   picker reaches; `scripts/ios-device-test.sh` stages a file in the app container and
   asserts the `idfon tray:` / `idfon file:` markers. Purely visual behavior (tabs, Bar
@@ -108,14 +108,36 @@ Key facts:
 
 ## Eve text-agent integration status
 
-The app's ordinary idfon text path is ready, but the first iOS → Eve demo still
-needs capability-ticket plumbing. The Eve holder requires a holder-issued,
-subject-bound `message.receive` ticket; `DaemonClient.sendText()` does not yet
-attach one, and `-pair` currently stores only the peer address and local grants.
-Track the remaining provisioning, persistence, and manual simulator/device E2E
-work in [idfon/idfon#11](https://github.com/donpark/idfon/issues/11). Voice
-agent integration (STT/TTS and live conversational audio) is separate from the
-peer-to-peer calls implemented here.
+The text path is wired end to end in the app. The Eve holder rejects an inbound
+message with no holder-signed, subject-bound `message.receive` ticket, so a
+ticket is provisioned out of band and attached to outbound turns:
+
+1. `idfon-eve-channel ticket --subject <this-app's-peer-id> [--key-file ...]`
+   prints the holder-signed JSON.
+2. Launch with `-pair-ticket <agent-peer-id> <ticket-json|file>`, where the id
+   is the one the app paired the agent under (the `id` field of the `-pair`
+   EndpointAddr JSON, which `sendText` passes as `to`); `CapabilityTickets`
+   persists it per peer (UserDefaults).
+3. `DaemonClient.sendText()` attaches it as `message.send`'s
+   `capability_ticket` param when one is stored. Ungated idfon peers store no
+   ticket and keep using local grants, so the ordinary text path is unchanged.
+
+The reply direction needs no ticket: `-pair` grants `message.receive` locally,
+which satisfies the daemon's inbound gate for the agent's peer id. What remains
+is the manual simulator/device E2E in
+[idfon/idfon#11](https://github.com/donpark/idfon/issues/11).
+
+`ios/Checks/CapabilityTicketCheck` covers the ticket round-trip (including the
+`expires_at: null` that must survive encoding) on the host:
+
+```sh
+swiftc -o /tmp/ctcheck ios/Idfon/AnyEncodable.swift \
+  ios/Idfon/CapabilityTickets.swift ios/Checks/CapabilityTicketCheck/main.swift \
+&& /tmp/ctcheck
+```
+
+Voice agent integration (STT/TTS and live conversational audio) is separate
+from the peer-to-peer calls implemented here.
 
 See also: [ui-design-notes.md](ui-design-notes.md) (UX spec),
 [live-activity-bar-layout.md](live-activity-bar-layout.md) (Bar layout + integration
