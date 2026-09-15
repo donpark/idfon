@@ -48,7 +48,6 @@ final class SidebarViewController: NSViewController {
         roomRow.spacing = 4
         roomRow.translatesAutoresizingMaskIntoConstraints = false
         let actions = NSStackView(views: [
-            roomRow,
             button("Add Channel…", #selector(addChannelTapped)),
             button("Create Identity…", #selector(createIdentityTapped)),
             button("Issue Receive Ticket…", #selector(issueTicketTapped)),
@@ -61,6 +60,7 @@ final class SidebarViewController: NSViewController {
 
         view.addSubview(identityPopup)
         view.addSubview(statusLabel)
+        view.addSubview(roomRow)
         view.addSubview(tabs.view)
         view.addSubview(actions)
         NSLayoutConstraint.activate([
