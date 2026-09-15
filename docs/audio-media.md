@@ -226,7 +226,7 @@ The boundary now takes a **source handle**. Implemented in
 
 ```c
 void  media_audio_push_samples(float const *pcm, size_t samples); // mono 48 kHz f32
-char *media_live_start_with_source(uint8_t audio, uint8_t video, char const *source); // "mic" | "push"
+char *media_live_start_with_source(uint8_t audio, uint8_t video, char const *source); // "mic" | "push" | "file:<path>" | "ticket:<live-ticket>"
 ```
 
 `PushAudioSource` drains a caller-pushed queue in `pop_samples` (silence on
@@ -234,8 +234,18 @@ underrun so the encoder keeps its 20 ms pacing; drop-oldest past 2 s so a stalle
 encoder cannot grow memory or add latency). Any holder of samples — a shell tap,
 a decoded remote stream, a file, a synth — can now feed the encoder with no new
 Rust source type. `media_live_start` is unchanged and still means `"mic"`.
-Remaining: the shells still use the mic path; wiring a shell tap, plus the
-`file`/`ticket` source kinds, is future work (issue #12).
+The source kinds are now:
+
+- `mic` — the default local capture device;
+- `push` — caller-pushed mono 48 kHz f32 PCM;
+- `file:<path>` — a local WAV/MP3 file decoded and published once;
+- `ticket:<live-ticket>` — subscribe to a remote live audio ticket, decode it,
+  and relay the samples into this publisher.
+
+The Apple shells use `push`; the file and ticket kinds are available to any
+caller linked against the C ABI. A ticket source is intentionally a live
+stream ticket, not a blob ticket: blob tickets identify completed content and
+belong on the file/attachment path.
 
 This generalises the rule above: **the pipeline takes a source handle, and
 whoever can observe that source's lifetime owns it.** A local mic/camera belongs

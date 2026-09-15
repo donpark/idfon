@@ -4,6 +4,7 @@ use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -15,9 +16,15 @@ use std::{
 use bytes::Bytes;
 use iroh::protocol::Router;
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use iroh_live::media::{
+    format::{PixelFormat, VideoFormat as SourceVideoFormat},
+    traits::VideoSource as SourceTrait,
+};
 use iroh_live::{
     media::{
         audio_backend::InputStream,
+        audio_file_source::AudioFileSource,
         codec::{OpusEncoder, VideoCodec},
         format::{AudioEncoderConfig, AudioFormat, AudioPreset, PlaybackConfig, VideoPreset},
         publish::{AudioRenditions, LocalBroadcast},
@@ -32,11 +39,6 @@ use iroh_live::{
     Live, Subscription,
 };
 use n0_future::boxed::BoxFuture;
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-use iroh_live::media::{
-    format::{PixelFormat, VideoFormat as SourceVideoFormat},
-    traits::VideoSource as SourceTrait,
-};
 use ogg::reading::PacketReader;
 use safer_ffi::prelude::*;
 
@@ -75,6 +77,13 @@ static CAMERA_ENABLED: AtomicBool = AtomicBool::new(false);
 struct LiveSession {
     _live: Live,
     _broadcast: LocalBroadcast,
+    ticket_source: Option<TicketAudioSession>,
+}
+
+struct TicketAudioSession {
+    _live: Live,
+    _subscription: Subscription,
+    _tracks: MediaTracks,
 }
 
 struct Subscriber {
@@ -137,6 +146,31 @@ impl AudioSource for MuteSource {
 /// stream, a file, a synth). Underrun yields silence rather than `None` so the
 /// encoder keeps its fixed 20 ms pacing; overflow drops oldest (see
 /// [`media_audio_push_samples`]).
+struct MonoFileSource {
+    source: AudioFileSource,
+    stereo: Vec<f32>,
+}
+
+impl AudioSource for MonoFileSource {
+    fn format(&self) -> AudioFormat {
+        AudioFormat::mono_48k()
+    }
+
+    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
+        self.stereo.resize(buf.len().saturating_mul(2), 0.0);
+        let Some(frames) = self.source.pop_samples(&mut self.stereo)? else {
+            return Ok(None);
+        };
+        for (dst, pair) in buf
+            .iter_mut()
+            .zip(self.stereo[..frames * 2].chunks_exact(2))
+        {
+            *dst = (pair[0] + pair[1]) * 0.5;
+        }
+        Ok(Some(frames))
+    }
+}
+
 struct PushAudioSource {
     format: AudioFormat,
     queue: Arc<Mutex<VecDeque<f32>>>,
@@ -182,13 +216,9 @@ const PUSH_AUDIO_CAPACITY: usize = 48_000 * 2;
 static PUSHED_AUDIO: Mutex<Option<Arc<Mutex<VecDeque<f32>>>>> = Mutex::new(None);
 
 fn push_audio_queue() -> Arc<Mutex<VecDeque<f32>>> {
-    let mut slot = PUSHED_AUDIO
-        .lock()
-        .expect("pushed audio mutex poisoned");
-    slot.get_or_insert_with(|| {
-        Arc::new(Mutex::new(VecDeque::with_capacity(PUSH_AUDIO_CAPACITY)))
-    })
-    .clone()
+    let mut slot = PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned");
+    slot.get_or_insert_with(|| Arc::new(Mutex::new(VecDeque::with_capacity(PUSH_AUDIO_CAPACITY))))
+        .clone()
 }
 
 /// Installs the Opus rendition for `source`. Generic because
@@ -220,12 +250,15 @@ fn live_video_codec() -> VideoCodec {
 }
 
 /// Which audio source a live publisher takes.
-#[derive(Clone, Copy)]
 enum LiveAudioSource {
     /// Default capture device (the platform mic).
     Mic,
     /// Caller-pushed PCM (`media_audio_push_samples`).
     Push,
+    /// Decode a local audio file (WAV/MP3) into the publisher.
+    File(PathBuf),
+    /// Subscribe to a live audio ticket and relay its decoded samples.
+    Ticket(LiveTicket),
 }
 
 fn audio() -> AudioBackend {
@@ -664,6 +697,83 @@ impl AudioSink for RecordingSink {
 struct RecordingBackend {
     recorder: Arc<Mutex<WavRecorder>>,
     output: AudioBackend,
+}
+
+struct ForwardingSink {
+    format: AudioFormat,
+    queue: Arc<Mutex<VecDeque<f32>>>,
+    handle: RecordingSinkHandle,
+}
+
+impl AudioSinkHandle for ForwardingSink {
+    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
+        self.handle.cloned_boxed()
+    }
+    fn pause(&self) {
+        self.handle.pause();
+    }
+    fn resume(&self) {
+        self.handle.resume();
+    }
+    fn is_paused(&self) -> bool {
+        self.handle.is_paused()
+    }
+    fn toggle_pause(&self) {
+        self.handle.toggle_pause();
+    }
+}
+
+impl AudioSink for ForwardingSink {
+    fn format(&self) -> anyhow::Result<AudioFormat> {
+        Ok(self.format)
+    }
+
+    fn push_samples(&mut self, samples: &[f32]) -> anyhow::Result<()> {
+        let channels = self.format.channel_count as usize;
+        let mut queue = self.queue.lock().expect("ticket audio queue poisoned");
+        if channels == 0 {
+            return Ok(());
+        }
+        for frame in samples.chunks(channels) {
+            let sample = frame.iter().copied().sum::<f32>() / frame.len() as f32;
+            queue.push_back(sample);
+        }
+        while queue.len() > PUSH_AUDIO_CAPACITY {
+            queue.pop_front();
+        }
+        Ok(())
+    }
+
+    fn handle(&self) -> Box<dyn AudioSinkHandle> {
+        self.handle.cloned_boxed()
+    }
+}
+
+#[derive(Clone)]
+struct ForwardingBackend {
+    queue: Arc<Mutex<VecDeque<f32>>>,
+}
+
+impl AudioStreamFactory for ForwardingBackend {
+    fn create_input(
+        &self,
+        _format: AudioFormat,
+    ) -> BoxFuture<anyhow::Result<Box<dyn AudioSource>>> {
+        Box::pin(async { anyhow::bail!("ticket forwarding backend has no input") })
+    }
+
+    fn create_output(&self, format: AudioFormat) -> BoxFuture<anyhow::Result<Box<dyn AudioSink>>> {
+        let queue = self.queue.clone();
+        Box::pin(async move {
+            Ok(Box::new(ForwardingSink {
+                format,
+                queue,
+                handle: RecordingSinkHandle {
+                    paused: Arc::new(AtomicBool::new(false)),
+                },
+            }) as Box<dyn AudioSink>)
+        })
+    }
 }
 
 impl AudioStreamFactory for RecordingBackend {
@@ -1129,7 +1239,9 @@ pub fn media_audio_set_bitrate(bitrate: u32) -> u8 {
 fn ensure_camera_access() {
     use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaType};
     let media_type: &AVMediaType = unsafe { objc2_av_foundation::AVMediaTypeVideo.unwrap() };
-    if unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) } == AVAuthorizationStatus::Authorized {
+    if unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) }
+        == AVAuthorizationStatus::Authorized
+    {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1142,6 +1254,30 @@ fn ensure_camera_access() {
     // Block until the user answers the dialog; timing out (ignored call) is
     // acceptable — capture proceeds either way, just without frames.
     let _ = rx.recv_timeout(Duration::from_secs(120));
+}
+
+async fn prepare_ticket_source(
+    ticket: LiveTicket,
+) -> anyhow::Result<(Arc<Mutex<VecDeque<f32>>>, TicketAudioSession)> {
+    let queue = Arc::new(Mutex::new(VecDeque::with_capacity(PUSH_AUDIO_CAPACITY)));
+    let live = Live::from_env().await?.spawn();
+    let subscription = live
+        .subscribe(ticket.endpoint, &ticket.broadcast_name)
+        .await?;
+    let backend = ForwardingBackend {
+        queue: queue.clone(),
+    };
+    let tracks = subscription
+        .media(&backend, PlaybackConfig::default())
+        .await?;
+    Ok((
+        queue,
+        TicketAudioSession {
+            _live: live,
+            _subscription: subscription,
+            _tracks: tracks,
+        },
+    ))
 }
 
 fn start_live(audio: bool, video: bool, audio_source: LiveAudioSource) -> char_p::Box {
@@ -1169,6 +1305,7 @@ fn start_live(audio: bool, video: bool, audio_source: LiveAudioSource) -> char_p
     let result = tokio_executor(async {
         let live = Live::from_env().await?.with_router().spawn();
         let broadcast = LocalBroadcast::new();
+        let mut ticket_source = None;
         if audio {
             let bitrate = BITRATE.load(Ordering::Relaxed);
             match audio_source {
@@ -1193,6 +1330,25 @@ fn start_live(audio: bool, video: bool, audio_source: LiveAudioSource) -> char_p
                     };
                     install_audio(&broadcast, MuteSource { inner: input }, bitrate)?;
                 }
+                LiveAudioSource::File(path) => {
+                    let source = MonoFileSource {
+                        source: AudioFileSource::new(path, false)?,
+                        stereo: Vec::new(),
+                    };
+                    install_audio(&broadcast, source, bitrate)?;
+                }
+                LiveAudioSource::Ticket(ticket) => {
+                    let (queue, session) = prepare_ticket_source(ticket).await?;
+                    install_audio(
+                        &broadcast,
+                        PushAudioSource {
+                            format: AudioFormat::mono_48k(),
+                            queue,
+                        },
+                        bitrate,
+                    )?;
+                    ticket_source = Some(session);
+                }
             }
         }
         if video {
@@ -1210,9 +1366,11 @@ fn start_live(audio: bool, video: bool, audio_source: LiveAudioSource) -> char_p
             #[cfg(any(target_os = "ios", target_os = "macos"))]
             // 360p (500 kbps) + 720p (2 Mbps) ladder: receiver-driven
             // adaptation picks the rendition that fits the network.
-            broadcast
-                .video()
-                .set_source(camera, live_video_codec(), [VideoPreset::P360, VideoPreset::P720])?;
+            broadcast.video().set_source(
+                camera,
+                live_video_codec(),
+                [VideoPreset::P360, VideoPreset::P720],
+            )?;
         }
         let broadcast_name = broadcast_name();
         live.publish(&broadcast_name, &broadcast).await?;
@@ -1222,6 +1380,7 @@ fn start_live(audio: bool, video: bool, audio_source: LiveAudioSource) -> char_p
             .replace(LiveSession {
                 _live: live,
                 _broadcast: broadcast,
+                ticket_source,
             });
         anyhow::Ok(ticket)
     });
@@ -1247,22 +1406,44 @@ pub fn media_live_start(audio: u8, video: u8) -> char_p::Box {
     start_live(audio != 0, video != 0, LiveAudioSource::Mic)
 }
 
-/// Like [`media_live_start`], but selects the audio source by name: `"mic"`
-/// (the default capture device) or `"push"` (samples supplied through
-/// [`media_audio_push_samples`]). An unknown name fails with an empty ticket
-/// and sets [`media_live_last_error`]. Makes the source a caller decision
-/// without adding a new Rust source type per input.
+fn parse_live_audio_source(source: &str) -> anyhow::Result<LiveAudioSource> {
+    match source {
+        "mic" | "" => Ok(LiveAudioSource::Mic),
+        "push" => Ok(LiveAudioSource::Push),
+        value
+            if value
+                .strip_prefix("file:")
+                .is_some_and(|path| !path.is_empty()) =>
+        {
+            Ok(LiveAudioSource::File(PathBuf::from(&value[5..])))
+        }
+        value
+            if value
+                .strip_prefix("ticket:")
+                .is_some_and(|ticket| !ticket.is_empty()) =>
+        {
+            let ticket = value[7..]
+                .parse::<LiveTicket>()
+                .map_err(|err| anyhow::anyhow!("invalid live audio ticket: {err}"))?;
+            Ok(LiveAudioSource::Ticket(ticket))
+        }
+        other => anyhow::bail!(
+            "unknown live source '{other}' (expected mic|push|file:<path>|ticket:<live-ticket>)"
+        ),
+    }
+}
+
+/// Like [`media_live_start`], but selects the audio source by name:
+/// `"mic"`, `"push"`, `"file:<path>"`, or `"ticket:<live-ticket>"`.
+/// A ticket source subscribes to the remote live audio and forwards its
+/// decoded samples into this publisher. An unknown or invalid source fails
+/// with an empty ticket and sets [`media_live_last_error`].
 #[ffi_export]
-pub fn media_live_start_with_source(
-    audio: u8,
-    video: u8,
-    source: char_p::Ref<'_>,
-) -> char_p::Box {
-    match source.to_str() {
-        "mic" | "" => start_live(audio != 0, video != 0, LiveAudioSource::Mic),
-        "push" => start_live(audio != 0, video != 0, LiveAudioSource::Push),
-        other => {
-            let text = format!("unknown live source '{other}' (expected mic|push)");
+pub fn media_live_start_with_source(audio: u8, video: u8, source: char_p::Ref<'_>) -> char_p::Box {
+    match parse_live_audio_source(source.to_str()) {
+        Ok(source) => start_live(audio != 0, video != 0, source),
+        Err(err) => {
+            let text = format!("invalid live source: {err:#}");
             tracing::warn!("{text}");
             *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = Some(text);
             String::new().try_into().expect("empty ticket conversion")
@@ -1318,7 +1499,8 @@ pub fn media_live_set_video_enabled(enabled: u8) -> u8 {
 /// Latest camera frame pushed from Swift (BGRA, rows tightly packed) with
 /// its actual dimensions.
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-static PUSHED_FRAME: Mutex<Option<(u32, u32, iroh_live::media::format::VideoFrame)>> = Mutex::new(None);
+static PUSHED_FRAME: Mutex<Option<(u32, u32, iroh_live::media::format::VideoFrame)>> =
+    Mutex::new(None);
 
 /// Consumes frames pushed over FFI (media_video_push_frame). Stateless: the
 /// slot is shared, start/stop just clear it. The encoder thread polls
@@ -1431,7 +1613,17 @@ pub fn media_live_stop() {
     tracing::info!("live publisher stop requested");
     let session = LIVE.lock().expect("live mutex poisoned").take();
     if let Some(session) = session {
-        tokio_executor(async move { session._live.shutdown().await });
+        tokio_executor(async move {
+            let LiveSession {
+                _live,
+                _broadcast: _,
+                ticket_source,
+            } = session;
+            _live.shutdown().await;
+            if let Some(source) = ticket_source {
+                source._live.shutdown().await;
+            }
+        });
         tracing::info!("live publisher stopped");
     } else {
         tracing::info!("live publisher stop ignored: no active publisher");
@@ -1454,7 +1646,10 @@ pub fn media_live_stop() {
 #[ffi_export]
 pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
     let ticket_text = ticket.to_str();
-    tracing::info!(ticket_len = ticket_text.len(), "live subscriber start requested");
+    tracing::info!(
+        ticket_len = ticket_text.len(),
+        "live subscriber start requested"
+    );
     let Ok(ticket) = LiveTicket::deserialize(ticket_text) else {
         tracing::warn!("live subscriber rejected: invalid ticket");
         return 1;
@@ -1535,6 +1730,139 @@ pub fn media_live_recording_samples() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_live_audio_source_kinds() {
+        assert!(matches!(
+            parse_live_audio_source("mic").unwrap(),
+            LiveAudioSource::Mic
+        ));
+        assert!(matches!(
+            parse_live_audio_source("push").unwrap(),
+            LiveAudioSource::Push
+        ));
+        assert!(matches!(
+            parse_live_audio_source("file:/tmp/test.wav").unwrap(),
+            LiveAudioSource::File(path) if path == PathBuf::from("/tmp/test.wav")
+        ));
+        assert!(parse_live_audio_source("file:").is_err());
+        assert!(parse_live_audio_source("ticket:not-a-ticket").is_err());
+        assert!(parse_live_audio_source("unknown").is_err());
+    }
+
+    #[test]
+    fn file_source_decodes_wav() {
+        let path = std::env::temp_dir().join(format!(
+            "idfon-audio-source-{}-{}.wav",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut recorder =
+            WavRecorder::create(path.to_str().unwrap(), AudioFormat::stereo_48k()).unwrap();
+        recorder.push(&[0.25, -0.25].repeat(480)).unwrap();
+        recorder.finish().unwrap();
+
+        let mut source = AudioFileSource::new(&path, false).unwrap();
+        let mut samples = vec![0.0; 960];
+        let mut frames = None;
+        for _ in 0..100 {
+            match source.pop_samples(&mut samples).unwrap() {
+                Some(value) => {
+                    frames = Some(value);
+                    break;
+                }
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert_eq!(frames, Some(480));
+        assert!(samples.iter().any(|sample| sample.abs() > 0.1));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ticket_forwarding_sink_downmixes() {
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let mut sink = ForwardingSink {
+            format: AudioFormat::stereo_48k(),
+            queue: queue.clone(),
+            handle: RecordingSinkHandle {
+                paused: Arc::new(AtomicBool::new(false)),
+            },
+        };
+        sink.push_samples(&[1.0, 0.0, -0.5, 0.5]).unwrap();
+        assert_eq!(
+            queue.lock().unwrap().iter().copied().collect::<Vec<_>>(),
+            vec![0.5, 0.0]
+        );
+    }
+
+    #[test]
+    fn file_source_starts_live_publisher() {
+        let path = std::env::temp_dir().join(format!(
+            "idfon-live-file-{}-{}.wav",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut recorder =
+            WavRecorder::create(path.to_str().unwrap(), AudioFormat::stereo_48k()).unwrap();
+        recorder.push(&[0.25, -0.25].repeat(4_800)).unwrap();
+        recorder.finish().unwrap();
+
+        let ticket = start_live(true, false, LiveAudioSource::File(path.clone()));
+        assert!(!ticket.to_str().is_empty(), "file source failed to publish");
+        media_live_stop();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn live_ticket_source_relays_decoded_audio() {
+        let path = std::env::temp_dir().join(format!(
+            "idfon-live-ticket-{}-{}.wav",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut recorder =
+            WavRecorder::create(path.to_str().unwrap(), AudioFormat::stereo_48k()).unwrap();
+        recorder.push(&[0.25, -0.25].repeat(9_600)).unwrap();
+        recorder.finish().unwrap();
+
+        let relayed = tokio_executor(async {
+            let publisher = Live::from_env().await?.with_router().spawn();
+            let broadcast = LocalBroadcast::new();
+            let source = MonoFileSource {
+                source: AudioFileSource::new(&path, false)?,
+                stereo: Vec::new(),
+            };
+            install_audio(&broadcast, source, 32_000)?;
+            let name = format!("idfon-ticket-test-{}", std::process::id());
+            publisher.publish(&name, &broadcast).await?;
+            let ticket = LiveTicket::new(publisher.endpoint().addr(), &name);
+            let (queue, session) = prepare_ticket_source(ticket).await?;
+
+            for _ in 0..200 {
+                if !queue.lock().expect("ticket queue poisoned").is_empty() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            let relayed = !queue.lock().expect("ticket queue poisoned").is_empty();
+            session._live.shutdown().await;
+            publisher.shutdown().await;
+            anyhow::Ok(relayed)
+        });
+        assert!(relayed.expect("ticket relay failed"));
+        fs::remove_file(path).unwrap();
+    }
+
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -1553,7 +1881,10 @@ mod tests {
         *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
         media_video_push_frame(pixels.as_ptr(), pixels.len(), 2, 2, 0);
         assert!(
-            PUSHED_FRAME.lock().expect("pushed frame mutex poisoned").is_none(),
+            PUSHED_FRAME
+                .lock()
+                .expect("pushed frame mutex poisoned")
+                .is_none(),
             "disabled gate must not queue a frame"
         );
 
@@ -1571,7 +1902,10 @@ mod tests {
             "disabling must drop the queued frame"
         );
         assert!(
-            PUSHED_FRAME.lock().expect("pushed frame mutex poisoned").is_none(),
+            PUSHED_FRAME
+                .lock()
+                .expect("pushed frame mutex poisoned")
+                .is_none(),
             "disabling must clear the slot"
         );
     }
@@ -1603,7 +1937,11 @@ mod tests {
         // Overflow keeps only the newest PUSH_AUDIO_CAPACITY samples.
         let big = vec![0.5f32; PUSH_AUDIO_CAPACITY + 100];
         media_audio_push_samples(big.as_ptr(), big.len());
-        let queued = source.queue.lock().expect("pushed audio queue poisoned").len();
+        let queued = source
+            .queue
+            .lock()
+            .expect("pushed audio queue poisoned")
+            .len();
         assert_eq!(queued, PUSH_AUDIO_CAPACITY, "overflow drops oldest");
 
         *PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned") = None;
@@ -1828,7 +2166,10 @@ pub fn media_live_recording_store() -> char_p::Box {
 #[ffi_export]
 pub fn media_blob_fetch(ticket: char_p::Ref<'_>) -> u8 {
     let ticket_text = ticket.to_str();
-    tracing::info!(ticket_len = ticket_text.len(), "recording blob fetch requested");
+    tracing::info!(
+        ticket_len = ticket_text.len(),
+        "recording blob fetch requested"
+    );
     let Ok(ticket) = ticket_text.parse::<BlobTicket>() else {
         tracing::warn!("recording blob fetch rejected: invalid ticket");
         return 1;
