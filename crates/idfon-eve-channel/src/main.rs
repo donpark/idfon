@@ -713,6 +713,9 @@ async fn handle_message(
         });
     }
 
+    // Message ids are daemon-local, so two peers can legitimately both send
+    // `msg_1`. The reply route must be globally unique within this holder.
+    let reply_key = format!("{}:{}", message.sender.peer_id, message.message_id);
     let mut targets_guard = targets.lock().await;
     if targets_guard.len() >= MAX_TARGETS {
         let error = HolderError::ResourceLimit;
@@ -725,7 +728,7 @@ async fn handle_message(
         return Err(TransportError::Failed(error.to_string()));
     }
     targets_guard.insert(
-        message.message_id.clone(),
+        reply_key.clone(),
         ReplyTarget {
             peer_id: message.sender.peer_id.clone(),
             endpoint_id: remote_endpoint_id.clone(),
@@ -736,7 +739,7 @@ async fn handle_message(
     drop(targets_guard);
     out_tx
         .send(IpcFrame::TurnIn {
-            message_id: message.message_id.clone(),
+            message_id: reply_key,
             peer_id: message.sender.peer_id.clone(),
             endpoint_id: remote_endpoint_id,
             idempotency_key: message.idempotency_key.clone(),
@@ -798,10 +801,13 @@ async fn handle_reply(
     else {
         return Err(anyhow!("expected reply.out frame"));
     };
+    let target_key = in_reply_to
+        .split_once('|')
+        .map_or(in_reply_to.as_str(), |(key, _)| key);
     let target = targets
         .lock()
         .await
-        .get(&in_reply_to)
+        .get(target_key)
         .cloned()
         .ok_or_else(|| anyhow!("unknown in_reply_to {}", in_reply_to))?;
     let endpoint_id: EndpointId = target

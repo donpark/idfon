@@ -17,6 +17,7 @@ if (!socketPath || !targetUrl || !secret || !Number.isInteger(port)) {
 const holder = createConnection(socketPath);
 let input = Buffer.alloc(0);
 const pending = new Map();
+const roomMembers = new Map();
 let writeTail = Promise.resolve();
 let nextRequestId = 1;
 
@@ -75,7 +76,7 @@ holder.on("error", (error) => { console.error(`[idfon-eve-channel] holder IPC: $
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
-  if (request.method !== "POST" || !["/reply", "/blob", "/blob/put", "/input", "/send", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
+  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/input", "/send", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -97,6 +98,32 @@ const server = createServer(async (request, response) => {
     body = JSON.parse(Buffer.concat(chunks));
   } catch {
     response.writeHead(400); response.end("invalid JSON\n"); return;
+  }
+  if (request.url === "/room/member") {
+    if (typeof body.conversation !== "string" || !body.conversation ||
+        typeof body.peer_id !== "string" || typeof body.endpoint_id !== "string" ||
+        typeof body.message_id !== "string") {
+      response.writeHead(400); response.end("invalid room member\n"); return;
+    }
+    const members = roomMembers.get(body.conversation) ?? new Map();
+    members.set(body.peer_id, {
+      peer_id: body.peer_id,
+      endpoint_id: body.endpoint_id,
+      message_id: body.message_id,
+    });
+    roomMembers.set(body.conversation, members);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ members: [...members.values()] }));
+    return;
+  }
+  if (request.url === "/room/members") {
+    if (typeof body.conversation !== "string" || !body.conversation) {
+      response.writeHead(400); response.end("invalid room members request\n"); return;
+    }
+    const members = [...(roomMembers.get(body.conversation)?.values() ?? [])];
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ members }));
+    return;
   }
   if (request.url === "/send") {
     if (typeof body.peer_id !== "string" || typeof body.endpoint_id !== "string" ||
