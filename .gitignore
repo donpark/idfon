@@ -23,6 +23,9 @@ skills-lock.json
 *.wav
 .DS_Store
 
+# Runtime blob store written by the Eve holder when --blob-dir is not set
+blobs/
+
 # iOS app build artifacts
 ios/Vendor/
 ios/.derived/
