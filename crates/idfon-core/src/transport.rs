@@ -10,13 +10,63 @@ use tokio::{
     sync::{mpsc, RwLock},
 };
 
-use iroh::{endpoint::{presets, Connection, RecvStream, SendStream}, Endpoint, EndpointAddr, EndpointId, SecretKey};
 use idfon_protocol::{
     decode_frame, encode_frame, AckStatus, MessageAck, MessageEnvelope, MAX_FRAME_BYTES,
 };
+use iroh::{
+    endpoint::{presets, Connection, RecvStream, SendStream},
+    protocol::ProtocolHandler,
+    Endpoint, EndpointAddr, EndpointId, SecretKey,
+};
+use iroh_gossip::{api::GossipTopic, Gossip, TopicId};
 use thiserror::Error;
 
 pub const MESSAGE_ALPN: &[u8] = b"idfon/message/1";
+
+/// A gossip service attached to an existing Iroh message endpoint. Gossip is
+/// only a dissemination path; callers still validate the signed envelope and
+/// persist it through the normal message receiver.
+pub struct GossipService {
+    gossip: Gossip,
+    _side_channel: SideChannelGuard,
+}
+
+impl GossipService {
+    pub fn start(transport: &IrohTransport) -> Self {
+        let gossip = Gossip::builder().spawn(transport.endpoint().clone());
+        let (tx, mut rx) = mpsc::channel::<Connection>(32);
+        let handler = gossip.clone();
+        tokio::spawn(async move {
+            while let Some(connection) = rx.recv().await {
+                let handler = handler.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = handler.accept(connection).await {
+                        tracing::warn!("gossip connection failed: {error}");
+                    }
+                });
+            }
+        });
+        let side_channel = transport.add_side_channel(iroh_gossip::ALPN, tx);
+        Self {
+            gossip,
+            _side_channel: side_channel,
+        }
+    }
+
+    pub async fn subscribe(
+        &self,
+        topic: TopicId,
+        bootstrap: Vec<EndpointId>,
+    ) -> Result<GossipTopic, iroh_gossip::api::ApiError> {
+        self.gossip.subscribe(topic, bootstrap).await
+    }
+}
+
+/// Stable topic mapping so every daemon derives the same gossip topic from a
+/// room id without putting transport-specific data on the wire.
+pub fn room_topic(room_id: &str) -> TopicId {
+    TopicId::from_bytes(*blake3::hash(room_id.as_bytes()).as_bytes())
+}
 
 /// Copies `reader` to `writer` verbatim until EOF, then half-closes the writer.
 /// Used by the byte-stream side channels (MCP bridge, daemon relay); it does not
@@ -110,6 +160,7 @@ pub struct IrohTransport {
     /// a registered entry are handed to the sender instead of the message
     /// path (e.g. MoQ sessions for 1:1 live calls).
     side_channels: Arc<Mutex<HashMap<Vec<u8>, mpsc::Sender<Connection>>>>,
+    gossip: Arc<Mutex<Option<Arc<GossipService>>>>,
 }
 
 impl IrohTransport {
@@ -130,6 +181,7 @@ impl IrohTransport {
             endpoint,
             alpn: MESSAGE_ALPN.to_vec(),
             side_channels: Arc::new(Mutex::new(HashMap::new())),
+            gossip: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -141,6 +193,16 @@ impl IrohTransport {
     /// are forwarded to `sender`. The ALPN is added to the endpoint's
     /// accepted set immediately; dropping the returned guard unregisters
     /// the forwarder (the ALPN stays accepted — re-register on next use).
+    pub fn enable_gossip(&self) -> Arc<GossipService> {
+        let mut slot = self.gossip.lock().expect("gossip state poisoned");
+        if let Some(service) = slot.as_ref() {
+            return service.clone();
+        }
+        let service = Arc::new(GossipService::start(self));
+        *slot = Some(service.clone());
+        service
+    }
+
     pub fn add_side_channel(
         &self,
         alpn: &[u8],
@@ -284,26 +346,51 @@ pub struct TransportManager {
 impl TransportManager {
     pub async fn bind_with_key(key: Option<[u8; 32]>) -> Result<Self, TransportError> {
         let mut transports = HashMap::new();
-        transports.insert("default".into(), Arc::new(IrohTransport::bind_with_key(key).await?));
-        Ok(Self { current: RwLock::new(transports) })
+        transports.insert(
+            "default".into(),
+            Arc::new(IrohTransport::bind_with_key(key).await?),
+        );
+        Ok(Self {
+            current: RwLock::new(transports),
+        })
     }
 
     pub fn endpoint_id(&self, identity: &str) -> Option<String> {
-        self.current.try_read().ok()?.get(identity).map(|transport| transport.endpoint().id().to_string())
+        self.current
+            .try_read()
+            .ok()?
+            .get(identity)
+            .map(|transport| transport.endpoint().id().to_string())
     }
 
     pub fn endpoint_ticket(&self, identity: &str) -> Option<Vec<u8>> {
-        serde_json::to_vec(&self.current.try_read().ok()?.get(identity)?.endpoint().addr()).ok()
+        serde_json::to_vec(
+            &self
+                .current
+                .try_read()
+                .ok()?
+                .get(identity)?
+                .endpoint()
+                .addr(),
+        )
+        .ok()
     }
 
     pub async fn current(&self, identity: &str) -> Option<Arc<IrohTransport>> {
         self.current.read().await.get(identity).cloned()
     }
 
-    pub async fn add_identity(&self, identity: &str, key: [u8; 32]) -> Result<String, TransportError> {
+    pub async fn add_identity(
+        &self,
+        identity: &str,
+        key: [u8; 32],
+    ) -> Result<String, TransportError> {
         let transport = Arc::new(IrohTransport::bind_with_key(Some(key)).await?);
         let endpoint_id = transport.endpoint().id().to_string();
-        self.current.write().await.insert(identity.into(), transport);
+        self.current
+            .write()
+            .await
+            .insert(identity.into(), transport);
         Ok(endpoint_id)
     }
 
@@ -313,7 +400,10 @@ impl TransportManager {
         Fut: Future<Output = Result<MessageAck, TransportError>> + Send + 'static,
     {
         loop {
-            let current = self.current(identity).await.ok_or_else(|| TransportError::Failed("identity transport not found".into()))?;
+            let current = self
+                .current(identity)
+                .await
+                .ok_or_else(|| TransportError::Failed("identity transport not found".into()))?;
             match current.serve(handler.clone()).await {
                 Err(TransportError::Failed(message)) if message == "message endpoint closed" => {
                     continue
@@ -323,16 +413,35 @@ impl TransportManager {
         }
     }
 
-    pub async fn rebind(&self, identity: &str, key: Option<[u8; 32]>) -> Result<String, TransportError> {
+    pub async fn rebind(
+        &self,
+        identity: &str,
+        key: Option<[u8; 32]>,
+    ) -> Result<String, TransportError> {
         let replacement = Arc::new(IrohTransport::bind_with_key(key).await?);
         let id = replacement.endpoint().id().to_string();
-        let old = self.current.write().await.insert(identity.into(), replacement);
-        if let Some(old) = old { old.endpoint().close().await; }
+        let old = self
+            .current
+            .write()
+            .await
+            .insert(identity.into(), replacement);
+        if let Some(old) = old {
+            old.endpoint().close().await;
+        }
         Ok(id)
     }
 
-    pub async fn send(&self, identity: &str, target: &EndpointAddr, message: &MessageEnvelope) -> Result<MessageAck, TransportError> {
-        self.current(identity).await.ok_or_else(|| TransportError::Failed("identity transport not found".into()))?.send(target, message).await
+    pub async fn send(
+        &self,
+        identity: &str,
+        target: &EndpointAddr,
+        message: &MessageEnvelope,
+    ) -> Result<MessageAck, TransportError> {
+        self.current(identity)
+            .await
+            .ok_or_else(|| TransportError::Failed("identity transport not found".into()))?
+            .send(target, message)
+            .await
     }
 }
 
@@ -443,6 +552,12 @@ mod tests {
             sender.endpoint().close().await;
             receiver.endpoint().close().await;
         });
+    }
+
+    #[test]
+    fn room_topics_are_stable_and_room_scoped() {
+        assert_eq!(room_topic("room-a"), room_topic("room-a"));
+        assert_ne!(room_topic("room-a"), room_topic("room-b"));
     }
 
     #[test]
