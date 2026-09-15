@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 anyhow = "1"
 blake3 = "1"
+futures-util = "0.3"
+iroh-gossip = "0.101"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 iroh = "1"
 iroh-blobs = "0.103"
