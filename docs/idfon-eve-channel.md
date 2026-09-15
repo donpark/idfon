@@ -172,6 +172,9 @@ Consequences:
 - **Grants as the edge gate.** The same hook can require `message.send` (or
   `mcp.transport`) for the peer before accepting a turn. idfon grants become
   the ingress authorization and map naturally onto Eve's approval policies.
+  Ordinary turns require `message.receive`; signed A2A envelopes additionally
+  require the explicit `agent.receive` grant, keeping agent-vs-human policy at
+  the capability boundary.
 - **Revocation is unilateral.** Revoking the idfon grant cuts the peer off
   without cooperation from the agent side.
 - **`forwardPrincipal`** can carry the peer identity to subagents and
@@ -196,9 +199,10 @@ managed-child packaging the attestation is the IPC channel itself.
   rather than external URLs or sandbox paths (Eve explicitly does not treat
   sandbox files as durable storage).
 - **Live media**: `idfon__publish-live` (requiring the authenticated
-  `live.audio.publish` grant) returns an idfon **stream ticket**; it is
-  delivered through the pinned `idfon-media`/MoQ plane and referenced in the
-  turn. It has no Eve session equivalent.
+  `live.audio.publish` or `live.video.publish` grant) returns an idfon **stream
+  ticket**; file-backed audio and fragmented-MP4 video are delivered through
+  the pinned `idfon-media`/MoQ plane and referenced in the turn. It has no Eve
+  session equivalent.
 - **Typing/status**: optional, from `turn.started` / `actions.requested`.
 
 ### Media is where idfon exceeds Slack
@@ -213,7 +217,8 @@ output:
 - **completed recordings** (Opus) via blob tickets;
 - **live audio/video** via `iroh-live`/MoQ **stream tickets** — real-time,
   multi-rendition, referenced by the turn but not streamed through Eve's
-  session model as token events.
+  session model as token events. The Eve holder supports file-backed WAV/MP3/
+  FLAC audio and fragmented-MP4 H.264 video.
 
 The protocol already reserves media shape: `MessageContent` currently has only
 `Text`, but `MediaResource` / `MediaKind { File, Recording, LiveAudio,
@@ -256,6 +261,8 @@ Honest caveats:
   so it does not reintroduce a public route.
 - **Reachability ≠ authorization.** Grants and capability tickets still gate
   who may send or invoke; idfon separates connection from permission by design.
+  The holder also applies a per-peer rate limit, bounded target/seen-message
+  sets, an eight-publisher live quota, and a configurable live-publisher TTL.
   Ticket grants are exposed to Eve approval policies as authenticated session
   attributes, not trusted from the incoming HTTP body.
 - **Two orthogonal axes, possibly one endpoint.** Conversation is this channel
@@ -269,12 +276,26 @@ Honest caveats:
 The channel contract does not force a separate process; only the endpoint's
 lifetime does. Three shapes, in order of preference:
 
-1. **Managed child (recommended).** The Eve extension spawns the endpoint
-   holder (a Rust binary bundling `idfon-core`) and speaks a small local IPC
-   protocol to it. One install, lifecycle coupled to the agent process. The
-   user sees a single provider. Requires Eve extension support for a bundled
-   binary (`eve.extension.externalDependencies` covers native assets/SDKs).
-2. **External sidecar.** An operator runs the holder; the channel connects to
+1. **Managed child (future hook).** The desired shape is for the Eve
+   extension to spawn the endpoint holder (a Rust binary bundling `idfon-core`)
+   and speak a small local IPC protocol to it. Eve 0.54.5 has no custom-channel
+   startup hook, so the managed runner below is the current lifecycle coupling.
+   Requires future Eve extension support for a bundled binary
+   (`eve.extension.externalDependencies` covers native assets/SDKs).
+2. **Managed sidecar runner.** `integrations/eve-idfon-channel/managed.mjs`
+   owns the Rust holder and bridge as child processes, uses a stable socket/key,
+   removes stale locks, forwards termination, and cleans up live publishers.
+   Example:
+   ```sh
+   node integrations/eve-idfon-channel/managed.mjs \
+     --holder-command ./idfon-eve-channel \
+     --key-file ~/.config/idfon/eve.key --socket /run/user/$UID/idfon-eve.sock \
+     --blob-dir ~/.local/share/idfon/eve-blobs \
+     --target http://127.0.0.1:52776 --secret "$IDFON_BRIDGE_SECRET" --port 18766
+   ```
+   Eve 0.54.5 does not expose a custom-channel startup hook, so this is the
+   explicit deployment entrypoint rather than an in-extension spawn.
+3. **External sidecar.** An operator runs the holder; the channel connects to
    its loopback endpoint. Simplest to develop and debug; one more thing to
    deploy.
 3. **Native addon (later, optional).** Drop the Rust binary by exposing

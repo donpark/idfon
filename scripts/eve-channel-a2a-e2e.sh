@@ -52,9 +52,9 @@ C_PID=$("$NUF" --socket "$C" status --json | jq -r .result.identity.public_key)
 # Derive both stable holder IDs from their signing keys before binding sockets.
 A_TICKET=$($HOLDER --key-file "$work/a-holder.key" ticket --subject "$C_PID")
 A_HOLDER_PID=$(printf '%s' "$A_TICKET" | jq -r .issuer)
-B_TICKET=$($HOLDER --key-file "$work/b-holder.key" ticket --subject "$A_HOLDER_PID")
+B_TICKET=$($HOLDER --key-file "$work/b-holder.key" ticket --subject "$A_HOLDER_PID" --capability agent.receive)
 B_PID=$(printf '%s' "$B_TICKET" | jq -r .issuer)
-A_REPLY_TICKET=$($HOLDER --key-file "$work/a-holder.key" ticket --subject "$B_PID")
+A_REPLY_TICKET=$($HOLDER --key-file "$work/a-holder.key" ticket --subject "$B_PID" --capability agent.receive)
 printf '%s' "$B_TICKET" >"$work/b-reply-ticket.json"
 printf '%s' "$A_REPLY_TICKET" >"$work/a-reply-ticket.json"
 

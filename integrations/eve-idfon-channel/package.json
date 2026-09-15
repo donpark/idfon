@@ -14,8 +14,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "bridge.mjs",
+    "managed.mjs"
   ],
+  "bin": {
+    "idfon-eve-channel": "./managed.mjs"
+  },
   "scripts": {
     "build": "eve extension build",
     "prepare": "eve extension build"

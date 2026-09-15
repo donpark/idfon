@@ -1,12 +1,12 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -33,6 +33,12 @@ use tokio::{
 };
 
 const IPC_MAX_FRAME_BYTES: usize = MAX_FRAME_BYTES;
+const MAX_MESSAGES_PER_PEER_PER_MINUTE: usize = 120;
+const MAX_TARGETS: usize = 4096;
+const MAX_SEEN_MESSAGES: usize = 10_000;
+const MAX_LIVE_PUBLISHERS: usize = 8;
+const MAX_BLOB_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_LIVE_TTL_SECS: u64 = 3600;
 static NEXT_REPLY_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Parser)]
@@ -66,6 +72,9 @@ enum Mode {
         /// JSON capability ticket to attach to outbound replies.
         #[arg(long, value_name = "FILE")]
         reply_ticket_file: Option<PathBuf>,
+        /// Stop abandoned live publishers after this many seconds.
+        #[arg(long, default_value_t = DEFAULT_LIVE_TTL_SECS)]
+        live_ttl_secs: u64,
     },
     /// Issue a holder-signed message.receive ticket for initial provisioning.
     Ticket {
@@ -211,6 +220,9 @@ enum IpcFrame {
         name: String,
         #[serde(default)]
         relay: bool,
+        #[serde(default)]
+        video: bool,
+        quality: Option<String>,
     },
     #[serde(rename = "live.publish.result")]
     LivePublishResult {
@@ -236,6 +248,27 @@ struct ReplyTarget {
 
 type Targets = Arc<Mutex<HashMap<String, ReplyTarget>>>;
 type Seen = Arc<Mutex<HashMap<(String, String), String>>>;
+type RateLimits = Arc<Mutex<HashMap<String, VecDeque<Instant>>>>;
+type LivePublishers = Arc<Mutex<HashMap<String, LivePublisherEntry>>>;
+
+enum LivePublisherKind {
+    Audio(idfon_media::live::LivePublisher),
+    Video(idfon_media::video::VideoPublisher),
+}
+
+impl LivePublisherKind {
+    fn stop(self) {
+        match self {
+            Self::Audio(publisher) => publisher.stop(),
+            Self::Video(publisher) => publisher.stop(),
+        }
+    }
+}
+
+struct LivePublisherEntry {
+    publisher: LivePublisherKind,
+    expires_at: Instant,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -248,12 +281,13 @@ async fn main() -> Result<()> {
             ephemeral,
             blob_dir,
             reply_ticket_file,
+            live_ttl_secs,
         } => {
             let key = load_key(key_file.as_deref(), ephemeral)?;
             let reply_ticket = reply_ticket_file
                 .map(|path| load_ticket(&path))
                 .transpose()?;
-            serve(socket, allow, key, blob_dir, reply_ticket).await
+            serve(socket, allow, key, blob_dir, reply_ticket, live_ttl_secs).await
         }
         Mode::Ticket {
             subject,
@@ -314,6 +348,7 @@ async fn serve(
     key: SigningKey,
     blob_dir: PathBuf,
     reply_ticket: Option<CapabilityTicket>,
+    live_ttl_secs: u64,
 ) -> Result<()> {
     if socket.exists() {
         std::fs::remove_file(&socket)
@@ -361,12 +396,24 @@ async fn serve(
 
     let targets = Targets::default();
     let seen = Seen::default();
-    let live_publishers = Arc::new(Mutex::new(HashMap::new()));
+    let rate_limits = RateLimits::default();
+    let live_publishers: LivePublishers = Arc::new(Mutex::new(HashMap::new()));
+    let live_cleanup = {
+        let live_publishers = Arc::clone(&live_publishers);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                cleanup_live_publishers(&live_publishers).await;
+            }
+        })
+    };
     let holder_peer_id = peer_id(&key);
     let transport_task = {
         let transport = Arc::clone(&transport);
         let targets = Arc::clone(&targets);
         let seen = Arc::clone(&seen);
+        let rate_limits = Arc::clone(&rate_limits);
         let out_tx = out_tx.clone();
         let allow = Arc::new(allow);
         let holder_peer_id = holder_peer_id.clone();
@@ -378,6 +425,7 @@ async fn serve(
                         remote_id.to_string(),
                         Arc::clone(&targets),
                         Arc::clone(&seen),
+                        Arc::clone(&rate_limits),
                         out_tx.clone(),
                         allow.clone(),
                         holder_peer_id.clone(),
@@ -441,6 +489,8 @@ async fn serve(
                 loop_playback,
                 name,
                 relay,
+                video,
+                quality,
             } => {
                 handle_live_publish(
                     request_id,
@@ -448,6 +498,9 @@ async fn serve(
                     loop_playback,
                     name,
                     relay,
+                    video,
+                    quality,
+                    live_ttl_secs,
                     &live_publishers,
                     out_tx.clone(),
                 )
@@ -512,8 +565,12 @@ async fn serve(
 
     transport_task.abort();
     let _ = transport_task.await;
+    live_cleanup.abort();
+    let _ = live_cleanup.await;
+    stop_all_live_publishers(&live_publishers).await;
     let _ = blob_router.shutdown().await;
     blob_endpoint.close().await;
+    let _ = std::fs::remove_file(&socket);
     Ok(())
 }
 
@@ -522,6 +579,7 @@ async fn handle_message(
     remote_endpoint_id: String,
     targets: Targets,
     seen: Seen,
+    rate_limits: RateLimits,
     out_tx: mpsc::Sender<IpcFrame>,
     allow: Arc<Vec<String>>,
     holder_peer_id: String,
@@ -553,6 +611,30 @@ async fn handle_message(
     let (text, a2a_depth) = parse_a2a_envelope(&wire_text)
         .map(|(depth, text)| (text, Some(depth)))
         .unwrap_or((wire_text.clone(), None));
+    if a2a_depth.is_some()
+        && !ticket
+            .capabilities
+            .contains(&Capability::new("agent.receive"))
+    {
+        let error = HolderError::AgentCapabilityDenied;
+        let _ = out_tx
+            .send(IpcFrame::Error {
+                code: error.code().into(),
+                message: error.to_string(),
+            })
+            .await;
+        return Err(TransportError::Failed(error.to_string()));
+    }
+    if !admit_message(&rate_limits, &message.sender.peer_id).await {
+        let error = HolderError::RateLimited;
+        let _ = out_tx
+            .send(IpcFrame::Error {
+                code: error.code().into(),
+                message: error.to_string(),
+            })
+            .await;
+        return Err(TransportError::Failed(error.to_string()));
+    }
     let attachment = parse_data_envelope(&text);
     let key = (
         message.sender.peer_id.clone(),
@@ -575,6 +657,16 @@ async fn handle_message(
                 message_id: message.message_id,
                 status: AckStatus::Duplicate,
             });
+        }
+        if seen_guard.len() >= MAX_SEEN_MESSAGES {
+            let error = HolderError::ResourceLimit;
+            let _ = out_tx
+                .send(IpcFrame::Error {
+                    code: error.code().into(),
+                    message: error.to_string(),
+                })
+                .await;
+            return Err(TransportError::Failed(error.to_string()));
         }
         seen_guard.insert(key, wire_text);
     }
@@ -621,7 +713,18 @@ async fn handle_message(
         });
     }
 
-    targets.lock().await.insert(
+    let mut targets_guard = targets.lock().await;
+    if targets_guard.len() >= MAX_TARGETS {
+        let error = HolderError::ResourceLimit;
+        let _ = out_tx
+            .send(IpcFrame::Error {
+                code: error.code().into(),
+                message: error.to_string(),
+            })
+            .await;
+        return Err(TransportError::Failed(error.to_string()));
+    }
+    targets_guard.insert(
         message.message_id.clone(),
         ReplyTarget {
             peer_id: message.sender.peer_id.clone(),
@@ -630,6 +733,7 @@ async fn handle_message(
             a2a_depth,
         },
     );
+    drop(targets_guard);
     out_tx
         .send(IpcFrame::TurnIn {
             message_id: message.message_id.clone(),
@@ -658,6 +762,24 @@ async fn handle_message(
         message_id: message.message_id,
         status: AckStatus::Accepted,
     })
+}
+
+async fn admit_message(rate_limits: &RateLimits, peer_id: &str) -> bool {
+    let now = Instant::now();
+    let window = Duration::from_secs(60);
+    let mut limits = rate_limits.lock().await;
+    let entries = limits.entry(peer_id.to_owned()).or_default();
+    while entries
+        .front()
+        .is_some_and(|started| now.duration_since(*started) >= window)
+    {
+        entries.pop_front();
+    }
+    if entries.len() >= MAX_MESSAGES_PER_PEER_PER_MINUTE {
+        return false;
+    }
+    entries.push_back(now);
+    true
 }
 
 async fn handle_reply(
@@ -767,6 +889,7 @@ async fn handle_status(
         .send(&EndpointAddr::new(endpoint_id), &envelope)
         .await
         .map_err(|error| anyhow!("send status to {}: {error}", target.peer_id))?;
+    targets.lock().await.remove(&in_reply_to);
     out_tx
         .send(IpcFrame::StatusAck {
             request_id,
@@ -1005,15 +1128,37 @@ async fn handle_live_publish(
     loop_playback: bool,
     name: String,
     relay: bool,
-    publishers: &Arc<Mutex<HashMap<String, idfon_media::live::LivePublisher>>>,
+    video: bool,
+    quality: Option<String>,
+    live_ttl_secs: u64,
+    publishers: &LivePublishers,
     out_tx: mpsc::Sender<IpcFrame>,
 ) -> Result<()> {
+    cleanup_live_publishers(publishers).await;
+    if publishers.lock().await.len() >= MAX_LIVE_PUBLISHERS {
+        return Err(anyhow!("live publisher limit exceeded"));
+    }
     let path = PathBuf::from(path);
-    let (publisher, ticket) =
-        idfon_media::live::LivePublisher::start(&path, loop_playback, &name, relay)
-            .with_context(|| format!("publish live media from {}", path.display()))?;
+    let (publisher, ticket) = if video {
+        let presets = video_presets(quality.as_deref())?;
+        let (publisher, ticket) =
+            idfon_media::video::VideoPublisher::start(&path, &name, relay, presets)
+                .with_context(|| format!("publish live video from {}", path.display()))?;
+        (LivePublisherKind::Video(publisher), ticket)
+    } else {
+        let (publisher, ticket) =
+            idfon_media::live::LivePublisher::start(&path, loop_playback, &name, relay)
+                .with_context(|| format!("publish live audio from {}", path.display()))?;
+        (LivePublisherKind::Audio(publisher), ticket)
+    };
     let id = format!("live-{}", NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed));
-    publishers.lock().await.insert(id.clone(), publisher);
+    publishers.lock().await.insert(
+        id.clone(),
+        LivePublisherEntry {
+            publisher,
+            expires_at: Instant::now() + Duration::from_secs(live_ttl_secs.max(1)),
+        },
+    );
     out_tx
         .send(IpcFrame::LivePublishResult {
             request_id,
@@ -1025,17 +1170,64 @@ async fn handle_live_publish(
     Ok(())
 }
 
+fn video_presets(quality: Option<&str>) -> Result<Vec<idfon_media::video::VideoPreset>> {
+    use idfon_media::video::VideoPreset;
+    match quality {
+        None | Some("all") => Ok(vec![
+            VideoPreset::P180,
+            VideoPreset::P360,
+            VideoPreset::P720,
+        ]),
+        Some("180p") | Some("low") => Ok(vec![VideoPreset::P180]),
+        Some("360p") | Some("mid") | Some("medium") => Ok(vec![VideoPreset::P360]),
+        Some("720p") | Some("high") => Ok(vec![VideoPreset::P720]),
+        Some(value) => Err(anyhow!("unsupported live video quality {value}")),
+    }
+}
+
+async fn cleanup_live_publishers(publishers: &LivePublishers) {
+    let expired = {
+        let now = Instant::now();
+        let mut guard = publishers.lock().await;
+        let ids = guard
+            .iter()
+            .filter(|(_, entry)| entry.expires_at <= now)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        ids.into_iter()
+            .filter_map(|id| guard.remove(&id).map(|entry| entry.publisher))
+            .collect::<Vec<_>>()
+    };
+    for publisher in expired {
+        let _ = tokio::task::spawn_blocking(move || publisher.stop()).await;
+    }
+}
+
+async fn stop_all_live_publishers(publishers: &LivePublishers) {
+    let entries = {
+        let mut guard = publishers.lock().await;
+        guard
+            .drain()
+            .map(|(_, entry)| entry.publisher)
+            .collect::<Vec<_>>()
+    };
+    for publisher in entries {
+        let _ = tokio::task::spawn_blocking(move || publisher.stop()).await;
+    }
+}
+
 async fn handle_live_stop(
     request_id: String,
     id: String,
-    publishers: &Arc<Mutex<HashMap<String, idfon_media::live::LivePublisher>>>,
+    publishers: &LivePublishers,
     out_tx: mpsc::Sender<IpcFrame>,
 ) -> Result<()> {
     let publisher = publishers
         .lock()
         .await
         .remove(&id)
-        .ok_or_else(|| anyhow!("unknown live publisher {id}"))?;
+        .ok_or_else(|| anyhow!("unknown live publisher {id}"))?
+        .publisher;
     tokio::task::spawn_blocking(move || publisher.stop())
         .await
         .map_err(|error| anyhow!("stop live publisher: {error}"))?;
@@ -1054,6 +1246,9 @@ async fn handle_blob_put(
     out_tx: mpsc::Sender<IpcFrame>,
 ) -> Result<()> {
     let bytes = BASE64.decode(bytes_base64).context("decode blob data")?;
+    if bytes.len() > MAX_BLOB_BYTES {
+        return Err(anyhow!("blob exceeds {} byte limit", MAX_BLOB_BYTES));
+    }
     let content = store
         .blobs()
         .add_slice(&bytes)
@@ -1077,6 +1272,9 @@ enum HolderError {
     CapabilityDenied,
     Unauthorized,
     ExpiredTicket,
+    AgentCapabilityDenied,
+    RateLimited,
+    ResourceLimit,
     IdempotencyConflict,
 }
 
@@ -1084,8 +1282,12 @@ impl HolderError {
     fn code(&self) -> &'static str {
         match self {
             Self::Auth(_) => "unauthorized",
-            Self::CapabilityDenied | Self::ExpiredTicket => "capability_denied",
+            Self::CapabilityDenied | Self::ExpiredTicket | Self::AgentCapabilityDenied => {
+                "capability_denied"
+            }
             Self::Unauthorized => "unauthorized",
+            Self::RateLimited => "rate_limited",
+            Self::ResourceLimit => "resource_limit",
             Self::IdempotencyConflict => "idempotency_key_conflict",
         }
     }
@@ -1098,6 +1300,9 @@ impl std::fmt::Display for HolderError {
             Self::CapabilityDenied => write!(f, "message.receive capability denied"),
             Self::Unauthorized => write!(f, "sender is not allowed"),
             Self::ExpiredTicket => write!(f, "capability ticket is expired"),
+            Self::AgentCapabilityDenied => write!(f, "agent.receive capability denied"),
+            Self::RateLimited => write!(f, "peer message rate limit exceeded"),
+            Self::ResourceLimit => write!(f, "holder resource limit exceeded"),
             Self::IdempotencyConflict => {
                 write!(f, "idempotency key was reused with different content")
             }
@@ -1300,6 +1505,16 @@ mod tests {
             validate_message(&expired_message, &sender_id, &[], &holder_id),
             Err(HolderError::ExpiredTicket)
         ));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_is_per_peer_and_bounded() {
+        let limits = RateLimits::default();
+        for _ in 0..MAX_MESSAGES_PER_PEER_PER_MINUTE {
+            assert!(admit_message(&limits, "peer-a").await);
+        }
+        assert!(!admit_message(&limits, "peer-a").await);
+        assert!(admit_message(&limits, "peer-b").await);
     }
 
     #[test]

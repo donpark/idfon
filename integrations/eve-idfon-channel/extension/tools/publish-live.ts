@@ -10,11 +10,14 @@ export default defineTool({
     name: z.string().min(1).default("eve-live"),
     loop: z.boolean().default(false),
     relay: z.boolean().default(true),
+    video: z.boolean().default(false),
+    quality: z.enum(["all", "180p", "360p", "720p"]).default("all"),
   }),
   async execute(input, ctx) {
     const capabilities = ctx.session.auth.current?.attributes?.capabilities;
-    if (!capabilities?.includes("live.audio.publish")) {
-      throw new Error("idfon grant live.audio.publish is required");
+    const grant = input.video ? "live.video.publish" : "live.audio.publish";
+    if (!capabilities?.includes(grant)) {
+      throw new Error(`idfon grant ${grant} is required`);
     }
     const response = await fetch(`${extension.config.bridgeUrl}/live/publish`, {
       method: "POST",
@@ -27,6 +30,8 @@ export default defineTool({
         name: input.name,
         loop_playback: input.loop,
         relay: input.relay,
+        video: input.video,
+        quality: input.quality,
       }),
     });
     if (!response.ok) {
@@ -35,7 +40,7 @@ export default defineTool({
     const result = (await response.json()) as { id: string; ticket: string };
     return {
       ...result,
-      envelope: `IDFON-LIVE/1\naction=start\nticket=${result.ticket}`,
+      envelope: `IDFON-LIVE/1\naction=start\nkind=${input.video ? "video" : "audio"}\nticket=${result.ticket}`,
     };
   },
 });
