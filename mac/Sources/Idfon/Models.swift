@@ -45,6 +45,7 @@ struct Event: Decodable {
     var messageText: String? { data["text"]?.stringValue }
     var messagePeerId: String? { data["peer_id"]?.stringValue }
     var messageId: String? { data["message_id"]?.stringValue }
+    var conversationId: String? { data["conversation"]?.stringValue }
 }
 
 enum MessageKind {
@@ -98,6 +99,8 @@ struct ChatMessage: Identifiable {
     /// Event time for received messages; `Date()` for locally-sent ones.
     /// Recents ordering consumes it.
     var timestamp: Date = Date()
+    /// nil is the ordinary 1:1 conversation; a room id scopes group history.
+    var conversation: String? = nil
 
     var displayText: String {
         switch kind {

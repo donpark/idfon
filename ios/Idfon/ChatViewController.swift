@@ -646,7 +646,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // MARK: - Table view
 
     private func syncMessages() {
-        messages = ChatStore.shared.messages.filter { $0.peerId == peer.id }
+        messages = ChatStore.shared.messages(for: peer.id)
         tableView.reloadData()
         if !messages.isEmpty {
             tableView.scrollToRow(at: IndexPath(row: messages.count - 1, section: 0), at: .bottom, animated: true)

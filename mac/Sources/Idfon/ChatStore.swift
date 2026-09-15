@@ -109,7 +109,7 @@ final class ChatStore {
         }
         let kind = MessageKind.parse(text)
         let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
-        let message = ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, status: nil, timestamp: timestamp)
+        let message = ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, status: nil, timestamp: timestamp, conversation: event.conversationId)
         messages.append(message)
         if case .recording(let ticket, _) = kind {
             onBanner?("Received voice message")
@@ -197,6 +197,14 @@ final class ChatStore {
     func cacheFile(_ ticket: String, url: URL) {
         fileURLs[ticket] = url
         notifyObservers()
+    }
+
+    func messages(for peerId: String, conversation: String? = nil) -> [ChatMessage] {
+        messages.filter { $0.peerId == peerId && $0.conversation == conversation }
+    }
+
+    func messages(in conversation: String) -> [ChatMessage] {
+        messages.filter { $0.conversation == conversation }
     }
 
     /// Peer ids ordered by most recent message (newest first) — feeds the

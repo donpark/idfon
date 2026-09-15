@@ -186,14 +186,25 @@ final class AppModel: NSObject {
     var onUpdate: (() -> Void)?
     /// Fired when the selected peer changed (detail swap).
     var onSelection: ((Peer?) -> Void)?
+    var onRoomSelection: ((Room?) -> Void)?
 
     private(set) var selectedPeer: Peer?
+    private(set) var selectedRoom: Room?
 
     let client = DaemonClient()
 
     func select(_ peer: Peer?) {
         selectedPeer = peer
+        selectedRoom = nil
         onSelection?(peer)
+        onRoomSelection?(nil)
+    }
+
+    func select(_ room: Room?) {
+        selectedRoom = room
+        selectedPeer = nil
+        onRoomSelection?(room)
+        onSelection?(nil)
     }
 
     func refresh() async {
@@ -288,6 +299,7 @@ final class DetailContainerViewController: NSViewController {
         self.app = app
         super.init(nibName: nil, bundle: nil)
         app.onSelection = { [weak self] peer in self?.show(peer) }
+        app.onRoomSelection = { [weak self] room in self?.show(room) }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -322,10 +334,16 @@ final class DetailContainerViewController: NSViewController {
             let next = ChatViewController(peer: peer, app: app)
             chat = next
             replace(with: next)
-        } else {
+        } else if app.selectedRoom == nil {
             chat = nil
             replace(with: PlaceholderViewController())
         }
+    }
+
+    private func show(_ room: Room?) {
+        guard let room else { return }
+        chat = nil
+        replace(with: RoomChatViewController(room: room))
     }
 }
 

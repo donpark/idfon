@@ -9,6 +9,8 @@ final class SidebarViewController: NSViewController {
     private let tabs: PeerTabsViewController
     private let statusLabel = NSTextField(labelWithString: "Connecting")
     private let identityPopup = NSPopUpButton()
+    private let roomPopup = NSPopUpButton()
+    private var rooms: [Room] = []
     private var suppressPopupSync = false
 
     init(app: AppModel) {
@@ -31,6 +33,9 @@ final class SidebarViewController: NSViewController {
         identityPopup.translatesAutoresizingMaskIntoConstraints = false
         identityPopup.target = self
         identityPopup.action = #selector(identityPicked)
+        roomPopup.target = self
+        roomPopup.action = #selector(roomPicked)
+        roomPopup.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.font = NSFont.systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -39,7 +44,11 @@ final class SidebarViewController: NSViewController {
         addChild(tabs)
         tabs.view.translatesAutoresizingMaskIntoConstraints = false
 
+        let roomRow = NSStackView(views: [roomPopup, button("+", #selector(createRoomTapped))])
+        roomRow.spacing = 4
+        roomRow.translatesAutoresizingMaskIntoConstraints = false
         let actions = NSStackView(views: [
+            roomRow,
             button("Add Channel…", #selector(addChannelTapped)),
             button("Create Identity…", #selector(createIdentityTapped)),
             button("Issue Receive Ticket…", #selector(issueTicketTapped)),
@@ -60,8 +69,11 @@ final class SidebarViewController: NSViewController {
             identityPopup.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             statusLabel.topAnchor.constraint(equalTo: identityPopup.bottomAnchor, constant: 4),
             statusLabel.leadingAnchor.constraint(equalTo: identityPopup.leadingAnchor),
+            roomRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            roomRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            roomRow.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
             // The tabbed lists stretch between the status line and the actions.
-            tabs.view.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
+            tabs.view.topAnchor.constraint(equalTo: roomRow.bottomAnchor, constant: 8),
             tabs.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tabs.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tabs.view.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -8),
@@ -84,6 +96,7 @@ final class SidebarViewController: NSViewController {
 
     private func refreshData() {
         statusLabel.stringValue = app.statusText
+        Task { await refreshRooms() }
         suppressPopupSync = true
         identityPopup.removeAllItems()
         for identity in app.identities {
@@ -94,6 +107,35 @@ final class SidebarViewController: NSViewController {
         }
         suppressPopupSync = false
         tabs.refresh()
+    }
+
+    private func refreshRooms() async {
+        guard let fetched = try? await app.client.rooms() else { return }
+        rooms = fetched
+        roomPopup.removeAllItems()
+        roomPopup.addItem(withTitle: "Rooms")
+        fetched.forEach { roomPopup.addItem(withTitle: $0.name?.isEmpty == false ? $0.name! : $0.id) }
+    }
+
+    @objc private func roomPicked() {
+        let index = roomPopup.indexOfSelectedItem - 1
+        guard index >= 0, index < rooms.count else { return }
+        app.select(rooms[index])
+    }
+
+    @objc private func createRoomTapped() {
+        let name = NSTextField(string: "")
+        name.placeholderString = "Room name"
+        let members = NSTextField(string: "")
+        members.placeholderString = "member ids, comma separated"
+        let stack = NSStackView(views: [name, members]); stack.orientation = .vertical; stack.spacing = 8
+        presentAlert(title: "Create Room", message: "Choose members by peer id.", accessory: stack, okTitle: "Create") {
+            let ids = members.stringValue.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            Task {
+                do { _ = try await self.app.client.createRoom(name: name.stringValue.isEmpty ? nil : name.stringValue, members: ids); await self.refreshRooms() }
+                catch { await MainActor.run { self.plainSheet(title: "Room Failed", message: error.localizedDescription) } }
+            }
+        }
     }
 
     @objc private func identityPicked() {
