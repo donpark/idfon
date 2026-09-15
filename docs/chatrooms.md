@@ -34,7 +34,9 @@ Four gaps, named up front so they are not discovered late:
 1. **Membership.** A topic has subscribers, not members. You still need a local
    member set: who to deliver to, who to show, whose revocation matters.
 2. **Delivery.** `message.send` is strictly one peer (`to`). A room needs
-   fan-out, and there is **no `iroh-gossip` dependency in this repo today**.
+   fan-out. `iroh-gossip` 0.101.0 is **already in the dependency tree**
+   (transitive via `iroh-live` and `iroh-smol-kv`) and compiled into the
+   vendored dylib with ALPN `/iroh-gossip/1`, but no idfon code uses it yet.
 3. **Confidentiality.** Messages are signed but **not payload-encrypted**;
    QUIC/TLS protects each hop only. Until the shared-key work lands, privacy is
    an unguessable room id alone.
@@ -81,9 +83,17 @@ No new transport. The sender signs **one envelope per recipient** — same
 - No cross-recipient ordering; each recipient orders by its own event cursor.
   **Total order is not promised.**
 
-`iroh-gossip` is the right transport at larger membership, but it is a new
-dependency and a new failure surface (tree maintenance, no acks). Defer it:
-fan-out is correct and testable for the small rooms that matter first.
+`iroh-gossip` is the right transport at larger membership. It is **already in
+the build** — transitive via `iroh-live` and `iroh-smol-kv`, present in
+`Cargo.lock`, and linked into `mac/Vendor/libiroh_c_ffi.dylib` (ALPN
+`/iroh-gossip/1`) — so adopting it is API work, not a new dependency. It is
+still a new failure surface (tree maintenance, no acks, eventual consistency).
+Defer it: fan-out is correct and testable for the small rooms that matter
+first.
+
+Note the identifier alignment: an `iroh-gossip` topic is itself a 32-byte id,
+so the room id can *be* the gossip topic id. R2 becomes a transport swap under
+the same identifier, not a re-addressing.
 
 ### Confidentiality — decided: shared room key
 
@@ -192,9 +202,9 @@ Each step is independently useful and leaves no dead surface.
 2. **R1 — Eve channel rooms.** Key sessions by `conversation`, fan replies to
    members, keep the per-message principal. Acceptance: two humans + one agent
    in one room; both humans see the agent's reply.
-3. **R2 — gossip transport.** Add `iroh-gossip` for large rooms, keeping
-   fan-out as the small-room path. Only if R0/R1 show membership sizes that
-   need it.
+3. **R2 — gossip transport.** Wire in the already-linked `iroh-gossip` for
+   large rooms, keeping fan-out as the small-room path. Only if R0/R1 show
+   membership sizes that need it.
 4. **R3 — room confidentiality (shared key).** Add an X25519 identity key, the
    `IDFON-ROOM/1` sealed-content envelope, and key wrap/rotation on membership
    change. Acceptance: a room where an outsider who learns the topic id still
