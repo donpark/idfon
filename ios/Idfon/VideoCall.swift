@@ -198,8 +198,9 @@ final class VideoCall: NSObject {
                     "mode": AnyEncodable("record"),
                 ])
                 activateAudioSession()
+                if audio { AudioPusher.shared.start() }
                 if video && cameraOn { CameraPusher.shared.start() }
-                let ticket = await ffiString { media_live_start(audio ? 1 : 0, video ? 1 : 0) }
+                let ticket = await ffiString { media_live_start_with_source(audio ? 1 : 0, video ? 1 : 0, "push") }
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
@@ -234,8 +235,9 @@ final class VideoCall: NSObject {
         Task {
             do {
                 activateAudioSession()
+                AudioPusher.shared.start()
                 await join(ticket: pending.ticket)
-                let own = await ffiString { media_live_start(1, 1) }
+                let own = await ffiString { media_live_start_with_source(1, 1, "push") }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
@@ -323,6 +325,7 @@ final class VideoCall: NSObject {
         framePath = nil
         lastFrameSize = -1
         Task.detached(priority: .userInitiated) {
+            AudioPusher.shared.stop()
             CameraPusher.shared.stop()
             media_live_stop()
             media_video_stop()

@@ -102,7 +102,7 @@ final class LiveCall {
                     "kind": AnyEncodable("live_audio"),
                     "mode": AnyEncodable("record"),
                 ])
-                let ticket = await ffiString { media_live_start(1, 0) } // audio only
+                let ticket = await ffiString { media_live_start_with_source(1, 0, "push") } // audio from the shell tap
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
@@ -139,7 +139,7 @@ final class LiveCall {
                 guard case .inCall = state else { return }
                 // Publish our own mic so audio is two-way, then send the
                 // return-leg invite (own ticket) that makes the caller join us.
-                let own = await ffiString { media_live_start(1, 0) } // audio only
+                let own = await ffiString { media_live_start_with_source(1, 0, "push") } // audio from the shell tap
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
@@ -481,7 +481,7 @@ final class VideoCall {
                 // dimensions when it configures the H.264 encoder. A mic-first
                 // call skips this; `setVideoEnabled(true)` starts it later.
                 if cameraOn { CameraPusher.shared.start() }
-                let ticket = await ffiString { media_live_start(1, 1) } // mic + camera
+                let ticket = await ffiString { media_live_start_with_source(1, 1, "push") } // shell-tap audio + camera
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
@@ -525,7 +525,7 @@ final class VideoCall {
                     return
                 }
                 // Mic-first: capture stays down until `setVideoEnabled(true)`.
-                let own = await ffiString { media_live_start(1, 1) }
+                let own = await ffiString { media_live_start_with_source(1, 1, "push") }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
