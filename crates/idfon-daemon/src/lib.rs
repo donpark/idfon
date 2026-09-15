@@ -4552,4 +4552,69 @@ mod tests {
         ));
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    #[test]
+    fn room_lifecycle_persists_and_retries_dedupe_per_member() {
+        let dir = temp_dir("room-lifecycle");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        {
+            let mut state = store.lock().unwrap();
+            state.peers.push(idfon_protocol::Peer {
+                id: "peer-b".into(),
+                identity: "default".into(),
+                name: "Bob".into(),
+                endpoint_id: Some("endpoint-b".into()),
+                endpoint_addr: Some("{}".into()),
+                aliases: Vec::new(),
+                call_mode: idfon_protocol::IncomingCallMode::default(),
+            });
+            state.grants.push(idfon_protocol::CapabilityGrant {
+                capability: idfon_protocol::Capability::MessageSend,
+                identity: "default".into(),
+                subject: "peer-b".into(),
+                conversation: None,
+                active_at: "0".into(),
+                expires_at: None,
+                revision: 1,
+                revoked_at: None,
+            });
+        }
+        let create = dispatch(Request {
+            version: PROTOCOL_VERSION,
+            id: "create".into(),
+            method: "room.create".into(),
+            params: serde_json::json!({"id":"r_test","name":"design","members":["Bob"]}),
+        }, &store);
+        let result = |response: Response| match response.body {
+            ResponseBody::Success { result, .. } => result,
+            ResponseBody::Failure { error, .. } => panic!("request failed: {}", error.message),
+        };
+        assert!(create.ok);
+        assert_eq!(result(create)["room"]["members"][0], "peer-b");
+
+        let reloaded = Store::load(&dir).unwrap();
+        assert_eq!(reloaded.rooms[0].id, "r_test");
+        assert_eq!(reloaded.rooms[0].members, ["peer-b"]);
+
+        let send = |id: &str| dispatch(Request {
+            version: PROTOCOL_VERSION,
+            id: id.into(),
+            method: "room.send".into(),
+            params: serde_json::json!({"room":"design","text":"hello","idempotency_key":"room-key"}),
+        }, &store);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (first, second) = runtime.block_on(async { (send("send-1"), send("send-2")) });
+        assert!(first.ok && second.ok);
+        assert_eq!(result(first)["operation_ids"], result(second)["operation_ids"]);
+
+        let leave = dispatch(Request {
+            version: PROTOCOL_VERSION,
+            id: "leave".into(),
+            method: "room.leave".into(),
+            params: serde_json::json!({"room":"design"}),
+        }, &store);
+        assert_eq!(result(leave)["removed"], true);
+        assert!(Store::load(&dir).unwrap().rooms.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
