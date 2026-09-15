@@ -316,6 +316,22 @@ pub struct CapabilityGrant {
     pub revoked_at: Option<String>,
 }
 
+/// A local room: a `conversation` topic plus the peers this identity delivers
+/// to. Membership is local state, never shared or authoritative — two peers may
+/// disagree about who is present (see `docs/chatrooms.md`). 1:1 has no `Room`;
+/// it is the degenerate case (`conversation = None`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Room {
+    pub id: String,
+    pub identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Resolved peer ids (not names/aliases) so a rename cannot silently drop a
+    /// recipient.
+    #[serde(default)]
+    pub members: Vec<String>,
+}
+
 /// An open, namespaced capability. Wire names are dotted strings (e.g.
 /// `message.send`, `mcp.transport`); a provider may define its own without a
 /// protocol change. The associated constants are the built-in names.

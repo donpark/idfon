@@ -134,6 +134,9 @@ struct Store {
     messages: Vec<idfon_protocol::MessageEnvelope>,
     #[serde(default)]
     grants: Vec<idfon_protocol::CapabilityGrant>,
+    /// Local rooms (topic id + member list); see `docs/chatrooms.md`.
+    #[serde(default)]
+    rooms: Vec<idfon_protocol::Room>,
     #[serde(default)]
     policies: Vec<idfon_protocol::LocalPolicy>,
     #[serde(default)]
@@ -176,6 +179,7 @@ impl Store {
                     events: Vec::new(),
                     messages: Vec::new(),
                     grants: Vec::new(),
+                    rooms: Vec::new(),
                     policies: Vec::new(),
                     revoked_tickets: Vec::new(),
                     mcp_discovery: Vec::new(),
@@ -678,6 +682,10 @@ fn dispatch_with_transport(
     match request.method.as_str() {
         "message.receive" => receive_message(&request, store),
         "message.send" => send_message(&request, store, transport),
+        "room.create" => room_create(&request, store),
+        "room.list" => room_list(&request, store),
+        "room.send" => room_send(&request, store, transport),
+        "room.leave" => room_leave(&request, store),
         "operation.get" => operation_get(&request, store),
         "operation.wait" => operation_wait(&request, store),
         "operation.cancel" => operation_cancel(&request, store),
@@ -935,6 +943,229 @@ fn request_text(params: &serde_json::Value, name: &str) -> Option<String> {
     Some(output)
 }
 
+/// 128-bit random room id (`r_` + 32 hex). Reuses the identity generator for OS
+/// randomness rather than taking on an RNG dependency.
+fn random_room_id() -> String {
+    let key = idfon_core::generate_identity();
+    format!("r_{}", &idfon_core::peer_id(&key)[..32])
+}
+
+fn identity_id_of(state: &Store, identity_ref: &str) -> String {
+    state
+        .identities
+        .iter()
+        .find(|identity| identity.id == identity_ref || identity.name == identity_ref)
+        .map(|identity| identity.id.clone())
+        .unwrap_or_else(|| identity_ref.to_owned())
+}
+
+/// Resolve a peer ref (id, name, or alias) to a peer id. Unknown refs are kept
+/// verbatim so a peer id that is not yet in the peer list still works.
+fn resolve_peer_id(state: &Store, identity_id: &str, peer_ref: &str) -> String {
+    state
+        .peers
+        .iter()
+        .find(|peer| {
+            peer.identity == identity_id
+                && (peer.id == peer_ref
+                    || peer.name == peer_ref
+                    || peer.aliases.iter().any(|alias| alias == peer_ref))
+        })
+        .map(|peer| peer.id.clone())
+        .unwrap_or_else(|| peer_ref.to_owned())
+}
+
+fn room_matches(room: &idfon_protocol::Room, room_ref: &str) -> bool {
+    room.id == room_ref || room.name.as_deref() == Some(room_ref)
+}
+
+/// `room.create { id?, name?, members? }`. `id` defaults to a random topic id;
+/// members are stored as **resolved peer ids** so a rename cannot drop one.
+/// Membership is local state — nothing here is shared or authoritative.
+fn room_create(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let identity_ref = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let id = request_text(&request.params, "id").unwrap_or_else(random_room_id);
+    let name = request_text(&request.params, "name");
+    let member_refs: Vec<String> = request
+        .params
+        .get("members")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut state = store.lock().expect("store mutex poisoned");
+    let identity_id = identity_id_of(&state, &identity_ref);
+    let members: Vec<String> = member_refs
+        .iter()
+        .map(|member_ref| resolve_peer_id(&state, &identity_id, member_ref))
+        .collect();
+    if !state.identities.iter().any(|identity| identity.id == identity_id) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "no active identity".into(),
+            false,
+        );
+    }
+    if state
+        .rooms
+        .iter()
+        .any(|room| room.identity == identity_id && room_matches(room, &id))
+    {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            format!("room already exists: {id}"),
+            false,
+        );
+    }
+    let room = idfon_protocol::Room {
+        id,
+        identity: identity_id,
+        name,
+        members,
+    };
+    state.rooms.push(room.clone());
+    let dir = state.data_dir.clone();
+    let _ = state.save(&dir);
+    success(request, serde_json::json!({ "room": room }))
+}
+
+/// `room.list` — rooms for the calling identity.
+fn room_list(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let identity_ref = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let state = store.lock().expect("store mutex poisoned");
+    let identity_id = identity_id_of(&state, &identity_ref);
+    let rooms: Vec<idfon_protocol::Room> = state
+        .rooms
+        .iter()
+        .filter(|room| room.identity == identity_id)
+        .cloned()
+        .collect();
+    success(request, serde_json::json!({ "rooms": rooms }))
+}
+
+/// `room.leave { room }` — local only; the other members are not told.
+fn room_leave(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let room_ref = request_text(&request.params, "room").unwrap_or_default();
+    let identity_ref = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let mut state = store.lock().expect("store mutex poisoned");
+    let identity_id = identity_id_of(&state, &identity_ref);
+    let before = state.rooms.len();
+    state
+        .rooms
+        .retain(|room| !(room.identity == identity_id && room_matches(room, &room_ref)));
+    let removed = before != state.rooms.len();
+    let dir = state.data_dir.clone();
+    let _ = state.save(&dir);
+    success(request, serde_json::json!({ "removed": removed }))
+}
+
+/// `room.send { room, text, idempotency_key, capability_ticket?, retries? }`
+///
+/// Fan-out: one ordinary `message.send` per member carrying the same
+/// `conversation`, so grants, tickets, retries and operations behave exactly as
+/// they do for a 1:1 send. The per-member idempotency key is derived
+/// deterministically from the caller's base key (`{base}:{member}`), so a
+/// retried `room.send` dedupes per recipient instead of all-or-nothing.
+fn room_send(
+    request: &Request,
+    store: &Arc<Mutex<Store>>,
+    transport: &Arc<TransportMode>,
+) -> Response {
+    let room_ref = request_text(&request.params, "room");
+    let text = request_text(&request.params, "text");
+    let base_key = request_text(&request.params, "idempotency_key");
+    let identity_ref = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    if room_ref.is_none() || text.is_none() || base_key.is_none() {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "room, text and idempotency_key are required".into(),
+            false,
+        );
+    }
+    let room_ref = room_ref.unwrap();
+    let text = text.unwrap();
+    let base_key = base_key.unwrap();
+    let room = {
+        let state = store.lock().expect("store mutex poisoned");
+        let identity_id = identity_id_of(&state, &identity_ref);
+        state
+            .rooms
+            .iter()
+            .find(|room| room.identity == identity_id && room_matches(room, &room_ref))
+            .cloned()
+    };
+    let room = match room {
+        Some(room) => room,
+        None => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                format!("room not found: {room_ref}"),
+                false,
+            )
+        }
+    };
+    let capability_ticket = request.params.get("capability_ticket").cloned();
+    let retries = request.params.get("retries").cloned();
+    let mut operation_ids: Vec<String> = Vec::new();
+    let mut failures: Vec<serde_json::Value> = Vec::new();
+    for member in &room.members {
+        let mut params = serde_json::json!({
+            "identity": room.identity,
+            "to": member,
+            "text": text,
+            "idempotency_key": format!("{base_key}:{member}"),
+            "conversation": room.id,
+        });
+        if let Some(ticket) = &capability_ticket {
+            params["capability_ticket"] = ticket.clone();
+        }
+        if let Some(retries) = &retries {
+            params["retries"] = retries.clone();
+        }
+        let sub_request = Request {
+            version: PROTOCOL_VERSION,
+            id: format!("{}-{member}", request.id),
+            method: "message.send".into(),
+            params,
+        };
+        match send_message(&sub_request, store, transport).body {
+            ResponseBody::Success { result, .. } => {
+                if let Some(operation_id) =
+                    result.get("operation_id").and_then(serde_json::Value::as_str)
+                {
+                    operation_ids.push(operation_id.to_owned());
+                }
+            }
+            ResponseBody::Failure { error, .. } => failures.push(serde_json::json!({
+                "peer": member,
+                "code": format!("{:?}", error.code),
+                "message": error.message,
+            })),
+        }
+    }
+    success(
+        request,
+        serde_json::json!({
+            "room": room.id,
+            "operation_ids": operation_ids,
+            "failures": failures,
+        }),
+    )
+}
+
 fn send_message(
     request: &Request,
     store: &Arc<Mutex<Store>>,
@@ -944,6 +1175,11 @@ fn send_message(
     let to = request_text(&request.params, "to");
     let text = request_text(&request.params, "text");
     let key = request_text(&request.params, "idempotency_key");
+    let conversation = request
+        .params
+        .get("conversation")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     let capability_ticket = request.params.get("capability_ticket").cloned().and_then(|value| serde_json::from_value(value).ok());
     let retries = request
         .params
@@ -968,7 +1204,7 @@ fn send_message(
     let to = to.unwrap();
     let text = text.unwrap();
     let key = key.unwrap();
-    let fingerprint = serde_json::to_string(&serde_json::json!({"to": to, "text": text})).unwrap();
+    let fingerprint = serde_json::to_string(&serde_json::json!({"to": to, "text": text, "conversation": conversation})).unwrap();
     let mut state = store.lock().expect("store mutex poisoned");
     let identity = match state
         .identities
@@ -1096,7 +1332,7 @@ fn send_message(
         message_id.clone(),
         idfon_protocol::MessageContent::Text { text: text.into() },
         &key,
-        None,
+        conversation,
         capability_ticket,
     ) {
         Ok(envelope) => envelope,
@@ -1485,7 +1721,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         r#type: "message.received".into(),
         timestamp: now,
         identity,
-        data: serde_json::json!({"message_id": envelope.message_id, "peer_id": envelope.sender.peer_id, "text": match &envelope.content { idfon_protocol::MessageContent::Text { text } => text }}),
+        data: serde_json::json!({"message_id": envelope.message_id, "peer_id": envelope.sender.peer_id, "conversation": envelope.conversation, "text": match &envelope.content { idfon_protocol::MessageContent::Text { text } => text }}),
     });
     if state.events.len() > EVENT_RETENTION {
         let excess = state.events.len() - EVENT_RETENTION;
