@@ -35,12 +35,41 @@ extension DaemonClient {
         return try JSONDecoder().decode([Peer].self, from: data)
     }
 
-    func sendText(to peer: String, _ text: String) async throws {
-        _ = try await requestWithLaunch(method: "message.send", params: [
+    func rooms() async throws -> [Room] {
+        guard let list = try await requestWithLaunch(method: "room.list")?["rooms"]?.asArray else { return [] }
+        return try JSONDecoder().decode([Room].self, from: JSONEncoder().encode(list))
+    }
+
+    func createRoom(id: String? = nil, name: String? = nil, members: [String] = []) async throws -> Room {
+        var params: [String: AnyEncodable] = [:]
+        if let id { params["id"] = AnyEncodable(id) }
+        if let name { params["name"] = AnyEncodable(name) }
+        if !members.isEmpty { params["members"] = AnyEncodable(members.map(AnyEncodable.init)) }
+        guard let raw = try await requestWithLaunch(method: "room.create", params: params)?["room"] else {
+            throw DaemonClient.DaemonError.request("room.create returned no room")
+        }
+        return try JSONDecoder().decode(Room.self, from: JSONEncoder().encode(raw))
+    }
+
+    func sendRoom(_ room: String, text: String, idempotencyKey: String = "mac-room-\(UUID().uuidString)") async throws {
+        _ = try await requestWithLaunch(method: "room.send", params: [
+            "room": AnyEncodable(room), "text": AnyEncodable(text),
+            "idempotency_key": AnyEncodable(idempotencyKey),
+        ])
+    }
+
+    func leaveRoom(_ room: String) async throws {
+        _ = try await requestWithLaunch(method: "room.leave", params: ["room": AnyEncodable(room)])
+    }
+
+    func sendText(to peer: String, _ text: String, conversation: String? = nil) async throws {
+        var params: [String: AnyEncodable] = [
             "to": AnyEncodable(peer),
             "text": AnyEncodable(text),
             "idempotency_key": AnyEncodable("mac-\(UUID().uuidString)"),
-        ])
+        ]
+        if let conversation { params["conversation"] = AnyEncodable(conversation) }
+        _ = try await requestWithLaunch(method: "message.send", params: params)
     }
 
     /// Blocks server-side until one matching event arrives or the timeout

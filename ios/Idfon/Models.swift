@@ -19,6 +19,13 @@ enum IncomingCallMode: String, Decodable {
     }
 }
 
+struct Room: Decodable, Identifiable, Hashable {
+    let id: String
+    let identity: String
+    let name: String?
+    let members: [String]
+}
+
 struct Peer: Decodable, Identifiable {
     let id: String
     let name: String?
