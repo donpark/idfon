@@ -1,6 +1,6 @@
 # Refactoring Plan: Shared Dynamic Library for Idfon
 
-Status: proposed, 2026-09-02
+Status: Phase 1 and Phase 2 implemented and verified, 2026-09-02. Keep this document as the as-built record and follow-up log.
 Related discussion: app/daemon code duplication, bundle size analysis (27MB compressed).
 
 ## Summary
@@ -334,24 +334,9 @@ is cheap relative to re-doing the same packaging work twice.
 
 ## Follow-ups (found in the Phase 1 review, not urgent)
 
-- `crates/idfon-cli` still carries its own copy of the framing
-  (`connect` + length-prefix + read in `main.rs`). Rust-to-Rust duplication
-  within one workspace (lower drift risk than the old Zig copy), but the
-  clean endgame is extracting the client core (framing/paths/retry, no FFI)
-  into a small workspace crate used by both the CLI and the vendored FFI
-  wrapper — do it together with Phase 2, not before.
 - The completion queue cap (8 KiB) is the only remaining response ceiling
   (see 1.2). Heap-allocating completions lifts it toward the 1 MiB frame
   limit.
-
-## Also-rans (do regardless, cheap size wins before/without Phase 2)
-
-- `[profile.release]` in both Cargo manifests: `panic = "abort"`, `lto =
-  "fat"`, `strip = "symbols"`, `codegen-units = 1`. Often 10–20% off Rust
-  binaries; zero risk. Measure before/after.
-- Confirm the Zig app side is built `ReleaseFast` with stripped symbols in
-  the packaged artifact (manifest says `ReleaseFast`; verify symbols are
-  stripped in `zig-out/bin/Idfon`).
 
 ## Risks
 

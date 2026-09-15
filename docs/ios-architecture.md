@@ -106,6 +106,17 @@ Key facts:
   asserts the `idfon tray:` / `idfon file:` markers. Purely visual behavior (tabs, Bar
   docking, the Files picker) stays manual — there is no XCUITest target.
 
+## Eve text-agent integration status
+
+The app's ordinary idfon text path is ready, but the first iOS → Eve demo still
+needs capability-ticket plumbing. The Eve holder requires a holder-issued,
+subject-bound `message.receive` ticket; `DaemonClient.sendText()` does not yet
+attach one, and `-pair` currently stores only the peer address and local grants.
+Track the remaining provisioning, persistence, and manual simulator/device E2E
+work in [idfon/idfon#11](https://github.com/donpark/idfon/issues/11). Voice
+agent integration (STT/TTS and live conversational audio) is separate from the
+peer-to-peer calls implemented here.
+
 See also: [ui-design-notes.md](ui-design-notes.md) (UX spec),
 [live-activity-bar-layout.md](live-activity-bar-layout.md) (Bar layout + integration
 contract), [callkit-integration.md](callkit-integration.md) (CallKit notes),
