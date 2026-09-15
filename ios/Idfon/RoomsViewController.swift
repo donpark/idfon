@@ -104,7 +104,10 @@ final class RoomChatViewController: UIViewController, UITableViewDataSource, UIT
             input.topAnchor.constraint(equalTo: table.bottomAnchor, constant: 8), input.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), input.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
             send.leadingAnchor.constraint(equalTo: input.trailingAnchor, constant: 8), send.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), send.centerYAnchor.constraint(equalTo: input.centerYAnchor), send.widthAnchor.constraint(equalToConstant: 52)
         ])
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Leave", style: .plain, target: self, action: #selector(leaveTapped))
+        navigationItem.rightBarButtonItems = [
+            UIBarButtonItem(title: "Copy Invite", style: .plain, target: self, action: #selector(copyInviteTapped)),
+            UIBarButtonItem(title: "Leave", style: .plain, target: self, action: #selector(leaveTapped)),
+        ]
         ChatStore.shared.addObserver(self)
         sync()
     }
@@ -122,6 +125,13 @@ final class RoomChatViewController: UIViewController, UITableViewDataSource, UIT
         ChatStore.shared.appendOutgoing(message)
         Task { try? await client.sendRoom(room.id, text: text) }
     }
+    @objc private func copyInviteTapped() {
+        UIPasteboard.general.string = room.id
+        let alert = UIAlertController(title: "Invite copied", message: "Share this room id with a member: \(room.id)", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
     @objc private func leaveTapped() {
         let alert = UIAlertController(title: "Leave room?", message: nil, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel)); alert.addAction(UIAlertAction(title: "Leave", style: .destructive) { [weak self] _ in guard let self else { return }; Task { try? await self.client.leaveRoom(self.room.id); self.navigationController?.popViewController(animated: true) } })
