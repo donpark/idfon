@@ -1,6 +1,6 @@
 # idfon Eve Channel — Implementation Plan
 
-> **Status:** M0–M5 agent messaging implemented; M3 files-in is complete; M4 authorization flows and M3 files-out/live streams remain deferred. Design:
+> **Status:** M0–M5 agent messaging and M4 HITL/status flows implemented; M3 files-in is complete; M3 files-out/live streams remain deferred. Design:
 > MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5, implemented).
 > Prototyping stage: no legacy or migration constraints. Eve channel contract as
 > of 2026-09-14 (`defineChannel`, routes/events, `from(address).send`,
@@ -29,7 +29,7 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | M3 media — files in | `efdcf73` | `scripts/eve-channel-media-e2e.sh` |
 | M3 media — files out + live streams | — | not started |
 | M4 HITL — approvals/input | `890071a` | `scripts/eve-channel-hitl-e2e.sh` |
-| M4 HITL — authorization flows | — | not started |
+| M4 HITL — authorization/status flows | `14ba0b9` | `scripts/eve-channel-hitl-e2e.sh` + holder IPC tests |
 | M5 agent-to-agent + isolation | `6a46734` | `scripts/eve-channel-a2a-e2e.sh` |
 
 ## Resolved decisions
@@ -279,8 +279,14 @@ Approvals and elicitations park the turn and round-trip over idfon.
   `IDFON-HITL/1` request carrying request IDs, prompts, and options; a peer's
   `IDFON-HITL-RESPONSE/1` message is validated and delivered through
   `from(address).respond(inputResponses, { auth })` (never `send`).
-- **Next:** `events["authorization.required"]`, consent policy from idfon
-  grants, and timeout/cancel status events.
+- **Implemented:** `authorization.required` / `authorization.completed`,
+  `turn.cancelled`, and `turn.failed` are emitted as authenticated
+  `IDFON-STATUS/1` messages. The validated ticket's grants are preserved in
+  Eve `session.auth.current.attributes.capabilities`, so approval policies can
+  require an idfon grant such as `consent.approve`.
+- Provider OAuth completion still occurs through Eve's callback URL; an idfon
+  peer receives the challenge/status but cannot impersonate the callback.
+
 
 ### Acceptance — `scripts/eve-channel-hitl-e2e.sh`
 

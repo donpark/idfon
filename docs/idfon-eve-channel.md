@@ -222,13 +222,18 @@ text `IDFON-DATA/1` envelope, or a referenced ticket), whichever is smaller.
 ## Human-in-the-loop
 
 Eve approvals and elicitations already park the turn durably and emit
-`input.requested` / `authorization.required`. The channel maps those to an
-idfon request→response pair (a message carrying the request id/options, then
-the peer's response) and answers with `inputResponses` on the follow-up.
-`inputResponses` never steer, matching Eve's contract. This is the concrete
-mechanism for "computer-use needs consent": the approval rides the same path
-as any other idfon message, and the consent decision can also consult the
-peer's idfon grants.
+`input.requested` / `authorization.required`. The channel maps input requests
+to an authenticated `IDFON-HITL/1` request and answers them with
+`IDFON-HITL-RESPONSE/1` through `inputResponses`; `inputResponses` never steer,
+matching Eve's contract. Authorization challenges and lifecycle outcomes use
+an authenticated `IDFON-STATUS/1` envelope, including the callback challenge,
+`authorization.completed`, `turn.cancelled`, and `turn.failed`.
+
+The holder also forwards validated capability grants into Eve session auth
+attributes. Approval policies can therefore require an idfon grant such as
+`consent.approve` before asking for human approval. An idfon peer receives an
+OAuth challenge/status, but completion still happens through Eve's provider
+callback rather than by treating a peer message as a credential callback.
 
 ## No public endpoint — and what that does and does not buy
 
@@ -249,6 +254,8 @@ Honest caveats:
   so it does not reintroduce a public route.
 - **Reachability ≠ authorization.** Grants and capability tickets still gate
   who may send or invoke; idfon separates connection from permission by design.
+  Ticket grants are exposed to Eve approval policies as authenticated session
+  attributes, not trusted from the incoming HTTP body.
 - **Two orthogonal axes, possibly one endpoint.** Conversation is this channel
   (`idfon/message/1`); service/tool invocation is MCP (`idfon/mcp/1`) or Eve
   Tools. Both avoid public ingress and can share a single endpoint via

@@ -44,4 +44,16 @@ with sock:
     )
     ack = read_frame(sock)
     assert ack["type"] == "reply.ack", ack
-    print(json.dumps({"turn": turn, "ack": ack}))
+    write_frame(
+        sock,
+        {
+            "type": "status.out",
+            "request_id": "status-1",
+            "in_reply_to": turn["message_id"],
+            "event": "turn.cancelled",
+            "data": {"reason": "fixture"},
+        },
+    )
+    status_ack = read_frame(sock)
+    assert status_ack["type"] == "status.ack", status_ack
+    print(json.dumps({"turn": turn, "ack": ack, "status_ack": status_ack}))

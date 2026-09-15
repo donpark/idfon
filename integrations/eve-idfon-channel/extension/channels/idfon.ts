@@ -13,6 +13,7 @@ type TurnIn = {
   blob_ticket?: string;
   size_bytes?: number;
   a2a_depth?: number;
+  capabilities?: string[];
 };
 
 type SessionTarget = {
@@ -24,7 +25,7 @@ type SessionTarget = {
 
 const sessionTargets = new Map<string, SessionTarget>();
 
-function authFor(turn: Pick<TurnIn, "peer_id" | "endpoint_id">) {
+function authFor(turn: Pick<TurnIn, "peer_id" | "endpoint_id" | "capabilities">) {
   return {
     authenticator: "idfon",
     principalId: turn.peer_id,
@@ -32,6 +33,7 @@ function authFor(turn: Pick<TurnIn, "peer_id" | "endpoint_id">) {
     attributes: {
       peer_id: turn.peer_id,
       endpoint_id: turn.endpoint_id,
+      capabilities: turn.capabilities ?? [],
     },
   };
 }
@@ -91,6 +93,22 @@ export default defineChannel({
       });
       return Response.json({ sessionId: session.id, address });
     }),
+    POST("/idfon/status", async (request) => {
+      const secret = request.headers.get("x-idfon-channel-secret");
+      if (secret !== extension.config.secret) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const status = (await request.json()) as {
+        peer_id?: string;
+        endpoint_id?: string;
+        event?: string;
+        data?: unknown;
+      };
+      if (!status.peer_id || !status.endpoint_id || !status.event || status.data === undefined) {
+        return Response.json({ error: "invalid status" }, { status: 400 });
+      }
+      return Response.json({ event: status.event });
+    }),
     POST("/idfon/input", async (request, { from }) => {
       const secret = request.headers.get("x-idfon-channel-secret");
       if (secret !== extension.config.secret) {
@@ -101,6 +119,7 @@ export default defineChannel({
         endpoint_id?: string;
         conversation?: string;
         responses?: unknown;
+        capabilities?: string[];
       };
       if (!input.peer_id || !input.endpoint_id || input.responses === undefined) {
         return Response.json({ error: "invalid input response" }, { status: 400 });
@@ -115,7 +134,11 @@ export default defineChannel({
         ? `${input.peer_id}:${input.conversation}`
         : input.peer_id;
       await from(address).respond(responses, {
-        auth: authFor({ peer_id: input.peer_id, endpoint_id: input.endpoint_id }),
+        auth: authFor({
+          peer_id: input.peer_id,
+          endpoint_id: input.endpoint_id,
+          capabilities: input.capabilities,
+        }),
       });
       return Response.json({ address });
     }),
@@ -152,6 +175,42 @@ export default defineChannel({
         endpoint_id: target.endpointId,
         conversation: target.conversation,
         requests: event.requests,
+      });
+    },
+    async "authorization.required"(event, _channel, ctx) {
+      const target = sessionTargets.get(ctx.session.id);
+      if (!target) return;
+      await bridge("/status", {
+        in_reply_to: target.messageId,
+        event: "authorization.required",
+        data: event,
+      });
+    },
+    async "authorization.completed"(event, _channel, ctx) {
+      const target = sessionTargets.get(ctx.session.id);
+      if (!target) return;
+      await bridge("/status", {
+        in_reply_to: target.messageId,
+        event: "authorization.completed",
+        data: event,
+      });
+    },
+    async "turn.cancelled"(event, _channel, ctx) {
+      const target = sessionTargets.get(ctx.session.id);
+      if (!target) return;
+      await bridge("/status", {
+        in_reply_to: target.messageId,
+        event: "turn.cancelled",
+        data: event,
+      });
+    },
+    async "turn.failed"(event, _channel, ctx) {
+      const target = sessionTargets.get(ctx.session.id);
+      if (!target) return;
+      await bridge("/status", {
+        in_reply_to: target.messageId,
+        event: "turn.failed",
+        data: event,
       });
     },
   },

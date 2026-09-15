@@ -67,7 +67,8 @@ pids="$pids $!"
   --capability-ticket "$HOLDER_TICKET" --retries 2 >"$work/send.out"
 
 for _ in $(seq 1 150); do
-  if grep -q "reply from eve holder" "$work/events.log"; then break; fi
+  if grep -q "reply from eve holder" "$work/events.log" &&
+      grep -q "IDFON-STATUS/1" "$work/events.log"; then break; fi
   sleep 0.1
 done
 
@@ -82,7 +83,9 @@ assert result["turn"]["type"] == "turn.in"
 assert result["turn"]["text"] == "hello"
 assert result["ack"]["type"] == "reply.ack"
 assert result["ack"]["status"] == "accepted"
+assert result["status_ack"]["event"] == "turn.cancelled"
 events = open(sys.argv[2]).read()
 assert "reply from eve holder" in events, events
+assert "IDFON-STATUS/1" in events, events
 print("PASS: authenticated holder turn and reply over idfon/message/1 + UDS")
 PY

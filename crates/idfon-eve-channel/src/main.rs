@@ -71,6 +71,9 @@ enum Mode {
     Ticket {
         #[arg(long, value_name = "PEER_ID")]
         subject: String,
+        /// Additional grant names to include alongside message.receive.
+        #[arg(long = "capability")]
+        capabilities: Vec<String>,
         #[arg(long)]
         expires_at: Option<String>,
         #[arg(long)]
@@ -96,6 +99,8 @@ enum IpcFrame {
         size_bytes: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         a2a_depth: Option<u8>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<Vec<String>>,
     },
     #[serde(rename = "reply.out")]
     ReplyOut {
@@ -109,6 +114,30 @@ enum IpcFrame {
         in_reply_to: String,
         message_id: String,
         status: String,
+    },
+    #[serde(rename = "status.out")]
+    StatusOut {
+        request_id: String,
+        in_reply_to: String,
+        event: String,
+        data: serde_json::Value,
+    },
+    #[serde(rename = "status.in")]
+    StatusIn {
+        message_id: String,
+        peer_id: String,
+        endpoint_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+        event: String,
+        data: serde_json::Value,
+    },
+    #[serde(rename = "status.ack")]
+    StatusAck {
+        request_id: String,
+        in_reply_to: String,
+        message_id: String,
+        event: String,
     },
     #[serde(rename = "input.out")]
     InputOut {
@@ -127,6 +156,8 @@ enum IpcFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
         responses: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<Vec<String>>,
     },
     #[serde(rename = "input.ack")]
     InputAck {
@@ -195,17 +226,20 @@ async fn main() -> Result<()> {
         }
         Mode::Ticket {
             subject,
+            capabilities,
             expires_at,
             ticket_id,
         } => {
             let key = load_key(key_file.as_deref(), false)?;
             let ticket_id = ticket_id.unwrap_or_else(|| format!("eve-ticket-{}", now_seconds()));
+            let mut grants = vec![Capability::MessageReceive];
+            grants.extend(capabilities.into_iter().map(Capability::new));
             println!(
                 "{}",
                 serde_json::to_string(&idfon_core::issue_capability_ticket(
                     &key,
                     Some(subject),
-                    vec![Capability::MessageReceive],
+                    grants,
                     expires_at,
                     ticket_id,
                 ))?
@@ -326,6 +360,25 @@ async fn serve(
                 )
                 .await
             }
+            IpcFrame::StatusOut {
+                request_id,
+                in_reply_to,
+                event,
+                data,
+            } => {
+                handle_status(
+                    request_id,
+                    in_reply_to,
+                    event,
+                    data,
+                    &key,
+                    &transport,
+                    &targets,
+                    reply_ticket.as_ref(),
+                    out_tx.clone(),
+                )
+                .await
+            }
             IpcFrame::BlobFetch { request_id, ticket } => {
                 handle_blob_fetch(request_id, ticket, &blob_dir, out_tx.clone()).await
             }
@@ -397,24 +450,27 @@ async fn handle_message(
     allow: Arc<Vec<String>>,
     holder_peer_id: String,
 ) -> std::result::Result<MessageAck, TransportError> {
-    if let Err(error) = validate_message(&message, &remote_endpoint_id, &allow, &holder_peer_id) {
-        eprintln!(
-            "[idfon-eve-channel] rejected message={} sender={} signed_endpoint={} remote_endpoint={} ticket_issuer={:?} ticket_subject={:?}: {error}",
-            message.message_id,
-            message.sender.peer_id,
-            message.sender.endpoint_id,
-            remote_endpoint_id,
-            message.capability_ticket.as_ref().map(|ticket| ticket.issuer.as_str()),
-            message.capability_ticket.as_ref().and_then(|ticket| ticket.subject.as_deref()),
-        );
-        let _ = out_tx
-            .send(IpcFrame::Error {
-                code: error.code().into(),
-                message: error.to_string(),
-            })
-            .await;
-        return Err(TransportError::Failed(error.to_string()));
-    }
+    let ticket = match validate_message(&message, &remote_endpoint_id, &allow, &holder_peer_id) {
+        Ok(ticket) => ticket,
+        Err(error) => {
+            eprintln!(
+                "[idfon-eve-channel] rejected message={} sender={} signed_endpoint={} remote_endpoint={} ticket_issuer={:?} ticket_subject={:?}: {error}",
+                message.message_id,
+                message.sender.peer_id,
+                message.sender.endpoint_id,
+                remote_endpoint_id,
+                message.capability_ticket.as_ref().map(|ticket| ticket.issuer.as_str()),
+                message.capability_ticket.as_ref().and_then(|ticket| ticket.subject.as_deref()),
+            );
+            let _ = out_tx
+                .send(IpcFrame::Error {
+                    code: error.code().into(),
+                    message: error.to_string(),
+                })
+                .await;
+            return Err(TransportError::Failed(error.to_string()));
+        }
+    };
     let wire_text = match &message.content {
         MessageContent::Text { text } => text.clone(),
     };
@@ -447,6 +503,24 @@ async fn handle_message(
         seen_guard.insert(key, wire_text);
     }
 
+    if let Some((event, data)) = parse_status_envelope(&text) {
+        out_tx
+            .send(IpcFrame::StatusIn {
+                message_id: message.message_id.clone(),
+                peer_id: message.sender.peer_id.clone(),
+                endpoint_id: remote_endpoint_id,
+                conversation: message.conversation.clone(),
+                event,
+                data,
+            })
+            .await
+            .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
+        return Ok(MessageAck {
+            message_id: message.message_id,
+            status: AckStatus::Accepted,
+        });
+    }
+
     if let Some(responses) = parse_input_response(&text) {
         out_tx
             .send(IpcFrame::InputIn {
@@ -455,6 +529,13 @@ async fn handle_message(
                 endpoint_id: remote_endpoint_id,
                 conversation: message.conversation.clone(),
                 responses,
+                capabilities: Some(
+                    ticket
+                        .capabilities
+                        .iter()
+                        .map(|capability| capability.0.to_string())
+                        .collect(),
+                ),
             })
             .await
             .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -487,6 +568,13 @@ async fn handle_message(
             blob_ticket: attachment.as_ref().map(|(ticket, _)| ticket.clone()),
             size_bytes: attachment.as_ref().and_then(|(_, size)| *size),
             a2a_depth,
+            capabilities: Some(
+                ticket
+                    .capabilities
+                    .iter()
+                    .map(|capability| capability.0.to_string())
+                    .collect(),
+            ),
         })
         .await
         .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -559,6 +647,62 @@ async fn handle_reply(
     Ok(())
 }
 
+async fn handle_status(
+    request_id: String,
+    in_reply_to: String,
+    event: String,
+    data: serde_json::Value,
+    key: &SigningKey,
+    transport: &IrohTransport,
+    targets: &Targets,
+    reply_ticket: Option<&CapabilityTicket>,
+    out_tx: mpsc::Sender<IpcFrame>,
+) -> Result<()> {
+    let target = targets
+        .lock()
+        .await
+        .get(&in_reply_to)
+        .cloned()
+        .ok_or_else(|| anyhow!("unknown in_reply_to {in_reply_to}"))?;
+    let endpoint_id: EndpointId = target
+        .endpoint_id
+        .parse()
+        .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
+    let message_id = format!(
+        "eve_status_{}",
+        NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let reply_ticket = reply_ticket
+        .filter(|ticket| ticket.issuer == target.peer_id)
+        .cloned();
+    let envelope = sign_message_with_ticket(
+        key,
+        peer_id(key),
+        message_id.clone(),
+        MessageContent::Text {
+            text: encode_status_envelope(&event, &data)?,
+        },
+        format!("eve-status-{message_id}"),
+        target.conversation,
+        reply_ticket,
+    )
+    .map_err(|error| anyhow!("sign status: {error}"))?;
+    transport
+        .send(&EndpointAddr::new(endpoint_id), &envelope)
+        .await
+        .map_err(|error| anyhow!("send status to {}: {error}", target.peer_id))?;
+    out_tx
+        .send(IpcFrame::StatusAck {
+            request_id,
+            in_reply_to,
+            message_id,
+            event,
+        })
+        .await
+        .map_err(|_| anyhow!("IPC client disconnected"))?;
+    Ok(())
+}
+
 async fn handle_input(
     request_id: String,
     target_peer_id: String,
@@ -623,6 +767,27 @@ fn parse_a2a_envelope(text: &str) -> Option<(u8, String)> {
     Some((
         depth?,
         String::from_utf8(BASE64.decode(payload?).ok()?).ok()?,
+    ))
+}
+
+fn encode_status_envelope(event: &str, data: &serde_json::Value) -> Result<String> {
+    let payload = serde_json::json!({ "event": event, "data": data });
+    Ok(format!(
+        "IDFON-STATUS/1\npayload={}\n",
+        BASE64.encode(serde_json::to_vec(&payload)?)
+    ))
+}
+
+fn parse_status_envelope(text: &str) -> Option<(String, serde_json::Value)> {
+    let encoded = text
+        .strip_prefix("IDFON-STATUS/1\n")?
+        .lines()
+        .find_map(|line| line.strip_prefix("payload="))?;
+    let payload = BASE64.decode(encoded).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    Some((
+        value.get("event")?.as_str()?.to_owned(),
+        value.get("data")?.clone(),
     ))
 }
 
@@ -789,12 +954,12 @@ impl std::fmt::Display for HolderError {
 
 impl std::error::Error for HolderError {}
 
-fn validate_message(
-    message: &MessageEnvelope,
+fn validate_message<'a>(
+    message: &'a MessageEnvelope,
     remote_endpoint_id: &str,
     allow: &[String],
     holder_peer_id: &str,
-) -> std::result::Result<(), HolderError> {
+) -> std::result::Result<&'a CapabilityTicket, HolderError> {
     verify_message(message).map_err(HolderError::Auth)?;
     if message.sender.endpoint_id != remote_endpoint_id {
         return Err(HolderError::Unauthorized);
@@ -815,7 +980,7 @@ fn validate_message(
     if ticket.expires_at.as_deref().is_some_and(expiry_is_past) {
         return Err(HolderError::ExpiredTicket);
     }
-    Ok(())
+    Ok(ticket)
 }
 
 fn expiry_is_past(value: &str) -> bool {
@@ -1013,6 +1178,21 @@ mod tests {
         assert_eq!(parse_a2a_envelope("hello"), None);
     }
 
+    #[test]
+    fn status_envelope_round_trips_and_rejects_plain_text() {
+        let encoded =
+            encode_status_envelope("turn.cancelled", &serde_json::json!({"reason": "user"}))
+                .unwrap();
+        assert_eq!(
+            parse_status_envelope(&encoded),
+            Some((
+                "turn.cancelled".into(),
+                serde_json::json!({"reason": "user"}),
+            ))
+        );
+        assert_eq!(parse_status_envelope("hello"), None);
+    }
+
     #[tokio::test]
     async fn ipc_frame_round_trips_with_little_endian_length() {
         let frame = IpcFrame::TurnIn {
@@ -1025,6 +1205,7 @@ mod tests {
             blob_ticket: None,
             size_bytes: None,
             a2a_depth: None,
+            capabilities: None,
         };
         let (mut writer, mut reader) = duplex(4096);
         write_frame(&mut writer, &frame).await.unwrap();
