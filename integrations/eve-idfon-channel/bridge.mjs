@@ -8,6 +8,7 @@ const socketPath = args.get("--socket");
 const targetUrl = args.get("--target");
 const secret = args.get("--secret");
 const port = Number(args.get("--port"));
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
 if (!socketPath || !targetUrl || !secret || !Number.isInteger(port)) {
   console.error("usage: bridge.mjs --socket PATH --target URL --secret VALUE --port PORT");
   process.exit(2);
@@ -83,8 +84,20 @@ const server = createServer(async (request, response) => {
     response.writeHead(401); response.end("unauthorized\n"); return;
   }
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
-  const body = JSON.parse(Buffer.concat(chunks));
+  let bodyBytes = 0;
+  for await (const chunk of request) {
+    bodyBytes += chunk.length;
+    if (bodyBytes > MAX_BODY_BYTES) {
+      response.writeHead(413); response.end("request too large\n"); return;
+    }
+    chunks.push(chunk);
+  }
+  let body;
+  try {
+    body = JSON.parse(Buffer.concat(chunks));
+  } catch {
+    response.writeHead(400); response.end("invalid JSON\n"); return;
+  }
   if (request.url === "/send") {
     if (typeof body.peer_id !== "string" || typeof body.endpoint_id !== "string" ||
         typeof body.text !== "string" || !body.text || body.capability_ticket == null ||
@@ -127,6 +140,8 @@ const server = createServer(async (request, response) => {
         loop_playback: body.loop_playback ?? false,
         name: body.name,
         relay: body.relay ?? true,
+        video: body.video ?? false,
+        quality: body.quality,
       });
       const result = await resultPromise;
       response.writeHead(200, { "content-type": "application/json" });

@@ -47,7 +47,10 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | auth | **per-message `verify_message` + capability ticket** | holder verifies before the channel sees the turn |
 | default `turnPolicy` | **`queue`** (configurable) | remote peers expect turn-ordered replies; Eve channel default is `steer` |
 | A2A outbound | **`idfon__send` tool** | uses the holder's authenticated endpoint and a caller-supplied capability ticket; it is separate from channel ingress |
+| A2A authorization | **`agent.receive`** | A2A envelopes require this grant in addition to `message.receive`; ordinary peer turns remain human/agent-neutral |
 | A2A loop bound | **depth 1** | replies increment the signed text envelope depth; the channel ignores depth > 1 |
+| rate limit | **120 accepted messages / peer / minute** | bounded in-memory window; oversized resource sets and live publishers are rejected |
+| live lifecycle | **one-hour TTL** | holder cleanup stops abandoned audio/video publishers; override with `--live-ttl-secs` |
 | media wire shape | **out-of-band ticket envelopes** | keep `MessageContent` Text-only; use `IDFON-DATA/1` for blobs and `IDFON-LIVE/1` for live audio, with no protocol bump |
 | streaming replies | **coalesce per turn** | token deltas deferred; a stream ticket can carry live media separately |
 | node in-process addon | **later** | no Node iroh binding exists; do not build speculatively |
@@ -265,9 +268,9 @@ Capture (microphone/camera), rendition adaptation policy, recording storage UX.
    `fetchFile` completes the holder fetch round trip.
 2. **Implemented:** `idfon__put` emits a blob ticket; `idfon get` fetches it
    from the holder and compares bytes (`scripts/eve-channel-media-out-e2e.sh`).
-3. **Implemented:** `idfon__publish-live` emits a live audio ticket; the peer
-   subscribes for a short capture and validates the decoded WAV
-   (`scripts/eve-channel-live-e2e.sh`). Video remains optional.
+3. **Implemented:** `idfon__publish-live` emits live audio or video tickets;
+   the peer subscribes and validates a decoded WAV or H.264 stream
+   (`scripts/eve-channel-live-e2e.sh`, with `EVE_LIVE_VIDEO=1` for video).
 
 ## Milestone 4 — human-in-the-loop
 
@@ -335,19 +338,25 @@ Act-as-user delegation; multi-agent orchestration; a global agent directory.
 
 ## Remaining hardening
 
-These are follow-up tasks, not blockers for the completed M3 acceptance path:
+The remaining work is now operational rather than a missing milestone:
 
-- Add per-peer rate limiting and resource quotas to the holder/channel boundary.
-- Define and enforce the agent-vs-human grant policy for A2A destinations.
+- Exercise the rate and resource limits under production load and tune their
+  defaults.
 - Expand multi-peer and multi-conversation isolation tests beyond the current
   bounded A2A fixture.
-- Add live-stream lifecycle policy: expiry/cleanup for abandoned publishers,
-  and optional video coverage.
+- Decide whether the managed runner should become a future Eve lifecycle hook;
+  Eve 0.54.5 custom channels do not expose a startup hook, so
+  `integrations/eve-idfon-channel/managed.mjs` is the explicit deployment
+  entrypoint today.
+- Add capture-device and voice negotiation support if the product needs live
+  microphone/camera input; file-backed audio/video output is covered.
 
 ## Later (do not start)
 
-- **Managed-child packaging**: extension spawns the holder; endpoint lifecycle
-  tied to the agent process (`eve dev` generation rebind is the hard part).
+- **Native Eve lifecycle hook**: the extension itself cannot spawn the holder
+  on Eve 0.54.5 because custom channels have no startup hook. The explicit
+  `managed.mjs` runner now couples holder + bridge lifecycle; revisit an
+  in-extension child when Eve exposes the required hook.
 - **Node N-API addon**: expose `idfon-core` to Node; drop the holder process.
   Gate on the sidecar proving the semantics.
 - Multi-thread UI (`conversation` → threads), presence/typing, voice
