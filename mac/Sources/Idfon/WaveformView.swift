@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CIdfon
 
 /// Messages-style dotted waveform. Port of ios/Idfon/LiveWaveformView.swift
 /// (UIKit UIView.draw -> AppKit NSView.draw). Low amplitudes render as small
@@ -155,10 +156,14 @@ private extension WaveformView.Mode {
 }
 
 /// Mic amplitude meter: taps the engine input and feeds normalized RMS to a
-/// waveform via a closure. Display-only — the call's capture pipeline stays
-/// in the daemon (cpal); this is a second, display-only mic client, which
-/// macOS allows (mic capture is non-exclusive). Port of the iOS AudioMeter
-/// minus AVAudioSession (doesn't exist on macOS).
+/// waveform via a closure. Port of the iOS AudioMeter minus AVAudioSession
+/// (which does not exist on macOS).
+///
+/// With `pushToEncoder` set, the same tap also feeds the live publisher's
+/// generic audio ingest (`media_audio_push_samples`) as 48 kHz mono f32. Only
+/// the live-call meter does so: in the dylib's "push" mode the Rust side does
+/// not open the mic, so this tap is the call's sole capture and its levels are
+/// the very samples the peer hears (issue #7). Memo meters leave it off.
 final class AudioMeter {
     private let engine = AVAudioEngine()
     // One engine tap fans out to every attached waveform (inline call bar +
@@ -166,6 +171,17 @@ final class AudioMeter {
     private struct WeakWave { weak var view: WaveformView? }
     private var views: [WeakWave] = []
     private(set) var running = false
+
+    /// Opt in to feeding the call's encoder as well as the waveform. In the
+    /// dylib's "push" mode the Rust side does not open the mic, so this tap is
+    /// the call's sole capture; leaving it off (memo meters) only displays.
+    var pushToEncoder = false
+
+    /// The ingest format the dylib's `PushAudioSource` expects.
+    private static let pipelineFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
+    /// Hardware format -> ingest format; keeps its resampler state across taps.
+    private var converter: AVAudioConverter?
 
     init(view: WaveformView) {
         views = [WeakWave(view: view)]
@@ -183,9 +199,20 @@ final class AudioMeter {
             DispatchQueue.main.async {
                 let input = self.engine.inputNode
                 let format = input.outputFormat(forBus: 0)
+                if self.pushToEncoder {
+                    self.converter = AVAudioConverter(from: format, to: Self.pipelineFormat)
+                    if self.converter == nil {
+                        // Non-standard hardware format: keep metering but drop the
+                        // push rather than publish wrong-speed audio.
+                        NSLog("idfon push: no converter for \(format); call stays on mic capture")
+                        self.pushToEncoder = false
+                    }
+                }
                 input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+                    guard let self else { return }
                     let rms = Self.rms(buffer)
-                    for wave in self?.views ?? [] { wave.view?.add(amplitude: Float(min(rms * 12, 1))) }
+                    for wave in self.views { wave.view?.add(amplitude: Float(min(rms * 12, 1))) }
+                    if self.pushToEncoder { self.push(buffer) }
                 }
                 do {
                     try self.engine.start()
@@ -201,7 +228,31 @@ final class AudioMeter {
         guard running else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        converter = nil
         running = false
+    }
+
+    /// Converts a hardware-format tap buffer to the ingest format and hands it
+    /// to the dylib. `.noDataNow` after one buffer lets the converter retain its
+    /// resampler state for the next tap.
+    private func push(_ buffer: AVAudioPCMBuffer) {
+        guard let converter else { return }
+        let ratio = Self.pipelineFormat.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
+        guard let out = AVAudioPCMBuffer(pcmFormat: Self.pipelineFormat, frameCapacity: capacity) else { return }
+        var consumed = false
+        var error: NSError?
+        let status = converter.convert(to: out, error: &error) { _, outStatus in
+            if consumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, out.frameLength > 0, let channel = out.floatChannelData?[0] else { return }
+        media_audio_push_samples(channel, Int(out.frameLength))
     }
 
     /// RMS of the first channel.

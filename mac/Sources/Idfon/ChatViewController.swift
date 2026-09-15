@@ -313,13 +313,17 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         fullscreenOverlay?.isHidden = !isLiveFullscreen
     }
 
-    /// Shared mic meter for the live bar + in-call recording waveform.
+    /// Shared mic meter for the live bar + in-call recording waveform. This is
+    /// also the call's capture: the dylib runs its audio source in "push" mode,
+    /// so the tap below is what the peer hears as well as what the waveform
+    /// shows (no second capture client racing the mic).
     private func ensureCallMeter() -> AudioMeter {
         if let callMeter { return callMeter }
         let wave = liveWaveView ?? WaveformView(frame: NSRect(x: 0, y: 0, width: 160, height: 22))
         wave.startLive()
         liveWaveView = wave
         let meter = AudioMeter(view: wave)
+        meter.pushToEncoder = true
         if let fullscreenWaveView { meter.add(view: fullscreenWaveView) }
         meter.start()
         callMeter = meter

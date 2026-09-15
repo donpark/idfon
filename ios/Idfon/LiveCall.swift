@@ -144,7 +144,8 @@ final class LiveCall {
                     "mode": AnyEncodable("record"),
                 ])
                 LiveCallHarness.activateAudioSession()
-                let ticket = await ffiString { media_live_start(1, 0) } // audio only
+                AudioPusher.shared.start()
+                let ticket = await ffiString { media_live_start_with_source(1, 0, "push") } // shell audio
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
@@ -153,6 +154,7 @@ final class LiveCall {
                 // Hung up while the publish was in flight: stop the publisher
                 // we just started instead of leaking it and ringing the peer.
                 guard case .calling = state else {
+                    AudioPusher.shared.stop()
                     Task.detached(priority: .userInitiated) { media_live_stop() }
                     return
                 }
@@ -176,6 +178,7 @@ final class LiveCall {
         Task {
             do {
                 LiveCallHarness.activateAudioSession()
+                AudioPusher.shared.start()
                 await join(ticket: pending.ticket)
                 // Torn down while subscribing (the subscribe failed and
                 // `fail` already ended the call): never publish into a dead
@@ -183,7 +186,7 @@ final class LiveCall {
                 guard case .inCall = state else { return }
                 // Publish our own mic so audio is two-way, then send the
                 // return-leg invite (own ticket) that makes the caller join us.
-                let own = await ffiString { media_live_start(1, 0) } // audio only
+                let own = await ffiString { media_live_start_with_source(1, 0, "push") } // shell audio
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
@@ -294,6 +297,7 @@ final class LiveCall {
         pendingInvite = nil
         audioEnabled = false
         videoEnabled = false
+        AudioPusher.shared.stop()
         Task.detached(priority: .userInitiated) {
             media_live_stop()
             media_live_unsubscribe()

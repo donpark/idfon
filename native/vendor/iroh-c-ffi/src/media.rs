@@ -158,7 +158,12 @@ impl AudioSource for PushAudioSource {
         for sample in buf[take..].iter_mut() {
             *sample = 0.0;
         }
-        if MIC_MUTED.load(Ordering::Relaxed) {
+        if MIC_MUTED.load(Ordering::Relaxed)
+            || LOCAL_RECORDING
+                .lock()
+                .expect("recording mutex poisoned")
+                .is_some()
+        {
             for sample in buf.iter_mut() {
                 *sample = 0.0;
             }
@@ -1168,6 +1173,10 @@ fn start_live(audio: bool, video: bool, audio_source: LiveAudioSource) -> char_p
             let bitrate = BITRATE.load(Ordering::Relaxed);
             match audio_source {
                 LiveAudioSource::Push => {
+                    // A fresh publisher must not inherit whatever the tap pushed
+                    // while ringing (or before the last stop): drop it so the
+                    // peer never hears stale audio at call start.
+                    *PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned") = None;
                     install_audio(
                         &broadcast,
                         PushAudioSource {
