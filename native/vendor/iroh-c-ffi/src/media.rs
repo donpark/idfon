@@ -1,6 +1,7 @@
 //! Rust-owned audio capture, live publishing, and decoded-audio recording.
 
 use std::{
+    collections::VecDeque,
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
     sync::{
@@ -127,6 +128,99 @@ impl AudioSource for MuteSource {
         }
         result
     }
+}
+
+/// Generic audio source fed by caller-pushed PCM (`media_audio_push_samples`).
+///
+/// Unlike the mic path there is no device and no background producer: the
+/// caller owns where the samples come from (a shell tap, a decoded remote
+/// stream, a file, a synth). Underrun yields silence rather than `None` so the
+/// encoder keeps its fixed 20 ms pacing; overflow drops oldest (see
+/// [`media_audio_push_samples`]).
+struct PushAudioSource {
+    format: AudioFormat,
+    queue: Arc<Mutex<VecDeque<f32>>>,
+}
+
+impl AudioSource for PushAudioSource {
+    fn format(&self) -> AudioFormat {
+        self.format
+    }
+
+    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
+        let mut queue = self.queue.lock().expect("pushed audio queue poisoned");
+        let take = buf.len().min(queue.len());
+        for (dst, src) in buf.iter_mut().zip(queue.drain(..take)) {
+            *dst = src;
+        }
+        // Underrun -> silence: a pushed source is not always ready, but the
+        // encoder wants a full buffer every tick.
+        for sample in buf[take..].iter_mut() {
+            *sample = 0.0;
+        }
+        if MIC_MUTED.load(Ordering::Relaxed) {
+            for sample in buf.iter_mut() {
+                *sample = 0.0;
+            }
+        }
+        Ok(Some(buf.len()))
+    }
+}
+
+/// Capacity of the pushed-audio queue: 2 s of mono 48 kHz f32. Bounds the
+/// latency and memory a stalled encoder can accumulate.
+const PUSH_AUDIO_CAPACITY: usize = 48_000 * 2;
+
+/// Queue shared by [`media_audio_push_samples`] (producer) and
+/// [`PushAudioSource`] (consumer). Created lazily on first use and cleared on
+/// stop, so nothing stale survives into the next call.
+static PUSHED_AUDIO: Mutex<Option<Arc<Mutex<VecDeque<f32>>>>> = Mutex::new(None);
+
+fn push_audio_queue() -> Arc<Mutex<VecDeque<f32>>> {
+    let mut slot = PUSHED_AUDIO
+        .lock()
+        .expect("pushed audio mutex poisoned");
+    slot.get_or_insert_with(|| {
+        Arc::new(Mutex::new(VecDeque::with_capacity(PUSH_AUDIO_CAPACITY)))
+    })
+    .clone()
+}
+
+/// Installs the Opus rendition for `source`. Generic because
+/// `AudioRenditions::empty` takes `impl AudioSource`, and `Box<dyn AudioSource>`
+/// is not itself an `AudioSource` in iroh-live.
+fn install_audio<A: AudioSource>(
+    broadcast: &LocalBroadcast,
+    source: A,
+    bitrate: u64,
+) -> anyhow::Result<()> {
+    let encoder_config =
+        AudioEncoderConfig::from_preset(AudioFormat::mono_48k(), AudioPreset::Hq).bitrate(bitrate);
+    let catalog = OpusEncoder::config_for(&encoder_config);
+    let mut renditions = AudioRenditions::empty(source);
+    renditions.add_with_callback::<OpusEncoder>(
+        format!("audio/opus-{bitrate}"),
+        catalog.into(),
+        move |_format| OpusEncoder::with_config(encoder_config.clone()),
+    );
+    broadcast.audio().set_renditions(renditions)?;
+    Ok(())
+}
+
+/// Preferred H.264 encoder: platform hardware (VideoToolbox / VAAPI) when
+/// compiled in, else software openh264. Both advertise plain H.264 on the
+/// wire, so this changes CPU/battery cost, not interop.
+fn live_video_codec() -> VideoCodec {
+    VideoCodec::best_available().unwrap_or(VideoCodec::H264)
+}
+
+/// Which audio source a live publisher takes.
+#[derive(Clone, Copy)]
+enum LiveAudioSource {
+    /// Default capture device (the platform mic).
+    Mic,
+    /// Caller-pushed PCM (`media_audio_push_samples`).
+    Push,
 }
 
 fn audio() -> AudioBackend {
@@ -1045,7 +1139,7 @@ fn ensure_camera_access() {
     let _ = rx.recv_timeout(Duration::from_secs(120));
 }
 
-fn start_live(audio: bool, video: bool) -> char_p::Box {
+fn start_live(audio: bool, video: bool, audio_source: LiveAudioSource) -> char_p::Box {
     tracing::info!(audio, video, "live publisher start requested");
     if !audio && !video {
         let text = "live publisher start rejected: no audio or video track".to_owned();
@@ -1071,22 +1165,26 @@ fn start_live(audio: bool, video: bool) -> char_p::Box {
         let live = Live::from_env().await?.with_router().spawn();
         let broadcast = LocalBroadcast::new();
         if audio {
-            let input = match INPUT.lock().expect("audio capture mutex poisoned").take() {
-                Some(input) => input,
-                None => self::audio().default_input().await?,
-            };
             let bitrate = BITRATE.load(Ordering::Relaxed);
-            let encoder_config =
-                AudioEncoderConfig::from_preset(AudioFormat::mono_48k(), AudioPreset::Hq)
-                    .bitrate(bitrate);
-            let catalog = OpusEncoder::config_for(&encoder_config);
-            let mut renditions = AudioRenditions::empty(MuteSource { inner: input });
-            renditions.add_with_callback::<OpusEncoder>(
-                format!("audio/opus-{bitrate}"),
-                catalog.into(),
-                move |_format| OpusEncoder::with_config(encoder_config.clone()),
-            );
-            broadcast.audio().set_renditions(renditions)?;
+            match audio_source {
+                LiveAudioSource::Push => {
+                    install_audio(
+                        &broadcast,
+                        PushAudioSource {
+                            format: AudioFormat::mono_48k(),
+                            queue: push_audio_queue(),
+                        },
+                        bitrate,
+                    )?;
+                }
+                LiveAudioSource::Mic => {
+                    let input = match INPUT.lock().expect("audio capture mutex poisoned").take() {
+                        Some(input) => input,
+                        None => self::audio().default_input().await?,
+                    };
+                    install_audio(&broadcast, MuteSource { inner: input }, bitrate)?;
+                }
+            }
         }
         if video {
             #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -1105,7 +1203,7 @@ fn start_live(audio: bool, video: bool) -> char_p::Box {
             // adaptation picks the rendition that fits the network.
             broadcast
                 .video()
-                .set_source(camera, VideoCodec::H264, [VideoPreset::P360, VideoPreset::P720])?;
+                .set_source(camera, live_video_codec(), [VideoPreset::P360, VideoPreset::P720])?;
         }
         let broadcast_name = broadcast_name();
         live.publish(&broadcast_name, &broadcast).await?;
@@ -1137,7 +1235,50 @@ fn start_live(audio: bool, video: bool) -> char_p::Box {
 /// select which tracks to publish; both zero is rejected (nothing to send).
 #[ffi_export]
 pub fn media_live_start(audio: u8, video: u8) -> char_p::Box {
-    start_live(audio != 0, video != 0)
+    start_live(audio != 0, video != 0, LiveAudioSource::Mic)
+}
+
+/// Like [`media_live_start`], but selects the audio source by name: `"mic"`
+/// (the default capture device) or `"push"` (samples supplied through
+/// [`media_audio_push_samples`]). An unknown name fails with an empty ticket
+/// and sets [`media_live_last_error`]. Makes the source a caller decision
+/// without adding a new Rust source type per input.
+#[ffi_export]
+pub fn media_live_start_with_source(
+    audio: u8,
+    video: u8,
+    source: char_p::Ref<'_>,
+) -> char_p::Box {
+    match source.to_str() {
+        "mic" | "" => start_live(audio != 0, video != 0, LiveAudioSource::Mic),
+        "push" => start_live(audio != 0, video != 0, LiveAudioSource::Push),
+        other => {
+            let text = format!("unknown live source '{other}' (expected mic|push)");
+            tracing::warn!("{text}");
+            *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = Some(text);
+            String::new().try_into().expect("empty ticket conversion")
+        }
+    }
+}
+
+/// Pushes caller-supplied mono 48 kHz f32 PCM into the generic live audio
+/// source. Pair with `media_live_start_with_source(audio, video, "push")`.
+///
+/// `samples` is the number of f32 values (mono: samples == frames). Null or
+/// empty input is ignored; overflow past 2 s drops oldest, so a stalled
+/// encoder cannot grow memory or add latency. Trusted in-process caller.
+#[ffi_export]
+pub fn media_audio_push_samples(pcm: *const f32, samples: usize) {
+    if pcm.is_null() || samples == 0 {
+        return;
+    }
+    let input = unsafe { std::slice::from_raw_parts(pcm, samples) };
+    let queue = push_audio_queue();
+    let mut queue = queue.lock().expect("pushed audio queue poisoned");
+    queue.extend(input.iter().copied());
+    while queue.len() > PUSH_AUDIO_CAPACITY {
+        queue.pop_front();
+    }
 }
 
 /// Enables/disables the outgoing audio stream. Disabled sends silence while
@@ -1295,6 +1436,9 @@ pub fn media_live_stop() {
     {
         *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
     }
+    // Same for a caller-pushed audio queue: drop it so a later "push" start
+    // begins empty and stale samples cannot leak into the next call.
+    *PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned") = None;
 }
 
 /// Subscribes to a live ticket and records decoded audio in the app-data directory.
@@ -1421,6 +1565,39 @@ mod tests {
             PUSHED_FRAME.lock().expect("pushed frame mutex poisoned").is_none(),
             "disabling must clear the slot"
         );
+    }
+
+    /// The pushed-audio source is the seam that lets a caller feed any input
+    /// (remote stream, file, synth) instead of the default mic: it must drain
+    /// in order, pad underrun with silence, and bound overflow.
+    #[test]
+    fn pushed_audio_source_drains_pads_and_bounds() {
+        MIC_MUTED.store(false, Ordering::Relaxed);
+        *PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned") = None;
+        let mut source = PushAudioSource {
+            format: AudioFormat::mono_48k(),
+            queue: push_audio_queue(),
+        };
+        let pcm: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        media_audio_push_samples(pcm.as_ptr(), pcm.len());
+
+        let mut buf = [0.0f32; 4];
+        assert_eq!(source.pop_samples(&mut buf).unwrap(), Some(4));
+        assert_eq!(buf, [0.0, 1.0, 2.0, 3.0], "drains in pushed order");
+
+        // Only 6 samples left: the rest is silence, never a short/None frame.
+        let mut buf = [1.0f32; 8];
+        assert_eq!(source.pop_samples(&mut buf).unwrap(), Some(8));
+        assert_eq!(buf[..6], [4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        assert_eq!(buf[6..], [0.0, 0.0], "underrun is padded with silence");
+
+        // Overflow keeps only the newest PUSH_AUDIO_CAPACITY samples.
+        let big = vec![0.5f32; PUSH_AUDIO_CAPACITY + 100];
+        media_audio_push_samples(big.as_ptr(), big.len());
+        let queued = source.queue.lock().expect("pushed audio queue poisoned").len();
+        assert_eq!(queued, PUSH_AUDIO_CAPACITY, "overflow drops oldest");
+
+        *PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned") = None;
     }
 
     #[test]

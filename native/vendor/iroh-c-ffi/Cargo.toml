@@ -57,6 +57,19 @@ objc2 = "0.6"
 objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 block2 = "0.6"
 
+# Hardware H.264 in the Rust pipeline: VideoToolbox on Apple, VAAPI on Linux.
+# Both advertise plain H.264 on the wire (VtbEncoder/VaapiEncoder report the
+# same h264_video_config), so this is a local encoder choice that changes
+# CPU/battery cost, not interop. Software openh264 stays compiled as the
+# fallback; `VideoCodec::best_available()` prefers hardware.
+# Target-gated because moq-media's `vaapi` feature pulls `cros-codecs`
+# unconditionally, which does not build on non-Linux.
+[target.'cfg(target_os = "macos")'.dependencies]
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "videotoolbox"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "vaapi"] }
+
 # ponytail note: a 4f94b3e regression put tokio and the idfon-* deps inside
 # a not(linux) target section and silently broke the Linux dylib (tokio
 # without rt-multi-thread -> iroh-blobs fs-store failed to compile). Keep
