@@ -36,7 +36,8 @@ Four gaps, named up front so they are not discovered late:
 2. **Delivery.** `message.send` is strictly one peer (`to`). A room needs
    fan-out, and there is **no `iroh-gossip` dependency in this repo today**.
 3. **Confidentiality.** Messages are signed but **not payload-encrypted**;
-   QUIC/TLS protects each hop only. A relay or any member reads plaintext.
+   QUIC/TLS protects each hop only. Until the shared-key work lands, privacy is
+   an unguessable room id alone.
 4. **History.** Pubsub is ephemeral; rooms need retention and late-join backfill.
 
 ## Model
@@ -84,19 +85,46 @@ No new transport. The sender signs **one envelope per recipient** — same
 dependency and a new failure surface (tree maintenance, no acks). Defer it:
 fan-out is correct and testable for the small rooms that matter first.
 
-### Confidentiality — the one real decision
+### Confidentiality — decided: shared room key
 
-v1 has **no group payload encryption**. A private room is private only by
-unguessable topic id plus explicit grants; a member or relay sees plaintext.
+**Decision (2026-09-15): one symmetric room key per room.** Chosen over a
+per-sender ratchet / MLS as the best cost-benefit at the room sizes idfon
+targets.
 
-| option | gives | costs |
-|---|---|---|
-| unguessable topic only (v1) | no accidental discovery | members can read each other; no wire privacy |
-| shared symmetric room key | members-only content | key distribution, rotation, revocation rekey |
-| MLS / per-sender ratchet | forward secrecy, post-compromise safety | real protocol work; likely out of scope |
+Shape:
 
-This is the single place a topic id is not enough. It should be chosen
-deliberately, not defaulted into.
+- **Key.** A random 32-byte `K` per room. Content is sealed with an AEAD
+  (XChaCha20-Poly1305), one nonce per message.
+- **Distribution.** `K` is wrapped to each member's public key (HPKE /
+  sealed-box) and delivered as an ordinary peer message. Adding a member =
+  wrap `K` to them; removing one = mint `K'` and re-wrap to the rest.
+- **Wire.** Ciphertext rides the existing `Text` content as an `IDFON-ROOM/1`
+  envelope (`nonce` + `ciphertext`, base64), matching the `IDFON-DATA/1` /
+  `IDFON-LIVE/1` precedent — so **no protocol bump**. A `MessageContent`
+  variant would be cleaner, but changing the type is a bump by the versioning
+  discipline.
+- **Signatures are unchanged.** The envelope is signed as today and only
+  `content` is opaque (sign-then-encrypt), so `message.receive` still
+  authenticates the author independently of the room key.
+
+Accepted trade-offs, taken knowingly:
+
+- **No forward secrecy.** A member who leaves still holds `K` and can read
+  everything they recorded. Rotation stops *future* reads, not past ones.
+- **No post-compromise healing.** If `K` leaks, traffic under `K` is readable
+  until a rotation actually completes.
+- **Members can read each other.** The room is a trust boundary, not a set of
+  private channels.
+
+Prerequisite (net-new): idfon identities are **Ed25519 signing keys only**
+(`idfon-core`). Sealing needs key agreement, so the identity record must gain
+an X25519 encryption key (or an Ed25519→X25519 conversion). Nothing above
+works until that exists.
+
+Rejected for now: **MLS / per-sender ratchet.** It buys forward secrecy and
+consistent membership, but needs a delivery service that imposes total ordering
+on the group — which v1 fan-out deliberately does not provide (see *Delivery*).
+Not justified at the target room size; revisit if forward secrecy is required.
 
 ### History
 
@@ -167,8 +195,10 @@ Each step is independently useful and leaves no dead surface.
 3. **R2 — gossip transport.** Add `iroh-gossip` for large rooms, keeping
    fan-out as the small-room path. Only if R0/R1 show membership sizes that
    need it.
-4. **R3 — room confidentiality.** Pick from the table above, only if rooms must
-   carry content members should not read.
+4. **R3 — room confidentiality (shared key).** Add an X25519 identity key, the
+   `IDFON-ROOM/1` sealed-content envelope, and key wrap/rotation on membership
+   change. Acceptance: a room where an outsider who learns the topic id still
+   cannot read content.
 
 ## 1:1 equivalence
 
