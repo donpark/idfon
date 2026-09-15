@@ -23,8 +23,8 @@ use idfon_protocol::{
     AckStatus, Capability, CapabilityTicket, MessageAck, MessageContent, MessageEnvelope,
     MAX_FRAME_BYTES,
 };
-use iroh::{endpoint::presets, Endpoint, EndpointAddr, EndpointId};
-use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket};
+use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, EndpointId};
+use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -191,6 +191,37 @@ enum IpcFrame {
         bytes_base64: String,
         size_bytes: u64,
     },
+    #[serde(rename = "blob.put")]
+    BlobPut {
+        request_id: String,
+        bytes_base64: String,
+    },
+    #[serde(rename = "blob.put.result")]
+    BlobPutResult {
+        request_id: String,
+        ticket: String,
+        size_bytes: u64,
+    },
+    #[serde(rename = "live.publish")]
+    LivePublish {
+        request_id: String,
+        path: String,
+        #[serde(default)]
+        loop_playback: bool,
+        name: String,
+        #[serde(default)]
+        relay: bool,
+    },
+    #[serde(rename = "live.publish.result")]
+    LivePublishResult {
+        request_id: String,
+        id: String,
+        ticket: String,
+    },
+    #[serde(rename = "live.stop")]
+    LiveStop { request_id: String, id: String },
+    #[serde(rename = "live.stop.result")]
+    LiveStopResult { request_id: String, id: String },
     #[serde(rename = "error")]
     Error { code: String, message: String },
 }
@@ -299,6 +330,14 @@ async fn serve(
             .await
             .context("bind iroh endpoint")?,
     );
+    let blob_store = FsStore::load(&blob_dir).await.context("load blob store")?;
+    let blob_endpoint = Endpoint::bind(presets::N0)
+        .await
+        .context("bind blob endpoint")?;
+    let blob_router = Router::builder(blob_endpoint.clone())
+        .accept(BLOBS_ALPN, BlobsProtocol::new(blob_store.as_ref(), None))
+        .spawn();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), blob_endpoint.online()).await;
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         transport.endpoint().online(),
@@ -322,6 +361,7 @@ async fn serve(
 
     let targets = Targets::default();
     let seen = Seen::default();
+    let live_publishers = Arc::new(Mutex::new(HashMap::new()));
     let holder_peer_id = peer_id(&key);
     let transport_task = {
         let transport = Arc::clone(&transport);
@@ -380,7 +420,41 @@ async fn serve(
                 .await
             }
             IpcFrame::BlobFetch { request_id, ticket } => {
-                handle_blob_fetch(request_id, ticket, &blob_dir, out_tx.clone()).await
+                handle_blob_fetch(request_id, ticket, &blob_dir, &blob_store, out_tx.clone()).await
+            }
+            IpcFrame::BlobPut {
+                request_id,
+                bytes_base64,
+            } => {
+                handle_blob_put(
+                    request_id,
+                    bytes_base64,
+                    &blob_store,
+                    &blob_endpoint,
+                    out_tx.clone(),
+                )
+                .await
+            }
+            IpcFrame::LivePublish {
+                request_id,
+                path,
+                loop_playback,
+                name,
+                relay,
+            } => {
+                handle_live_publish(
+                    request_id,
+                    path,
+                    loop_playback,
+                    name,
+                    relay,
+                    &live_publishers,
+                    out_tx.clone(),
+                )
+                .await
+            }
+            IpcFrame::LiveStop { request_id, id } => {
+                handle_live_stop(request_id, id, &live_publishers, out_tx.clone()).await
             }
             IpcFrame::InputOut {
                 request_id,
@@ -438,6 +512,8 @@ async fn serve(
 
     transport_task.abort();
     let _ = transport_task.await;
+    let _ = blob_router.shutdown().await;
+    blob_endpoint.close().await;
     Ok(())
 }
 
@@ -868,6 +944,7 @@ async fn handle_blob_fetch(
     request_id: String,
     ticket: String,
     root: &Path,
+    store: &FsStore,
     out_tx: mpsc::Sender<IpcFrame>,
 ) -> Result<()> {
     let ticket: BlobTicket = ticket.parse().context("parse blob ticket")?;
@@ -882,7 +959,7 @@ async fn handle_blob_fetch(
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
         let endpoint = Endpoint::bind(presets::N0).await?;
-        let result = fetch_blob_once(&ticket, &endpoint, root).await;
+        let result = fetch_blob_once(&ticket, &endpoint, store, root).await;
         endpoint.close().await;
         match result {
             Ok(value) => {
@@ -904,8 +981,12 @@ async fn handle_blob_fetch(
     Ok(())
 }
 
-async fn fetch_blob_once(ticket: &BlobTicket, endpoint: &Endpoint, root: &Path) -> Result<Vec<u8>> {
-    let store = FsStore::load(root).await?;
+async fn fetch_blob_once(
+    ticket: &BlobTicket,
+    endpoint: &Endpoint,
+    store: &FsStore,
+    root: &Path,
+) -> Result<Vec<u8>> {
     tokio::time::timeout(
         std::time::Duration::from_secs(30),
         store
@@ -916,6 +997,78 @@ async fn fetch_blob_once(ticket: &BlobTicket, endpoint: &Endpoint, root: &Path) 
     let output = root.join(format!("{}.blob", ticket.hash()));
     store.blobs().export(ticket.hash(), &output).await?;
     Ok(tokio::fs::read(output).await?)
+}
+
+async fn handle_live_publish(
+    request_id: String,
+    path: String,
+    loop_playback: bool,
+    name: String,
+    relay: bool,
+    publishers: &Arc<Mutex<HashMap<String, idfon_media::live::LivePublisher>>>,
+    out_tx: mpsc::Sender<IpcFrame>,
+) -> Result<()> {
+    let path = PathBuf::from(path);
+    let (publisher, ticket) =
+        idfon_media::live::LivePublisher::start(&path, loop_playback, &name, relay)
+            .with_context(|| format!("publish live media from {}", path.display()))?;
+    let id = format!("live-{}", NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed));
+    publishers.lock().await.insert(id.clone(), publisher);
+    out_tx
+        .send(IpcFrame::LivePublishResult {
+            request_id,
+            id,
+            ticket,
+        })
+        .await
+        .map_err(|_| anyhow!("IPC client disconnected"))?;
+    Ok(())
+}
+
+async fn handle_live_stop(
+    request_id: String,
+    id: String,
+    publishers: &Arc<Mutex<HashMap<String, idfon_media::live::LivePublisher>>>,
+    out_tx: mpsc::Sender<IpcFrame>,
+) -> Result<()> {
+    let publisher = publishers
+        .lock()
+        .await
+        .remove(&id)
+        .ok_or_else(|| anyhow!("unknown live publisher {id}"))?;
+    tokio::task::spawn_blocking(move || publisher.stop())
+        .await
+        .map_err(|error| anyhow!("stop live publisher: {error}"))?;
+    out_tx
+        .send(IpcFrame::LiveStopResult { request_id, id })
+        .await
+        .map_err(|_| anyhow!("IPC client disconnected"))?;
+    Ok(())
+}
+
+async fn handle_blob_put(
+    request_id: String,
+    bytes_base64: String,
+    store: &FsStore,
+    endpoint: &Endpoint,
+    out_tx: mpsc::Sender<IpcFrame>,
+) -> Result<()> {
+    let bytes = BASE64.decode(bytes_base64).context("decode blob data")?;
+    let content = store
+        .blobs()
+        .add_slice(&bytes)
+        .with_named_tag(format!("resource-{}", blake3::hash(&bytes)))
+        .await?;
+    let ticket = BlobTicket::new(endpoint.addr(), content.hash, content.format).to_string();
+    out_tx
+        .send(IpcFrame::BlobPutResult {
+            request_id,
+            ticket,
+            size_bytes: bytes.len() as u64,
+        })
+        .await
+        .map_err(|_| anyhow!("IPC client disconnected"))?;
+    Ok(())
 }
 
 #[derive(Debug)]

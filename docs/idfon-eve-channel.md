@@ -195,8 +195,10 @@ managed-child packaging the attestation is the IPC channel itself.
   (`UserContent` / `fetchFile`); the agent's outputs go back as blob tickets
   rather than external URLs or sandbox paths (Eve explicitly does not treat
   sandbox files as durable storage).
-- **Live media**: an idfon **stream ticket** has no Eve session equivalent; it
-  is delivered through idfon's media plane and referenced in the turn.
+- **Live media**: `idfon__publish-live` (requiring the authenticated
+  `live.audio.publish` grant) returns an idfon **stream ticket**; it is
+  delivered through the pinned `idfon-media`/MoQ plane and referenced in the
+  turn. It has no Eve session equivalent.
 - **Typing/status**: optional, from `turn.started` / `actions.requested`.
 
 ### Media is where idfon exceeds Slack

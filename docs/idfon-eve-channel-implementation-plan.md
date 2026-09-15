@@ -1,6 +1,6 @@
 # idfon Eve Channel — Implementation Plan
 
-> **Status:** M0–M5 agent messaging and M4 HITL/status flows implemented; M3 files-in is complete; M3 files-out/live streams remain deferred. Design:
+> **Status:** M0–M5 agent messaging, M4 HITL/status flows, and M3 files-in/files-out/live audio are implemented. Design:
 > MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5, implemented).
 > Prototyping stage: no legacy or migration constraints. Eve channel contract as
 > of 2026-09-14 (`defineChannel`, routes/events, `from(address).send`,
@@ -27,10 +27,11 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | M1 endpoint holder | `47049b0` | `scripts/eve-channel-holder-e2e.sh` |
 | M2 Eve channel provider | `8c1e757` | `scripts/eve-channel-e2e.sh` |
 | M3 media — files in | `efdcf73` | `scripts/eve-channel-media-e2e.sh` |
-| M3 media — files out + live streams | — | not started |
+| M3 media — files out | `7f500bb` | `scripts/eve-channel-media-out-e2e.sh` |
+| M3 media — live streams | `7f500bb` | `scripts/eve-channel-live-e2e.sh` |
 | M4 HITL — approvals/input | `890071a` | `scripts/eve-channel-hitl-e2e.sh` |
-| M4 HITL — authorization/status flows | `14ba0b9` | `scripts/eve-channel-hitl-e2e.sh` + holder IPC tests |
-| M5 agent-to-agent + isolation | `6a46734` | `scripts/eve-channel-a2a-e2e.sh` |
+| M4 HITL — authorization/status flows | `9a1bf5b` | `scripts/eve-channel-hitl-e2e.sh` + holder IPC tests |
+| M5 agent-to-agent + isolation | `6e6592d` | `scripts/eve-channel-a2a-e2e.sh` |
 
 ## Resolved decisions
 
@@ -47,7 +48,7 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 | default `turnPolicy` | **`queue`** (configurable) | remote peers expect turn-ordered replies; Eve channel default is `steer` |
 | A2A outbound | **`idfon__send` tool** | uses the holder's authenticated endpoint and a caller-supplied capability ticket; it is separate from channel ingress |
 | A2A loop bound | **depth 1** | replies increment the signed text envelope depth; the channel ignores depth > 1 |
-| media wire shape | **decide in M3** | `MessageContent` is Text-only; either extend it or keep the daemon's out-of-band ticket envelope |
+| media wire shape | **out-of-band ticket envelopes** | keep `MessageContent` Text-only; use `IDFON-DATA/1` for blobs and `IDFON-LIVE/1` for live audio, with no protocol bump |
 | streaming replies | **coalesce per turn** | token deltas deferred; a stream ticket can carry live media separately |
 | node in-process addon | **later** | no Node iroh binding exists; do not build speculatively |
 
@@ -239,33 +240,34 @@ image ceiling.
 - **Files in — implemented here**: an `IDFON-DATA/1` message referencing a blob
   ticket becomes an Eve `UserContent` file part. The holder fetches it with
   `iroh-blobs` and the channel's `fetchFile` resolves the `idfon-blob:` URL.
-- **Files out — next**: agent outputs delivered as blob tickets (store to the
-  holder's `iroh-blobs` `FsStore`, tag, send the ticket) rather than sandbox
-  paths.
-- **Live media — next**: `media.live.publish`/`subscribe` via `idfon-media`,
-  referenced in the turn as a stream ticket. Live bytes ride idfon's MoQ plane,
-  not Eve's session model.
+- **Files out — implemented**: the `idfon__put` tool stores base64 output in
+  the holder's `iroh-blobs` store and returns an `IDFON-DATA/1` ticket envelope.
+- **Live media — implemented**: the `idfon__publish-live` and `idfon__stop-live`
+  tools drive the pinned `idfon-media`/`iroh-live` file publisher; the returned
+  `IDFON-LIVE/1` ticket is subscribed to through the existing MoQ plane, outside
+  Eve's session model.
 - Wire shape: extend `MessageContent` with a media/blob variant **or** continue
   the daemon's out-of-band `IDFON-DATA/1` text envelope. Choose the smaller
   change; if `MessageContent` changes, bump `PROTOCOL_VERSION` and update
   `docs/protocol.md` and `scripts/test-cli.sh` per versioning discipline.
-- The holder registers the MoQ side-channel ALPN (from `iroh-live`) for live
-  sessions, as `idfon-media` does today.
+- The holder keeps the `idfon-media` publisher alive in a managed sidecar
+  endpoint; live bytes ride its pinned `iroh-live` MoQ plane rather than the
+  Eve session transport.
 
 ### Out of scope (M3)
 
 Capture (microphone/camera), rendition adaptation policy, recording storage UX.
 
-### Acceptance — `scripts/eve-channel-media-e2e.sh`
+### Acceptance — M3 media scripts
 
 1. **Implemented:** put a file into the peer's blob store; send an
    `IDFON-DATA/1` ticket envelope; assert the Eve turn includes the file part and
    `fetchFile` completes the holder fetch round trip.
-2. **Next:** have the agent emit a blob ticket; `idfon get` it from the peer
-   and compare bytes.
-3. **Next:** publish a short live audio clip as a stream ticket; assert the
-   agent receives the ticket and the peer can subscribe. (Video optional; reuse
-   `scripts/video-e2e.sh`.)
+2. **Implemented:** `idfon__put` emits a blob ticket; `idfon get` fetches it
+   from the holder and compares bytes (`scripts/eve-channel-media-out-e2e.sh`).
+3. **Implemented:** `idfon__publish-live` emits a live audio ticket; the peer
+   subscribes for a short capture and validates the decoded WAV
+   (`scripts/eve-channel-live-e2e.sh`). Video remains optional.
 
 ## Milestone 4 — human-in-the-loop
 
@@ -330,6 +332,17 @@ Act-as-user delegation; multi-agent orchestration; a global agent directory.
    replies and the fixture peer receives A's result.
 3. Deliver a depth-2 turn and assert the channel returns `a2a_loop_guard`;
    assert B's depth-1 reply is received by A without another outbound loop.
+
+## Remaining hardening
+
+These are follow-up tasks, not blockers for the completed M3 acceptance path:
+
+- Add per-peer rate limiting and resource quotas to the holder/channel boundary.
+- Define and enforce the agent-vs-human grant policy for A2A destinations.
+- Expand multi-peer and multi-conversation isolation tests beyond the current
+  bounded A2A fixture.
+- Add live-stream lifecycle policy: expiry/cleanup for abandoned publishers,
+  and optional video coverage.
 
 ## Later (do not start)
 
