@@ -129,10 +129,32 @@ Auto rendition switching on the receiver is already provided by iroh-live
 (`VideoTrack::enable_adaptation` driven by QUIC path stats) and lands with the
 GUI video view; the headless recorder uses fixed-rendition selection.
 
+## Codec backends
+
+The H.264 encoder implementation is a build feature, not a wire concern: the
+pipeline asks for `VideoCodec::best_available()`, which prefers platform
+hardware and falls back to software openh264.
+
+| platform | encoder |
+|---|---|
+| macOS | VideoToolbox (`videotoolbox` feature) |
+| Linux | VAAPI (`vaapi` feature) |
+| iOS / others | software openh264 |
+
+Hardware and software encoders advertise plain H.264 on the wire
+(`config_for` → `h264_video_config`), so the choice affects CPU/battery, not
+interop. The features are target-gated in `native/vendor/iroh-c-ffi/Cargo.toml`
+and `crates/idfon-media/Cargo.toml` (`vaapi` pulls `cros-codecs`, which does not
+build off Linux). VAAPI is unverified on this machine (no Linux toolchain).
+
+Capture stays raw (PCM / BGRA frames pushed from the shell); codec selection is
+downstream of that and independent of it. The live subscribe path's decoder also
+prefers hardware (iroh-live's dynamic decoder); the file-import path still
+decodes with software openh264.
+
 ## Not yet
 
 - File audio (AAC→Opus transcode) alongside the video track
-- Hardware codecs (rusty-codecs has a VideoToolbox feature for macOS)
 - Passthrough single-rendition publishing (zero-CPU mode for weak senders)
 - MKV/TS/FLV/H.264 elementary imports (plumbing exists, untested)
 - Incremental import for multi-GB files

@@ -254,7 +254,9 @@ async fn build_video_broadcast(
                 format,
                 rx,
             },
-            codec::VideoCodec::H264,
+            // Hardware H.264 (VideoToolbox/VAAPI) when compiled in, else software.
+            // Same wire codec either way.
+            codec::VideoCodec::best_available().unwrap_or(codec::VideoCodec::H264),
             presets.iter().copied(),
         ))
         .map_err(|err| anyhow::anyhow!("video setup: {err:#}"))?;
