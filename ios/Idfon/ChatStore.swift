@@ -7,16 +7,15 @@ protocol ChatStoreObserver: AnyObject {
     func chatStoreDidUpdate()
 }
 
-/// In-memory message store tailing the daemon event stream.
+/// Message store tailing the daemon event stream.
 ///
-/// The event cursor is persisted so a relaunch (or foreground after
-/// suspension) replays everything since the last seen event — the shared
-/// reconciliation pattern from docs/native-shells-plan.md. Message bodies
-/// are memory-only for M2; events after the persisted cursor are
-/// re-delivered, so nothing sent while the app was dead is lost.
+/// The event cursor and rendered messages are persisted so a relaunch (or
+/// foreground after suspension) keeps both sides of the conversation visible.
+/// The daemon remains the source of truth for incoming-event reconciliation.
 final class ChatStore {
     static let shared = ChatStore()
     static let cursorKey = "idfon.event.cursor"
+    private static let messagesKey = "idfon.chat.messages"
 
     private let client = DaemonClient()
     private let queue = DispatchQueue(label: "app.idfon.chatstore")
@@ -50,13 +49,19 @@ final class ChatStore {
     func start() {
         guard !started else { return }
         started = true
+        loadMessages()
         Task { await hydrateHistory() }
         Task { await runLoop() }
         Task { selfPeerId = (try? await client.status())?.1 ?? selfPeerId }
     }
 
-    /// Delivers an event (new or replayed) into the store. Main queue.
+    /// Delivers an event (new or replayed) into the store on the main queue.
     private func ingest(_ event: Event) {
+        guard !Thread.isMainThread else { ingestOnMain(event); return }
+        DispatchQueue.main.async { [weak self] in self?.ingestOnMain(event) }
+    }
+
+    private func ingestOnMain(_ event: Event) {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
         let messageID = event.messageId ?? event.eventId
         guard seenMessageIDs.insert(messageID).inserted else { return }
@@ -88,8 +93,9 @@ final class ChatStore {
         }
         let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
         messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, timestamp: timestamp, conversation: event.conversationId))
+        persistMessages()
         NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")
-        DispatchQueue.main.async { self.notifyObservers() }
+        notifyObservers()
     }
 
     /// Replayed invites older than 60s are from past calls; never ring.
@@ -99,8 +105,59 @@ final class ChatStore {
     }
 
     func appendOutgoing(_ message: ChatMessage) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.appendOutgoing(message) }
+            return
+        }
         messages.append(message)
-        DispatchQueue.main.async { self.notifyObservers() }
+        persistMessages()
+        notifyObservers()
+    }
+
+    private struct StoredMessage: Codable {
+        let id: String
+        let peerId: String
+        let kind: String
+        let text: String?
+        let ticket: String?
+        let name: String?
+        let sizeBytes: Int?
+        let durationMs: Int?
+        let outgoing: Bool
+        let timestamp: Date
+        let conversation: String?
+
+        init(_ message: ChatMessage) {
+            id = message.id; peerId = message.peerId; outgoing = message.outgoing
+            timestamp = message.timestamp; conversation = message.conversation
+            switch message.kind {
+            case .text(let value): kind = "text"; text = value; ticket = nil; name = nil; sizeBytes = nil; durationMs = nil
+            case .recording(let value, let duration, _): kind = "recording"; text = nil; ticket = value; name = nil; sizeBytes = nil; durationMs = duration
+            case .file(let value, let fileName, let size, _): kind = "file"; text = nil; ticket = value; name = fileName; sizeBytes = size; durationMs = nil
+            }
+        }
+
+        var message: ChatMessage {
+            let messageKind: MessageKind
+            switch kind {
+            case "recording": messageKind = .recording(ticket: ticket ?? "", durationMs: durationMs ?? 0, localURL: nil)
+            case "file": messageKind = .file(ticket: ticket ?? "", name: name ?? "file", sizeBytes: sizeBytes ?? 0, localURL: nil)
+            default: messageKind = .text(text ?? "")
+            }
+            return ChatMessage(id: id, peerId: peerId, kind: messageKind, outgoing: outgoing, timestamp: timestamp, conversation: conversation)
+        }
+    }
+
+    private func loadMessages() {
+        guard let data = UserDefaults.standard.data(forKey: Self.messagesKey),
+              let stored = try? JSONDecoder().decode([StoredMessage].self, from: data) else { return }
+        messages = stored.map(\.message)
+        seenMessageIDs = Set(messages.map(\.id))
+    }
+
+    private func persistMessages() {
+        guard let data = try? JSONEncoder().encode(messages.map(StoredMessage.init)) else { return }
+        UserDefaults.standard.set(data, forKey: Self.messagesKey)
     }
 
     private static func readKey(_ id: String) -> String { "idfon.chat.read.\(id)" }
@@ -144,7 +201,8 @@ final class ChatStore {
         guard let index = messages.firstIndex(where: { $0.id == messageId }),
               case .file(let ticket, let name, let sizeBytes, _) = messages[index].kind else { return }
         messages[index].kind = .file(ticket: ticket, name: name, sizeBytes: sizeBytes, localURL: url)
-        DispatchQueue.main.async { self.notifyObservers() }
+        persistMessages()
+        notifyObservers()
     }
 
     private func hydrateHistory() async {
