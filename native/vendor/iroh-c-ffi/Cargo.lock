@@ -2162,9 +2162,12 @@ dependencies = [
 name = "idfon-core"
 version = "0.4.0"
 dependencies = [
+ "blake3",
  "ed25519-dalek 2.2.0",
+ "futures-util",
  "idfon-protocol",
  "iroh",
+ "iroh-gossip",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
@@ -2181,11 +2184,13 @@ dependencies = [
  "blake3",
  "chrono",
  "ed25519-dalek 2.2.0",
+ "futures-util",
  "idfon-core",
  "idfon-media",
  "idfon-protocol",
  "iroh",
  "iroh-blobs",
+ "iroh-gossip",
  "libc",
  "serde",
  "serde_json",
