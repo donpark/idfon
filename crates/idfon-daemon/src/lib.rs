@@ -134,17 +134,46 @@ impl TransportMode {
         peer: &idfon_protocol::Peer,
         message: &idfon_protocol::MessageEnvelope,
     ) -> io::Result<idfon_protocol::MessageAck> {
-        let address = if matches!(self, Self::Fake(_)) {
-            "0000000000000000000000000000000000000000000000000000000000000000"
-        } else {
-            peer.endpoint_addr
-                .as_deref()
-                .ok_or_else(|| io::Error::other("peer has no endpoint address"))?
-        };
+        // The fake transport dials a fixed placeholder; the real one tries
+        // each device of the peer's account until one acknowledges.
+        if matches!(self, Self::Fake(_)) {
+            return self.send_to(
+                identity,
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                message,
+            );
+        }
+        let targets = peer.dial_targets();
+        if targets.is_empty() {
+            return Err(io::Error::other("peer has no endpoint address"));
+        }
+        let mut last_error = None;
+        for (endpoint_id, address) in targets {
+            eprintln!("[idfond] transport send attempt identity={} peer={} device={} message_id={} target_bytes={}", identity, peer.id, endpoint_id, message.message_id, address.len());
+            match self.send_to(identity, &address, message) {
+                Ok(ack) => {
+                    eprintln!("[idfond] transport send acknowledged identity={} peer={} device={} message_id={} status={:?}", identity, peer.id, endpoint_id, message.message_id, ack.status);
+                    return Ok(ack);
+                }
+                Err(error) => {
+                    eprintln!("[idfond] transport send failed identity={} peer={} device={} message_id={} error={}", identity, peer.id, endpoint_id, message.message_id, error);
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| io::Error::other("peer has no endpoint address")))
+    }
+
+    /// One dial attempt against a single serialized `EndpointAddr`.
+    fn send_to(
+        &self,
+        identity: &str,
+        address: &str,
+        message: &idfon_protocol::MessageEnvelope,
+    ) -> io::Result<idfon_protocol::MessageAck> {
         let target = serde_json::from_str(address)
             .map_err(|error| io::Error::other(format!("invalid endpoint address: {error}")))?;
-        eprintln!("[idfond] transport send attempt identity={} peer={} endpoint_id={:?} message_id={} target_bytes={}", identity, peer.id, peer.endpoint_id, message.message_id, address.len());
-        let result = std::thread::scope(|scope| {
+        std::thread::scope(|scope| {
             scope
                 .spawn(|| {
                     let runtime = tokio::runtime::Runtime::new()?;
@@ -158,12 +187,7 @@ impl TransportMode {
                 })
                 .join()
                 .map_err(|_| io::Error::other("transport worker panicked"))?
-        });
-        match &result {
-            Ok(ack) => eprintln!("[idfond] transport send acknowledged identity={} peer={} message_id={} status={:?}", identity, peer.id, message.message_id, ack.status),
-            Err(error) => eprintln!("[idfond] transport send failed identity={} peer={} message_id={} error={}", identity, peer.id, message.message_id, error),
-        }
-        result
+        })
     }
 }
 
@@ -271,6 +295,34 @@ impl Store {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid identity key"))
     }
 
+    /// The transport (endpoint) key for an identity. Identities created since
+    /// the account/endpoint split get a dedicated `endpoint-<id>.key` so the
+    /// identity key stays signing-only; identities created before it fall back
+    /// to the identity key, because switching their endpoint id would break
+    /// every peer record that already points at it.
+    fn endpoint_key(&self, identity_id: &str) -> io::Result<ed25519_dalek::SigningKey> {
+        let path = self.data_dir.join(format!("endpoint-{identity_id}.key"));
+        match std::fs::read_to_string(&path) {
+            Ok(value) => idfon_core::decode_signing_key(value.trim())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid endpoint key")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => self.identity_key(identity_id),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Creates a dedicated transport key for a new identity (idempotent).
+    fn ensure_endpoint_key(&self, identity_id: &str) -> io::Result<()> {
+        let path = self.data_dir.join(format!("endpoint-{identity_id}.key"));
+        if path.exists() {
+            return Ok(());
+        }
+        let key = idfon_core::generate_identity();
+        std::fs::write(&path, idfon_core::encode_signing_key(&key))?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+
     /// The inbound MCP relay command: `IDFON_MCP_COMMAND` (per-process, keeps
     /// the C ABI unchanged) overrides the persisted `mcp.configure` value.
     fn configured_mcp_command(&self) -> Option<String> {
@@ -306,6 +358,10 @@ pub struct DaemonConfig {
     /// Exit gracefully after this long with zero connected clients.
     /// None (default) = run until ctrl_c or `daemon.shutdown`.
     pub idle_exit: Option<Duration>,
+    /// Mobile: bind/wire only `default` and the active identity at startup
+    /// instead of every identity, binding others on `identity.use`. Env
+    /// `IDFON_LAZY_IDENTITIES` also enables it (see `run_blocking`).
+    pub lazy_identities: bool,
 }
 
 /// Blocking entry point: builds its own tokio runtime and runs the daemon
@@ -323,12 +379,19 @@ pub fn run_blocking(config: DaemonConfig) -> io::Result<()> {
         .idle_exit
         .or(env_idle_exit)
         .filter(|duration| !duration.is_zero());
+    // IDFON_LAZY_IDENTITIES lets the iOS app opt into active-only binding
+    // without touching the C ABI. Empty or "0" = off (desktop default).
+    let lazy_identities = config.lazy_identities
+        || std::env::var("IDFON_LAZY_IDENTITIES")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(io::Error::other)?;
     runtime.block_on(run(DaemonConfig {
         idle_exit,
+        lazy_identities,
         ..config
     }))
 }
@@ -339,6 +402,7 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
         data_dir,
         transport,
         idle_exit,
+        lazy_identities,
     } = config;
     let transport = transport.unwrap_or_else(|| DEFAULT_TRANSPORT.into());
     if transport != "fake" && transport != "iroh" {
@@ -351,31 +415,36 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
     let store = Arc::new(Mutex::new(Store::load(&data_dir)?));
     let media_service = Arc::new(MediaService::default());
     let _ = MEDIA_SERVICE.set((*media_service).clone());
-    let identity_key = store
+    let default_endpoint_key = store
         .lock()
         .expect("store mutex poisoned")
-        .identity_key("default")?;
+        .endpoint_key("default")?;
     let transport = Arc::new(
         TransportMode::new(
             &transport,
-            Some(idfon_core::signing_key_bytes(&identity_key)),
+            Some(idfon_core::signing_key_bytes(&default_endpoint_key)),
         )
         .await?,
     );
-    let identity_keys: Vec<(String, [u8; 32])> = {
+    // The endpoint key is separate from the identity (account) signing key for
+    // identities created since the split; older ones fall back to the identity
+    // key so their endpoint id — and peers' records — do not change.
+    let bound_keys: Vec<(String, [u8; 32])> = {
         let state = store.lock().expect("store mutex poisoned");
+        let ids = startup_identity_ids(&state.identities, lazy_identities);
         state
             .identities
             .iter()
+            .filter(|identity| ids.contains(&identity.id))
             .filter_map(|identity| {
                 state
-                    .identity_key(&identity.id)
+                    .endpoint_key(&identity.id)
                     .ok()
                     .map(|key| (identity.id.clone(), idfon_core::signing_key_bytes(&key)))
             })
             .collect()
     };
-    for (identity, key) in identity_keys.iter().filter(|(id, _)| id != "default") {
+    for (identity, key) in bound_keys.iter().filter(|(id, _)| id != "default") {
         transport.add_identity(identity, *key).await?;
     }
     if let TransportMode::Iroh(manager) = transport.as_ref() {
@@ -388,35 +457,15 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
         let data_dir = state.data_dir.clone();
         state.save(&data_dir)?;
     }
-    // M2 user-side relay: any inbound `idfon/mcp/1` stream is spliced to the
-    // configured local MCP server when the peer holds an `mcp.transport`
-    // grant. The relay is registered for every identity at startup and reads
-    // its command per connection (env overrides the persisted `mcp.configure`
-    // value), so runtime configuration needs no re-registration. The env var
-    // keeps the C ABI unchanged (same precedent as IDFON_IDLE_EXIT_SECS).
-    if let TransportMode::Iroh(iroh) = transport.as_ref() {
-        for (identity, _) in &identity_keys {
-            spawn_receiver(Arc::clone(iroh), Arc::clone(&store), identity.clone());
-            mcp::spawn_inbound(Arc::clone(iroh), Arc::clone(&store), identity.clone()).await;
-            if let Some(current) = iroh.current(identity).await {
-                current.enable_gossip();
-            }
-            let rooms = store
-                .lock()
-                .expect("store mutex poisoned")
-                .rooms
-                .iter()
-                .filter(|room| room.identity == *identity)
-                .cloned()
-                .collect::<Vec<_>>();
-            for room in rooms {
-                let transport = Arc::clone(&transport);
-                let store = Arc::clone(&store);
-                tokio::spawn(async move {
-                    join_gossip_room(room.identity, room.id, room.members, store, transport).await;
-                });
-            }
-        }
+    // Per-identity inbound work (message receiver, MCP relay, gossip, rooms)
+    // is wired for the bound set. On lazy (mobile) startup that is `default`
+    // plus the active identity; `identity.use` wires the rest on demand. The
+    // relay reads its command per connection (env overrides the persisted
+    // `mcp.configure` value), so runtime configuration needs no
+    // re-registration. The env var keeps the C ABI unchanged (same precedent
+    // as IDFON_IDLE_EXIT_SECS).
+    for (identity, _) in &bound_keys {
+        wire_identity(Arc::clone(&transport), Arc::clone(&store), identity.clone());
     }
     prepare_socket(&socket)?;
     if let Some(parent) = socket.parent() {
@@ -680,6 +729,62 @@ fn spawn_receiver(
     });
 }
 
+/// Identities whose endpoints are bound at startup: all of them on desktop;
+/// on lazy (mobile) startup only `default` — always bound by the manager — and
+/// the active identity. `identity.use` binds a switched-to identity on demand.
+fn startup_identity_ids(identities: &[Identity], lazy: bool) -> Vec<String> {
+    let active = identities
+        .iter()
+        .find(|identity| identity.active)
+        .map(|identity| identity.id.clone());
+    identities
+        .iter()
+        .filter(|identity| {
+            identity.id == "default" || !lazy || active.as_deref() == Some(identity.id.as_str())
+        })
+        .map(|identity| identity.id.clone())
+        .collect()
+}
+
+/// Wires the per-identity background work for an already-bound transport:
+/// message receiver, MCP inbound relay, gossip, and rooms. Called at startup
+/// for the bound set and from `identity.use` when a lazily-bound identity
+/// comes online; a no-op for the fake transport.
+fn wire_identity(transport: Arc<TransportMode>, store: Arc<Mutex<Store>>, identity: String) {
+    let TransportMode::Iroh(manager) = transport.as_ref() else {
+        return;
+    };
+    let manager = Arc::clone(manager);
+    spawn_receiver(Arc::clone(&manager), Arc::clone(&store), identity.clone());
+    let mcp_manager = Arc::clone(&manager);
+    let mcp_store = Arc::clone(&store);
+    let mcp_identity = identity.clone();
+    tokio::spawn(async move {
+        mcp::spawn_inbound(mcp_manager, mcp_store, mcp_identity).await;
+    });
+    let gossip_manager = Arc::clone(&manager);
+    tokio::spawn(async move {
+        if let Some(current) = gossip_manager.current(&identity).await {
+            current.enable_gossip();
+        }
+        let rooms = store
+            .lock()
+            .expect("store mutex poisoned")
+            .rooms
+            .iter()
+            .filter(|room| room.identity == identity)
+            .cloned()
+            .collect::<Vec<_>>();
+        for room in rooms {
+            let store = Arc::clone(&store);
+            let transport = Arc::clone(&transport);
+            tokio::spawn(async move {
+                join_gossip_room(room.identity, room.id, room.members, store, transport).await;
+            });
+        }
+    });
+}
+
 /// Resolves the request's `identity` param to the stored identity id (same
 /// lookup as message.send; falls back to the raw ref).
 fn resolved_identity_id(request: &Request, store: &Arc<Mutex<Store>>) -> String {
@@ -721,7 +826,7 @@ fn live_dial_dispatch(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             && (peer.id == to
                 || peer.name == to
                 || peer.aliases.iter().any(|alias| alias == &to)
-                || peer.endpoint_id.as_deref() == Some(&to))
+                || peer.knows_endpoint(&to))
     }) else {
         return error_response(
             request.id.clone(),
@@ -750,8 +855,8 @@ fn live_dial_dispatch(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             false,
         );
     }
-    let addr = peer.endpoint_addr.clone();
-    let Some(addr) = addr.as_deref() else {
+    let targets = peer.dial_targets();
+    if targets.is_empty() {
         return error_response(
             request.id.clone(),
             &request.method,
@@ -759,9 +864,17 @@ fn live_dial_dispatch(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             "peer has no endpoint address".into(),
             false,
         );
-    };
+    }
     drop(state);
-    live::live_dial(request, addr)
+    let mut last = None;
+    for (_, address) in targets {
+        let response = live::live_dial(request, &address);
+        if response.ok {
+            return response;
+        }
+        last = Some(response);
+    }
+    last.expect("dial targets is non-empty")
 }
 
 fn dispatch(request: Request, store: &Arc<Mutex<Store>>) -> Response {
@@ -858,7 +971,7 @@ fn dispatch_with_transport(
                     peer.id == reference
                         || peer.name == reference
                         || peer.aliases.iter().any(|alias| alias == reference)
-                        || peer.endpoint_id.as_deref() == Some(reference)
+                        || peer.knows_endpoint(reference)
                 })
             });
             match peer {
@@ -954,7 +1067,7 @@ fn dispatch_with_transport(
             for identity in &mut state.identities {
                 identity.active = identity.id == identity_id;
             }
-            let key = match state.identity_key(&identity_id) {
+            let key = match state.endpoint_key(&identity_id) {
                 Ok(key) => key,
                 Err(error) => {
                     return error_response(
@@ -999,9 +1112,9 @@ fn dispatch_with_transport(
                     true,
                 );
             }
-            if let TransportMode::Iroh(manager) = transport.as_ref() {
-                spawn_receiver(Arc::clone(manager), Arc::clone(store), identity_id.clone());
-            }
+            // On lazy (mobile) startup this is the first bind for the
+            // identity; wire the receiver/relay/gossip/rooms startup skipped.
+            wire_identity(Arc::clone(transport), Arc::clone(store), identity_id.clone());
             success(
                 &request,
                 serde_json::json!({"identity": name, "active": true}),
@@ -1027,7 +1140,7 @@ fn dispatch_with_transport(
                         peer.id == reference
                             || peer.name == reference
                             || peer.aliases.iter().any(|alias| alias == reference)
-                            || peer.endpoint_id.as_deref() == Some(reference)
+                            || peer.knows_endpoint(reference)
                     })
                 })
                 .collect();
@@ -2067,7 +2180,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let known_peer = state.peers.iter().any(|peer| {
         peer.identity == receiving_identity
             && peer.id == envelope.sender.peer_id
-            && peer.endpoint_id.as_deref() == Some(envelope.sender.endpoint_id.as_str())
+            && peer.knows_endpoint(&envelope.sender.endpoint_id)
     });
     // A verified ticket (issuer = this identity, unexpired, unrevoked,
     // subject-bound, contains message.receive) is the sender's standing
@@ -3645,6 +3758,18 @@ fn identity_create(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             true,
         );
     }
+    // New identities get a dedicated transport key, so the identity key is a
+    // signing-only account key from birth (existing identities keep their
+    // legacy endpoint id; see `Store::endpoint_key`).
+    if let Err(error) = state.ensure_endpoint_key(&identity.id) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
     success(request, serde_json::json!({"identity": identity}))
 }
 
@@ -3833,6 +3958,17 @@ fn peer_add(
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
             .or_else(|| contact.as_ref().map(|contact| contact.transport.clone())),
+        devices: request
+            .params
+            .get("devices")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| serde_json::from_value(value.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default(),
         aliases: request
             .params
             .get("aliases")
@@ -3883,6 +4019,7 @@ fn peer_add(
                 endpoint_addr: transport
                     .endpoint_ticket_for(&source.id)
                     .and_then(|bytes| String::from_utf8(bytes).ok()),
+                devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
             };
@@ -4015,6 +4152,16 @@ fn peer_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             );
         }
         peer.endpoint_addr = Some(endpoint_addr.into());
+    }
+    if let Some(devices) = request
+        .params
+        .get("devices")
+        .and_then(serde_json::Value::as_array)
+    {
+        peer.devices = devices
+            .iter()
+            .filter_map(|value| serde_json::from_value(value.clone()).ok())
+            .collect();
     }
     if let Some(aliases) = request
         .params
@@ -4547,6 +4694,7 @@ mod tests {
             name: "Alice".into(),
             endpoint_id: Some("endpoint-a".into()),
             endpoint_addr: None,
+            devices: Vec::new(),
             aliases: Vec::new(),
             call_mode: idfon_protocol::IncomingCallMode::default(),
         });
@@ -4612,6 +4760,7 @@ mod tests {
             name: "Alice".into(),
             endpoint_id: Some("endpoint-a".into()),
             endpoint_addr: None,
+            devices: Vec::new(),
             aliases: Vec::new(),
             call_mode: idfon_protocol::IncomingCallMode::default(),
         });
@@ -4686,6 +4835,7 @@ mod tests {
             name: "Alice".into(),
             endpoint_id: Some("endpoint-a".into()),
             endpoint_addr: None,
+            devices: Vec::new(),
             aliases: Vec::new(),
             call_mode: idfon_protocol::IncomingCallMode::default(),
         });
@@ -4779,6 +4929,7 @@ mod tests {
             name: "Alice".into(),
             endpoint_id: Some("ep".into()),
             endpoint_addr: None,
+            devices: Vec::new(),
             aliases: vec![],
             call_mode: idfon_protocol::IncomingCallMode::default(),
         });
@@ -5004,6 +5155,7 @@ mod tests {
                 name: "Self".into(),
                 endpoint_id: Some("self-endpoint".into()),
                 endpoint_addr: Some("{}".into()),
+                devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
             });
@@ -5354,6 +5506,7 @@ mod tests {
             data_dir: dir.clone(),
             transport: Some("fake".into()),
             idle_exit: Some(Duration::from_millis(300)),
+            lazy_identities: false,
         }));
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await
@@ -5361,6 +5514,53 @@ mod tests {
             .unwrap();
         assert!(result.is_ok());
         assert!(!socket.exists(), "socket not cleaned up on idle exit");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lazy_startup_binds_default_and_active_only() {
+        let make = |id: &str, active: bool| Identity {
+            id: id.into(),
+            name: id.into(),
+            endpoint_id: None,
+            public_key: None,
+            active,
+        };
+        let identities = vec![make("default", false), make("work", true), make("home", false)];
+        assert_eq!(startup_identity_ids(&identities, true), ["default", "work"]);
+        assert_eq!(
+            startup_identity_ids(&identities, false),
+            ["default", "work", "home"]
+        );
+        let identities = vec![make("default", true), make("work", false)];
+        assert_eq!(startup_identity_ids(&identities, true), ["default"]);
+    }
+
+    #[test]
+    fn new_identity_gets_a_distinct_endpoint_key() {
+        let dir = temp_dir("endpoint-key");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let response = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "create".into(),
+                method: "identity.create".into(),
+                params: serde_json::json!({"name": "work"}),
+            },
+            &store,
+        );
+        assert!(response.ok);
+        let state = store.lock().unwrap();
+        let account = idfon_core::peer_id(&state.identity_key("work").unwrap());
+        let endpoint = idfon_core::peer_id(&state.endpoint_key("work").unwrap());
+        assert_ne!(account, endpoint, "account and endpoint keys must differ");
+        assert!(dir.join("endpoint-work.key").is_file());
+        // Identities predating the split keep one key for both roles.
+        assert_eq!(
+            idfon_core::peer_id(&state.identity_key("default").unwrap()),
+            idfon_core::peer_id(&state.endpoint_key("default").unwrap())
+        );
+        drop(state);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -5412,6 +5612,7 @@ mod tests {
             name: "Alice".into(),
             endpoint_id: Some("ep-1".into()),
             endpoint_addr: None,
+            devices: Vec::new(),
             aliases: vec!["alice@work".into()],
             call_mode: idfon_protocol::IncomingCallMode::default(),
         });
@@ -5444,6 +5645,7 @@ mod tests {
                 name: "same".into(),
                 endpoint_id: None,
                 endpoint_addr: None,
+                devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
             });
@@ -5485,6 +5687,7 @@ mod tests {
                 name: "Bob".into(),
                 endpoint_id: Some("endpoint-b".into()),
                 endpoint_addr: Some("{}".into()),
+                devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
             });

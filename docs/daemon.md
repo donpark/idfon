@@ -51,16 +51,25 @@ scale:
 - **Agents (interactive):** view state, event polling, live media — already
   direct, no daemon mediation needed.
 
-**Current state (verified in code + daemon traces 2026-09-08): the daemon
-ALREADY runs one endpoint per identity, concurrently.**
+**The daemon runs one endpoint per identity, concurrently.**
 `idfon_core::transport::TransportManager` holds a
-`HashMap<identity, endpoint>`; daemon startup binds `default` plus
-`add_identity` for every other identity; `send(identity, …)` routes through
-the sending identity's own endpoint; `identity.use` does **not** touch the
-transport — it only flips the persisted `active` flags and the per-connection
-session default. Daemon traces confirm concurrent delivery for two identities
-in one daemon. (An earlier revision re-bound a single transport per
-`identity.use`; that design is gone.)
+`HashMap<identity, endpoint>`; `send(identity, …)` routes through the sending
+identity's own endpoint. Desktop startup binds `default` plus every other
+identity. On mobile (`IDFON_LAZY_IDENTITIES`, set by the iOS app) startup binds
+only `default` and the active identity — idle endpoints die on background
+anyway — and `identity.use` binds a not-yet-bound identity on demand, wiring
+its receiver, MCP relay, gossip, and rooms at that point. Daemon traces confirm
+concurrent delivery for two identities in one daemon.
+
+**Identity key vs endpoint key (2026-09-16).** A transport key must never run
+on two live endpoints, so the identity key is being split from the endpoint
+key: identities created since the split get a dedicated `endpoint-<id>.key`,
+and the identity key (`identity-<id>.key`) becomes a signing-only *account* key
+that signs envelopes and grants while the endpoint presents its own id —
+`PeerAuth` already carries `peer_id` and `endpoint_id` separately. Identities
+created before the split fall back to the identity key for both roles, so their
+endpoint id — and every peer record pointing at it — is unchanged. See
+`docs/multi-device.md`.
 
 Client responsibilities under this model:
 

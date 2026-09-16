@@ -31,7 +31,7 @@ fn wait_for_socket(path: &PathBuf) {
 fn request(socket: &PathBuf, method: &str) -> serde_json::Value {
     let mut stream = UnixStream::connect(socket).unwrap();
     let body = serde_json::to_vec(&serde_json::json!({
-        "version": 1, "id": method, "method": method, "params": {}
+        "version": 2, "id": method, "method": method, "params": {}
     }))
     .unwrap();
     stream

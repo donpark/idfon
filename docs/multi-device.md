@@ -118,6 +118,12 @@ a Mac and an iPhone online together — which for this user is always — you ge
 exactly the relay/Pkarr conflict and split-brain QUIC handshakes. Never copy a
 transport key. Linking a device **issues a new device key**, always.
 
+**Status (2026-09-16):** the key split has landed for *new* identities —
+`identity.create` writes a dedicated `endpoint-<id>.key`, the daemon binds the
+endpoint with it and signs with the identity key, and legacy identities fall
+back to the old single-key behaviour so their endpoint ids are unchanged.
+Account-addressed peers and device enrollment are still open.
+
 ### Account-addressed peers
 
 `Peer` gains an `account_id` and a `devices` list. Dialing a peer means
@@ -215,13 +221,13 @@ device set. Blobs sync via the existing store/tickets.
   Either the account key is backed up (e.g. Keychain / recovery phrase) or the
   design accepts loss. Decide explicitly.
 
-## 10. Quick win, independent
+## 10. Lazy mobile binding (landed 2026-09-16)
 
-`crates/idfon-daemon/src/lib.rs` binds **every** identity's endpoint at
-startup, mobile included. On iOS those endpoints all die on the next
-background anyway, so this is pure cost. Lazy-bind only the active identity on
-mobile; leave desktop concurrent. Small, no new infrastructure, correct given
-the freeze.
+The daemon now honours `IDFON_LAZY_IDENTITIES` (set by the iOS app): startup
+binds and wires only `default` and the active identity, and `identity.use`
+binds a switched-to identity on demand. Desktop is unchanged (all identities
+bound concurrently). Guarded by the
+`lazy_startup_binds_default_and_active_only` test.
 
 ## 11. Sequencing
 
