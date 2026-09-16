@@ -1927,16 +1927,13 @@ fn send_message(
             false,
         );
     }
-    if !state.grants.iter().any(|grant| {
-        grant.identity == identity.id
-            && grant.subject == peer.id
-            && grant.capability == idfon_protocol::Capability::MessageSend
-            && grant.revoked_at.is_none()
-            && grant
-                .expires_at
-                .as_deref()
-                .is_none_or(|expires| expires > now().as_str())
-    }) {
+    if !has_grant_for_conversation(
+        &state,
+        &identity.id,
+        &peer.id,
+        &idfon_protocol::Capability::MessageSend,
+        conversation.as_deref(),
+    ) {
         return error_response(
             request.id.clone(),
             &request.method,
@@ -2279,6 +2276,10 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
                 .subject
                 .as_deref()
                 .is_some_and(|subject| subject != envelope.sender.peer_id)
+            || ticket
+                .conversation
+                .as_deref()
+                .is_some_and(|scope| Some(scope) != envelope.conversation.as_deref())
             || !ticket
                 .capabilities
                 .contains(&idfon_protocol::Capability::MessageReceive)
@@ -2307,16 +2308,13 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     // authorization: it satisfies the gate even when the grant has not been
     // materialized yet — always the case on a fresh cross-daemon pairing.
     let allowed = envelope.capability_ticket.is_some()
-        || state.grants.iter().any(|grant| {
-            grant.identity == receiving_identity
-                && grant.capability == idfon_protocol::Capability::MessageReceive
-                && grant.subject == envelope.sender.peer_id
-                && grant.revoked_at.is_none()
-                && grant
-                    .expires_at
-                    .as_deref()
-                    .is_none_or(|expires| expires > now().as_str())
-        });
+        || has_grant_for_conversation(
+            &state,
+            &receiving_identity,
+            &envelope.sender.peer_id,
+            &idfon_protocol::Capability::MessageReceive,
+            envelope.conversation.as_deref(),
+        );
     drop(state);
     if !known_peer {
         eprintln!("[idfond] message receive rejected: unknown peer identity={} message_id={} sender={} sender_endpoint={}", receiving_identity, envelope.message_id, envelope.sender.peer_id, envelope.sender.endpoint_id);
@@ -2354,7 +2352,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             capability: idfon_protocol::Capability::MessageSend,
             identity: receiving_identity.clone(),
             subject: envelope.sender.peer_id.clone(),
-            conversation: None,
+            conversation: envelope.conversation.clone(),
             active_at: "0".into(),
             expires_at: None,
             revision: 1,
@@ -2376,7 +2374,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
                     capability: capability.clone(),
                     identity: receiving_identity.clone(),
                     subject: envelope.sender.peer_id.clone(),
-                    conversation: None,
+                    conversation: envelope.conversation.clone(),
                     active_at: "0".into(),
                     expires_at: None,
                     revision: 1,
@@ -2388,6 +2386,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     if let Some(existing) = state.messages.iter().find(|message| {
         message.sender.peer_id == envelope.sender.peer_id
             && message.idempotency_key == envelope.idempotency_key
+            && message.conversation == envelope.conversation
     }) {
         if existing.content != envelope.content {
             eprintln!("[idfond] message receive rejected: duplicate key with different content identity={} message_id={} sender={}", receiving_identity, envelope.message_id, envelope.sender.peer_id);
@@ -2540,10 +2539,24 @@ fn has_grant(
     subject: &str,
     capability: &idfon_protocol::Capability,
 ) -> bool {
+    has_grant_for_conversation(state, identity, subject, capability, None)
+}
+
+fn has_grant_for_conversation(
+    state: &Store,
+    identity: &str,
+    subject: &str,
+    capability: &idfon_protocol::Capability,
+    conversation: Option<&str>,
+) -> bool {
     state.grants.iter().any(|grant| {
         grant.identity == identity
             && grant.subject == subject
             && &grant.capability == capability
+            && grant
+                .conversation
+                .as_deref()
+                .is_none_or(|scope| Some(scope) == conversation)
             && grant.revoked_at.is_none()
             && grant
                 .expires_at
@@ -2583,8 +2596,15 @@ fn capability_ticket_issue(request: &Request, store: &Arc<Mutex<Store>>) -> Resp
             false,
         );
     };
-    let ticket =
-        idfon_core::issue_capability_ticket(&key, subject, capabilities, expires_at, ticket_id);
+    let conversation = request_text(&request.params, "conversation");
+    let ticket = idfon_core::issue_capability_ticket_for_conversation(
+        &key,
+        subject,
+        conversation,
+        capabilities,
+        expires_at,
+        ticket_id,
+    );
     success(request, serde_json::json!({"ticket": ticket}))
 }
 
@@ -5335,13 +5355,14 @@ mod tests {
             revoked_at: None,
         });
         drop(state);
-        let signed = |text: &str| {
-            idfon_core::sign_message(
+        let signed = |text: &str, conversation: Option<&str>| {
+            idfon_core::sign_message_with_ticket(
                 &key,
                 "ep",
                 "msg-1",
                 idfon_protocol::MessageContent::Text { text: text.into() },
                 "key-1",
+                conversation.map(str::to_owned),
                 None,
             )
             .unwrap()
@@ -5352,10 +5373,13 @@ mod tests {
             method: "message.receive".into(),
             params: serde_json::to_value(message).unwrap(),
         };
-        assert!(dispatch(request(signed("hello")), &store).ok);
-        let duplicate = dispatch(request(signed("hello")), &store);
+        assert!(dispatch(request(signed("hello", Some("chat-ab"))), &store).ok);
+        let duplicate = dispatch(request(signed("hello", Some("chat-ab"))), &store);
         assert!(duplicate.ok);
-        let conflict = dispatch(request(signed("changed")), &store);
+        let other_conversation =
+            dispatch(request(signed("different chat", Some("chat-cd"))), &store);
+        assert!(other_conversation.ok);
+        let conflict = dispatch(request(signed("changed", Some("chat-ab"))), &store);
         assert!(matches!(
             conflict.body,
             ResponseBody::Failure {
@@ -5367,9 +5391,49 @@ mod tests {
             }
         ));
         let reloaded = Store::load(&dir).unwrap();
-        assert_eq!(reloaded.messages.len(), 1);
-        assert_eq!(reloaded.events.len(), 1);
-        assert_eq!(reloaded.operations.len(), 1);
+        assert_eq!(reloaded.messages.len(), 2);
+        assert_eq!(reloaded.events.len(), 2);
+        assert_eq!(reloaded.operations.len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn conversation_scoped_grants_do_not_cross_conversations() {
+        let dir = temp_dir("conversation-grants");
+        let store = Store::load(&dir).unwrap();
+        let grant = idfon_protocol::CapabilityGrant {
+            capability: idfon_protocol::Capability::MessageReceive,
+            identity: "default".into(),
+            subject: "alice-account".into(),
+            conversation: Some("chat-ab".into()),
+            active_at: "0".into(),
+            expires_at: None,
+            revision: 1,
+            revoked_at: None,
+        };
+        let mut state = store;
+        state.grants.push(grant);
+        assert!(has_grant_for_conversation(
+            &state,
+            "default",
+            "alice-account",
+            &idfon_protocol::Capability::MessageReceive,
+            Some("chat-ab"),
+        ));
+        assert!(!has_grant_for_conversation(
+            &state,
+            "default",
+            "alice-account",
+            &idfon_protocol::Capability::MessageReceive,
+            Some("chat-cd"),
+        ));
+        assert!(!has_grant_for_conversation(
+            &state,
+            "default",
+            "alice-account",
+            &idfon_protocol::Capability::MessageReceive,
+            None,
+        ));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -452,6 +452,8 @@ struct TicketArgs {
     #[arg(long)]
     subject: String,
     #[arg(long)]
+    conversation: Option<String>,
+    #[arg(long)]
     capability: Option<String>,
     #[arg(long = "expires-at")]
     expires_at: Option<String>,
@@ -1021,6 +1023,7 @@ fn run() -> io::Result<()> {
                 "subject": args.subject,
                 "capabilities": [args.capability.clone().unwrap_or_else(|| "message.receive".into())],
                 "expires_at": args.expires_at,
+                "conversation": args.conversation,
             });
             let response = send_rpc(
                 socket,
