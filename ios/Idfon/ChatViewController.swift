@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UITextViewDelegate {
     /// Read by the Live Activity Bar coordinator (density + `.open` routing).
     let peer: Peer
+    private let conversation: Conversation
     private let client = DaemonClient()
 
     private let tableView = UITableView()
@@ -40,6 +41,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private var autoAnswerArmed = false
     private var messages: [ChatMessage] = []
+    private var senderNames: [String: String] = [:]
     private var players: [String: AVAudioPlayer] = [:] // ticket -> player
 
     /// Per-channel incoming-call mode (§6): a config affordance, not a
@@ -54,6 +56,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     init(peer: Peer) {
         self.peer = peer
+        self.conversation = Conversation(peer: peer)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    init(room: Room) {
+        self.peer = Peer(id: room.id, name: room.name, endpointId: nil, aliases: nil, callMode: nil)
+        self.conversation = Conversation(room: room)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -61,24 +70,45 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = peer.displayName
+        title = conversation.title
         view.backgroundColor = .systemBackground
+
+        // Rooms use the same chat surface but do not expose 1:1 call controls.
+        if conversation.isRoom {
+            navigationItem.rightBarButtonItems = [
+                UIBarButtonItem(title: "Copy Invite", style: .plain, target: self, action: #selector(copyInviteTapped)),
+                UIBarButtonItem(title: "Leave", style: .plain, target: self, action: #selector(leaveTapped)),
+            ]
+        }
 
         // One call entry (#4 feedback): the Bar owns mute / camera / End, so the
         // nav bar no longer duplicates them with separate audio/video buttons.
         // `.generic` keeps the back button reading "Back" instead of the
         // callee's name when a thread is stacked on another.
         navigationItem.backButtonDisplayMode = .generic
-        navigationItem.rightBarButtonItems = [
-            UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"), style: .plain, target: self, action: #selector(callTapped)),
-            UIBarButtonItem(image: UIImage(systemName: "phone.badge.waveform"), style: .plain, target: self, action: #selector(toggleAutoAnswer)),
-            incomingModeItem,
-        ]
-        syncIncomingModeMenu()
+        if !conversation.isRoom {
+            navigationItem.rightBarButtonItems = [
+                UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"), style: .plain, target: self, action: #selector(callTapped)),
+                UIBarButtonItem(image: UIImage(systemName: "phone.badge.waveform"), style: .plain, target: self, action: #selector(toggleAutoAnswer)),
+                incomingModeItem,
+            ]
+            syncIncomingModeMenu()
+        }
 
         buildViews()
         ChatStore.shared.addObserver(self)
+        ChatStore.shared.markRead(conversation)
         syncMessages()
+        if conversation.isRoom {
+            Task {
+                if let peers = try? await client.peers() {
+                    await MainActor.run {
+                        self.senderNames = Dictionary(uniqueKeysWithValues: peers.map { ($0.id, $0.displayName) })
+                        self.tableView.reloadData()
+                    }
+                }
+            }
+        }
 
         NotificationCenter.default.addObserver(forName: .init("idfon.dial"), object: nil, queue: .main) { [weak self] note in
             guard let ref = note.userInfo?["ref"] as? String else { return }
@@ -276,7 +306,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func applyMode() {
         let recording = mode == .recording
         let review = mode == .review
-        [composerText, micButton, sendButton, attachButton].forEach { $0.isHidden = recording || review }
+        [composerText, sendButton].forEach { $0.isHidden = recording || review }
+        micButton.isHidden = recording || review
+        attachButton.isHidden = recording || review
         [elapsedLabel, stopButton].forEach { $0.isHidden = !recording }
         elapsedLabel.isHidden = !recording && !review
         [closeButton, playButton, reviewWaveform].forEach { $0.isHidden = !review }
@@ -305,8 +337,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let text = composerText.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
         composerText.text = ""
         textViewDidChange(composerText)
-        ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .text(text), outgoing: true, timestamp: Date()))
-        Task { try? await client.sendText(to: peer.id, text) }
+        let peerId = conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id
+        ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .text(text), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
+        Task {
+            if let room = conversation.room {
+                try? await client.sendRoom(room.id, text: text)
+            } else {
+                try? await client.sendText(to: peer.id, text)
+            }
+        }
+    }
+
+    private func sendConversationText(_ text: String) async throws {
+        if let room = conversation.room {
+            try await client.sendRoom(room.id, text: text)
+        } else {
+            try await client.sendText(to: peer.id, text)
+        }
     }
 
     // MARK: - Voice memo
@@ -409,8 +456,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 sender_id=\(ChatStore.shared.selfPeerId)
                 ticket=\(ticket)
                 """
-                try await client.sendText(to: peer.id, envelope)
-                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .recording(ticket: ticket, durationMs: durationMs, localURL: url), outgoing: true, timestamp: Date()))
+                try await sendConversationText(envelope)
+                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id, kind: .recording(ticket: ticket, durationMs: durationMs, localURL: url), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
                 try? FileManager.default.removeItem(at: url)
                 TransferCenter.shared.finish(id: transferId)
                 self.memoURL = nil
@@ -470,8 +517,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 sender_id=\(ChatStore.shared.selfPeerId)
                 ticket=\(ticket)
                 """
-                try await client.sendText(to: peer.id, envelope)
-                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .file(ticket: ticket, name: safeName, sizeBytes: size, localURL: nil), outgoing: true, timestamp: Date()))
+                try await sendConversationText(envelope)
+                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id, kind: .file(ticket: ticket, name: safeName, sizeBytes: size, localURL: nil), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
                 NSLog("idfon file: sent name=\(safeName) size=\(size) ticket=\(ticket)")
                 TransferCenter.shared.finish(id: transferId)
                 self.showCallStatus(nil)
@@ -643,10 +690,31 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
+    @objc private func copyInviteTapped() {
+        guard let room = conversation.room else { return }
+        UIPasteboard.general.string = room.id
+        let alert = UIAlertController(title: "Invite copied", message: "Share this room id with a member: \(room.id)", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
+    @objc private func leaveTapped() {
+        guard let room = conversation.room else { return }
+        let alert = UIAlertController(title: "Leave room?", message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Leave", style: .destructive) { [weak self] _ in
+            Task {
+                try? await self?.client.leaveRoom(room.id)
+                await MainActor.run { self?.navigationController?.popViewController(animated: true) }
+            }
+        })
+        present(alert, animated: true)
+    }
+
     // MARK: - Table view
 
     private func syncMessages() {
-        messages = ChatStore.shared.messages(for: peer.id)
+        messages = ChatStore.shared.messages(for: conversation)
         tableView.reloadData()
         if !messages.isEmpty {
             tableView.scrollToRow(at: IndexPath(row: messages.count - 1, section: 0), at: .bottom, animated: true)
@@ -661,7 +729,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath)
         let message = messages[indexPath.row]
         var config = cell.defaultContentConfiguration()
-        config.secondaryText = message.outgoing ? "sent" : nil
+        config.secondaryText = message.outgoing ? "sent" : (conversation.isRoom ? (senderNames[message.peerId] ?? String(message.peerId.prefix(8))) : nil)
         switch message.kind {
         case .text(let text):
             config.text = text

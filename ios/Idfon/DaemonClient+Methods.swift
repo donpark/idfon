@@ -39,6 +39,16 @@ extension DaemonClient {
         return try JSONDecoder().decode([Room].self, from: JSONEncoder().encode(list))
     }
 
+    func joinRoom(_ room: String, name: String? = nil, members: [String] = []) async throws -> Room {
+        var params: [String: AnyEncodable] = ["room": AnyEncodable(room)]
+        if let name { params["name"] = AnyEncodable(name) }
+        if !members.isEmpty { params["members"] = AnyEncodable(members.map(AnyEncodable.init)) }
+        guard let raw = try await request(method: "room.join", params: params)?["room"] else {
+            throw DaemonClient.DaemonError.request("room.join returned no room")
+        }
+        return try JSONDecoder().decode(Room.self, from: JSONEncoder().encode(raw))
+    }
+
     func createRoom(id: String? = nil, name: String? = nil, members: [String] = []) async throws -> Room {
         var params: [String: AnyEncodable] = [:]
         if let id { params["id"] = AnyEncodable(id) }

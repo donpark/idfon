@@ -45,6 +45,45 @@ struct Peer: Decodable, Identifiable {
     var incomingCallMode: IncomingCallMode { callMode ?? .bar }
 }
 
+/// The single navigation target used by both direct chats and rooms.
+struct Conversation: Identifiable {
+    enum Kind {
+        case direct(Peer)
+        case room(Room)
+    }
+
+    let kind: Kind
+
+    init(peer: Peer) { kind = .direct(peer) }
+    init(room: Room) { kind = .room(room) }
+
+    var id: String {
+        switch kind {
+        case .direct(let peer): return peer.id
+        case .room(let room): return room.id
+        }
+    }
+
+    var room: Room? {
+        if case .room(let room) = kind { return room }
+        return nil
+    }
+
+    var peer: Peer? {
+        if case .direct(let peer) = kind { return peer }
+        return nil
+    }
+
+    var title: String {
+        switch kind {
+        case .direct(let peer): return peer.displayName
+        case .room(let room): return room.name?.isEmpty == false ? room.name! : "Room"
+        }
+    }
+
+    var isRoom: Bool { room != nil }
+}
+
 struct Event: Decodable {
     let eventId: String
     let cursor: String

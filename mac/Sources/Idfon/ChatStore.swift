@@ -19,6 +19,7 @@ final class ChatStore {
     let client = DaemonClient()
 
     private(set) var messages: [ChatMessage] = []
+    private var seenMessageIDs = Set<String>()
     /// Local playback files for recording tickets (tmp; populated by the
     /// eager fetch on ingest).
     private(set) var recordingURLs: [String: URL] = [:]
@@ -58,6 +59,7 @@ final class ChatStore {
     func start() {
         guard !started else { return }
         started = true
+        Task { await hydrateHistory() }
         Task { await runLoop() }
         Task {
             if let id = try? await client.identityId() {
@@ -71,6 +73,7 @@ final class ChatStore {
     /// serves the new active identity.
     func switchIdentity(to name: String) {
         messages = []
+        seenMessageIDs.removeAll()
         recordingURLs = [:]
         fileURLs = [:]
         Task {
@@ -92,6 +95,8 @@ final class ChatStore {
     /// Delivers an event (new or replayed) into the store.
     private func ingest(_ event: Event) {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
+        let messageID = event.messageId ?? event.eventId
+        guard seenMessageIDs.insert(messageID).inserted else { return }
         // Call-control traffic (live invites, call_started/stopped) routes
         // to the call state machines; never shown as chat history. Invites
         // replayed after a relaunch are stale (app was closed when they
@@ -199,8 +204,35 @@ final class ChatStore {
         notifyObservers()
     }
 
+    private static func readKey(_ id: String) -> String { "idfon.chat.read.\(id)" }
+
+    func markRead(_ conversation: Conversation) {
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.readKey(conversation.id))
+        notifyObservers()
+    }
+
+    func unreadCount(for conversation: Conversation) -> Int {
+        let readAt = UserDefaults.standard.double(forKey: Self.readKey(conversation.id))
+        return messages(for: conversation).filter { !$0.outgoing && $0.timestamp.timeIntervalSince1970 > readAt }.count
+    }
+
+    var recentChatIDs: [String] {
+        var latest: [String: Date] = [:]
+        for message in messages {
+            let id = message.conversation ?? message.peerId
+            if latest[id].map({ $0 >= message.timestamp }) == true { continue }
+            latest[id] = message.timestamp
+        }
+        return latest.sorted { $0.value > $1.value }.map(\.key)
+    }
+
     func messages(for peerId: String, conversation: String? = nil) -> [ChatMessage] {
         messages.filter { $0.peerId == peerId && $0.conversation == conversation }
+    }
+
+    func messages(for conversation: Conversation) -> [ChatMessage] {
+        if let room = conversation.room { return messages(in: room.id) }
+        return messages(for: conversation.peer?.id ?? conversation.id)
     }
 
     func messages(in conversation: String) -> [ChatMessage] {
@@ -216,6 +248,11 @@ final class ChatStore {
             latest[message.peerId] = message.timestamp
         }
         return latest.sorted { $0.value > $1.value }.map(\.key)
+    }
+
+    private func hydrateHistory() async {
+        guard let events = try? await client.events(after: nil) else { return }
+        for event in events { ingest(event) }
     }
 
     private func runLoop() async {
