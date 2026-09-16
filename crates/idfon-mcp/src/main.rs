@@ -44,7 +44,7 @@ enum Mode {
         contact: bool,
         /// Stable account/virtual ID to include in the contact ticket.
         #[arg(long = "account-id")]
-        account_id: Option<String>,
+        account_id: String,
     },
     /// Dial a peer and splice the bi-stream to this process's stdio.
     Connect {
@@ -110,7 +110,7 @@ async fn serve(
     key: [u8; 32],
     mcp_command: String,
     contact: bool,
-    account_id: Option<String>,
+    account_id: String,
 ) -> Result<()> {
     let transport = std::sync::Arc::new(
         IrohTransport::bind_with_key(Some(key))
@@ -153,7 +153,7 @@ async fn serve(
             Ok(discover) => serde_json::to_string(&McpContactTicket {
                 transport: serde_json::to_string(&address).unwrap_or_default(),
                 peer: McpPeer {
-                    account_id,
+                    account_id: account_id.clone(),
                     endpoint_id: address.id.to_string(),
                     name: None,
                 },

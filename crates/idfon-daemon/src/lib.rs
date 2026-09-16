@@ -878,7 +878,24 @@ fn live_dial_dispatch(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             false,
         );
     }
-    let targets = peer.dial_targets();
+    let delivery = request
+        .params
+        .get("delivery")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<idfon_protocol::DeliveryPolicy>(value).ok());
+    if matches!(
+        delivery.as_ref().map(|policy| &policy.mode),
+        Some(idfon_protocol::DeliveryMode::All)
+    ) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "live calls require one endpoint or failover, not fan-out".into(),
+            false,
+        );
+    }
+    let targets = peer.dial_targets_with(delivery.as_ref());
     if targets.is_empty() {
         return error_response(
             request.id.clone(),
@@ -4047,11 +4064,7 @@ fn peer_add(
         Some(id) => id,
         None => match (&device_ticket, &contact) {
             (Some(ticket), _) => ticket.account_id.clone(),
-            (_, Some(contact)) => contact
-                .peer
-                .account_id
-                .clone()
-                .unwrap_or_else(|| contact.peer.endpoint_id.clone()),
+            (_, Some(contact)) => contact.peer.account_id.clone(),
             (_, None) => {
                 return error_response(
                     request.id.clone(),
