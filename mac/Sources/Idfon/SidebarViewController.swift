@@ -2,21 +2,30 @@ import AppKit
 import CIdfon
 
 /// Left pane: daemon status, identity switching, the tabbed peer lists, and the
-/// action buttons (add connection, create identity, capability ticket, audio
+/// action buttons (add channel, create identity, capability ticket, audio
 /// settings).
 final class SidebarViewController: NSViewController {
     private let app: AppModel
     private let tabs: PeerTabsViewController
     private let statusLabel = NSTextField(labelWithString: "Connecting")
     private let identityPopup = NSPopUpButton()
+    private let roomPopup = NSPopUpButton()
+    private var rooms: [Room] = []
     private var suppressPopupSync = false
 
     init(app: AppModel) {
         self.app = app
         self.tabs = PeerTabsViewController(
             peersProvider: { [weak app] in app?.peers ?? [] },
-            recentPeerIds: { ChatStore.shared.recentPeerIds },
-            onSelect: { [weak app] peer in app?.select(peer) })
+            recentPeerIds: { ChatStore.shared.recentChatIDs },
+            onSelect: { [weak app] chat in
+                switch chat.kind {
+                case .direct(let peer): app?.select(peer)
+                case .room(let room): app?.select(room)
+                }
+            },
+            recentRoomsProvider: { [weak app] in app?.rooms ?? [] },
+            unreadCountProvider: { ChatStore.shared.unreadCount(for: $0) })
         super.init(nibName: nil, bundle: nil)
         app.onUpdate = { [weak self] in self?.sync() }
         ChatStore.shared.addObserver(self)
@@ -31,6 +40,9 @@ final class SidebarViewController: NSViewController {
         identityPopup.translatesAutoresizingMaskIntoConstraints = false
         identityPopup.target = self
         identityPopup.action = #selector(identityPicked)
+        roomPopup.target = self
+        roomPopup.action = #selector(roomPicked)
+        roomPopup.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.font = NSFont.systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -39,8 +51,11 @@ final class SidebarViewController: NSViewController {
         addChild(tabs)
         tabs.view.translatesAutoresizingMaskIntoConstraints = false
 
+        let roomRow = NSStackView(views: [roomPopup, button("+", #selector(createRoomTapped)), button("Join", #selector(joinRoomTapped))])
+        roomRow.spacing = 4
+        roomRow.translatesAutoresizingMaskIntoConstraints = false
         let actions = NSStackView(views: [
-            button("Add Connection…", #selector(addConnectionTapped)),
+            button("Add Channel…", #selector(addChannelTapped)),
             button("Create Identity…", #selector(createIdentityTapped)),
             button("Issue Receive Ticket…", #selector(issueTicketTapped)),
             button("Audio Settings…", #selector(audioSettingsTapped)),
@@ -52,6 +67,7 @@ final class SidebarViewController: NSViewController {
 
         view.addSubview(identityPopup)
         view.addSubview(statusLabel)
+        view.addSubview(roomRow)
         view.addSubview(tabs.view)
         view.addSubview(actions)
         NSLayoutConstraint.activate([
@@ -60,8 +76,11 @@ final class SidebarViewController: NSViewController {
             identityPopup.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             statusLabel.topAnchor.constraint(equalTo: identityPopup.bottomAnchor, constant: 4),
             statusLabel.leadingAnchor.constraint(equalTo: identityPopup.leadingAnchor),
+            roomRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            roomRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            roomRow.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
             // The tabbed lists stretch between the status line and the actions.
-            tabs.view.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
+            tabs.view.topAnchor.constraint(equalTo: roomRow.bottomAnchor, constant: 8),
             tabs.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tabs.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tabs.view.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -8),
@@ -84,6 +103,7 @@ final class SidebarViewController: NSViewController {
 
     private func refreshData() {
         statusLabel.stringValue = app.statusText
+        Task { await refreshRooms() }
         suppressPopupSync = true
         identityPopup.removeAllItems()
         for identity in app.identities {
@@ -96,6 +116,55 @@ final class SidebarViewController: NSViewController {
         tabs.refresh()
     }
 
+    private func refreshRooms() async {
+        guard let fetched = try? await app.client.rooms() else { return }
+        rooms = fetched
+        app.rooms = fetched
+        roomPopup.removeAllItems()
+        roomPopup.addItem(withTitle: "Rooms")
+        fetched.forEach { roomPopup.addItem(withTitle: $0.name?.isEmpty == false ? $0.name! : $0.id) }
+    }
+
+    @objc private func roomPicked() {
+        let index = roomPopup.indexOfSelectedItem - 1
+        guard index >= 0, index < rooms.count else { return }
+        app.select(rooms[index])
+    }
+
+    @objc private func joinRoomTapped() {
+        let room = NSTextField(string: "")
+        room.placeholderString = "Room id"
+        let name = NSTextField(string: "")
+        name.placeholderString = "Room name (optional)"
+        let members = NSTextField(string: "")
+        members.placeholderString = "member ids, comma separated"
+        let stack = NSStackView(views: [room, name, members]); stack.orientation = .vertical; stack.spacing = 8
+        presentAlert(title: "Join Room", message: "Paste the room id and provide member peer ids.", accessory: stack, okTitle: "Join") {
+            let roomID = room.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ids = members.stringValue.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            guard !roomID.isEmpty else { return }
+            Task {
+                do { _ = try await self.app.client.joinRoom(roomID, name: name.stringValue.isEmpty ? nil : name.stringValue, members: ids); await self.refreshRooms() }
+                catch { await MainActor.run { self.plainSheet(title: "Join Room Failed", message: error.localizedDescription) } }
+            }
+        }
+    }
+
+    @objc private func createRoomTapped() {
+        let name = NSTextField(string: "")
+        name.placeholderString = "Room name"
+        let members = NSTextField(string: "")
+        members.placeholderString = "member ids, comma separated"
+        let stack = NSStackView(views: [name, members]); stack.orientation = .vertical; stack.spacing = 8
+        presentAlert(title: "Create Room", message: "Choose members by peer id.", accessory: stack, okTitle: "Create") {
+            let ids = members.stringValue.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            Task {
+                do { _ = try await self.app.client.createRoom(name: name.stringValue.isEmpty ? nil : name.stringValue, members: ids); await self.refreshRooms() }
+                catch { await MainActor.run { self.plainSheet(title: "Room Failed", message: error.localizedDescription) } }
+            }
+        }
+    }
+
     @objc private func identityPicked() {
         guard !suppressPopupSync, let name = identityPopup.titleOfSelectedItem else { return }
         Task { await app.useIdentity(name) }
@@ -103,7 +172,7 @@ final class SidebarViewController: NSViewController {
 
     // MARK: - Actions
 
-    @objc private func addConnectionTapped() {
+    @objc private func addChannelTapped() {
         let name = NSTextField(string: "")
         name.placeholderString = "Name"
         let ticketScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 110))
@@ -118,12 +187,12 @@ final class SidebarViewController: NSViewController {
         name.frame = NSRect(x: 0, y: 140, width: 320, height: 24)
         accessory.addSubview(name)
         accessory.addSubview(ticketScroll)
-        presentAlert(title: "Add Connection",
+        presentAlert(title: "Add Channel",
                      message: "Paste the peer's endpoint-addr ticket (the \"id\" field identifies the peer).",
                      accessory: accessory, okTitle: "Add") {
             Task {
-                let error = await self.app.addConnection(name: name.stringValue, ticketJSON: ticket.string)
-                if let error { await MainActor.run { self.plainSheet(title: "Add Connection Failed", message: error) } }
+                let error = await self.app.addChannel(name: name.stringValue, ticketJSON: ticket.string)
+                if let error { await MainActor.run { self.plainSheet(title: "Add Channel Failed", message: error) } }
             }
         }
     }

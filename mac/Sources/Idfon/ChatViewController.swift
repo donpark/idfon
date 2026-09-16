@@ -7,6 +7,7 @@ import CIdfon
 /// video calls, one-way video shares, in-call recording.
 final class ChatViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, AVAudioPlayerDelegate {
     private let peer: Peer
+    private let conversation: Conversation
     private let app: AppModel
 
     private let store = ChatStore.shared
@@ -87,6 +88,14 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     init(peer: Peer, app: AppModel) {
         self.peer = peer
+        self.conversation = Conversation(peer: peer)
+        self.app = app
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    init(room: Room, app: AppModel) {
+        self.peer = Peer(id: room.id, name: room.name, endpointId: nil, aliases: nil)
+        self.conversation = Conversation(room: room)
         self.app = app
         super.init(nibName: nil, bundle: nil)
     }
@@ -94,6 +103,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func loadView() {
+        title = conversation.title
         headerRow = NSStackView()
         headerRow.orientation = .horizontal
         headerRow.spacing = 8
@@ -169,32 +179,38 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private func refreshHeader() {
         var buttons: [NSButton] = []
         var status = ""
+        if conversation.isRoom {
+            buttons = [headerButton("Copy Invite", #selector(copyInviteTapped)),
+                       headerButton("Leave", #selector(leaveTapped), destructive: true)]
+        }
         // The Live Activity Bar owns Answer/Decline/End and the stream toggles
         // (§4 feedback: no duplicated call controls); the header keeps only the
         // call entry, the mac-only extras, and the status line.
-        switch live.state {
-        case .incoming(let p) where p == peer.id:
-            status = "Incoming call"
-        case .inCall(let p) where p == peer.id:
-            buttons = [headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
-            status = "In call"
-        case .calling(let p) where p == peer.id:
-            status = "Calling…"
-        default:
-            switch video.state {
-            case .incoming where video.pendingPeer == peer.id:
-                status = video.pendingWatchOnly ? "Incoming video" : "Incoming video call"
-            case .inCall where video.activePeer == peer.id:
+        if !conversation.isRoom {
+            switch live.state {
+            case .incoming(let p) where p == peer.id:
+                status = "Incoming call"
+            case .inCall(let p) where p == peer.id:
                 buttons = [headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
-                status = "In video call"
-            case .watching where video.activePeer == peer.id:
-                status = "Watching video"
-            case .calling where video.activePeer == peer.id:
+                status = "In call"
+            case .calling(let p) where p == peer.id:
                 status = "Calling…"
             default:
-                buttons = [headerSymbolButton("phone.arrow.up.right", #selector(callTapped), "Start call"),
-                           headerSymbolButton("arrow.down.doc", #selector(shareVideoTapped), "Share a video file"),
-                           headerSymbolButton("person.crop.circle", #selector(peerDetailsTapped), "Peer details")]
+                switch video.state {
+                case .incoming where video.pendingPeer == peer.id:
+                    status = video.pendingWatchOnly ? "Incoming video" : "Incoming video call"
+                case .inCall where video.activePeer == peer.id:
+                    buttons = [headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
+                    status = "In video call"
+                case .watching where video.activePeer == peer.id:
+                    status = "Watching video"
+                case .calling where video.activePeer == peer.id:
+                    status = "Calling…"
+                default:
+                    buttons = [headerSymbolButton("phone.arrow.up.right", #selector(callTapped), "Start call"),
+                               headerSymbolButton("arrow.down.doc", #selector(shareVideoTapped), "Share a video file"),
+                               headerSymbolButton("person.crop.circle", #selector(peerDetailsTapped), "Peer details")]
+                }
             }
         }
         callLabel.stringValue = status
@@ -313,13 +329,17 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         fullscreenOverlay?.isHidden = !isLiveFullscreen
     }
 
-    /// Shared mic meter for the live bar + in-call recording waveform.
+    /// Shared mic meter for the live bar + in-call recording waveform. This is
+    /// also the call's capture: the dylib runs its audio source in "push" mode,
+    /// so the tap below is what the peer hears as well as what the waveform
+    /// shows (no second capture client racing the mic).
     private func ensureCallMeter() -> AudioMeter {
         if let callMeter { return callMeter }
         let wave = liveWaveView ?? WaveformView(frame: NSRect(x: 0, y: 0, width: 160, height: 22))
         wave.startLive()
         liveWaveView = wave
         let meter = AudioMeter(view: wave)
+        meter.pushToEncoder = true
         if let fullscreenWaveView { meter.add(view: fullscreenWaveView) }
         meter.start()
         callMeter = meter
@@ -449,7 +469,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }()
 
     private func syncMessages() {
-        history = store.messages.filter { $0.peerId == peer.id }
+        history = store.messages(for: conversation)
         table.reloadData()
         if history.count > lastCount, history.count > 0 {
             table.scrollRowToVisible(history.count - 1)
@@ -585,6 +605,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     override func viewDidLoad() {
         super.viewDidLoad()
         store.addObserver(self)
+        store.markRead(conversation)
         DispatchQueue.main.async { [weak self] in
             self?.view.window?.makeFirstResponder(self?.composerTextView)
         }
@@ -627,14 +648,14 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         let message = history[row]
+        let height: CGFloat
         switch message.kind {
-        case .recording:
-            return 46
-        case .file:
-            return 46
+        case .recording, .file:
+            height = 46
         case .text(let text):
-            return textHeight(for: message, text: text)
+            height = textHeight(for: message, text: text)
         }
+        return height + (conversation.isRoom && !message.outgoing ? 16 : 0)
     }
 
     /// Cached bubble row height; measured from the same attributed string the
@@ -765,6 +786,19 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             ])
         }
 
+        var bubbleTop: CGFloat = 2
+        if conversation.isRoom && !message.outgoing {
+            let sender = NSTextField(labelWithString: app.peers.first(where: { $0.id == message.peerId })?.displayName ?? String(message.peerId.prefix(8)))
+            sender.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+            sender.textColor = .secondaryLabelColor
+            row.addSubview(sender)
+            sender.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                sender.topAnchor.constraint(equalTo: row.topAnchor, constant: 1),
+                sender.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
+            ])
+            bubbleTop = 18
+        }
         row.addSubview(bubble)
         bubble.translatesAutoresizingMaskIntoConstraints = false
         let leading = bubble.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10)
@@ -777,7 +811,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             leading.isActive = true
         }
         NSLayoutConstraint.activate([
-            bubble.topAnchor.constraint(equalTo: row.topAnchor, constant: 2),
+            bubble.topAnchor.constraint(equalTo: row.topAnchor, constant: bubbleTop),
             bubble.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -2),
             leading, trailing,
         ])
@@ -792,15 +826,43 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         guard !text.isEmpty else { return }
         composerTextView.string = ""
         let id = "local-\(UUID().uuidString)"
-        store.appendOutgoing(ChatMessage(id: id, peerId: peer.id, kind: .text(text), outgoing: true, status: "Sending"))
+        let peerId = conversation.isRoom ? store.selfPeerId : peer.id
+        store.appendOutgoing(ChatMessage(id: id, peerId: peerId, kind: .text(text), outgoing: true, status: "Sending", conversation: conversation.room?.id))
         Task {
             do {
-                try await client.sendText(to: peer.id, text)
+                if let room = conversation.room {
+                    try await client.sendRoom(room.id, text: text)
+                } else {
+                    try await client.sendText(to: peer.id, text)
+                }
                 store.updateMessage(id: id) { $0.status = "Sent" }
             } catch {
                 store.updateMessage(id: id) { $0.status = "Failed" }
                 showBanner(error.localizedDescription)
             }
+        }
+    }
+
+    private func sendConversationText(_ text: String) async throws {
+        if let room = conversation.room {
+            try await client.sendRoom(room.id, text: text)
+        } else {
+            try await client.sendText(to: peer.id, text)
+        }
+    }
+
+    @objc private func copyInviteTapped() {
+        guard let room = conversation.room else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(room.id, forType: .string)
+        store.onBanner?("Room invite copied")
+    }
+
+    @objc private func leaveTapped() {
+        guard let room = conversation.room else { return }
+        Task {
+            try? await client.leaveRoom(room.id)
+            await MainActor.run { self.app.select(nil as Peer?) }
         }
     }
 
@@ -872,10 +934,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 sender_id=\(store.selfPeerId)
                 ticket=\(ticket)
                 """
-                try await client.sendText(to: peer.id, envelope)
-                store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: peer.id,
+                try await sendConversationText(envelope)
+                store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: conversation.isRoom ? store.selfPeerId : peer.id,
                                                  kind: .file(ticket: ticket, name: safeName, sizeBytes: size),
-                                                 outgoing: true, status: "Sent"))
+                                                 outgoing: true, status: "Sent", conversation: conversation.room?.id))
                 TransferCenter.shared.finish(id: transferId)
                 NSLog("idfon file: sent name=\(safeName) size=\(size) ticket=\(ticket)")
             } catch is CancellationError {
@@ -1092,9 +1154,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             sender_id=\(store.selfPeerId)
             ticket=\(ticket)
             """
-            try await client.sendText(to: peer.id, envelope)
+            try await sendConversationText(envelope)
             await MainActor.run {
-                store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: peer.id, kind: .recording(ticket: ticket, durationMs: durationMs), outgoing: true, status: "Sent"))
+                store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: conversation.isRoom ? store.selfPeerId : peer.id, kind: .recording(ticket: ticket, durationMs: durationMs), outgoing: true, status: "Sent", conversation: conversation.room?.id))
                 store.cacheRecording(ticket, url: fileURL)
                 self.showBanner("Audio sent")
             }
@@ -1188,9 +1250,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         """
         Task {
             do {
-                try await client.sendText(to: peer.id, envelope)
+                try await sendConversationText(envelope)
                 await MainActor.run {
-                    store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: peer.id, kind: .recording(ticket: pending.ticket, durationMs: pending.durationMs), outgoing: true, status: "Sent"))
+                    store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: conversation.isRoom ? store.selfPeerId : peer.id, kind: .recording(ticket: pending.ticket, durationMs: pending.durationMs), outgoing: true, status: "Sent", conversation: conversation.room?.id))
                     self.showBanner("Audio sent")
                 }
             } catch {

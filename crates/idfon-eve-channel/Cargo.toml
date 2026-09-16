@@ -1,0 +1,25 @@
+[package]
+name = "idfon-eve-channel"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[[bin]]
+name = "idfon-eve-channel"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+blake3 = "1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = "2"
+idfon-core = { path = "../idfon-core" }
+idfon-media = { path = "../idfon-media" }
+idfon-protocol = { path = "../idfon-protocol" }
+iroh = "1"
+iroh-blobs = "0.103"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }

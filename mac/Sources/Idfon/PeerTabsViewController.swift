@@ -13,7 +13,9 @@ final class PeerTabsViewController: NSTabViewController {
 
     init(peersProvider: @escaping () -> [Peer],
          recentPeerIds: @escaping () -> [String],
-         onSelect: @escaping (Peer) -> Void) {
+         onSelect: @escaping (Conversation) -> Void,
+         recentRoomsProvider: @escaping () -> [Room] = { [] },
+         unreadCountProvider: @escaping (Conversation) -> Int = { _ in 0 }) {
         super.init(nibName: nil, bundle: nil)
         // Segmented buttons above the list (the closest AppKit analogue of
         // UITabBarController's bar), not the window toolbar.
@@ -23,6 +25,8 @@ final class PeerTabsViewController: NSTabViewController {
             tabViewItem(for: section)?.label = label
             section.peersProvider = peersProvider
             section.recentPeerIdsProvider = recentPeerIds
+            section.recentRoomsProvider = recentRoomsProvider
+            section.unreadCountProvider = unreadCountProvider
             section.onSelect = onSelect
         }
     }
@@ -53,12 +57,14 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
     /// Peer ids with message history, newest first (injected so this view layer
     /// stays free of ChatStore/daemon dependencies).
     var recentPeerIdsProvider: (() -> [String])?
-    var onSelect: ((Peer) -> Void)?
+    var recentRoomsProvider: (() -> [Room])?
+    var unreadCountProvider: ((Conversation) -> Int)?
+    var onSelect: ((Conversation) -> Void)?
 
     private let table = NSTableView()
     private let searchField = NSSearchField()
     private let emptyLabel = NSTextField(labelWithString: "")
-    private var shown: [Peer] = []
+    private var shown: [Conversation] = []
     private var query = ""
 
     init(section: Section) {
@@ -77,18 +83,18 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
     }
 
     /// The peers this section shows, before the search filter.
-    private func sectionPeers() -> [Peer] {
+    private func sectionConversations() -> [Conversation] {
         let peers = peersProvider?() ?? []
         switch section {
         case .contacts:
-            return peers
+            return peers.map(Conversation.init(peer:))
         case .recents:
-            // Session-only: message bodies are memory-only, so this reflects the
-            // current run (newest first).
+            let peerChats = Dictionary(uniqueKeysWithValues: peers.map { ($0.id, Conversation(peer: $0)) })
+            let roomChats = Dictionary(uniqueKeysWithValues: (recentRoomsProvider?() ?? []).map { ($0.id, Conversation(room: $0)) })
             let recent = recentPeerIdsProvider?() ?? []
-            return recent.compactMap { id in peers.first { $0.id == id } }
+            return recent.compactMap { roomChats[$0] ?? peerChats[$0] }
         case .favorites:
-            return [] // no backing store yet (same placeholder as the iOS tab)
+            return []
         }
     }
 
@@ -144,12 +150,11 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
     /// Re-reads the source and re-applies the current query.
     func reload() {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let all = sectionPeers()
-        shown = q.isEmpty ? all : all.filter { peer in
-            // Match everything the row displays, endpoint id included.
-            peer.displayName.lowercased().contains(q)
-                || peer.id.lowercased().contains(q)
-                || (peer.endpointId?.lowercased().contains(q) ?? false)
+        let all = sectionConversations()
+        shown = q.isEmpty ? all : all.filter { chat in
+            chat.title.lowercased().contains(q)
+                || chat.id.lowercased().contains(q)
+                || (chat.peer?.endpointId?.lowercased().contains(q) ?? false)
         }
         emptyLabel.stringValue = emptyText(isSearching: !q.isEmpty)
         emptyLabel.isHidden = !shown.isEmpty
@@ -157,7 +162,8 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
     }
 
     /// Peers currently listed, for `mac/Checks/PeerTabsCheck`.
-    var displayedPeers: [Peer] { shown }
+    var displayedPeers: [Peer] { shown.compactMap(\.peer) }
+    var displayedConversations: [Conversation] { shown }
 
     /// Applies a search query as if typed (for `mac/Checks/PeerTabsCheck`).
     func search(_ text: String) {
@@ -170,7 +176,7 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         switch section {
         case .favorites: return "No favorites yet"
         case .recents: return "No recent conversations"
-        case .contacts: return "No connections yet"
+        case .contacts: return "No channels yet"
         }
     }
 
@@ -196,7 +202,7 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let peer = shown[row]
+        let chat = shown[row]
         let cell = tableView.makeView(withIdentifier: .init("peerCell"), owner: self) as? NSTableCellView
             ?? NSTableCellView()
         cell.identifier = .init("peerCell")
@@ -221,10 +227,11 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         } else {
             labels = cell.subviews.compactMap { $0 as? NSTextField }
         }
-        labels[0].stringValue = peer.displayName
+        let unread = unreadCountProvider?(chat) ?? 0
+        labels[0].stringValue = unread > 0 ? "\(chat.title) · \(unread)" : chat.title
         labels[0].font = NSFont.systemFont(ofSize: 13, weight: .medium)
         labels[0].lineBreakMode = .byTruncatingTail
-        labels[1].stringValue = peer.endpointId ?? peer.id
+        labels[1].stringValue = chat.peer?.endpointId ?? (chat.isRoom ? "Room · \(chat.id)" : chat.id)
         labels[1].font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         labels[1].textColor = .secondaryLabelColor
         labels[1].lineBreakMode = .byTruncatingMiddle

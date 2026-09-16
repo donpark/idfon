@@ -2,9 +2,49 @@ import UIKit
 import AVFAudio
 import UniformTypeIdentifiers
 
+private final class MessageCell: UITableViewCell {
+    let messageLabel = UILabel()
+    let detailLabel = UILabel()
+    private var messageConstraints: [NSLayoutConstraint] = []
+    private var detailConstraints: [NSLayoutConstraint] = []
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        for label in [messageLabel, detailLabel] {
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.numberOfLines = 0
+            contentView.addSubview(label)
+        }
+        detailLabel.font = .preferredFont(forTextStyle: .subheadline)
+        detailLabel.textColor = .secondaryLabel
+    }
+
+    required init?(coder: NSCoder) { fatalError("storyboards are not used") }
+
+    func setAlignment(outgoing: Bool) {
+        NSLayoutConstraint.deactivate(messageConstraints + detailConstraints)
+        let edge = outgoing ? contentView.trailingAnchor : contentView.leadingAnchor
+        messageLabel.textAlignment = outgoing ? .right : .left
+        detailLabel.textAlignment = outgoing ? .right : .left
+        messageConstraints = [
+            messageLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
+            messageLabel.bottomAnchor.constraint(equalTo: detailLabel.topAnchor, constant: -2),
+            messageLabel.leadingAnchor.constraint(equalTo: outgoing ? contentView.leadingAnchor : edge, constant: outgoing ? 20 : 16),
+            messageLabel.trailingAnchor.constraint(equalTo: outgoing ? edge : contentView.trailingAnchor, constant: outgoing ? -16 : -20),
+        ]
+        detailConstraints = [
+            detailLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10),
+            detailLabel.leadingAnchor.constraint(equalTo: outgoing ? contentView.leadingAnchor : edge, constant: outgoing ? 20 : 16),
+            detailLabel.trailingAnchor.constraint(equalTo: outgoing ? edge : contentView.trailingAnchor, constant: outgoing ? -16 : -20),
+        ]
+        NSLayoutConstraint.activate(messageConstraints + detailConstraints)
+    }
+}
+
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UITextViewDelegate {
     /// Read by the Live Activity Bar coordinator (density + `.open` routing).
     let peer: Peer
+    private let conversation: Conversation
     private let client = DaemonClient()
 
     private let tableView = UITableView()
@@ -38,13 +78,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// The in-flight file upload (§5), cancelled the same way.
     private var fileTask: Task<Void, Never>?
 
-    private var autoAnswerArmed = false
     private var messages: [ChatMessage] = []
+    private var senderNames: [String: String] = [:]
     private var players: [String: AVAudioPlayer] = [:] // ticket -> player
-
-    /// Per-connection incoming-call mode (§6): a config affordance, not a
-    /// settings screen.
-    private let incomingModeItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), style: .plain, target: nil, action: nil)
 
     // inline live-video bar (tap to expand the fullscreen call screen)
     private let videoBar = UIView()
@@ -54,6 +90,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     init(peer: Peer) {
         self.peer = peer
+        self.conversation = Conversation(peer: peer)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    init(room: Room) {
+        self.peer = Peer(id: room.id, name: room.name, endpointId: nil, aliases: nil, callMode: nil)
+        self.conversation = Conversation(room: room)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -61,31 +104,46 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = peer.displayName
+        title = conversation.title
         view.backgroundColor = .systemBackground
+
+        // Rooms use the same chat surface but do not expose 1:1 call controls.
+        if conversation.isRoom {
+            navigationItem.rightBarButtonItems = [
+                UIBarButtonItem(title: "Copy Invite", style: .plain, target: self, action: #selector(copyInviteTapped)),
+                UIBarButtonItem(title: "Leave", style: .plain, target: self, action: #selector(leaveTapped)),
+            ]
+        }
 
         // One call entry (#4 feedback): the Bar owns mute / camera / End, so the
         // nav bar no longer duplicates them with separate audio/video buttons.
         // `.generic` keeps the back button reading "Back" instead of the
         // callee's name when a thread is stacked on another.
         navigationItem.backButtonDisplayMode = .generic
-        navigationItem.rightBarButtonItems = [
-            UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"), style: .plain, target: self, action: #selector(callTapped)),
-            UIBarButtonItem(image: UIImage(systemName: "phone.badge.waveform"), style: .plain, target: self, action: #selector(toggleAutoAnswer)),
-            incomingModeItem,
-        ]
-        syncIncomingModeMenu()
+        if !conversation.isRoom {
+            navigationItem.rightBarButtonItems = [
+                UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"), style: .plain, target: self, action: #selector(callTapped)),
+            ]
+        }
 
         buildViews()
         ChatStore.shared.addObserver(self)
+        ChatStore.shared.markRead(conversation)
         syncMessages()
+        if conversation.isRoom {
+            Task {
+                if let peers = try? await client.peers() {
+                    await MainActor.run {
+                        self.senderNames = Dictionary(uniqueKeysWithValues: peers.map { ($0.id, $0.displayName) })
+                        self.tableView.reloadData()
+                    }
+                }
+            }
+        }
 
         NotificationCenter.default.addObserver(forName: .init("idfon.dial"), object: nil, queue: .main) { [weak self] note in
             guard let ref = note.userInfo?["ref"] as? String else { return }
             self?.dial(peerRef: ref)
-        }
-        NotificationCenter.default.addObserver(forName: .init("idfon.answer"), object: nil, queue: .main) { [weak self] _ in
-            self?.toggleAutoAnswer()
         }
         videoObservers.append(NotificationCenter.default.addObserver(forName: .idfonVideoChanged, object: nil, queue: .main) { [weak self] _ in
             self?.syncVideoBar()
@@ -107,7 +165,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "message")
+        tableView.register(MessageCell.self, forCellReuseIdentifier: "message")
         tableView.separatorStyle = .none
         tableView.keyboardDismissMode = .interactive
 
@@ -276,7 +334,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func applyMode() {
         let recording = mode == .recording
         let review = mode == .review
-        [composerText, micButton, sendButton, attachButton].forEach { $0.isHidden = recording || review }
+        [composerText, sendButton].forEach { $0.isHidden = recording || review }
+        micButton.isHidden = recording || review
+        attachButton.isHidden = recording || review
         [elapsedLabel, stopButton].forEach { $0.isHidden = !recording }
         elapsedLabel.isHidden = !recording && !review
         [closeButton, playButton, reviewWaveform].forEach { $0.isHidden = !review }
@@ -305,8 +365,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let text = composerText.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
         composerText.text = ""
         textViewDidChange(composerText)
-        ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .text(text), outgoing: true, timestamp: Date()))
-        Task { try? await client.sendText(to: peer.id, text) }
+        let peerId = conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id
+        ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .text(text), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
+        Task {
+            if let room = conversation.room {
+                try? await client.sendRoom(room.id, text: text)
+            } else {
+                try? await client.sendText(to: peer.id, text)
+            }
+        }
+    }
+
+    private func sendConversationText(_ text: String) async throws {
+        if let room = conversation.room {
+            try await client.sendRoom(room.id, text: text)
+        } else {
+            try await client.sendText(to: peer.id, text)
+        }
     }
 
     // MARK: - Voice memo
@@ -409,8 +484,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 sender_id=\(ChatStore.shared.selfPeerId)
                 ticket=\(ticket)
                 """
-                try await client.sendText(to: peer.id, envelope)
-                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .recording(ticket: ticket, durationMs: durationMs, localURL: url), outgoing: true, timestamp: Date()))
+                try await sendConversationText(envelope)
+                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id, kind: .recording(ticket: ticket, durationMs: durationMs, localURL: url), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
                 try? FileManager.default.removeItem(at: url)
                 TransferCenter.shared.finish(id: transferId)
                 self.memoURL = nil
@@ -470,8 +545,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 sender_id=\(ChatStore.shared.selfPeerId)
                 ticket=\(ticket)
                 """
-                try await client.sendText(to: peer.id, envelope)
-                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .file(ticket: ticket, name: safeName, sizeBytes: size, localURL: nil), outgoing: true, timestamp: Date()))
+                try await sendConversationText(envelope)
+                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id, kind: .file(ticket: ticket, name: safeName, sizeBytes: size, localURL: nil), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
                 NSLog("idfon file: sent name=\(safeName) size=\(size) ticket=\(ticket)")
                 TransferCenter.shared.finish(id: transferId)
                 self.showCallStatus(nil)
@@ -533,40 +608,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 
-    // MARK: - Incoming-call mode (§6)
-
-    /// Nav-bar ellipsis → "Incoming calls" → Bar / CallKit, reflecting the
-    /// peer's current mode. CallKit stays visible but disabled while its
-    /// presenter is unavailable: a connection must not be configurable into a
-    /// mode that cannot be served.
-    private func syncIncomingModeMenu() {
-        let current = IncomingCallRouter.shared.mode(for: peer.id)
-        func modeAction(_ mode: IncomingCallMode, _ title: String) -> UIAction {
-            UIAction(title: title, state: current == mode ? .on : .off) { [weak self] _ in
-                self?.setIncomingMode(mode)
-            }
-        }
-        let callKit = modeAction(.callKit, "CallKit")
-        if !IncomingCallRouter.CallKitIncomingPresenter.isAvailable {
-            callKit.attributes = .disabled
-            callKit.subtitle = "Not available yet"
-        }
-        incomingModeItem.menu = UIMenu(children: [
-            UIMenu(title: "Incoming calls", children: [modeAction(.bar, "Bar"), callKit]),
-        ])
-    }
-
-    private func setIncomingMode(_ mode: IncomingCallMode) {
-        Task {
-            do {
-                try await IncomingCallRouter.shared.setMode(mode, for: peer.id)
-            } catch {
-                NSLog("idfon incoming-call mode update failed: \(error.localizedDescription)")
-            }
-            syncIncomingModeMenu()
-        }
-    }
-
     // MARK: - Live call
 
     private func showCallStatus(_ text: String?) {
@@ -618,35 +659,31 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// Arms auto-answer: the daemon waits (up to 120s per attempt) for an
-    /// incoming dial and records it. Disarming stops re-arming after the
-    /// current attempt returns — the blocking request cannot be cancelled.
-    @objc private func toggleAutoAnswer() {
-        autoAnswerArmed.toggle()
-        let armed = autoAnswerArmed
-        navigationItem.rightBarButtonItems?.last?.isSelected = armed
-        guard armed else { showCallStatus(nil); return }
-        showCallStatus("Auto-answer armed…")
-        Task {
-            while self.autoAnswerArmed {
-                do {
-                    let out = try await LiveCallHarness.armAutoAnswer(waitSeconds: 120, captureSeconds: 8, client: client)
-                    guard self.autoAnswerArmed else { break }
-                    self.showCallStatus("Call recorded")
-                    NSLog("idfon call recorded to \(out)")
-                } catch {
-                    guard self.autoAnswerArmed else { break }
-                    self.showCallStatus("Answer failed: \(error.localizedDescription)")
-                }
+    @objc private func copyInviteTapped() {
+        guard let room = conversation.room else { return }
+        UIPasteboard.general.string = room.id
+        let alert = UIAlertController(title: "Invite copied", message: "Share this room id with a member: \(room.id)", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
+    @objc private func leaveTapped() {
+        guard let room = conversation.room else { return }
+        let alert = UIAlertController(title: "Leave room?", message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Leave", style: .destructive) { [weak self] _ in
+            Task {
+                try? await self?.client.leaveRoom(room.id)
+                await MainActor.run { self?.navigationController?.popViewController(animated: true) }
             }
-            if !self.autoAnswerArmed { self.showCallStatus(nil) }
-        }
+        })
+        present(alert, animated: true)
     }
 
     // MARK: - Table view
 
     private func syncMessages() {
-        messages = ChatStore.shared.messages.filter { $0.peerId == peer.id }
+        messages = ChatStore.shared.messages(for: conversation)
         tableView.reloadData()
         if !messages.isEmpty {
             tableView.scrollToRow(at: IndexPath(row: messages.count - 1, section: 0), at: .bottom, animated: true)
@@ -658,32 +695,33 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath)
+        let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
         let message = messages[indexPath.row]
-        var config = cell.defaultContentConfiguration()
-        config.secondaryText = message.outgoing ? "sent" : nil
+        cell.setAlignment(outgoing: message.outgoing)
+        cell.messageLabel.textColor = .label
+        cell.messageLabel.text = message.displayText
+        cell.detailLabel.text = message.outgoing ? "sent" : (conversation.isRoom ? (senderNames[message.peerId] ?? String(message.peerId.prefix(8))) : nil)
         switch message.kind {
         case .text(let text):
-            config.text = text
+            cell.messageLabel.text = text
             cell.accessoryView = nil
         case .recording(let ticket, let durationMs, _):
-            config.text = "Voice message (\(Self.format(Double(durationMs) / 1000)))"
-            config.textProperties.color = .link
+            cell.messageLabel.text = "Voice message (\(Self.format(Double(durationMs) / 1000)))"
+            cell.messageLabel.textColor = .link
             let button = UIButton(type: .system)
             button.setImage(UIImage(systemName: players[ticket]?.isPlaying == true ? "pause.fill" : "play.fill"), for: .normal)
             button.addTarget(self, action: #selector(playRecordingTapped(_:)), for: .touchUpInside)
             button.tag = indexPath.row
             cell.accessoryView = button
         case .file(_, let name, let sizeBytes, let localURL):
-            config.text = "\(name) (\(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)))"
-            config.textProperties.color = .link
+            cell.messageLabel.text = "\(name) (\(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)))"
+            cell.messageLabel.textColor = .link
             let button = UIButton(type: .system)
             button.setImage(UIImage(systemName: localURL == nil ? "arrow.down.circle" : "square.and.arrow.up"), for: .normal)
             button.addTarget(self, action: #selector(fileTapped(_:)), for: .touchUpInside)
             button.tag = indexPath.row
             cell.accessoryView = button
         }
-        cell.contentConfiguration = config
         cell.isUserInteractionEnabled = true
         return cell
     }

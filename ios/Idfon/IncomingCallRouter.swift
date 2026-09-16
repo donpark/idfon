@@ -1,12 +1,12 @@
 import Foundation
 
-/// Per-connection incoming-call routing seam
+/// Per-channel incoming-call routing seam
 /// (docs/ui-design-notes.md §6, "Incoming-call handling: two modes").
 ///
-/// The mode selects who owns incoming-ring *presentation* for a connection,
+/// The mode selects who owns incoming-ring *presentation* for a channel,
 /// not how the call is transported: both modes funnel into the same call
 /// state machines. Bar is the interim default until CallKit integration
-/// lands. A connection configured for CallKit while the presenter is
+/// lands. A channel configured for CallKit while the presenter is
 /// unavailable is presented in the Bar and the deferral is logged — an
 /// explicit, visible switch, never a silent mode change.
 @MainActor
@@ -41,7 +41,7 @@ final class IncomingCallRouter {
         modes = peers.reduce(into: [:]) { $0[$1.id] = $1.incomingCallMode }
     }
 
-    /// Routes an invite envelope from `peerId` to the presenter its connection
+    /// Routes an invite envelope from `peerId` to the presenter its channel
     /// selects. Only invites go through here — `call_started`/`call_stopped`
     /// stay direct to both machines, since the mode governs presentation, not
     /// teardown.
@@ -59,7 +59,7 @@ final class IncomingCallRouter {
         VideoCall.shared.handleEnvelope(peer: peerId, text)
     }
 
-    /// Sets a connection's incoming-call mode and refreshes the cache.
+    /// Sets a channel's incoming-call mode and refreshes the cache.
     func setMode(_ mode: IncomingCallMode, for peerId: String) async throws {
         try await client.setIncomingCallMode(ref: peerId, mode)
         modes[peerId] = mode

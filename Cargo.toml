@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/idfon-protocol", "crates/idfon-core", "crates/idfon-media", "crates/idfon-mcp", "crates/idfon-mcp-server", "crates/idfond", "crates/idfon-cli", "crates/idfon-client", "crates/idfon-daemon"]
+members = ["crates/idfon-protocol", "crates/idfon-core", "crates/idfon-media", "crates/idfon-mcp", "crates/idfon-mcp-server", "crates/idfon-eve-channel", "crates/idfond", "crates/idfon-cli", "crates/idfon-client", "crates/idfon-daemon"]
 exclude = ["native/vendor/iroh-c-ffi"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
-version = "0.4.0"
+version = "0.5.0"
 
 [profile.release]
 lto = "fat"

@@ -1,5 +1,12 @@
 import Foundation
 
+struct Room: Decodable, Identifiable, Hashable {
+    let id: String
+    let identity: String
+    let name: String?
+    let members: [String]
+}
+
 struct Peer: Decodable, Identifiable, Hashable {
     let id: String
     let name: String?
@@ -12,6 +19,45 @@ struct Peer: Decodable, Identifiable, Hashable {
     }
 
     var displayName: String { name ?? id }
+}
+
+/// The single navigation target used by both direct chats and rooms.
+struct Conversation: Identifiable {
+    enum Kind {
+        case direct(Peer)
+        case room(Room)
+    }
+
+    let kind: Kind
+
+    init(peer: Peer) { kind = .direct(peer) }
+    init(room: Room) { kind = .room(room) }
+
+    var id: String {
+        switch kind {
+        case .direct(let peer): return peer.id
+        case .room(let room): return room.id
+        }
+    }
+
+    var room: Room? {
+        if case .room(let room) = kind { return room }
+        return nil
+    }
+
+    var peer: Peer? {
+        if case .direct(let peer) = kind { return peer }
+        return nil
+    }
+
+    var title: String {
+        switch kind {
+        case .direct(let peer): return peer.displayName
+        case .room(let room): return room.name?.isEmpty == false ? room.name! : "Room"
+        }
+    }
+
+    var isRoom: Bool { room != nil }
 }
 
 struct IdentityInfo: Identifiable, Hashable {
@@ -38,6 +84,7 @@ struct Event: Decodable {
     var messageText: String? { data["text"]?.stringValue }
     var messagePeerId: String? { data["peer_id"]?.stringValue }
     var messageId: String? { data["message_id"]?.stringValue }
+    var conversationId: String? { data["conversation"]?.stringValue }
 }
 
 enum MessageKind {
@@ -91,6 +138,8 @@ struct ChatMessage: Identifiable {
     /// Event time for received messages; `Date()` for locally-sent ones.
     /// Recents ordering consumes it.
     var timestamp: Date = Date()
+    /// nil is the ordinary 1:1 conversation; a room id scopes group history.
+    var conversation: String? = nil
 
     var displayText: String {
         switch kind {

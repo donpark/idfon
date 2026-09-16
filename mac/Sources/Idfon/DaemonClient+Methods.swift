@@ -10,7 +10,7 @@ extension DaemonClient {
         return (ready, name)
     }
 
-    /// The identity's connection ticket (endpoint addr JSON) from status.
+    /// The identity's channel ticket (endpoint addr JSON) from status.
     /// Raw bytes in the result — decode as UTF-8.
     func statusTicket() async throws -> String {
         guard let raw = try await requestWithLaunch(method: "status"),
@@ -35,12 +35,59 @@ extension DaemonClient {
         return try JSONDecoder().decode([Peer].self, from: data)
     }
 
-    func sendText(to peer: String, _ text: String) async throws {
-        _ = try await requestWithLaunch(method: "message.send", params: [
+    func rooms() async throws -> [Room] {
+        guard let list = try await requestWithLaunch(method: "room.list")?["rooms"]?.asArray else { return [] }
+        return try JSONDecoder().decode([Room].self, from: JSONEncoder().encode(list))
+    }
+
+    func joinRoom(_ room: String, name: String? = nil, members: [String] = []) async throws -> Room {
+        var params: [String: AnyEncodable] = ["room": AnyEncodable(room)]
+        if let name { params["name"] = AnyEncodable(name) }
+        if !members.isEmpty { params["members"] = AnyEncodable(members.map(AnyEncodable.init)) }
+        guard let raw = try await requestWithLaunch(method: "room.join", params: params)?["room"] else {
+            throw DaemonClient.DaemonError.request("room.join returned no room")
+        }
+        return try JSONDecoder().decode(Room.self, from: JSONEncoder().encode(raw))
+    }
+
+    func createRoom(id: String? = nil, name: String? = nil, members: [String] = []) async throws -> Room {
+        var params: [String: AnyEncodable] = [:]
+        if let id { params["id"] = AnyEncodable(id) }
+        if let name { params["name"] = AnyEncodable(name) }
+        if !members.isEmpty { params["members"] = AnyEncodable(members.map(AnyEncodable.init)) }
+        guard let raw = try await requestWithLaunch(method: "room.create", params: params)?["room"] else {
+            throw DaemonClient.DaemonError.request("room.create returned no room")
+        }
+        return try JSONDecoder().decode(Room.self, from: JSONEncoder().encode(raw))
+    }
+
+    func sendRoom(_ room: String, text: String, idempotencyKey: String = "mac-room-\(UUID().uuidString)") async throws {
+        _ = try await requestWithLaunch(method: "room.send", params: [
+            "room": AnyEncodable(room), "text": AnyEncodable(text),
+            "idempotency_key": AnyEncodable(idempotencyKey),
+        ])
+    }
+
+    func leaveRoom(_ room: String) async throws {
+        _ = try await requestWithLaunch(method: "room.leave", params: ["room": AnyEncodable(room)])
+    }
+
+    func sendText(to peer: String, _ text: String, conversation: String? = nil) async throws {
+        var params: [String: AnyEncodable] = [
             "to": AnyEncodable(peer),
             "text": AnyEncodable(text),
             "idempotency_key": AnyEncodable("mac-\(UUID().uuidString)"),
-        ])
+        ]
+        if let conversation { params["conversation"] = AnyEncodable(conversation) }
+        _ = try await requestWithLaunch(method: "message.send", params: params)
+    }
+
+    /// Replays retained events for initial ChatStore hydration.
+    func events(after cursor: String?) async throws -> [Event] {
+        var params: [String: AnyEncodable] = [:]
+        if let cursor { params["after"] = AnyEncodable(cursor) }
+        guard let list = try await requestWithLaunch(method: "events", params: params)?["events"]?.asArray else { return [] }
+        return try JSONDecoder().decode([Event].self, from: JSONEncoder().encode(list))
     }
 
     /// Blocks server-side until one matching event arrives or the timeout
@@ -58,8 +105,8 @@ extension DaemonClient {
 
     /// Adds a peer from its endpoint-addr ticket JSON and grants the chat
     /// capabilities both ways (mirrors the iOS pair automation and the GUI's
-    /// Add Connection flow).
-    func addConnection(name: String, ticketJSON: String, identity: String) async throws {
+    /// Add Channel flow).
+    func addChannel(name: String, ticketJSON: String, identity: String) async throws {
         guard let addr = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any],
               let endpointId = addr["id"] as? String, !endpointId.isEmpty else {
             throw DaemonError.request("invalid endpoint addr JSON (needs an \"id\" field)")

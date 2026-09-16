@@ -1,6 +1,6 @@
 import Foundation
 
-/// How an incoming call is presented for one connection
+/// How an incoming call is presented for one channel
 /// (docs/ui-design-notes.md §6, docs/protocol.md). Bar is the interim
 /// default.
 ///
@@ -17,6 +17,13 @@ enum IncomingCallMode: String, Decodable {
         let raw = try? decoder.singleValueContainer().decode(String.self)
         self = raw.flatMap(IncomingCallMode.init(rawValue:)) ?? .bar
     }
+}
+
+struct Room: Decodable, Identifiable, Hashable {
+    let id: String
+    let identity: String
+    let name: String?
+    let members: [String]
 }
 
 struct Peer: Decodable, Identifiable {
@@ -38,6 +45,45 @@ struct Peer: Decodable, Identifiable {
     var incomingCallMode: IncomingCallMode { callMode ?? .bar }
 }
 
+/// The single navigation target used by both direct chats and rooms.
+struct Conversation: Identifiable {
+    enum Kind {
+        case direct(Peer)
+        case room(Room)
+    }
+
+    let kind: Kind
+
+    init(peer: Peer) { kind = .direct(peer) }
+    init(room: Room) { kind = .room(room) }
+
+    var id: String {
+        switch kind {
+        case .direct(let peer): return peer.id
+        case .room(let room): return room.id
+        }
+    }
+
+    var room: Room? {
+        if case .room(let room) = kind { return room }
+        return nil
+    }
+
+    var peer: Peer? {
+        if case .direct(let peer) = kind { return peer }
+        return nil
+    }
+
+    var title: String {
+        switch kind {
+        case .direct(let peer): return peer.displayName
+        case .room(let room): return room.name?.isEmpty == false ? room.name! : "Room"
+        }
+    }
+
+    var isRoom: Bool { room != nil }
+}
+
 struct Event: Decodable {
     let eventId: String
     let cursor: String
@@ -54,6 +100,7 @@ struct Event: Decodable {
     var messageText: String? { data["text"]?.stringValue }
     var messagePeerId: String? { data["peer_id"]?.stringValue }
     var messageId: String? { data["message_id"]?.stringValue }
+    var conversationId: String? { data["conversation"]?.stringValue }
 }
 
 enum MessageKind {
@@ -109,6 +156,20 @@ struct ChatMessage: Identifiable {
     /// Event time for received messages; `Date()` for locally-sent ones.
     /// Nothing renders it yet — Recents ordering will consume it.
     let timestamp: Date
+    /// nil is the ordinary 1:1 conversation; a room id scopes group history.
+    let conversation: String?
+
+    init(id: String, peerId: String, kind: MessageKind, outgoing: Bool, timestamp: Date, conversation: String? = nil) {
+        self.id = id; self.peerId = peerId; self.kind = kind; self.outgoing = outgoing; self.timestamp = timestamp; self.conversation = conversation
+    }
+
+    var displayText: String {
+        switch kind {
+        case .text(let text): return text
+        case .recording: return "Voice message"
+        case .file(_, let name, _, _): return name
+        }
+    }
 }
 
 extension AnyEncodable {

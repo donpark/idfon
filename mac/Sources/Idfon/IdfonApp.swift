@@ -176,6 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class AppModel: NSObject {
     var identities: [IdentityInfo] = []
     var peers: [Peer] = []
+    var rooms: [Room] = []
     var ready = false
     var identityName = ""
     var endpointTicket = ""
@@ -186,14 +187,25 @@ final class AppModel: NSObject {
     var onUpdate: (() -> Void)?
     /// Fired when the selected peer changed (detail swap).
     var onSelection: ((Peer?) -> Void)?
+    var onRoomSelection: ((Room?) -> Void)?
 
     private(set) var selectedPeer: Peer?
+    private(set) var selectedRoom: Room?
 
     let client = DaemonClient()
 
     func select(_ peer: Peer?) {
         selectedPeer = peer
+        selectedRoom = nil
         onSelection?(peer)
+        onRoomSelection?(nil)
+    }
+
+    func select(_ room: Room?) {
+        selectedRoom = room
+        selectedPeer = nil
+        onRoomSelection?(room)
+        onSelection?(nil)
     }
 
     func refresh() async {
@@ -203,6 +215,7 @@ final class AppModel: NSObject {
             identityName = status.identityName
             endpointTicket = try await client.statusTicket()
             peers = try await client.peers()
+            rooms = try await client.rooms()
             identities = await loadIdentities()
             statusText = ready ? "Connected" : "Daemon not ready"
         } catch {
@@ -245,11 +258,11 @@ final class AppModel: NSObject {
     }
 
     @discardableResult
-    func addConnection(name: String, ticketJSON: String) async -> String? {
+    func addChannel(name: String, ticketJSON: String) async -> String? {
         addError = nil
         do {
             let identity = try await client.identityId()
-            try await client.addConnection(name: name, ticketJSON: ticketJSON, identity: identity)
+            try await client.addChannel(name: name, ticketJSON: ticketJSON, identity: identity)
             peers = try await client.peers()
         } catch {
             addError = error.localizedDescription
@@ -288,6 +301,7 @@ final class DetailContainerViewController: NSViewController {
         self.app = app
         super.init(nibName: nil, bundle: nil)
         app.onSelection = { [weak self] peer in self?.show(peer) }
+        app.onRoomSelection = { [weak self] room in self?.show(room) }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -322,19 +336,26 @@ final class DetailContainerViewController: NSViewController {
             let next = ChatViewController(peer: peer, app: app)
             chat = next
             replace(with: next)
-        } else {
+        } else if app.selectedRoom == nil {
             chat = nil
             replace(with: PlaceholderViewController())
         }
+    }
+
+    private func show(_ room: Room?) {
+        guard let room else { return }
+        let next = ChatViewController(room: room, app: app)
+        chat = next
+        replace(with: next)
     }
 }
 
 final class PlaceholderViewController: NSViewController {
     override func loadView() {
-        let label = NSTextField(labelWithString: "No connections")
+        let label = NSTextField(labelWithString: "No channels")
         label.isSelectable = false
         label.textColor = .secondaryLabelColor
-        let caption = NSTextField(labelWithString: "Add a connection with the peer's endpoint-addr ticket.")
+        let caption = NSTextField(labelWithString: "Add a channel with the peer's endpoint-addr ticket.")
         caption.font = NSFont.systemFont(ofSize: 11)
         caption.textColor = .tertiaryLabelColor
         let stack = NSStackView(views: [label, caption])

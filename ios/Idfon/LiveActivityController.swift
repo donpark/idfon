@@ -61,10 +61,6 @@ final class LiveActivityController: NSObject {
     private var micOn = false
     private var camOn = false
 
-    /// Body of the idle Bar's `.ping`: placeholder for the spec's ephemeral
-    /// "Free to talk?" notification (the protocol has no ephemeral envelope).
-    private static let pingMessage = "Free to talk?"
-
     private var elapsed: TimeInterval = 0
     private var startedAt: Date?
     private var timer: Timer?
@@ -199,7 +195,7 @@ final class LiveActivityController: NSObject {
         // Render the state as it is now: a call can already be in flight before
         // this controller exists (launch-argument dial, scene reconnection).
         sync()
-        // Prime the per-connection incoming-call modes (§6); refreshed after a
+        // Prime the per-channel incoming-call modes (§6); refreshed after a
         // mode change too. Incoming invites before this lands fall back to Bar.
         Task { await IncomingCallRouter.shared.refreshModes() }
         Task { await refreshPeerNames() }
@@ -265,18 +261,7 @@ final class LiveActivityController: NSObject {
 
         let transfers = TransferCenter.shared
         var models: [LiveActivityBarModel] = []
-        if phase == .idle {
-            if let peerId = visiblePeer {
-                var model = idleModel(for: peerId)
-                model.rows = transfers.rows(for: peerId)
-                models.append(model)
-            }
-        } else if let callPeer {
-            if let peerId = visiblePeer, peerId != callPeer {
-                var model = idleModel(for: peerId)
-                model.rows = transfers.rows(for: peerId)
-                models.append(model)
-            }
+        if phase != .idle, let callPeer {
             var model = LiveActivityBarModel(peerId: callPeer, handle: barHandle(for: callPeer))
             model.phase = phase
             model.micOn = micOn
@@ -300,14 +285,6 @@ final class LiveActivityController: NSObject {
             models.append(model)
         }
         overlay.render(models)
-    }
-
-    /// State 1 chrome for `peerId`: idle phase, Ping verb, no stream toggles.
-    private func idleModel(for peerId: String) -> LiveActivityBarModel {
-        var model = LiveActivityBarModel(peerId: peerId, handle: barHandle(for: peerId))
-        model.phase = .idle
-        model.density = .expanded
-        return model
     }
 
     // MARK: - Elapsed timer
@@ -340,10 +317,6 @@ final class LiveActivityController: NSObject {
         case .open: openPeerThread(peerId)
         case .toggleMic: toggleSendState(peerId: peerId, mic: true)
         case .toggleCam: toggleSendState(peerId: peerId, mic: false)
-        // Placeholder for §3's ephemeral "Free to talk?" ping: the protocol
-        // has no ephemeral envelope, so this is an ordinary low-priority text
-        // (delivered to the peer's thread, it does not ring like a call).
-        case .ping: Task { try? await client.sendText(to: peerId, Self.pingMessage) }
         // Session Tray actions (§4): Cancel aborts the transfer; pause/Stop is
         // for media streams, which have no producer yet.
         case .cancelRow(let id): TransferCenter.shared.cancel(id: id)

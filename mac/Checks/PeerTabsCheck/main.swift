@@ -17,6 +17,11 @@ struct AnyEncodable: Decodable { let value: Any
 }
 
 MainActor.assumeIsolated {
+    let direct = Conversation(peer: Peer(id: "p1", name: "Ada", endpointId: "ep1", aliases: nil))
+    check(direct.id == "p1" && direct.title == "Ada" && !direct.isRoom, "direct conversation identity")
+    let room = Conversation(room: Room(id: "room-1", identity: "default", name: "Design", members: ["p1"]))
+    check(room.id == "room-1" && room.title == "Design" && room.isRoom, "room conversation identity")
+
     let peers = [
         Peer(id: "p1", name: "Ada", endpointId: "ep1", aliases: nil),
         Peer(id: "p2", name: "Bob", endpointId: "ep2", aliases: nil),

@@ -61,7 +61,7 @@ include `invalid_request`, `capability_denied`, `cursor_too_old`,
 
 `ref` in every method matches peer id, name, alias, or endpoint id.
 
-`call_mode` selects how a shell surfaces an incoming call for that connection:
+`call_mode` selects how a shell surfaces an incoming call for that channel:
 `"bar"` (Live Activity Bar) or `"call_kit"` (CallKit). It defaults to `bar` on
 `peer.add` when omitted, and any other value is rejected with `invalid_request`.
 `peer.update` only changes it when the param is present. The auto-created
@@ -77,7 +77,7 @@ reciprocal peer always takes the default.
 `server/discover` result. See the MCP transport section.
 | `peer.update` | same as add | `{ peer }` |
 | `peer.remove` | `{ ref }` | `{}` |
-| `peer.resolve` | `{ ref }` | live connection info |
+| `peer.resolve` | `{ ref }` | live channel info |
 | `peer.show` / `peer.status` | `{ ref }` | `{ peer }` / connectivity |
 
 ### Messaging

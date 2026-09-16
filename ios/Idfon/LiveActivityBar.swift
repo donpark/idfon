@@ -59,7 +59,7 @@ struct LiveActivityBarModel: Equatable {
 }
 
 enum LiveActivityBarIntent: Equatable {
-    case toggleMic, toggleCam, ping, end, answer, decline
+    case toggleMic, toggleCam, end, answer, decline
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill tapped: navigate to the owning thread.
     case open
@@ -155,7 +155,7 @@ final class LiveActivityBar: UIView {
         control(camButton, "video.slash.fill", "Camera", #selector(camTapped))
         control(declineButton, "phone.down.fill", "Decline", #selector(declineTapped))
         control(answerButton, "phone.fill", "Answer", #selector(answerTapped))
-        control(verbButton, "bell", "Ping", #selector(verbTapped))
+        control(verbButton, "phone.down.fill", "End", #selector(verbTapped))
         declineButton.configuration?.baseBackgroundColor = .systemRed
         answerButton.configuration?.baseBackgroundColor = .systemGreen
         // §6: End from the compact pill needs confirmation — a one-item
@@ -255,7 +255,7 @@ final class LiveActivityBar: UIView {
         verbButton.isHidden = incoming
         switch model.phase {
         case .idle:
-            setVerb("bell", "Ping", .tintColor)
+            verbButton.isHidden = true
         case .calling, .inCall, .incoming:
             // Icon only: the "End" label wrapped and broke the control row (#2).
             setVerb("phone.down.fill", "End", .systemRed, showsTitle: false)
@@ -306,7 +306,7 @@ final class LiveActivityBar: UIView {
     @objc private func openTapped() { onIntent?(.open) }
     @objc private func verbTapped() {
         switch model.phase {
-        case .idle: onIntent?(.ping)
+        case .idle: break
         case .calling, .inCall: onIntent?(.end)
         case .incoming: break
         }
