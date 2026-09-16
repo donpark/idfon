@@ -202,6 +202,11 @@ pub struct Operation {
     pub idempotency_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// Persisted outbound payload for restart recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound: Option<MessageEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<DeliveryPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
