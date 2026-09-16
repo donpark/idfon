@@ -14,17 +14,21 @@ mod live;
 mod mcp;
 
 use futures_util::StreamExt;
-use idfon_core::transport::{room_topic, FakeTransport, MessageTransport};
+use idfon_core::transport::{
+    room_topic, FakeTransport, MessageTransport, SideChannelGuard, SYNC_ALPN,
+};
 use idfon_media::service::MediaService;
 use idfon_protocol::{
     encode_json, validate_request, ApiError, ErrorCode, Identity, Request, Response, ResponseBody,
     PROTOCOL_VERSION,
 };
+use iroh::endpoint::Connection;
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use rusqlite::OptionalExtension;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
+    sync::mpsc,
 };
 
 const DEFAULT_TRANSPORT: &str = "iroh";
@@ -34,6 +38,7 @@ const EVENT_RETENTION: usize = 1000;
 // client's error path never advances its cursor). The client drains the rest
 // via its cursor on the next 1s poll.
 const COMPACT_EVENTS_MAX_BYTES: usize = 128 * 1024;
+static SYNC_GUARDS: OnceLock<Mutex<Vec<SideChannelGuard>>> = OnceLock::new();
 const MAX_RESOURCE_BYTES: usize = 512 * 1024;
 static MEDIA_SERVICE: OnceLock<MediaService> = OnceLock::new();
 struct GossipTopicHandle {
@@ -528,6 +533,7 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
     // as IDFON_IDLE_EXIT_SECS).
     for (identity, _) in &bound_keys {
         wire_identity(Arc::clone(&transport), Arc::clone(&store), identity.clone());
+        wire_sync_identity(Arc::clone(&transport), Arc::clone(&store), identity.clone()).await;
     }
     resume_pending_operations(Arc::clone(&store), Arc::clone(&transport));
     prepare_socket(&socket)?;
@@ -746,6 +752,97 @@ async fn serve(
         )
         .await?
     }
+}
+
+async fn wire_sync_identity(
+    transport: Arc<TransportMode>,
+    store: Arc<Mutex<Store>>,
+    identity: String,
+) {
+    let TransportMode::Iroh(manager) = transport.as_ref() else {
+        return;
+    };
+    let Some(endpoint) = manager.current(&identity).await else {
+        return;
+    };
+    let (tx, mut rx) = mpsc::channel::<Connection>(16);
+    let guard = endpoint.add_side_channel(SYNC_ALPN, tx);
+    SYNC_GUARDS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .expect("sync guards poisoned")
+        .push(guard);
+    tokio::spawn(async move {
+        while let Some(connection) = rx.recv().await {
+            let store = Arc::clone(&store);
+            let identity = identity.clone();
+            tokio::spawn(async move {
+                let result = async {
+                    let remote = connection.remote_id().to_string();
+                    let (mut send, mut recv) =
+                        connection.accept_bi().await.map_err(io::Error::other)?;
+                    let bytes = recv
+                        .read_to_end(1024 * 1024)
+                        .await
+                        .map_err(io::Error::other)?;
+                    let envelope: idfon_protocol::StateSyncEnvelope =
+                        serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+                    idfon_core::verify_state_sync(&envelope).map_err(io::Error::other)?;
+                    let accepted = {
+                        let state = store.lock().expect("store mutex poisoned");
+                        state.peers.iter().any(|peer| {
+                            peer.identity == identity
+                                && peer.id == envelope.account_id
+                                && peer.knows_endpoint(&remote)
+                        })
+                    };
+                    if !accepted {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "sync endpoint is not an enrolled account device",
+                        ));
+                    }
+                    let added = merge_state_events(&store, &envelope)?;
+                    let response = serde_json::to_vec(&serde_json::json!({"added": added}))
+                        .map_err(io::Error::other)?;
+                    send.write_all(&response).await.map_err(io::Error::other)?;
+                    send.finish().map_err(io::Error::other)?;
+                    Ok::<(), io::Error>(())
+                }
+                .await;
+                if let Err(error) = result {
+                    connection.close(1u32.into(), error.to_string().as_bytes());
+                }
+            });
+        }
+    });
+}
+
+fn merge_state_events(
+    store: &Arc<Mutex<Store>>,
+    envelope: &idfon_protocol::StateSyncEnvelope,
+) -> io::Result<usize> {
+    let mut state = store.lock().expect("store mutex poisoned");
+    let mut added = 0;
+    for event in &envelope.events {
+        if state
+            .events
+            .iter()
+            .any(|existing| existing.event_id == event.event_id)
+        {
+            continue;
+        }
+        apply_state_event(&mut state, event)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid state event"))?;
+        state.events.push(event.clone());
+        added += 1;
+    }
+    if added > 0 {
+        state.events.sort_by(|a, b| a.event_id.cmp(&b.event_id));
+    }
+    let data_dir = state.data_dir.clone();
+    state.save(&data_dir)?;
+    Ok(added)
 }
 
 fn resume_pending_operations(store: Arc<Mutex<Store>>, transport: Arc<TransportMode>) {
@@ -1108,6 +1205,7 @@ fn dispatch_with_transport(
         "operation.cancel" => operation_cancel(&request, store),
         "events" => events(&request, store),
         "events.export" => events_export(&request, store),
+        "events.sync" => events_sync(&request, store, transport),
         "events.merge" => events_merge(&request, store),
         "wait" => wait_event(&request, store),
         "contact.ticket" => contact_ticket(&request, store, transport),
@@ -5005,6 +5103,141 @@ fn compact_events(
     }
     payload[0..2].copy_from_slice(&(count as u16).to_be_bytes());
     payload
+}
+
+fn events_sync(
+    request: &Request,
+    store: &Arc<Mutex<Store>>,
+    transport: &Arc<TransportMode>,
+) -> Response {
+    let identity_ref =
+        request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let target = request_text(&request.params, "to");
+    let Some(target) = target else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "to is required".into(),
+            false,
+        );
+    };
+    let (identity, peer, envelope) = {
+        let state = store.lock().expect("store mutex poisoned");
+        let identity = identity_id_of(&state, &identity_ref);
+        let Some(identity_data) = state.identities.iter().find(|item| item.id == identity) else {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "identity not found".into(),
+                false,
+            );
+        };
+        let Some(peer) = state
+            .peers
+            .iter()
+            .find(|peer| {
+                peer.identity == identity
+                    && (peer.id == target || peer.name == target || peer.knows_endpoint(&target))
+            })
+            .cloned()
+        else {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "peer not found".into(),
+                false,
+            );
+        };
+        let Some(account_id) = identity_data.public_key.clone() else {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "identity has no account key".into(),
+                false,
+            );
+        };
+        let key = match state.identity_key(&identity) {
+            Ok(key) => key,
+            Err(error) => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::Internal,
+                    error.to_string(),
+                    false,
+                )
+            }
+        };
+        let events = state.events.clone();
+        let batch_id = format!("{}-{}", identity, events.len());
+        (
+            identity,
+            peer,
+            idfon_core::sign_state_sync(&key, account_id, batch_id, events),
+        )
+    };
+    let Some(address) = peer
+        .dial_targets()
+        .into_iter()
+        .next()
+        .map(|(_, address)| address)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer has no endpoint address".into(),
+            false,
+        );
+    };
+    let Some(endpoint) = transport.current_transport(&identity) else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "no transport for identity".into(),
+            false,
+        );
+    };
+    let result = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let runtime = tokio::runtime::Runtime::new().map_err(io::Error::other)?;
+                runtime.block_on(async {
+                    let target = serde_json::from_str(&address).map_err(io::Error::other)?;
+                    let (_connection, mut send, mut recv) = endpoint
+                        .open_bi_stream(&target, SYNC_ALPN)
+                        .await
+                        .map_err(io::Error::other)?;
+                    let bytes = serde_json::to_vec(&envelope).map_err(io::Error::other)?;
+                    send.write_all(&bytes).await.map_err(io::Error::other)?;
+                    send.finish().map_err(io::Error::other)?;
+                    recv.read_to_end(1024 * 1024)
+                        .await
+                        .map_err(io::Error::other)
+                })
+            })
+            .join()
+            .map_err(|_| io::Error::other("sync worker panicked"))
+    })
+    .and_then(|value| value);
+    match result {
+        Ok(bytes) => success(
+            request,
+            serde_json::json!({"synced": true, "response": serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_default()}),
+        ),
+        Err(error) => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        ),
+    }
 }
 
 fn events_export(request: &Request, store: &Arc<Mutex<Store>>) -> Response {

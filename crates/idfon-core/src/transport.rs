@@ -22,6 +22,7 @@ use iroh_gossip::{api::GossipTopic, Gossip, TopicId};
 use thiserror::Error;
 
 pub const MESSAGE_ALPN: &[u8] = b"idfon/message/1";
+pub const SYNC_ALPN: &[u8] = b"idfon/sync/1";
 
 /// A gossip service attached to an existing Iroh message endpoint. Gossip is
 /// only a dissemination path; callers still validate the signed envelope and
