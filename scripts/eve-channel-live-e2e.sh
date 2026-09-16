@@ -110,7 +110,7 @@ cat >"$app/package.json" <<EOF
   "type": "module",
   "dependencies": {
     "eve": "0.55.0",
-    "@idfon/eve-channel": "file:$integration"
+    "idfon-eve-channel": "file:$integration"
   }
 }
 EOF

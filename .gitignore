@@ -15,6 +15,10 @@ geo-timings.json
 cli/idfon-*/bin/
 # generated copies of the root license files
 cli/idfon-*/LICENSE-*
+
+# eve channel platform packages: built by scripts/build-eve-channel.sh
+integrations/idfon-eve-channel-*/bin/
+integrations/idfon-eve-channel-*/LICENSE-*
 # local agent/tooling state — not repo content
 .pi/
 .agents/

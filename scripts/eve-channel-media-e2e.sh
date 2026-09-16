@@ -73,7 +73,7 @@ cat > "$app/package.json" <<EOF
   "dependencies": {
     "eve": "0.55.0",
     "just-bash": "^3.4.2",
-    "@idfon/eve-channel": "file:$integration"
+    "idfon-eve-channel": "file:$integration"
   }
 }
 EOF
