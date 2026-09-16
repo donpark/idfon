@@ -1,9 +1,8 @@
 # Native App Shells: Platform Plan
 
 Status: iOS and macOS shells are implemented through text, voice messages,
-and live audio/video UI; the iOS↔Eve text-agent demo is tracked in
-[issue #11](https://github.com/donpark/idfon/issues/11). Android and
-Windows/Linux remain deferred.
+and live audio/video UI; the iOS ↔ Eve text-agent demo is complete and
+validated on a physical iPhone. Android and Windows/Linux remain deferred.
 
 ## Strategy
 

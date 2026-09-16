@@ -2,7 +2,7 @@
 
 > **Status:** M0–M5 agent messaging, M4 HITL/status flows, and M3 files-in,
 > files-out, live audio, and live video are implemented. Remaining operational
-> work, including the iOS text-agent demo, is tracked in [issue #11](https://github.com/donpark/idfon/issues/11).
+> work, including the validated iOS text-agent demo, is documented in `docs/ios-architecture.md`.
 > Design: MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5,
 > implemented). Prototyping stage: no legacy or migration constraints. Eve
 > channel contract as of 2026-09-14 (`defineChannel`, routes/events,
@@ -354,8 +354,8 @@ The remaining work is now operational rather than a missing milestone:
   entrypoint today.
 - Add capture-device and voice negotiation support if the product needs live
   microphone/camera input; file-backed audio/video output is covered.
-- Complete the iOS text-agent demo ticket plumbing and manual E2E in
-  [issue #11](https://github.com/donpark/idfon/issues/11).
+- Keep the validated iOS text-agent path covered by device E2E when changing
+  ticket handling or message persistence.
 
 ## Later (do not start)
 

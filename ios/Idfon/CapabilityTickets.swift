@@ -12,7 +12,7 @@ import Foundation
 /// `idfon-eve-channel ticket --subject <ios-peer-id>` prints the JSON, and
 /// `-pair-ticket <agent-peer-id> <json|file>` (AppDelegate) stores it here,
 /// keyed by the peer id that `sendText` passes as `to` (the `id` field of the
-/// `-pair` EndpointAddr JSON). See docs/ios-architecture.md and idfon/idfon#11.
+/// `-pair` EndpointAddr JSON). See docs/ios-architecture.md.
 enum CapabilityTickets {
     private static let defaultsKey = "idfon.capabilityTickets"
 

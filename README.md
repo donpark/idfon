@@ -7,7 +7,8 @@ use direct paths, discovery, or relays supplied by iroh.
 
 > **Status:** experimental and pre-release. The CLI is available as an npm
 > package. Native clients are usable for development; the iOS ↔ Eve text-agent
-> demo remains an integration follow-up tracked in [issue #11](https://github.com/donpark/idfon/issues/11).
+> demo is validated end to end on a physical iPhone. Voice/STT/TTS remains a
+> separate follow-up.
 
 ## CLI installation
 
