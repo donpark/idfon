@@ -1107,6 +1107,7 @@ fn dispatch_with_transport(
         "operation.wait" => operation_wait(&request, store),
         "operation.cancel" => operation_cancel(&request, store),
         "events" => events(&request, store),
+        "events.export" => events_export(&request, store),
         "events.merge" => events_merge(&request, store),
         "wait" => wait_event(&request, store),
         "contact.ticket" => contact_ticket(&request, store, transport),
@@ -5006,33 +5007,93 @@ fn compact_events(
     payload
 }
 
-fn events_merge(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
-    let Some(values) = request
-        .params
-        .get("events")
-        .and_then(serde_json::Value::as_array)
+fn events_export(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let identity_ref =
+        request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let after = request_text(&request.params, "after");
+    let state = store.lock().expect("store mutex poisoned");
+    let identity_id = identity_id_of(&state, &identity_ref);
+    let Some(account_id) = state
+        .identities
+        .iter()
+        .find(|item| item.id == identity_id)
+        .and_then(|item| item.public_key.clone())
     else {
         return error_response(
             request.id.clone(),
             &request.method,
             ErrorCode::InvalidRequest,
-            "events must be an array".into(),
+            "identity has no account key".into(),
             false,
         );
     };
-    let incoming = values
+    let events = state
+        .events
         .iter()
-        .filter_map(|value| serde_json::from_value::<idfon_protocol::Event>(value.clone()).ok())
+        .filter(|event| {
+            after
+                .as_deref()
+                .is_none_or(|cursor| event.cursor.as_str() > cursor)
+        })
+        .cloned()
         .collect::<Vec<_>>();
-    if incoming.len() != values.len() {
+    let key = match state.identity_key(&identity_id) {
+        Ok(key) => key,
+        Err(error) => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::Internal,
+                error.to_string(),
+                false,
+            )
+        }
+    };
+    let envelope = idfon_core::sign_state_sync(
+        &key,
+        account_id,
+        format!("{identity_id}-{}", state.events.len()),
+        events,
+    );
+    success(
+        request,
+        serde_json::to_value(envelope).expect("sync envelope serializes"),
+    )
+}
+
+fn events_merge(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(value) = request.params.get("envelope") else {
         return error_response(
             request.id.clone(),
             &request.method,
             ErrorCode::InvalidRequest,
-            "events contains an invalid event".into(),
+            "envelope is required".into(),
+            false,
+        );
+    };
+    let envelope = match serde_json::from_value::<idfon_protocol::StateSyncEnvelope>(value.clone())
+    {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                format!("invalid sync envelope: {error}"),
+                false,
+            )
+        }
+    };
+    if let Err(error) = idfon_core::verify_state_sync(&envelope) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Unauthorized,
+            error.to_string(),
             false,
         );
     }
+    let incoming = envelope.events;
     let mut state = store.lock().expect("store mutex poisoned");
     let mut added = 0usize;
     for event in incoming {
@@ -6316,19 +6377,26 @@ mod tests {
             aliases: Vec::new(),
             call_mode: Default::default(),
         };
-        let event = serde_json::json!({
-            "event_id": "peer-event-1",
-            "cursor": "remote-1",
-            "type": "peer.created",
-            "timestamp": "1",
-            "identity": "default",
-            "data": {"peer": peer}
-        });
+        let event = idfon_protocol::Event {
+            event_id: "peer-event-1".into(),
+            cursor: "remote-1".into(),
+            r#type: "peer.created".into(),
+            timestamp: "1".into(),
+            identity: "default".into(),
+            data: serde_json::json!({"peer": peer}),
+        };
+        let key = idfon_core::generate_identity();
+        let envelope = idfon_core::sign_state_sync(
+            &key,
+            idfon_core::peer_id(&key),
+            "batch-1".into(),
+            vec![event],
+        );
         let request = || Request {
             version: PROTOCOL_VERSION,
             id: "merge".into(),
             method: "events.merge".into(),
-            params: serde_json::json!({"events": [event.clone()]}),
+            params: serde_json::json!({"envelope": envelope}),
         };
         assert!(dispatch(request(), &store).ok);
         assert!(dispatch(request(), &store).ok);
