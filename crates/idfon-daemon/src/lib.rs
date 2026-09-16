@@ -1107,6 +1107,7 @@ fn dispatch_with_transport(
         "operation.wait" => operation_wait(&request, store),
         "operation.cancel" => operation_cancel(&request, store),
         "events" => events(&request, store),
+        "events.merge" => events_merge(&request, store),
         "wait" => wait_event(&request, store),
         "contact.ticket" => contact_ticket(&request, store, transport),
         "status" | "context" => {
@@ -4309,6 +4310,12 @@ fn peer_add(
         .peers
         .retain(|candidate| !(candidate.identity == peer.identity && candidate.id == peer.id));
     state.peers.push(peer.clone());
+    record_state_event(
+        &mut state,
+        &peer.identity,
+        "peer.created",
+        serde_json::json!({"peer": peer}),
+    );
     if let Some(discover) = contact.and_then(|contact| contact.discover) {
         state
             .mcp_discovery
@@ -4504,6 +4511,12 @@ fn peer_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         peer.call_mode = call_mode;
     }
     let updated = peer.clone();
+    record_state_event(
+        &mut state,
+        &updated.identity,
+        "peer.updated",
+        serde_json::json!({"peer": updated}),
+    );
     let data_dir = state.data_dir.clone();
     if let Err(error) = state.save(&data_dir) {
         return error_response(
@@ -4614,6 +4627,12 @@ fn peer_device_add(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     }
     peer.devices.push(device);
     let updated = peer.clone();
+    record_state_event(
+        &mut state,
+        &updated.identity,
+        "peer.device_added",
+        serde_json::json!({"peer": updated}),
+    );
     let data_dir = state.data_dir.clone();
     if let Err(error) = state.save(&data_dir) {
         return error_response(
@@ -4689,6 +4708,12 @@ fn peer_device_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
     };
     *device = replacement;
     let updated = peer.clone();
+    record_state_event(
+        &mut state,
+        &updated.identity,
+        "peer.device_updated",
+        serde_json::json!({"peer": updated}),
+    );
     let data_dir = state.data_dir.clone();
     if let Err(error) = state.save(&data_dir) {
         return error_response(
@@ -4780,6 +4805,16 @@ fn peer_remove(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let mut state = store.lock().expect("store mutex poisoned");
     let before = state.peers.len();
+    let removed = state
+        .peers
+        .iter()
+        .find(|peer| {
+            peer.identity == identity
+                && (peer.id == reference
+                    || peer.name == reference
+                    || peer.aliases.iter().any(|alias| alias == reference))
+        })
+        .cloned();
     state.peers.retain(|peer| {
         !(peer.identity == identity
             && (peer.id == reference
@@ -4793,6 +4828,14 @@ fn peer_remove(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             ErrorCode::InvalidRequest,
             "peer not found".into(),
             false,
+        );
+    }
+    if let Some(peer) = removed {
+        record_state_event(
+            &mut state,
+            &identity,
+            "peer.removed",
+            serde_json::json!({"peer": peer}),
         );
     }
     let data_dir = state.data_dir.clone();
@@ -4961,6 +5004,171 @@ fn compact_events(
     }
     payload[0..2].copy_from_slice(&(count as u16).to_be_bytes());
     payload
+}
+
+fn events_merge(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(values) = request
+        .params
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "events must be an array".into(),
+            false,
+        );
+    };
+    let incoming = values
+        .iter()
+        .filter_map(|value| serde_json::from_value::<idfon_protocol::Event>(value.clone()).ok())
+        .collect::<Vec<_>>();
+    if incoming.len() != values.len() {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "events contains an invalid event".into(),
+            false,
+        );
+    }
+    let mut state = store.lock().expect("store mutex poisoned");
+    let mut added = 0usize;
+    for event in incoming {
+        if state
+            .events
+            .iter()
+            .any(|existing| existing.event_id == event.event_id)
+        {
+            continue;
+        }
+        if let Err(response) = apply_state_event(&mut state, &event) {
+            return response;
+        }
+        state.events.push(event);
+        added += 1;
+    }
+    state.events.sort_by(|a, b| a.event_id.cmp(&b.event_id));
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(
+        request,
+        serde_json::json!({"added": added, "total": state.events.len()}),
+    )
+}
+
+fn apply_state_event(state: &mut Store, event: &idfon_protocol::Event) -> Result<(), Response> {
+    let payload = &event.data;
+    match event.r#type.as_str() {
+        "identity.created" => {
+            let identity: Identity =
+                serde_json::from_value(payload["identity"].clone()).map_err(|_| {
+                    error_response(
+                        "merge".into(),
+                        "events.merge",
+                        ErrorCode::InvalidRequest,
+                        "invalid identity event".into(),
+                        false,
+                    )
+                })?;
+            if !state.identities.iter().any(|item| item.id == identity.id) {
+                state.identities.push(identity);
+            }
+        }
+        "peer.created"
+        | "peer.updated"
+        | "peer.device_added"
+        | "peer.device_updated"
+        | "peer.device_removed" => {
+            let peer: idfon_protocol::Peer = serde_json::from_value(payload["peer"].clone())
+                .map_err(|_| {
+                    error_response(
+                        "merge".into(),
+                        "events.merge",
+                        ErrorCode::InvalidRequest,
+                        "invalid peer event".into(),
+                        false,
+                    )
+                })?;
+            state
+                .peers
+                .retain(|item| !(item.identity == peer.identity && item.id == peer.id));
+            state.peers.push(peer);
+        }
+        "peer.removed" => {
+            let peer: idfon_protocol::Peer = serde_json::from_value(payload["peer"].clone())
+                .map_err(|_| {
+                    error_response(
+                        "merge".into(),
+                        "events.merge",
+                        ErrorCode::InvalidRequest,
+                        "invalid peer event".into(),
+                        false,
+                    )
+                })?;
+            state
+                .peers
+                .retain(|item| !(item.identity == peer.identity && item.id == peer.id));
+        }
+        "grant.created" => {
+            let grant: idfon_protocol::CapabilityGrant =
+                serde_json::from_value(payload["grant"].clone()).map_err(|_| {
+                    error_response(
+                        "merge".into(),
+                        "events.merge",
+                        ErrorCode::InvalidRequest,
+                        "invalid grant event".into(),
+                        false,
+                    )
+                })?;
+            if !state.grants.iter().any(|item| {
+                item.identity == grant.identity
+                    && item.subject == grant.subject
+                    && item.capability == grant.capability
+                    && item.conversation == grant.conversation
+            }) {
+                state.grants.push(grant);
+            }
+        }
+        "room.created" => {
+            let room: idfon_protocol::Room = serde_json::from_value(payload["room"].clone())
+                .map_err(|_| {
+                    error_response(
+                        "merge".into(),
+                        "events.merge",
+                        ErrorCode::InvalidRequest,
+                        "invalid room event".into(),
+                        false,
+                    )
+                })?;
+            if !state
+                .rooms
+                .iter()
+                .any(|item| item.identity == room.identity && item.id == room.id)
+            {
+                state.rooms.push(room);
+            }
+        }
+        _ => {
+            return Err(error_response(
+                "merge".into(),
+                "events.merge",
+                ErrorCode::InvalidRequest,
+                format!("unsupported state event: {}", event.r#type),
+                false,
+            ))
+        }
+    }
+    Ok(())
 }
 
 fn events(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
@@ -6091,6 +6299,40 @@ mod tests {
                 ..
             }
         ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn events_merge_applies_peer_snapshot_and_deduplicates() {
+        let dir = temp_dir("events-merge");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let peer = idfon_protocol::Peer {
+            id: "alice".into(),
+            identity: "default".into(),
+            name: "Alice".into(),
+            endpoint_id: Some("alice-phone".into()),
+            endpoint_addr: Some("{\"id\":\"alice-phone\"}".into()),
+            devices: Vec::new(),
+            aliases: Vec::new(),
+            call_mode: Default::default(),
+        };
+        let event = serde_json::json!({
+            "event_id": "peer-event-1",
+            "cursor": "remote-1",
+            "type": "peer.created",
+            "timestamp": "1",
+            "identity": "default",
+            "data": {"peer": peer}
+        });
+        let request = || Request {
+            version: PROTOCOL_VERSION,
+            id: "merge".into(),
+            method: "events.merge".into(),
+            params: serde_json::json!({"events": [event.clone()]}),
+        };
+        assert!(dispatch(request(), &store).ok);
+        assert!(dispatch(request(), &store).ok);
+        assert_eq!(store.lock().unwrap().peers.len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
