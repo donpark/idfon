@@ -1,11 +1,39 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const bridge = resolve(here, "bridge.mjs");
+const require = createRequire(import.meta.url);
+
+// The holder ships as per-platform packages (optional dependencies of this
+// package), mirroring cli/idfon. --holder-command / IDFON_EVE_CHANNEL_HOLDER
+// override the lookup.
+const holderPackages = {
+  "darwin-arm64": "idfon-eve-channel-darwin-arm64",
+  "darwin-x64": "idfon-eve-channel-darwin-x64",
+  "linux-arm64": "idfon-eve-channel-linux-arm64",
+  "linux-x64": "idfon-eve-channel-linux-x64",
+  // ponytail: no win32 — the holder IPC is a Unix socket; add a named-pipe
+  // transport to idfon-client first, then an idfon-eve-channel-win32-x64 pkg.
+};
+
+function resolveHolder() {
+  const pkg = holderPackages[`${process.platform}-${process.arch}`];
+  if (!pkg) return undefined;
+  let dir;
+  try {
+    dir = dirname(require.resolve(`${pkg}/package.json`));
+  } catch {
+    // Repo-layout fallback: platform packages sitting at integrations/* from
+    // scripts/build-eve-channel.sh (no node_modules install).
+    dir = resolve(here, "..", pkg);
+  }
+  return resolve(dir, "bin", "idfon-eve-channel");
+}
 const args = process.argv.slice(2);
 const values = new Map();
 const allows = [];
@@ -16,7 +44,8 @@ for (let i = 0; i < args.length; i += 1) {
   else usage(`unexpected argument ${key}`);
 }
 
-const holderCommand = values.get("--holder-command") || process.env.IDFON_EVE_CHANNEL_HOLDER;
+const holderCommand =
+  values.get("--holder-command") || process.env.IDFON_EVE_CHANNEL_HOLDER || resolveHolder();
 const target = values.get("--target");
 const secret = values.get("--secret");
 const socket = values.get("--socket");
@@ -25,7 +54,15 @@ const blobDir = values.get("--blob-dir") || resolve(dirname(socket || "."), "blo
 const port = Number(values.get("--port"));
 const liveTtlSecs = Number(values.get("--live-ttl-secs") || 3600);
 if (!holderCommand || !target || !secret || !socket || !keyFile || !Number.isInteger(port) || port < 1 || port > 65535) {
-  usage("--holder-command, --target, --secret, --socket, --key-file, and --port are required");
+  usage(
+    `--target, --secret, --socket, --key-file, and --port are required, and a` +
+      ` holder binary must be available for ${process.platform}-${process.arch}` +
+      " (via --holder-command, IDFON_EVE_CHANNEL_HOLDER, or a platform package)"
+  );
+}
+if (!existsSync(holderCommand)) {
+  usage(`holder binary not found at ${holderCommand}` +
+    " — pass --holder-command or install the idfon-eve-channel platform package for this system");
 }
 if (!Number.isInteger(liveTtlSecs) || liveTtlSecs < 1) usage("--live-ttl-secs must be a positive integer");
 const targetUrl = new URL(target);
@@ -35,7 +72,7 @@ if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(targetUrl.hostname)) {
 
 function usage(error) {
   if (error) console.error(`idfon-eve-channel managed: ${error}`);
-  console.error("usage: managed.mjs --holder-command PATH --target URL --secret VALUE --socket PATH --key-file FILE --port PORT [--blob-dir PATH] [--allow PEER_ID]...");
+  console.error("usage: managed.mjs [--holder-command PATH] --target URL --secret VALUE --socket PATH --key-file FILE --port PORT [--blob-dir PATH] [--allow PEER_ID]...");
   process.exit(2);
 }
 

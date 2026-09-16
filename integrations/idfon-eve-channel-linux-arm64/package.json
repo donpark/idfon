@@ -1,0 +1,22 @@
+{
+  "name": "idfon-eve-channel-linux-arm64",
+  "version": "0.5.0",
+  "description": "Prebuilt idfon Eve channel endpoint holder for Linux arm64.",
+  "license": "(MIT OR Apache-2.0)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/donpark/idfon.git",
+    "directory": "integrations/idfon-eve-channel-linux-arm64"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "bin"
+  ]
+}

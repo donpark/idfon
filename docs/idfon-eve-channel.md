@@ -312,6 +312,22 @@ documented `defineChannel` surfaces, and the endpoint is the provider's
 "platform client". The in-process shape is therefore **not** a contract
 violation — the real cost is lifecycle, not legitimacy.
 
+### npm distribution
+
+The provider publishes as the unscoped **`idfon-eve-channel`** package (the
+`@idfon` org is not registered), and its version tracks the Cargo workspace
+until 1.0. The extension itself is plain TypeScript built by
+`eve extension build` in `prepare`; the Rust holder ships separately as
+per-platform packages `idfon-eve-channel-{darwin,linux}-{arm64,x64}` listed as
+`optionalDependencies`, mirroring `cli/idfon`. `managed.mjs` (the package's
+`bin`) resolves the holder from the installed platform package, with
+`integrations/<pkg>` as a repo-layout fallback; `--holder-command` and
+`IDFON_EVE_CHANNEL_HOLDER` override it. `scripts/build-eve-channel.sh [TARGET]`
+populates a platform package (its `bin/` and generated `LICENSE-*` are
+gitignored, as with `cli/idfon-*`). No Windows package: the holder IPC is a
+Unix socket. Still open: the CI build/publish workflow, a publish script, and
+a version-sync guard across the Cargo workspace, `cli/idfon`, and this package.
+
 ## The endpoint holder reuses the MCP bridge pattern
 
 `crates/idfon-mcp` is the seed. It already owns an endpoint with

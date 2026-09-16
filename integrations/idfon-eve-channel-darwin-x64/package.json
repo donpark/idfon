@@ -1,0 +1,22 @@
+{
+  "name": "idfon-eve-channel-darwin-x64",
+  "version": "0.5.0",
+  "description": "Prebuilt idfon Eve channel endpoint holder for macOS x64.",
+  "license": "(MIT OR Apache-2.0)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/donpark/idfon.git",
+    "directory": "integrations/idfon-eve-channel-darwin-x64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "bin"
+  ]
+}

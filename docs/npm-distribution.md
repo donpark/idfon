@@ -78,3 +78,14 @@ and the launcher then errors at first command).
 Launch gate: the repo goes public first; `npm view idfon` confirmed the name
 free (2026-09-06). Platform packages use the same version as the Cargo
 workspace — bump in lockstep (currently 0.5.0).
+
+## The Eve channel package
+
+`integrations/eve-idfon-channel` (unscoped **`idfon-eve-channel`**) reuses the
+same model for the Rust **endpoint holder** binary: platform packages
+`idfon-eve-channel-{darwin,linux}-{arm64,x64}` as `optionalDependencies`,
+populated by `scripts/build-eve-channel.sh [TARGET]` and resolved by
+`managed.mjs` (the package's `bin`) with `--holder-command` as the override.
+The Eve extension is plain JS built by `eve extension build` in `prepare`, and
+the package version tracks the Cargo workspace until 1.0. No Windows package —
+the holder IPC is a Unix socket. CI build/publish is not wired yet.
