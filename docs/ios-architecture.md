@@ -123,9 +123,9 @@ ticket is provisioned out of band and attached to outbound turns:
    ticket and keep using local grants, so the ordinary text path is unchanged.
 
 The reply direction needs no ticket: `-pair` grants `message.receive` locally,
-which satisfies the daemon's inbound gate for the agent's peer id. What remains
-is the manual simulator/device E2E in
-[idfon/idfon#11](https://github.com/donpark/idfon/issues/11).
+which satisfies the daemon's inbound gate for the agent's peer id. The text
+path is validated end to end on a physical iPhone, including restart persistence.
+Voice/STT/TTS remains separate from this text path.
 
 `ios/Checks/CapabilityTicketCheck` covers the ticket round-trip (including the
 `expires_at: null` that must survive encoding) on the host:
