@@ -219,6 +219,17 @@ pub struct Event {
     pub data: serde_json::Value,
 }
 
+/// Account-authenticated state-sync batch. The signature covers every field
+/// except `signature`; endpoint authentication remains a separate transport
+/// concern.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StateSyncEnvelope {
+    pub account_id: String,
+    pub batch_id: String,
+    pub events: Vec<Event>,
+    pub signature: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Identity {
     pub id: String,

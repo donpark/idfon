@@ -151,6 +151,45 @@ fn ticket_unsigned(ticket: &CapabilityTicket) -> serde_json::Value {
     serde_json::json!({"issuer":ticket.issuer,"subject":ticket.subject,"conversation":ticket.conversation,"capabilities":ticket.capabilities,"expires_at":ticket.expires_at,"ticket_id":ticket.ticket_id})
 }
 
+pub fn sign_state_sync(
+    key: &SigningKey,
+    account_id: String,
+    batch_id: String,
+    events: Vec<idfon_protocol::Event>,
+) -> idfon_protocol::StateSyncEnvelope {
+    let mut envelope = idfon_protocol::StateSyncEnvelope {
+        account_id,
+        batch_id,
+        events,
+        signature: String::new(),
+    };
+    envelope.signature = encode_hex(&key.sign(&state_sync_bytes(&envelope)).to_bytes());
+    envelope
+}
+
+pub fn verify_state_sync(envelope: &idfon_protocol::StateSyncEnvelope) -> Result<(), AuthError> {
+    let public = decode_fixed::<32>(&envelope.account_id).ok_or(AuthError::InvalidPeerId)?;
+    let key = VerifyingKey::from_bytes(&public).map_err(|_| AuthError::InvalidPeerId)?;
+    let signature = decode_fixed::<64>(&envelope.signature)
+        .ok_or(AuthError::InvalidSignature)
+        .and_then(|bytes| {
+            Signature::from_bytes(&bytes)
+                .try_into()
+                .map_err(|_| AuthError::InvalidSignature)
+        })?;
+    key.verify(&state_sync_bytes(envelope), &signature)
+        .map_err(|_| AuthError::VerificationFailed)
+}
+
+fn state_sync_bytes(envelope: &idfon_protocol::StateSyncEnvelope) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "account_id": envelope.account_id,
+        "batch_id": envelope.batch_id,
+        "events": envelope.events,
+    }))
+    .expect("state sync serialization")
+}
+
 pub fn verify_message(message: &MessageEnvelope) -> Result<(), AuthError> {
     let public = decode_fixed::<32>(&message.sender.peer_id).ok_or(AuthError::InvalidPeerId)?;
     let verifying_key = VerifyingKey::from_bytes(&public).map_err(|_| AuthError::InvalidPeerId)?;
@@ -259,6 +298,26 @@ mod tests {
         ticket.ticket_id = "ticket-2".into();
         assert_eq!(
             verify_capability_ticket(&ticket),
+            Err(AuthError::VerificationFailed)
+        );
+    }
+
+    #[test]
+    fn state_sync_signature_covers_batch_and_events() {
+        let key = generate_identity();
+        let event = idfon_protocol::Event {
+            event_id: "event-1".into(),
+            cursor: "cursor-1".into(),
+            r#type: "peer.created".into(),
+            timestamp: "1".into(),
+            identity: "default".into(),
+            data: serde_json::json!({"peer_id": "alice"}),
+        };
+        let mut envelope = sign_state_sync(&key, peer_id(&key), "batch-1".into(), vec![event]);
+        assert_eq!(verify_state_sync(&envelope), Ok(()));
+        envelope.batch_id = "batch-2".into();
+        assert_eq!(
+            verify_state_sync(&envelope),
             Err(AuthError::VerificationFailed)
         );
     }
