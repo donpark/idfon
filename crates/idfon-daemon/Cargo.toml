@@ -4,6 +4,10 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 
+[features]
+default = []
+linux-vaapi = ["idfon-media/linux-vaapi"]
+
 [dependencies]
 anyhow = "1"
 blake3 = "1"

@@ -79,7 +79,7 @@ default = ["linux-vaapi"]
 # Enable Linux hardware H.264 encoding. The CLI release disables this because
 # GitHub's Ubuntu runners have incompatible libva headers; native Linux builds
 # keep it enabled by default.
-linux-vaapi = ["iroh-live/vaapi"]
+linux-vaapi = ["iroh-live/vaapi", "idfon-daemon/linux-vaapi"]
 # generate headers
 headers = ["safer-ffi/headers"]
 
