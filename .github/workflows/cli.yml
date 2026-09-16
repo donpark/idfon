@@ -48,10 +48,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # cpal → ALSA only since the capture feature is off (no pipewire dep).
-      # alsa-sys needs libasound2 headers + pkg-config to link.
-      - name: Install audio dev libs (Linux)
+      # The Linux VAAPI encoder also needs libva headers and pkg-config metadata.
+      - name: Install audio/video dev libs (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libva-dev pkg-config
       # x86_64 binaries run under Rosetta on the arm64 runner (smoke test).
       - name: Install Rosetta (darwin-x64 cross)
         if: matrix.target == 'x86_64-apple-darwin'
