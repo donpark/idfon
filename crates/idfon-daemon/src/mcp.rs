@@ -98,9 +98,7 @@ fn inbound_allowed(store: &Arc<Mutex<Store>>, identity: &str, remote_endpoint_id
     let subject = state
         .peers
         .iter()
-        .find(|peer| {
-            peer.identity == identity && peer.endpoint_id.as_deref() == Some(remote_endpoint_id)
-        })
+        .find(|peer| peer.identity == identity && peer.knows_endpoint(remote_endpoint_id))
         .map(|peer| peer.id.clone());
     subject.is_some_and(|subject| has_grant(&state, identity, &subject, &Capability::McpTransport))
 }
@@ -129,7 +127,7 @@ pub fn listen(
             peer.identity == identity
                 && (peer.id == reference
                     || peer.name == reference
-                    || peer.endpoint_id.as_deref() == Some(reference.as_str())
+                    || peer.knows_endpoint(&reference)
                     || peer.aliases.iter().any(|alias| alias == &reference))
         }) else {
             return error_response(

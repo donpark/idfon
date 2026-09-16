@@ -34,6 +34,9 @@ enum DaemonBootstrap {
         // sandbox): point NATIVE_SDK_APP_DATA_DIR at the sandbox tmp so
         // video-frame.jpg / received.wav land somewhere writable.
         setenv("NATIVE_SDK_APP_DATA_DIR", dataDir, 1)
+        // Bind only the active identity's endpoint; idle ones die on
+        // background anyway, and `identity.use` binds on demand.
+        setenv("IDFON_LAZY_IDENTITIES", "1", 1)
         iroh_enable_tracing()
         let thread = Thread {
             let result = idfon_daemon_run(socket, dataDir, nil)

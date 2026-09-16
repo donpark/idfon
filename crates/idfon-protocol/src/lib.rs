@@ -234,6 +234,18 @@ pub enum IncomingCallMode {
     CallKit,
 }
 
+/// One device endpoint of a peer's account. `Peer::endpoint_id`/`endpoint_addr`
+/// stay the primary (legacy) device; `devices` are the additional devices a
+/// multi-device account is reachable on.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerDevice {
+    pub endpoint_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Peer {
     pub id: String,
@@ -243,9 +255,55 @@ pub struct Peer {
     pub endpoint_id: Option<String>,
     #[serde(default)]
     pub endpoint_addr: Option<String>,
+    /// Additional device endpoints beyond the primary pair above. Empty for
+    /// single-device peers (every peer before multi-device enrollment).
+    #[serde(default)]
+    pub devices: Vec<PeerDevice>,
     pub aliases: Vec<String>,
     #[serde(default)]
     pub call_mode: IncomingCallMode,
+}
+
+impl Peer {
+    /// Every dialable `(endpoint_id, endpoint_addr JSON)` for this peer: the
+    /// primary pair first, then `devices`, deduped by endpoint id. Entries
+    /// without an address are skipped.
+    pub fn dial_targets(&self) -> Vec<(String, String)> {
+        fn add(
+            targets: &mut Vec<(String, String)>,
+            endpoint_id: Option<&str>,
+            endpoint_addr: Option<&str>,
+        ) {
+            if let (Some(endpoint_id), Some(endpoint_addr)) = (endpoint_id, endpoint_addr) {
+                if !targets.iter().any(|(known, _)| known == endpoint_id) {
+                    targets.push((endpoint_id.to_string(), endpoint_addr.to_string()));
+                }
+            }
+        }
+        let mut targets = Vec::new();
+        add(
+            &mut targets,
+            self.endpoint_id.as_deref(),
+            self.endpoint_addr.as_deref(),
+        );
+        for device in &self.devices {
+            add(
+                &mut targets,
+                Some(device.endpoint_id.as_str()),
+                device.endpoint_addr.as_deref(),
+            );
+        }
+        targets
+    }
+
+    /// Whether `endpoint_id` is one of this peer's devices (primary or extra).
+    pub fn knows_endpoint(&self, endpoint_id: &str) -> bool {
+        self.endpoint_id.as_deref() == Some(endpoint_id)
+            || self
+                .devices
+                .iter()
+                .any(|device| device.endpoint_id == endpoint_id)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
