@@ -368,6 +368,8 @@ impl Peer {
 pub struct CapabilityTicket {
     pub issuer: String,
     pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
     pub capabilities: Vec<Capability>,
     pub expires_at: Option<String>,
     pub ticket_id: String,

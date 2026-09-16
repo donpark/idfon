@@ -52,7 +52,15 @@ pub fn sign_message(
     idempotency_key: impl Into<String>,
     conversation: Option<String>,
 ) -> Result<MessageEnvelope, AuthError> {
-    sign_message_with_ticket(key, endpoint_id, message_id, content, idempotency_key, conversation, None)
+    sign_message_with_ticket(
+        key,
+        endpoint_id,
+        message_id,
+        content,
+        idempotency_key,
+        conversation,
+        None,
+    )
 }
 
 pub fn sign_message_with_ticket(
@@ -87,9 +95,44 @@ pub fn sign_message_with_ticket(
     })
 }
 
-pub fn issue_capability_ticket(key: &SigningKey, subject: Option<String>, capabilities: Vec<Capability>, expires_at: Option<String>, ticket_id: impl Into<String>) -> CapabilityTicket {
-    let mut ticket = CapabilityTicket { issuer: peer_id(key), subject, capabilities, expires_at, ticket_id: ticket_id.into(), signature: String::new() };
-    ticket.signature = encode_hex(&key.sign(&serde_json::to_vec(&ticket_unsigned(&ticket)).unwrap()).to_bytes());
+pub fn issue_capability_ticket(
+    key: &SigningKey,
+    subject: Option<String>,
+    capabilities: Vec<Capability>,
+    expires_at: Option<String>,
+    ticket_id: impl Into<String>,
+) -> CapabilityTicket {
+    issue_capability_ticket_for_conversation(
+        key,
+        subject,
+        None,
+        capabilities,
+        expires_at,
+        ticket_id,
+    )
+}
+
+pub fn issue_capability_ticket_for_conversation(
+    key: &SigningKey,
+    subject: Option<String>,
+    conversation: Option<String>,
+    capabilities: Vec<Capability>,
+    expires_at: Option<String>,
+    ticket_id: impl Into<String>,
+) -> CapabilityTicket {
+    let mut ticket = CapabilityTicket {
+        issuer: peer_id(key),
+        subject,
+        conversation,
+        capabilities,
+        expires_at,
+        ticket_id: ticket_id.into(),
+        signature: String::new(),
+    };
+    ticket.signature = encode_hex(
+        &key.sign(&serde_json::to_vec(&ticket_unsigned(&ticket)).unwrap())
+            .to_bytes(),
+    );
     ticket
 }
 
@@ -97,11 +140,15 @@ pub fn verify_capability_ticket(ticket: &CapabilityTicket) -> Result<(), AuthErr
     let public = decode_fixed::<32>(&ticket.issuer).ok_or(AuthError::InvalidPeerId)?;
     let key = VerifyingKey::from_bytes(&public).map_err(|_| AuthError::InvalidPeerId)?;
     let sig = decode_fixed::<64>(&ticket.signature).ok_or(AuthError::InvalidSignature)?;
-    key.verify(&serde_json::to_vec(&ticket_unsigned(ticket)).map_err(|_| AuthError::Serialization)?, &Signature::from_bytes(&sig)).map_err(|_| AuthError::VerificationFailed)
+    key.verify(
+        &serde_json::to_vec(&ticket_unsigned(ticket)).map_err(|_| AuthError::Serialization)?,
+        &Signature::from_bytes(&sig),
+    )
+    .map_err(|_| AuthError::VerificationFailed)
 }
 
 fn ticket_unsigned(ticket: &CapabilityTicket) -> serde_json::Value {
-    serde_json::json!({"issuer":ticket.issuer,"subject":ticket.subject,"capabilities":ticket.capabilities,"expires_at":ticket.expires_at,"ticket_id":ticket.ticket_id})
+    serde_json::json!({"issuer":ticket.issuer,"subject":ticket.subject,"conversation":ticket.conversation,"capabilities":ticket.capabilities,"expires_at":ticket.expires_at,"ticket_id":ticket.ticket_id})
 }
 
 pub fn verify_message(message: &MessageEnvelope) -> Result<(), AuthError> {
@@ -210,7 +257,10 @@ mod tests {
         );
         assert_eq!(verify_capability_ticket(&ticket), Ok(()));
         ticket.ticket_id = "ticket-2".into();
-        assert_eq!(verify_capability_ticket(&ticket), Err(AuthError::VerificationFailed));
+        assert_eq!(
+            verify_capability_ticket(&ticket),
+            Err(AuthError::VerificationFailed)
+        );
     }
 
     #[test]
@@ -218,14 +268,21 @@ mod tests {
         let mut ticket = CapabilityTicket {
             issuer: "not-a-peer-id".into(),
             subject: None,
+            conversation: None,
             capabilities: vec![Capability::MessageReceive],
             expires_at: None,
             ticket_id: "ticket-1".into(),
             signature: "bad".into(),
         };
-        assert_eq!(verify_capability_ticket(&ticket), Err(AuthError::InvalidPeerId));
+        assert_eq!(
+            verify_capability_ticket(&ticket),
+            Err(AuthError::InvalidPeerId)
+        );
         ticket.issuer = "00".repeat(32);
-        assert_eq!(verify_capability_ticket(&ticket), Err(AuthError::InvalidSignature));
+        assert_eq!(
+            verify_capability_ticket(&ticket),
+            Err(AuthError::InvalidSignature)
+        );
     }
 
     #[test]
