@@ -18,6 +18,7 @@ iroh = "1"
 iroh-blobs = "0.103"
 libc = "0.2"
 ed25519-dalek = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
 idfon-core = { path = "../idfon-core" }
 idfon-media = { path = "../idfon-media" }
 idfon-protocol = { path = "../idfon-protocol" }
