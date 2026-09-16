@@ -490,6 +490,7 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
     for (identity, _) in &bound_keys {
         wire_identity(Arc::clone(&transport), Arc::clone(&store), identity.clone());
     }
+    resume_pending_operations(Arc::clone(&store), Arc::clone(&transport));
     prepare_socket(&socket)?;
     if let Some(parent) = socket.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -705,6 +706,77 @@ async fn serve(
             &encode_json(&response).map_err(io::Error::other)?,
         )
         .await?
+    }
+}
+
+fn resume_pending_operations(store: Arc<Mutex<Store>>, transport: Arc<TransportMode>) {
+    let pending = {
+        let state = store.lock().expect("store mutex poisoned");
+        state
+            .operations
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation.status,
+                    idfon_protocol::OperationStatus::Queued
+                        | idfon_protocol::OperationStatus::Transmitting
+                ) && operation.outbound.is_some()
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for operation in pending {
+        let store = Arc::clone(&store);
+        let transport = Arc::clone(&transport);
+        tokio::spawn(async move {
+            let Some(envelope) = operation.outbound.clone() else {
+                return;
+            };
+            let peer = {
+                let state = store.lock().expect("store mutex poisoned");
+                operation
+                    .target
+                    .as_deref()
+                    .and_then(|target| {
+                        state
+                            .peers
+                            .iter()
+                            .find(|peer| peer.identity == operation.identity && peer.id == target)
+                    })
+                    .cloned()
+            };
+            let Some(peer) = peer else {
+                let _ = update_operation(
+                    &store,
+                    &operation.operation_id,
+                    &operation.identity,
+                    idfon_protocol::OperationStatus::Failed,
+                );
+                return;
+            };
+            let mut result = Err(io::Error::other("no transport attempt"));
+            for _ in 0..=3 {
+                let transport = Arc::clone(&transport);
+                let identity = operation.identity.clone();
+                let peer = peer.clone();
+                let envelope = envelope.clone();
+                let policy = operation.delivery.clone();
+                result = tokio::task::spawn_blocking(move || {
+                    transport.send(&identity, &peer, &envelope, policy.as_ref())
+                })
+                .await
+                .unwrap_or_else(|error| Err(io::Error::other(error)));
+                if result.is_ok() {
+                    break;
+                }
+            }
+            let status = if result.is_ok() {
+                idfon_protocol::OperationStatus::Delivered
+            } else {
+                idfon_protocol::OperationStatus::Failed
+            };
+            let _ = update_operation(&store, &operation.operation_id, &operation.identity, status);
+        });
     }
 }
 
@@ -1490,6 +1562,8 @@ fn gossip_room_send(
             updated_at: timestamp,
             idempotency_key: Some(key),
             message_id: Some(message_id),
+            outbound: Some(envelope.clone()),
+            delivery: None,
         };
         state.operations.push(operation.clone());
         let _ = state.save(&state.data_dir);
@@ -2042,6 +2116,8 @@ fn send_message(
         updated_at: timestamp,
         idempotency_key: Some(key.into()),
         message_id: Some(envelope.message_id.clone()),
+        outbound: Some(envelope.clone()),
+        delivery: delivery_policy.clone(),
     };
     state.operations.push(operation.clone());
     let result = state.save(&state.data_dir);
@@ -2439,6 +2515,8 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         updated_at: now.clone(),
         idempotency_key: Some(envelope.idempotency_key.clone()),
         message_id: Some(envelope.message_id.clone()),
+        outbound: None,
+        delivery: None,
     };
     state.messages.push(envelope.clone());
     state.operations.push(operation.clone());
@@ -5411,6 +5489,59 @@ mod tests {
     }
 
     #[test]
+    fn queued_outbound_operation_round_trips_for_restart() {
+        let dir = temp_dir("outbound-operation");
+        let mut state = Store::load(&dir).unwrap();
+        let key = idfon_core::generate_identity();
+        let envelope = idfon_core::sign_message(
+            &key,
+            "endpoint-a",
+            "msg-restart",
+            idfon_protocol::MessageContent::Text {
+                text: "queued".into(),
+            },
+            "retry-restart",
+            Some("chat-ab".into()),
+        )
+        .unwrap();
+        state.operations.push(idfon_protocol::Operation {
+            identity: "default".into(),
+            operation_id: "op-restart".into(),
+            method: "message.send".into(),
+            status: idfon_protocol::OperationStatus::Queued,
+            target: Some("alice-account".into()),
+            request_fingerprint: Some("fingerprint".into()),
+            created_at: now(),
+            updated_at: now(),
+            idempotency_key: Some("retry-restart".into()),
+            message_id: Some("msg-restart".into()),
+            outbound: Some(envelope),
+            delivery: Some(idfon_protocol::DeliveryPolicy {
+                mode: idfon_protocol::DeliveryMode::All,
+                device_class: Some("mobile".into()),
+                ..Default::default()
+            }),
+        });
+        state.save(&dir).unwrap();
+        let restored = Store::load(&dir).unwrap();
+        let operation = &restored.operations[0];
+        assert_eq!(operation.status, idfon_protocol::OperationStatus::Queued);
+        assert_eq!(
+            operation.outbound.as_ref().unwrap().message_id,
+            "msg-restart"
+        );
+        assert_eq!(
+            operation.outbound.as_ref().unwrap().conversation.as_deref(),
+            Some("chat-ab")
+        );
+        assert_eq!(
+            operation.delivery.as_ref().unwrap().mode,
+            idfon_protocol::DeliveryMode::All
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn conversation_scoped_grants_do_not_cross_conversations() {
         let dir = temp_dir("conversation-grants");
         let store = Store::load(&dir).unwrap();
@@ -5809,6 +5940,8 @@ mod tests {
                 updated_at: now(),
                 idempotency_key: Some("key".into()),
                 message_id: Some("msg".into()),
+                outbound: None,
+                delivery: None,
             });
         let response = dispatch(
             Request {
