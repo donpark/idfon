@@ -57,7 +57,11 @@ pub fn live_publish(request: &Request) -> Response {
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.is_empty())
     else {
-        return error(&request.id, method, "file is required (mic source not supported yet)");
+        return error(
+            &request.id,
+            method,
+            "file is required (mic source not supported yet)",
+        );
     };
     let loop_playback = request
         .params
@@ -123,7 +127,11 @@ pub fn live_publish(request: &Request) -> Response {
 /// Parses the optional video quality ladder (`presets: ["180p", ...]`).
 fn video_presets(request: &Request) -> Result<Vec<idfon_media::video::VideoPreset>, String> {
     use std::str::FromStr;
-    match request.params.get("presets").and_then(serde_json::Value::as_array) {
+    match request
+        .params
+        .get("presets")
+        .and_then(serde_json::Value::as_array)
+    {
         None => Ok(vec![
             idfon_media::video::VideoPreset::P180,
             idfon_media::video::VideoPreset::P360,
@@ -136,8 +144,9 @@ fn video_presets(request: &Request) -> Result<Vec<idfon_media::video::VideoPrese
                     .as_str()
                     .ok_or_else(|| "presets must be strings".to_string())
                     .and_then(|s| {
-                        idfon_media::video::VideoPreset::from_str(s)
-                            .map_err(|_| format!("unknown preset '{s}' (expected 180p, 360p, 720p, 1080p)"))
+                        idfon_media::video::VideoPreset::from_str(s).map_err(|_| {
+                            format!("unknown preset '{s}' (expected 180p, 360p, 720p, 1080p)")
+                        })
                     })
             })
             .collect(),
@@ -247,27 +256,35 @@ pub fn live_subscribe(request: &Request) -> Response {
                     "subscribe_ms": stats.subscribe_ms,
                 }),
             ),
-            Err(err) => error(&request.id, &request.method, format!("live subscribe failed: {err:#}")),
+            Err(err) => error(
+                &request.id,
+                &request.method,
+                format!("live subscribe failed: {err:#}"),
+            ),
         }
     } else {
         match listen_to_wav(ticket, &out, seconds, relay) {
-        Ok(stats) => ok(
-            &request.id,
-            serde_json::json!({
-                "out": out.display().to_string(),
-                "duration_ms": stats.duration_ms,
-                "packets": stats.packets,
-                "arrival_jitter_ms": stats.arrival_jitter_ms,
-                "wall_ms": stats.wall_ms,
-                "subscribe_ms": stats.subscribe_ms,
-                "startup_ms": stats.startup_ms,
-                "max_gap_ms": stats.max_gap_ms,
-                "stalls_over_100ms": stats.stalls_over_100ms,
-                "missing_packets": stats.missing_packets,
-                "prebuffer_ms": stats.prebuffer_ms,
-            }),
-        ),
-        Err(err) => error(&request.id, &request.method, format!("live subscribe failed: {err:#}")),
+            Ok(stats) => ok(
+                &request.id,
+                serde_json::json!({
+                    "out": out.display().to_string(),
+                    "duration_ms": stats.duration_ms,
+                    "packets": stats.packets,
+                    "arrival_jitter_ms": stats.arrival_jitter_ms,
+                    "wall_ms": stats.wall_ms,
+                    "subscribe_ms": stats.subscribe_ms,
+                    "startup_ms": stats.startup_ms,
+                    "max_gap_ms": stats.max_gap_ms,
+                    "stalls_over_100ms": stats.stalls_over_100ms,
+                    "missing_packets": stats.missing_packets,
+                    "prebuffer_ms": stats.prebuffer_ms,
+                }),
+            ),
+            Err(err) => error(
+                &request.id,
+                &request.method,
+                format!("live subscribe failed: {err:#}"),
+            ),
         }
     }
 }
@@ -291,7 +308,10 @@ pub fn live_dial(request: &Request, peer_addr: &str) -> Response {
         .get("loop")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    let seconds = request.params.get("seconds").and_then(serde_json::Value::as_u64);
+    let seconds = request
+        .params
+        .get("seconds")
+        .and_then(serde_json::Value::as_u64);
     let relay = request
         .params
         .get("relay")
@@ -399,8 +419,9 @@ pub fn live_answer(
             Ok(quality) => quality,
             Err(message) => return error(&request.id, method, message),
         };
-        return match idfon_media::video::answer_to_h264(transport, &out, seconds, wait, from, quality)
-        {
+        return match idfon_media::video::answer_to_h264(
+            transport, &out, seconds, wait, from, quality,
+        ) {
             Ok(stats) => ok(
                 &request.id,
                 serde_json::json!({

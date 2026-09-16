@@ -133,6 +133,7 @@ impl TransportMode {
         identity: &str,
         peer: &idfon_protocol::Peer,
         message: &idfon_protocol::MessageEnvelope,
+        policy: Option<&idfon_protocol::DeliveryPolicy>,
     ) -> io::Result<idfon_protocol::MessageAck> {
         // The fake transport dials a fixed placeholder; the real one tries
         // each device of the peer's account until one acknowledges.
@@ -143,25 +144,47 @@ impl TransportMode {
                 message,
             );
         }
-        let targets = peer.dial_targets();
+        let mut targets = peer.dial_targets_with(policy);
+        if matches!(
+            policy.map(|policy| &policy.mode),
+            Some(idfon_protocol::DeliveryMode::One) | None
+        ) {
+            targets.truncate(1);
+        }
         if targets.is_empty() {
             return Err(io::Error::other("peer has no endpoint address"));
         }
+        let all = matches!(
+            policy.map(|policy| &policy.mode),
+            Some(idfon_protocol::DeliveryMode::All)
+        );
         let mut last_error = None;
+        let mut last_ack = None;
         for (endpoint_id, address) in targets {
             eprintln!("[idfond] transport send attempt identity={} peer={} device={} message_id={} target_bytes={}", identity, peer.id, endpoint_id, message.message_id, address.len());
             match self.send_to(identity, &address, message) {
                 Ok(ack) => {
                     eprintln!("[idfond] transport send acknowledged identity={} peer={} device={} message_id={} status={:?}", identity, peer.id, endpoint_id, message.message_id, ack.status);
-                    return Ok(ack);
+                    last_ack = Some(ack);
+                    if !all {
+                        return last_ack.ok_or_else(|| io::Error::other("missing acknowledgement"));
+                    }
                 }
                 Err(error) => {
                     eprintln!("[idfond] transport send failed identity={} peer={} device={} message_id={} error={}", identity, peer.id, endpoint_id, message.message_id, error);
                     last_error = Some(error);
+                    if !all {
+                        break;
+                    }
                 }
             }
         }
-        Err(last_error.unwrap_or_else(|| io::Error::other("peer has no endpoint address")))
+        match (last_ack, last_error) {
+            (Some(ack), None) => Ok(ack),
+            (Some(ack), Some(_)) => Ok(ack),
+            (None, Some(error)) => Err(error),
+            (None, None) => Err(io::Error::other("peer has no endpoint address")),
+        }
     }
 
     /// One dial attempt against a single serialized `EndpointAddr`.
@@ -877,6 +900,50 @@ fn live_dial_dispatch(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
     last.expect("dial targets is non-empty")
 }
 
+fn contact_ticket_value(
+    state: &Store,
+    transport: &Arc<TransportMode>,
+    identity_id: &str,
+) -> Option<idfon_protocol::ContactTicket> {
+    let identity = state
+        .identities
+        .iter()
+        .find(|identity| identity.id == identity_id)?;
+    let endpoint_id = identity.endpoint_id.clone()?;
+    let endpoint_addr = String::from_utf8(transport.endpoint_ticket_for(identity_id)?).ok()?;
+    Some(idfon_protocol::ContactTicket {
+        version: 1,
+        account_id: identity.public_key.clone()?,
+        endpoint_id,
+        endpoint_addr,
+        label: Some(identity.name.clone()),
+        device_class: None,
+        capabilities: vec!["chat".into(), "live_audio".into(), "live_video".into()],
+    })
+}
+
+fn contact_ticket(
+    request: &Request,
+    store: &Arc<Mutex<Store>>,
+    transport: &Arc<TransportMode>,
+) -> Response {
+    let state = store.lock().expect("store mutex poisoned");
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    match contact_ticket_value(&state, transport, &identity) {
+        Some(ticket) => success(
+            request,
+            serde_json::to_value(ticket).expect("contact ticket serializes"),
+        ),
+        None => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "identity has no bound endpoint".into(),
+            false,
+        ),
+    }
+}
+
 fn dispatch(request: Request, store: &Arc<Mutex<Store>>) -> Response {
     let transport = Arc::new(TransportMode::Fake(FakeTransport::default()));
     dispatch_with_transport(request, store, &transport)
@@ -913,6 +980,7 @@ fn dispatch_with_transport(
         "operation.cancel" => operation_cancel(&request, store),
         "events" => events(&request, store),
         "wait" => wait_event(&request, store),
+        "contact.ticket" => contact_ticket(&request, store, transport),
         "status" | "context" => {
             let state = store.lock().expect("store mutex poisoned");
             let identity_ref =
@@ -932,6 +1000,7 @@ fn dispatch_with_transport(
                     "ready": true,
                     "protocol_version": PROTOCOL_VERSION,
                     "ticket": transport.endpoint_ticket_for(identity_id).unwrap_or_default(),
+                    "contact_ticket": contact_ticket_value(&state, transport, identity_id),
                 }),
             )
         }
@@ -959,6 +1028,9 @@ fn dispatch_with_transport(
         }
         "peer.add" => peer_add(&request, store, transport),
         "peer.update" => peer_update(&request, store),
+        "peer.device.add" => peer_device_add(&request, store),
+        "peer.device.update" => peer_device_update(&request, store),
+        "peer.device.remove" => peer_device_remove(&request, store),
         "peer.remove" => peer_remove(&request, store),
         "peer.show" | "peer.status" => {
             let reference = request
@@ -1114,7 +1186,11 @@ fn dispatch_with_transport(
             }
             // On lazy (mobile) startup this is the first bind for the
             // identity; wire the receiver/relay/gossip/rooms startup skipped.
-            wire_identity(Arc::clone(transport), Arc::clone(store), identity_id.clone());
+            wire_identity(
+                Arc::clone(transport),
+                Arc::clone(store),
+                identity_id.clone(),
+            );
             success(
                 &request,
                 serde_json::json!({"identity": name, "active": true}),
@@ -1428,7 +1504,7 @@ fn gossip_room_send(
             match tokio::task::spawn_blocking(move || {
                 peers
                     .iter()
-                    .all(|peer| transport.send(&identity, peer, &envelope).is_ok())
+                    .all(|peer| transport.send(&identity, peer, &envelope, None).is_ok())
             })
             .await
             {
@@ -1528,32 +1604,65 @@ fn room_create(
 /// `room.join { room, name?, members? }` — imports a room id into local state.
 /// Membership remains local because the current invite is intentionally just an
 /// opaque room id; callers provide the peers they want to fan out to.
-fn room_join(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<TransportMode>) -> Response {
+fn room_join(
+    request: &Request,
+    store: &Arc<Mutex<Store>>,
+    transport: &Arc<TransportMode>,
+) -> Response {
     let room_id = match request_text(&request.params, "room") {
         Some(room) if !room.is_empty() => room,
-        _ => return error_response(request.id.clone(), &request.method, ErrorCode::InvalidRequest, "room is required".into(), false),
+        _ => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "room is required".into(),
+                false,
+            )
+        }
     };
-    let identity_ref = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let identity_ref =
+        request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let identity_id = {
         let state = store.lock().expect("store mutex poisoned");
         identity_id_of(&state, &identity_ref)
     };
     {
         let state = store.lock().expect("store mutex poisoned");
-        if let Some(existing) = state.rooms.iter().find(|room| room.identity == identity_id && room.id == room_id) {
+        if let Some(existing) = state
+            .rooms
+            .iter()
+            .find(|room| room.identity == identity_id && room.id == room_id)
+        {
             return success(request, serde_json::json!({ "room": existing }));
         }
     }
     let mut params = request.params.clone();
     let Some(object) = params.as_object_mut() else {
-        return error_response(request.id.clone(), &request.method, ErrorCode::InvalidRequest, "room params must be an object".into(), false);
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "room params must be an object".into(),
+            false,
+        );
     };
     object.insert("id".into(), serde_json::Value::String(room_id));
-    let create = Request { method: "room.create".into(), params, ..request.clone() };
+    let create = Request {
+        method: "room.create".into(),
+        params,
+        ..request.clone()
+    };
     let response = room_create(&create, store, transport);
     match response.body {
         ResponseBody::Success { result, .. } => success(request, result),
-        ResponseBody::Failure { error, .. } => error_response(request.id.clone(), &request.method, error.code, error.message, false),
+        ResponseBody::Failure { error, .. } => error_response(
+            request.id.clone(),
+            &request.method,
+            error.code,
+            error.message,
+            false,
+        ),
     }
 }
 
@@ -1659,6 +1768,7 @@ fn room_send(
         return response;
     }
     let capability_ticket = request.params.get("capability_ticket").cloned();
+    let delivery = request.params.get("delivery").cloned();
     let retries = request.params.get("retries").cloned();
     let mut operation_ids: Vec<String> = Vec::new();
     let mut failures: Vec<serde_json::Value> = Vec::new();
@@ -1672,6 +1782,9 @@ fn room_send(
         });
         if let Some(ticket) = &capability_ticket {
             params["capability_ticket"] = ticket.clone();
+        }
+        if let Some(delivery) = &delivery {
+            params["delivery"] = delivery.clone();
         }
         if let Some(retries) = &retries {
             params["retries"] = retries.clone();
@@ -1727,6 +1840,11 @@ fn send_message(
         .get("capability_ticket")
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok());
+    let delivery_policy = request
+        .params
+        .get("delivery")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<idfon_protocol::DeliveryPolicy>(value).ok());
     let retries = request
         .params
         .get("retries")
@@ -1936,6 +2054,7 @@ fn send_message(
     let worker_transport = Arc::clone(transport);
     let worker_envelope = envelope.clone();
     let worker_peer = peer.clone();
+    let worker_policy = delivery_policy.clone();
     let worker_identity = identity.id.clone();
     tokio::spawn(async move {
         let transition = tokio::task::spawn_blocking({
@@ -1971,8 +2090,9 @@ fn send_message(
             let peer = worker_peer.clone();
             let envelope = worker_envelope.clone();
             let identity = worker_identity.clone();
+            let policy = worker_policy.clone();
             delivery = match tokio::task::spawn_blocking(move || {
-                transport.send(&identity, &peer, &envelope)
+                transport.send(&identity, &peer, &envelope, policy.as_ref())
             })
             .await
             {
@@ -3868,6 +3988,16 @@ fn peer_add(
 ) -> Response {
     // An M3 contact ticket carries the dial address, endpoint id, and an
     // optional cached `server/discover`; it fills any omitted fields.
+    let device_ticket = request
+        .params
+        .get("contact_ticket")
+        .filter(|value| !value.is_null())
+        .and_then(|value| match value {
+            serde_json::Value::String(text) => {
+                serde_json::from_str::<idfon_protocol::ContactTicket>(text).ok()
+            }
+            other => serde_json::from_value::<idfon_protocol::ContactTicket>(other.clone()).ok(),
+        });
     let contact = match request
         .params
         .get("mcp_ticket")
@@ -3895,9 +4025,14 @@ fn peer_add(
         .map(str::to_owned)
     {
         Some(id) => id,
-        None => match &contact {
-            Some(contact) => contact.peer.endpoint_id.clone(),
-            None => {
+        None => match (&device_ticket, &contact) {
+            (Some(ticket), _) => ticket.account_id.clone(),
+            (_, Some(contact)) => contact
+                .peer
+                .account_id
+                .clone()
+                .unwrap_or_else(|| contact.peer.endpoint_id.clone()),
+            (_, None) => {
                 return error_response(
                     request.id.clone(),
                     &request.method,
@@ -3948,6 +4083,11 @@ fn peer_add(
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
             .or_else(|| {
+                device_ticket
+                    .as_ref()
+                    .map(|ticket| ticket.endpoint_id.clone())
+            })
+            .or_else(|| {
                 contact
                     .as_ref()
                     .map(|contact| contact.peer.endpoint_id.clone())
@@ -3957,6 +4097,11 @@ fn peer_add(
             .get("endpoint_addr")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
+            .or_else(|| {
+                device_ticket
+                    .as_ref()
+                    .map(|ticket| ticket.endpoint_addr.clone())
+            })
             .or_else(|| contact.as_ref().map(|contact| contact.transport.clone())),
         devices: request
             .params
@@ -4180,6 +4325,252 @@ fn peer_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     };
     if let Some(call_mode) = call_mode {
         peer.call_mode = call_mode;
+    }
+    let updated = peer.clone();
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"peer": updated}))
+}
+
+fn peer_device_from_params(request: &Request) -> Result<idfon_protocol::PeerDevice, String> {
+    let endpoint_id = request
+        .params
+        .get("endpoint_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "endpoint_id is required".to_string())?
+        .to_owned();
+    let endpoint_addr = request
+        .params
+        .get("endpoint_addr")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if let Some(address) = endpoint_addr.as_deref() {
+        serde_json::from_str::<serde_json::Value>(address)
+            .map_err(|_| "endpoint_addr must be valid JSON".to_string())?;
+    }
+    let label = request
+        .params
+        .get("label")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let device_class = request
+        .params
+        .get("device_class")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let capabilities = request
+        .params
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(idfon_protocol::PeerDevice {
+        endpoint_id,
+        endpoint_addr,
+        label,
+        device_class,
+        capabilities,
+    })
+}
+
+fn peer_device_add(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(reference) = request_text(&request.params, "ref") else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "ref is required".into(),
+            false,
+        );
+    };
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let device = match peer_device_from_params(request) {
+        Ok(device) => device,
+        Err(message) => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                message,
+                false,
+            )
+        }
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    let Some(peer) = state.peers.iter_mut().find(|peer| {
+        peer.identity == identity
+            && (peer.id == reference
+                || peer.name == reference
+                || peer.aliases.iter().any(|alias| alias == &reference))
+    }) else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer not found".into(),
+            false,
+        );
+    };
+    if peer.knows_endpoint(&device.endpoint_id) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "endpoint already belongs to peer".into(),
+            false,
+        );
+    }
+    peer.devices.push(device);
+    let updated = peer.clone();
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"peer": updated}))
+}
+
+fn peer_device_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(reference) = request_text(&request.params, "ref") else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "ref is required".into(),
+            false,
+        );
+    };
+    let Some(endpoint_id) = request_text(&request.params, "endpoint_id") else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "endpoint_id is required".into(),
+            false,
+        );
+    };
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let replacement = match peer_device_from_params(request) {
+        Ok(device) => device,
+        Err(message) => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                message,
+                false,
+            )
+        }
+    };
+    let mut state = store.lock().expect("store mutex poisoned");
+    let Some(peer) = state.peers.iter_mut().find(|peer| {
+        peer.identity == identity
+            && (peer.id == reference
+                || peer.name == reference
+                || peer.aliases.iter().any(|alias| alias == &reference))
+    }) else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer not found".into(),
+            false,
+        );
+    };
+    let Some(device) = peer
+        .devices
+        .iter_mut()
+        .find(|device| device.endpoint_id == endpoint_id)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "device not found".into(),
+            false,
+        );
+    };
+    *device = replacement;
+    let updated = peer.clone();
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(request, serde_json::json!({"peer": updated}))
+}
+
+fn peer_device_remove(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(reference) = request_text(&request.params, "ref") else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "ref is required".into(),
+            false,
+        );
+    };
+    let Some(endpoint_id) = request_text(&request.params, "endpoint_id") else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "endpoint_id is required".into(),
+            false,
+        );
+    };
+    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let mut state = store.lock().expect("store mutex poisoned");
+    let Some(peer) = state.peers.iter_mut().find(|peer| {
+        peer.identity == identity
+            && (peer.id == reference
+                || peer.name == reference
+                || peer.aliases.iter().any(|alias| alias == &reference))
+    }) else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "peer not found".into(),
+            false,
+        );
+    };
+    let before = peer.devices.len();
+    peer.devices
+        .retain(|device| device.endpoint_id != endpoint_id);
+    if peer.devices.len() == before {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "device not found".into(),
+            false,
+        );
     }
     let updated = peer.clone();
     let data_dir = state.data_dir.clone();
@@ -5040,6 +5431,86 @@ mod tests {
     }
 
     #[test]
+    fn peer_device_operations_are_incremental_and_persistent() {
+        let dir = temp_dir("peer-devices");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let add = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "peer".into(),
+                method: "peer.add".into(),
+                params: serde_json::json!({
+                    "id": "alice-account",
+                    "name": "Alice",
+                    "identity": "default",
+                    "endpoint_id": "alice-mac",
+                    "endpoint_addr": "{\"id\":\"alice-mac\"}"
+                }),
+            },
+            &store,
+        );
+        assert!(add.ok);
+
+        let device = |id: &str, address: &str| Request {
+            version: PROTOCOL_VERSION,
+            id: id.into(),
+            method: "peer.device.add".into(),
+            params: serde_json::json!({
+                "ref": "alice-account",
+                "endpoint_id": id,
+                "endpoint_addr": address,
+                "label": "Alice phone",
+                "device_class": "mobile",
+                "capabilities": ["chat", "callkit"]
+            }),
+        };
+        assert!(dispatch(device("alice-iphone", "{\"id\":\"alice-iphone\"}"), &store).ok);
+        let duplicate = dispatch(device("alice-iphone", "{}"), &store);
+        assert!(!duplicate.ok);
+
+        let update = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "update".into(),
+                method: "peer.device.update".into(),
+                params: serde_json::json!({
+                    "ref": "alice-account",
+                    "endpoint_id": "alice-iphone",
+                    "endpoint_addr": "{\"id\":\"alice-iphone\",\"relay\":true}",
+                    "label": "Alice iPhone",
+                    "device_class": "mobile",
+                    "capabilities": ["chat", "callkit", "push"]
+                }),
+            },
+            &store,
+        );
+        assert!(update.ok);
+        {
+            let state = store.lock().unwrap();
+            let peer = &state.peers[0];
+            assert_eq!(peer.devices.len(), 1);
+            assert_eq!(peer.devices[0].label.as_deref(), Some("Alice iPhone"));
+            assert_eq!(peer.devices[0].capabilities, ["chat", "callkit", "push"]);
+        }
+
+        let remove = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "remove".into(),
+                method: "peer.device.remove".into(),
+                params: serde_json::json!({
+                    "ref": "alice-account",
+                    "endpoint_id": "alice-iphone"
+                }),
+            },
+            &store,
+        );
+        assert!(remove.ok);
+        assert!(store.lock().unwrap().peers[0].devices.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn peer_call_mode_defaults_persists_updates_and_rejects_invalid() {
         use idfon_protocol::IncomingCallMode;
         let dir = temp_dir("call-mode");
@@ -5526,7 +5997,11 @@ mod tests {
             public_key: None,
             active,
         };
-        let identities = vec![make("default", false), make("work", true), make("home", false)];
+        let identities = vec![
+            make("default", false),
+            make("work", true),
+            make("home", false),
+        ];
         assert_eq!(startup_identity_ids(&identities, true), ["default", "work"]);
         assert_eq!(
             startup_identity_ids(&identities, false),

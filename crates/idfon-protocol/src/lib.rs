@@ -244,6 +244,30 @@ pub struct PeerDevice {
     pub endpoint_addr: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Advisory sender-side routing metadata; not an authorization boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryMode {
+    #[default]
+    Failover,
+    One,
+    All,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DeliveryPolicy {
+    #[serde(default)]
+    pub mode: DeliveryMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoint_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_class: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -269,6 +293,12 @@ impl Peer {
     /// primary pair first, then `devices`, deduped by endpoint id. Entries
     /// without an address are skipped.
     pub fn dial_targets(&self) -> Vec<(String, String)> {
+        self.dial_targets_with(None)
+    }
+
+    /// Selects concrete devices for a sender policy. Empty filters mean all
+    /// dialable devices; `one` is enforced by the transport caller.
+    pub fn dial_targets_with(&self, policy: Option<&DeliveryPolicy>) -> Vec<(String, String)> {
         fn add(
             targets: &mut Vec<(String, String)>,
             endpoint_id: Option<&str>,
@@ -281,17 +311,45 @@ impl Peer {
             }
         }
         let mut targets = Vec::new();
-        add(
-            &mut targets,
-            self.endpoint_id.as_deref(),
-            self.endpoint_addr.as_deref(),
-        );
-        for device in &self.devices {
+        let primary_selected = policy.is_none_or(|policy| {
+            policy.device_class.is_none()
+                && (policy.endpoint_ids.is_empty()
+                    || self
+                        .endpoint_id
+                        .as_deref()
+                        .is_some_and(|id| policy.endpoint_ids.iter().any(|wanted| wanted == id)))
+        });
+        if primary_selected {
             add(
                 &mut targets,
-                Some(device.endpoint_id.as_str()),
-                device.endpoint_addr.as_deref(),
+                self.endpoint_id.as_deref(),
+                self.endpoint_addr.as_deref(),
             );
+        }
+        for device in &self.devices {
+            let selected = policy.is_none_or(|policy| {
+                (policy.endpoint_ids.is_empty()
+                    || policy
+                        .endpoint_ids
+                        .iter()
+                        .any(|id| id == &device.endpoint_id))
+                    && policy
+                        .device_class
+                        .as_deref()
+                        .is_none_or(|class| device.device_class.as_deref() == Some(class))
+            });
+            if selected {
+                add(
+                    &mut targets,
+                    Some(device.endpoint_id.as_str()),
+                    device.endpoint_addr.as_deref(),
+                );
+            }
+        }
+        if let Some(policy) = policy {
+            if !policy.endpoint_ids.is_empty() {
+                targets.retain(|(id, _)| policy.endpoint_ids.iter().any(|wanted| wanted == id));
+            }
         }
         targets
     }
@@ -316,10 +374,26 @@ pub struct CapabilityTicket {
     pub signature: String,
 }
 
-/// Net-new contact ticket: everything the user side needs to add an agent as a
-/// contact without a live connection. `discover` is an optional cache of the
-/// agent's `server/discover` result; the bridge fills it, the daemon stores it
-/// opaquely and never parses JSON-RPC itself.
+/// Canonical Idfon device/contact ticket. `endpoint_addr` is serialized
+/// transport metadata; account/device fields are identity and routing hints.
+/// Legacy raw EndpointAddr JSON remains accepted by daemon import paths.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContactTicket {
+    pub version: u16,
+    pub account_id: String,
+    pub endpoint_id: String,
+    pub endpoint_addr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+/// Net-new MCP contact ticket: everything the user side needs to add an agent
+/// as a contact without a live connection. `discover` is an optional cache of
+/// the agent's `server/discover` result.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpContactTicket {
     /// Peer endpoint address as JSON text (iroh `EndpointAddr`), used to dial.
@@ -331,6 +405,9 @@ pub struct McpContactTicket {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpPeer {
+    /// Stable account/virtual identity. Absent on legacy endpoint-only tickets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
     pub endpoint_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -415,8 +492,7 @@ impl Capability {
     pub const RecordingRetain: Capability =
         Capability(std::borrow::Cow::Borrowed("recording.retain"));
     /// May use the peer's `idfon/mcp/1` transport (grants gate each direction).
-    pub const McpTransport: Capability =
-        Capability(std::borrow::Cow::Borrowed("mcp.transport"));
+    pub const McpTransport: Capability = Capability(std::borrow::Cow::Borrowed("mcp.transport"));
 
     pub fn new(value: impl Into<String>) -> Self {
         Capability(std::borrow::Cow::Owned(value.into()))
@@ -588,13 +664,24 @@ mod tests {
     fn invocation_result_vocabulary_round_trips() {
         for result in [
             InvocationResult::Text { text: "hi".into() },
-            InvocationResult::Render { view: serde_json::json!({"kind": "card"}) },
-            InvocationResult::BlobTicket { blob_ticket: "blob1".into() },
-            InvocationResult::StreamTicket { stream_ticket: "stream1".into() },
-            InvocationResult::Error { message: "nope".into() },
+            InvocationResult::Render {
+                view: serde_json::json!({"kind": "card"}),
+            },
+            InvocationResult::BlobTicket {
+                blob_ticket: "blob1".into(),
+            },
+            InvocationResult::StreamTicket {
+                stream_ticket: "stream1".into(),
+            },
+            InvocationResult::Error {
+                message: "nope".into(),
+            },
         ] {
             let json = encode_json(&result).unwrap();
-            assert_eq!(serde_json::from_slice::<InvocationResult>(&json).unwrap(), result);
+            assert_eq!(
+                serde_json::from_slice::<InvocationResult>(&json).unwrap(),
+                result
+            );
         }
     }
 

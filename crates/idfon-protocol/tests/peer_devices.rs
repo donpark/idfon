@@ -1,10 +1,12 @@
 use idfon_protocol::{IncomingCallMode, Peer, PeerDevice};
 
-fn device(id: &str, addr: Option<&str>) -> PeerDevice {
+fn device(id: &str, addr: Option<&str>, class: Option<&str>) -> PeerDevice {
     PeerDevice {
         endpoint_id: id.into(),
         endpoint_addr: addr.map(str::to_owned),
         label: None,
+        device_class: class.map(str::to_owned),
+        capabilities: vec![],
     }
 }
 
@@ -16,9 +18,9 @@ fn sample() -> Peer {
         endpoint_id: Some("primary".into()),
         endpoint_addr: Some("primary-addr".into()),
         devices: vec![
-            device("primary", Some("dupe-addr")),
-            device("phone", Some("phone-addr")),
-            device("no-address", None),
+            device("primary", Some("dupe-addr"), Some("desktop")),
+            device("phone", Some("phone-addr"), Some("mobile")),
+            device("no-address", None, Some("mobile")),
         ],
         aliases: vec![],
         call_mode: IncomingCallMode::default(),
@@ -33,6 +35,32 @@ fn dial_targets_primary_first_deduped_addressed() {
             ("primary".to_string(), "primary-addr".to_string()),
             ("phone".to_string(), "phone-addr".to_string()),
         ]
+    );
+}
+
+#[test]
+fn delivery_policy_selects_requested_devices() {
+    use idfon_protocol::{DeliveryMode, DeliveryPolicy};
+
+    let peer = sample();
+    let mobile = DeliveryPolicy {
+        mode: DeliveryMode::All,
+        device_class: Some("mobile".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        peer.dial_targets_with(Some(&mobile)),
+        vec![("phone".into(), "phone-addr".into())]
+    );
+
+    let endpoint = DeliveryPolicy {
+        mode: DeliveryMode::One,
+        endpoint_ids: vec!["phone".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        peer.dial_targets_with(Some(&endpoint)),
+        vec![("phone".into(), "phone-addr".into())]
     );
 }
 

@@ -19,7 +19,10 @@ use tokio::{
 const MCP_ALPN: &[u8] = b"idfon/mcp/1";
 
 #[derive(Parser)]
-#[command(name = "idfon-mcp", about = "MCP over iroh transport bridge (idfon/mcp/1)")]
+#[command(
+    name = "idfon-mcp",
+    about = "MCP over iroh transport bridge (idfon/mcp/1)"
+)]
 struct Cli {
     /// Hex Ed25519 key (64 hex chars). `IDFON_MCP_KEY` is used if unset.
     #[arg(long, global = true, value_name = "FILE")]
@@ -39,6 +42,9 @@ enum Mode {
         /// server/discover cache) instead of the bare endpoint ticket.
         #[arg(long)]
         contact: bool,
+        /// Stable account/virtual ID to include in the contact ticket.
+        #[arg(long = "account-id")]
+        account_id: Option<String>,
     },
     /// Dial a peer and splice the bi-stream to this process's stdio.
     Connect {
@@ -60,7 +66,11 @@ fn main() -> Result<()> {
         .context("build tokio runtime")?
         .block_on(async {
             match cli.mode {
-                Mode::Serve { mcp_command, contact } => serve(key, mcp_command, contact).await,
+                Mode::Serve {
+                    mcp_command,
+                    contact,
+                    account_id,
+                } => serve(key, mcp_command, contact, account_id).await,
                 Mode::Connect { peer, uds } => connect(key, peer, uds).await,
             }
         })
@@ -89,12 +99,19 @@ fn load_key(key_file: Option<&Path>) -> Result<[u8; 32]> {
                 "[idfon-mcp] WARNING: no --key-file or IDFON_MCP_KEY; using an ephemeral \
                  identity (grants will not survive a restart)"
             );
-            Ok(idfon_core::signing_key_bytes(&idfon_core::generate_identity()))
+            Ok(idfon_core::signing_key_bytes(
+                &idfon_core::generate_identity(),
+            ))
         }
     }
 }
 
-async fn serve(key: [u8; 32], mcp_command: String, contact: bool) -> Result<()> {
+async fn serve(
+    key: [u8; 32],
+    mcp_command: String,
+    contact: bool,
+    account_id: Option<String>,
+) -> Result<()> {
     let transport = std::sync::Arc::new(
         IrohTransport::bind_with_key(Some(key))
             .await
@@ -135,7 +152,11 @@ async fn serve(key: [u8; 32], mcp_command: String, contact: bool) -> Result<()> 
         match probe_discover(&mcp_command).await {
             Ok(discover) => serde_json::to_string(&McpContactTicket {
                 transport: serde_json::to_string(&address).unwrap_or_default(),
-                peer: McpPeer { endpoint_id: address.id.to_string(), name: None },
+                peer: McpPeer {
+                    account_id,
+                    endpoint_id: address.id.to_string(),
+                    name: None,
+                },
                 discover: Some(discover),
             })
             .context("serialize contact ticket")?,
@@ -258,9 +279,7 @@ async fn probe_discover(mcp_command: &str) -> Result<McpDiscover> {
             "io.modelcontextprotocol/clientCapabilities": {},
         }},
     });
-    stdin
-        .write_all(format!("{request}\n").as_bytes())
-        .await?;
+    stdin.write_all(format!("{request}\n").as_bytes()).await?;
     stdin.flush().await?;
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
@@ -274,7 +293,10 @@ async fn probe_discover(mcp_command: &str) -> Result<McpDiscover> {
     read.map_err(|_| anyhow!("server/discover timed out"))??;
     let value: serde_json::Value =
         serde_json::from_str(line.trim()).context("parse server/discover")?;
-    let result = value.get("result").cloned().unwrap_or(serde_json::Value::Null);
+    let result = value
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let cached_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs().to_string())
@@ -283,16 +305,27 @@ async fn probe_discover(mcp_command: &str) -> Result<McpDiscover> {
         supported_versions: result
             .get("supportedVersions")
             .and_then(|versions| versions.as_array())
-            .map(|versions| versions.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+            .map(|versions| {
+                versions
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
             .unwrap_or_default(),
-        capabilities: result.get("capabilities").cloned().unwrap_or(serde_json::Value::Null),
+        capabilities: result
+            .get("capabilities")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
         server_info: result
             .get("_meta")
             .and_then(|meta| meta.get("io.modelcontextprotocol/serverInfo"))
             .cloned()
             .unwrap_or(serde_json::Value::Null),
         ttl_ms: result.get("ttlMs").and_then(serde_json::Value::as_u64),
-        cache_scope: result.get("cacheScope").and_then(serde_json::Value::as_str).map(str::to_owned),
+        cache_scope: result
+            .get("cacheScope")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
         cached_at,
     })
 }
