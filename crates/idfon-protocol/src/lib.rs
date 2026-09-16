@@ -407,9 +407,8 @@ pub struct McpContactTicket {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpPeer {
-    /// Stable account/virtual identity. Absent on legacy endpoint-only tickets.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
+    /// Stable account/virtual identity.
+    pub account_id: String,
     pub endpoint_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

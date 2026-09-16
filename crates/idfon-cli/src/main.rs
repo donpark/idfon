@@ -850,7 +850,7 @@ fn run() -> io::Result<()> {
                         // 1:1 session-scoped stream to the peer; blocks until
                         // they hang up (or --seconds). No ticket exists.
                         let file = resolve_stream_file(args.file.as_ref())?;
-                        let mut params = json!({"to": peer, "file": file, "video": args.video, "relay": !args.no_relay});
+                        let mut params = json!({"to": peer, "file": file, "video": args.video, "relay": !args.no_relay, "delivery": {"mode": args.delivery, "endpoint_ids": args.endpoint_ids, "device_class": args.device_class}});
                         if let Some(seconds) = args.seconds {
                             params["seconds"] = seconds.into();
                         }
