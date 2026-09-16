@@ -68,13 +68,18 @@ block2 = "0.6"
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "videotoolbox"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "vaapi"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
 
 # ponytail note: a 4f94b3e regression put tokio and the idfon-* deps inside
 # a not(linux) target section and silently broke the Linux dylib (tokio
 # without rt-multi-thread -> iroh-blobs fs-store failed to compile). Keep
 # everything except objc2 unconditional.
 [features]
+default = ["linux-vaapi"]
+# Enable Linux hardware H.264 encoding. The CLI release disables this because
+# GitHub's Ubuntu runners have incompatible libva headers; native Linux builds
+# keep it enabled by default.
+linux-vaapi = ["iroh-live/vaapi"]
 # generate headers
 headers = ["safer-ffi/headers"]
 
