@@ -124,6 +124,34 @@ The repository contains native clients for macOS and iOS. They use the same
 daemon protocol and share the Rust networking/media components, but are not
 release products yet.
 
+Install the JavaScript workspace dependencies first:
+
+```sh
+pnpm install
+```
+
+Build and launch the iOS app on a connected, unlocked iPhone:
+
+```sh
+pnpm ios build
+DEVICE=<iphone-udid-or-name> pnpm ios device
+```
+
+`pnpm ios build` produces a device Release build. `pnpm ios device` installs
+and launches it through `devicectl`; omit `DEVICE` to use the first available
+physical iPhone. For the simulator, build with `pnpm --filter @idfon/ios build -- --sim`
+and launch the result with `pnpm ios start`.
+
+Build and launch the macOS app:
+
+```sh
+pnpm mac build
+pnpm mac start
+```
+
+The macOS and iOS apps use the local daemon and share the Rust networking/media
+components. See the platform-specific docs for details:
+
 - [macOS client](mac/README.md)
 - [Native SDK client](native/README.md)
 - iOS client (`ios/`)
