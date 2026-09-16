@@ -64,8 +64,10 @@ case "$target" in
       $build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml $cross_flag
     ;;
   *linux-gnu)
+    # ponytail: release CLI omits Linux VAAPI; the Ubuntu libva headers do not
+    # match cros-libva's generated bindings. Native Linux builds keep VAAPI.
     RUSTFLAGS="-C link-arg=-Wl,-soname,libiroh_c_ffi.so" \
-      $build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml $cross_flag
+      $build --release --no-default-features --manifest-path native/vendor/iroh-c-ffi/Cargo.toml $cross_flag
     ;;
 esac
 
