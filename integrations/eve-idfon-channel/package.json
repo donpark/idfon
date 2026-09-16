@@ -1,0 +1,49 @@
+{
+  "name": "@idfon/eve-channel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "eve": {
+    "extension": {
+      "source": "./extension",
+      "dist": "./dist/extension",
+      "externalDependencies": []
+    }
+  },
+  "files": [
+    "dist",
+    "bridge.mjs",
+    "managed.mjs"
+  ],
+  "bin": {
+    "idfon-eve-channel": "./managed.mjs"
+  },
+  "scripts": {
+    "build": "eve extension build",
+    "prepare": "eve extension build"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "eve": "0.55.0",
+    "typescript": "^5.8.3"
+  },
+  "peerDependencies": {
+    "eve": "*"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "default": "./dist/tools/index.mjs"
+    }
+  }
+}

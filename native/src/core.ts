@@ -6,12 +6,12 @@ import { type TextInputEvent, applyTextInputEvent } from "@native-sdk/core/text"
 export type ImageState = "loaded" | "rejected" | "not_found" | "io_failed" | "connect_failed" | "tls_failed" | "protocol_failed" | "timed_out" | "http_status" | "cancelled" | "too_large" | "unsupported" | "decode_failed" | "registry_full" | "alloc_failed";
 
 const EMPTY = new Uint8Array(0);
-const NO_CONNECTIONS: readonly Connection[] = [];
+const NO_CHANNELS: readonly Channel[] = [];
 const MAX_MESSAGE = 8192;
 const RECEIVER_CHANNEL = 1;
 export type ChannelState = "data" | "closed" | "rejected";
 
-export interface Connection {
+export interface Channel {
   readonly name: Uint8Array;
   readonly endpoint: Uint8Array;
 }
@@ -58,13 +58,13 @@ export interface Model {
   readonly identitySelected: boolean;
   readonly copyIdentityTicket: boolean;
   readonly identityError: boolean;
-  readonly connections: readonly Connection[];
-  readonly selectedConnectionName: Uint8Array;
-  readonly selectedConnectionInitials: Uint8Array;
+  readonly channels: readonly Channel[];
+  readonly selectedChannelName: Uint8Array;
+  readonly selectedChannelInitials: Uint8Array;
   readonly sessionLaunch: SessionLaunch | null;
   readonly chatOpen: boolean;
   readonly avatarSheetOpen: boolean;
-  readonly connectionName: Uint8Array;
+  readonly channelName: Uint8Array;
   readonly receiverId: Uint8Array;
   readonly receiverTicket: Uint8Array;
   readonly capabilityTicket: Uint8Array;
@@ -125,7 +125,7 @@ export interface Model {
   readonly blobStatus: Uint8Array;
   readonly showAdvanced: boolean;
   readonly showTicket: boolean;
-  readonly showAddConnection: boolean;
+  readonly showAddChannel: boolean;
   readonly showAddIdentity: boolean;
   readonly newIdentityName: Uint8Array;
   readonly liveAutoAccept: boolean;
@@ -164,22 +164,22 @@ export type Msg =
   | { readonly kind: "identity_create_error"; readonly data: Uint8Array }
   | { readonly kind: "identity_used"; readonly data: Uint8Array }
   | { readonly kind: "identity_use_error"; readonly data: Uint8Array }
-  | { readonly kind: "connection_selected"; readonly name: Uint8Array }
-  | { readonly kind: "connection_opened"; readonly name: Uint8Array }
+  | { readonly kind: "channel_selected"; readonly name: Uint8Array }
+  | { readonly kind: "channel_opened"; readonly name: Uint8Array }
   | { readonly kind: "chat_closed" }
   | { readonly kind: "avatar_pressed" }
   | { readonly kind: "avatar_sheet_closed" }
-  | { readonly kind: "connection_name_edit"; readonly edit: TextInputEvent }
+  | { readonly kind: "channel_name_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "receiver_id_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "capability_ticket_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "issue_capability_ticket" }
   | { readonly kind: "capability_ticket_issued"; readonly data: Uint8Array }
   | { readonly kind: "capability_ticket_error"; readonly data: Uint8Array }
   | { readonly kind: "copy_endpoint_id" }
-  | { readonly kind: "show_add_connection" }
-  | { readonly kind: "cancel_add_connection" }
+  | { readonly kind: "show_add_channel" }
+  | { readonly kind: "cancel_add_channel" }
   | { readonly kind: "toggle_live_auto_accept" }
-  | { readonly kind: "add_connection" }
+  | { readonly kind: "add_channel" }
   | { readonly kind: "peer_added"; readonly data: Uint8Array }
   | { readonly kind: "peer_add_error"; readonly data: Uint8Array }
   | { readonly kind: "send_message" }
@@ -307,13 +307,13 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     identitySelected: true,
     copyIdentityTicket: false,
     identityError: false,
-    connections: NO_CONNECTIONS,
-    selectedConnectionName: EMPTY,
-    selectedConnectionInitials: EMPTY,
+    channels: NO_CHANNELS,
+    selectedChannelName: EMPTY,
+    selectedChannelInitials: EMPTY,
     sessionLaunch: null,
     chatOpen: false,
     avatarSheetOpen: false,
-    connectionName: EMPTY,
+    channelName: EMPTY,
     receiverId: EMPTY,
     receiverTicket: EMPTY,
     capabilityTicket: EMPTY,
@@ -369,7 +369,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     blobStatus: utf8Bytes("No blob selected"),
     showAdvanced: false,
     showTicket: false,
-    showAddConnection: false,
+    showAddChannel: false,
     showAddIdentity: false,
     newIdentityName: EMPTY,
     // ponytail: explicit Answer button replaced auto-accept now that calls have header controls
@@ -768,7 +768,7 @@ function isSelfTarget(model: Model, target: Uint8Array): boolean {
 
 // Once a peer reaches us, the conversation is symmetric: adopt them as the
 // send target so composer/call actions work without the user having added
-// them as a connection first. Never override an existing selection.
+// them as a channel first. Never override an existing selection.
 function withInboundTarget(model: Model, peer: Uint8Array): Model {
   if (model.receiverId.length !== 0) return model;
   return { ...model, receiverId: peer, senderDisabled: isSelfTarget(model, peer) };
@@ -915,7 +915,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         // page replay as a live message once the first chain finishes.
         return { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName };
       }
-      const next = { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, drainInviteTicket: EMPTY };
+      const next = { ...model, identities, identityName: activeName, identityInitials: identityInitials(activeName), newIdentityName: activeName, receiverTicket: EMPTY, endpointId: EMPTY, channels: NO_CHANNELS, receiverId: EMPTY, selectedChannelName: EMPTY, selectedChannelInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, drainInviteTicket: EMPTY };
       return [next, Cmd.batch([
         Cmd.request("idfond.request", contextPayload(activeName), { key: "idfond-context", ok: "daemon_ready", err: "daemon_error" }),
         Cmd.request("idfond.request", peersPayload(activeName), { key: "idfond-peers", ok: "peers_loaded", err: "daemon_error" }),
@@ -928,7 +928,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // (phantom "Incoming recording" chat + failed blob fetch) once the
       // first chain finishes and flips eventsReady.
       if (model.syncingEvents && sameBytes(model.identityName, msg.name)) return model;
-      return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, drainInviteTicket: EMPTY, copyIdentityTicket: true }, Cmd.request("idfond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "idfond-identity-use", ok: "identity_used", err: "identity_use_error" })];
+      return [{ ...model, identityName: msg.name, identityInitials: identityInitials(msg.name), newIdentityName: msg.name, identities: model.identities.map((identity) => ({ ...identity, active: sameBytes(identity.name, msg.name) })), receiverTicket: EMPTY, endpointId: EMPTY, channels: NO_CHANNELS, receiverId: EMPTY, selectedChannelName: EMPTY, selectedChannelInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, drainInviteTicket: EMPTY, copyIdentityTicket: true }, Cmd.request("idfond.request", identityPayload(utf8Bytes("identity.use"), msg.name), { key: "idfond-identity-use", ok: "identity_used", err: "identity_use_error" })];
     case "show_add_identity":
       return { ...model, showAddIdentity: true, newIdentityName: EMPTY };
     case "cancel_add_identity":
@@ -943,7 +943,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "identity_create_error":
       return { ...model, receiverStatus: msg.data };
     case "identity_used":
-      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), receiverTicket: EMPTY, endpointId: EMPTY, connections: NO_CONNECTIONS, receiverId: EMPTY, selectedConnectionName: EMPTY, selectedConnectionInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, drainInviteTicket: EMPTY }, Cmd.batch([
+      return [{ ...model, identityName: model.newIdentityName, identityInitials: identityInitials(model.newIdentityName), receiverTicket: EMPTY, endpointId: EMPTY, channels: NO_CHANNELS, receiverId: EMPTY, selectedChannelName: EMPTY, selectedChannelInitials: identityInitials(EMPTY), senderDisabled: true, receiverAvailable: false, eventCursor: EMPTY, eventsReady: false, syncingEvents: true, drainInviteTicket: EMPTY }, Cmd.batch([
         Cmd.request("idfond.request", contextPayload(model.newIdentityName), { key: "idfond-context", ok: "daemon_ready", err: "daemon_error" }),
         Cmd.request("idfond.request", peersPayload(model.newIdentityName), { key: "idfond-peers", ok: "peers_loaded", err: "daemon_error" }),
         Cmd.request("idfond.request", daemonEventsPayload(model.newIdentityName, EMPTY), { key: "idfond-events", ok: "events_loaded", err: "daemon_error" }),
@@ -973,7 +973,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           const label = utf8Bytes(ticked.drainInviteCall ? "Incoming video call" : ticked.drainInviteVideo ? "Incoming video" : "Incoming call");
           // Adopt the caller as send target (same as the live invite path):
           // Answer's return invite rides model.receiverId.
-          return showBanner(withInboundTarget({ ...cleared, identitySelected: true, replyRoute: ticked.drainInvitePeer, liveTicketInput: ticked.drainInviteTicket, incomingVideo: ticked.drainInviteVideo, incomingVideoCall: ticked.drainInviteCall, sessionLaunch: { peerId: EMPTY, sessionId: ticked.drainInvitePeer, sessionType: utf8Bytes("chat") }, selectedConnectionName: label, selectedConnectionInitials: identityInitials(label), chatOpen: true, receiverStatus: label, incomingLive: true }, ticked.drainInvitePeer), label);
+          return showBanner(withInboundTarget({ ...cleared, identitySelected: true, replyRoute: ticked.drainInvitePeer, liveTicketInput: ticked.drainInviteTicket, incomingVideo: ticked.drainInviteVideo, incomingVideoCall: ticked.drainInviteCall, sessionLaunch: { peerId: EMPTY, sessionId: ticked.drainInvitePeer, sessionType: utf8Bytes("chat") }, selectedChannelName: label, selectedChannelInitials: identityInitials(label), chatOpen: true, receiverStatus: label, incomingLive: true }, ticked.drainInvitePeer), label);
         }
         return cleared;
       }
@@ -1086,7 +1086,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
                     Cmd.request("media.live.subscribe", ticket, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
                   ])];
                 }
-                const incoming = showBanner({ ...next, identitySelected: true, replyRoute: peer, liveTicketInput: ticket, incomingVideo: isVideo, incomingVideoCall: mediaCall, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, selectedConnectionName: label, selectedConnectionInitials: identityInitials(label), chatOpen: true, receiverStatus: label, incomingLive: isStart }, label);
+                const incoming = showBanner({ ...next, identitySelected: true, replyRoute: peer, liveTicketInput: ticket, incomingVideo: isVideo, incomingVideoCall: mediaCall, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, selectedChannelName: label, selectedChannelInitials: identityInitials(label), chatOpen: true, receiverStatus: label, incomingLive: isStart }, label);
                 if (isStart) {
                   return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.none];
                 }
@@ -1100,13 +1100,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
                 ])];
           } else if (text.length > recordingPrefix.length && sameBytes(text.slice(0, recordingPrefix.length), recordingPrefix)) {
             const ticket = recordingTicket(text);
-            const withAudio = addAudioMessage(showBanner({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), selectedConnectionName: utf8Bytes("Incoming recording"), selectedConnectionInitials: identityInitials(utf8Bytes("Incoming recording")), chatOpen: true, eventsReady: true }, utf8Bytes("Preparing recording")), ticket, false, false, recordingDurationLabel(text));
+            const withAudio = addAudioMessage(showBanner({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), selectedChannelName: utf8Bytes("Incoming recording"), selectedChannelInitials: identityInitials(utf8Bytes("Incoming recording")), chatOpen: true, eventsReady: true }, utf8Bytes("Preparing recording")), ticket, false, false, recordingDurationLabel(text));
             return [withAudio, Cmd.batch([
               Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" }),
               Cmd.request("media.blob.fetch", ticket, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" }),
             ])];
           } else {
-            next = addChatMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), selectedConnectionName: utf8Bytes("Incoming connection"), selectedConnectionInitials: identityInitials(utf8Bytes("Incoming connection")), chatOpen: true }, text, false, utf8Bytes("Received"));
+            next = addChatMessage({ ...next, identitySelected: true, replyRoute: peer, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), selectedChannelName: utf8Bytes("Incoming channel"), selectedChannelInitials: identityInitials(utf8Bytes("Incoming channel")), chatOpen: true }, text, false, utf8Bytes("Received"));
           }
         }
         index += 1;
@@ -1117,7 +1117,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       if (msg.data.length < 2) return { ...model, receiverStatus: utf8Bytes("Connected") };
       const count = msg.data[0] * 256 + msg.data[1];
       let offset = 2;
-      const connections: Connection[] = [];
+      const channels: Channel[] = [];
       let index = 0;
       while (index < count && offset + 2 <= msg.data.length) {
         const nameLength = msg.data[offset] * 256 + msg.data[offset + 1];
@@ -1130,15 +1130,15 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (offset + endpointLength > msg.data.length) break;
         const endpoint = msg.data.slice(offset, offset + endpointLength);
         offset += endpointLength;
-        if (name.length !== 0 && endpoint.length !== 0) connections.push({ name, endpoint });
+        if (name.length !== 0 && endpoint.length !== 0) channels.push({ name, endpoint });
         index += 1;
       }
-      return { ...model, connections, selectedConnectionName: connections.length === 0 ? EMPTY : connections[0].name, selectedConnectionInitials: identityInitials(connections.length === 0 ? EMPTY : connections[0].name), receiverStatus: utf8Bytes("Connected") };
+      return { ...model, channels, selectedChannelName: channels.length === 0 ? EMPTY : channels[0].name, selectedChannelInitials: identityInitials(channels.length === 0 ? EMPTY : channels[0].name), receiverStatus: utf8Bytes("Connected") };
     }
     case "receiver_ready": {
       const ticket = receiverTicket(msg.data);
       const connected = { ...model, identitySelected: true, identityError: false, receiverTicket: ticket, endpointId: endpointId(msg.data), receiverStatus: utf8Bytes("Available"), receiverAvailable: true };
-      return [model.receiverId.length === 0 ? showBanner(connected, utf8Bytes("Add a connection")) : connected, Cmd.none];
+      return [model.receiverId.length === 0 ? showBanner(connected, utf8Bytes("Add a channel")) : connected, Cmd.none];
     }
     case "receiver_error":
       return { ...model, identityError: true, receiverStatus: msg.data, receiverAvailable: false };
@@ -1161,7 +1161,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           const isStop = sameBytes(action, utf8Bytes("stop"));
           if (!isStart && !isStop) return model;
           if (isStart && ticket.length === 0) return model;
-          const next = showBanner({ ...inbound, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedConnectionName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), selectedConnectionInitials: identityInitials(utf8Bytes(isStart ? "Incoming call" : "Call ended")), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart }, utf8Bytes(isStart ? "Incoming call" : "Call ended"));
+          const next = showBanner({ ...inbound, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedChannelName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), selectedChannelInitials: identityInitials(utf8Bytes(isStart ? "Incoming call" : "Call ended")), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart }, utf8Bytes(isStart ? "Incoming call" : "Call ended"));
           if (isStart) return [next, Cmd.none];
           return [next, Cmd.batch([
             Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
@@ -1171,27 +1171,27 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         const recordingPrefix = utf8Bytes("IDFON-RECORDING/1\n");
         if (message.length > recordingPrefix.length && sameBytes(message.slice(0, recordingPrefix.length), recordingPrefix)) {
           const ticket = recordingTicket(message);
-          const withAudio = addAudioMessage(showBanner({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), selectedConnectionName: utf8Bytes("Incoming recording"), selectedConnectionInitials: identityInitials(utf8Bytes("Incoming recording")), chatOpen: true }, utf8Bytes("Preparing recording")), ticket, false, false, recordingDurationLabel(message));
+          const withAudio = addAudioMessage(showBanner({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, blobTicketInput: ticket, receiverStatus: utf8Bytes("Received recording"), selectedChannelName: utf8Bytes("Incoming recording"), selectedChannelInitials: identityInitials(utf8Bytes("Incoming recording")), chatOpen: true }, utf8Bytes("Preparing recording")), ticket, false, false, recordingDurationLabel(message));
           return [withAudio, Cmd.batch([
             Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" }),
             Cmd.request("media.blob.fetch", ticket, { key: "media-blob-fetch", ok: "blob_fetched", err: "blob_fetch_error" }),
           ])];
         }
-        return addChatMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), selectedConnectionName: utf8Bytes("Incoming connection"), selectedConnectionInitials: identityInitials(utf8Bytes("Incoming connection")), chatOpen: true }, message, false, utf8Bytes("Received"));
+        return addChatMessage({ ...inbound, identitySelected: true, replyRoute: route, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, receiverStatus: utf8Bytes("Connected"), selectedChannelName: utf8Bytes("Incoming channel"), selectedChannelInitials: identityInitials(utf8Bytes("Incoming channel")), chatOpen: true }, message, false, utf8Bytes("Received"));
       }
-    case "connection_selected": {
-      const connection = model.connections.find((item) => sameBytes(item.name, msg.name));
-      if (connection === undefined) return model;
-      const selfTarget = isSelfTarget(model, connection.endpoint);
-      const next = { ...model, selectedConnectionName: connection.name, selectedConnectionInitials: identityInitials(connection.name), receiverId: connection.endpoint, senderDisabled: selfTarget };
-      return [targetBanner(next, selfTarget), Cmd.request("media.set_scope", connection.endpoint, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
+    case "channel_selected": {
+      const channel = model.channels.find((item) => sameBytes(item.name, msg.name));
+      if (channel === undefined) return model;
+      const selfTarget = isSelfTarget(model, channel.endpoint);
+      const next = { ...model, selectedChannelName: channel.name, selectedChannelInitials: identityInitials(channel.name), receiverId: channel.endpoint, senderDisabled: selfTarget };
+      return [targetBanner(next, selfTarget), Cmd.request("media.set_scope", channel.endpoint, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
     }
-    case "connection_opened": {
-      const connection = model.connections.find((item) => sameBytes(item.name, msg.name));
-      if (connection === undefined) return model;
-      const selfTarget = isSelfTarget(model, connection.endpoint);
-      const next = { ...model, selectedConnectionName: connection.name, selectedConnectionInitials: identityInitials(connection.name), receiverId: connection.endpoint, sessionLaunch: { peerId: connection.endpoint, sessionId: connection.endpoint, sessionType: utf8Bytes("chat") }, senderDisabled: selfTarget, chatOpen: true };
-      return [targetBanner(next, selfTarget), Cmd.request("media.set_scope", connection.endpoint, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
+    case "channel_opened": {
+      const channel = model.channels.find((item) => sameBytes(item.name, msg.name));
+      if (channel === undefined) return model;
+      const selfTarget = isSelfTarget(model, channel.endpoint);
+      const next = { ...model, selectedChannelName: channel.name, selectedChannelInitials: identityInitials(channel.name), receiverId: channel.endpoint, sessionLaunch: { peerId: channel.endpoint, sessionId: channel.endpoint, sessionType: utf8Bytes("chat") }, senderDisabled: selfTarget, chatOpen: true };
+      return [targetBanner(next, selfTarget), Cmd.request("media.set_scope", channel.endpoint, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
     }
     case "chat_closed":
       return { ...model, chatOpen: false, sessionLaunch: null };
@@ -1205,26 +1205,26 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "identity_name_edit":
       return { ...model, identityName: editText(model.identityName, msg.edit), identityInitials: identityInitials(editText(model.identityName, msg.edit)) };
-    case "connection_name_edit":
-      return { ...model, connectionName: editText(model.connectionName, msg.edit) };
+    case "channel_name_edit":
+      return { ...model, channelName: editText(model.channelName, msg.edit) };
     case "receiver_id_edit":
       return { ...model, receiverId: editText(model.receiverId, msg.edit) };
     case "copy_endpoint_id":
       if (model.receiverTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.receiverTicket)];
-    case "show_add_connection":
-      return { ...model, showAddConnection: true };
-    case "cancel_add_connection":
-      return { ...model, showAddConnection: false };
+    case "show_add_channel":
+      return { ...model, showAddChannel: true };
+    case "cancel_add_channel":
+      return { ...model, showAddChannel: false };
     case "toggle_live_auto_accept":
       return { ...model, liveAutoAccept: !model.liveAutoAccept, livePolicyStatus: utf8Bytes(model.liveAutoAccept ? "Incoming live audio requires approval" : "Incoming live audio auto-accepted") };
-    case "add_connection":
-      if (model.connectionName.length === 0 || model.receiverId.length === 0) return model;
-      return [model, Cmd.request("idfond.request", peerAddPayload(model.identityName, model.connectionName, model.receiverId), { key: "idfond-peer-add", ok: "peer_added", err: "peer_add_error" })];
+    case "add_channel":
+      if (model.channelName.length === 0 || model.receiverId.length === 0) return model;
+      return [model, Cmd.request("idfond.request", peerAddPayload(model.identityName, model.channelName, model.receiverId), { key: "idfond-peer-add", ok: "peer_added", err: "peer_add_error" })];
     case "peer_added": {
-      const connection: Connection = { name: model.connectionName, endpoint: ticketEndpointId(model.receiverId) };
+      const channel: Channel = { name: model.channelName, endpoint: ticketEndpointId(model.receiverId) };
       const selfTarget = isSelfTarget(model, model.receiverId);
-      return [targetBanner({ ...model, connections: [...model.connections, connection], showAddConnection: false, senderDisabled: selfTarget }, selfTarget), Cmd.request("media.set_scope", connection.endpoint, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
+      return [targetBanner({ ...model, channels: [...model.channels, channel], showAddChannel: false, senderDisabled: selfTarget }, selfTarget), Cmd.request("media.set_scope", channel.endpoint, { key: "media-scope", ok: "sender_ready", err: "sender_error" })];
     }
     case "peer_add_error":
       return showBanner(model, msg.data);
@@ -1322,7 +1322,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "live_decline": {
       if (!model.incomingLive) return model;
-      const declined = hideBanner({ ...model, incomingLive: false, incomingVideo: false, incomingVideoCall: false, liveTicketInput: EMPTY, receiverStatus: utf8Bytes("Call declined"), selectedConnectionName: utf8Bytes("Call declined") });
+      const declined = hideBanner({ ...model, incomingLive: false, incomingVideo: false, incomingVideoCall: false, liveTicketInput: EMPTY, receiverStatus: utf8Bytes("Call declined"), selectedChannelName: utf8Bytes("Call declined") });
       if (model.replyRoute.length === 0) return declined;
       return [declined, Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_stopped"), utf8Bytes(`call-stopped-${model.tickAt}-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
     }
@@ -1511,7 +1511,7 @@ export function windows(model: Model): readonly WindowDescriptor[] {
   return [windowDescriptor({
     label: asciiBytes("chat"),
     canvasLabel: asciiBytes("chat-canvas"),
-    title: model.selectedConnectionName,
+    title: model.selectedChannelName,
     width: 420,
     height: 420,
     closePolicy: "quit",

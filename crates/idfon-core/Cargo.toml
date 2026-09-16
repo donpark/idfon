@@ -6,11 +6,14 @@ license.workspace = true
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+blake3 = "1"
 iroh = "1.0"
+iroh-gossip = "0.101"
 idfon-protocol = { path = "../idfon-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "time", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "io-util", "sync"] }
+futures-util = "0.3"
 rand_core = { version = "0.6", features = ["getrandom"] }

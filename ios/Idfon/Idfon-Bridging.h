@@ -1,6 +1,7 @@
 #ifndef IDFOSS_BRIDGING_H
 #define IDFOSS_BRIDGING_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 // C ABI from native/vendor/iroh-c-ffi. Keep in sync with src/client.rs and
@@ -28,6 +29,12 @@ void idfon_client_result_free(uint8_t *ptr, uintptr_t len);
 // with rust_free_string. Empty string return = failure (see
 // media_live_last_error for the cause).
 char *media_live_start(uint8_t audio, uint8_t video); // publish the selected tracks; (0,0) rejected. Returns ticket.
+// Same, but selects the audio source: "mic" (default capture device) or
+// "push" (samples supplied through media_audio_push_samples). Makes the
+// source a caller decision instead of a hardwired default input.
+char *media_live_start_with_source(uint8_t audio, uint8_t video, char const *source);
+// Push mono 48 kHz f32 PCM into the "push" source.
+void media_audio_push_samples(const float *pcm, size_t samples);
 void media_live_stop(void);                  // stop own publish
 uint8_t media_live_subscribe(char const *ticket); // hear the peer (decodes + plays)
 void media_live_unsubscribe(void);

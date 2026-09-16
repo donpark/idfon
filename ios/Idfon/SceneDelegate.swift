@@ -16,14 +16,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             PlaceholderViewController(title: "Favorites", symbol: "star",
                                       message: "Favorites you add will appear here."),
             title: "Favorites", symbol: "star")
-        let recents = Self.tab(
-            PlaceholderViewController(title: "Recents", symbol: "clock",
-                                      message: "People you talk to will appear here."),
-            title: "Recents", symbol: "clock")
+        let recents = Self.tab(ConversationsViewController(), title: "Recents", symbol: "clock")
         let contacts = Self.tab(PeerListViewController(), title: "Contacts", symbol: "person.crop.circle")
+        let rooms = Self.tab(RoomsViewController(), title: "Rooms", symbol: "person.3")
 
         let tabs = UITabBarController()
-        tabs.viewControllers = [favorites, recents, contacts]
+        tabs.viewControllers = [favorites, recents, contacts, rooms]
 
         let activity = LiveActivityController(windowScene: windowScene)
         activity.tabBarController = tabs

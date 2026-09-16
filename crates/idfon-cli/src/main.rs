@@ -96,6 +96,9 @@ enum Command {
     Send(SendArgs),
     /// Receive a peer push: signaled blob (--file mode) or 1:1 stream (--stream)
     Recv(RecvArgs),
+    /// Rooms: a `conversation` topic plus a local member list
+    #[command(subcommand)]
+    Room(RoomCmd),
     /// Fetch daemon events (follow with --follow)
     Events(EventsArgs),
     /// Block until a matching event arrives (--json prints the Response envelope,
@@ -227,9 +230,14 @@ struct SendArgs {
     /// Stream mode only: stable broadcast name
     #[arg(long)]
     name: Option<String>,
+    /// Thread into a room: sets the signed envelope's `conversation` field.
+    /// This is an ordinary `message.send` param, not a CLI-only concept, so
+    /// every frontend can set it.
+    #[arg(long)]
+    conversation: Option<String>,
     #[arg(long = "idempotency-key")]
     idempotency_key: Option<String>,
-    #[arg(long = "capability-ticket")]
+    #[arg(long = "capability-ticket", value_parser = parse_json_value)]
     capability_ticket: Option<Value>,
     #[arg(long)]
     retries: Option<u64>,
@@ -271,6 +279,40 @@ struct EventsArgs {
     after: Option<String>,
     #[arg(long = "type")]
     event_type: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum RoomCmd {
+    /// Create a room; `--id` defaults to a random 128-bit topic id
+    Create {
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        /// Peer ref (id, name, or alias) to add as a member; repeatable
+        #[arg(long = "member")]
+        members: Vec<String>,
+    },
+    /// List rooms
+    List,
+    /// Send text to every member of a room (fan-out on the caller's daemon)
+    Send {
+        #[arg(value_name = "ROOM")]
+        room: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+        #[arg(long = "capability-ticket", value_parser = parse_json_value)]
+        capability_ticket: Option<Value>,
+        #[arg(long)]
+        retries: Option<u64>,
+    },
+    /// Leave a room (local only; other members are not told)
+    Leave {
+        #[arg(value_name = "ROOM")]
+        room: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -589,6 +631,53 @@ fn run() -> io::Result<()> {
             send_rpc(socket, "peer.status", json!({"ref": peer_ref}), identity, cli.stdin_json)?,
             json,
         ),
+        Command::Room(command) => match command {
+            RoomCmd::Create { id, name, members } => {
+                let mut params = json!({"id": id, "name": name});
+                if !members.is_empty() {
+                    params["members"] = json!(members);
+                }
+                finish(
+                    send_rpc(socket, "room.create", params, identity, cli.stdin_json)?,
+                    json,
+                )
+            }
+            RoomCmd::List => finish(
+                send_rpc(socket, "room.list", json!({}), identity, cli.stdin_json)?,
+                json,
+            ),
+            RoomCmd::Send {
+                room,
+                text,
+                idempotency_key,
+                capability_ticket,
+                retries,
+            } => {
+                let key = idempotency_key.unwrap_or_else(|| {
+                    format!(
+                        "idfon-room-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("clock before epoch")
+                            .as_nanos()
+                    )
+                });
+                finish(
+                    send_rpc(
+                        socket,
+                        "room.send",
+                        json!({"room": room, "text": text, "idempotency_key": key, "capability_ticket": capability_ticket, "retries": retries}),
+                        identity,
+                        cli.stdin_json,
+                    )?,
+                    json,
+                )
+            }
+            RoomCmd::Leave { room } => finish(
+                send_rpc(socket, "room.leave", json!({"room": room}), identity, cli.stdin_json)?,
+                json,
+            ),
+        },
         Command::Send(args) => {
             if args.stream {
                 match (args.peer.as_deref(), args.list, args.stop.as_deref()) {
@@ -1119,6 +1208,10 @@ fn result_usize(response: &Response, key: &str) -> usize {
     }
 }
 
+fn parse_json_value(value: &str) -> Result<Value, String> {
+    serde_json::from_str(value).map_err(|error| format!("invalid JSON: {error}"))
+}
+
 fn request_error(response: &Response) -> String {
     match &response.body {
         ResponseBody::Failure { error, .. } => format!("{:?}: {}", error.code, error.message),
@@ -1235,7 +1328,7 @@ fn send_payload(
             send_rpc(
                 socket,
                 "message.send",
-                json!({"to": peer, "text": args.text, "idempotency_key": key, "capability_ticket": args.capability_ticket, "retries": args.retries}),
+                json!({"to": peer, "text": args.text, "idempotency_key": key, "conversation": args.conversation, "capability_ticket": args.capability_ticket, "retries": args.retries}),
                 identity,
                 stdin_json,
             )?,

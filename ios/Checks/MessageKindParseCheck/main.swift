@@ -21,6 +21,11 @@ check(isText(MessageKind.parse("hello")), "plain text passes through")
 check(isText(MessageKind.parse("IDFON-FILE/1\nname=x\n")), "file envelope without a ticket falls back to text")
 check(isText(MessageKind.parse("IDFON-RECORDING/1\n")), "recording envelope without a ticket falls back to text")
 
+let direct = Conversation(peer: Peer(id: "peer-1", name: "Ada", endpointId: nil, aliases: nil, callMode: nil))
+check(direct.id == "peer-1" && direct.title == "Ada" && !direct.isRoom, "direct conversation identity")
+let room = Conversation(room: Room(id: "room-1", identity: "default", name: "Design", members: ["peer-1"]))
+check(room.id == "room-1" && room.title == "Design" && room.isRoom, "room conversation identity")
+
 let fileEnvelope = """
 IDFON-FILE/1
 id=abc

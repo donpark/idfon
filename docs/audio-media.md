@@ -67,7 +67,7 @@ The chat window currently provides:
 
 Chat is symmetric once a peer reaches the GUI: an inbound message, call, or
 recording adopts the sender as the send target, so the callee can reply,
-record, and call back without adding the peer as a connection first.
+record, and call back without adding the peer as a channel first.
 
 Live publisher and subscriber shutdown paths call `Live::shutdown()` before
 releasing their sessions, including replacement of an active subscriber. This
@@ -169,10 +169,90 @@ application diagnostic.
 ## Current architecture
 
 The daemon owns network media sessions, BlobTicket providers, resource transfer,
-and authorization. The GUI owns local microphone/speaker access, playback,
-volume/mute, consent, notifications, and emergency stop. The extracted
+and authorization. The caller owns local microphone/speaker/camera access,
+playback, volume/mute, consent, notifications, and emergency stop. The extracted
 `idfon-media` crate provides explicit publisher/subscriber and local resource
 session handles while the legacy Native SDK local-device backend is migrated.
+
+### Capture ownership and lifecycle authority
+
+Device capture (microphone, camera) belongs to the **caller** process, never the
+daemon. Two load-bearing reasons:
+
+- **Consent and locality.** A daemon that can open a device can be made to
+  capture by any grant-holder or headless/automated client, with no user at the
+  device; the daemon may also be remote, shared, or have no microphone at all.
+  The daemon is "the network that exists even when no app is running"
+  ([daemon.md](daemon.md)) — device capture is the opposite: it only exists
+  alongside a live user session. Raw device samples never cross the
+  **daemon IPC**; shell-owned capture feeds the pipeline over the C ABI push
+  path (see "Sources are pluggable" below).
+- **Lifecycle authority.** Only the caller can observe and enforce the events
+  that end capture — user intent, foreground state, permission (TCC)
+  revocation, audio-route/interruption changes, app suspension or kill. A daemon
+  that holds capture manages a lifetime it cannot observe, producing shadow
+  state, defensive lifetime pinning, and daemon policy forced by client state.
+  Rule: **authority follows observation** — a component should only hold a
+  resource whose lifetime it can enforce.
+
+The daemon does not capture today: `idfon-media` is headless by construction
+("without a capture device") and `media.live.publish` requires a `file`. cpal
+capture lives in the caller-linked `iroh-c-ffi` (`AudioBackend`/`InputStream`),
+and Apple camera capture is shell-pushed (`CameraPusher.swift` →
+`media_video_push_frame`). When CLI microphone or camera input lands, capture
+goes in `idfon-cli` (or a caller-linked source), **not** as a `capture` feature
+in `idfon-media`/`idfond`. Pipeline placement may vary; the daemon receives a
+session handle or ticket, never a device.
+
+### Sources are pluggable
+
+The pipeline takes a **source**, not a device. `iroh-live` already models this:
+`AudioRenditions::empty(source)` accepts any `AudioSource`, and the repo has
+three (`MuteSource` = mic, `AudioFileSource`, `PushFrameSource` = pushed video
+frames). The exported boundary, though, still pins concrete sources:
+
+| surface | accepted source |
+|---|---|
+| FFI `media_live_start(audio, video)` | `AudioBackend::default_input()` — the default cpal device, selectable only among cpal devices (`media_audio_switch_input`) |
+| daemon `media.live.publish {file}` | a file path |
+
+So the app can choose among local cpal devices and nothing else: a remote audio
+stream, a peer's inbound stream, synthesized/mixed/processed audio, or TTS output
+cannot be the outgoing source without editing Rust. Plug-and-play was blocked at
+the boundary, not in the core ([issue #12](https://github.com/donpark/idfon/issues/12)).
+
+The boundary now takes a **source handle**. Implemented in
+`native/vendor/iroh-c-ffi/src/media.rs` (mirroring the video push path):
+
+```c
+void  media_audio_push_samples(float const *pcm, size_t samples); // mono 48 kHz f32
+char *media_live_start_with_source(uint8_t audio, uint8_t video, char const *source); // "mic" | "push" | "file:<path>" | "ticket:<live-ticket>"
+```
+
+`PushAudioSource` drains a caller-pushed queue in `pop_samples` (silence on
+underrun so the encoder keeps its 20 ms pacing; drop-oldest past 2 s so a stalled
+encoder cannot grow memory or add latency). Any holder of samples — a shell tap,
+a decoded remote stream, a file, a synth — can now feed the encoder with no new
+Rust source type. `media_live_start` is unchanged and still means `"mic"`.
+The source kinds are now:
+
+- `mic` — the default local capture device;
+- `push` — caller-pushed mono 48 kHz f32 PCM;
+- `file:<path>` — a local WAV/MP3 file decoded and published once;
+- `ticket:<live-ticket>` — subscribe to a remote live audio ticket, decode it,
+  and relay the samples into this publisher.
+
+The Apple shells use `push`; the file and ticket kinds are available to any
+caller linked against the C ABI. A ticket source is intentionally a live
+stream ticket, not a blob ticket: blob tickets identify completed content and
+belong on the file/attachment path.
+
+This generalises the rule above: **the pipeline takes a source handle, and
+whoever can observe that source's lifetime owns it.** A local mic/camera belongs
+to the caller; a remote stream is a legitimate daemon resource (its lifetime is
+network-observable); a file belongs to whoever opened it. The daemon file
+publish and the FFI device publish become the same operation with different
+source handles.
 
 ## Live streaming through the daemon (synthetic, no microphone)
 

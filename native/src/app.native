@@ -21,11 +21,11 @@
   <if test="{identitySelected}">
     <column gap="8">
       <row cross="center">
-        <text grow="1">Connections</text>
-        <button variant="secondary" on-press="show_add_connection">Add Connection</button>
+        <text grow="1">Channels</text>
+        <button variant="secondary" on-press="show_add_channel">Add Channel</button>
       </row>
-      <for each="connections" key="name" as="connection">
-        <list-item label="{connection.name}" on-press="connection_selected:{connection.name}" on-double-press="connection_opened:{connection.name}" on-submit="connection_opened:{connection.name}">{connection.name}</list-item>
+      <for each="channels" key="name" as="channel">
+        <list-item label="{channel.name}" on-press="channel_selected:{channel.name}" on-double-press="channel_opened:{channel.name}" on-submit="channel_opened:{channel.name}">{channel.name}</list-item>
       </for>
     </column>
   </if>
@@ -42,14 +42,14 @@
     </dialog>
   </if>
 
-  <if test="{showAddConnection}">
-    <dialog text="Add Connection">
+  <if test="{showAddChannel}">
+    <dialog text="Add Channel">
       <column gap="8" padding="12">
-        <text-field text="{connectionName}" label="Name" placeholder="Connection name" on-input="connection_name_edit" />
+        <text-field text="{channelName}" label="Name" placeholder="Channel name" on-input="channel_name_edit" />
         <text-field text="{receiverId}" label="Receiver ID" placeholder="Paste receiver ticket" on-input="receiver_id_edit" />
         <row gap="8">
-          <button variant="secondary" on-press="cancel_add_connection">Cancel</button>
-          <button variant="primary" on-press="add_connection">Add</button>
+          <button variant="secondary" on-press="cancel_add_channel">Cancel</button>
+          <button variant="primary" on-press="add_channel">Add</button>
         </row>
       </column>
     </dialog>

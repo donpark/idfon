@@ -770,6 +770,19 @@ media_audio_probe (
     uint64_t duration_ms);
 
 /** \brief
+ *  Pushes caller-supplied mono 48 kHz f32 PCM into the generic live audio
+ *  source. Pair with `media_live_start_with_source(audio, video, "push")`.
+ *
+ *  `samples` is the number of f32 values (mono: samples == frames). Null or
+ *  empty input is ignored; overflow past 2 s drops oldest, so a stalled
+ *  encoder cannot grow memory or add latency. Trusted in-process caller.
+ */
+void
+media_audio_push_samples (
+    float const * pcm,
+    size_t samples);
+
+/** \brief
  *  Sets the live audio encode target bitrate in bits per second (Opus VBR).
  *  Valid range 8000..=510000; applies to the next live publisher start.
  */
@@ -869,6 +882,19 @@ char *
 media_live_start (
     uint8_t audio,
     uint8_t video);
+
+/** \brief
+ *  Like [`media_live_start`], but selects the audio source by name: `"mic"`
+ *  (the default capture device) or `"push"` (samples supplied through
+ *  [`media_audio_push_samples`]). An unknown name fails with an empty ticket
+ *  and sets [`media_live_last_error`]. Makes the source a caller decision
+ *  without adding a new Rust source type per input.
+ */
+char *
+media_live_start_with_source (
+    uint8_t audio,
+    uint8_t video,
+    char const * source);
 
 /** \brief
  *  Stops the live microphone broadcast.
