@@ -4,6 +4,10 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 
+[features]
+default = []
+linux-vaapi = ["iroh-live/vaapi"]
+
 [lib]
 crate-type = ["rlib"]
 
@@ -45,4 +49,4 @@ tracing-subscriber = "0.3"
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "videotoolbox"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "vaapi"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
