@@ -21,6 +21,7 @@ use idfon_protocol::{
     PROTOCOL_VERSION,
 };
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
+use rusqlite::OptionalExtension;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
@@ -248,7 +249,37 @@ struct Store {
 }
 
 impl Store {
+    fn db(data_dir: &Path) -> io::Result<rusqlite::Connection> {
+        std::fs::create_dir_all(data_dir)?;
+        let connection =
+            rusqlite::Connection::open(data_dir.join("state.db")).map_err(io::Error::other)?;
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(io::Error::other)?;
+        connection
+            .pragma_update(None, "synchronous", "FULL")
+            .map_err(io::Error::other)?;
+        connection
+            .execute_batch("CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL);")
+            .map_err(io::Error::other)?;
+        Ok(connection)
+    }
+
     fn load(data_dir: &Path) -> io::Result<Self> {
+        if let Ok(connection) = Self::db(data_dir) {
+            let snapshot = connection
+                .query_row("SELECT json FROM state WHERE id = 1", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .optional()
+                .map_err(io::Error::other)?;
+            if let Some(snapshot) = snapshot {
+                let mut store: Self = serde_json::from_str(&snapshot).map_err(io::Error::other)?;
+                store.data_dir = data_dir.to_path_buf();
+                store.ensure_identity_keys(data_dir)?;
+                return Ok(store);
+            }
+        }
         let path = data_dir.join("state.json");
         match std::fs::read(&path) {
             Ok(bytes) => {
@@ -363,7 +394,15 @@ impl Store {
     }
 
     fn save(&self, data_dir: &Path) -> io::Result<()> {
-        std::fs::create_dir_all(data_dir)?;
+        let snapshot = serde_json::to_string(self).map_err(io::Error::other)?;
+        let connection = Self::db(data_dir)?;
+        connection
+            .execute(
+                "INSERT INTO state (id, json) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+                rusqlite::params![snapshot],
+            )
+            .map_err(io::Error::other)?;
+        // Keep the JSON snapshot as a human-readable export during migration.
         let bytes = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
         let temporary = data_dir.join("state.json.tmp");
         std::fs::write(&temporary, bytes)?;
@@ -1677,6 +1716,12 @@ fn room_create(
         members,
     };
     state.rooms.push(room.clone());
+    record_state_event(
+        &mut state,
+        &room.identity,
+        "room.created",
+        serde_json::json!({"room": room}),
+    );
     let dir = state.data_dir.clone();
     let _ = state.save(&dir);
     let identity = room.identity.clone();
@@ -2825,6 +2870,12 @@ fn access_grant(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         revoked_at: None,
     };
     state.grants.push(grant.clone());
+    record_state_event(
+        &mut state,
+        identity,
+        "grant.created",
+        serde_json::json!({"grant": grant}),
+    );
     let data_dir = state.data_dir.clone();
     if let Err(error) = state.save(&data_dir) {
         return error_response(
@@ -4005,6 +4056,21 @@ fn identity_create(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             true,
         );
     }
+    record_state_event(
+        &mut state,
+        &identity.id,
+        "identity.created",
+        serde_json::json!({"identity": identity}),
+    );
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
     success(request, serde_json::json!({"identity": identity}))
 }
 
@@ -4956,6 +5022,27 @@ fn now() -> String {
         .unwrap_or_default()
         .as_secs()
         .to_string()
+}
+
+fn record_state_event(
+    state: &mut Store,
+    identity: &str,
+    event_type: &str,
+    data: serde_json::Value,
+) {
+    let number = state.events.len() + 1;
+    state.events.push(idfon_protocol::Event {
+        event_id: format!("state-{event_type}-{number}"),
+        cursor: format!("cur_{number:020}"),
+        r#type: event_type.into(),
+        timestamp: now(),
+        identity: identity.into(),
+        data,
+    });
+    if state.events.len() > EVENT_RETENTION {
+        let excess = state.events.len() - EVENT_RETENTION;
+        state.events.drain(..excess);
+    }
 }
 
 fn expiry_is_past(value: &str) -> bool {
@@ -6268,6 +6355,19 @@ mod tests {
         std::fs::write(dir.join("state.lock"), "999999999\n").unwrap();
         let lock = DataLock::acquire(&dir).unwrap();
         drop(lock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn embedded_sqlite_snapshot_survives_json_removal() {
+        let dir = temp_dir("sqlite-snapshot");
+        let store = Store::load(&dir).unwrap();
+        store.save(&dir).unwrap();
+        assert!(dir.join("state.db").is_file());
+        std::fs::remove_file(dir.join("state.json")).unwrap();
+        let restored = Store::load(&dir).unwrap();
+        assert_eq!(restored.identities.len(), 1);
+        assert_eq!(restored.identities[0].id, "default");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
