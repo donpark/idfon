@@ -176,6 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class AppModel: NSObject {
     var identities: [IdentityInfo] = []
     var peers: [Peer] = []
+    var rooms: [Room] = []
     var ready = false
     var identityName = ""
     var endpointTicket = ""
@@ -214,6 +215,7 @@ final class AppModel: NSObject {
             identityName = status.identityName
             endpointTicket = try await client.statusTicket()
             peers = try await client.peers()
+            rooms = try await client.rooms()
             identities = await loadIdentities()
             statusText = ready ? "Connected" : "Daemon not ready"
         } catch {
@@ -342,8 +344,9 @@ final class DetailContainerViewController: NSViewController {
 
     private func show(_ room: Room?) {
         guard let room else { return }
-        chat = nil
-        replace(with: RoomChatViewController(room: room))
+        let next = ChatViewController(room: room, app: app)
+        chat = next
+        replace(with: next)
     }
 }
 

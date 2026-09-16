@@ -17,8 +17,15 @@ final class SidebarViewController: NSViewController {
         self.app = app
         self.tabs = PeerTabsViewController(
             peersProvider: { [weak app] in app?.peers ?? [] },
-            recentPeerIds: { ChatStore.shared.recentPeerIds },
-            onSelect: { [weak app] peer in app?.select(peer) })
+            recentPeerIds: { ChatStore.shared.recentChatIDs },
+            onSelect: { [weak app] chat in
+                switch chat.kind {
+                case .direct(let peer): app?.select(peer)
+                case .room(let room): app?.select(room)
+                }
+            },
+            recentRoomsProvider: { [weak app] in app?.rooms ?? [] },
+            unreadCountProvider: { ChatStore.shared.unreadCount(for: $0) })
         super.init(nibName: nil, bundle: nil)
         app.onUpdate = { [weak self] in self?.sync() }
         ChatStore.shared.addObserver(self)
@@ -44,7 +51,7 @@ final class SidebarViewController: NSViewController {
         addChild(tabs)
         tabs.view.translatesAutoresizingMaskIntoConstraints = false
 
-        let roomRow = NSStackView(views: [roomPopup, button("+", #selector(createRoomTapped))])
+        let roomRow = NSStackView(views: [roomPopup, button("+", #selector(createRoomTapped)), button("Join", #selector(joinRoomTapped))])
         roomRow.spacing = 4
         roomRow.translatesAutoresizingMaskIntoConstraints = false
         let actions = NSStackView(views: [
@@ -112,6 +119,7 @@ final class SidebarViewController: NSViewController {
     private func refreshRooms() async {
         guard let fetched = try? await app.client.rooms() else { return }
         rooms = fetched
+        app.rooms = fetched
         roomPopup.removeAllItems()
         roomPopup.addItem(withTitle: "Rooms")
         fetched.forEach { roomPopup.addItem(withTitle: $0.name?.isEmpty == false ? $0.name! : $0.id) }
@@ -121,6 +129,25 @@ final class SidebarViewController: NSViewController {
         let index = roomPopup.indexOfSelectedItem - 1
         guard index >= 0, index < rooms.count else { return }
         app.select(rooms[index])
+    }
+
+    @objc private func joinRoomTapped() {
+        let room = NSTextField(string: "")
+        room.placeholderString = "Room id"
+        let name = NSTextField(string: "")
+        name.placeholderString = "Room name (optional)"
+        let members = NSTextField(string: "")
+        members.placeholderString = "member ids, comma separated"
+        let stack = NSStackView(views: [room, name, members]); stack.orientation = .vertical; stack.spacing = 8
+        presentAlert(title: "Join Room", message: "Paste the room id and provide member peer ids.", accessory: stack, okTitle: "Join") {
+            let roomID = room.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ids = members.stringValue.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            guard !roomID.isEmpty else { return }
+            Task {
+                do { _ = try await self.app.client.joinRoom(roomID, name: name.stringValue.isEmpty ? nil : name.stringValue, members: ids); await self.refreshRooms() }
+                catch { await MainActor.run { self.plainSheet(title: "Join Room Failed", message: error.localizedDescription) } }
+            }
+        }
     }
 
     @objc private func createRoomTapped() {

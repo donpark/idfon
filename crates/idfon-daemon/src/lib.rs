@@ -791,6 +791,7 @@ fn dispatch_with_transport(
         "message.receive" => receive_message(&request, store),
         "message.send" => send_message(&request, store, transport),
         "room.create" => room_create(&request, store, transport),
+        "room.join" => room_join(&request, store, transport),
         "room.list" => room_list(&request, store),
         "room.send" => room_send(&request, store, transport),
         "room.leave" => room_leave(&request, store),
@@ -1409,6 +1410,38 @@ fn room_create(
         });
     }
     success(request, serde_json::json!({ "room": room }))
+}
+
+/// `room.join { room, name?, members? }` — imports a room id into local state.
+/// Membership remains local because the current invite is intentionally just an
+/// opaque room id; callers provide the peers they want to fan out to.
+fn room_join(request: &Request, store: &Arc<Mutex<Store>>, transport: &Arc<TransportMode>) -> Response {
+    let room_id = match request_text(&request.params, "room") {
+        Some(room) if !room.is_empty() => room,
+        _ => return error_response(request.id.clone(), &request.method, ErrorCode::InvalidRequest, "room is required".into(), false),
+    };
+    let identity_ref = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+    let identity_id = {
+        let state = store.lock().expect("store mutex poisoned");
+        identity_id_of(&state, &identity_ref)
+    };
+    {
+        let state = store.lock().expect("store mutex poisoned");
+        if let Some(existing) = state.rooms.iter().find(|room| room.identity == identity_id && room.id == room_id) {
+            return success(request, serde_json::json!({ "room": existing }));
+        }
+    }
+    let mut params = request.params.clone();
+    let Some(object) = params.as_object_mut() else {
+        return error_response(request.id.clone(), &request.method, ErrorCode::InvalidRequest, "room params must be an object".into(), false);
+    };
+    object.insert("id".into(), serde_json::Value::String(room_id));
+    let create = Request { method: "room.create".into(), params, ..request.clone() };
+    let response = room_create(&create, store, transport);
+    match response.body {
+        ResponseBody::Success { result, .. } => success(request, result),
+        ResponseBody::Failure { error, .. } => error_response(request.id.clone(), &request.method, error.code, error.message, false),
+    }
 }
 
 /// `room.list` — rooms for the calling identity.

@@ -40,6 +40,16 @@ extension DaemonClient {
         return try JSONDecoder().decode([Room].self, from: JSONEncoder().encode(list))
     }
 
+    func joinRoom(_ room: String, name: String? = nil, members: [String] = []) async throws -> Room {
+        var params: [String: AnyEncodable] = ["room": AnyEncodable(room)]
+        if let name { params["name"] = AnyEncodable(name) }
+        if !members.isEmpty { params["members"] = AnyEncodable(members.map(AnyEncodable.init)) }
+        guard let raw = try await requestWithLaunch(method: "room.join", params: params)?["room"] else {
+            throw DaemonClient.DaemonError.request("room.join returned no room")
+        }
+        return try JSONDecoder().decode(Room.self, from: JSONEncoder().encode(raw))
+    }
+
     func createRoom(id: String? = nil, name: String? = nil, members: [String] = []) async throws -> Room {
         var params: [String: AnyEncodable] = [:]
         if let id { params["id"] = AnyEncodable(id) }
@@ -70,6 +80,14 @@ extension DaemonClient {
         ]
         if let conversation { params["conversation"] = AnyEncodable(conversation) }
         _ = try await requestWithLaunch(method: "message.send", params: params)
+    }
+
+    /// Replays retained events for initial ChatStore hydration.
+    func events(after cursor: String?) async throws -> [Event] {
+        var params: [String: AnyEncodable] = [:]
+        if let cursor { params["after"] = AnyEncodable(cursor) }
+        guard let list = try await requestWithLaunch(method: "events", params: params)?["events"]?.asArray else { return [] }
+        return try JSONDecoder().decode([Event].self, from: JSONEncoder().encode(list))
     }
 
     /// Blocks server-side until one matching event arrives or the timeout

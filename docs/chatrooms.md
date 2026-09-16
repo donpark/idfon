@@ -157,13 +157,15 @@ Shell surface (v1, additive; unknown fields stay ignorable):
 | method | params | result |
 |---|---|---|
 | `room.create` | `{ id?, name?, members? }` | `{ room }` — generates a random id when omitted |
+| `room.join` | `{ room, name?, members? }` | `{ room }` — imports a copied room id into local state |
 | `room.list` | — | `{ rooms: [Room] }` |
 | `room.send` | `{ room, text, idempotency_key }` | `{ operation_ids: [...] }` — direct path returns one per member; gossip returns one room operation |
 | `room.leave` | `{ room }` | `{}` — local only |
 
 `room.send` uses direct N-way `message.send` fan-out for small or unavailable
-rooms, and one gossip operation for eligible larger rooms. The daemon keeps the
-local member list and transport state; the wire envelope remains unchanged.
+rooms, and one gossip operation for eligible larger rooms. Text, file, and voice
+memo envelopes all use this same path; the daemon keeps the local member list
+and transport state, and the wire envelope remains unchanged.
 
 ## The Eve agent seam
 
