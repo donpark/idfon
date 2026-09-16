@@ -141,6 +141,9 @@ enum PeerCmd {
     Add {
         #[arg(value_name = "REF")]
         peer_ref: Option<String>,
+        /// Stable account/virtual ID; defaults to REF for legacy direct peers
+        #[arg(long = "account-id")]
+        account_id: Option<String>,
         #[arg(long)]
         name: Option<String>,
         #[arg(long = "endpoint-id")]
@@ -169,6 +172,11 @@ enum PeerCmd {
         #[arg(long = "call-mode", value_name = "MODE")]
         call_mode: Option<String>,
     },
+    /// Manage one peer's concrete devices
+    Device {
+        #[command(subcommand)]
+        command: PeerDeviceCmd,
+    },
     /// Remove a peer
     Remove {
         #[arg(value_name = "REF")]
@@ -188,6 +196,47 @@ enum PeerCmd {
     Status {
         #[arg(value_name = "REF")]
         peer_ref: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PeerDeviceCmd {
+    /// Add a device endpoint to an existing account peer
+    Add {
+        #[arg(value_name = "PEER")]
+        peer_ref: String,
+        #[arg(long = "endpoint-id")]
+        endpoint_id: String,
+        #[arg(long = "endpoint-addr")]
+        endpoint_addr: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long = "device-class")]
+        device_class: Option<String>,
+        #[arg(long = "capability")]
+        capabilities: Vec<String>,
+    },
+    /// Update an existing device endpoint
+    Update {
+        #[arg(value_name = "PEER")]
+        peer_ref: String,
+        #[arg(long = "endpoint-id")]
+        endpoint_id: String,
+        #[arg(long = "endpoint-addr")]
+        endpoint_addr: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long = "device-class")]
+        device_class: Option<String>,
+        #[arg(long = "capability")]
+        capabilities: Vec<String>,
+    },
+    /// Remove a device endpoint
+    Remove {
+        #[arg(value_name = "PEER")]
+        peer_ref: String,
+        #[arg(long = "endpoint-id")]
+        endpoint_id: String,
     },
 }
 
@@ -241,6 +290,15 @@ struct SendArgs {
     capability_ticket: Option<Value>,
     #[arg(long)]
     retries: Option<u64>,
+    /// Delivery policy: failover (default), one, or all
+    #[arg(long, value_parser = ["failover", "one", "all"], default_value = "failover")]
+    delivery: String,
+    /// Restrict delivery to these endpoint IDs (repeatable)
+    #[arg(long = "endpoint-id")]
+    endpoint_ids: Vec<String>,
+    /// Restrict delivery to a device class, e.g. mobile or desktop
+    #[arg(long = "device-class")]
+    device_class: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -307,6 +365,13 @@ enum RoomCmd {
         capability_ticket: Option<Value>,
         #[arg(long)]
         retries: Option<u64>,
+        /// Delivery policy applied independently to each room member
+        #[arg(long, value_parser = ["failover", "one", "all"], default_value = "failover")]
+        delivery: String,
+        #[arg(long = "endpoint-id")]
+        endpoint_ids: Vec<String>,
+        #[arg(long = "device-class")]
+        device_class: Option<String>,
     },
     /// Leave a room (local only; other members are not told)
     Leave {
@@ -441,9 +506,8 @@ fn run() -> io::Result<()> {
     match cli.command {
         Command::Shutdown => {
             // No auto-start here: shutting down a daemon we just spawned is a no-op.
-            let mut client = Client::connect(socket).map_err(|_| {
-                io::Error::new(io::ErrorKind::NotFound, "daemon is not running")
-            })?;
+            let mut client = Client::connect(socket)
+                .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "daemon is not running"))?;
             let request = Request {
                 version: PROTOCOL_VERSION,
                 id: "cli-shutdown".into(),
@@ -456,7 +520,10 @@ fn run() -> io::Result<()> {
                 .json()
                 .map_err(io::Error::other)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&response).map_err(io::Error::other)?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response).map_err(io::Error::other)?
+                );
             } else {
                 println!("daemon stopped");
             }
@@ -513,9 +580,14 @@ fn run() -> io::Result<()> {
                 )
             }
         }
-        Command::Events(args) => {
-            cmd_events(socket, args.follow, args.after, args.event_type, json, identity)
-        }
+        Command::Events(args) => cmd_events(
+            socket,
+            args.follow,
+            args.after,
+            args.event_type,
+            json,
+            identity,
+        ),
         Command::Wait(args) => {
             let response = send_rpc(
                 socket,
@@ -530,8 +602,7 @@ fn run() -> io::Result<()> {
             operation_id,
             timeout_ms,
         }) => {
-            let mut params =
-                json!({"operation_id": operation_id, "timeout_ms": timeout_ms});
+            let mut params = json!({"operation_id": operation_id, "timeout_ms": timeout_ms});
             inject_identity(&mut params, identity);
             let request = Request {
                 version: PROTOCOL_VERSION,
@@ -561,29 +632,51 @@ fn run() -> io::Result<()> {
             }
             finish(response, json)
         }
-        Command::Status => {
-            finish(send_rpc(socket, "status", json!({}), identity, cli.stdin_json)?, json)
-        }
-        Command::Identity(IdentityCmd::List) => {
-            finish(send_rpc(socket, "identities", json!({}), identity, cli.stdin_json)?, json)
-        }
+        Command::Status => finish(
+            send_rpc(socket, "status", json!({}), identity, cli.stdin_json)?,
+            json,
+        ),
+        Command::Identity(IdentityCmd::List) => finish(
+            send_rpc(socket, "identities", json!({}), identity, cli.stdin_json)?,
+            json,
+        ),
         Command::Identity(IdentityCmd::Use { name }) => finish(
-            send_rpc(socket, "identity.use", json!({"name": name}), identity, cli.stdin_json)?,
+            send_rpc(
+                socket,
+                "identity.use",
+                json!({"name": name}),
+                identity,
+                cli.stdin_json,
+            )?,
             json,
         ),
         Command::Identity(IdentityCmd::Create { name }) => finish(
-            send_rpc(socket, "identity.create", json!({"name": name}), identity, cli.stdin_json)?,
+            send_rpc(
+                socket,
+                "identity.create",
+                json!({"name": name}),
+                identity,
+                cli.stdin_json,
+            )?,
             json,
         ),
         Command::Identity(IdentityCmd::Delete { name }) => finish(
-            send_rpc(socket, "identity.delete", json!({"name": name}), identity, cli.stdin_json)?,
+            send_rpc(
+                socket,
+                "identity.delete",
+                json!({"name": name}),
+                identity,
+                cli.stdin_json,
+            )?,
             json,
         ),
-        Command::Peer(PeerCmd::List) => {
-            finish(send_rpc(socket, "peers", json!({}), identity, cli.stdin_json)?, json)
-        }
+        Command::Peer(PeerCmd::List) => finish(
+            send_rpc(socket, "peers", json!({}), identity, cli.stdin_json)?,
+            json,
+        ),
         Command::Peer(PeerCmd::Add {
             peer_ref,
+            account_id,
             name,
             endpoint_id,
             endpoint_addr,
@@ -593,7 +686,7 @@ fn run() -> io::Result<()> {
             send_rpc(
                 socket,
                 "peer.add",
-                json!({"ref": peer_ref, "id": peer_ref, "name": name, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "aliases": [], "call_mode": call_mode, "mcp_ticket": mcp_ticket}),
+                json!({"ref": peer_ref, "id": account_id.or(peer_ref), "name": name, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "aliases": [], "call_mode": call_mode, "mcp_ticket": mcp_ticket}),
                 identity,
                 cli.stdin_json,
             )?,
@@ -615,20 +708,81 @@ fn run() -> io::Result<()> {
             )?,
             json,
         ),
+        Command::Peer(PeerCmd::Device { command }) => {
+            let (method, params) = match command {
+                PeerDeviceCmd::Add {
+                    peer_ref,
+                    endpoint_id,
+                    endpoint_addr,
+                    label,
+                    device_class,
+                    capabilities,
+                } => (
+                    "peer.device.add",
+                    json!({"ref": peer_ref, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "label": label, "device_class": device_class, "capabilities": capabilities}),
+                ),
+                PeerDeviceCmd::Update {
+                    peer_ref,
+                    endpoint_id,
+                    endpoint_addr,
+                    label,
+                    device_class,
+                    capabilities,
+                } => (
+                    "peer.device.update",
+                    json!({"ref": peer_ref, "endpoint_id": endpoint_id, "endpoint_addr": endpoint_addr, "label": label, "device_class": device_class, "capabilities": capabilities}),
+                ),
+                PeerDeviceCmd::Remove {
+                    peer_ref,
+                    endpoint_id,
+                } => (
+                    "peer.device.remove",
+                    json!({"ref": peer_ref, "endpoint_id": endpoint_id}),
+                ),
+            };
+            finish(
+                send_rpc(socket, method, params, identity, cli.stdin_json)?,
+                json,
+            )
+        }
         Command::Peer(PeerCmd::Remove { peer_ref }) => finish(
-            send_rpc(socket, "peer.remove", json!({"ref": peer_ref}), identity, cli.stdin_json)?,
+            send_rpc(
+                socket,
+                "peer.remove",
+                json!({"ref": peer_ref}),
+                identity,
+                cli.stdin_json,
+            )?,
             json,
         ),
         Command::Peer(PeerCmd::Resolve { peer_ref }) => finish(
-            send_rpc(socket, "peer.resolve", json!({"ref": peer_ref}), identity, cli.stdin_json)?,
+            send_rpc(
+                socket,
+                "peer.resolve",
+                json!({"ref": peer_ref}),
+                identity,
+                cli.stdin_json,
+            )?,
             json,
         ),
         Command::Peer(PeerCmd::Show { peer_ref }) => finish(
-            send_rpc(socket, "peer.show", json!({"ref": peer_ref}), identity, cli.stdin_json)?,
+            send_rpc(
+                socket,
+                "peer.show",
+                json!({"ref": peer_ref}),
+                identity,
+                cli.stdin_json,
+            )?,
             json,
         ),
         Command::Peer(PeerCmd::Status { peer_ref }) => finish(
-            send_rpc(socket, "peer.status", json!({"ref": peer_ref}), identity, cli.stdin_json)?,
+            send_rpc(
+                socket,
+                "peer.status",
+                json!({"ref": peer_ref}),
+                identity,
+                cli.stdin_json,
+            )?,
             json,
         ),
         Command::Room(command) => match command {
@@ -652,6 +806,9 @@ fn run() -> io::Result<()> {
                 idempotency_key,
                 capability_ticket,
                 retries,
+                delivery,
+                endpoint_ids,
+                device_class,
             } => {
                 let key = idempotency_key.unwrap_or_else(|| {
                     format!(
@@ -666,7 +823,7 @@ fn run() -> io::Result<()> {
                     send_rpc(
                         socket,
                         "room.send",
-                        json!({"room": room, "text": text, "idempotency_key": key, "capability_ticket": capability_ticket, "retries": retries}),
+                        json!({"room": room, "text": text, "idempotency_key": key, "capability_ticket": capability_ticket, "retries": retries, "delivery": {"mode": delivery, "endpoint_ids": endpoint_ids, "device_class": device_class}}),
                         identity,
                         cli.stdin_json,
                     )?,
@@ -674,7 +831,13 @@ fn run() -> io::Result<()> {
                 )
             }
             RoomCmd::Leave { room } => finish(
-                send_rpc(socket, "room.leave", json!({"room": room}), identity, cli.stdin_json)?,
+                send_rpc(
+                    socket,
+                    "room.leave",
+                    json!({"room": room}),
+                    identity,
+                    cli.stdin_json,
+                )?,
                 json,
             ),
         },
@@ -733,7 +896,8 @@ fn run() -> io::Result<()> {
                         // Broadcast publish: prints the live ticket.
                         if args.video {
                             let file = resolve_stream_file(args.file.as_ref())?;
-                            let mut params = json!({"file": file, "video": true, "relay": !args.no_relay});
+                            let mut params =
+                                json!({"file": file, "video": true, "relay": !args.no_relay});
                             if let Some(name) = args.name.as_deref() {
                                 params["name"] = name.into();
                             }
@@ -742,15 +906,17 @@ fn run() -> io::Result<()> {
                                 return Err(io::Error::other(request_error(&response)));
                             }
                             if json {
-                                println!("{}", serde_json::to_string(&response).map_err(io::Error::other)?);
+                                println!(
+                                    "{}",
+                                    serde_json::to_string(&response).map_err(io::Error::other)?
+                                );
                                 return Ok(());
                             }
                             println!("{}", result_str(&response, "ticket"));
                             return Ok(());
                         }
                         let file = resolve_stream_file(args.file.as_ref())?;
-                        let mut params =
-                            json!({"file": file, "loop": args.loop_playback, "relay": !args.no_relay});
+                        let mut params = json!({"file": file, "loop": args.loop_playback, "relay": !args.no_relay});
                         if let Some(name) = args.name.as_deref() {
                             params["name"] = name.into();
                         }
@@ -804,7 +970,10 @@ fn run() -> io::Result<()> {
             )?,
             json,
         ),
-        Command::Access(AccessCmd::Check { subject, capability }) => finish(
+        Command::Access(AccessCmd::Check {
+            subject,
+            capability,
+        }) => finish(
             send_rpc(
                 socket,
                 "access.check",
@@ -814,7 +983,10 @@ fn run() -> io::Result<()> {
             )?,
             json,
         ),
-        Command::Access(AccessCmd::Allow { subject, capability }) => finish(
+        Command::Access(AccessCmd::Allow {
+            subject,
+            capability,
+        }) => finish(
             send_rpc(
                 socket,
                 "access.grant",
@@ -850,7 +1022,13 @@ fn run() -> io::Result<()> {
                 "capabilities": [args.capability.clone().unwrap_or_else(|| "message.receive".into())],
                 "expires_at": args.expires_at,
             });
-            let response = send_rpc(socket, "capability.ticket", params, identity, cli.stdin_json)?;
+            let response = send_rpc(
+                socket,
+                "capability.ticket",
+                params,
+                identity,
+                cli.stdin_json,
+            )?;
             if !json {
                 let ticket = match &response.body {
                     ResponseBody::Success { result, .. } => {
@@ -890,7 +1068,9 @@ fn finish(response: Response, json: bool) -> io::Result<()> {
 fn inject_identity(params: &mut Value, identity: Option<&str>) {
     if let Some(identity) = identity {
         if let Some(params) = params.as_object_mut() {
-            params.entry("identity").or_insert(Value::String(identity.into()));
+            params
+                .entry("identity")
+                .or_insert(Value::String(identity.into()));
         }
     }
 }
@@ -915,7 +1095,10 @@ fn send_rpc(
         params,
     };
     let mut client = connect_or_start_daemon(socket)?;
-    read_json(&mut client, &encode_json(&request).map_err(io::Error::other)?)
+    read_json(
+        &mut client,
+        &encode_json(&request).map_err(io::Error::other)?,
+    )
 }
 
 fn cmd_events(
@@ -962,7 +1145,10 @@ fn print_events(response: &Response) -> io::Result<()> {
     if let idfon_protocol::ResponseBody::Success { result, .. } = &response.body {
         if let Some(events) = result.get("events").and_then(Value::as_array) {
             for event in events {
-                println!("{}", serde_json::to_string(event).map_err(io::Error::other)?);
+                println!(
+                    "{}",
+                    serde_json::to_string(event).map_err(io::Error::other)?
+                );
             }
         }
     }
@@ -1108,20 +1294,22 @@ fn guess_mime(path: &str) -> Option<String> {
         .extension()?
         .to_str()?
         .to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "mp4" | "m4v" | "cmfv" => "video/mp4",
-        "webm" => "video/webm",
-        "mkv" => "video/x-matroska",
-        "mov" => "video/quicktime",
-        "ts" | "m2ts" | "mts" => "video/mp2t",
-        "avi" => "video/x-msvideo",
-        "opus" => "audio/opus",
-        "ogg" => "audio/ogg",
-        "wav" => "audio/wav",
-        "mp3" => "audio/mpeg",
-        _ => return None,
-    }
-    .to_string())
+    Some(
+        match ext.as_str() {
+            "mp4" | "m4v" | "cmfv" => "video/mp4",
+            "webm" => "video/webm",
+            "mkv" => "video/x-matroska",
+            "mov" => "video/quicktime",
+            "ts" | "m2ts" | "mts" => "video/mp2t",
+            "avi" => "video/x-msvideo",
+            "opus" => "audio/opus",
+            "ogg" => "audio/ogg",
+            "wav" => "audio/wav",
+            "mp3" => "audio/mpeg",
+            _ => return None,
+        }
+        .to_string(),
+    )
 }
 
 fn response_bytes(result: &Value) -> io::Result<Vec<u8>> {
@@ -1148,8 +1336,9 @@ fn put_data(
     identity: Option<&str>,
 ) -> io::Result<Response> {
     let data = match file {
-        Some(path) => std::fs::read(path)
-            .map_err(|error| io::Error::new(error.kind(), format!("cannot read {path}: {error}")))?,
+        Some(path) => std::fs::read(path).map_err(|error| {
+            io::Error::new(error.kind(), format!("cannot read {path}: {error}"))
+        })?,
         None => {
             let mut data = Vec::new();
             std::io::Read::read_to_end(&mut std::io::stdin(), &mut data)?;
@@ -1161,7 +1350,8 @@ fn put_data(
         .cloned()
         .or_else(|| file.and_then(|path| guess_mime(path)));
     let put = |chunk: &[u8], append: bool, finish: bool| {
-        let mut params = json!({"resource_id": resource_id, "bytes": chunk, "append": append, "finish": finish});
+        let mut params =
+            json!({"resource_id": resource_id, "bytes": chunk, "append": append, "finish": finish});
         if let Some(ref mime) = mime {
             params["mime"] = mime.clone().into();
         }
@@ -1328,7 +1518,7 @@ fn send_payload(
             send_rpc(
                 socket,
                 "message.send",
-                json!({"to": peer, "text": args.text, "idempotency_key": key, "conversation": args.conversation, "capability_ticket": args.capability_ticket, "retries": args.retries}),
+                json!({"to": peer, "text": args.text, "idempotency_key": key, "conversation": args.conversation, "capability_ticket": args.capability_ticket, "retries": args.retries, "delivery": {"mode": args.delivery, "endpoint_ids": args.endpoint_ids, "device_class": args.device_class}}),
                 identity,
                 stdin_json,
             )?,
@@ -1420,8 +1610,8 @@ fn cmd_recv(
     timeout_ms: Option<u64>,
     identity: Option<&str>,
 ) -> io::Result<()> {
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis(timeout_ms.unwrap_or(60_000));
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.unwrap_or(60_000));
     // Baseline: only wait for messages that arrive after recv started. No
     // retained events means no `after` filter (a "cur_0" sentinel would be
     // rejected as CursorTooOld — it sorts below the first cursor).
@@ -1479,10 +1669,7 @@ fn cmd_recv(
                     continue;
                 }
             }
-            let text = data
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let text = data.get("text").and_then(Value::as_str).unwrap_or("");
             let Some((ticket, declared_size)) = parse_data_envelope(text) else {
                 continue;
             };
@@ -1610,7 +1797,11 @@ fn cmd_listen(
             result_str(&response, "duration_ms"),
         );
     } else {
-        eprintln!("listen: wrote {} ({})", written_path, result_str(&response, "duration_ms") + " ms audio");
+        eprintln!(
+            "listen: wrote {} ({})",
+            written_path,
+            result_str(&response, "duration_ms") + " ms audio"
+        );
     }
     Ok(())
 }
@@ -1690,4 +1881,3 @@ fn cmd_answer(
     }
     Ok(())
 }
-

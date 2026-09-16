@@ -123,22 +123,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                     })
                     NSLog("idfon self ticket: \(String(data: data, encoding: .utf8) ?? "?")")
                 }
-                guard let addr = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any],
-                      let endpointId = addr["id"] as? String, !endpointId.isEmpty else {
-                    NSLog("idfon pair failed: invalid endpoint addr JSON")
+                guard let ticket = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any] else {
+                    NSLog("idfon pair failed: invalid ticket JSON")
                     return
                 }
+                let transport = (ticket["endpoint_addr"] as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ticket
+                guard let endpointId = (ticket["endpoint_id"] as? String) ?? (transport["id"] as? String), !endpointId.isEmpty else {
+                    NSLog("idfon pair failed: ticket has no endpoint_id")
+                    return
+                }
+                let accountId = (ticket["account_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? endpointId
+                let endpointAddr = (ticket["endpoint_addr"] as? String) ?? ticketJSON
                 _ = try await client.request(method: "peer.add", params: [
-                    "id": AnyEncodable(endpointId),
+                    "id": AnyEncodable(accountId),
                     "name": AnyEncodable(name),
                     "endpoint_id": AnyEncodable(endpointId),
-                    "endpoint_addr": AnyEncodable(ticketJSON),
+                    "endpoint_addr": AnyEncodable(endpointAddr),
                     "identity": AnyEncodable(identity),
                 ])
                 for capability in ["message.send", "message.receive", "live.audio.subscribe"] {
                     _ = try await client.request(method: "access.grant", params: [
                         "identity": AnyEncodable(identity),
-                        "subject": AnyEncodable(endpointId),
+                        "subject": AnyEncodable(accountId),
                         "capability": AnyEncodable(capability),
                     ])
                 }

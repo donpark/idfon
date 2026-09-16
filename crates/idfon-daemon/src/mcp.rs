@@ -21,7 +21,9 @@ use idfon_protocol::{Capability, ErrorCode, Request, Response};
 use iroh::EndpointAddr;
 use tokio::process::Command;
 
-use crate::{error_response, has_grant, request_text, resolved_identity_id, success, Store, TransportMode};
+use crate::{
+    error_response, has_grant, request_text, resolved_identity_id, success, Store, TransportMode,
+};
 
 pub const MCP_ALPN: &[u8] = b"idfon/mcp/1";
 
@@ -63,7 +65,10 @@ async fn inbound(
         connection.close(1u32.into(), b"mcp.transport not granted");
         return Ok(());
     }
-    let command = store.lock().expect("store mutex poisoned").configured_mcp_command();
+    let command = store
+        .lock()
+        .expect("store mutex poisoned")
+        .configured_mcp_command();
     let Some(command) = command else {
         connection.close(2u32.into(), b"mcp server not configured");
         return Ok(());
@@ -181,14 +186,26 @@ pub fn listen(
     };
     let directory = data_dir.join("mcp");
     if let Err(error) = std::fs::create_dir_all(&directory) {
-        return error_response(request.id.clone(), method, ErrorCode::Internal, error.to_string(), true);
+        return error_response(
+            request.id.clone(),
+            method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
     }
     let path = directory.join(format!("{}.sock", peer_socket_name(&peer_id)));
     let _ = std::fs::remove_file(&path);
     let listener = match tokio::net::UnixListener::bind(&path) {
         Ok(listener) => listener,
         Err(error) => {
-            return error_response(request.id.clone(), method, ErrorCode::Internal, error.to_string(), true)
+            return error_response(
+                request.id.clone(),
+                method,
+                ErrorCode::Internal,
+                error.to_string(),
+                true,
+            )
         }
     };
     let manager = Arc::clone(manager);

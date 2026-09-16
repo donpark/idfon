@@ -107,21 +107,26 @@ extension DaemonClient {
     /// capabilities both ways (mirrors the iOS pair automation and the GUI's
     /// Add Channel flow).
     func addChannel(name: String, ticketJSON: String, identity: String) async throws {
-        guard let addr = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any],
-              let endpointId = addr["id"] as? String, !endpointId.isEmpty else {
-            throw DaemonError.request("invalid endpoint addr JSON (needs an \"id\" field)")
+        guard let ticket = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any] else {
+            throw DaemonError.request("invalid contact ticket JSON")
         }
+        let transport = (ticket["endpoint_addr"] as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ticket
+        guard let endpointId = (ticket["endpoint_id"] as? String) ?? (transport["id"] as? String), !endpointId.isEmpty else {
+            throw DaemonError.request("ticket has no endpoint_id")
+        }
+        let accountId = (ticket["account_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? endpointId
+        let endpointAddr = (ticket["endpoint_addr"] as? String) ?? ticketJSON
         _ = try await requestWithLaunch(method: "peer.add", params: [
-            "id": AnyEncodable(endpointId),
+            "id": AnyEncodable(accountId),
             "name": AnyEncodable(name),
             "endpoint_id": AnyEncodable(endpointId),
-            "endpoint_addr": AnyEncodable(ticketJSON),
+            "endpoint_addr": AnyEncodable(endpointAddr),
             "identity": AnyEncodable(identity),
         ])
         for capability in ["message.send", "message.receive", "live.audio.subscribe"] {
             _ = try await requestWithLaunch(method: "access.grant", params: [
                 "identity": AnyEncodable(identity),
-                "subject": AnyEncodable(endpointId),
+                "subject": AnyEncodable(accountId),
                 "capability": AnyEncodable(capability),
             ])
         }

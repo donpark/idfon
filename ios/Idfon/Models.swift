@@ -26,17 +26,43 @@ struct Room: Decodable, Identifiable, Hashable {
     let members: [String]
 }
 
+struct PeerDevice: Decodable, Hashable {
+    let endpointId: String
+    let endpointAddr: String?
+    let label: String?
+    let deviceClass: String?
+    let capabilities: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case label, capabilities
+        case endpointId = "endpoint_id"
+        case endpointAddr = "endpoint_addr"
+        case deviceClass = "device_class"
+    }
+}
+
 struct Peer: Decodable, Identifiable {
     let id: String
     let name: String?
     let endpointId: String?
+    let devices: [PeerDevice]
     let aliases: [String]?
     let callMode: IncomingCallMode?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, aliases
+        case id, name, aliases, devices
         case endpointId = "endpoint_id"
         case callMode = "call_mode"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decodeIfPresent(String.self, forKey: .name)
+        endpointId = try values.decodeIfPresent(String.self, forKey: .endpointId)
+        devices = try values.decodeIfPresent([PeerDevice].self, forKey: .devices) ?? []
+        aliases = try values.decodeIfPresent([String].self, forKey: .aliases)
+        callMode = try values.decodeIfPresent(IncomingCallMode.self, forKey: .callMode)
     }
 
     var displayName: String { name ?? id }

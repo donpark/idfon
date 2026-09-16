@@ -507,8 +507,8 @@ function capabilityTicketPayload(identity: Uint8Array): Uint8Array {
   return concat(concat(utf8Bytes('{"version":2,"id":"gui-capability-ticket","method":"capability.ticket","params":{"identity":'), jsonString(identity)), utf8Bytes(',"capabilities":["message.receive","live.audio.subscribe"]}}'));
 }
 
-function extractTicket(data: Uint8Array): Uint8Array {
-  const marker = utf8Bytes('"ticket":');
+function extractObject(data: Uint8Array, field: string): Uint8Array {
+  const marker = utf8Bytes(`"${field}":`);
   for (let i = 0; i + marker.length < data.length; i += 1) {
     if (sameBytes(data.slice(i, i + marker.length), marker)) {
       let start = i + marker.length;
@@ -524,6 +524,14 @@ function extractTicket(data: Uint8Array): Uint8Array {
   return EMPTY;
 }
 
+function extractTicket(data: Uint8Array): Uint8Array {
+  return extractObject(data, "ticket");
+}
+
+function extractContactTicket(data: Uint8Array): Uint8Array {
+  return extractObject(data, "contact_ticket");
+}
+
 function contextPayload(identity: Uint8Array): Uint8Array {
   return concat(concat(utf8Bytes('{"version":2,"id":"gui-context","method":"context","params":{"identity":'), jsonString(identity)), utf8Bytes('}}'));
 }
@@ -536,30 +544,51 @@ function identityPayload(method: Uint8Array, name: Uint8Array): Uint8Array {
   return concat(concat(concat(concat(utf8Bytes('{"version":2,"id":"gui-identity","method":"'), method), utf8Bytes('","params":{"name":')), jsonString(name)), utf8Bytes('}}'));
 }
 
-function ticketEndpointId(ticket: Uint8Array): Uint8Array {
-  const marker = utf8Bytes("\"id\":\"");
+function ticketField(ticket: Uint8Array, field: string, unescape: boolean): Uint8Array {
+  const marker = utf8Bytes(`"${field}":"`);
   for (let i = 0; i + marker.length < ticket.length; i += 1) {
-    if (sameBytes(ticket.slice(i, i + marker.length), marker)) {
-      const start = i + marker.length;
-      let end = start;
-      while (end < ticket.length && ticket[end] !== 34) end += 1;
-      return ticket.slice(start, end);
+    if (!sameBytes(ticket.slice(i, i + marker.length), marker)) continue;
+    const out = new Uint8Array(ticket.length);
+    let outLength = 0;
+    let escaped = false;
+    for (let j = i + marker.length; j < ticket.length; j += 1) {
+      const byte = ticket[j];
+      if (escaped) {
+        if (!unescape || byte !== 34 && byte !== 92) out[outLength++] = 92;
+        out[outLength++] = byte;
+        escaped = false;
+      } else if (byte === 92) {
+        escaped = true;
+      } else if (byte === 34) {
+        return out.slice(0, outLength);
+      } else {
+        out[outLength++] = byte;
+      }
     }
   }
   return EMPTY;
 }
 
+function ticketEndpointId(ticket: Uint8Array): Uint8Array {
+  const endpoint = ticketField(ticket, "endpoint_id", false);
+  return endpoint.length === 0 ? ticketField(ticket, "id", false) : endpoint;
+}
+
 function peerAddPayload(identity: Uint8Array, name: Uint8Array, ticket: Uint8Array): Uint8Array {
-  const id = ticketEndpointId(ticket);
+  const endpoint = ticketEndpointId(ticket);
+  const accountField = ticketField(ticket, "account_id", false);
+  const account = accountField.length === 0 ? endpoint : accountField;
+  const address = ticketField(ticket, "endpoint_addr", true);
+  const transport = address.length === 0 ? ticket : address;
   let payload = concat(utf8Bytes('{"version":2,"id":"gui-peer-add","method":"peer.add","params":{"identity":'), jsonString(identity));
   payload = concat(payload, utf8Bytes(',"id":'));
-  payload = concat(payload, jsonString(id));
+  payload = concat(payload, jsonString(account));
   payload = concat(payload, utf8Bytes(',"name":'));
   payload = concat(payload, jsonString(name));
   payload = concat(payload, utf8Bytes(',"endpoint_id":'));
-  payload = concat(payload, jsonString(id));
+  payload = concat(payload, jsonString(endpoint));
   payload = concat(payload, utf8Bytes(',"endpoint_addr":'));
-  payload = concat(payload, jsonString(ticket));
+  payload = concat(payload, jsonString(transport));
   return concat(payload, utf8Bytes(',"aliases":[]}}'));
 }
 
@@ -868,7 +897,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         }),
       ])];
     case "daemon_ready": {
-      const ticket = contextTicket(msg.data);
+      const ticket = extractContactTicket(msg.data);
       const next = { ...model, receiverStatus: utf8Bytes("Connected"), receiverTicket: ticket, receiverAvailable: true, copyIdentityTicket: false };
       if (model.copyIdentityTicket && ticket.length !== 0) return [next, Cmd.batch([
         Cmd.clipboardWrite(ticket),
