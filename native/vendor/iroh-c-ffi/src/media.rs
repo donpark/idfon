@@ -1,2234 +1,549 @@
-//! Rust-owned audio capture, live publishing, and decoded-audio recording.
+//! Current native media bridge built on the current iroh-live/moq-media APIs.
+//!
+//! The old iroh-live media backend was intentionally removed. Native shells push
+//! frames/samples into the current source model; capture and decode ownership
+//! stays in moq-audio/moq-video.
 
-use std::{
-    collections::VecDeque,
-    fs::{self, File, OpenOptions},
-    io::{Seek, SeekFrom, Write},
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
-    },
-    thread,
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, path::PathBuf, sync::{Arc, Mutex}, sync::atomic::{AtomicBool, Ordering}};
 
-use bytes::Bytes;
-use iroh::protocol::Router;
+use iroh::{endpoint::presets, protocol::Router, Endpoint};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-use iroh_live::media::{
-    format::{PixelFormat, VideoFormat as SourceVideoFormat},
-    traits::VideoSource as SourceTrait,
-};
-use iroh_live::{
-    media::{
-        audio_backend::InputStream,
-        audio_file_source::AudioFileSource,
-        codec::{OpusEncoder, VideoCodec},
-        format::{AudioEncoderConfig, AudioFormat, AudioPreset, PlaybackConfig, VideoPreset},
-        publish::{AudioRenditions, LocalBroadcast},
-        subscribe::MediaTracks,
-        traits::{
-            AudioDecoder, AudioEncoder, AudioEncoderFactory, AudioSink, AudioSinkHandle,
-            AudioSource, AudioStreamFactory,
-        },
-        AudioBackend,
-    },
-    ticket::LiveTicket,
-    Live, Subscription,
-};
-use n0_future::boxed::BoxFuture;
-use ogg::reading::PacketReader;
+use iroh_live::{ticket::LiveTicket, Live};
+use moq_media::publish::{AudioSource, LocalBroadcast, VideoRendition, VideoSource};
+use moq_audio::encode::{Options as AudioOptions, Publication, PublicationOptions};
+use moq_audio::{Frame as AudioFrame, Format};
+use moq_video::{Frame as VideoFrame, Size, Surface};
+use n0_future::{boxed::BoxStream, stream::unfold};
 use safer_ffi::prelude::*;
 
 use crate::util::tokio_executor;
 
-// Held until no call needs audio; dropping the last clone ends the driver
-// thread, which drops the cpal streams and releases the mic (the OS mic
-// indicator otherwise stays on forever — the driver never closes the input
-// device on its own, it only detaches consumers).
-static AUDIO: Mutex<Option<AudioBackend>> = Mutex::new(None);
-static MEDIA_SCOPE: Mutex<Option<String>> = Mutex::new(None);
-static RECORDING_HISTORY: Mutex<()> = Mutex::new(());
-static INPUT: Mutex<Option<InputStream>> = Mutex::new(None);
+const AUDIO_CAPACITY: usize = 48_000 * 2;
+static AUDIO_QUEUE: Mutex<Option<Arc<Mutex<VecDeque<f32>>>>> = Mutex::new(None);
 static LIVE: Mutex<Option<LiveSession>> = Mutex::new(None);
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+static MEDIA_SCOPE: Mutex<Option<PathBuf>> = Mutex::new(None);
+static LIVE_CONFIG: Mutex<Option<(bool, bool, bool, Option<PathBuf>)>> = Mutex::new(None);
+static AUDIO_ENABLED: AtomicBool = AtomicBool::new(true);
+static VIDEO_ENABLED: AtomicBool = AtomicBool::new(false);
 static SUBSCRIBER: Mutex<Option<Subscriber>> = Mutex::new(None);
-// Live audio encode target in bits per second (Opus VBR, so actual wire
-// usage dips below this on silence). Sender-configurable via
-// media_audio_set_bitrate; applies to the next live publisher start.
-static BITRATE: AtomicU64 = AtomicU64::new(32_000);
-// Last live-publisher failure (formatted), surfaced to the GUI so a failed
-// video call shows the real cause instead of a generic live_start_failed.
-static LAST_LIVE_ERROR: Mutex<Option<String>> = Mutex::new(None);
+static RECORDING: Mutex<Option<Recording>> = Mutex::new(None);
+static RECORDING_DURATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static BLOB_PROVIDER: Mutex<Option<BlobProvider>> = Mutex::new(None);
-static LOCAL_RECORDING: Mutex<Option<LocalRecording>> = Mutex::new(None);
-static LAST_RECORDING_DURATION_MS: AtomicU64 = AtomicU64::new(0);
+static VIDEO_QUEUE: Mutex<Option<(u32, u32, Vec<u8>, u64)>> = Mutex::new(None);
 static PLAYBACK: Mutex<Option<Playback>> = Mutex::new(None);
-// Send-gating for the outgoing streams, adjustable mid-call by the shell.
-// Disabling audio sends silence (capture stays open, so re-enable is
-// instant, and the OS mic indicator stays on); disabling video withholds
-// frames. start_live opens the mic and closes the camera gate: the shells
-// publish the video track up front and open the gate only once the camera is
-// actually on.
-static MIC_MUTED: AtomicBool = AtomicBool::new(false);
-static CAMERA_ENABLED: AtomicBool = AtomicBool::new(false);
+static PLAYBACK_CONTROL: Mutex<Option<moq_audio::playback::Control>> = Mutex::new(None);
+static PLAYBACK_ENGINE: Mutex<Option<moq_audio::playback::Engine>> = Mutex::new(None);
+static INPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
+static OUTPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
+static VOLUME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(100);
+static BITRATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(32_000);
 
 struct LiveSession {
-    _live: Live,
-    _broadcast: LocalBroadcast,
-    ticket_source: Option<TicketAudioSession>,
+    live: Live,
+    _audio: Option<LocalBroadcast>,
+    _video: Option<LocalBroadcast>,
 }
 
-struct TicketAudioSession {
-    _live: Live,
-    _subscription: Subscription,
-    _tracks: MediaTracks,
+struct Subscriber { stop: Arc<AtomicBool>, handle: Option<std::thread::JoinHandle<()>> }
+struct Recording { stop: Arc<AtomicBool>, handle: Option<std::thread::JoinHandle<()>> }
+struct BlobProvider { endpoint: Endpoint, store: FsStore, _router: Router }
+struct Playback { stop: Arc<AtomicBool>, handle: Option<std::thread::JoinHandle<()>> }
+
+pub(crate) fn media_path(name: &str) -> PathBuf {
+    let root = MEDIA_SCOPE.lock().ok().and_then(|scope| scope.clone())
+        .or_else(|| std::env::var_os("IDFON_MEDIA_DIR").map(PathBuf::from))
+        .unwrap_or_else(|| std::env::temp_dir().join("idfon"));
+    root.join(name)
 }
 
-struct Subscriber {
-    _live: Live,
-    _subscription: Subscription,
-    _tracks: MediaTracks,
-    recording: Arc<Mutex<WavRecorder>>,
-}
-
-struct BlobProvider {
-    _live: Live,
-    _store: FsStore,
-    _router: Router,
-}
-
-struct LocalRecording {
-    stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-    recorder: Arc<Mutex<OggOpusRecorder>>,
-    peak: Arc<Mutex<f32>>,
-    started: Instant,
-}
-
-struct Playback {
-    stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-}
-
-/// Silences the microphone toward the live publisher while a local recording
-/// is active: the user can prepare a voice message mid-call without the peer
-/// hearing it. Sits between the capture device and the Opus encoder.
-struct MuteSource {
-    inner: InputStream,
-}
-
-impl AudioSource for MuteSource {
-    fn format(&self) -> AudioFormat {
-        self.inner.format()
-    }
-    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
-        let result = self.inner.pop_samples(buf);
-        if MIC_MUTED.load(Ordering::Relaxed)
-            || LOCAL_RECORDING
-                .lock()
-                .expect("recording mutex poisoned")
-                .is_some()
-        {
-            for sample in buf.iter_mut() {
-                *sample = 0.0;
-            }
-        }
-        result
-    }
-}
-
-/// Generic audio source fed by caller-pushed PCM (`media_audio_push_samples`).
-///
-/// Unlike the mic path there is no device and no background producer: the
-/// caller owns where the samples come from (a shell tap, a decoded remote
-/// stream, a file, a synth). Underrun yields silence rather than `None` so the
-/// encoder keeps its fixed 20 ms pacing; overflow drops oldest (see
-/// [`media_audio_push_samples`]).
-struct MonoFileSource {
-    source: AudioFileSource,
-    stereo: Vec<f32>,
-}
-
-impl AudioSource for MonoFileSource {
-    fn format(&self) -> AudioFormat {
-        AudioFormat::mono_48k()
-    }
-
-    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
-        self.stereo.resize(buf.len().saturating_mul(2), 0.0);
-        let Some(frames) = self.source.pop_samples(&mut self.stereo)? else {
-            return Ok(None);
-        };
-        for (dst, pair) in buf
-            .iter_mut()
-            .zip(self.stereo[..frames * 2].chunks_exact(2))
-        {
-            *dst = (pair[0] + pair[1]) * 0.5;
-        }
-        Ok(Some(frames))
-    }
-}
-
-struct PushAudioSource {
-    format: AudioFormat,
-    queue: Arc<Mutex<VecDeque<f32>>>,
-}
-
-impl AudioSource for PushAudioSource {
-    fn format(&self) -> AudioFormat {
-        self.format
-    }
-
-    fn pop_samples(&mut self, buf: &mut [f32]) -> anyhow::Result<Option<usize>> {
-        let mut queue = self.queue.lock().expect("pushed audio queue poisoned");
-        let take = buf.len().min(queue.len());
-        for (dst, src) in buf.iter_mut().zip(queue.drain(..take)) {
-            *dst = src;
-        }
-        // Underrun -> silence: a pushed source is not always ready, but the
-        // encoder wants a full buffer every tick.
-        for sample in buf[take..].iter_mut() {
-            *sample = 0.0;
-        }
-        if MIC_MUTED.load(Ordering::Relaxed)
-            || LOCAL_RECORDING
-                .lock()
-                .expect("recording mutex poisoned")
-                .is_some()
-        {
-            for sample in buf.iter_mut() {
-                *sample = 0.0;
-            }
-        }
-        Ok(Some(buf.len()))
-    }
-}
-
-/// Capacity of the pushed-audio queue: 2 s of mono 48 kHz f32. Bounds the
-/// latency and memory a stalled encoder can accumulate.
-const PUSH_AUDIO_CAPACITY: usize = 48_000 * 2;
-
-/// Queue shared by [`media_audio_push_samples`] (producer) and
-/// [`PushAudioSource`] (consumer). Created lazily on first use and cleared on
-/// stop, so nothing stale survives into the next call.
-static PUSHED_AUDIO: Mutex<Option<Arc<Mutex<VecDeque<f32>>>>> = Mutex::new(None);
-
-fn push_audio_queue() -> Arc<Mutex<VecDeque<f32>>> {
-    let mut slot = PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned");
-    slot.get_or_insert_with(|| Arc::new(Mutex::new(VecDeque::with_capacity(PUSH_AUDIO_CAPACITY))))
+fn audio_queue() -> Arc<Mutex<VecDeque<f32>>> {
+    let mut slot = AUDIO_QUEUE.lock().expect("audio queue poisoned");
+    slot.get_or_insert_with(|| Arc::new(Mutex::new(VecDeque::with_capacity(AUDIO_CAPACITY))))
         .clone()
 }
 
-/// Installs the Opus rendition for `source`. Generic because
-/// `AudioRenditions::empty` takes `impl AudioSource`, and `Box<dyn AudioSource>`
-/// is not itself an `AudioSource` in iroh-live.
-fn install_audio<A: AudioSource>(
-    broadcast: &LocalBroadcast,
-    source: A,
-    bitrate: u64,
-) -> anyhow::Result<()> {
-    let encoder_config =
-        AudioEncoderConfig::from_preset(AudioFormat::mono_48k(), AudioPreset::Hq).bitrate(bitrate);
-    let catalog = OpusEncoder::config_for(&encoder_config);
-    let mut renditions = AudioRenditions::empty(source);
-    renditions.add_with_callback::<OpusEncoder>(
-        format!("audio/opus-{bitrate}"),
-        catalog.into(),
-        move |_format| OpusEncoder::with_config(encoder_config.clone()),
-    );
-    broadcast.audio().set_renditions(renditions)?;
-    Ok(())
-}
-
-/// Preferred H.264 encoder: platform hardware (VideoToolbox / VAAPI) when
-/// compiled in, else software openh264. Both advertise plain H.264 on the
-/// wire, so this changes CPU/battery cost, not interop.
-fn live_video_codec() -> VideoCodec {
-    VideoCodec::best_available().unwrap_or(VideoCodec::H264)
-}
-
-/// Which audio source a live publisher takes.
-enum LiveAudioSource {
-    /// Default capture device (the platform mic).
-    Mic,
-    /// Caller-pushed PCM (`media_audio_push_samples`).
-    Push,
-    /// Decode a local audio file (WAV/MP3) into the publisher.
-    File(PathBuf),
-    /// Subscribe to a live audio ticket and relay its decoded samples.
-    Ticket(LiveTicket),
-}
-
-fn audio() -> AudioBackend {
-    let backend = AUDIO
-        .lock()
-        .expect("audio backend mutex poisoned")
-        .get_or_insert_with(|| {
-            let backend = AudioBackend::default();
-            backend.set_aec_enabled(false);
-            backend
-        })
-        .clone();
-    // ponytail: AEC disabled — sonora's EchoRemover panics (slice index OOB,
-    // panic=abort → SIGABRT) on the CoreAudio IO thread when a mono output
-    // stream (48k/1 opus live track) joins the 2ch-configured AEC. The input
-    // device is 1ch while the AEC config is hardcoded 2ch, so cancellation was
-    // processing mono-as-stereo garbage anyway. Re-enable when iroh-live/sonora
-    // handles channel-count mismatches; echo risk until then.
-    backend.set_aec_enabled(false);
-    backend
-}
-
-/// Releases the audio driver so the mic/speaker devices close. Safe to call
-/// while streams are alive: the driver only exits once every stream is gone.
-fn release_audio() {
-    *AUDIO.lock().expect("audio backend mutex poisoned") = None;
-}
-
-fn media_dir() -> std::path::PathBuf {
-    let root = std::env::var_os("NATIVE_SDK_APP_DATA_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/idfon"));
-    let scope = MEDIA_SCOPE
-        .lock()
-        .expect("media scope mutex poisoned")
-        .clone()
-        .unwrap_or_else(|| "default".to_owned());
-    let mut safe = String::with_capacity(scope.len().min(96));
-    for byte in scope.bytes().take(96) {
-        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
-            safe.push(byte as char);
-        } else {
-            safe.push('_');
-        }
-    }
-    let root = root
-        .join("conversations")
-        .join(if safe.is_empty() { "default" } else { &safe });
-    let _ = fs::create_dir_all(&root);
-    root
-}
-
-fn broadcast_name() -> String {
-    let scope = MEDIA_SCOPE
-        .lock()
-        .expect("media scope mutex poisoned")
-        .clone()
-        .unwrap_or_else(|| "default".to_owned());
-    let mut name = String::from("idfon-audio-");
-    for byte in scope.bytes().take(64) {
-        name.push(
-            if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
-                byte as char
-            } else {
-                '_'
-            },
-        );
-    }
-    name
-}
-
-pub(crate) fn media_path(name: &str) -> std::path::PathBuf {
-    media_dir().join(name)
-}
-
-/// Persists a recording ticket once in the active conversation's ledger.
-#[ffi_export]
-pub fn media_recording_persist(ticket: char_p::Ref<'_>) -> u8 {
-    let ticket = ticket.to_str();
-    tracing::info!(ticket_len = ticket.len(), "recording persist requested");
-    if ticket.is_empty()
-        || ticket
-            .bytes()
-            .any(|byte| byte == 0 || byte == b'\n' || byte == b'\r')
-    {
-        return 1;
-    }
-    if ticket.parse::<BlobTicket>().is_err() {
-        tracing::warn!("recording persist rejected: invalid blob ticket");
-        return 1;
-    }
-    let _guard = RECORDING_HISTORY
-        .lock()
-        .expect("recording history mutex poisoned");
-    let path = media_path("recording-history.log");
-    let existing = fs::read_to_string(&path).unwrap_or_default();
-    if existing.lines().any(|line| line == ticket) {
-        tracing::info!("recording persist duplicate");
-        return 0;
-    }
-    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
-        return 1;
-    };
-    if writeln!(file, "{ticket}").is_err() {
-        return 1;
-    }
-    tracing::info!("recording persist complete");
-    0
-}
-
-/// Selects the identity/conversation namespace used by subsequent media operations.
-#[ffi_export]
-pub fn media_set_scope(scope: char_p::Ref<'_>) -> u8 {
-    let scope = scope.to_str();
-    if scope.is_empty()
-        || scope.len() > 4096
-        || scope.bytes().any(|byte| byte == 0 || byte == b'\n')
-    {
-        return 1;
-    }
-    *MEDIA_SCOPE.lock().expect("media scope mutex poisoned") = Some(scope.to_owned());
-    tracing::info!(scope_len = scope.len(), "media scope selected");
-    0
-}
-
-#[derive(Debug)]
-struct OggOpusRecorder {
-    file: File,
-    encoder: OpusEncoder,
-    serial: u32,
-    sequence: u32,
-    granule: u64,
-}
-
-impl OggOpusRecorder {
-    fn create(path: &str) -> anyhow::Result<Self> {
-        let format = AudioFormat::mono_48k();
-        let encoder = OpusEncoder::with_preset(format, AudioPreset::Hq)?;
-        let mut this = Self {
-            file: File::create(path)?,
-            encoder,
-            serial: 0x4e55464f,
-            sequence: 0,
-            granule: 0,
-        };
-        this.write_packet(
-            b"OpusHead\x01\x01\x38\x01\x80\xbb\x00\x00\x00\x00\x00",
-            0,
-            true,
-            false,
-        )?;
-        this.write_packet(
-            b"OpusTags\x05\x00\x00\x00Idfon\x00\x00\x00\x00",
-            0,
-            false,
-            false,
-        )?;
-        Ok(this)
-    }
-
-    fn push(&mut self, samples: &[f32]) -> anyhow::Result<()> {
-        self.encoder.push_samples(samples)?;
-        while let Some(packet) = self.encoder.pop_packet()? {
-            self.granule += 960;
-            self.write_packet(&packet.payload, self.granule, false, false)?;
-        }
-        Ok(())
-    }
-
-    fn finish(&mut self) -> anyhow::Result<()> {
-        // OpusEncoder buffers until a complete 20 ms frame. Pad the tail so
-        // short recordings and a final partial capture are not discarded.
-        self.encoder.push_samples(&vec![0.0f32; 960])?;
-        while let Some(packet) = self.encoder.pop_packet()? {
-            self.granule += 960;
-            self.write_packet(&packet.payload, self.granule, false, false)?;
-        }
-        self.write_packet(&[], self.granule, false, true)
-    }
-
-    fn write_packet(
-        &mut self,
-        packet: &[u8],
-        granule: u64,
-        bos: bool,
-        eos: bool,
-    ) -> anyhow::Result<()> {
-        let mut offset = 0;
-        let mut first = true;
-        while offset < packet.len() || first {
-            let remaining = packet.len() - offset;
-            let payload_len = remaining.min(255 * 255);
-            let mut lacing = Vec::new();
-            let mut left = payload_len;
-            while left >= 255 {
-                lacing.push(255);
-                left -= 255;
-            }
-            lacing.push(left as u8);
-            let mut page = Vec::with_capacity(27 + lacing.len() + payload_len);
-            page.extend_from_slice(b"OggS");
-            page.push(0);
-            page.push(if first && bos {
-                2
-            } else if offset + payload_len == packet.len() && eos {
-                4
-            } else if !first {
-                1
-            } else {
-                0
-            });
-            page.extend_from_slice(&granule.to_le_bytes());
-            page.extend_from_slice(&self.serial.to_le_bytes());
-            page.extend_from_slice(&self.sequence.to_le_bytes());
-            page.extend_from_slice(&0u32.to_le_bytes());
-            page.push(lacing.len() as u8);
-            page.extend_from_slice(&lacing);
-            page.extend_from_slice(&packet[offset..offset + payload_len]);
-            let crc = ogg_crc(&page);
-            page[22..26].copy_from_slice(&crc.to_le_bytes());
-            self.file.write_all(&page)?;
-            self.sequence += 1;
-            offset += payload_len;
-            first = false;
-            if payload_len == 0 {
-                break;
+fn audio_stream(queue: Arc<Mutex<VecDeque<f32>>>) -> BoxStream<AudioFrame> {
+    Box::pin(unfold((queue, 0u64), |(queue, pts)| async move {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut data = vec![0.0f32; 960];
+        if AUDIO_ENABLED.load(Ordering::Relaxed) {
+            let mut q = queue.lock().ok()?;
+            for sample in &mut data {
+                *sample = q.pop_front().unwrap_or(0.0);
             }
         }
-        Ok(())
-    }
+        let bytes: Vec<u8> = data.into_iter().flat_map(f32::to_le_bytes).collect();
+        let timestamp = moq_net::Timestamp::from_micros(pts).ok()?;
+        Some((AudioFrame::new(bytes::Bytes::from(bytes), timestamp), (queue, pts + 20_000)))
+    }))
 }
 
-fn ogg_crc(page: &[u8]) -> u32 {
-    let mut crc = 0u32;
-    for &byte in page {
-        crc ^= (byte as u32) << 24;
-        for _ in 0..8 {
-            crc = if crc & 0x8000_0000 != 0 {
-                (crc << 1) ^ 0x04c1_1db7
-            } else {
-                crc << 1
-            };
+fn video_stream() -> BoxStream<VideoFrame> {
+    Box::pin(unfold((), |_| async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if !VIDEO_ENABLED.load(Ordering::Relaxed) { continue; }
+            let Some((width, height, pixels, pts)) = VIDEO_QUEUE.lock().ok()?.take() else { continue; };
+            let size = Size { width, height };
+            let surface = Surface::rgba(&pixels, size).ok()?;
+            let timestamp = moq_net::Timestamp::from_micros(pts).ok()?;
+            return Some((VideoFrame::new(surface, timestamp), ()));
         }
-    }
-    crc
+    }))
 }
 
-#[derive(Debug)]
-struct WavRecorder {
-    file: File,
-    format: AudioFormat,
-    data_bytes: u32,
-    samples: usize,
-}
-
-impl WavRecorder {
-    fn create(path: &str, format: AudioFormat) -> std::io::Result<Self> {
-        let mut recorder = Self {
-            file: File::create(path)?,
-            format,
-            data_bytes: 0,
-            samples: 0,
-        };
-        recorder.write_header()?;
-        Ok(recorder)
-    }
-
-    fn write_header(&mut self) -> std::io::Result<()> {
-        let channels = self.format.channel_count as u16;
-        let rate = self.format.sample_rate;
-        let byte_rate = rate * channels as u32 * 2;
-        let block_align = channels * 2;
-        self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(b"RIFF")?;
-        self.file
-            .write_all(&(36u32 + self.data_bytes).to_le_bytes())?;
-        self.file.write_all(b"WAVEfmt ")?;
-        self.file.write_all(&16u32.to_le_bytes())?;
-        self.file.write_all(&1u16.to_le_bytes())?;
-        self.file.write_all(&channels.to_le_bytes())?;
-        self.file.write_all(&rate.to_le_bytes())?;
-        self.file.write_all(&byte_rate.to_le_bytes())?;
-        self.file.write_all(&block_align.to_le_bytes())?;
-        self.file.write_all(&16u16.to_le_bytes())?;
-        self.file.write_all(b"data")?;
-        self.file.write_all(&self.data_bytes.to_le_bytes())?;
-        Ok(())
-    }
-
-    fn push(&mut self, samples: &[f32]) -> std::io::Result<()> {
-        for sample in samples {
-            let pcm = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-            self.file.write_all(&pcm.to_le_bytes())?;
-        }
-        self.data_bytes = self.data_bytes.saturating_add((samples.len() * 2) as u32);
-        self.samples += samples.len() / self.format.channel_count as usize;
-        Ok(())
-    }
-
-    fn finish(&mut self) -> std::io::Result<()> {
-        self.write_header()?;
-        self.file.seek(SeekFrom::End(0))?;
-        self.file.flush()
-    }
-}
-
-#[derive(Debug)]
-struct RecordingSinkHandle {
-    paused: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl AudioSinkHandle for RecordingSinkHandle {
-    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
-        Box::new(Self {
-            paused: self.paused.clone(),
-        })
-    }
-    fn pause(&self) {
-        self.paused
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-    fn resume(&self) {
-        self.paused
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-    }
-    fn is_paused(&self) -> bool {
-        self.paused.load(std::sync::atomic::Ordering::Relaxed)
-    }
-    fn toggle_pause(&self) {
-        let old = self.is_paused();
-        self.paused
-            .store(!old, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-struct NullAudioSink {
-    format: AudioFormat,
-    handle: RecordingSinkHandle,
-}
-
-impl AudioSinkHandle for NullAudioSink {
-    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
-        self.handle.cloned_boxed()
-    }
-    fn pause(&self) {
-        self.handle.pause();
-    }
-    fn resume(&self) {
-        self.handle.resume();
-    }
-    fn is_paused(&self) -> bool {
-        self.handle.is_paused()
-    }
-    fn toggle_pause(&self) {
-        self.handle.toggle_pause();
-    }
-}
-
-impl AudioSink for NullAudioSink {
-    fn format(&self) -> anyhow::Result<AudioFormat> {
-        Ok(self.format)
-    }
-    fn push_samples(&mut self, _samples: &[f32]) -> anyhow::Result<()> {
-        Ok(())
-    }
-    fn handle(&self) -> Box<dyn AudioSinkHandle> {
-        self.handle.cloned_boxed()
-    }
-}
-
-struct RecordingSink {
-    format: AudioFormat,
-    recorder: Arc<Mutex<WavRecorder>>,
-    output: Box<dyn AudioSink>,
-    handle: RecordingSinkHandle,
-}
-
-impl std::fmt::Debug for RecordingSink {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RecordingSink")
-            .field("format", &self.format)
-            .finish()
-    }
-}
-
-impl AudioSinkHandle for RecordingSink {
-    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
-        self.handle.cloned_boxed()
-    }
-    fn pause(&self) {
-        self.handle.pause();
-        self.output.pause();
-    }
-    fn resume(&self) {
-        self.handle.resume();
-        self.output.resume();
-    }
-    fn is_paused(&self) -> bool {
-        self.handle.is_paused()
-    }
-    fn toggle_pause(&self) {
-        self.handle.toggle_pause();
-        self.output.toggle_pause();
-    }
-}
-
-impl AudioSink for RecordingSink {
-    fn format(&self) -> anyhow::Result<AudioFormat> {
-        Ok(self.format)
-    }
-    fn push_samples(&mut self, samples: &[f32]) -> anyhow::Result<()> {
-        // Mute the speaker while a local recording is active: there is no
-        // echo cancellation, so peer audio would bleed into the recording.
-        // The subscribed-call WAV recording keeps running regardless.
-        if LOCAL_RECORDING
-            .lock()
-            .expect("recording mutex poisoned")
-            .is_none()
-        {
-            self.output.push_samples(samples)?;
-        }
-        if !self.handle.is_paused() {
-            self.recorder
-                .lock()
-                .expect("recorder mutex poisoned")
-                .push(samples)?;
-        }
-        Ok(())
-    }
-    fn handle(&self) -> Box<dyn AudioSinkHandle> {
-        self.handle.cloned_boxed()
-    }
-}
-
-#[derive(Clone, Debug)]
-struct RecordingBackend {
-    recorder: Arc<Mutex<WavRecorder>>,
-    output: AudioBackend,
-}
-
-struct ForwardingSink {
-    format: AudioFormat,
-    queue: Arc<Mutex<VecDeque<f32>>>,
-    handle: RecordingSinkHandle,
-}
-
-impl AudioSinkHandle for ForwardingSink {
-    fn cloned_boxed(&self) -> Box<dyn AudioSinkHandle> {
-        self.handle.cloned_boxed()
-    }
-    fn pause(&self) {
-        self.handle.pause();
-    }
-    fn resume(&self) {
-        self.handle.resume();
-    }
-    fn is_paused(&self) -> bool {
-        self.handle.is_paused()
-    }
-    fn toggle_pause(&self) {
-        self.handle.toggle_pause();
-    }
-}
-
-impl AudioSink for ForwardingSink {
-    fn format(&self) -> anyhow::Result<AudioFormat> {
-        Ok(self.format)
-    }
-
-    fn push_samples(&mut self, samples: &[f32]) -> anyhow::Result<()> {
-        let channels = self.format.channel_count as usize;
-        let mut queue = self.queue.lock().expect("ticket audio queue poisoned");
-        if channels == 0 {
-            return Ok(());
-        }
-        for frame in samples.chunks(channels) {
-            let sample = frame.iter().copied().sum::<f32>() / frame.len() as f32;
-            queue.push_back(sample);
-        }
-        while queue.len() > PUSH_AUDIO_CAPACITY {
-            queue.pop_front();
-        }
-        Ok(())
-    }
-
-    fn handle(&self) -> Box<dyn AudioSinkHandle> {
-        self.handle.cloned_boxed()
-    }
-}
-
-#[derive(Clone)]
-struct ForwardingBackend {
-    queue: Arc<Mutex<VecDeque<f32>>>,
-}
-
-impl AudioStreamFactory for ForwardingBackend {
-    fn create_input(
-        &self,
-        _format: AudioFormat,
-    ) -> BoxFuture<anyhow::Result<Box<dyn AudioSource>>> {
-        Box::pin(async { anyhow::bail!("ticket forwarding backend has no input") })
-    }
-
-    fn create_output(&self, format: AudioFormat) -> BoxFuture<anyhow::Result<Box<dyn AudioSink>>> {
-        let queue = self.queue.clone();
-        Box::pin(async move {
-            Ok(Box::new(ForwardingSink {
-                format,
-                queue,
-                handle: RecordingSinkHandle {
-                    paused: Arc::new(AtomicBool::new(false)),
-                },
-            }) as Box<dyn AudioSink>)
-        })
-    }
-}
-
-impl AudioStreamFactory for RecordingBackend {
-    fn create_input(
-        &self,
-        _format: AudioFormat,
-    ) -> BoxFuture<anyhow::Result<Box<dyn AudioSource>>> {
-        Box::pin(async { anyhow::bail!("recording backend has no input") })
-    }
-    fn create_output(&self, format: AudioFormat) -> BoxFuture<anyhow::Result<Box<dyn AudioSink>>> {
-        let recorder = self.recorder.clone();
-        let output = self.output.clone();
-        Box::pin(async move {
-            let handle = RecordingSinkHandle {
-                paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            };
-            let output = match output.create_output(format).await {
-                Ok(output) => output,
-                Err(error) => {
-                    tracing::warn!("audio output unavailable; recording live audio without playback: {error:#}");
-                    Box::new(NullAudioSink {
-                        format,
-                        handle: RecordingSinkHandle {
-                            paused: handle.paused.clone(),
-                        },
-                    }) as Box<dyn AudioSink>
-                }
-            };
-            Ok(Box::new(RecordingSink {
-                format,
-                recorder,
-                output,
-                handle,
-            }) as Box<dyn AudioSink>)
-        })
-    }
-}
-
-/// Downloads and exports a blob to a per-hash file unless it is already present.
-/// Returns the exported path.
-fn ensure_fetched(ticket: &BlobTicket) -> anyhow::Result<std::path::PathBuf> {
-    tokio_executor(async {
-        let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
-        let store = FsStore::load(media_dir().join("fetched-blobs")).await?;
-        let fetched = media_dir()
-            .join("fetched-blobs")
-            .join(format!("{}.opus", ticket.hash()));
-        if !fetched.exists() {
-            store
-                .downloader(&endpoint)
-                .download(ticket.hash(), Some(ticket.addr().id))
-                .await?;
-            store.blobs().export(ticket.hash(), &fetched).await?;
-        }
-        endpoint.close().await;
-        anyhow::Ok(fetched)
-    })
-}
-
-/// Plays the fetched recording through the default output device.
-/// Returns `0` on success and `1` on failure.
-#[ffi_export]
-pub fn media_recording_play(ticket: char_p::Ref<'_>) -> u8 {
-    let Ok(ticket) = ticket.to_str().parse::<BlobTicket>() else {
-        tracing::warn!("recording playback rejected: invalid ticket");
-        return 1;
-    };
-    // per-message playback: a new play supersedes the previous one
-    media_recording_stop_playback();
-    let path = match ensure_fetched(&ticket) {
-        Ok(path) => path,
-        Err(err) => {
-            tracing::warn!("recording playback fetch failed: {err:#}");
-            return 1;
-        }
-    };
-    if !path.exists() {
-        return 1;
-    }
-    let file = match File::open(&path) {
-        Ok(file) => file,
-        Err(err) => {
-            tracing::warn!(path = %path.display(), "recording playback open failed: {err:#}");
-            return 1;
-        }
-    };
-    tracing::info!(path = %path.display(), bytes = file.metadata().map(|value| value.len()).unwrap_or(0), "recording playback started");
-    let mut packets = PacketReader::new(file);
-    let config = iroh_live::media::config::AudioConfig {
-        codec: iroh_live::media::config::AudioCodec::Opus,
-        sample_rate: 48_000,
-        channel_count: 1,
-        bitrate: Some(128_000),
-        description: None,
-    };
-    let mut decoder =
-        match iroh_live::media::codec::OpusAudioDecoder::new(&config, AudioFormat::stereo_48k()) {
-            Ok(decoder) => decoder,
-            Err(_) => return 1,
-        };
-    let stop = Arc::new(AtomicBool::new(false));
-    let thread_stop = stop.clone();
-    let thread = thread::spawn(move || {
-        let mut output = match tokio_executor(audio().default_output()) {
-            Ok(output) => output,
-            Err(err) => {
-                tracing::warn!("recording playback output initialization failed: {err:#}");
-                return;
-            }
-        };
-        let mut decoded_packets = 0usize;
-        let mut decoded_samples = 0usize;
-        let mut peak = 0.0f32;
-        let mut prebuffered = 0usize;
-        let mut playback_deadline = Instant::now() + Duration::from_millis(200);
-        while !thread_stop.load(Ordering::Relaxed) {
-            let packet = match packets.read_packet() {
-                Ok(Some(packet)) => packet,
-                Ok(None) | Err(_) => break,
-            };
-            if packet.data.starts_with(b"OpusHead") || packet.data.starts_with(b"OpusTags") {
-                continue;
-            }
-            let media_packet = iroh_live::media::format::MediaPacket {
-                timestamp: Duration::ZERO,
-                payload: buf_list::BufList::from(Bytes::from(packet.data)),
-                is_keyframe: true,
-            };
-            match decoder.push_packet(media_packet) {
-                Ok(()) => {
-                    if let Ok(Some(samples)) = decoder.pop_samples() {
-                        decoded_packets += 1;
-                        decoded_samples += samples.len();
-                        for sample in samples {
-                            peak = peak.max(sample.abs());
-                        }
-                        if let Err(err) = output.push_samples(samples) {
-                            tracing::warn!("recording playback output failed: {err:#}");
-                            break;
-                        }
-                        // Prebuffer before starting the device clock. Without
-                        // this, callback scheduling can drain each 20 ms frame
-                        // before the next one is submitted, producing pops.
-                        prebuffered += 1;
-                        if prebuffered >= 10 {
-                            let frame_duration =
-                                Duration::from_secs_f64(samples.len() as f64 / (48_000.0 * 2.0));
-                            playback_deadline += frame_duration;
-                            if let Some(remaining) =
-                                playback_deadline.checked_duration_since(Instant::now())
-                            {
-                                if !thread_stop.load(Ordering::Relaxed) {
-                                    thread::sleep(remaining);
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!("recording playback Opus decode failed: {err:#}");
-                    break;
-                }
-            }
-        }
-        if !thread_stop.load(Ordering::Relaxed) {
-            if let Some(remaining) = playback_deadline.checked_duration_since(Instant::now()) {
-                thread::sleep(remaining);
-            }
-        }
-        tracing::info!(
-            decoded_packets,
-            decoded_samples,
-            peak,
-            "recording playback finished"
-        );
-    });
-    *PLAYBACK.lock().expect("playback mutex poisoned") = Some(Playback {
-        stop,
-        thread: Some(thread),
-    });
-    0
-}
-
-/// Stops fetched-recording playback.
-#[ffi_export]
-pub fn media_recording_stop_playback() {
-    if let Some(mut playback) = PLAYBACK.lock().expect("playback mutex poisoned").take() {
-        playback.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = playback.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-/// Returns the number of currently enumerated output devices.
-#[ffi_export]
-pub fn media_audio_output_count() -> usize {
-    AudioBackend::list_outputs().len()
-}
-
-/// Sets the active subscriber output volume from 0 to 100.
-#[ffi_export]
-pub fn media_audio_set_volume(percent: u8) -> u8 {
-    let volume = (percent.min(100) as f32) / 100.0;
-    let subscriber = SUBSCRIBER.lock().expect("subscriber mutex poisoned");
-    let Some(track) = subscriber
-        .as_ref()
-        .and_then(|value| value._tracks.audio.as_ref())
-    else {
-        return 1;
-    };
-    track.set_volume(volume);
-    0
-}
-
-/// Switches the microphone input device by its cpal device identifier.
-#[ffi_export]
-pub fn media_audio_switch_input(device: char_p::Ref<'_>) -> u8 {
-    let device = match device.to_str().parse() {
-        Ok(device) => device,
-        Err(_) => return 1,
-    };
-    match tokio_executor(audio().switch_input(Some(device))) {
-        Ok(()) => 0,
-        Err(err) => {
-            tracing::warn!("failed to switch input device: {err:#}");
-            1
-        }
-    }
-}
-
-/// Switches the speaker output device by its cpal device identifier.
-#[ffi_export]
-pub fn media_audio_switch_output(device: char_p::Ref<'_>) -> u8 {
-    let device = match device.to_str().parse() {
-        Ok(device) => device,
-        Err(_) => return 1,
-    };
-    match tokio_executor(audio().switch_output(Some(device))) {
-        Ok(()) => 0,
-        Err(err) => {
-            tracing::warn!("failed to switch output device: {err:#}");
-            1
-        }
-    }
-}
-
-/// Returns the number of currently enumerated input devices.
-#[ffi_export]
-pub fn media_audio_input_count() -> usize {
-    AudioBackend::list_inputs().len()
-}
-
-/// Starts the default 48 kHz mono microphone stream.
-#[ffi_export]
-pub fn media_audio_start() -> u8 {
-    tracing::info!("audio start requested");
-    let result = tokio_executor(audio().default_input());
-    let Ok(input) = result else {
-        tracing::warn!("audio start failed");
-        return 1;
-    };
-    *INPUT.lock().expect("audio capture mutex poisoned") = Some(input);
-    tracing::info!("audio started");
-    0
-}
-
-/// Captures a short sample window and returns the number of non-silent samples.
-#[ffi_export]
-pub fn media_audio_probe(duration_ms: u64) -> usize {
-    let mut input = match tokio_executor(audio().default_input()) {
-        Ok(input) => input,
-        Err(_) => return 0,
-    };
-    let deadline = Instant::now() + Duration::from_millis(duration_ms.clamp(100, 5_000));
-    let mut samples = vec![0.0f32; 480];
-    let mut non_silent = 0usize;
-    while Instant::now() < deadline {
-        match input.pop_samples(&mut samples) {
-            Ok(Some(count)) => {
-                non_silent += samples[..count]
-                    .iter()
-                    .filter(|sample| sample.abs() > 0.001)
-                    .count()
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(5)),
-            Err(_) => return 0,
-        }
-    }
-    non_silent
-}
-
-/// Stops microphone capture when it is not owned by a live publisher.
-#[ffi_export]
-pub fn media_audio_stop() {
-    *INPUT.lock().expect("audio capture mutex poisoned") = None;
-    tracing::info!("audio stopped");
-}
-
-/// Starts recording microphone audio in the Native SDK app-data directory.
-#[ffi_export]
-pub fn media_recording_start() -> u8 {
-    tracing::info!("recording start requested");
-    if LOCAL_RECORDING
-        .lock()
-        .expect("recording mutex poisoned")
-        .is_some()
-    {
-        tracing::warn!("recording start rejected: already recording");
-        return 1;
-    }
-    let input = match tokio_executor(audio().default_input()) {
-        Ok(input) => input,
-        Err(err) => {
-            tracing::warn!("recording input initialization failed: {err:#}");
-            return 1;
-        }
-    };
-    let path = media_path("recording.opus");
-    let recorder =
-        match OggOpusRecorder::create(path.to_str().unwrap_or("/tmp/idfon/recording.opus")) {
-            Ok(r) => Arc::new(Mutex::new(r)),
-            Err(err) => {
-                tracing::warn!(error = %err, "recording file initialization failed");
-                return 1;
-            }
-        };
-    let stop = Arc::new(AtomicBool::new(false));
-    let thread_stop = stop.clone();
-    let thread_recorder = recorder.clone();
-    let peak = Arc::new(Mutex::new(0.0f32));
-    let thread_peak = peak.clone();
-    let thread = thread::spawn(move || {
-        let mut input = input;
-        let mut samples = vec![0.0f32; 480];
-        while !thread_stop.load(Ordering::Relaxed) {
-            match input.pop_samples(&mut samples) {
-                Ok(Some(count)) => {
-                    let current_peak = samples[..count]
-                        .iter()
-                        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
-                    let mut recorded_peak =
-                        thread_peak.lock().expect("recording peak mutex poisoned");
-                    *recorded_peak = recorded_peak.max(current_peak);
-                    drop(recorded_peak);
-                    let _ = thread_recorder
-                        .lock()
-                        .expect("recorder mutex poisoned")
-                        .push(&samples[..count]);
-                    // InputStream can report an underflow with a filled buffer;
-                    // do not spin and encode thousands of synthetic frames per
-                    // second while waiting for the device callback.
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(None) => thread::sleep(Duration::from_millis(5)),
-                Err(_) => break,
-            }
-        }
-    });
-    tracing::info!(path = %path.display(), "microphone recording started");
-    *LOCAL_RECORDING.lock().expect("recording mutex poisoned") = Some(LocalRecording {
-        stop,
-        thread: Some(thread),
-        recorder,
-        peak,
-        started: Instant::now(),
-    });
-    0
-}
-
-/// Stops and finalizes the local microphone recording.
-#[ffi_export]
-pub fn media_recording_stop() -> u8 {
-    tracing::info!("recording stop requested");
-    let Some(mut recording) = LOCAL_RECORDING
-        .lock()
-        .expect("recording mutex poisoned")
-        .take()
-    else {
-        tracing::warn!("recording stop rejected: no active recording");
-        return 1;
-    };
-    recording.stop.store(true, Ordering::Relaxed);
-    if let Some(thread) = recording.thread.take() {
-        let _ = thread.join();
-    }
-    let peak = *recording
-        .peak
-        .lock()
-        .expect("recording peak mutex poisoned");
-    let result = recording
-        .recorder
-        .lock()
-        .expect("recorder mutex poisoned")
-        .finish();
-    let elapsed_ms = recording.started.elapsed().as_millis();
-    LAST_RECORDING_DURATION_MS.store(elapsed_ms as u64, Ordering::Relaxed);
-    let packets = recording
-        .recorder
-        .lock()
-        .expect("recorder mutex poisoned")
-        .sequence;
-    tracing::info!(elapsed_ms, packets, peak, "microphone recording finalized");
-    if result.is_err() || peak < 0.001 {
-        if let Err(error) = result {
-            tracing::warn!(error = %error, "microphone recording finalization failed");
-        }
-        if peak < 0.001 {
-            tracing::warn!(peak, "microphone recording contains no audible samples");
-        }
-        return 1;
-    }
-    tracing::info!("recording stop complete");
-    0
-}
-
-/// Returns the duration of the most recently finalized local recording.
-#[ffi_export]
-pub fn media_recording_duration_ms() -> u64 {
-    LAST_RECORDING_DURATION_MS.load(Ordering::Relaxed)
-}
-
-/// Returns whether a microphone source or live publisher is active.
-#[ffi_export]
-pub fn media_audio_active() -> u8 {
-    let input_active = INPUT
-        .lock()
-        .expect("audio capture mutex poisoned")
-        .is_some();
-    let live_active = LIVE.lock().expect("live mutex poisoned").is_some();
-    let recording_active = LOCAL_RECORDING
-        .lock()
-        .expect("recording mutex poisoned")
-        .is_some();
-    let subscribed = SUBSCRIBER
-        .lock()
-        .expect("subscriber mutex poisoned")
-        .is_some();
-    u8::from(input_active || live_active || recording_active || subscribed)
-}
-
-/// Sets the live audio encode target bitrate in bits per second (Opus VBR).
-/// Valid range 8000..=510000; applies to the next live publisher start.
-#[ffi_export]
-pub fn media_audio_set_bitrate(bitrate: u32) -> u8 {
-    if !(8_000..=510_000).contains(&bitrate) {
-        tracing::warn!(bitrate, "live audio bitrate rejected: out of range");
-        return 1;
-    }
-    tracing::info!(bitrate, "live audio bitrate set");
-    BITRATE.store(bitrate as u64, Ordering::Relaxed);
-    0
-}
-
-/// Starts the live broadcast (mic, plus camera for video calls) and returns
-/// its iroh-live ticket.
-/// Requests camera access (TCC prompt on macOS, in-app prompt on iOS) if
-/// not yet determined.
-/// nokhwa's device query does not trigger the prompt, so without this the
-/// camera list comes back empty and the video broadcast fails to start.
-/// Denial is tolerated: audio still publishes, video vends black frames.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-fn ensure_camera_access() {
-    use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaType};
-    let media_type: &AVMediaType = unsafe { objc2_av_foundation::AVMediaTypeVideo.unwrap() };
-    if unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) }
-        == AVAuthorizationStatus::Authorized
-    {
-        return;
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    unsafe {
-        let handler = block2::RcBlock::new(move |_granted: objc2::runtime::Bool| {
-            let _ = tx.send(());
-        });
-        AVCaptureDevice::requestAccessForMediaType_completionHandler(media_type, &handler);
-    }
-    // Block until the user answers the dialog; timing out (ignored call) is
-    // acceptable — capture proceeds either way, just without frames.
-    let _ = rx.recv_timeout(Duration::from_secs(120));
-}
-
-async fn prepare_ticket_source(
-    ticket: LiveTicket,
-) -> anyhow::Result<(Arc<Mutex<VecDeque<f32>>>, TicketAudioSession)> {
-    let queue = Arc::new(Mutex::new(VecDeque::with_capacity(PUSH_AUDIO_CAPACITY)));
-    let live = Live::from_env().await?.spawn();
-    let subscription = live
-        .subscribe(ticket.endpoint, &ticket.broadcast_name)
-        .await?;
-    let backend = ForwardingBackend {
-        queue: queue.clone(),
-    };
-    let tracks = subscription
-        .media(&backend, PlaybackConfig::default())
-        .await?;
-    Ok((
-        queue,
-        TicketAudioSession {
-            _live: live,
-            _subscription: subscription,
-            _tracks: tracks,
-        },
-    ))
-}
-
-fn start_live(audio: bool, video: bool, audio_source: LiveAudioSource) -> char_p::Box {
-    tracing::info!(audio, video, "live publisher start requested");
-    if !audio && !video {
-        let text = "live publisher start rejected: no audio or video track".to_owned();
-        tracing::warn!("{text}");
-        *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = Some(text);
-        return String::new().try_into().expect("empty ticket conversion");
-    }
-    // A fresh publisher starts mic-open, camera-closed. Opening the camera
-    // gate here and letting the shell disable it asynchronously left a window
-    // where a frame still being pushed by a running capture session leaked as
-    // the call's first video frame; the shell now opens the gate explicitly
-    // once its send state is known.
-    MIC_MUTED.store(false, Ordering::Relaxed);
-    CAMERA_ENABLED.store(false, Ordering::Relaxed);
-    // Drop any frame left queued by a previous session before the gate opens:
-    // otherwise it is sent as this call's first video frame (an audio-only call
-    // would leak one frame of whatever the camera last saw).
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    {
-        *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
-    }
-    let result = tokio_executor(async {
+fn start_live(audio: bool, video: bool, push_audio: bool, file_audio: Option<PathBuf>) -> anyhow::Result<String> {
+    if !audio && !video { anyhow::bail!("at least one media track is required"); }
+    let result = tokio_executor(async move {
         let live = Live::from_env().await?.with_router().spawn();
-        let broadcast = LocalBroadcast::new();
-        let mut ticket_source = None;
-        if audio {
-            let bitrate = BITRATE.load(Ordering::Relaxed);
-            match audio_source {
-                LiveAudioSource::Push => {
-                    // A fresh publisher must not inherit whatever the tap pushed
-                    // while ringing (or before the last stop): drop it so the
-                    // peer never hears stale audio at call start.
-                    *PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned") = None;
-                    install_audio(
-                        &broadcast,
-                        PushAudioSource {
-                            format: AudioFormat::mono_48k(),
-                            queue: push_audio_queue(),
-                        },
-                        bitrate,
-                    )?;
-                }
-                LiveAudioSource::Mic => {
-                    let input = match INPUT.lock().expect("audio capture mutex poisoned").take() {
-                        Some(input) => input,
-                        None => self::audio().default_input().await?,
-                    };
-                    install_audio(&broadcast, MuteSource { inner: input }, bitrate)?;
-                }
-                LiveAudioSource::File(path) => {
-                    let source = MonoFileSource {
-                        source: AudioFileSource::new(path, false)?,
-                        stereo: Vec::new(),
-                    };
-                    install_audio(&broadcast, source, bitrate)?;
-                }
-                LiveAudioSource::Ticket(ticket) => {
-                    let (queue, session) = prepare_ticket_source(ticket).await?;
-                    install_audio(
-                        &broadcast,
-                        PushAudioSource {
-                            format: AudioFormat::mono_48k(),
-                            queue,
-                        },
-                        bitrate,
-                    )?;
-                    ticket_source = Some(session);
-                }
+        let name = format!("idfon-live-{}", std::process::id());
+        let mut combined_broadcast = None;
+        if audio || video {
+            let broadcast = live.publish(&name)?;
+            if audio {
+                let mut options = AudioOptions::default();
+                options.codec = moq_audio::encode::Codec::Opus;
+                options.bitrate = Some(BITRATE.load(Ordering::Relaxed) as u32);
+                // Device capture is the default live source; pushed PCM remains
+                // available through `media_audio_push_samples` for shell-owned taps.
+                let source = if push_audio {
+                    AudioSource::Frames {
+                        input: moq_audio::encode::Input { format: Format::F32, sample_rate: 48_000, channels: 1 },
+                        frames: audio_stream(audio_queue()),
+                    }
+                } else if let Some(path) = file_audio {
+                    let file = moq_media::audio_file::AudioFile::open(path, false)?;
+                    AudioSource::Frames { input: file.input(), frames: file.into_stream() }
+                } else {
+                    AudioSource::Device({
+                        let mut config = moq_audio::capture::Config::default();
+                        config.source = moq_audio::capture::Source::Microphone(INPUT_DEVICE.lock().unwrap().clone());
+                        config
+                    })
+                };
+                broadcast.audio().set_with(source, options);
             }
+            if video {
+                broadcast.video().set_renditions(
+                    VideoSource::Frames(video_stream()),
+                    vec![VideoRendition::new("video")],
+                )?;
+            }
+            combined_broadcast = Some(broadcast);
         }
-        if video {
-            #[cfg(any(target_os = "ios", target_os = "macos"))]
-            ensure_camera_access();
-            // iOS + macOS: the shell's AVCaptureSession (CameraPusher.swift)
-            // pushes BGRA frames via media_video_push_frame; the encoder
-            // drains them through PushFrameSource. Replaces vendored-nokhwa
-            // capture on Apple platforms. Other platforms have no C-FFI
-            // camera consumer — refuse rather than publish a black stream.
-            #[cfg(any(target_os = "ios", target_os = "macos"))]
-            let camera = PushFrameSource;
-            #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-            anyhow::bail!("live video capture is macOS/iOS only (shell-pushed frames)");
-            #[cfg(any(target_os = "ios", target_os = "macos"))]
-            // 360p (500 kbps) + 720p (2 Mbps) ladder: receiver-driven
-            // adaptation picks the rendition that fits the network.
-            broadcast.video().set_source(
-                camera,
-                live_video_codec(),
-                [VideoPreset::P360, VideoPreset::P720],
-            )?;
-        }
-        let broadcast_name = broadcast_name();
-        live.publish(&broadcast_name, &broadcast).await?;
-        let ticket = LiveTicket::new(live.endpoint().addr(), &broadcast_name).serialize();
-        LIVE.lock()
-            .expect("live mutex poisoned")
-            .replace(LiveSession {
-                _live: live,
-                _broadcast: broadcast,
-                ticket_source,
-            });
+        let ticket = LiveTicket::new(live.endpoint().id(), &name).serialize();
+        LIVE.lock().expect("live mutex poisoned").replace(LiveSession { live, _audio: combined_broadcast, _video: None });
         anyhow::Ok(ticket)
     });
     match result {
-        Ok(ticket) => {
-            tracing::info!(ticket_len = ticket.len(), "live publisher started");
-            *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = None;
-            ticket.try_into().expect("live ticket conversion failed")
-        }
-        Err(err) => {
-            let text = format!("{err:#}");
-            tracing::warn!("failed to start live publisher: {text}");
-            *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = Some(text);
-            String::new().try_into().expect("empty ticket conversion")
-        }
+        Ok(ticket) => { *LAST_ERROR.lock().expect("error poisoned") = None; Ok(ticket) }
+        Err(err) => { *LAST_ERROR.lock().expect("error poisoned") = Some(format!("{err:#}")); Err(err) }
     }
 }
 
-/// Starts the live broadcast and returns its ticket. `audio` and `video`
-/// select which tracks to publish; both zero is rejected (nothing to send).
 #[ffi_export]
-pub fn media_live_start(audio: u8, video: u8) -> char_p::Box {
-    start_live(audio != 0, video != 0, LiveAudioSource::Mic)
-}
+pub fn media_live_start(audio: u8, video: u8) -> char_p::Box { media_live_start_inner(audio != 0, video != 0, false, None) }
 
-fn parse_live_audio_source(source: &str) -> anyhow::Result<LiveAudioSource> {
-    match source {
-        "mic" | "" => Ok(LiveAudioSource::Mic),
-        "push" => Ok(LiveAudioSource::Push),
-        value
-            if value
-                .strip_prefix("file:")
-                .is_some_and(|path| !path.is_empty()) =>
-        {
-            Ok(LiveAudioSource::File(PathBuf::from(&value[5..])))
+fn media_live_start_inner(audio: bool, video: bool, push_audio: bool, file_audio: Option<PathBuf>) -> char_p::Box {
+    match start_live(audio, video, push_audio, file_audio.clone()) {
+        Ok(ticket) => {
+            *LIVE_CONFIG.lock().unwrap() = Some((audio, video, push_audio, file_audio));
+            ticket.try_into().unwrap()
         }
-        value
-            if value
-                .strip_prefix("ticket:")
-                .is_some_and(|ticket| !ticket.is_empty()) =>
-        {
-            let ticket = value[7..]
-                .parse::<LiveTicket>()
-                .map_err(|err| anyhow::anyhow!("invalid live audio ticket: {err}"))?;
-            Ok(LiveAudioSource::Ticket(ticket))
-        }
-        other => anyhow::bail!(
-            "unknown live source '{other}' (expected mic|push|file:<path>|ticket:<live-ticket>)"
-        ),
+        Err(_) => String::new().try_into().unwrap(),
     }
 }
 
-/// Like [`media_live_start`], but selects the audio source by name:
-/// `"mic"`, `"push"`, `"file:<path>"`, or `"ticket:<live-ticket>"`.
-/// A ticket source subscribes to the remote live audio and forwards its
-/// decoded samples into this publisher. An unknown or invalid source fails
-/// with an empty ticket and sets [`media_live_last_error`].
 #[ffi_export]
 pub fn media_live_start_with_source(audio: u8, video: u8, source: char_p::Ref<'_>) -> char_p::Box {
-    match parse_live_audio_source(source.to_str()) {
-        Ok(source) => start_live(audio != 0, video != 0, source),
-        Err(err) => {
-            let text = format!("invalid live source: {err:#}");
-            tracing::warn!("{text}");
-            *LAST_LIVE_ERROR.lock().expect("live error mutex poisoned") = Some(text);
-            String::new().try_into().expect("empty ticket conversion")
-        }
+    let source = source.to_str();
+    let file = source.strip_prefix("file:").filter(|path| !path.is_empty()).map(PathBuf::from);
+    if source != "mic" && source != "push" && file.is_none() {
+        *LAST_ERROR.lock().unwrap() = Some(format!("unknown live source: {source}"));
+        return String::new().try_into().unwrap();
     }
+    media_live_start_inner(audio != 0, video != 0, source == "push", file)
 }
 
-/// Pushes caller-supplied mono 48 kHz f32 PCM into the generic live audio
-/// source. Pair with `media_live_start_with_source(audio, video, "push")`.
-///
-/// `samples` is the number of f32 values (mono: samples == frames). Null or
-/// empty input is ignored; overflow past 2 s drops oldest, so a stalled
-/// encoder cannot grow memory or add latency. Trusted in-process caller.
 #[ffi_export]
 pub fn media_audio_push_samples(pcm: *const f32, samples: usize) {
-    if pcm.is_null() || samples == 0 {
-        return;
-    }
+    if pcm.is_null() || samples == 0 { return; }
     let input = unsafe { std::slice::from_raw_parts(pcm, samples) };
-    let queue = push_audio_queue();
-    let mut queue = queue.lock().expect("pushed audio queue poisoned");
-    queue.extend(input.iter().copied());
-    while queue.len() > PUSH_AUDIO_CAPACITY {
-        queue.pop_front();
+    let queue = audio_queue();
+    let result = queue.lock();
+    if let Ok(mut q) = result {
+        q.extend(input.iter().copied());
+        while q.len() > AUDIO_CAPACITY { q.pop_front(); }
     }
 }
 
-/// Enables/disables the outgoing audio stream. Disabled sends silence while
-/// capture stays open (instant re-enable, OS mic indicator stays on); it does
-/// not release the input device. Returns 0.
 #[ffi_export]
-pub fn media_live_set_audio_enabled(enabled: u8) -> u8 {
-    MIC_MUTED.store(enabled == 0, Ordering::Relaxed);
-    0
-}
-
-/// Enables/disables the outgoing video stream. Disabled sends no frames and
-/// drops any queued frame. Returns 0.
+pub fn media_live_set_audio_enabled(enabled: u8) -> u8 { AUDIO_ENABLED.store(enabled != 0, Ordering::Relaxed); 0 }
 #[ffi_export]
-pub fn media_live_set_video_enabled(enabled: u8) -> u8 {
-    CAMERA_ENABLED.store(enabled != 0, Ordering::Relaxed);
-    if enabled == 0 {
-        #[cfg(any(target_os = "ios", target_os = "macos"))]
-        {
-            *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
-        }
-    }
-    0
-}
-
-// --- Swift AVCaptureSession -> PushFrameSource camera path (iOS + macOS) ---
-
-/// Latest camera frame pushed from Swift (BGRA, rows tightly packed) with
-/// its actual dimensions.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-static PUSHED_FRAME: Mutex<Option<(u32, u32, iroh_live::media::format::VideoFrame)>> =
-    Mutex::new(None);
-
-/// Consumes frames pushed over FFI (media_video_push_frame). Stateless: the
-/// slot is shared, start/stop just clear it. The encoder thread polls
-/// pop_frame; when no frame is waiting it gets None (encoder idles until the
-/// next push), so Swift may start pushing before or after start_live.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-struct PushFrameSource;
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-impl PushFrameSource {
-    // iOS: CameraPusher locks the capture connection to portrait, so
-    // frames arrive 720x1280 upright.
-    // macOS: native sensor orientation, nominally 1280x720 landscape.
-    fn default_dimensions() -> [u32; 2] {
-        #[cfg(target_os = "ios")]
-        return [720, 1280];
-        #[cfg(target_os = "macos")]
-        return [1280, 720];
-    }
-}
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-impl SourceTrait for PushFrameSource {
-    fn name(&self) -> &str {
-        "swift-camera"
-    }
-    fn format(&self) -> SourceVideoFormat {
-        // The H.264 encoder is initialized from these dimensions and never
-        // re-reads them per frame, so every pushed frame must match. Both
-        // shells normalise their frames to exactly this size (CameraPusher +
-        // VideoScaling) instead of trusting the camera: macOS session presets
-        // are advisory and the activeFormat pin can fail silently.
-        //
-        // Deliberately no probing/waiting for a pushed frame: a mic-first call
-        // has no frame to learn from, and stalling call setup to discover a
-        // size the shells already guarantee would be pure latency.
-        SourceVideoFormat {
-            pixel_format: PixelFormat::Bgra,
-            dimensions: Self::default_dimensions(),
-        }
-    }
-
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    fn start(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-    fn stop(&mut self) -> anyhow::Result<()> {
-        *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
-        Ok(())
-    }
-    fn pop_frame(&mut self) -> anyhow::Result<Option<iroh_live::media::format::VideoFrame>> {
-        // ponytail: no per-call logging here — upstream moq's shared-source
-        // driver thread spins on Ok(None) (~25M polls/s during a call), so
-        // even a modulo-throttled log floods the tracing file (300 MB per
-        // 100 s call). Frame-flow evidence lives in the subscriber-side
-        // video-frame.jpg rewrites instead.
-        if !CAMERA_ENABLED.load(Ordering::Relaxed) {
-            *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
-            return Ok(None);
-        }
-        Ok(PUSHED_FRAME
-            .lock()
-            .expect("pushed frame mutex poisoned")
-            .take()
-            .map(|(_, _, frame)| frame))
-    }
-}
-
-/// Pushes one camera frame (BGRA, 4 bytes/pixel, rows tightly packed) from
-/// Swift's AVCaptureSession into the slot drained by PushFrameSource.
-/// Drop-latest: an unconsumed frame is overwritten. Malformed sizes and
-/// short buffers are ignored (trusted in-process caller; belt for stride
-/// math mistakes).
-#[cfg(any(target_os = "ios", target_os = "macos"))]
+pub fn media_live_set_video_enabled(enabled: u8) -> u8 { VIDEO_ENABLED.store(enabled != 0, Ordering::Relaxed); 0 }
 #[ffi_export]
-pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u32, pts_ms: u64) {
-    if !CAMERA_ENABLED.load(Ordering::Relaxed) {
-        return;
-    }
-    if data.is_null() || width == 0 || height == 0 || len < width as usize * height as usize * 4 {
-        return;
-    }
-    let payload = unsafe { std::slice::from_raw_parts(data, len) };
-    let frame = iroh_live::media::format::VideoFrame::new_packed(
-        Bytes::copy_from_slice(payload),
-        width,
-        height,
-        PixelFormat::Bgra,
-        Duration::from_millis(pts_ms),
-    );
-    *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = Some((width, height, frame));
-}
-
-/// Returns the last live-publisher failure (empty string if none), so the
-/// GUI can show the real cause instead of a generic start-failed message.
-#[ffi_export]
-pub fn media_live_last_error() -> char_p::Box {
-    LAST_LIVE_ERROR
-        .lock()
-        .expect("live error mutex poisoned")
-        .clone()
-        .unwrap_or_default()
-        .try_into()
-        .expect("live error conversion failed")
-}
-
-/// Stops the live microphone broadcast.
+pub fn media_live_last_error() -> char_p::Box { LAST_ERROR.lock().unwrap().clone().unwrap_or_default().try_into().unwrap() }
 #[ffi_export]
 pub fn media_live_stop() {
-    tracing::info!("live publisher stop requested");
-    let session = LIVE.lock().expect("live mutex poisoned").take();
-    if let Some(session) = session {
-        tokio_executor(async move {
-            let LiveSession {
-                _live,
-                _broadcast: _,
-                ticket_source,
-            } = session;
-            _live.shutdown().await;
-            if let Some(source) = ticket_source {
-                source._live.shutdown().await;
-            }
-        });
-        tracing::info!("live publisher stopped");
-    } else {
-        tracing::info!("live publisher stop ignored: no active publisher");
-    }
-    // Encode pipelines are dead now; dropping the backend ends the driver
-    // thread and closes the mic/speaker devices (kills the OS mic indicator).
-    release_audio();
-    // The shell-pushed camera slot is a plain static and outlives the publisher;
-    // clear it here as well, so nothing stale survives into the next call.
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    {
-        *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
-    }
-    // Same for a caller-pushed audio queue: drop it so a later "push" start
-    // begins empty and stale samples cannot leak into the next call.
-    *PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned") = None;
+    if let Some(session) = LIVE.lock().unwrap().take() { tokio_executor(session.live.shutdown()); }
+    *LIVE_CONFIG.lock().unwrap() = None;
+    if let Ok(mut frame) = VIDEO_QUEUE.lock() { *frame = None; }
+    if let Ok(mut queue) = AUDIO_QUEUE.lock() { *queue = None; }
 }
-
-/// Subscribes to a live ticket and records decoded audio in the app-data directory.
 #[ffi_export]
 pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
-    let ticket_text = ticket.to_str();
-    tracing::info!(
-        ticket_len = ticket_text.len(),
-        "live subscriber start requested"
-    );
-    let Ok(ticket) = LiveTicket::deserialize(ticket_text) else {
-        tracing::warn!("live subscriber rejected: invalid ticket");
-        return 1;
-    };
-    let result = tokio_executor(async {
-        let path = media_path("received.wav");
-        let recorder = Arc::new(Mutex::new(WavRecorder::create(
-            path.to_str().unwrap_or("/tmp/idfon/received.wav"),
-            AudioFormat::stereo_48k(),
-        )?));
-        let backend = RecordingBackend {
-            recorder: recorder.clone(),
-            output: audio().clone(),
-        };
-        let live = Live::from_env().await?.spawn();
-        let subscription = live
-            .subscribe(ticket.endpoint, &ticket.broadcast_name)
-            .await?;
-        // A video-only broadcast has no audio rendition; MediaTracks then
-        // carries audio: None and no output device is opened. That is a valid
-        // call (its video arrives via media_video_start), so do not reject.
-        let tracks = subscription
-            .media(&backend, PlaybackConfig::default())
-            .await?;
-        anyhow::Ok((live, subscription, tracks, recorder))
-    });
-    match result {
-        Ok((live, subscription, tracks, recorder)) => {
-            tracing::info!("live subscriber connected and recording");
-            let previous = SUBSCRIBER
-                .lock()
-                .expect("subscriber mutex poisoned")
-                .replace(Subscriber {
-                    _live: live,
-                    _subscription: subscription,
-                    _tracks: tracks,
-                    recording: recorder,
-                });
-            if let Some(previous) = previous {
-                tokio_executor(async move {
-                    let Subscriber {
-                        _live,
-                        _subscription,
-                        _tracks,
-                        recording: _,
-                    } = previous;
-                    drop(_tracks);
-                    drop(_subscription);
-                    _live.shutdown().await;
-                });
+    media_live_unsubscribe();
+    let Ok(ticket) = ticket.to_str().parse::<LiveTicket>() else { return 1; };
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let handle = std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Runtime::new() else { return; };
+        let result = runtime.block_on(async move {
+            let live = Live::from_env().await?.spawn();
+            let subscription = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
+            let broadcast = subscription.broadcast();
+            let catalog = broadcast.catalog();
+            let Some(name) = catalog.first_audio() else { anyhow::bail!("broadcast has no audio track"); };
+            let config = catalog.audio().get(name).ok_or_else(|| anyhow::anyhow!("audio catalog missing"))?;
+            let mut decode = moq_audio::decode::Config::new();
+            decode.format = Format::F32;
+            decode.sample_rate = Some(48_000);
+            decode.channels = Some(1);
+            let mut consumer = moq_audio::decode::Consumer::new(broadcast.consumer(), config, name, decode).await?;
+            let engine = moq_audio::playback::Engine::open({
+                let mut playback = moq_audio::playback::Config::default();
+                playback.device = OUTPUT_DEVICE.lock().unwrap().clone();
+                playback
+            }).await?;
+            PLAYBACK_ENGINE.lock().unwrap().replace(engine.clone());
+            let mut playback_input = moq_audio::playback::Input::default();
+            playback_input.format = Format::F32;
+            playback_input.sample_rate = 48_000;
+            playback_input.channels = 1;
+            let mut sink = engine.sink(playback_input)?;
+            let control = sink.control();
+            control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
+            *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
+            let mut samples = Vec::new();
+            while !thread_stop.load(Ordering::Relaxed) {
+                let frame = match tokio::time::timeout(std::time::Duration::from_millis(200), consumer.read()).await {
+                    Ok(frame) => frame?,
+                    Err(_) => continue,
+                };
+                let Some(frame) = frame else { break; };
+                sink.write(&frame.data)?;
+                for chunk in frame.data.chunks_exact(4) { samples.push(f32::from_le_bytes(chunk.try_into().unwrap())); }
             }
-            0
-        }
-        Err(err) => {
-            tracing::warn!("failed to subscribe to live audio: {err:#}");
-            1
-        }
-    }
+            write_wav(&media_path("received.wav"), &samples)?;
+            PLAYBACK_CONTROL.lock().unwrap().take();
+            live.shutdown().await;
+            anyhow::Ok(())
+        });
+        if let Err(err) = result { eprintln!("live subscribe failed: {err:#}"); }
+    });
+    *SUBSCRIBER.lock().unwrap() = Some(Subscriber { stop, handle: Some(handle) });
+    0
 }
 
-/// Returns the number of decoded frames written to the subscriber WAV file.
+fn write_wav(path: &std::path::Path, samples: &[f32]) -> anyhow::Result<()> {
+    std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")))?;
+    let mut bytes = Vec::with_capacity(44 + samples.len() * 2);
+    let data_len = (samples.len() * 2) as u32;
+    bytes.extend_from_slice(b"RIFF"); bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt "); bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes()); bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000u32.to_le_bytes()); bytes.extend_from_slice(&96_000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes()); bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data"); bytes.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples { bytes.extend_from_slice(&((sample.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()); }
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+#[ffi_export]
+pub fn media_live_unsubscribe() {
+    media_recording_stop_playback();
+    if let Some(mut sub) = SUBSCRIBER.lock().unwrap().take() {
+        sub.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = sub.handle.take() { let _ = handle.join(); }
+    }
+}
+#[ffi_export]
+pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u32, pts_ms: u64) {
+    if data.is_null() || width == 0 || height == 0 || len < width as usize * height as usize * 4 { return; }
+    let pixels = unsafe { std::slice::from_raw_parts(data, width as usize * height as usize * 4) }.to_vec();
+    if let Ok(mut slot) = VIDEO_QUEUE.lock() { *slot = Some((width, height, pixels, pts_ms * 1_000)); }
+}
+
+#[ffi_export]
+pub fn media_audio_start() -> u8 { AUDIO_ENABLED.store(true, Ordering::Relaxed); 0 }
+#[ffi_export]
+pub fn media_audio_stop() { AUDIO_ENABLED.store(false, Ordering::Relaxed); }
+#[ffi_export]
+pub fn media_audio_active() -> u8 {
+    u8::from(
+        LIVE.lock().unwrap().is_some()
+            || RECORDING.lock().unwrap().is_some()
+            || SUBSCRIBER.lock().unwrap().is_some()
+            || PLAYBACK.lock().unwrap().is_some(),
+    )
+}
+#[ffi_export]
+pub fn media_audio_probe(_duration_ms: u64) -> usize {
+    audio_queue().lock().map(|queue| queue.iter().filter(|sample| sample.abs() > 0.001).count()).unwrap_or(0)
+}
+#[ffi_export]
+pub fn media_audio_input_count() -> usize {
+    tokio_executor(async { moq_audio::capture::devices().await.map(|devices| devices.len()).unwrap_or(0) })
+}
+#[ffi_export]
+pub fn media_audio_output_count() -> usize {
+    tokio_executor(async { moq_audio::playback::devices().await.map(|devices| devices.len()).unwrap_or(0) })
+}
+#[ffi_export]
+pub fn media_audio_set_volume(percent: u8) -> u8 {
+    let value = percent.min(100);
+    VOLUME.store(value, Ordering::Relaxed);
+    if let Some(control) = PLAYBACK_CONTROL.lock().unwrap().as_ref() {
+        control.set_volume(value as f32 / 100.0);
+    }
+    0
+}
+#[ffi_export]
+pub fn media_audio_switch_input(device: char_p::Ref<'_>) -> u8 {
+    let id = device.to_str().to_owned();
+    let found = tokio_executor(async {
+        moq_audio::capture::devices().await.map(|devices| devices.into_iter().any(|item| item.id == id)).unwrap_or(false)
+    });
+    if !found { return 1; }
+    *INPUT_DEVICE.lock().unwrap() = Some(id);
+    let config = LIVE_CONFIG.lock().unwrap().clone();
+    if let Some((audio, video, push, file)) = config {
+        media_live_stop();
+        if start_live(audio, video, push, file.clone()).is_ok() {
+            *LIVE_CONFIG.lock().unwrap() = Some((audio, video, push, file));
+        }
+    }
+    0
+}
+#[ffi_export]
+pub fn media_audio_switch_output(device: char_p::Ref<'_>) -> u8 {
+    let id = device.to_str().to_owned();
+    let found = tokio_executor(async {
+        moq_audio::playback::devices().await.map(|devices| devices.into_iter().any(|item| item.id == id)).unwrap_or(false)
+    });
+    if !found { return 1; }
+    *OUTPUT_DEVICE.lock().unwrap() = Some(id.clone());
+    if let Some(engine) = PLAYBACK_ENGINE.lock().unwrap().as_ref() {
+        let mut config = moq_audio::playback::Config::default();
+        config.device = Some(id);
+        if tokio_executor(engine.switch(config)).is_err() { return 1; }
+    }
+    0
+}
+#[ffi_export]
+pub fn media_audio_set_bitrate(bitrate: u32) -> u8 {
+    if !(8_000..=510_000).contains(&bitrate) { return 1; }
+    BITRATE.store(bitrate as u64, Ordering::Relaxed);
+    0
+}
+#[ffi_export]
+pub fn media_recording_start() -> u8 {
+    media_recording_stop();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let handle = std::thread::spawn(move || {
+        let result = tokio_executor(async move {
+            let live = Live::from_env().await?.with_router().spawn();
+            let path = format!("idfon-recording-{}", std::process::id());
+            let mut producer = live.publish_raw(&path)?;
+            let catalog = moq_mux::catalog::Producer::new(&mut producer)?;
+            let mut options = PublicationOptions::default();
+            options.capture.source = moq_audio::capture::Source::Microphone(INPUT_DEVICE.lock().unwrap().clone());
+            options.encode.codec = moq_audio::encode::Codec::Opus;
+            let (publication, driver) = Publication::new(producer, catalog, options)?;
+            let mut driver_future = Box::pin(driver.run());
+            let subscription_future = live.subscribe(live.endpoint().addr(), &path);
+            tokio::pin!(subscription_future);
+            let subscription = tokio::select! {
+                result = &mut subscription_future => result?,
+                result = &mut driver_future => {
+                    result?;
+                    anyhow::bail!("recording capture ended before subscription")
+                }
+            };
+            let broadcast = subscription.broadcast();
+            let catalog = broadcast.catalog();
+            let name = catalog.first_audio().ok_or_else(|| anyhow::anyhow!("recording audio track unavailable"))?.to_owned();
+            let config = catalog.audio().get(&name).ok_or_else(|| anyhow::anyhow!("recording catalog unavailable"))?.clone();
+            let mut decode = moq_audio::decode::Config::new();
+            decode.format = Format::F32;
+            decode.sample_rate = Some(48_000);
+            decode.channels = Some(1);
+            let mut consumer = moq_audio::decode::Consumer::new(broadcast.consumer(), &config, &name, decode).await?;
+            let mut samples = Vec::new();
+            let started = std::time::Instant::now();
+            loop {
+                tokio::select! {
+                    _ = &mut driver_future => break,
+                    frame = consumer.read() => {
+                        let Some(frame) = frame? else { break; };
+                        if thread_stop.load(Ordering::Relaxed) { break; }
+                        for chunk in frame.data.chunks_exact(4) { samples.push(f32::from_le_bytes(chunk.try_into().unwrap())); }
+                    }
+                }
+            }
+            write_wav(&media_path("recording.wav"), &samples)?;
+            RECORDING_DURATION.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+            drop(publication);
+            live.shutdown().await;
+            anyhow::Ok(())
+        });
+        if let Err(err) = result { eprintln!("local recording failed: {err:#}"); }
+    });
+    *RECORDING.lock().unwrap() = Some(Recording { stop, handle: Some(handle) });
+    0
+}
+#[ffi_export]
+pub fn media_recording_stop() -> u8 {
+    if let Some(mut recording) = RECORDING.lock().unwrap().take() {
+        recording.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = recording.handle.take() { let _ = handle.join(); }
+        0
+    } else { 1 }
+}
+#[ffi_export]
+pub fn media_recording_duration_ms() -> u64 { RECORDING_DURATION.load(Ordering::Relaxed) }
+#[ffi_export]
+pub fn media_recording_persist(ticket: char_p::Ref<'_>) -> u8 {
+    let Ok(ticket) = ticket.to_str().parse::<BlobTicket>() else { return 1; };
+    let result = tokio_executor(async {
+        let endpoint = Endpoint::bind(presets::N0).await?;
+        let root = media_path("persisted-blobs");
+        let store = FsStore::load(&root).await?;
+        store.downloader(&endpoint).download(ticket.hash(), Some(ticket.addr().id)).await?;
+        let output = media_path("fetched-blobs");
+        std::fs::create_dir_all(&output)?;
+        store.blobs().export(ticket.hash(), output.join("received.wav")).await?;
+        endpoint.close().await;
+        anyhow::Ok(())
+    });
+    u8::from(result.is_err())
+}
+#[ffi_export]
+pub fn media_recording_play(ticket: char_p::Ref<'_>) -> u8 {
+    media_recording_stop_playback();
+    let path = if ticket.to_str().parse::<BlobTicket>().is_ok() {
+        media_path("fetched-blobs").join("received.wav")
+    } else {
+        media_path("recording.wav")
+    };
+    if !path.exists() { return 1; }
+    let Ok(data) = std::fs::read(&path) else { return 1; };
+    if data.len() < 44 || &data[0..4] != b"RIFF" { return 1; }
+    let samples = data[44..].to_vec();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let handle = std::thread::spawn(move || {
+        let result = tokio_executor(async {
+            let mut playback_config = moq_audio::playback::Config::default();
+            playback_config.device = OUTPUT_DEVICE.lock().unwrap().clone();
+            let engine = moq_audio::playback::Engine::open(playback_config).await?;
+            let mut input = moq_audio::playback::Input::default();
+            input.format = Format::S16;
+            input.sample_rate = 48_000;
+            input.channels = 1;
+            let mut sink = engine.sink(input)?;
+            let control = sink.control();
+            control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
+            *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
+            for chunk in samples.chunks(1_920) {
+                if thread_stop.load(Ordering::Relaxed) { break; }
+                sink.write(chunk)?;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            anyhow::Ok(())
+        });
+        if let Err(err) = result { eprintln!("playback failed: {err:#}"); }
+    });
+    *PLAYBACK.lock().unwrap() = Some(Playback { stop, handle: Some(handle) });
+    0
+}
+#[ffi_export]
+pub fn media_recording_stop_playback() {
+    PLAYBACK_CONTROL.lock().unwrap().take();
+    PLAYBACK_ENGINE.lock().unwrap().take();
+    if let Some(mut playback) = PLAYBACK.lock().unwrap().take() {
+        playback.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = playback.handle.take() { let _ = handle.join(); }
+    }
+}
 #[ffi_export]
 pub fn media_live_recording_samples() -> usize {
-    SUBSCRIBER
-        .lock()
-        .expect("subscriber mutex poisoned")
-        .as_ref()
-        .map(|subscriber| {
-            subscriber
-                .recording
-                .lock()
-                .expect("recorder mutex poisoned")
-                .samples
-        })
+    let path = {
+        let received = media_path("received.wav");
+        if received.exists() { received } else { media_path("recording.wav") }
+    };
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len().saturating_sub(44) as usize / 2)
         .unwrap_or(0)
+}
+#[ffi_export]
+pub fn media_live_recording_store() -> char_p::Box {
+    let result = tokio_executor(async {
+        let mut guard = BLOB_PROVIDER.lock().map_err(|_| anyhow::anyhow!("blob provider poisoned"))?;
+        if guard.is_none() {
+            let endpoint = Endpoint::bind(presets::N0).await?;
+            let store = FsStore::load(media_path("blobs")).await?;
+            let router = Router::builder(endpoint.clone()).accept(BLOBS_ALPN, BlobsProtocol::new(store.as_ref(), None)).spawn();
+            *guard = Some(BlobProvider { endpoint, store, _router: router });
+        }
+        let provider = guard.as_ref().unwrap();
+        let path = {
+            let local = media_path("recording.wav");
+            if local.exists() { local } else { media_path("received.wav") }
+        };
+        anyhow::ensure!(path.exists(), "no recording available");
+        let content = provider.store.add_path(&path).await?;
+        Ok::<String, anyhow::Error>(format!("{}\n{}", RECORDING_DURATION.load(Ordering::Relaxed), BlobTicket::new(provider.endpoint.addr(), content.hash, content.format)))
+    });
+    result.unwrap_or_default().try_into().unwrap()
+}
+#[ffi_export]
+pub fn media_blob_fetch(ticket: char_p::Ref<'_>) -> u8 {
+    let Ok(ticket) = ticket.to_str().parse::<BlobTicket>() else { return 1; };
+    let result = tokio_executor(async {
+        let endpoint = Endpoint::bind(presets::N0).await?;
+        let root = media_path("fetched-blobs");
+        let store = FsStore::load(&root).await?;
+        store.downloader(&endpoint).download(ticket.hash(), Some(ticket.addr().id)).await?;
+        store.blobs().export(ticket.hash(), root.join("received.wav")).await?;
+        endpoint.close().await;
+        anyhow::Ok(())
+    });
+    u8::from(result.is_err())
+}
+#[ffi_export]
+pub fn media_set_scope(scope: char_p::Ref<'_>) -> u8 {
+    let path = PathBuf::from(scope.to_str());
+    if std::fs::create_dir_all(&path).is_err() { return 1; }
+    *MEDIA_SCOPE.lock().unwrap() = Some(path);
+    0
+}
+#[ffi_export]
+pub fn media_emergency_stop() { media_live_stop(); }
+#[ffi_export]
+pub fn media_shutdown() {
+    media_live_unsubscribe();
+    media_recording_stop_playback();
+    media_recording_stop();
+    media_live_stop();
+    if let Some(provider) = BLOB_PROVIDER.lock().unwrap().take() { tokio_executor(async { provider.endpoint.close().await; }); }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn parses_live_audio_source_kinds() {
-        assert!(matches!(
-            parse_live_audio_source("mic").unwrap(),
-            LiveAudioSource::Mic
-        ));
-        assert!(matches!(
-            parse_live_audio_source("push").unwrap(),
-            LiveAudioSource::Push
-        ));
-        assert!(matches!(
-            parse_live_audio_source("file:/tmp/test.wav").unwrap(),
-            LiveAudioSource::File(path) if path == PathBuf::from("/tmp/test.wav")
-        ));
-        assert!(parse_live_audio_source("file:").is_err());
-        assert!(parse_live_audio_source("ticket:not-a-ticket").is_err());
-        assert!(parse_live_audio_source("unknown").is_err());
-    }
-
-    #[test]
-    fn file_source_decodes_wav() {
-        let path = std::env::temp_dir().join(format!(
-            "idfon-audio-source-{}-{}.wav",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut recorder =
-            WavRecorder::create(path.to_str().unwrap(), AudioFormat::stereo_48k()).unwrap();
-        recorder.push(&[0.25, -0.25].repeat(480)).unwrap();
-        recorder.finish().unwrap();
-
-        let mut source = AudioFileSource::new(&path, false).unwrap();
-        let mut samples = vec![0.0; 960];
-        let mut frames = None;
-        for _ in 0..100 {
-            match source.pop_samples(&mut samples).unwrap() {
-                Some(value) => {
-                    frames = Some(value);
-                    break;
-                }
-                None => std::thread::sleep(Duration::from_millis(10)),
-            }
-        }
-        assert_eq!(frames, Some(480));
-        assert!(samples.iter().any(|sample| sample.abs() > 0.1));
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn ticket_forwarding_sink_downmixes() {
-        let queue = Arc::new(Mutex::new(VecDeque::new()));
-        let mut sink = ForwardingSink {
-            format: AudioFormat::stereo_48k(),
-            queue: queue.clone(),
-            handle: RecordingSinkHandle {
-                paused: Arc::new(AtomicBool::new(false)),
-            },
-        };
-        sink.push_samples(&[1.0, 0.0, -0.5, 0.5]).unwrap();
-        assert_eq!(
-            queue.lock().unwrap().iter().copied().collect::<Vec<_>>(),
-            vec![0.5, 0.0]
-        );
-    }
-
-    #[test]
-    fn file_source_starts_live_publisher() {
-        let path = std::env::temp_dir().join(format!(
-            "idfon-live-file-{}-{}.wav",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut recorder =
-            WavRecorder::create(path.to_str().unwrap(), AudioFormat::stereo_48k()).unwrap();
-        recorder.push(&[0.25, -0.25].repeat(4_800)).unwrap();
-        recorder.finish().unwrap();
-
-        let ticket = start_live(true, false, LiveAudioSource::File(path.clone()));
-        assert!(!ticket.to_str().is_empty(), "file source failed to publish");
-        media_live_stop();
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn live_ticket_source_relays_decoded_audio() {
-        let path = std::env::temp_dir().join(format!(
-            "idfon-live-ticket-{}-{}.wav",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut recorder =
-            WavRecorder::create(path.to_str().unwrap(), AudioFormat::stereo_48k()).unwrap();
-        recorder.push(&[0.25, -0.25].repeat(9_600)).unwrap();
-        recorder.finish().unwrap();
-
-        let relayed = tokio_executor(async {
-            let publisher = Live::from_env().await?.with_router().spawn();
-            let broadcast = LocalBroadcast::new();
-            let source = MonoFileSource {
-                source: AudioFileSource::new(&path, false)?,
-                stereo: Vec::new(),
-            };
-            install_audio(&broadcast, source, 32_000)?;
-            let name = format!("idfon-ticket-test-{}", std::process::id());
-            publisher.publish(&name, &broadcast).await?;
-            let ticket = LiveTicket::new(publisher.endpoint().addr(), &name);
-            let (queue, session) = prepare_ticket_source(ticket).await?;
-
-            for _ in 0..200 {
-                if !queue.lock().expect("ticket queue poisoned").is_empty() {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            let relayed = !queue.lock().expect("ticket queue poisoned").is_empty();
-            session._live.shutdown().await;
-            publisher.shutdown().await;
-            anyhow::Ok(relayed)
-        });
-        assert!(relayed.expect("ticket relay failed"));
-        fs::remove_file(path).unwrap();
-    }
-
-    use std::{
-        fs,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    /// The camera gate is the only thing standing between a running capture
-    /// session and a leaked frame: a frame pushed while disabled must never
-    /// enter the slot, and disabling must drop whatever is already queued.
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    #[test]
-    fn camera_gate_drops_frames_pushed_while_disabled() {
-        let pixels = [0u8; 2 * 2 * 4];
-        let mut source = PushFrameSource;
-
-        CAMERA_ENABLED.store(false, Ordering::Relaxed);
-        *PUSHED_FRAME.lock().expect("pushed frame mutex poisoned") = None;
-        media_video_push_frame(pixels.as_ptr(), pixels.len(), 2, 2, 0);
-        assert!(
-            PUSHED_FRAME
-                .lock()
-                .expect("pushed frame mutex poisoned")
-                .is_none(),
-            "disabled gate must not queue a frame"
-        );
-
-        CAMERA_ENABLED.store(true, Ordering::Relaxed);
-        media_video_push_frame(pixels.as_ptr(), pixels.len(), 2, 2, 0);
-        assert!(
-            source.pop_frame().unwrap().is_some(),
-            "enabled gate must deliver the queued frame"
-        );
-
-        media_video_push_frame(pixels.as_ptr(), pixels.len(), 2, 2, 0);
-        CAMERA_ENABLED.store(false, Ordering::Relaxed);
-        assert!(
-            source.pop_frame().unwrap().is_none(),
-            "disabling must drop the queued frame"
-        );
-        assert!(
-            PUSHED_FRAME
-                .lock()
-                .expect("pushed frame mutex poisoned")
-                .is_none(),
-            "disabling must clear the slot"
-        );
-    }
-
-    /// The pushed-audio source is the seam that lets a caller feed any input
-    /// (remote stream, file, synth) instead of the default mic: it must drain
-    /// in order, pad underrun with silence, and bound overflow.
-    #[test]
-    fn pushed_audio_source_drains_pads_and_bounds() {
-        MIC_MUTED.store(false, Ordering::Relaxed);
-        *PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned") = None;
-        let mut source = PushAudioSource {
-            format: AudioFormat::mono_48k(),
-            queue: push_audio_queue(),
-        };
-        let pcm: Vec<f32> = (0..10).map(|i| i as f32).collect();
-        media_audio_push_samples(pcm.as_ptr(), pcm.len());
-
-        let mut buf = [0.0f32; 4];
-        assert_eq!(source.pop_samples(&mut buf).unwrap(), Some(4));
-        assert_eq!(buf, [0.0, 1.0, 2.0, 3.0], "drains in pushed order");
-
-        // Only 6 samples left: the rest is silence, never a short/None frame.
-        let mut buf = [1.0f32; 8];
-        assert_eq!(source.pop_samples(&mut buf).unwrap(), Some(8));
-        assert_eq!(buf[..6], [4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
-        assert_eq!(buf[6..], [0.0, 0.0], "underrun is padded with silence");
-
-        // Overflow keeps only the newest PUSH_AUDIO_CAPACITY samples.
-        let big = vec![0.5f32; PUSH_AUDIO_CAPACITY + 100];
-        media_audio_push_samples(big.as_ptr(), big.len());
-        let queued = source
-            .queue
-            .lock()
-            .expect("pushed audio queue poisoned")
-            .len();
-        assert_eq!(queued, PUSH_AUDIO_CAPACITY, "overflow drops oldest");
-
-        *PUSHED_AUDIO.lock().expect("pushed audio mutex poisoned") = None;
-    }
-
-    #[test]
-    fn ogg_opus_writes_headers_and_audio_page() {
-        let path = std::env::temp_dir().join(format!(
-            "idfon-test-{}.opus",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut recorder = OggOpusRecorder::create(path.to_str().unwrap()).unwrap();
-        recorder.push(&vec![0.1f32; 960]).unwrap();
-        recorder.finish().unwrap();
-        let data = fs::read(&path).unwrap();
-        assert!(data.windows(4).any(|window| window == b"OggS"));
-        assert!(data.windows(8).any(|window| window == b"OpusHead"));
-        assert!(data.windows(8).any(|window| window == b"OpusTags"));
-        let mut reader = PacketReader::new(std::io::Cursor::new(data));
-        assert_eq!(
-            reader.read_packet().unwrap().unwrap().data,
-            b"OpusHead\x01\x01\x38\x01\x80\xbb\x00\x00\x00\x00\x00"
-        );
-        assert_eq!(
-            reader.read_packet().unwrap().unwrap().data,
-            b"OpusTags\x05\x00\x00\x00Idfon\x00\x00\x00\x00"
-        );
-        let packet = reader.read_packet().unwrap().unwrap();
-        assert!(packet.data.len() > 2);
-        let config = iroh_live::media::config::AudioConfig {
-            codec: iroh_live::media::config::AudioCodec::Opus,
-            sample_rate: 48_000,
-            channel_count: 1,
-            bitrate: Some(128_000),
-            description: None,
-        };
-        let mut decoder =
-            iroh_live::media::codec::OpusAudioDecoder::new(&config, AudioFormat::mono_48k())
-                .unwrap();
-        decoder
-            .push_packet(iroh_live::media::format::MediaPacket {
-                timestamp: Duration::ZERO,
-                payload: buf_list::BufList::from(Bytes::from(packet.data)),
-                is_keyframe: true,
-            })
-            .unwrap();
-        assert!(decoder.pop_samples().unwrap().is_some());
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn wav_finalize_writes_data_size_and_samples() {
-        let path = std::env::temp_dir().join(format!(
-            "idfon-test-{}.wav",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut recorder =
-            WavRecorder::create(path.to_str().unwrap(), AudioFormat::mono_48k()).unwrap();
-        recorder.push(&[0.0, 0.5, -0.5, 0.0]).unwrap();
-        recorder.finish().unwrap();
-        let data = fs::read(&path).unwrap();
-        assert_eq!(&data[0..4], b"RIFF");
-        assert_eq!(u32::from_le_bytes(data[40..44].try_into().unwrap()), 8);
-        assert!(data[44..].iter().any(|byte| *byte != 0));
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn blob_store_persists_named_recording() {
-        let root = std::env::temp_dir().join(format!(
-            "idfon-blobs-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let wav = root.join("recording.wav");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(&wav, b"test recording").unwrap();
-        tokio_executor(async {
-            let store = FsStore::load(&root).await.unwrap();
-            let content = store
-                .add_path(&wav)
-                .with_named_tag("recording")
-                .await
-                .unwrap();
-            let mut tags = store.tags().list().await.unwrap();
-            use n0_future::StreamExt;
-            let tag = tags.next().await.unwrap().unwrap();
-            assert_eq!(tag.hash, content.hash);
-        });
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn blob_ticket_transfers_recording_between_endpoints() {
-        let root = std::env::temp_dir().join(format!(
-            "idfon-transfer-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let source = root.join("source.wav");
-        let target = root.join("target.wav");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(&source, b"received decoded audio").unwrap();
-        tokio_executor(async {
-            let provider_endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
-                .await
-                .unwrap();
-            let provider_store = FsStore::load(root.join("provider")).await.unwrap();
-            let content = provider_store
-                .add_path(&source)
-                .with_named_tag("recording")
-                .await
-                .unwrap();
-            let protocol = BlobsProtocol::new(provider_store.as_ref(), None);
-            let router = Router::builder(provider_endpoint.clone())
-                .accept(BLOBS_ALPN, protocol)
-                .spawn();
-            provider_endpoint.online().await;
-            let recipient_endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
-                .await
-                .unwrap();
-            let recipient_store = FsStore::load(root.join("recipient")).await.unwrap();
-            recipient_endpoint.online().await;
-            let ticket = BlobTicket::new(provider_endpoint.addr(), content.hash, content.format);
-            recipient_store
-                .downloader(&recipient_endpoint)
-                .download(ticket.hash(), Some(ticket.addr().id))
-                .await
-                .unwrap();
-            recipient_store
-                .blobs()
-                .export(ticket.hash(), &target)
-                .await
-                .unwrap();
-            assert_eq!(fs::read(&source).unwrap(), fs::read(&target).unwrap());
-            router.shutdown().await.unwrap();
-            provider_endpoint.close().await;
-            recipient_endpoint.close().await;
-        });
-        fs::remove_dir_all(root).unwrap();
-    }
-}
-
-/// Stores the finalized recipient recording in the local iroh-blobs filesystem store.
-/// Returns the BLAKE3 content hash, or an empty string on failure.
-#[ffi_export]
-pub fn media_live_recording_store() -> char_p::Box {
-    tracing::info!("recording blob store requested");
-    // Reuse the previous provider's live/store/router instead of reopening:
-    // a second FsStore::load on the same "blobs" directory deadlocks on
-    // blobs.db while the previous store is still shutting down, which made
-    // every store after the first hang forever.
-    let existing = BLOB_PROVIDER
-        .lock()
-        .expect("blob provider mutex poisoned")
-        .take();
-    let result = tokio_executor(async move {
-        let (live, store, router) = match existing {
-            Some(BlobProvider {
-                _live: live,
-                _store: store,
-                _router: router,
-            }) => (live, store, router),
-            None => {
-                let live = Live::from_env().await?.spawn();
-                let store = FsStore::load(media_dir().join("blobs")).await?;
-                let protocol = BlobsProtocol::new(store.as_ref(), None);
-                let router = Router::builder(live.endpoint().clone())
-                    .accept(BLOBS_ALPN, protocol)
-                    .spawn();
-                (live, store, router)
-            }
-        };
-        let local = media_path("recording.opus");
-        let received = media_path("received.wav");
-        let recording_path = if local.exists() { local } else { received };
-        anyhow::ensure!(recording_path.exists(), "no finalized recording exists");
-        anyhow::ensure!(
-            fs::metadata(&recording_path)?.len() > 0,
-            "recording is empty"
-        );
-        let content = store.add_path(recording_path).await?;
-        let recording_tag = format!("recording-{}", content.hash);
-        store.tags().set(&recording_tag, content.hash).await?;
-        let ticket = BlobTicket::new(live.endpoint().addr(), content.hash, content.format);
-        BLOB_PROVIDER
-            .lock()
-            .expect("blob provider mutex poisoned")
-            .replace(BlobProvider {
-                _live: live,
-                _store: store,
-                _router: router,
-            });
-        anyhow::Ok(ticket.to_string())
-    });
-    match result {
-        Ok(hash) => {
-            tracing::info!(ticket_len = hash.len(), "recording blob stored");
-            hash.try_into().expect("blob hash conversion failed")
-        }
-        Err(err) => {
-            tracing::warn!("failed to store recording blob: {err:#}");
-            String::new()
-                .try_into()
-                .expect("empty blob hash conversion")
-        }
-    }
-}
-
-/// Fetches a BlobTicket into the Native SDK app-data directory.
-/// Returns `0` on success and `1` on failure.
-#[ffi_export]
-pub fn media_blob_fetch(ticket: char_p::Ref<'_>) -> u8 {
-    let ticket_text = ticket.to_str();
-    tracing::info!(
-        ticket_len = ticket_text.len(),
-        "recording blob fetch requested"
-    );
-    let Ok(ticket) = ticket_text.parse::<BlobTicket>() else {
-        tracing::warn!("recording blob fetch rejected: invalid ticket");
-        return 1;
-    };
-    match ensure_fetched(&ticket) {
-        Ok(_) => {
-            tracing::info!("recording blob fetch complete");
-            0
-        }
-        Err(err) => {
-            tracing::warn!("failed to fetch recording blob: {err:#}");
-            1
-        }
-    }
-}
-
-/// Immediately stops inbound live audio, playback, and microphone capture.
-#[ffi_export]
-pub fn media_emergency_stop() {
-    media_recording_stop_playback();
-    media_live_unsubscribe();
-    media_live_stop();
-    media_audio_stop();
-}
-
-/// Stops all media resources during application shutdown.
-#[ffi_export]
-pub fn media_shutdown() {
-    media_recording_stop_playback();
-    let _ = media_recording_stop();
-    media_live_unsubscribe();
-    media_live_stop();
-    BLOB_PROVIDER
-        .lock()
-        .expect("blob provider mutex poisoned")
-        .take();
-    *INPUT.lock().expect("audio capture mutex poisoned") = None;
-    release_audio();
-}
-
-/// Stops the live audio subscription and finalizes its WAV recording.
-#[ffi_export]
-pub fn media_live_unsubscribe() {
-    tracing::info!("live subscriber stop requested");
-    if let Some(subscriber) = SUBSCRIBER.lock().expect("subscriber mutex poisoned").take() {
-        let Subscriber {
-            _live,
-            _subscription,
-            _tracks,
-            recording,
-        } = subscriber;
-        // Stop the decoder/output thread before rewriting the WAV header.
-        drop(_tracks);
-        drop(_subscription);
-        tokio_executor(async move { _live.shutdown().await });
-        let mut recorder = recording.lock().expect("recorder mutex poisoned");
-        let _ = recorder.finish();
-        tracing::info!(samples = recorder.samples, "live audio recording finalized");
-    } else {
-        tracing::info!("live subscriber stop ignored: no active subscriber");
-    }
+    fn media_path_is_stable() { assert!(super::media_path("x").ends_with("x")); }
 }

@@ -4,6 +4,7 @@
   "private": true,
   "description": "Build the idfon CLI + idfond daemon and populate the npm platform packages.",
   "scripts": {
+    "clean": "rm -rf ../target idfon-*/bin",
     "build": "../scripts/build-cli.sh"
   }
 }

@@ -3,10 +3,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use iroh_live::{
-    media::{codec::AudioCodec, format::AudioPreset, publish::LocalBroadcast, AudioBackend},
-    Live,
-};
+use iroh_live::{media::publish::{AudioSource, LocalBroadcast}, Live};
+use moq_audio::capture::Config as AudioCaptureConfig;
 use idfon_protocol::{MediaKind, MediaSession};
 use thiserror::Error;
 
@@ -42,6 +40,7 @@ struct LivePublisher {
 struct LiveSubscriber {
     live: Live,
     _subscription: iroh_live::Subscription,
+    _media: Option<iroh_live::media::subscribe::MediaTracks>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,25 +108,17 @@ impl MediaSessionHandle {
         if self.session.kind != MediaKind::LiveAudio || !self.is_active() {
             return Err(MediaServiceError::AlreadyStopped);
         }
-        let input = AudioBackend::default()
-            .default_input()
-            .await
-            .map_err(|_| MediaServiceError::MediaUnavailable)?;
         let live = Live::from_env()
             .await
             .map_err(|_| MediaServiceError::MediaUnavailable)?
             .with_router()
             .spawn();
-        let broadcast = LocalBroadcast::new();
-        broadcast
-            .audio()
-            .set(input, AudioCodec::Opus, [AudioPreset::Hq])
-            .map_err(|_| MediaServiceError::MediaUnavailable)?;
         let name = format!("idfon-session-{}", self.session.session_id);
-        live.publish(&name, &broadcast)
-            .await
+        let broadcast = live
+            .publish(&name)
             .map_err(|_| MediaServiceError::MediaUnavailable)?;
-        let ticket = iroh_live::ticket::LiveTicket::new(live.endpoint().addr(), &name).serialize();
+        broadcast.audio().set(AudioSource::Device(AudioCaptureConfig::default()));
+        let ticket = iroh_live::ticket::LiveTicket::new(live.endpoint().id(), &name).serialize();
         *self.publisher.lock().expect("publisher poisoned") = Some(LivePublisher {
             live,
             _broadcast: broadcast,
@@ -157,9 +148,11 @@ impl MediaSessionHandle {
             .subscribe(ticket.endpoint, &ticket.broadcast_name)
             .await
             .map_err(|_| MediaServiceError::MediaUnavailable)?;
+        let media = subscription.media().await;
         *self.subscriber.lock().expect("subscriber poisoned") = Some(LiveSubscriber {
             live,
             _subscription: subscription,
+            _media: Some(media),
         });
         Ok(())
     }
@@ -179,14 +172,15 @@ impl MediaSessionHandle {
             return Err(MediaServiceError::AlreadyStopped);
         }
         *state = SessionState::Stopped;
+        let _ = self.publisher.lock().expect("publisher poisoned").take();
+        let _ = self.subscriber.lock().expect("subscriber poisoned").take();
         let _ = self.recording.lock().expect("recording poisoned").take();
         let _ = self.playback.lock().expect("playback poisoned").take();
         Ok(())
     }
 }
 
-/// Owns logical media sessions. Concrete capture/publish resources are attached
-/// to these handles as the daemon media backend is migrated.
+/// Owns logical media sessions and their current iroh-live resources.
 #[derive(Clone, Default)]
 pub struct MediaService {
     sessions: Arc<Mutex<HashMap<String, MediaSessionHandle>>>,

@@ -29,7 +29,7 @@ iroh-blobs = "0.103.0"
 # so capture-camera/rusty-capture/v4l2r/nokhwa are compiled nowhere: the
 # v4l2r 0.0.7 bindgen also fails against Ubuntu 22.04 kernel headers
 # (missing AV1/VP9 stateless controls).
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
 # macOS camera permission request (camera access is also requested from the
 # Swift shells; this covers daemon-side starts). objc2 hard-fails to compile
 # on non-Apple platforms, hence the target gate; ensure_camera_access is
@@ -47,6 +47,11 @@ n0-future = "0.3.0"
 data-encoding = "2.9.0"
 ogg = "0.9.2"
 iroh-mdns-address-lookup = "0.5.0"
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", package = "moq-media", default-features = false, features = ["capture"] }
+moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-3", default-features = false, features = ["aac", "capture", "playback"] }
+moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
 idfon-protocol = { path = "../../../crates/idfon-protocol" }
 idfon-client = { path = "../../../crates/idfon-client" }
 idfon-daemon = { path = "../../../crates/idfon-daemon" }
@@ -59,16 +64,14 @@ block2 = "0.6"
 
 # Hardware H.264 in the Rust pipeline: VideoToolbox on Apple, VAAPI on Linux.
 # Both advertise plain H.264 on the wire (VtbEncoder/VaapiEncoder report the
-# same h264_video_config), so this is a local encoder choice that changes
-# CPU/battery cost, not interop. Software openh264 stays compiled as the
-# fallback; `VideoCodec::best_available()` prefers hardware.
+# same H.264 wire format); current moq-video selects the available backend.
 # Target-gated because moq-media's `vaapi` feature pulls `cros-codecs`
 # unconditionally, which does not build on non-Linux.
 [target.'cfg(target_os = "macos")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "videotoolbox"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
 
 # ponytail note: a 4f94b3e regression put tokio and the idfon-* deps inside
 # a not(linux) target section and silently broke the Linux dylib (tokio
@@ -89,7 +92,16 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
+# Match the MoQ development snapshot selected by the current iroh-live rev.
+[patch.crates-io]
+hang = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2" }
+iroh-moq = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2" }
+
 # Vendored nokhwa: the Linux-gated direct dep already points at this path,
 # so no patch is needed for it; keep the entry only if a transitive dep ever
 # pulls crates.io nokhwa again.
-[patch.crates-io]

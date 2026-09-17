@@ -10,23 +10,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iroh_live::media::{
-    audio_file_source::AudioFileSource,
-    codec::{self, OpusAudioDecoder},
-    config::AudioConfig,
-    format::{AudioFormat, AudioPreset, Quality},
-    publish::LocalBroadcast,
-    traits::AudioDecoder,
-    transport::PacketSource,
+use moq_media::{
+    audio_file::AudioFile,
+    publish::AudioSource,
+    subscribe::RemoteBroadcast,
 };
+use moq_audio::decode::{Config as AudioDecodeConfig, Consumer as AudioConsumer};
+use moq_audio::Format;
+use moq_audio::encode::Options as AudioOptions;
 use iroh_live::{ticket::LiveTicket, Live};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh::protocol::ProtocolHandler as _;
-use iroh_live::media::subscribe::RemoteBroadcast;
-
-/// Broadcast name used on a 1:1 MoQ session (session-scoped: only the
-/// connected peer can see it — there is no ticket to share).
-pub(crate) const CALL_BROADCAST: &str = "call";
 
 /// A running file-source publisher. Holds the live endpoint, router, and
 /// broadcast; the tokio runtime is owned by this struct (a runtime dropped
@@ -81,20 +75,22 @@ impl LivePublisher {
                 Err(err) => return fail(format!("endpoint: {err:#}")),
             };
             let live = Arc::new(Live::builder(endpoint).with_router().spawn());
-            let broadcast = LocalBroadcast::new();
-            let source = match AudioFileSource::new(&path, loop_playback) {
+            let broadcast = match live.publish(&name) {
+                Ok(broadcast) => broadcast,
+                Err(err) => return fail(format!("publish: {err:#}")),
+            };
+            let source = match AudioFile::open(&path, loop_playback) {
                 Ok(source) => source,
                 Err(err) => return fail(format!("audio file source: {err:#}")),
             };
-            if let Err(err) =
-                broadcast.audio().set(source, codec::AudioCodec::Opus, [AudioPreset::Hq])
-            {
-                return fail(format!("audio setup: {err:#}"));
-            }
-            if let Err(err) = live.publish(&name, &broadcast).await {
-                return fail(format!("publish: {err:#}"));
-            }
-            let ticket = LiveTicket::new(live.endpoint().addr(), &name).serialize();
+            broadcast.audio().set_with(
+                AudioSource::Frames {
+                    input: source.input(),
+                    frames: source.into_stream(),
+                },
+                AudioOptions::default(),
+            );
+            let ticket = LiveTicket::new(live.endpoint().id(), &name).serialize();
             let _ = tx.send(Ok((live.clone(), ticket)));
             // Hold the broadcast open until stop()/shutdown.
             std::future::pending::<()>().await;
@@ -216,18 +212,20 @@ async fn stream_peer(
     let addr: EndpointAddr = serde_json::from_str(peer_addr)
         .map_err(|err| anyhow::anyhow!("invalid peer endpoint address: {err}"))?;
     let endpoint = build_endpoint(relay).await?;
-    // Outbound-only session: a bare Moq on a fresh endpoint, no inbound path.
-    let moq = iroh_live::moq::Moq::new(endpoint);
-    let broadcast = LocalBroadcast::new();
-    let source = AudioFileSource::new(path, loop_playback)?;
-    broadcast
-        .audio()
-        .set(source, codec::AudioCodec::Opus, [AudioPreset::Hq])?;
-    let session = moq
-        .connect(addr)
+    let live = Live::builder(endpoint).with_router().spawn();
+    let call_path = iroh_live::Call::path(live.endpoint().id());
+    let broadcast = live.publish(&call_path)?;
+    let source = AudioFile::open(path, loop_playback)?;
+    broadcast.audio().set_with(
+        AudioSource::Frames {
+            input: source.input(),
+            frames: source.into_stream(),
+        },
+        AudioOptions::default(),
+    );
+    let call = iroh_live::Call::dial(&live, addr)
         .await
-        .map_err(|err| anyhow::anyhow!("connect to peer: {err:#}"))?;
-    session.publish(CALL_BROADCAST, broadcast.consume());
+        .map_err(|err| anyhow::anyhow!("dial call: {err}"))?;
     let base = Instant::now();
     // The receiver controls the call length: it hangs up when its capture
     // window ends, which closes the session and releases us. `seconds` is a
@@ -235,10 +233,12 @@ async fn stream_peer(
     match seconds {
         Some(cap) => tokio::time::sleep(Duration::from_secs(cap)).await,
         None => {
-            session.conn().closed().await;
+            call.closed().await;
         }
     }
     let held_ms = base.elapsed().as_millis() as u64;
+    call.close();
+    live.shutdown().await;
     Ok(held_ms)
 }
 
@@ -276,9 +276,8 @@ async fn answer_wav(
         Some(id) => Some(id.parse().map_err(|err| anyhow::anyhow!("invalid --from endpoint id: {err}"))?),
         None => None,
     };
-    // MoQ rides the daemon's transport endpoint via a side-channel ALPN: the
-    // accept loop hands us raw connections, the handler turns them into
-    // sessions, and the session stream is what `answer` waits on.
+    // Mount the current MoQ handler on the daemon endpoint and accept a current
+    // iroh-live call session.
     let moq = iroh_live::moq::Moq::new(transport.endpoint().clone());
     let handler = moq.protocol_handler();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<iroh::endpoint::Connection>(8);
@@ -292,45 +291,26 @@ async fn answer_wav(
         }
     });
     let mut incoming = moq.incoming_sessions();
-    let mut session = tokio::time::timeout(Duration::from_secs(wait), async {
-        loop {
-            let Some(call) = incoming.next().await else {
-                anyhow::bail!("live transport shut down");
-            };
-            match from_id {
-                Some(want) if call.remote_id() != want => call.reject(),
-                _ => break Ok::<_, anyhow::Error>(call.accept()),
+    let session = tokio::time::timeout(Duration::from_secs(wait), async {
+        let Some(call) = incoming.next().await else {
+            anyhow::bail!("live transport shut down");
+        };
+        if let Some(want) = from_id {
+            if call.remote_id() != want {
+                anyhow::bail!("incoming call is from an unexpected endpoint");
             }
         }
+        Ok::<_, anyhow::Error>(call)
     })
     .await
     .map_err(|_| anyhow::anyhow!("no incoming call within {wait}s"))??;
-    let mut last_err = String::new();
-    const SUBSCRIBE_ATTEMPTS: u32 = 3;
-    const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(8);
-    let remote = {
-        let mut result = None;
-        for _attempt in 0..SUBSCRIBE_ATTEMPTS {
-            match tokio::time::timeout(SUBSCRIBE_TIMEOUT, session.subscribe(CALL_BROADCAST)).await {
-                Ok(Ok(consumer)) => {
-                    result = Some(
-                        RemoteBroadcast::new(CALL_BROADCAST, consumer)
-                            .await
-                            .map_err(|err| anyhow::anyhow!("remote broadcast: {err:#}"))?,
-                    );
-                    break;
-                }
-                Ok(Err(err)) => last_err = format!("{err:#}"),
-                Err(_) => last_err = "timed out waiting for the call broadcast to be announced".into(),
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-        result.ok_or_else(|| anyhow::anyhow!("subscribe to caller failed after retries: {last_err}"))?
-    };
+    let call = iroh_live::Call::accept(session)
+        .await
+        .map_err(|err| anyhow::anyhow!("accept call: {err}"))?;
+    let remote = call.remote().clone();
     let stats = record_remote(&remote, out, seconds, 0, true).await?;
-    drop(remote);
-    drop(session);
-    drop(_side); // unregister the side channel
+    call.close();
+    drop(_side);
     Ok(stats)
 }
 
@@ -345,16 +325,21 @@ async fn record_remote(
     hangup_ends: bool,
 ) -> anyhow::Result<ListenStats> {
     let base = Instant::now();
-    let audio = broadcast
-        .catalog()
-        .select_audio_rendition(Quality::Highest)?;
-    let (mut source, config) = broadcast.raw_audio_track(&audio)?;
-
-    let config: AudioConfig = config.into();
-    let mut decoder = OpusAudioDecoder::new(
-        &config,
-        AudioFormat::mono_48k(),
-    )?;
+    let catalog = broadcast.catalog();
+    let audio = catalog
+        .first_audio()
+        .ok_or_else(|| anyhow::anyhow!("broadcast has no audio track"))?;
+    let config = catalog
+        .audio()
+        .get(audio)
+        .ok_or_else(|| anyhow::anyhow!("audio catalog entry disappeared"))?;
+    let mut decode_config = AudioDecodeConfig::new();
+    decode_config.format = Format::F32;
+    decode_config.sample_rate = Some(48_000);
+    decode_config.channels = Some(1);
+    let mut decoder = AudioConsumer::new(
+        broadcast.consumer(), config, audio, decode_config,
+    ).await?;
 
     let start = Instant::now();
     let wall_ms = std::time::SystemTime::now()
@@ -366,20 +351,17 @@ async fn record_remote(
     let mut pts: Vec<u128> = Vec::new();
 
     while start.elapsed() < Duration::from_secs(seconds) {
-        let pkt = match source.read().await {
-            Ok(Some(pkt)) => pkt,
+        let frame = match decoder.read().await {
+            Ok(Some(frame)) => frame,
             Ok(None) => break,
             // On a 1:1 call the peer hanging up is a normal end, not an error.
             Err(_) if hangup_ends => break,
             Err(err) => return Err(err.into()),
         };
         arrivals.push(base.elapsed().as_millis());
-        pts.push(pkt.timestamp.as_millis());
-        if decoder.push_packet(pkt).is_err() {
-            continue;
-        }
-        while let Some(buf) = decoder.pop_samples()? {
-            samples.extend_from_slice(buf);
+        pts.push(frame.timestamp.as_millis());
+        for chunk in frame.data.chunks_exact(4) {
+            samples.push(f32::from_le_bytes(chunk.try_into().unwrap()));
         }
     }
 
