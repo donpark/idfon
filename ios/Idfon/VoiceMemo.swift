@@ -15,7 +15,7 @@ final class VoiceMemo: NSObject, AVAudioRecorderDelegate {
     private var meterTimer: Timer?
 
     static func requestPermission(_ completion: @escaping (Bool) -> Void) {
-        AVAudioSession.sharedInstance().requestRecordPermission { granted in
+        AVAudioApplication.requestRecordPermission { granted in
             DispatchQueue.main.async { completion(granted) }
         }
     }

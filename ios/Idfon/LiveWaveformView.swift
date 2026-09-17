@@ -143,7 +143,7 @@ final class AudioMeter {
     func start() {
         guard !running else { return }
         let session = AVAudioSession.sharedInstance()
-        session.requestRecordPermission { [weak self] granted in
+        AVAudioApplication.requestRecordPermission { [weak self] granted in
             guard granted, let self, !self.running else { return }
             do {
                 try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])

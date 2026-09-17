@@ -55,6 +55,15 @@ struct Peer: Decodable, Identifiable {
         case callMode = "call_mode"
     }
 
+    init(id: String, name: String?, endpointId: String?, aliases: [String]?, callMode: IncomingCallMode?, devices: [PeerDevice] = []) {
+        self.id = id
+        self.name = name
+        self.endpointId = endpointId
+        self.aliases = aliases
+        self.callMode = callMode
+        self.devices = devices
+    }
+
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)

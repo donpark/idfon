@@ -196,7 +196,8 @@ final class AudioMeter {
         guard !running else { return }
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             guard granted, let self, !self.running else { return }
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
                 let input = self.engine.inputNode
                 let format = input.outputFormat(forBus: 0)
                 if self.pushToEncoder {
@@ -208,11 +209,11 @@ final class AudioMeter {
                         self.pushToEncoder = false
                     }
                 }
-                input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
-                    guard let self else { return }
+                input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak owner = self] buffer, _ in
+                    guard let owner else { return }
                     let rms = Self.rms(buffer)
-                    for wave in self.views { wave.view?.add(amplitude: Float(min(rms * 12, 1))) }
-                    if self.pushToEncoder { self.push(buffer) }
+                    for wave in owner.views { wave.view?.add(amplitude: Float(min(rms * 12, 1))) }
+                    if owner.pushToEncoder { owner.push(buffer) }
                 }
                 do {
                     try self.engine.start()

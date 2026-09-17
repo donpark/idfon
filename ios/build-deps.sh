@@ -14,14 +14,16 @@ cd "$root/native/vendor/iroh-c-ffi"
 echo "== aarch64-apple-ios"
 # Deployment target >= 12: openh264's ___chkstk_darwin needs it, and the
 # default (10.0) makes the final lib un-linkable.
-SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path) IPHONEOS_DEPLOYMENT_TARGET=16.0 CARGO_PROFILE_RELEASE_LTO=off \
+SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path) IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-miphoneos-version-min=17.0" CARGO_PROFILE_RELEASE_LTO=off \
   cargo build --release --target aarch64-apple-ios
 cp target/aarch64-apple-ios/release/libiroh_c_ffi.a "$ios_dir/Vendor/device/"
 
 if [ "${1:-}" = "--sim" ]; then
   mkdir -p "$ios_dir/Vendor/sim"
   echo "== aarch64-apple-ios-sim"
-  SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path) IPHONEOS_DEPLOYMENT_TARGET=16.0 CARGO_PROFILE_RELEASE_LTO=off \
+  SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path) IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+  RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-mios-simulator-version-min=17.0" CARGO_PROFILE_RELEASE_LTO=off \
     cargo build --release --target aarch64-apple-ios-sim
   cp target/aarch64-apple-ios-sim/release/libiroh_c_ffi.a "$ios_dir/Vendor/sim/"
 fi

@@ -26,7 +26,7 @@ final class AudioPusher {
     func start() {
         guard !running else { return }
         let session = AVAudioSession.sharedInstance()
-        session.requestRecordPermission { [weak self] granted in
+        AVAudioApplication.requestRecordPermission { [weak self] granted in
             guard granted, let self, !self.running else { return }
             do {
                 try session.setCategory(
