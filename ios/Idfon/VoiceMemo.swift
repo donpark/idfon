@@ -6,6 +6,8 @@ import AVFAudio
 /// to the daemon as a blob + IDFON-RECORDING/1 envelope.
 final class VoiceMemo: NSObject, AVAudioRecorderDelegate {
     private var recorder: AVAudioRecorder?
+    private var interruptionObserver: NSObjectProtocol?
+    private var routeObserver: NSObjectProtocol?
     private(set) var fileURL: URL?
     private(set) var duration: TimeInterval = 0
 
@@ -21,6 +23,7 @@ final class VoiceMemo: NSObject, AVAudioRecorderDelegate {
     }
 
     func start() throws -> URL {
+        if recorder != nil { _ = stop() }
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
         try session.setActive(true)
@@ -40,6 +43,24 @@ final class VoiceMemo: NSObject, AVAudioRecorderDelegate {
         recorder.record()
         self.recorder = recorder
         fileURL = url
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] notification in
+            guard let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  type == AVAudioSession.InterruptionType.began.rawValue else { return }
+            _ = self?.stop()
+        }
+        routeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] notification in
+            guard let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
+            _ = self?.stop()
+        }
 
         meterTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self, weak recorder] _ in
             guard let recorder else { return }
@@ -59,7 +80,37 @@ final class VoiceMemo: NSObject, AVAudioRecorderDelegate {
         duration = recorder.currentTime
         recorder.stop()
         self.recorder = nil
+        self.onAmplitude?(0)
+        self.fileURL = nil
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver)
+            self.interruptionObserver = nil
+        }
+        if let routeObserver {
+            NotificationCenter.default.removeObserver(routeObserver)
+            self.routeObserver = nil
+        }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         return (url, duration)
+    }
+
+    deinit {
+        meterTimer?.invalidate()
+        recorder?.stop()
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver)
+        }
+        if let routeObserver {
+            NotificationCenter.default.removeObserver(routeObserver)
+        }
+    }
+
+    func discard() {
+        let url = fileURL
+        _ = stop()
+        if let url { try? FileManager.default.removeItem(at: url) }
+        fileURL = nil
+        duration = 0
     }
 
     /// Downsamples a wav file into normalized amplitudes for a static waveform.

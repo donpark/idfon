@@ -24,33 +24,53 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     /// Set when start() was requested while the app was not active; capture
     /// arbitration denies frames to non-active clients, so we defer.
     private var pendingStart = false
+    private var restartAfterInterruption = false
     /// Set when the session reports a runtime error / interruption.
     private var lastSessionError = ""
+    private var observers: [NSObjectProtocol] = []
+    private var activationObserver: NSObjectProtocol?
 
     override init() {
         super.init()
         // object: nil so rebuilt (fresh) sessions are observed too; this is
         // the only AVCaptureSession in the process.
-        NotificationCenter.default.addObserver(
+        observers.append(NotificationCenter.default.addObserver(
             forName: .AVCaptureSessionRuntimeError, object: nil, queue: nil
         ) { [weak self] note in
             let err = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
             self?.lastSessionError = "runtime: \(err?.description ?? "?")"
             NSLog("idfon camera push: RUNTIME ERROR \(err?.description ?? "?")")
-        }
-        NotificationCenter.default.addObserver(
+        })
+        observers.append(NotificationCenter.default.addObserver(
             forName: .AVCaptureSessionWasInterrupted, object: nil, queue: nil
         ) { [weak self] note in
             let reason = note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int ?? -1
-            self?.lastSessionError = "interrupted reason=\(reason)"
+            guard let self else { return }
+            self.lastSessionError = "interrupted reason=\(reason)"
+            self.restartAfterInterruption = self.session.isRunning
+            self.queue.async {
+                if self.session.isRunning { self.session.stopRunning() }
+            }
             NSLog("idfon camera push: INTERRUPTED reason=\(reason)")
-        }
-        NotificationCenter.default.addObserver(
-            forName: .AVCaptureSessionInterruptionEnded, object: session, queue: nil
-        ) { _ in NSLog("idfon camera push: interruption ended") }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .AVCaptureSessionInterruptionEnded, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.restartAfterInterruption else { return }
+            self.restartAfterInterruption = false
+            NSLog("idfon camera push: interruption ended; restarting")
+            self.queue.async { self.startLocked() }
+        })
+    }
+
+    deinit {
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        if session.isRunning { session.stopRunning() }
     }
 
     func start() {
+        restartAfterInterruption = false
         let state = UIApplication.shared.applicationState
         NSLog("idfon camera push: start requested appState=\(state.rawValue) (0=active)")
         guard state == .active else {
@@ -58,12 +78,15 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             // delivery (cameracaptured arbitration) and never recovers —
             // wait until the app is actually active.
             pendingStart = true
-            NotificationCenter.default.addObserver(
-                forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
-            ) { [weak self] _ in
-                guard let self, self.pendingStart else { return }
-                self.pendingStart = false
-                self.queue.async { self.startLocked() }
+            if activationObserver == nil {
+                activationObserver = NotificationCenter.default.addObserver(
+                    forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+                ) { [weak self] _ in
+                    guard let self, self.pendingStart else { return }
+                    self.pendingStart = false
+                    self.activationObserver = nil
+                    self.queue.async { self.startLocked() }
+                }
             }
             NSLog("idfon camera push: app not active, deferring start until didBecomeActive")
             return
@@ -71,6 +94,12 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         queue.async { self.startLocked() }
     }
     func stop() {
+        pendingStart = false
+        restartAfterInterruption = false
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
+            self.activationObserver = nil
+        }
         queue.async {
             if self.session.isRunning { self.session.stopRunning() }
         }

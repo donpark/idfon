@@ -1,7 +1,7 @@
 import UIKit
 
 /// Full-screen remote-video view for a 1:1 camera call. The video frame is
-/// a polled JPEG (video-frame.jpg rewritten by the FFI ~15fps) rendered as
+/// decoded video frames supplied by Idfon's current media bridge, rendered as
 /// a UIImage — no pixels cross the FFI, mirroring the macOS GUI.
 final class CallViewController: UIViewController {
     private let videoView = UIImageView()

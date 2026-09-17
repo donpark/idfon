@@ -157,6 +157,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         super.viewDidDisappear(animated)
         videoObservers.forEach(NotificationCenter.default.removeObserver)
         videoObservers = []
+        if memo != nil {
+            memo?.discard()
+            memo = nil
+            memoURL = nil
+            mode = .normal
+        }
     }
 
     // MARK: - Views
@@ -427,6 +433,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func discardMemoTapped() {
+        memo?.discard()
+        memo = nil
         if let url = memoURL { try? FileManager.default.removeItem(at: url) }
         memoURL = nil
         reviewPlayer?.stop()
