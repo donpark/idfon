@@ -118,11 +118,11 @@ a Mac and an iPhone online together — which for this user is always — you ge
 exactly the relay/Pkarr conflict and split-brain QUIC handshakes. Never copy a
 transport key. Linking a device **issues a new device key**, always.
 
-**Status (2026-09-16):** the key split has landed for *new* identities —
-`identity.create` writes a dedicated `endpoint-<id>.key`, the daemon binds the
-endpoint with it and signs with the identity key, and legacy identities fall
-back to the old single-key behaviour so their endpoint ids are unchanged.
-Account-addressed peers and device enrollment are still open.
+**Status:** the account/endpoint key split is implemented. New identities use a
+dedicated `endpoint-<id>.key` for transport and the identity key for account
+signing. Existing endpoint bindings remain stable. Account-addressed peers,
+device metadata, sender delivery policy, standard contact tickets, and
+endpoint-aware calls are implemented.
 
 ### Account-addressed peers
 
@@ -143,73 +143,50 @@ receipt on two devices, or neither, is recoverable: devices must tolerate
 duplicates and the sender must be able to deliver to any one device. idfon's
 room fan-out (`docs/chatrooms.md`) is the closest existing machinery.
 
-## 5. Discovery — deferred
+### Discovery model today
 
-A peer needs the account's device set. Today that can be carried **in the peer
-record**, distributed over the existing iroh channel when a device is enrolled
-or a set changes. No DNS, no WebFinger, no directory service.
+A peer's device set is carried in the standard contact/device ticket and peer
+record, distributed over the existing Iroh channel when a device is added or
+updated. No DNS, WebFinger, or directory service is required by the prototype.
 
-When idfon eventually grows public handles, resolve `handle → account key →
-signed device set` via **WebFinger / HTTPS with authentication**, not a public
-DNS TXT record: a public device set is a metadata graph that links one person's
-endpoints, which is precisely the correlation the privacy model should avoid.
+## 6. Sender durability and state sync (implemented)
 
-## 6. Delivery durability — the mailbox
+Durability remains P2P by default. The daemon persists complete outbound
+operations, including the signed envelope and delivery policy, in embedded
+SQLite using WAL mode. Queued/transmitting operations can resume after daemon
+restart and re-resolve current peer endpoints.
 
-This is the part neither the removed notes nor the general Iroh material
-supplies, and it is the blocker.
+State mutations emit events. Devices exchange signed event batches over the
+`idfon/sync/1` Iroh protocol. The receiving device verifies the account
+signature, confirms the remote endpoint is enrolled for that account,
+deduplicates event IDs, and applies supported snapshots deterministically.
 
-Push is **latency, not durability**. A message "delivered" by waking a phone
-is lost if the phone is off, the app was uninstalled, APNs drops it, or the
-sender quits before the phone next foregrounds. Today, durability lives in the
-**sender's** operation queue (`docs/daemon.md`); with a freeze-prone recipient
-that is no longer enough.
+This is a log-union prototype, not a CRDT. Blobs continue to use existing
+tickets.
 
-Design:
+## 7. Push wake — deferred optional infrastructure
 
-- An **untrusted store-and-forward mailbox**, keyed by account id. Envelopes
-  are opaque and signature-verified by the reader; the server cannot forge
-  membership or read content.
-- A device **claims** envelopes when it is next up (foreground, or woken).
-  Claim is idempotent; duplicates are tolerated.
-- Large media stays out of the mailbox: the mailbox holds envelope/signal
-  data and blob *tickets*; blobs keep using the existing blob store, with the
-  mailbox optionally caching for offline peers.
+Push is not durability and is not required for P2P operation. The intended
+production boundary is a `PushProvider` with no-op and local test
+implementations, followed later by APNs/PushKit. Ordinary notifications would
+wake the app to perform P2P sync; PushKit would wake CallKit-enabled calls.
+Production work requires APNs credentials, device-token registration, provider
+service deployment, token lifecycle handling, and real-device tests.
 
-The mailbox is a server, and that is an honest cost for this requirement. A
-suspended iOS app cannot be reached by pure P2P, and a phone that is off
-cannot be reached by anything. The cheapest structure that satisfies
-"iPhone works when Mac is off" includes one small, untrusted service.
+## 8. Public discovery — deferred
 
-## 7. Wake — push, last
+Manual standard contact/device tickets are sufficient for the prototype. Public
+handles and directories remain future work. If needed, use authenticated
+WebFinger/HTTPS rather than public DNS device graphs.
 
-Once the mailbox exists, push notifications are a latency optimization:
-APNs/PushKit wakes the app briefly to drain the mailbox and, for calls, to ring
-via CallKit (Pattern A signaling). Not built today (`docs/callkit-integration.md`).
-Push requires a server that knows device tokens; that is the same service as
-the mailbox, or a sibling of it.
+## 9. Mailbox/store-and-forward — deferred optional transport
 
-Order matters: mailbox first (stop losing messages), push second (make them
-arrive sooner).
+A mailbox is intentionally not required. Pure P2P plus durable sender-side
+operations is the default. Add an untrusted mailbox only if recipient-side
+durability or delivery while the sender is offline becomes a product
+requirement.
 
-## 8. State sync
-
-State must converge across devices that were independently offline. idfon is
-already half event-sourced, so the native approach is a **log union +
-deterministic replay**, not a CRDT dependency:
-
-1. Convert mutations of `peers`, `grants`, and `identities` into events. Until
-   then there is no log to union.
-2. Sync = exchange events/operations since the last common cursor, dedup by id,
-   replay deterministically. This reuses the existing `events`/`operations`
-   shapes.
-3. Adopt `iroh-docs` only if the merge requirements outgrow a log (they do not,
-   at idfon's current scale).
-
-Device-to-device sync itself runs over iroh, authorized by the account-signed
-device set. Blobs sync via the existing store/tickets.
-
-## 9. Enrollment and revocation
+## 10. Enrollment and revocation
 
 - **Enrollment** is out of band: the new device receives the account public key
   and a one-time bootstrap (QR). It generates its own transport key, proves
@@ -221,7 +198,7 @@ device set. Blobs sync via the existing store/tickets.
   Either the account key is backed up (e.g. Keychain / recovery phrase) or the
   design accepts loss. Decide explicitly.
 
-## 10. Lazy mobile binding (landed 2026-09-16)
+## 11. Lazy mobile binding (landed 2026-09-16)
 
 The daemon now honours `IDFON_LAZY_IDENTITIES` (set by the iOS app): startup
 binds and wires only `default` and the active identity, and `identity.use`
@@ -229,16 +206,21 @@ binds a switched-to identity on demand. Desktop is unchanged (all identities
 bound concurrently). Guarded by the
 `lazy_startup_binds_default_and_active_only` test.
 
-## 11. Sequencing
+## 12. Sequencing and status
 
-1. **Account-addressed peers** (schema + protocol + dial paths). Load-bearing.
-2. **Account key + signed device bindings + out-of-band enrollment.** Device
-   set rides the peer record — no discovery service.
-3. **Mailbox** for durability.
-4. **Device-to-device state sync** (after mutable state is event-sourced).
-5. **Push wake**, then **discovery**, as they become necessary.
+1. Account/endpoint identity split — **implemented**.
+2. Account-addressed peers and device operations — **implemented**.
+3. Sender delivery policy — **implemented**.
+4. Conversation authorization and deduplication — **implemented**.
+5. Standard tickets and client pairing — **implemented**.
+6. Calls and MCP endpoint selection — **implemented**.
+7. Sender durability with embedded SQLite — **implemented**.
+8. Signed event capture, merge, and Iroh sync — **implemented**.
+9. Push wake — **deferred optional infrastructure**.
+10. Public discovery — **deferred**.
+11. Mailbox/store-and-forward — **deferred optional transport**, not a blocker.
 
-## 12. Invariants
+## 13. Invariants
 
 - A transport key is single-host and is **never copied**. Linking a device
   issues a new key.
@@ -248,7 +230,7 @@ bound concurrently). Guarded by the
 - iOS is an **intermittent recipient**: anything that must arrive has to
   survive the phone being suspended indefinitely.
 
-## 13. Open questions
+## 14. Open questions
 
 - **One account per human, or per context?** Work/family contexts suggest per
   context; a single human handle would then need a layer above.
