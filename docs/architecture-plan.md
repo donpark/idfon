@@ -29,6 +29,31 @@ custom app ┘
 The primary public contract is the logical CLI/API, not Iroh, QUIC, or a
 Rust dynamic-library ABI.
 
+## What Idfon adds over Iroh
+
+Iroh is the transport: endpoint identity, discovery, relay, hole punching,
+and encrypted QUIC streams and datagrams. Idfon is the durable, authorized,
+multi-device application layer on top of it. The protocols that feel
+"iroh-shaped" (blobs, live/MoQ, gossip) are upstream crates that Idfon wires
+together; the differentiators live above them, and they are why Idfon is not a
+rebranding of Iroh:
+
+- **Durability** — persisted operation queues, retry/backoff, replay, and
+  idempotency that outlives the client. Iroh provides none of this.
+- **Authorization** — signed capability tickets, grants, expiry, and
+  revocation. Iroh authenticates endpoints; it does not grant application
+  permission.
+- **Multi-device accounts** — an account key plus per-device transport
+  endpoints, delivery policy, and out-of-band enrollment. Iroh identity is
+  per-endpoint.
+- **Media integration** — capture/encode/codec choices and recording lifecycle
+  wrapped around `iroh-live`/MoQ and `iroh-blobs`.
+
+The raw `idfon/message/1` path (framed JSON over a bidi QUIC stream plus an
+ack) is deliberately thin: it is plumbing, not the product. Adapters such as
+the CLI, the GUI shells, and the Eve channel are clients of this layer, not
+competing transports.
+
 ## Design principles
 
 1. **One endpoint owner.** `idfond` owns live endpoint instances and private
