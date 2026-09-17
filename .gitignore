@@ -34,3 +34,5 @@ blobs/
 ios/Vendor/
 ios/.derived/
 mac/.build/
+# mac app links this dylib from Vendor/; built by pnpm cli/mac build, not repo content
+mac/Vendor/*.dylib
