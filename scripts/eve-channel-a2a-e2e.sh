@@ -15,7 +15,7 @@ integration="$root/integrations/eve-idfon-channel"
 
 RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
   cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-cargo build --release -p idfond -p idfon-cli -p idfon-eve-channel
+cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel
 codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 
 work=$(mktemp -d /tmp/idfon-eve-a2a.XXXXXX)
@@ -30,7 +30,7 @@ cleanup() {
 trap cleanup EXIT
 
 NUF="$root/target/release/idfon"
-HOLDER="$root/target/release/idfon-eve-channel"
+HOLDER="$root/target/release/eve-idfon-channel"
 A="$work/a/idfond.sock"
 C="$work/c/idfond.sock"
 A_SOCK="$work/a-holder.sock"
@@ -97,7 +97,7 @@ make_app() {
   "type": "module",
   "dependencies": {
     "eve": "0.55.0",
-    "idfon-eve-channel": "file:$integration"
+    "eve-idfon-channel": "file:$integration"
   }
 }
 EOF

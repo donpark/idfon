@@ -156,7 +156,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     /// `-pair-ticket <agent-peer-id> <ticket-json|ticket-file>`: persist a
-    /// ticket minted by the peer's holder (`idfon-eve-channel ticket --subject
+    /// ticket minted by the peer's holder (`eve-idfon-channel ticket --subject
     /// <this-app's-peer-id>`) so outbound turns pass its ingress gate. The id
     /// must be the one the app paired the agent under — the `id` field of the
     /// `-pair` EndpointAddr JSON, which is what `sendText` passes as `to`.

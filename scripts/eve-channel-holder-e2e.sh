@@ -10,7 +10,7 @@ cd "$root"
 
 RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
   cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-cargo build --release -p idfond -p idfon-cli -p idfon-eve-channel
+cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel
 codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 
 work=$(mktemp -d /tmp/idfon-eve-holder.XXXXXX)
@@ -25,7 +25,7 @@ cleanup() {
 trap cleanup EXIT
 
 NUF="$root/target/release/idfon"
-HOLDER="$root/target/release/idfon-eve-channel"
+HOLDER="$root/target/release/eve-idfon-channel"
 A="$work/a/idfond.sock"
 HOLDER_SOCK="$work/holder.sock"
 mkdir -p "$work/a"

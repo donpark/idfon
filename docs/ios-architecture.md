@@ -112,7 +112,7 @@ The text path is wired end to end in the app. The Eve holder rejects an inbound
 message with no holder-signed, subject-bound `message.receive` ticket, so a
 ticket is provisioned out of band and attached to outbound turns:
 
-1. `idfon-eve-channel ticket --subject <this-app's-peer-id> [--key-file ...]`
+1. `eve-idfon-channel ticket --subject <this-app's-peer-id> [--key-file ...]`
    prints the holder-signed JSON.
 2. Launch with `-pair-ticket <agent-peer-id> <ticket-json|file>`, where the id
    is the one the app paired the agent under (the `id` field of the `-pair`

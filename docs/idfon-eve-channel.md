@@ -291,7 +291,7 @@ lifetime does. Three shapes, in order of preference:
    Example:
    ```sh
    node integrations/eve-idfon-channel/managed.mjs \
-     --holder-command ./idfon-eve-channel \
+     --holder-command ./eve-idfon-channel \
      --key-file ~/.config/idfon/eve.key --socket /run/user/$UID/idfon-eve.sock \
      --blob-dir ~/.local/share/idfon/eve-blobs \
      --target http://127.0.0.1:52776 --secret "$IDFON_BRIDGE_SECRET" --port 18766
@@ -314,15 +314,15 @@ violation — the real cost is lifecycle, not legitimacy.
 
 ### npm distribution
 
-The provider publishes as the unscoped **`idfon-eve-channel`** package (the
+The provider publishes as the unscoped **`eve-idfon-channel`** package (the
 `@idfon` org is not registered), and its version tracks the Cargo workspace
 until 1.0. The extension itself is plain TypeScript built by
 `eve extension build` in `prepare`; the Rust holder ships separately as
-per-platform packages `idfon-eve-channel-{darwin,linux}-{arm64,x64}` listed as
+per-platform packages `eve-idfon-channel-{darwin,linux}-{arm64,x64}` listed as
 `optionalDependencies`, mirroring `cli/idfon`. `managed.mjs` (the package's
 `bin`) resolves the holder from the installed platform package, with
 `integrations/<pkg>` as a repo-layout fallback; `--holder-command` and
-`IDFON_EVE_CHANNEL_HOLDER` override it. `scripts/build-eve-channel.sh [TARGET]`
+`EVE_IDFON_CHANNEL_HOLDER` override it. `scripts/build-eve-channel.sh [TARGET]`
 populates a platform package (its `bin/` and generated `LICENSE-*` are
 gitignored, as with `cli/idfon-*`). No Windows package: the holder IPC is a
 Unix socket. Still open: the CI build/publish workflow, a publish script, and
@@ -335,7 +335,7 @@ a version-sync guard across the Cargo workspace, `cli/idfon`, and this package.
 links `idfon-client` (the agent has no daemon). The differences for the
 conversation channel:
 
-| | `idfon-mcp` (tools) | `idfon-eve-channel` (conversation) |
+| | `idfon-mcp` (tools) | `eve-idfon-channel` (conversation) |
 |---|---|---|
 | ALPN | `idfon/mcp/1` | `idfon/message/1` (message plane) |
 | semantics | pure byte pump | parse/verify `MessageEnvelope`, normalize |
@@ -448,7 +448,7 @@ scripts/eve-channel-chat.sh                          # interactive, Ctrl-D to qu
 scripts/eve-channel-chat.sh --model openai/gpt-4.1-mini
 ```
 
-The model is an AI Gateway id (`--model`, or `IDFON_EVE_MODEL`); unset in the
+The model is an AI Gateway id (`--model`, or `EVE_IDFON_MODEL`); unset in the
 agent app it falls back to the deterministic `mockModel` the acceptance
 scripts assert on. Turns thread to one Eve session per peer id automatically.
 

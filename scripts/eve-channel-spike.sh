@@ -6,7 +6,7 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 fixture="$root/scripts/eve-channel-spike-app"
-work=$(mktemp -d /tmp/idfon-eve-channel.XXXXXX)
+work=$(mktemp -d /tmp/eve-idfon-channel.XXXXXX)
 pid=""
 cleanup() {
   if [ -n "$pid" ]; then

@@ -1,4 +1,4 @@
-import idfon from "idfon-eve-channel";
+import idfon from "eve-idfon-channel";
 
 export default idfon({
   bridgeUrl: "http://127.0.0.1:18766",

@@ -98,20 +98,20 @@ iroh, the endpoint holder, real peer verification, media, HITL, packaging.
 
 ### Goal
 
-A standalone binary `idfon-eve-channel` that owns an idfon endpoint, accepts
+A standalone binary `eve-idfon-channel` that owns an idfon endpoint, accepts
 authenticated inbound messages, emits normalized turns on a local socket, and
 sends replies (and later, media/HITL events) back over `message.send`.
 
 ### In scope
 
-- New crate `crates/idfon-eve-channel`, binary `idfon-eve-channel`, added to
+- New crate `crates/eve-idfon-channel`, binary `eve-idfon-channel`, added to
   root `Cargo.toml` members.
 - Modes:
-  - `idfon-eve-channel serve --socket <path> [--key-file <path>] [--allow <peer-id>]...`
+  - `eve-idfon-channel serve --socket <path> [--key-file <path>] [--allow <peer-id>]...`
     — bind the endpoint, serve `idfon/message/1`, write inbound turns to the
     socket, read outbound frames from the same socket, print the endpoint ticket
     on startup.
-- Identity: key from `--key-file` / `IDFON_EVE_CHANNEL_KEY`; ephemeral only with
+- Identity: key from `--key-file` / `EVE_IDFON_CHANNEL_KEY`; ephemeral only with
   an explicit `--ephemeral` and a warning. (Same discipline as `idfon-mcp`: a
   stable key keeps grants valid across runs.)
 - Inbound: reuse `IrohTransport::serve(handler)` and
@@ -141,14 +141,14 @@ managed child.
 ### Architecture
 
 ```text
-idfon peer ──idfon/message/1──▶ idfon-eve-channel ──uds json──▶ <socket consumer>
+idfon peer ──idfon/message/1──▶ eve-idfon-channel ──uds json──▶ <socket consumer>
                     ▲                                      │
                     └────────── message.send ◀──── reply.out┘
 ```
 
 ### Repo touchpoints
 
-- `crates/idfon-eve-channel/src/main.rs` — CLI, endpoint, IPC loop.
+- `crates/eve-idfon-channel/src/main.rs` — CLI, endpoint, IPC loop.
 - Reuse, don't reinvent:
   - `idfon_core::IrohTransport::{bind_with_key, serve, send, open_bi_stream}`.
   - `idfon_core::{sign_message, verify_message, verify_capability_ticket}`.
@@ -160,7 +160,7 @@ idfon peer ──idfon/message/1──▶ idfon-eve-channel ──uds json──
 
 1. Start a throwaway `idfond` peer (`IDFON_PROFILE`) with a grant to send to the
    holder.
-2. Start `idfon-eve-channel serve --socket <path> --key-file <path>`; read its
+2. Start `eve-idfon-channel serve --socket <path> --key-file <path>`; read its
    ticket; add it as a peer to the daemon; issue a capability ticket.
 3. `idfon send <holder> "hello"` → assert a `turn.in` frame with the right
    `peer_id` and text on the socket.
@@ -211,7 +211,7 @@ Managed-child packaging; media; HITL; agent-to-agent; multi-thread UI; presence.
 ### Architecture
 
 ```text
-idfon peer ──▶ idfon-eve-channel ──uds──▶ idfon channel (defineChannel) ──▶ Eve session
+idfon peer ──▶ eve-idfon-channel ──uds──▶ idfon channel (defineChannel) ──▶ Eve session
                       ▲                          │
                       └──── reply.out ◀── events (message.completed) ──┘
 ```
