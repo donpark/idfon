@@ -1479,6 +1479,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "eve-idfon-channel"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "blake3",
+ "chrono",
+ "clap",
+ "ed25519-dalek 2.2.0",
+ "idfon-core",
+ "idfon-media",
+ "idfon-protocol",
+ "iroh",
+ "iroh-blobs",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "extended"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2273,26 +2293,6 @@ dependencies = [
  "iroh-gossip",
  "libc",
  "rusqlite",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "idfon-eve-channel"
-version = "0.5.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "blake3",
- "chrono",
- "clap",
- "ed25519-dalek 2.2.0",
- "idfon-core",
- "idfon-media",
- "idfon-protocol",
- "iroh",
- "iroh-blobs",
  "serde",
  "serde_json",
  "tokio",

@@ -12,7 +12,7 @@
 #
 #   --prompt TEXT   send one turn and print the reply (repeatable; omitting
 #                   it starts an interactive session)
-#   --model ID      AI Gateway model id (default $IDFON_EVE_MODEL, else
+#   --model ID      AI Gateway model id (default $EVE_IDFON_MODEL, else
 #                   anthropic/claude-haiku-4.5)
 #   --agent-dir DIR Eve app to run (default scripts/eve-channel-app)
 #   --timeout SECS  wait per reply (default 120)
@@ -22,7 +22,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-model="${IDFON_EVE_MODEL:-anthropic/claude-haiku-4.5}"
+model="${EVE_IDFON_MODEL:-anthropic/claude-haiku-4.5}"
 agent_src="$root/scripts/eve-channel-app"
 timeout_s=120
 build=1
@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
 done
 
 # agent.ts reads this at runtime.
-export IDFON_EVE_MODEL="$model"
+export EVE_IDFON_MODEL="$model"
 
 integration="$root/integrations/eve-idfon-channel"
 if [ "$build" = 1 ]; then
@@ -55,7 +55,7 @@ if [ "$build" = 1 ]; then
   )
   RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
     cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-  cargo build --release -p idfond -p idfon-cli -p idfon-eve-channel
+  cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel
   codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 fi
 
@@ -69,7 +69,7 @@ cleanup() {
 trap cleanup EXIT
 
 NUF="$root/target/release/idfon"
-HOLDER="$root/target/release/idfon-eve-channel"
+HOLDER="$root/target/release/eve-idfon-channel"
 A="$work/a/idfond.sock"
 HOLDER_SOCK="$work/holder.sock"
 mkdir -p "$work/a"
@@ -116,7 +116,7 @@ cat > "$app/package.json" <<EOF
   "type": "module",
   "dependencies": {
     "eve": "0.55.0",
-    "idfon-eve-channel": "file:$integration"
+    "eve-idfon-channel": "file:$integration"
   }
 }
 EOF

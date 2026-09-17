@@ -15,7 +15,7 @@ func check(_ cond: Bool, _ msg: String) { if !cond { print("FAIL:", msg); exit(1
 
 let peer = "check-peer-\(UUID().uuidString)"
 
-// Shape produced by `idfon-eve-channel ticket` (CapabilityTicket's optional
+// Shape produced by `eve-idfon-channel ticket` (CapabilityTicket's optional
 // subject/expires_at serialize as explicit nulls).
 let ticket = """
 {"issuer":"aa","subject":"bb","capabilities":["message.receive"],"expires_at":null,"ticket_id":"eve-1","signature":"cc"}

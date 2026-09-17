@@ -10,15 +10,15 @@ const bridge = resolve(here, "bridge.mjs");
 const require = createRequire(import.meta.url);
 
 // The holder ships as per-platform packages (optional dependencies of this
-// package), mirroring cli/idfon. --holder-command / IDFON_EVE_CHANNEL_HOLDER
+// package), mirroring cli/idfon. --holder-command / EVE_IDFON_CHANNEL_HOLDER
 // override the lookup.
 const holderPackages = {
-  "darwin-arm64": "idfon-eve-channel-darwin-arm64",
-  "darwin-x64": "idfon-eve-channel-darwin-x64",
-  "linux-arm64": "idfon-eve-channel-linux-arm64",
-  "linux-x64": "idfon-eve-channel-linux-x64",
+  "darwin-arm64": "eve-idfon-channel-darwin-arm64",
+  "darwin-x64": "eve-idfon-channel-darwin-x64",
+  "linux-arm64": "eve-idfon-channel-linux-arm64",
+  "linux-x64": "eve-idfon-channel-linux-x64",
   // ponytail: no win32 — the holder IPC is a Unix socket; add a named-pipe
-  // transport to idfon-client first, then an idfon-eve-channel-win32-x64 pkg.
+  // transport to idfon-client first, then an eve-idfon-channel-win32-x64 pkg.
 };
 
 function resolveHolder() {
@@ -32,7 +32,7 @@ function resolveHolder() {
     // scripts/build-eve-channel.sh (no node_modules install).
     dir = resolve(here, "..", pkg);
   }
-  return resolve(dir, "bin", "idfon-eve-channel");
+  return resolve(dir, "bin", "eve-idfon-channel");
 }
 const args = process.argv.slice(2);
 const values = new Map();
@@ -45,7 +45,7 @@ for (let i = 0; i < args.length; i += 1) {
 }
 
 const holderCommand =
-  values.get("--holder-command") || process.env.IDFON_EVE_CHANNEL_HOLDER || resolveHolder();
+  values.get("--holder-command") || process.env.EVE_IDFON_CHANNEL_HOLDER || resolveHolder();
 const target = values.get("--target");
 const secret = values.get("--secret");
 const socket = values.get("--socket");
@@ -57,12 +57,12 @@ if (!holderCommand || !target || !secret || !socket || !keyFile || !Number.isInt
   usage(
     `--target, --secret, --socket, --key-file, and --port are required, and a` +
       ` holder binary must be available for ${process.platform}-${process.arch}` +
-      " (via --holder-command, IDFON_EVE_CHANNEL_HOLDER, or a platform package)"
+      " (via --holder-command, EVE_IDFON_CHANNEL_HOLDER, or a platform package)"
   );
 }
 if (!existsSync(holderCommand)) {
   usage(`holder binary not found at ${holderCommand}` +
-    " — pass --holder-command or install the idfon-eve-channel platform package for this system");
+    " — pass --holder-command or install the eve-idfon-channel platform package for this system");
 }
 if (!Number.isInteger(liveTtlSecs) || liveTtlSecs < 1) usage("--live-ttl-secs must be a positive integer");
 const targetUrl = new URL(target);
@@ -71,7 +71,7 @@ if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(targetUrl.hostname)) {
 }
 
 function usage(error) {
-  if (error) console.error(`idfon-eve-channel managed: ${error}`);
+  if (error) console.error(`eve-idfon-channel managed: ${error}`);
   console.error("usage: managed.mjs [--holder-command PATH] --target URL --secret VALUE --socket PATH --key-file FILE --port PORT [--blob-dir PATH] [--allow PEER_ID]...");
   process.exit(2);
 }
@@ -169,11 +169,11 @@ try {
   });
   holder.once("exit", (code) => {
     if (!stopping) {
-      console.error(`[idfon-eve-channel] holder exited (${code ?? "signal"})`);
+      console.error(`[eve-idfon-channel] holder exited (${code ?? "signal"})`);
       void cleanup(code || 1);
     }
   });
 } catch (error) {
-  console.error(`[idfon-eve-channel] managed startup failed: ${error.message}`);
+  console.error(`[eve-idfon-channel] managed startup failed: ${error.message}`);
   await cleanup(1);
 }

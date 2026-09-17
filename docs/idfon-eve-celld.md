@@ -187,7 +187,7 @@ M0/M1 are shared with the Eve plan — the endpoint holder is byte-identical.
   celld by mapping an idfon-shaped synthetic request into a Worker's `fetch`
   over the existing HTTP listener (localhost). No celld changes. Reuses
   `docs/idfon-eve-channel-implementation-plan.md` M0.
-- **M1 — endpoint holder.** `crates/idfon-eve-channel` (embeds `idfon-core`,
+- **M1 — endpoint holder.** `crates/eve-idfon-channel` (embeds `idfon-core`,
   owns the endpoint, UDS JSON IPC, `verify_message` + capability ticket).
   Identical to the Eve plan's M1; build once, use from both adapters.
 - **M2 — celld iroh adapter (fork).** `crates/celld/iroh.rs`: bind the endpoint

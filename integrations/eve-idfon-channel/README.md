@@ -1,4 +1,4 @@
-# idfon-eve-channel
+# eve-idfon-channel
 
 Eve ingress **channel** that makes an idfon peer a first-class Eve agent
 contact. The caller authenticates with its idfon endpoint key instead of a
@@ -12,30 +12,30 @@ peer, and the turn lands in an Eve session with the peer as the principal.
 
 - Node.js >= 24 (Eve's requirement)
 - A holder binary for your platform. It ships as an optional platform package
-  (`idfon-eve-channel-{darwin,linux}-{arm64,x64}`) and is resolved
+  (`eve-idfon-channel-{darwin,linux}-{arm64,x64}`) and is resolved
 automatically; there is no Windows package (the holder's IPC is a Unix socket).
   For an unsupported platform or a self-built holder, pass `--holder-command`
-  (or set `IDFON_EVE_CHANNEL_HOLDER`) pointing at
-  `cargo build --release -p idfon-eve-channel` output from the
+  (or set `EVE_IDFON_CHANNEL_HOLDER`) pointing at
+  `cargo build --release -p eve-idfon-channel` output from the
   [idfon workspace](https://github.com/donpark/idfon).
 
 ## Install
 
 ```sh
-npm install idfon-eve-channel
+npm install eve-idfon-channel
 ```
 
 With pnpm inside the idfon workspace:
 
 ```sh
-pnpm add idfon-eve-channel --filter <your-eve-app>
+pnpm add eve-idfon-channel --filter <your-eve-app>
 ```
 
 ## Use in an Eve app
 
 ```ts
 // agent/extensions/idfon.ts
-import idfon from "idfon-eve-channel";
+import idfon from "eve-idfon-channel";
 
 export default idfon({
   bridgeUrl: "http://127.0.0.1:18766",
@@ -47,7 +47,7 @@ export default idfon({
 handler requires the same `secret` on every request.
 
 The `idfon__send`, `idfon__put`, `idfon__publish-live`, and
-`idfon__stop-live` tools are available at `idfon-eve-channel/tools`.
+`idfon__stop-live` tools are available at `eve-idfon-channel/tools`.
 
 ## Run the managed sidecar
 
@@ -56,7 +56,7 @@ the socket, forwards termination, and cleans up on exit. Eve 0.55 has no
 custom-channel startup hook, so this is the deployment entrypoint.
 
 ```sh
-npx idfon-eve-channel \
+npx eve-idfon-channel \
   --key-file  ~/.config/idfon/eve.key \
   --socket    /run/user/$UID/idfon-eve.sock \
   --blob-dir  ~/.local/share/idfon/eve-blobs \
