@@ -14,6 +14,9 @@
   "cpu": [
     "x64"
   ],
+  "scripts": {
+    "clean": "rm -rf bin"
+  },
   "files": [
     "LICENSE-APACHE",
     "LICENSE-MIT",

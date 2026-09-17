@@ -14,6 +14,7 @@ crate-type = ["rlib"]
 [dependencies]
 anyhow = "1"
 bytes = "1"
+futures-util = "0.3"
 iroh = "1"
 # No "capture" feature: idfon is headless audio (file source + cpal), and
 # capture drags rusty-capture -> pipewire -> libspa on Linux, which fails to
@@ -22,17 +23,20 @@ iroh = "1"
 # Capture also belongs to the caller, not the daemon (see docs/audio-media.md,
 # "Capture ownership and lifecycle authority"): CLI mic/camera input goes in
 # idfon-cli or a caller-linked source, never as a feature here.
-# "h264" is the always-available software fallback (openh264). Hardware H.264
-# is added per target at the bottom of this file; both advertise plain H.264
-# on the wire, so the choice affects CPU/battery, not interop. The pipeline
-# picks it via `VideoCodec::best_available()`.
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
+# Current moq-video owns codec/backend selection. Idfon supplies frames and
+# chooses renditions; the upstream encoder selects the available backend.
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", package = "moq-media", default-features = false, features = ["capture", "playback"] }
+moq-audio = { version = "0.0.23", default-features = false, features = ["aac", "capture", "playback"] }
+moq-video = "0.0.23"
+n0-future = "0.3.2"
+# rustix 1.1.5 currently fails to compile with hick's limited feature set.
+rustix = "=1.1.4"
+jpeg-encoder = "0.7"
 # fMP4/MKV/TS/FLV/H.264 import (video file demuxing) and the in-memory
 # broadcast pair used to replay imported tracks. Versions must stay in lock
 # with what iroh-live resolves to (see Cargo.lock).
-moq-mux = "0.5.6"
-moq-lite = { package = "moq-net", version = "0.1.18" }
-hang = "0.20"
+moq-mux = "0.9.14"
 idfon-core = { path = "../idfon-core" }
 idfon-protocol = { path = "../idfon-protocol" }
 thiserror = "2"
@@ -46,7 +50,7 @@ tracing-subscriber = "0.3"
 # Target-gated because moq-media's `vaapi` feature pulls `cros-codecs`
 # unconditionally, which does not build on non-Linux.
 [target.'cfg(target_os = "macos")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264", "videotoolbox"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f06c3dea8a73fc87d76c729793b33ac97", default-features = false, features = ["opus", "h264"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }

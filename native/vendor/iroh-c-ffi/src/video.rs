@@ -1,183 +1,58 @@
-//! GUI-facing video subscription: decoded adaptive `VideoTrack` -> JPEG
-//! frames on disk.
-//!
-//! The FFI starts a subscription that decodes the remote broadcast (with
-//! network-driven rendition adaptation from iroh-live) and continuously
-//! writes the latest decoded frame to `video-frame.jpg` (atomic rename) in
-//! the media directory. The application core re-loads that file through
-//! `Cmd.imageLoad` onto a stable image id on a timer, so the platform image
-//! pipeline renders live video without raw pixels crossing the FFI.
+//! Current decoded-video FFI bridge.
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
-use std::time::{Duration, Instant};
-
-use iroh_live::media::{adaptive::AdaptiveConfig, format::DecodeConfig};
-use iroh_live::ticket::LiveTicket;
-use iroh_live::{Live, Subscription};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
+use iroh_live::{ticket::LiveTicket, Live};
 use safer_ffi::prelude::*;
 
 use crate::media::media_path;
 
 static VIDEO: Mutex<Option<VideoSession>> = Mutex::new(None);
 
-struct VideoSession {
-    stop: Arc<AtomicBool>,
-}
+struct VideoSession { stop: Arc<AtomicBool> }
 
-/// Starts the video subscription for `ticket`: subscribes, enables network
-/// adaptation, and writes decoded frames to `video-frame.jpg` under the
-/// media directory (see `media_path`). Returns the absolute frame path for
-/// `Cmd.imageLoad`, or an empty string on failure.
 #[ffi_export]
 pub fn media_video_start(ticket: char_p::Ref<'_>) -> char_p::Box {
-    let ticket = ticket.to_str().to_string();
-
-    // Replace any running session.
     media_video_stop();
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_loop = stop.clone();
+    let ticket = ticket.to_str().to_owned();
     let frame_path = media_path("video-frame.jpg");
-    let tmp_path = media_path("video-frame.jpg.tmp");
-    // Drop any frame left over from a previous session before the caller starts
-    // polling the path: otherwise the previous call's last frame is shown as
-    // this call's "live" video even when the peer's camera is off.
+    let temp_path = media_path("video-frame.jpg.tmp");
     let _ = std::fs::remove_file(&frame_path);
-    let _ = std::fs::remove_file(&tmp_path);
-    let return_path = frame_path.to_str().unwrap_or("").to_string();
-
-    // Multi-thread runtime on a dedicated thread: the loop runs for the
-    // session's lifetime and must not share the caller's executor.
+    let _ = std::fs::remove_file(&temp_path);
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let return_path = frame_path.to_string_lossy().into_owned();
     std::thread::spawn(move || {
-        if let Ok(rt) = tokio::runtime::Runtime::new() {
-            rt.block_on(video_loop(&ticket, &frame_path, &tmp_path, stop_loop));
+        if let Ok(runtime) = tokio::runtime::Runtime::new() {
+            runtime.block_on(video_loop(&ticket, &frame_path, &temp_path, thread_stop));
         }
     });
-
-    let session = VideoSession { stop };
-    match VIDEO.lock() {
-        Ok(mut guard) => *guard = Some(session),
-        Err(_) => return char_p::new(""),
-    }
-    char_p::new(return_path.as_str())
+    *VIDEO.lock().unwrap() = Some(VideoSession { stop });
+    return_path.try_into().unwrap()
 }
 
-/// Stops the video subscription and frame writing.
 #[ffi_export]
 pub fn media_video_stop() {
-    if let Ok(mut guard) = VIDEO.lock() {
-        if let Some(session) = guard.take() {
-            session.stop.store(true, Ordering::Relaxed);
-        }
+    if let Some(session) = VIDEO.lock().unwrap().take() {
+        session.stop.store(true, Ordering::Relaxed);
     }
 }
 
-async fn video_loop(ticket: &str, frame_path: &std::path::Path, tmp_path: &std::path::Path, stop: Arc<AtomicBool>) {
-    let Ok(parsed) = ticket.parse::<LiveTicket>() else {
-        eprintln!("video: invalid ticket");
-        return;
-    };
-    let Ok(live) = Live::from_env().await else {
-        eprintln!("video: endpoint setup failed");
-        return;
-    };
+async fn video_loop(ticket: &str, frame_path: &std::path::Path, temp_path: &std::path::Path, stop: Arc<AtomicBool>) {
+    let Ok(ticket) = ticket.parse::<LiveTicket>() else { return };
+    let Ok(live) = Live::from_env().await else { return };
     let live = live.spawn();
-    // Bounded subscribe: a publisher that never announces must not hang us.
-    let subscription: Subscription = match tokio::time::timeout(
-        Duration::from_secs(10),
-        live.subscribe(parsed.endpoint, &parsed.broadcast_name),
-    )
-    .await
-    {
-        Ok(Ok(sub)) => sub,
-        Ok(Err(err)) => {
-            eprintln!("video subscribe failed: {err:#}");
-            return;
-        }
-        Err(_) => {
-            eprintln!("video subscribe timed out");
-            return;
-        }
-    };
-    let (_session, broadcast, signals) = subscription.into_parts();
-    // video_ready resolves once the catalog has a video track and the
-    // decoded track is running.
-    let mut track = match tokio::time::timeout(Duration::from_secs(10), broadcast.video_ready()).await {
-        Ok(Ok(track)) => track,
-        Ok(Err(err)) => {
-            eprintln!("video track setup failed: {err:#}");
-            return;
-        }
-        Err(_) => {
-            eprintln!("no video track in broadcast");
-            return;
-        }
-    };
-    // Network-driven rendition switching: the track re-keys its decoder to
-    // the rendition the adaptive controller selects from QUIC signals.
-    let _ = track.enable_adaptation(
-        broadcast,
-        signals,
-        AdaptiveConfig::default(),
-        DecodeConfig::default(),
-    );
-
-    // How long the stream may go silent before the last frame is treated as
-    // stale. The peer gates video per frame, so a real camera delivers every
-    // ~33 ms; this many frames of silence means it is off or stalled.
-    const STALE_AFTER: Duration = Duration::from_millis(2000);
-    let started_at = Instant::now();
-    let mut last_frame_at: Option<Instant> = None;
-    let mut stale_cleared = false;
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            return;
-        }
-        match tokio::time::timeout(Duration::from_millis(500), track.next_frame()).await {
-            Ok(Some(frame)) => {
-                last_frame_at = Some(Instant::now());
-                stale_cleared = false;
-                let rgba = frame.rgba_image();
-                let mut jpeg = Vec::with_capacity((rgba.width() as usize) * (rgba.height() as usize) / 4);
-                let encoder = jpeg_encoder::Encoder::new(&mut jpeg, 80);
-                if encoder
-                    .encode(
-                        rgba.as_raw(),
-                        rgba.width().try_into().unwrap_or(0),
-                        rgba.height().try_into().unwrap_or(0),
-                        jpeg_encoder::ColorType::Rgba,
-                    )
-                    .is_err()
-                {
-                    continue;
-                }
-                // Atomic write: readers never observe a partial JPEG.
-                if std::fs::write(tmp_path, &jpeg).is_ok() {
-                    let _ = std::fs::rename(tmp_path, frame_path);
-                }
-            }
-            // Track closed (stream ended): keep polling until stopped so a
-            // late-restarting broadcast is picked up... it will not; exit.
-            Ok(None) => return,
-            // No frame in the window: a peer whose camera is off sends nothing.
-            // Once the stream has been silent long enough, drop the frame file
-            // so the shell clears the surface instead of showing a frozen image
-            // as if it were live.
-            Err(_) => {
-                // `last_frame_at` is None when the peer never sent a frame this
-                // session; fall back to the session start so a stale write that
-                // raced the startup delete is cleaned up too.
-                if !stale_cleared
-                    && last_frame_at.unwrap_or(started_at).elapsed() >= STALE_AFTER
-                {
-                    let _ = std::fs::remove_file(frame_path);
-                    let _ = std::fs::remove_file(tmp_path);
-                    stale_cleared = true;
-                }
-            }
+    let Ok(subscription) = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await else { return };
+    let broadcast = subscription.broadcast();
+    let Ok(track) = broadcast.video().await else { return };
+    track.enable_adaptation(subscription.signals().clone());
+    while !stop.load(Ordering::Relaxed) {
+        let Some(frame) = track.recv().await else { break };
+        let Ok(rgba) = frame.surface.into_rgba() else { continue };
+        let mut jpeg = Vec::new();
+        let encoder = jpeg_encoder::Encoder::new(&mut jpeg, 80);
+        if encoder.encode(rgba.data(), rgba.width() as u16, rgba.height() as u16, jpeg_encoder::ColorType::Rgba).is_ok() {
+            if std::fs::write(temp_path, &jpeg).is_ok() { let _ = std::fs::rename(temp_path, frame_path); }
         }
     }
+    live.shutdown().await;
 }

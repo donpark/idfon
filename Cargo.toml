@@ -12,3 +12,11 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+[patch.crates-io]
+hang = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-audio = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2" }

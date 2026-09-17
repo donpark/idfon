@@ -41,6 +41,7 @@
     "eve-idfon-channel": "./managed.mjs"
   },
   "scripts": {
+    "clean": "rm -rf dist",
     "build": "eve extension build",
     "prepare": "eve extension build"
   },

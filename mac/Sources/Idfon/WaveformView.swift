@@ -238,7 +238,7 @@ final class AudioMeter {
 
     private func installAudioObservers() {
         let center = NotificationCenter.default
-        interruptionObserver = center.addObserver(forName: AVAudioEngine.configurationChangeNotification, object: engine, queue: .main) { [weak self] _ in
+        interruptionObserver = center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             guard let self, self.running else { return }
             self.stop()
             self.start()
