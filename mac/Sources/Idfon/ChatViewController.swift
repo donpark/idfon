@@ -1061,7 +1061,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc private func micTapped() {
         VoiceMemo.requestPermission { [weak self] granted in
             guard granted, let self else { return }
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
                 let memo = VoiceMemo()
                 do {
                     _ = try memo.start()
@@ -1076,11 +1077,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 self.rebuildComposer()
                 // VoiceMemo meters into the live waveform; this timer only
                 // drives the elapsed label.
-                self.memoTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-                    Task { @MainActor in
-                        guard let self, self.memo != nil else { return }
-                        let elapsed = Date().timeIntervalSince(self.memoStartDate)
-                        self.recordingElapsedLabel?.stringValue = String(format: "%d:%02d", Int(elapsed) / 60, Int(elapsed) % 60)
+                self.memoTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak owner = self] _ in
+                    Task { @MainActor [weak owner] in
+                        guard let owner, owner.memo != nil else { return }
+                        let elapsed = Date().timeIntervalSince(owner.memoStartDate)
+                        owner.recordingElapsedLabel?.stringValue = String(format: "%d:%02d", Int(elapsed) / 60, Int(elapsed) % 60)
                     }
                 }
             }
@@ -1116,10 +1117,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             player = newPlayer
             // Progress on the bubble's static waveform.
             progressTimer?.invalidate()
-            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self, let player = self.player else { return }
-                    self.reviewWave?.setStatic(samples: self.reviewSamples, progress: player.currentTime / max(player.duration, 0.001))
+            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak owner = self] _ in
+                Task { @MainActor [weak owner] in
+                    guard let owner, let player = owner.player else { return }
+                    owner.reviewWave?.setStatic(samples: owner.reviewSamples, progress: player.currentTime / max(player.duration, 0.001))
                 }
             }
         }
@@ -1285,11 +1286,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             playingMessageId = messageId
             // Progress on the bubble's static waveform.
             progressTimer?.invalidate()
-            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self, let player = self.player else { return }
-                    self.staticWaves[messageId]?.setStatic(
-                        samples: self.staticWavesSamples[messageId] ?? .init(repeating: 0, count: 32),
+            progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak owner = self] _ in
+                Task { @MainActor [weak owner] in
+                    guard let owner, let player = owner.player else { return }
+                    owner.staticWaves[messageId]?.setStatic(
+                        samples: owner.staticWavesSamples[messageId] ?? .init(repeating: 0, count: 32),
                         progress: player.currentTime / max(player.duration, 0.001))
                 }
             }

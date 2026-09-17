@@ -117,7 +117,9 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             output.alwaysDiscardsLateVideoFrames = true
             output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "idfon.camera.frames.\(cameraPosition.rawValue)"))
             fresh.addOutput(output)
-            output.connection(with: .video)?.videoOrientation = .portrait
+            if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+            }
             self.session = fresh
             fresh.startRunning()
             NSLog("idfon camera push: rebuilt running pos=\(cameraPosition.rawValue) preset=\(preset ?? "none") appState=\(UIApplication.shared.applicationState.rawValue)")
@@ -146,7 +148,9 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         session.addOutput(output)
         // Sensor is landscape-native; have AVFoundation deliver upright
         // portrait frames so no rotation is needed anywhere downstream.
-        output.connection(with: .video)?.videoOrientation = .portrait
+        if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) {
+            connection.videoRotationAngle = 90
+        }
         configured = true
         NSLog("idfon camera push: configured ok, device=\(device.localizedName) auth=\(AVCaptureDevice.authorizationStatus(for: .video).rawValue)")
     }

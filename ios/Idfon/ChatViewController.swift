@@ -442,9 +442,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return
         }
         if reviewPlayer == nil {
-            // AVAudioPlayer init decodes the file; keep it off the main thread.
             Task { @MainActor in
-                let p = await Task.detached(priority: .userInitiated) { try? AVAudioPlayer(contentsOf: url) }.value
+                let p = try? AVAudioPlayer(contentsOf: url)
                 guard reviewPlayer == nil else { return } // replayed while decoding
                 reviewPlayer = p
                 reviewPlayer?.delegate = self
@@ -648,12 +647,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func dial(peerRef: String) {
         NSLog("idfon dial: \(peerRef)")
         showCallStatus("Calling…")
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             do {
-                try await LiveCallHarness.dial(peer: peerRef, seconds: 8, client: client)
-                showCallStatus("Call ended")
+                try await LiveCallHarness.dial(peer: peerRef, seconds: 8, client: self.client)
+                self.showCallStatus("Call ended")
             } catch {
-                showCallStatus("Call failed: \(error.localizedDescription)")
+                self.showCallStatus("Call failed: \(error.localizedDescription)")
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.showCallStatus(nil) }
         }
@@ -674,7 +674,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         alert.addAction(UIAlertAction(title: "Leave", style: .destructive) { [weak self] _ in
             Task {
                 try? await self?.client.leaveRoom(room.id)
-                await MainActor.run { self?.navigationController?.popViewController(animated: true) }
+                _ = await MainActor.run { self?.navigationController?.popViewController(animated: true) }
             }
         })
         present(alert, animated: true)
@@ -751,12 +751,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     data = try await client.fetchBlob(ticket)
                 }
                 let url = FileManager.default.temporaryDirectory.appendingPathComponent("rec-\(ticket.prefix(12)).wav")
-                // File write + audio decode off the main actor (this Task
-                // inherits MainActor from the view controller).
-                let player = try await Task.detached(priority: .userInitiated) {
-                    try data.write(to: url)
-                    return try AVAudioPlayer(contentsOf: url)
-                }.value
+                try data.write(to: url)
+                let player = try AVAudioPlayer(contentsOf: url)
                 player.play()
                 players[ticket] = player
                 tableView.reloadRows(at: [IndexPath(row: sender.tag, section: 0)], with: .none)
