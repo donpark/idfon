@@ -2,7 +2,7 @@
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use idfon_protocol::{Capability, CapabilityTicket, MessageContent, MessageEnvelope, PeerAuth};
-use rand_core::OsRng;
+use getrandom::{rand_core::UnwrapErr, SysRng};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -22,7 +22,7 @@ pub enum AuthError {
 
 /// Generates a new Ed25519 identity key. Keep the signing key in secure storage.
 pub fn generate_identity() -> SigningKey {
-    SigningKey::generate(&mut OsRng)
+    SigningKey::generate(&mut UnwrapErr(SysRng))
 }
 
 /// Returns the stable hexadecimal public-key identity used as `PeerAuth.peer_id`.

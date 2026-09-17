@@ -10,11 +10,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 blake3 = "1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 idfon-core = { path = "../idfon-core" }
 idfon-media = { path = "../idfon-media" }
 idfon-protocol = { path = "../idfon-protocol" }

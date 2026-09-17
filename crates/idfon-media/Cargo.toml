@@ -32,7 +32,7 @@ iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "a130f15f0
 # with what iroh-live resolves to (see Cargo.lock).
 moq-mux = "0.5.6"
 moq-lite = { package = "moq-net", version = "0.1.18" }
-hang = "0.19.5"
+hang = "0.20"
 idfon-core = { path = "../idfon-core" }
 idfon-protocol = { path = "../idfon-protocol" }
 thiserror = "2"
