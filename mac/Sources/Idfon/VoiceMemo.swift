@@ -2,9 +2,9 @@ import Foundation
 import AVFAudio
 import AVFoundation
 
-/// Shell-side voice-message recorder (AVAudioRecorder). Call audio stays
-/// daemon-side; voice messages in the composer are recorded here, then handed
-/// to the daemon as a blob + IDFON-RECORDING/1 envelope.
+/// Shell-side recorder for voice messages and call captures. AVAudioRecorder
+/// owns the Apple microphone lifecycle; the resulting file is handed to Idfon
+/// as a blob plus an IDFON-RECORDING/1 envelope.
 ///
 /// macOS adaptation of the iOS version: no AVAudioSession (doesn't exist on
 /// macOS); mic permission comes from AVCaptureDevice instead.
@@ -15,6 +15,11 @@ final class VoiceMemo: NSObject {
 
     /// Live amplitude 0...1 while recording (recorder metering).
     var onAmplitude: ((Float) -> Void)?
+
+    deinit {
+        meterTimer?.invalidate()
+        recorder?.stop()
+    }
     private var meterTimer: Timer?
 
     static func requestPermission(_ completion: @escaping (Bool) -> Void) {
@@ -24,6 +29,7 @@ final class VoiceMemo: NSObject {
     }
 
     func start() throws -> URL {
+        if recorder != nil { _ = stop() }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("memo-\(Int(Date().timeIntervalSince1970 * 1000)).wav")
         let settings: [String: Any] = [
@@ -50,6 +56,14 @@ final class VoiceMemo: NSObject {
         return url
     }
 
+    func discard() {
+        let url = fileURL
+        _ = stop()
+        if let url { try? FileManager.default.removeItem(at: url) }
+        fileURL = nil
+        duration = 0
+    }
+
     /// Stops and returns (fileURL, duration seconds).
     func stop() -> (url: URL, duration: TimeInterval)? {
         meterTimer?.invalidate()
@@ -58,6 +72,8 @@ final class VoiceMemo: NSObject {
         duration = recorder.currentTime
         recorder.stop()
         self.recorder = nil
+        self.onAmplitude?(0)
+        self.fileURL = nil
         return (url, duration)
     }
 }

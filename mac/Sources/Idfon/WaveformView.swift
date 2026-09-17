@@ -182,6 +182,7 @@ final class AudioMeter {
         commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
     /// Hardware format -> ingest format; keeps its resampler state across taps.
     private var converter: AVAudioConverter?
+    private var interruptionObserver: NSObjectProtocol?
 
     init(view: WaveformView) {
         views = [WeakWave(view: view)]
@@ -217,6 +218,7 @@ final class AudioMeter {
                 }
                 do {
                     try self.engine.start()
+                    self.installAudioObservers()
                     self.running = true
                 } catch {
                     NSLog("idfon audio meter failed: \(error.localizedDescription)")
@@ -230,7 +232,27 @@ final class AudioMeter {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         converter = nil
+        removeAudioObservers()
         running = false
+    }
+
+    private func installAudioObservers() {
+        let center = NotificationCenter.default
+        interruptionObserver = center.addObserver(forName: AVAudioEngine.configurationChangeNotification, object: engine, queue: .main) { [weak self] _ in
+            guard let self, self.running else { return }
+            self.stop()
+            self.start()
+        }
+    }
+
+    private func removeAudioObservers() {
+        let center = NotificationCenter.default
+        if let interruptionObserver { center.removeObserver(interruptionObserver); self.interruptionObserver = nil }
+    }
+
+    deinit {
+        stop()
+        removeAudioObservers()
     }
 
     /// Converts a hardware-format tap buffer to the ingest format and hands it

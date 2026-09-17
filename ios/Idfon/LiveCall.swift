@@ -1,12 +1,11 @@
 import Foundation
 import AVFAudio
 
-/// Live-call harness over the daemon's media methods (test/automation path).
+/// Live-call harness over Idfon's media/session methods (test/automation path).
 ///
-/// The daemon owns this media pipeline (cpal file source + iroh-live); the
-/// shell only triggers dial/answer and manages the audio session. It streams
-/// a bundled WAV file and the callee records to a file — the real audio call
-/// state machine is the `LiveCall` class below.
+/// Swift owns the Apple audio session; Idfon owns authorization, signaling, and
+/// current iroh-live transport. It streams a bundled WAV file and the callee
+/// records to a file; the real audio call state machine is below.
 enum LiveCallHarness {
     /// File the dialer streams (bundled 3s 440Hz sine).
     static var bundledWavPath: String {
@@ -52,8 +51,8 @@ enum LiveCallHarness {
 }
 
 /// Live audio-call state machine (ported from mac/Sources/Idfon/Calls.swift):
-/// the caller publishes its microphone through the c-ffi (cpal capture inside
-/// the dylib) and sends an invite carrying its ticket; the callee subscribes
+/// Swift captures microphone PCM and the Idfon media bridge publishes it over
+/// current iroh-live before the caller sends an invite; the callee subscribes
 /// (decoded playback), publishes its own mic, and sends an audio return-leg
 /// invite carrying its ticket — so audio is two-way and the caller leaves
 /// `.calling` (parity with VideoCall). `call_started` is still sent as

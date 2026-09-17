@@ -21,12 +21,42 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     private let queue = DispatchQueue(label: "idfon.camera.control")
     private let captureQueue = DispatchQueue(label: "idfon.camera.frames")
     private var configured = false
+    private var restartAfterInterruption = false
+    private var observers: [NSObjectProtocol] = []
+
+    override init() {
+        super.init()
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: .AVCaptureSessionRuntimeError, object: nil, queue: .main) { [weak self] note in
+            NSLog("idfon camera push: runtime error \(note)")
+            self?.stop()
+        })
+        observers.append(center.addObserver(forName: .AVCaptureSessionWasInterrupted, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.restartAfterInterruption = self.session.isRunning
+            self.queue.async {
+                if self.session.isRunning { self.session.stopRunning() }
+            }
+        })
+        observers.append(center.addObserver(forName: .AVCaptureSessionInterruptionEnded, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.restartAfterInterruption else { return }
+            self.restartAfterInterruption = false
+            self.queue.async { self.startLocked() }
+        })
+    }
+
+    deinit {
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        if session.isRunning { session.stopRunning() }
+    }
 
     func start() {
+        restartAfterInterruption = false
         queue.async { self.startLocked() }
     }
 
     func stop() {
+        restartAfterInterruption = false
         queue.async {
             if self.session.isRunning { self.session.stopRunning() }
         }

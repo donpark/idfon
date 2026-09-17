@@ -52,9 +52,9 @@ struct LiveInvite {
 /// while publishing its own broadcast and sending its own invite back; the
 /// caller receives that return leg and joins it.
 ///
-/// Media runs through the vendored c-ffi FFI (camera, H.264 publish, peer
-/// video decoded to video-frame.jpg ~15fps); signaling goes over the daemon
-/// socket (message.send) like every other chat message.
+/// Swift owns camera/audio capture and call UI lifecycle; the Idfon media
+/// bridge publishes/subscribes current MoQ tracks and supplies decoded frames.
+/// Signaling stays on the daemon socket.
 ///
 /// @MainActor: the frame-polling Timer.scheduledTimer attaches to the
 /// current run loop — join()/answer() hop into Tasks that would otherwise
@@ -187,8 +187,8 @@ final class VideoCall: NSObject {
                     id = peerRef
                 }
                 peer = id
-                // Registry entry (parity with core.ts video_call_start); the
-                // media itself is FFI-side, not daemon-side.
+                // Registry entry for Idfon's authorization/session lifecycle;
+                // Swift owns capture while the media bridge owns transport.
                 let identity = (try? await client.status())?.1 ?? "default"
                 let peerBytes = Array(id.utf8.map { AnyEncodable(Int($0)) })
                 _ = try await client.request(method: "media.session.start", params: [
@@ -298,8 +298,8 @@ final class VideoCall: NSObject {
 
     // MARK: - Internals
 
-    /// Subscribes audio (decoded playback through cpal) and video (decoded
-    /// frames rewritten to video-frame.jpg).
+    /// Subscribes audio/video through Idfon's current media bridge; Swift owns
+    /// the call UI and lifecycle while the bridge owns MoQ decode resources.
     private func join(ticket: String) async {
         activateAudioSession()
         let path = await ffiString { media_video_start(ticket) }
@@ -351,8 +351,8 @@ final class VideoCall: NSObject {
     }
 
     /// Rewrites the remote frame into the UI ~10x/s. The FFI renames a new
-    /// JPEG over video-frame.jpg atomically; we only reload when the file
-    /// size changed (cheap change detection, matches core.ts re-issue).
+    /// The current bridge supplies decoded frames through a native image
+    /// artifact; reload only when its size changes.
     private func startFramePolling() {
         frameTimer?.invalidate()
         // Timer fires on the main runloop; hop through the main actor for

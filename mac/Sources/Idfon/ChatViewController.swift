@@ -52,7 +52,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         case normal
         case memoRecording
         case memoReview(url: URL)
-        case callReview(durationMs: Int, ticket: String)
     }
     private var composerTextView: NSTextView?
 
@@ -67,10 +66,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private var reviewSamples: [Float] = []
     private var recordingElapsedLabel: NSTextField?
 
-    // in-call recording state (daemon-side opus)
+    // in-call recording state (native AVAudioRecorder)
     private var callRecordingActive = false
+    private var callMemo: VoiceMemo?
     private var callRecordingWaveView: WaveformView?
-    private var pendingCallRecording: (durationMs: Int, ticket: String)?
     /// The in-flight file upload (§5), so the tray's Cancel can abort it.
     private var fileTask: Task<Void, Never>?
 
@@ -581,17 +580,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 wave.heightAnchor.constraint(equalToConstant: 28),
                 wave.widthAnchor.constraint(equalToConstant: 180),
             ])
-        case .callReview(let durationMs, _):
-            let label = NSTextField(labelWithString: "Call recording · \(durationLabel(durationMs))")
-            label.textColor = .secondaryLabelColor
-            let discard = NSButton(title: "Discard", target: self, action: #selector(discardCallRecordingTapped))
-            discard.bezelStyle = .rounded
-            let send = NSButton(title: "Send", target: self, action: #selector(sendCallRecordingTapped))
-            send.bezelStyle = .rounded
-            send.keyEquivalent = "\r"
-            composer.addArrangedSubview(label)
-            composer.addArrangedSubview(discard)
-            composer.addArrangedSubview(send)
         }
     }
 
@@ -626,6 +614,13 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         memoTimer?.invalidate()
         bannerTimer?.invalidate()
         player?.stop()
+        if let callMemo {
+            callMemo.discard()
+            self.callMemo = nil
+            callRecordingActive = false
+            if case .memoRecording = composerMode { composerMode = .normal }
+            rebuildComposer()
+        }
     }
 
     private func refreshHeaderSoon() {
@@ -1129,6 +1124,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc private func discardMemoTapped() {
         player?.stop()
         progressTimer?.invalidate()
+        memo?.discard()
+        memo = nil
+        callMemo?.discard()
+        callMemo = nil
         memoURL = nil
         memoDuration = 0
         composerMode = .normal
@@ -1138,7 +1137,14 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc private func sendMemoTapped() {
         guard let url = memoURL else { return }
         let durationMs = Int(memoDuration * 1000)
-        discardMemoTapped()
+        player?.stop()
+        progressTimer?.invalidate()
+        memo = nil
+        callMemo = nil
+        memoURL = nil
+        memoDuration = 0
+        composerMode = .normal
+        rebuildComposer()
         Task { await sendRecording(fileURL: url, durationMs: durationMs, codec: "pcm", sampleRate: "16000") }
     }
 
@@ -1166,98 +1172,31 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         }
     }
 
-    // MARK: - In-call recording (daemon-side opus, GUI's media.recording.*)
+    // MARK: - In-call recording (native AVAudioRecorder, Idfon blob/envelope flow)
 
     @objc private func callRecordTapped() {
-        if !callRecordingActive {
-            guard live.state == .inCall(peer: peer.id) || video.state == .inCall else { return }
-            Task.detached(priority: .userInitiated) { _ = media_recording_start() }
-            callRecordingActive = true
-            let meterWave = WaveformView(frame: NSRect(x: 0, y: 0, width: 200, height: 28))
-            meterWave.startLive()
-            callRecordingWaveView = meterWave
-            // Same display-only mic tap as the inline call bar (two engine
-            // taps would race the input node).
-            let meter = ensureCallMeter()
-            meter.add(view: meterWave)
-            // Swap the composer into a live recording bar.
-            composer.arrangedSubviews.forEach { composer.removeArrangedSubview($0); $0.removeFromSuperview() }
-            let dot = NSTextField(labelWithString: "●")
-            dot.textColor = .systemRed
-            let elapsed = NSTextField(labelWithString: "0:00")
-            elapsed.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium)
-            recordingElapsedLabel = elapsed
-            let liveWave = callRecordingWaveView ?? meterWave
-            let stop = NSButton(title: "Stop", target: self, action: #selector(callRecordTapped))
-            stop.bezelStyle = .rounded
-            stop.hasDestructiveAction = true
-            composer.addArrangedSubview(dot)
-            composer.addArrangedSubview(elapsed)
-            composer.addArrangedSubview(liveWave)
-            composer.addArrangedSubview(stop)
-            liveWave.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                liveWave.heightAnchor.constraint(equalToConstant: 28),
-                liveWave.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
-            ])
-            refreshHeader()
-        } else {
+        guard live.state == .inCall(peer: peer.id) || video.state == .inCall else { return }
+        if let callMemo {
+            guard let result = callMemo.stop() else { return }
+            self.callMemo = nil
             callRecordingActive = false
-            // Shared call meter keeps running — the call itself does.
-            recordingElapsedLabel = nil
-            Task {
-                let stored = await Task.detached(priority: .userInitiated) { () -> String in
-                    let ptr = media_live_recording_store()
-                    defer { if let ptr { rust_free_string(ptr) } }
-                    return ptr.map { String(cString: $0) } ?? ""
-                }.value
-                let fields = stored.split(separator: "\n").map(String.init)
-                guard fields.count == 2, let durationMs = Int(fields[0]), !fields[1].isEmpty else {
-                    await MainActor.run { self.showBanner("Recording store failed") }
-                    return
-                }
-                let ticket = fields[1]
-                await Task.detached(priority: .userInitiated) { _ = media_recording_persist(ticket) }.value
-                await MainActor.run {
-                    self.pendingCallRecording = (durationMs, ticket)
-                    self.composerMode = .callReview(durationMs: durationMs, ticket: ticket)
-                    self.rebuildComposer()
-                }
-            }
-            refreshHeader()
+            memoURL = result.url
+            memoDuration = result.duration
+            composerMode = .memoReview(url: result.url)
+            rebuildComposer()
+            return
         }
-    }
-
-    @objc private func discardCallRecordingTapped() {
-        pendingCallRecording = nil
-        composerMode = .normal
-        rebuildComposer()
-    }
-
-    @objc private func sendCallRecordingTapped() {
-        guard let pending = pendingCallRecording else { return }
-        pendingCallRecording = nil
-        composerMode = .normal
-        rebuildComposer()
-        let envelope = """
-        IDFON-RECORDING/1
-        id=\(UUID().uuidString)
-        codec=opus
-        channels=1
-        sample_rate=48000
-        duration_ms=\(pending.durationMs)
-        sender_id=\(store.selfPeerId)
-        ticket=\(pending.ticket)
-        """
-        Task {
+        VoiceMemo.requestPermission { [weak self] granted in
+            guard let self, granted else { self?.showBanner("Microphone permission denied"); return }
             do {
-                try await sendConversationText(envelope)
-                await MainActor.run {
-                    store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: conversation.isRoom ? store.selfPeerId : peer.id, kind: .recording(ticket: pending.ticket, durationMs: pending.durationMs), outgoing: true, status: "Sent", conversation: conversation.room?.id))
-                    self.showBanner("Audio sent")
-                }
+                let memo = VoiceMemo()
+                _ = try memo.start()
+                self.callMemo = memo
+                self.callRecordingActive = true
+                self.composerMode = .memoRecording
+                self.rebuildComposer()
             } catch {
-                await MainActor.run { self.showBanner("Send failed: \(error.localizedDescription)") }
+                self.showBanner("Call recording failed: \(error.localizedDescription)")
             }
         }
     }
@@ -1338,5 +1277,16 @@ extension ChatViewController: ChatStoreObserver {
 }
 
 extension ChatViewController: CallStateObserver {
-    func callStateDidChange() { refreshHeaderSoon() }
+    func callStateDidChange() {
+        if case .idle = live.state, case .idle = video.state, let recorder = callMemo,
+           let result = recorder.stop() {
+            callMemo = nil
+            callRecordingActive = false
+            memoURL = result.url
+            memoDuration = result.duration
+            composerMode = .memoReview(url: result.url)
+            rebuildComposer()
+        }
+        refreshHeaderSoon()
+    }
 }

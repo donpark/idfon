@@ -13,6 +13,8 @@ final class AudioPusher {
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private(set) var running = false
+    private var observers: [NSObjectProtocol] = []
+    private var restartAfterInterruption = false
 
     private static let pipelineFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -46,6 +48,7 @@ final class AudioPusher {
                     self?.push(buffer)
                 }
                 try self.engine.start()
+                self.installObservers(session)
                 self.running = true
                 NSLog("idfon audio push: started (\(format))")
             } catch {
@@ -55,12 +58,49 @@ final class AudioPusher {
     }
 
     func stop() {
+        restartAfterInterruption = false
         guard running else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         converter = nil
+        removeObservers()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         running = false
         NSLog("idfon audio push: stopped")
+    }
+
+    private func installObservers(_ session: AVAudioSession) {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
+            guard let self, let value = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else { return }
+            if value == AVAudioSession.InterruptionType.began.rawValue {
+                self.restartAfterInterruption = self.running
+                if self.running {
+                    self.engine.inputNode.removeTap(onBus: 0)
+                    self.engine.stop()
+                    self.converter = nil
+                }
+                self.running = false
+            } else if value == AVAudioSession.InterruptionType.ended.rawValue, self.restartAfterInterruption {
+                self.restartAfterInterruption = false
+                self.start()
+            }
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] note in
+            guard let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
+            self?.stop()
+        })
+    }
+
+    private func removeObservers() {
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+    }
+
+    deinit {
+        stop()
+        removeObservers()
     }
 
     private func push(_ buffer: AVAudioPCMBuffer) {
