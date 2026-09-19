@@ -21,6 +21,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     private let captureQueue = DispatchQueue(label: "idfon.camera.frames")
     private var configured = false
     private var framesPushed = 0
+    private var videoEnabledAt: Date?
     /// Set when start() was requested while the app was not active; capture
     /// arbitration denies frames to non-active clients, so we defer.
     private var pendingStart = false
@@ -70,6 +71,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     }
 
     func start() {
+        videoEnabledAt = Date()
         restartAfterInterruption = false
         let state = UIApplication.shared.applicationState
         NSLog("idfon camera push: start requested appState=\(state.rawValue) (0=active)")
@@ -210,6 +212,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
 
         let ptsMs = UInt64(max(0, CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)) * 1000))
+        if framesPushed <= 3 { NSLog("idfon camera push: pushing frame #\(framesPushed) enabledSince=\(videoEnabledAt?.description ?? "n/a")") }
         let canonical = width == VideoScaling.width && height == VideoScaling.height
         if canonical && bytesPerRow == expected {
             media_video_push_frame(base.assumingMemoryBound(to: UInt8.self), UInt(expected * height), UInt32(width), UInt32(height), ptsMs)

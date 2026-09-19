@@ -60,6 +60,13 @@ bundled Info.plist usage descriptions.
 
 Interops with the Native SDK GUI, the iOS app, and the CLI (same daemon).
 
+Apple-native media status: verified with an iOS-to-macOS video call starting
+with audio enabled and video initially disabled. Enabling video worked on both
+sides, and macOS audio survived switching to AirPods. Swift owns microphone
+and camera capture; the shared Rust/iroh bridge owns media transport and
+encoding. macOS uses one shared `AVAudioEngine` input tap for call metering so
+route changes do not create competing input taps.
+
 ## Deliberate v1 limits
 
 - Native-GUI voice notes are Opus; AVAudioPlayer can't decode raw Opus, so

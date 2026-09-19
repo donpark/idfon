@@ -408,10 +408,10 @@ final class VideoCall {
         guard videoAvailable else { return }
         if enabled {
             CameraPusher.shared.start()
-            NSLog("idfon video: enabling camera capture")
+            NSLog("idfon video: enabling camera capture; published=\(published) video=\(videoEnabled)")
         } else {
             CameraPusher.shared.stop()
-            NSLog("idfon video: disabling camera capture")
+            NSLog("idfon video: disabling camera capture; published=\(published)")
         }
         videoEnabled = enabled
         applySendState()
@@ -591,7 +591,6 @@ final class VideoCall {
         if state == .calling || state == .inCall {
             NSLog("idfon video return invite from \(peerID), state=\(state)")
             peer = peerID
-            guard joinedTicket != invite.ticket else { return }
             Task { await join(ticket: invite.ticket) }
         } else if state == .idle {
             pendingInvite = (peerID, invite.ticket)
@@ -627,9 +626,13 @@ final class VideoCall {
     /// Subscribes audio/video through Idfon's current media bridge; Swift owns
     /// the call UI and lifecycle while the bridge owns MoQ decode resources.
     private func join(ticket: String) async {
+        // The return invite arrives through both ChatStore and
+        // waitForReturnInvite; the second must not restart the watch.
+        guard joinedTicket != ticket else { return }
+        joinedTicket = ticket
         let path = await ffiString { media_video_start(ticket) }
         guard !path.isEmpty else {
-            let error = await ffiString { media_live_last_error() }
+            let error = await ffiString { media_video_last_error() }
             fail("video watch failed\(error.isEmpty ? "" : ": \(error)")")
             return
         }
@@ -638,7 +641,6 @@ final class VideoCall {
         }
         if state == .idle { return } // hung up while subscribing
         NSLog("idfon video watch started path=\(path)")
-        joinedTicket = ticket
         framePath = path
         frameDeadline = Date().addingTimeInterval(10)
         lastFrameSize = -1
@@ -682,7 +684,9 @@ final class VideoCall {
     private func fail(_ message: String) {
         NSLog("idfon video call failed: \(message)")
         lastError = message
-        terminate(local: false) // surfaces lastError via state change
+        // Tell the peer: they were invited (or answered) and would otherwise
+        // sit in a one-sided call until they hang up themselves.
+        terminate(local: true) // surfaces lastError via state change
     }
 
     /// Rewrites the remote frame into the UI ~10x/s. The FFI renames a new
@@ -698,8 +702,17 @@ final class VideoCall {
                 let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
                 guard size > 0 else {
                     if let deadline = self.frameDeadline, Date() > deadline {
-                        self.fail("video frame timeout")
-                        return
+                        // No picture yet is normal: the peer's camera may be off
+                        // (calls start mic-first) and its video track only
+                        // exists once it enables it. Only a reported watch
+                        // failure ends the call.
+                        self.frameDeadline = nil
+                        let error = await self.ffiString { media_video_last_error() }
+                        if !error.isEmpty {
+                            self.fail("video watch failed: \(error)")
+                            return
+                        }
+                        NSLog("idfon video: no remote frame yet (peer camera off?)")
                     }
                     // No frame written yet, or the FFI removed the stale JPEG
                     // (new subscription / peer camera off). Drop any frame
@@ -742,4 +755,5 @@ final class VideoCall {
             observer.callStateDidChange()
         }
     }
+
 }

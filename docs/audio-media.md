@@ -26,7 +26,9 @@ completed recording
   → local file
 ```
 
-The current implementation is macOS-first and has been verified with two simultaneously running app instances sending and playing a short recording. Recording attachments use the custom `idfon-chat/1` ALPN and a length-prefixed bidirectional QUIC stream; the receiver acknowledges a validated envelope with `audio_received` before the sender reports delivery success. Each receiver instance generates a fresh endpoint identity on launch, so two instances may safely share the default development directory for endpoint identity; separate directories are still recommended to isolate media files.
+The current implementation is macOS-first. Apple-native media handling is now working on the macOS and iOS shells: microphone/camera capture stays in Swift, while the Rust/iroh media bridge owns publishing, subscription, encoding, and playback. A macOS iOS-to-macOS video call has been verified with both sides starting audio-only, enabling video successfully, and routing audio through AirPods. macOS call metering uses one shared `AVAudioEngine` input tap so audio-route changes cannot install competing taps. The macOS app has also been rebuilt successfully after this path was exercised.
+
+The implementation has been verified with two simultaneously running app instances sending and playing a short recording. Recording attachments use the custom `idfon-chat/1` ALPN and a length-prefixed bidirectional QUIC stream; the receiver acknowledges a validated envelope with `audio_received` before the sender reports delivery success. Each receiver instance generates a fresh endpoint identity on launch, so two instances may safely share the default development directory for endpoint identity; separate directories are still recommended to isolate media files.
 
 It uses the following app-data files
 under `NATIVE_SDK_APP_DATA_DIR` (with `/tmp/idfon` as a development fallback):
@@ -198,10 +200,11 @@ daemon. Two load-bearing reasons:
 The daemon does not capture today: `idfon-media` is headless by construction
 ("without a capture device") and `media.live.publish` requires a `file`. cpal
 capture lives in the caller-linked `iroh-c-ffi` (`AudioBackend`/`InputStream`),
-and Apple camera capture is shell-pushed (`CameraPusher.swift` →
-`media_video_push_frame`). When CLI microphone or camera input lands, capture
-goes in `idfon-cli` (or a caller-linked source), **not** as a `capture` feature
-in `idfon-media`/`idfond`. Pipeline placement may vary; the daemon receives a
+and Apple microphone/camera capture is shell-owned: Swift uses `AVAudioEngine`
+and `AVCaptureSession`, then pushes audio/video frames through the FFI. When
+CLI microphone or camera input lands, capture goes in `idfon-cli` (or a
+caller-linked source), **not** as a `capture` feature in
+`idfon-media`/`idfond`. Pipeline placement may vary; the daemon receives a
 session handle or ticket, never a device.
 
 ### Sources are pluggable

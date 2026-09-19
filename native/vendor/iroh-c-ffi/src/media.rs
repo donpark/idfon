@@ -20,6 +20,9 @@ use crate::util::tokio_executor;
 
 const AUDIO_CAPACITY: usize = 48_000 * 2;
 static AUDIO_QUEUE: Mutex<Option<Arc<Mutex<VecDeque<f32>>>>> = Mutex::new(None);
+static AUDIO_SAMPLES_PUSHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static AUDIO_FRAMES_ENCODED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static AUDIO_FRAMES_DECODED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static LIVE: Mutex<Option<LiveSession>> = Mutex::new(None);
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static MEDIA_SCOPE: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -31,6 +34,8 @@ static RECORDING: Mutex<Option<Recording>> = Mutex::new(None);
 static RECORDING_DURATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static BLOB_PROVIDER: Mutex<Option<BlobProvider>> = Mutex::new(None);
 static VIDEO_QUEUE: Mutex<Option<(u32, u32, Vec<u8>, u64)>> = Mutex::new(None);
+static VIDEO_FRAMES_PUSHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static VIDEO_FRAMES_CONSUMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PLAYBACK: Mutex<Option<Playback>> = Mutex::new(None);
 static PLAYBACK_CONTROL: Mutex<Option<moq_audio::playback::Control>> = Mutex::new(None);
 static PLAYBACK_ENGINE: Mutex<Option<moq_audio::playback::Engine>> = Mutex::new(None);
@@ -72,6 +77,8 @@ fn audio_stream(queue: Arc<Mutex<VecDeque<f32>>>) -> BoxStream<AudioFrame> {
             for sample in &mut data {
                 *sample = q.pop_front().unwrap_or(0.0);
             }
+            let encoded = AUDIO_FRAMES_ENCODED.fetch_add(1, Ordering::Relaxed) + 1;
+            if encoded <= 3 || encoded % 100 == 0 { eprintln!("[media] audio frame encoded #{}", encoded); }
         }
         let bytes: Vec<u8> = data.into_iter().flat_map(f32::to_le_bytes).collect();
         let timestamp = moq_net::Timestamp::from_micros(pts).ok()?;
@@ -85,6 +92,7 @@ fn video_stream() -> BoxStream<VideoFrame> {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             if !VIDEO_ENABLED.load(Ordering::Relaxed) { continue; }
             let Some((width, height, pixels, pts)) = VIDEO_QUEUE.lock().ok()?.take() else { continue; };
+            VIDEO_FRAMES_CONSUMED.fetch_add(1, Ordering::Relaxed);
             let size = Size { width, height };
             let surface = Surface::rgba(&pixels, size).ok()?;
             let timestamp = moq_net::Timestamp::from_micros(pts).ok()?;
@@ -169,6 +177,8 @@ pub fn media_live_start_with_source(audio: u8, video: u8, source: char_p::Ref<'_
 #[ffi_export]
 pub fn media_audio_push_samples(pcm: *const f32, samples: usize) {
     if pcm.is_null() || samples == 0 { return; }
+    let pushed = AUDIO_SAMPLES_PUSHED.fetch_add(samples as u64, Ordering::Relaxed) + samples as u64;
+    if pushed <= 2_000 || pushed % 48_000 < samples as u64 { eprintln!("[media] audio samples pushed total={}", pushed); }
     let input = unsafe { std::slice::from_raw_parts(pcm, samples) };
     let queue = audio_queue();
     let result = queue.lock();
@@ -181,7 +191,14 @@ pub fn media_audio_push_samples(pcm: *const f32, samples: usize) {
 #[ffi_export]
 pub fn media_live_set_audio_enabled(enabled: u8) -> u8 { AUDIO_ENABLED.store(enabled != 0, Ordering::Relaxed); 0 }
 #[ffi_export]
-pub fn media_live_set_video_enabled(enabled: u8) -> u8 { VIDEO_ENABLED.store(enabled != 0, Ordering::Relaxed); 0 }
+pub fn media_live_set_video_enabled(enabled: u8) -> u8 {
+    VIDEO_ENABLED.store(enabled != 0, Ordering::Relaxed);
+    // Drop the frame parked while the camera was on: re-enabling would
+    // otherwise encode it with a timestamp behind everything already sent.
+    if enabled == 0 { if let Ok(mut slot) = VIDEO_QUEUE.lock() { *slot = None; } }
+    eprintln!("[media] video enabled={} pushed={} consumed={}", enabled, VIDEO_FRAMES_PUSHED.load(Ordering::Relaxed), VIDEO_FRAMES_CONSUMED.load(Ordering::Relaxed));
+    0
+}
 #[ffi_export]
 pub fn media_live_last_error() -> char_p::Box { LAST_ERROR.lock().unwrap().clone().unwrap_or_default().try_into().unwrap() }
 #[ffi_export]
@@ -203,6 +220,13 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
             let live = Live::from_env().await?.spawn();
             let subscription = live.subscribe(ticket.endpoint, &ticket.broadcast_name).await?;
             let broadcast = subscription.broadcast();
+            // The publisher writes an empty catalog first and adds the audio
+            // rendition once its encoder is probed, so the first snapshot a
+            // fast subscriber sees may not carry it yet: wait for it.
+            while !broadcast.has_audio() {
+                if thread_stop.load(Ordering::Relaxed) { live.shutdown().await; return anyhow::Ok(()); }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
             let catalog = broadcast.catalog();
             let Some(name) = catalog.first_audio() else { anyhow::bail!("broadcast has no audio track"); };
             let config = catalog.audio().get(name).ok_or_else(|| anyhow::anyhow!("audio catalog missing"))?;
@@ -233,6 +257,8 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                 };
                 let Some(frame) = frame else { break; };
                 sink.write(&frame.data)?;
+                let decoded = AUDIO_FRAMES_DECODED.fetch_add(1, Ordering::Relaxed) + 1;
+                if decoded <= 3 || decoded % 100 == 0 { eprintln!("[media] audio frame decoded #{}", decoded); }
                 for chunk in frame.data.chunks_exact(4) { samples.push(f32::from_le_bytes(chunk.try_into().unwrap())); }
             }
             write_wav(&media_path("received.wav"), &samples)?;
@@ -273,6 +299,8 @@ pub fn media_live_unsubscribe() {
 pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u32, pts_ms: u64) {
     if data.is_null() || width == 0 || height == 0 || len < width as usize * height as usize * 4 { return; }
     let pixels = unsafe { std::slice::from_raw_parts(data, width as usize * height as usize * 4) }.to_vec();
+    let count = VIDEO_FRAMES_PUSHED.fetch_add(1, Ordering::Relaxed) + 1;
+    if count <= 3 || count % 150 == 0 { eprintln!("[media] video frame pushed #{} {}x{} enabled={}", count, width, height, VIDEO_ENABLED.load(Ordering::Relaxed)); }
     if let Ok(mut slot) = VIDEO_QUEUE.lock() { *slot = Some((width, height, pixels, pts_ms * 1_000)); }
 }
 
