@@ -6,6 +6,12 @@ first (file-driven, like the audio file streaming in
 
 ## Live camera capture (iOS + macOS → any receiver)
 
+Status: verified on the Apple-native shells. An iOS-to-macOS video call works
+when both sides start audio-only and video is enabled during the call; the
+macOS side also survives switching the audio route to AirPods. Swift owns
+Apple capture and pushes frames into the shared Rust/iroh media bridge. The
+Rust side does not open a second camera or microphone on Apple platforms.
+
 iOS captures through `ios/Idfon/CameraPusher.swift`: a headless
 `AVCaptureSession` (no preview layer) delivers BGRA frames on a serial
 delegate queue and pushes each frame over the `media_video_push_frame` FFI

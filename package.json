@@ -6,9 +6,11 @@
   "scripts": {
     "clean": "pnpm cli clean && pnpm mac clean && pnpm ios clean && pnpm native clean && pnpm --filter eve-idfon-channel clean",
     "native": "pnpm --filter @idfon/native",
+    "all": "pnpm",
     "ios": "pnpm --filter @idfon/ios",
     "mac": "pnpm --filter @idfon/mac",
-    "cli": "pnpm --filter @idfon/cli"
+    "cli": "pnpm --filter @idfon/cli",
+    "pair": "bash ./scripts/pair-apple-channels.sh"
   },
   "author": "Don Park",
   "license": "(MIT OR Apache-2.0)",

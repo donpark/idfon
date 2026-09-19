@@ -165,12 +165,19 @@ private extension WaveformView.Mode {
 /// not open the mic, so this tap is the call's sole capture and its levels are
 /// the very samples the peer hears (issue #7). Memo meters leave it off.
 final class AudioMeter {
-    private let engine = AVAudioEngine()
+    // AVAudioEngine input taps are process-wide at the hardware input bus:
+    // separate engines can still collide when macOS switches devices.
+    private static let inputEngine = AVAudioEngine()
+    private var engine: AVAudioEngine { Self.inputEngine }
     // One engine tap fans out to every attached waveform (inline call bar +
     // in-call recording bar share it; a second engine tap would race the mic).
     private struct WeakWave { weak var view: WaveformView? }
     private var views: [WeakWave] = []
     private(set) var running = false
+    private var tapInstalled = false
+    private var startGeneration = 0
+    private static weak var activeInputMeter: AudioMeter?
+    private static var inputTapInstalled = false
 
     /// Opt in to feeding the call's encoder as well as the waveform. In the
     /// dylib's "push" mode the Rust side does not open the mic, so this tap is
@@ -194,12 +201,25 @@ final class AudioMeter {
     }
 
     func start() {
-        guard !running else { return }
+        guard !running, !tapInstalled else { return }
+        startGeneration += 1
+        let generation = startGeneration
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             guard granted, let self, !self.running else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self,
+                      generation == self.startGeneration,
+                      !self.running, !self.tapInstalled else { return }
+                // The input bus accepts only one tap process-wide. This can be
+                // hit during device changes when an old meter's permission
+                // callback arrives after the UI has created the replacement.
+                if let active = Self.activeInputMeter, active !== self { active.stop() }
                 let input = self.engine.inputNode
+                if Self.inputTapInstalled {
+                    input.removeTap(onBus: 0)
+                    Self.inputTapInstalled = false
+                }
+                self.tapInstalled = false
                 let format = input.outputFormat(forBus: 0)
                 if self.pushToEncoder {
                     self.converter = AVAudioConverter(from: format, to: Self.pipelineFormat)
@@ -216,6 +236,9 @@ final class AudioMeter {
                     for wave in owner.views { wave.view?.add(amplitude: Float(min(rms * 12, 1))) }
                     if owner.pushToEncoder { owner.push(buffer) }
                 }
+                self.tapInstalled = true
+                Self.inputTapInstalled = true
+                Self.activeInputMeter = self
                 do {
                     try self.engine.start()
                     self.installAudioObservers()
@@ -228,8 +251,14 @@ final class AudioMeter {
     }
 
     func stop() {
-        guard running else { return }
-        engine.inputNode.removeTap(onBus: 0)
+        startGeneration += 1
+        guard running || tapInstalled else { return }
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+            Self.inputTapInstalled = false
+        }
+        if Self.activeInputMeter === self { Self.activeInputMeter = nil }
         engine.stop()
         converter = nil
         removeAudioObservers()

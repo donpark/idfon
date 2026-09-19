@@ -41,8 +41,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let i = args.firstIndex(of: "-videodial"), args.count > i + 1 {
             VideoCall.shared.dial(args[i + 1])
         }
-        if let i = args.firstIndex(of: "-pair"), args.count > i + 1 {
-            pairPeer(ticketJSON: args[i + 1], name: args.count > i + 2 ? args[i + 2] : "mac")
+        // Pairing requests run in order on one task: `peer.remove`/`peer.add`
+        // for the same name race when issued concurrently, and `-pair-exit`
+        // must wait for every request, not just the first to finish.
+        let unpairs = args.indices.filter { args[$0] == "-unpair" && args.count > $0 + 1 }.map { args[$0 + 1] }
+        let pairs = args.indices.filter { args[$0] == "-pair" && args.count > $0 + 1 }
+            .map { (ticketJSON: args[$0 + 1], name: args.count > $0 + 2 && !args[$0 + 2].hasPrefix("-") ? args[$0 + 2] : "peer") }
+        if !unpairs.isEmpty || !pairs.isEmpty {
+            Task {
+                for name in unpairs { await unpairPeer(name: name) }
+                for pair in pairs { await pairPeer(ticketJSON: pair.ticketJSON, name: pair.name) }
+                if args.contains("-pair-exit") { exit(0) }
+            }
         }
         if let i = args.firstIndex(of: "-pair-ticket"), args.count > i + 2 {
             storeCapabilityTicket(peer: args[i + 1], jsonOrPath: args[i + 2])
@@ -115,57 +125,70 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// send/receive both ways, and logs this daemon's own channel ticket
     /// (`idfon self ticket:`) so the remote side can be paired from console
     /// output.
-    private func pairPeer(ticketJSON: String, name: String) {
-        Task {
-            let client = DaemonClient()
-            do {
-                // Canonical identity id (name may differ, e.g. id "default"
-                // vs name "Default" — grants and peer.add must use the id).
-                let identity: String
-                if let raw = try? await client.request(method: "status") {
-                    identity = raw["identity"]?["id"]?.stringValue ?? raw["identity"]?["name"]?.stringValue ?? "default"
-                } else {
-                    identity = "default"
-                }
-                // Log our own ticket so `devicectl launch --console` captures it.
-                if let raw = try? await client.request(method: "status"),
-                   let ticketBytes = raw["ticket"]?.asArray {
-                    let data = Data(ticketBytes.compactMap { enc -> UInt8? in
-                        guard let v = enc.intValue, v > 0, v < 256 else { return nil }
-                        return UInt8(v)
-                    })
-                    NSLog("idfon self ticket: \(String(data: data, encoding: .utf8) ?? "?")")
-                }
-                guard let ticket = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any] else {
-                    NSLog("idfon pair failed: invalid ticket JSON")
-                    return
-                }
-                let transport = (ticket["endpoint_addr"] as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ticket
-                guard let endpointId = (ticket["endpoint_id"] as? String) ?? (transport["id"] as? String), !endpointId.isEmpty else {
-                    NSLog("idfon pair failed: ticket has no endpoint_id")
-                    return
-                }
-                let accountId = (ticket["account_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? endpointId
-                let endpointAddr = (ticket["endpoint_addr"] as? String) ?? ticketJSON
-                _ = try await client.request(method: "peer.add", params: [
-                    "id": AnyEncodable(accountId),
-                    "name": AnyEncodable(name),
-                    "endpoint_id": AnyEncodable(endpointId),
-                    "endpoint_addr": AnyEncodable(endpointAddr),
-                    "identity": AnyEncodable(identity),
-                ])
-                for capability in ["message.send", "message.receive", "live.audio.subscribe"] {
-                    _ = try await client.request(method: "access.grant", params: [
-                        "identity": AnyEncodable(identity),
-                        "subject": AnyEncodable(accountId),
-                        "capability": AnyEncodable(capability),
-                    ])
-                }
-                NSLog("idfon paired: peer \(endpointId.prefix(16)) as \(name), identity \(identity)")
-            } catch {
-                NSLog("idfon pair failed: \(error.localizedDescription)")
+    private func pairPeer(ticketJSON: String, name: String) async {
+        let client = DaemonClient()
+        do {
+            // Canonical identity id (name may differ, e.g. id "default"
+            // vs name "Default" — grants and peer.add must use the id).
+            let status = try? await client.request(method: "status")
+            let identity = status?["identity"]?["id"]?.stringValue ?? status?["identity"]?["name"]?.stringValue ?? "default"
+            // Log our own ticket so `devicectl launch --console` captures it.
+            // The contact ticket carries `account_id`: the Mac keys the peer
+            // (and its grants) by account, which differs from the endpoint id
+            // for every identity created after the account/endpoint split.
+            // The raw endpoint ticket is the fallback while the endpoint is
+            // still binding.
+            if let contact = try? await client.contactTicket(identity: identity), !contact.isEmpty {
+                NSLog("idfon self ticket: \(contact)")
+            } else if let ticketBytes = status?["ticket"]?.asArray {
+                let data = Data(ticketBytes.compactMap { enc -> UInt8? in
+                    guard let v = enc.intValue, v > 0, v < 256 else { return nil }
+                    return UInt8(v)
+                })
+                NSLog("idfon self ticket: \(String(data: data, encoding: .utf8) ?? "?")")
             }
+            guard let ticket = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any] else {
+                NSLog("idfon pair failed: invalid ticket JSON")
+                return
+            }
+            let transport = (ticket["endpoint_addr"] as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ticket
+            guard let endpointId = (ticket["endpoint_id"] as? String) ?? (transport["id"] as? String), !endpointId.isEmpty else {
+                NSLog("idfon pair failed: ticket has no endpoint_id")
+                return
+            }
+            let accountId = (ticket["account_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? endpointId
+            let endpointAddr = (ticket["endpoint_addr"] as? String) ?? ticketJSON
+            _ = try? await client.request(method: "peer.remove", params: [
+                "ref": AnyEncodable(name),
+                "identity": AnyEncodable(identity),
+            ])
+            _ = try await client.request(method: "peer.add", params: [
+                "id": AnyEncodable(accountId),
+                "name": AnyEncodable(name),
+                "endpoint_id": AnyEncodable(endpointId),
+                "endpoint_addr": AnyEncodable(endpointAddr),
+                "identity": AnyEncodable(identity),
+            ])
+            for capability in ["message.send", "message.receive", "live.audio.subscribe"] {
+                _ = try await client.request(method: "access.grant", params: [
+                    "identity": AnyEncodable(identity),
+                    "subject": AnyEncodable(accountId),
+                    "capability": AnyEncodable(capability),
+                ])
+            }
+            NSLog("idfon paired: peer \(endpointId.prefix(16)) as \(name), identity \(identity)")
+        } catch {
+            NSLog("idfon pair failed: \(error.localizedDescription)")
         }
+    }
+
+    private func unpairPeer(name: String) async {
+        let client = DaemonClient()
+        let identity = (try? await client.request(method: "status"))?["identity"]?["id"]?.stringValue ?? "default"
+        _ = try? await client.request(method: "peer.remove", params: [
+            "ref": AnyEncodable(name),
+            "identity": AnyEncodable(identity),
+        ])
     }
 
     /// `-pair-ticket <agent-peer-id> <ticket-json|ticket-file>`: persist a

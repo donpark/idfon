@@ -21,6 +21,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     private let queue = DispatchQueue(label: "idfon.camera.control")
     private let captureQueue = DispatchQueue(label: "idfon.camera.frames")
     private var configured = false
+    private var framesPushed = 0
     private var restartAfterInterruption = false
     private var observers: [NSObjectProtocol] = []
 
@@ -130,6 +131,8 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        framesPushed += 1
+        if framesPushed <= 3 || framesPushed % 150 == 0 { NSLog("idfon camera push: frame #\(framesPushed)") }
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         guard CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_32BGRA else {
             NSLog("idfon camera push: ignoring non-BGRA frame format=\(CVPixelBufferGetPixelFormatType(pb))")
