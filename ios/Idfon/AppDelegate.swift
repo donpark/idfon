@@ -21,26 +21,21 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// `simctl openurl` shows for URL schemes.
     private func handleLaunchArguments() {
         let args = ProcessInfo.processInfo.arguments
-        let client = DaemonClient()
         if let i = args.firstIndex(of: "-dial"), args.count > i + 1 {
             let ref = args[i + 1]
-            Task {
-                do {
-                    try await LiveCallHarness.dial(peer: ref, seconds: 8, client: client)
-                    NSLog("idfon dial done: \(ref)")
-                } catch {
-                    NSLog("idfon dial failed: \(error.localizedDescription)")
-                }
+            Task { @MainActor in
+                LiveCall.shared.dial(ref)
+                NSLog("idfon audio dial started: \(ref)")
             }
         }
         if args.contains("-answer") {
-            Task {
-                do {
-                    let out = try await LiveCallHarness.armAutoAnswer(waitSeconds: 120, captureSeconds: 8, client: client)
-                    NSLog("idfon call recorded to \(out)")
-                } catch {
-                    NSLog("idfon answer failed: \(error.localizedDescription)")
-                }
+            Task { @MainActor in
+                await Self.answerWhenIncoming(audio: true)
+            }
+        }
+        if args.contains("-videoanswer") {
+            Task { @MainActor in
+                await Self.answerWhenIncoming(audio: false)
             }
         }
         if let i = args.firstIndex(of: "-videodial"), args.count > i + 1 {
@@ -95,6 +90,27 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// Waits for the real Swift call state machine to receive an invite, then
+    /// answers it. This deliberately replaces the old daemon-side media
+    /// harness: E2E launches must exercise AVAudioEngine/AVCaptureSession.
+    @MainActor
+    private static func answerWhenIncoming(audio: Bool) async {
+        for _ in 0..<600 {
+            if audio, case .incoming = LiveCall.shared.state {
+                LiveCall.shared.answer()
+                NSLog("idfon audio answer started")
+                return
+            }
+            if !audio, VideoCall.shared.state == .incoming {
+                VideoCall.shared.answer(cameraOn: true)
+                NSLog("idfon video answer started camera=1")
+                return
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        NSLog("idfon answer timed out waiting for incoming call")
     }
 
     /// Device pairing automation (no peer-add UI on iOS): launch with

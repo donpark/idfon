@@ -358,10 +358,13 @@ final class VideoCall {
     private let client = DaemonClient()
     private var frameTimer: Timer?
     private var framePath: String?
+    private var frameDeadline: Date?
     private var lastFrameSize = -1
 
     private var peer: String?
+    private var callStartedAt: Date?
     private var pendingInvite: (peer: String, ticket: String)?
+    private var joinedTicket: String?
     /// media=video invites open a watch-only session (no own publish).
     private var pendingIsWatchOnly = false
     private var watching = false
@@ -403,7 +406,13 @@ final class VideoCall {
     /// the camera up, since a mic-first call never started capture.
     func setVideoEnabled(_ enabled: Bool) {
         guard videoAvailable else { return }
-        if enabled { CameraPusher.shared.start() }
+        if enabled {
+            CameraPusher.shared.start()
+            NSLog("idfon video: enabling camera capture")
+        } else {
+            CameraPusher.shared.stop()
+            NSLog("idfon video: disabling camera capture")
+        }
         videoEnabled = enabled
         applySendState()
         notify()
@@ -447,6 +456,7 @@ final class VideoCall {
         audioEnabled = true
         videoEnabled = cameraOn
         peer = peerRef
+        callStartedAt = Date()
         state = .calling
         notify()
         Task {
@@ -490,6 +500,7 @@ final class VideoCall {
                 applySendState()
                 try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
                 if case .calling = state { /* still waiting for the return leg */ }
+                await waitForReturnInvite(peer: id)
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
             }
@@ -553,6 +564,12 @@ final class VideoCall {
         terminate(local: true)
     }
 
+    /// Clears a restored/stale call before launch-argument automation starts.
+    func resetForAutomation() {
+        guard state != .idle else { return }
+        terminate(local: false)
+    }
+
     // MARK: - Event routing (called by ChatStore on the main actor)
 
     /// Handles a call-control message from `peerID`. Invite envelopes and
@@ -572,13 +589,36 @@ final class VideoCall {
         let watchOnly = invite.media == "video" // audio invites route to LiveCall
         guard watchOnly || invite.media == "video-call" else { return }
         if state == .calling || state == .inCall {
+            NSLog("idfon video return invite from \(peerID), state=\(state)")
+            peer = peerID
+            guard joinedTicket != invite.ticket else { return }
             Task { await join(ticket: invite.ticket) }
         } else if state == .idle {
             pendingInvite = (peerID, invite.ticket)
             pendingIsWatchOnly = watchOnly
-            state = .incoming
+            state = watchOnly ? .watching : .incoming
             notify()
             onIncoming?(peerID, watchOnly)
+        }
+    }
+
+    private func waitForReturnInvite(peer: String) async {
+        for attempt in 0..<80 {
+            guard state == .calling || state == .inCall else { return }
+            do {
+                let events = try await client.events(after: nil)
+                if let event = events.first(where: {
+                    guard let text = $0.messageText, let invite = LiveInvite.parse(text) else { return false }
+                    guard let timestamp = Double($0.timestamp), let started = callStartedAt?.timeIntervalSince1970 else { return false }
+                    return $0.messagePeerId == peer && invite.isStart && invite.media == "video-call" && timestamp >= started - 2
+                }), let text = event.messageText {
+                    NSLog("idfon video return invite found attempt=\(attempt) event=\(event.eventId)")
+                    handleEnvelope(peer: peer, text)
+                    return
+                }
+                if attempt == 0 || attempt % 10 == 0 { NSLog("idfon video waiting return invite peer=\(peer) events=\(events.count)") }
+            } catch { NSLog("idfon video return poll failed: \(error.localizedDescription)") }
+            try? await Task.sleep(nanoseconds: 500_000_000)
         }
     }
 
@@ -589,14 +629,18 @@ final class VideoCall {
     private func join(ticket: String) async {
         let path = await ffiString { media_video_start(ticket) }
         guard !path.isEmpty else {
-            fail("video watch failed")
+            let error = await ffiString { media_live_last_error() }
+            fail("video watch failed\(error.isEmpty ? "" : ": \(error)")")
             return
         }
         if !watching {
             _ = await Task.detached(priority: .userInitiated) { _ = media_live_subscribe(ticket) }.value
         }
         if state == .idle { return } // hung up while subscribing
+        NSLog("idfon video watch started path=\(path)")
+        joinedTicket = ticket
         framePath = path
+        frameDeadline = Date().addingTimeInterval(10)
         lastFrameSize = -1
         startFramePolling()
         if state == .calling { state = .inCall }
@@ -611,6 +655,8 @@ final class VideoCall {
         frameTimer?.invalidate()
         frameTimer = nil
         framePath = nil
+        frameDeadline = nil
+        joinedTicket = nil
         lastFrameSize = -1
         watching = false
         lastFrame = nil
@@ -627,6 +673,7 @@ final class VideoCall {
         CameraPusher.shared.stop()
         state = .idle
         peer = nil
+        callStartedAt = nil
         pendingInvite = nil
         notify()
         onFrame?(nil)
@@ -650,6 +697,10 @@ final class VideoCall {
                 guard let self, let path = self.framePath else { return }
                 let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
                 guard size > 0 else {
+                    if let deadline = self.frameDeadline, Date() > deadline {
+                        self.fail("video frame timeout")
+                        return
+                    }
                     // No frame written yet, or the FFI removed the stale JPEG
                     // (new subscription / peer camera off). Drop any frame
                     // still on screen so a paused stream cannot masquerade as
@@ -663,6 +714,7 @@ final class VideoCall {
                 }
                 guard size != self.lastFrameSize else { return }
                 self.lastFrameSize = size
+                self.frameDeadline = nil
                 // Decode off the main thread: a JPEG decode ~10x/s would
                 // otherwise eat main-thread time for the whole call.
                 // kCGImageSourceShouldCacheImmediately forces eager decode

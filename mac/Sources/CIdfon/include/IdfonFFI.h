@@ -51,6 +51,7 @@ void media_video_push_frame(uint8_t const *data, size_t len, uint32_t width, uin
 // frame to <media dir>/video-frame.jpg (atomic rename). Returns the absolute
 // frame path, or "" on failure.
 char *media_video_start(char const *ticket);
+char *media_video_last_error(void);
 void media_video_stop(void);
 char *media_live_last_error(void);           // last publish failure ("" if none)
 

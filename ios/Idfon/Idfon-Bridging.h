@@ -39,6 +39,7 @@ void media_live_stop(void);                  // stop own publish
 uint8_t media_live_subscribe(char const *ticket); // hear the peer (decodes + plays)
 void media_live_unsubscribe(void);
 char *media_video_start(char const *ticket); // watch peer video -> video-frame.jpg path
+char *media_video_last_error(void);
 void media_video_stop(void);
 uint8_t media_live_set_audio_enabled(uint8_t enabled); // 0 = send silence (capture stays open)
 uint8_t media_live_set_video_enabled(uint8_t enabled); // 0 = send no frames

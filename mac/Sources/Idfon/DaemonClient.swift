@@ -74,6 +74,7 @@ struct AnyEncodable: Encodable, Decodable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch value {
+        case is NSNull: try container.encodeNil()
         case let v as Bool: try container.encode(v)
         case let v as Int: try container.encode(v)
         case let v as Int64: try container.encode(v)
