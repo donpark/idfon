@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build Idfon for a real iPhone (Release), install and launch it via devicectl.
 # Extra arguments are passed to the app as launch arguments
-# (e.g. ios/device.sh -dial mac). DEVICE=<name-or-udid> picks a specific
-# device; otherwise the first available one is used.
+# (e.g. ios/device.sh -dial mac). IPHONE_UDID or IPHONE_NAME picks a
+# specific device; DEVICE remains a compatibility alias.
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ios_dir="$root/ios"
@@ -17,11 +17,16 @@ xcodebuild -project "$ios_dir/Idfon.xcodeproj" -scheme Idfon \
 app="$ios_dir/.derived/Build/Products/${CONFIG}-iphoneos/Idfon.app"
 
 device=$(xcrun devicectl list devices 2>/dev/null \
-  | grep "available" | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
-if [ -n "${DEVICE:-}" ]; then
+  | grep -E "connected.*physical|physical.*connected" \
+  | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
+if [ -n "${IPHONE_UDID:-}" ]; then
+  device="$IPHONE_UDID"
+  elif [ -n "${IPHONE_NAME:-}" ]; then
+  device="$IPHONE_NAME"
+elif [ -n "${DEVICE:-}" ]; then
   device="$DEVICE"
 elif [ -z "$device" ]; then
-  echo "no available iPhone found (connect one, or set DEVICE=<name-or-udid>)" >&2
+  echo "no connected iPhone found (set IPHONE_UDID, IPHONE_NAME, or DEVICE)" >&2
   exit 1
 fi
 

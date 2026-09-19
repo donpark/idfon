@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Task { await app.refresh() }
         runAutomationIfRequested()
+        runCallAutomationIfRequested()
     }
 
     private func surfaceIncoming(peerID: String, label: String) {
@@ -114,6 +115,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var topInsetHeight: NSLayoutConstraint?
     private var detail: DetailContainerViewController?
     private let liveActivity = LiveActivityController()
+
+    /// Launch arguments exercise the real Swift media state machines without
+    /// UI taps. They are intended for paired-device E2E runs.
+    private func runCallAutomationIfRequested() {
+        let args = CommandLine.arguments
+        if let index = args.firstIndex(of: "-dial"), args.count > index + 1 {
+            let peer = args[index + 1]
+            Task { @MainActor in
+                await app.refresh()
+                if let match = app.peers.first(where: { $0.id == peer || $0.name == peer }) {
+                    app.select(match)
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                }
+                LiveCall.shared.dial(peer)
+                NSLog("idfon audio dial started: \(peer)")
+            }
+        }
+        if let index = args.firstIndex(of: "-videodial"), args.count > index + 1 {
+            let peer = args[index + 1]
+            Task { @MainActor in
+                VideoCall.shared.resetForAutomation()
+                await app.refresh()
+                let match = app.peers.first(where: { $0.id == peer || $0.name == peer })
+                if let match {
+                    app.select(match)
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    VideoCall.shared.dial(match.id)
+                } else {
+                    VideoCall.shared.dial(peer)
+                }
+                NSLog("idfon video dial started: \(peer)")
+            }
+        }
+        if args.contains("-answer") { waitForIncomingCall(video: false) }
+        if args.contains("-videoanswer") { waitForIncomingCall(video: true) }
+    }
+
+    private func waitForIncomingCall(video: Bool) {
+        Task { @MainActor in
+            for _ in 0..<600 {
+                if video, VideoCall.shared.state == .incoming {
+                    VideoCall.shared.answer()
+                    NSLog("idfon video answer started")
+                    return
+                }
+                if !video, case .incoming = LiveCall.shared.state {
+                    LiveCall.shared.answer()
+                    NSLog("idfon audio answer started")
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            NSLog("idfon \(video ? "video" : "audio") answer timed out")
+        }
+    }
 
     /// `-sendfile <peer> <path>` drives the real attachment path with no clicks
     /// (see `Automation.swift` / `scripts/mac-e2e.sh`).
@@ -226,14 +282,30 @@ final class AppModel: NSObject {
 
     func useIdentity(_ name: String) async {
         guard let active = identities.first(where: { $0.name == name }), !active.active else { return }
+        guard LiveCall.shared.state == .idle, VideoCall.shared.state == .idle else {
+            ChatStore.shared.onBanner?("End the active call before switching identity")
+            return
+        }
+        selectedPeer = nil
+        selectedRoom = nil
+        onSelection?(nil)
+        onRoomSelection?(nil)
         ChatStore.shared.switchIdentity(to: name)
         await refresh()
     }
 
     func createIdentity(_ name: String) async {
+        guard LiveCall.shared.state == .idle, VideoCall.shared.state == .idle else {
+            ChatStore.shared.onBanner?("End the active call before switching identity")
+            return
+        }
         do {
             _ = try await client.request(method: "identity.create", params: ["name": AnyEncodable(name)])
             ChatStore.shared.switchIdentity(to: name)
+            selectedPeer = nil
+            selectedRoom = nil
+            onSelection?(nil)
+            onRoomSelection?(nil)
             await refresh()
         } catch {
             addError = error.localizedDescription

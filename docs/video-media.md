@@ -24,8 +24,8 @@ Key invariants (break these and capture silently stops or distorts):
 - **Start only while the app is foregroundActive.** iOS capture arbitration
   denies frames to sessions born inactive — no error, no notification, and
   rebuilding the same session never recovers. `CameraPusher.start()` defers
-  to `didBecomeActive` when needed; launch-arg automation (`-camprobe`,
-  `-videodial`) must go through the same gate. See
+  to `didBecomeActive` when needed; launch-arg video automation (`-videodial`)
+  must go through the same gate. See
   [troubleshooting.md](troubleshooting.md) for the full post-mortem.
 - **Orientation at capture.** `connection.videoOrientation = .portrait`
   rotates in the capture pipeline; pushed frames are 720x1280 upright.

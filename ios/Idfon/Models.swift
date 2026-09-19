@@ -19,6 +19,14 @@ enum IncomingCallMode: String, Decodable {
     }
 }
 
+struct IdentityInfo: Decodable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let active: Bool
+
+    var displayName: String { active ? "\(name) (active)" : name }
+}
+
 struct Room: Decodable, Identifiable, Hashable {
     let id: String
     let identity: String

@@ -57,6 +57,7 @@ final class SidebarViewController: NSViewController {
         let actions = NSStackView(views: [
             button("Add Channel…", #selector(addChannelTapped)),
             button("Create Identity…", #selector(createIdentityTapped)),
+            button("Share Identity…", #selector(shareIdentityTapped)),
             button("Issue Receive Ticket…", #selector(issueTicketTapped)),
             button("Audio Settings…", #selector(audioSettingsTapped)),
         ])
@@ -193,6 +194,22 @@ final class SidebarViewController: NSViewController {
             Task {
                 let error = await self.app.addChannel(name: name.stringValue, ticketJSON: ticket.string)
                 if let error { await MainActor.run { self.plainSheet(title: "Add Channel Failed", message: error) } }
+            }
+        }
+    }
+
+    @objc private func shareIdentityTapped() {
+        Task {
+            guard let ticket = try? await app.client.contactTicket() else { return }
+            await MainActor.run {
+                let field = NSTextField(wrappingLabelWithString: ticket)
+                field.font = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+                field.isSelectable = true
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(ticket, forType: .string)
+                self.plainSheet(title: "Identity Contact Ticket (copied)",
+                                message: "Share this ticket to add this identity as a contact on another device.",
+                                accessory: field)
             }
         }
     }
