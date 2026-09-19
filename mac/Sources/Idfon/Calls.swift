@@ -89,6 +89,7 @@ final class LiveCall {
     func dial(_ peerId: String) {
         guard case .idle = state else { return }
         audioEnabled = true // this session carries audio from the start
+        UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
         state = .calling(peer: peerId)
         notify()
         Task {
@@ -102,6 +103,8 @@ final class LiveCall {
                     "kind": AnyEncodable("live_audio"),
                     "mode": AnyEncodable("record"),
                 ])
+                AudioMeter.shared.pushToEncoder = true
+                AudioMeter.shared.start()
                 let ticket = await ffiString { media_live_start_with_source(1, 0, "push") } // audio from the shell tap
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -139,6 +142,8 @@ final class LiveCall {
                 guard case .inCall = state else { return }
                 // Publish our own mic so audio is two-way, then send the
                 // return-leg invite (own ticket) that makes the caller join us.
+                AudioMeter.shared.pushToEncoder = true
+                AudioMeter.shared.start()
                 let own = await ffiString { media_live_start_with_source(1, 0, "push") } // audio from the shell tap
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -160,6 +165,7 @@ final class LiveCall {
     func decline() {
         guard case .incoming(let peer) = state else { return }
         state = .idle
+        UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
         notify()
         Task { try? await client.sendText(to: peer, "call_stopped") }
     }
@@ -209,6 +215,7 @@ final class LiveCall {
         }
         guard case .idle = state else { return } // video-call invites route to VideoCall
         pendingInvite = (peerID, invite.ticket)
+        UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
         state = .incoming(peer: peerID)
         notify()
         onIncoming?(peerID)
@@ -267,6 +274,14 @@ final class LiveCall {
         notify()
     }
 
+    /// A process crash cannot send the normal stop envelope. On the next
+    /// launch, close the persisted session at the peer before accepting calls.
+    func recoverStaleCall() {
+        guard let peer = UserDefaults.standard.string(forKey: "idfon.live-call.peer") else { return }
+        UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
+        Task { try? await client.sendText(to: peer, "call_stopped") }
+    }
+
     /// Subscribes to a peer ticket without tearing the call down on failure.
     private func subscribe(ticket: String) async -> Bool {
         await Task.detached(priority: .userInitiated) { () -> Bool in
@@ -291,9 +306,11 @@ final class LiveCall {
             }
         }
         published = false
+        UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
         audioEnabled = false
         videoEnabled = false
         pendingInvite = nil
+        AudioMeter.shared.stop()
         Task.detached(priority: .userInitiated) {
             media_live_stop()
             media_live_unsubscribe()
@@ -394,6 +411,12 @@ final class VideoCall {
     /// The own-media publish exists (set after `media_live_start` succeeds).
     private var published = false
 
+    func recoverStaleCall() {
+        guard let peer = UserDefaults.standard.string(forKey: "idfon.video-call.peer") else { return }
+        UserDefaults.standard.removeObject(forKey: "idfon.video-call.peer")
+        Task { try? await client.sendText(to: peer, "call_stopped") }
+    }
+
     /// Mute/unmute outgoing audio: disabled sends silence, capture stays open.
     func setAudioEnabled(_ enabled: Bool) {
         guard audioAvailable else { return }
@@ -476,6 +499,7 @@ final class VideoCall {
                     id = peerRef
                 }
                 peer = id
+                UserDefaults.standard.set(id, forKey: "idfon.video-call.peer")
                 // Registry entry for Idfon's authorization/session lifecycle;
                 // native Swift owns capture while the media bridge owns transport.
                 let identity = (try? await client.identityId()) ?? "default"
@@ -490,6 +514,8 @@ final class VideoCall {
                 // dimensions when it configures the H.264 encoder. A mic-first
                 // call skips this; `setVideoEnabled(true)` starts it later.
                 if cameraOn { CameraPusher.shared.start() }
+                AudioMeter.shared.pushToEncoder = true
+                AudioMeter.shared.start()
                 let ticket = await ffiString { media_live_start_with_source(1, 1, "push") } // shell-tap audio + camera
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -535,6 +561,8 @@ final class VideoCall {
                     return
                 }
                 // Mic-first: capture stays down until `setVideoEnabled(true)`.
+                AudioMeter.shared.pushToEncoder = true
+                AudioMeter.shared.start()
                 let own = await ffiString { media_live_start_with_source(1, 1, "push") }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -594,6 +622,7 @@ final class VideoCall {
             Task { await join(ticket: invite.ticket) }
         } else if state == .idle {
             pendingInvite = (peerID, invite.ticket)
+            UserDefaults.standard.set(peerID, forKey: "idfon.video-call.peer")
             pendingIsWatchOnly = watchOnly
             state = watchOnly ? .watching : .incoming
             notify()
@@ -663,10 +692,12 @@ final class VideoCall {
         watching = false
         lastFrame = nil
         published = false
+        UserDefaults.standard.removeObject(forKey: "idfon.video-call.peer")
         audioAvailable = false
         videoAvailable = false
         audioEnabled = false
         videoEnabled = false
+        AudioMeter.shared.stop()
         Task.detached(priority: .userInitiated) {
             media_live_stop()
             media_video_stop()

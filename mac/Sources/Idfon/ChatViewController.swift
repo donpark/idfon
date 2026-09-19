@@ -337,8 +337,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let wave = liveWaveView ?? WaveformView(frame: NSRect(x: 0, y: 0, width: 160, height: 22))
         wave.startLive()
         liveWaveView = wave
-        let meter = AudioMeter(view: wave)
+        let meter = AudioMeter.shared
+        meter.add(view: wave)
         meter.pushToEncoder = true
+        NSLog("idfon call capture: using shared AudioMeter pushToEncoder=true")
         if let fullscreenWaveView { meter.add(view: fullscreenWaveView) }
         meter.start()
         callMeter = meter
@@ -346,7 +348,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     private func stopCallMeter() {
-        callMeter?.stop()
         callMeter = nil
         liveWaveView?.removeFromSuperview()
         liveWaveView = nil

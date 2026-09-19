@@ -129,6 +129,7 @@ final class LiveCall {
     func dial(_ peerId: String) {
         guard case .idle = state else { return }
         state = .calling(peer: peerId)
+        UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
         audioEnabled = audioAvailable // this session carries audio from the start
         notify()
         Task {
@@ -214,6 +215,12 @@ final class LiveCall {
         terminate(local: true)
     }
 
+    func recoverStaleCall() {
+        guard let peer = UserDefaults.standard.string(forKey: "idfon.live-call.peer") else { return }
+        UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
+        Task { try? await client.sendText(to: peer, "call_stopped") }
+    }
+
     // MARK: - Event routing (called by ChatStore on the main actor)
 
     /// Handles a call-control text from `peerID`.
@@ -255,6 +262,7 @@ final class LiveCall {
         }
         guard case .idle = state else { return } // video-call invites route to VideoCall
         pendingInvite = (peerID, invite.ticket)
+        UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
         state = .incoming(peer: peerID)
         notify()
     }
@@ -293,6 +301,7 @@ final class LiveCall {
             }
         }
         published = false
+        UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
         pendingInvite = nil
         audioEnabled = false
         videoEnabled = false
