@@ -180,6 +180,7 @@ final class VideoCall: NSObject {
         audioEnabled = audio
         videoEnabled = video && cameraOn
         peer = peerRef
+        UserDefaults.standard.set(peerRef, forKey: "idfon.video-call.peer")
         state = .calling
         notify()
         Task {
@@ -279,6 +280,12 @@ final class VideoCall: NSObject {
         terminate(local: true)
     }
 
+    func recoverStaleCall() {
+        guard let peer = UserDefaults.standard.string(forKey: "idfon.video-call.peer") else { return }
+        UserDefaults.standard.removeObject(forKey: "idfon.video-call.peer")
+        Task { try? await client.sendText(to: peer, "call_stopped") }
+    }
+
     // MARK: - Event routing (called by ChatStore via the main queue)
 
     /// Handles a call-control message from `peerID`. Invite envelopes and
@@ -303,6 +310,7 @@ final class VideoCall: NSObject {
             Task { await join(ticket: invite.ticket) }
         } else if state == .idle {
             pendingInvite = (peerID, invite.ticket)
+            UserDefaults.standard.set(peerID, forKey: "idfon.video-call.peer")
             // Answering publishes both tracks but starts mic-only (camera off
             // until the Bar's toggle), so there is nothing to pre-stage.
             audioAvailable = true
@@ -361,6 +369,7 @@ final class VideoCall: NSObject {
         peer = nil
         pendingInvite = nil
         published = false
+        UserDefaults.standard.removeObject(forKey: "idfon.video-call.peer")
         audioAvailable = false
         videoAvailable = false
         audioEnabled = false

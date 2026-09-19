@@ -64,8 +64,11 @@ Apple-native media status: verified with an iOS-to-macOS video call starting
 with audio enabled and video initially disabled. Enabling video worked on both
 sides, and macOS audio survived switching to AirPods. Swift owns microphone
 and camera capture; the shared Rust/iroh bridge owns media transport and
-encoding. macOS uses one shared `AVAudioEngine` input tap for call metering so
-route changes do not create competing input taps.
+encoding. macOS uses one shared `AVAudioEngine` input tap for call capture and metering so
+route changes do not create competing input taps. The tap is started by the
+call state machine rather than the selected chat view, and temporary capture
+metrics are written to `/tmp/idfon-audio-<pid>.log`. RMS normalization is not
+yet enabled; the current path applies modest 2× gain with peak clamping.
 
 ## Deliberate v1 limits
 

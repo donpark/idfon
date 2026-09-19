@@ -21,6 +21,7 @@ use crate::util::tokio_executor;
 const AUDIO_CAPACITY: usize = 48_000 * 2;
 static AUDIO_QUEUE: Mutex<Option<Arc<Mutex<VecDeque<f32>>>>> = Mutex::new(None);
 static AUDIO_SAMPLES_PUSHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static AUDIO_SAMPLES_NONZERO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static AUDIO_FRAMES_ENCODED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static AUDIO_FRAMES_DECODED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static LIVE: Mutex<Option<LiveSession>> = Mutex::new(None);
@@ -180,6 +181,13 @@ pub fn media_audio_push_samples(pcm: *const f32, samples: usize) {
     let pushed = AUDIO_SAMPLES_PUSHED.fetch_add(samples as u64, Ordering::Relaxed) + samples as u64;
     if pushed <= 2_000 || pushed % 48_000 < samples as u64 { eprintln!("[media] audio samples pushed total={}", pushed); }
     let input = unsafe { std::slice::from_raw_parts(pcm, samples) };
+    let nonzero = input.iter().filter(|sample| sample.abs() > 0.0001).count() as u64;
+    AUDIO_SAMPLES_NONZERO.fetch_add(nonzero, Ordering::Relaxed);
+    if pushed <= 2_000 || pushed % 48_000 < samples as u64 {
+        let peak = input.iter().fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        let rms = (input.iter().map(|sample| sample * sample).sum::<f32>() / samples as f32).sqrt();
+        eprintln!("[media] pushed audio samples={} nonzero={} rms={:.5} peak={:.5}", samples, nonzero, rms, peak);
+    }
     let queue = audio_queue();
     let result = queue.lock();
     if let Ok(mut q) = result {

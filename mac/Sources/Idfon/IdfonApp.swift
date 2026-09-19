@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DaemonRuntime.configure()
         ChatStore.shared.start()
+        LiveCall.shared.recoverStaleCall()
+        VideoCall.shared.recoverStaleCall()
         buildMenu()
         buildWindow()
         // GUI parity: an incoming invite always surfaces — open the caller's

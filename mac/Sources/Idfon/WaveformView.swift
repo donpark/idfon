@@ -165,6 +165,24 @@ private extension WaveformView.Mode {
 /// not open the mic, so this tap is the call's sole capture and its levels are
 /// the very samples the peer hears (issue #7). Memo meters leave it off.
 final class AudioMeter {
+    static let shared = AudioMeter()
+    private static let logQueue = DispatchQueue(label: "idfon.audio-meter-log")
+    private static func log(_ message: String) {
+        NSLog("\(message)")
+        logQueue.async {
+            let url = URL(fileURLWithPath: "/tmp/idfon-audio-\(ProcessInfo.processInfo.processIdentifier).log")
+            let line = "\(Date()) \(message)\n"
+            if let data = line.data(using: .utf8) {
+                if FileManager.default.fileExists(atPath: url.path), let file = try? FileHandle(forWritingTo: url) {
+                    try? file.seekToEnd()
+                    try? file.write(contentsOf: data)
+                    try? file.close()
+                } else {
+                    try? data.write(to: url)
+                }
+            }
+        }
+    }
     // AVAudioEngine input taps are process-wide at the hardware input bus:
     // separate engines can still collide when macOS switches devices.
     private static let inputEngine = AVAudioEngine()
@@ -190,21 +208,29 @@ final class AudioMeter {
     /// Hardware format -> ingest format; keeps its resampler state across taps.
     private var converter: AVAudioConverter?
     private var interruptionObserver: NSObjectProtocol?
+    private var pushedBuffers = 0
+    private var callbackBuffers = 0
+    private var windowSamples = 0
+    private var windowSumSquares = 0.0
+    private var windowPeak = 0.0
 
-    init(view: WaveformView) {
-        views = [WeakWave(view: view)]
+    init(view: WaveformView? = nil) {
+        if let view { views = [WeakWave(view: view)] }
     }
 
     /// Attach another waveform to the same meter.
     func add(view: WaveformView) {
-        views.append(WeakWave(view: view))
+        views.removeAll { $0.view == nil }
+        if !views.contains(where: { $0.view === view }) { views.append(WeakWave(view: view)) }
     }
 
     func start() {
+        Self.log("idfon audio meter start requested running=\(running) tap=\(tapInstalled) push=\(pushToEncoder)")
         guard !running, !tapInstalled else { return }
         startGeneration += 1
         let generation = startGeneration
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+            Self.log("idfon audio meter permission granted=\(granted)")
             guard granted, let self, !self.running else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self,
@@ -223,6 +249,11 @@ final class AudioMeter {
                 let format = input.outputFormat(forBus: 0)
                 if self.pushToEncoder {
                     self.converter = AVAudioConverter(from: format, to: Self.pipelineFormat)
+                self.pushedBuffers = 0
+                self.callbackBuffers = 0
+                self.windowSamples = 0
+                self.windowSumSquares = 0
+                self.windowPeak = 0
                     if self.converter == nil {
                         // Non-standard hardware format: keep metering but drop the
                         // push rather than publish wrong-speed audio.
@@ -230,8 +261,13 @@ final class AudioMeter {
                         self.pushToEncoder = false
                     }
                 }
+                Self.log("idfon audio meter installing tap format=\(format)")
                 input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak owner = self] buffer, _ in
                     guard let owner else { return }
+                    owner.callbackBuffers += 1
+                    if owner.callbackBuffers <= 3 || owner.callbackBuffers % 100 == 0 {
+                        Self.log("idfon call capture: tap callback buffer=\(owner.callbackBuffers) push=\(owner.pushToEncoder) frames=\(buffer.frameLength)")
+                    }
                     let rms = Self.rms(buffer)
                     for wave in owner.views { wave.view?.add(amplitude: Float(min(rms * 12, 1))) }
                     if owner.pushToEncoder { owner.push(buffer) }
@@ -243,8 +279,9 @@ final class AudioMeter {
                     try self.engine.start()
                     self.installAudioObservers()
                     self.running = true
+                    Self.log("idfon audio meter engine started")
                 } catch {
-                    NSLog("idfon audio meter failed: \(error.localizedDescription)")
+                    Self.log("idfon audio meter failed: \(error.localizedDescription)")
                 }
             }
         }
@@ -304,7 +341,40 @@ final class AudioMeter {
             return buffer
         }
         guard status != .error, out.frameLength > 0, let channel = out.floatChannelData?[0] else { return }
-        media_audio_push_samples(channel, Int(out.frameLength))
+        let count = Int(out.frameLength)
+        var rawSum = 0.0
+        var rawPeak = 0.0
+        for index in 0..<count {
+            let sample = Double(channel[index])
+            rawSum += sample * sample
+            rawPeak = max(rawPeak, abs(sample))
+        }
+        let rawRMS = (rawSum / Double(count)).squareRoot()
+        windowSamples += count
+        windowSumSquares += rawSum
+        windowPeak = max(windowPeak, rawPeak)
+        if windowSamples >= 48_000 {
+            let windowRMS = (windowSumSquares / Double(windowSamples)).squareRoot()
+            Self.log("idfon audio meter 1s window samples=\(windowSamples) rms=\(windowRMS) peak=\(windowPeak)")
+            windowSamples = 0
+            windowSumSquares = 0
+            windowPeak = 0
+        }
+        // Keep the current gain only as an explicit measurement condition; do
+        // not claim normalization until sender/receiver levels are compared.
+        for index in 0..<count {
+            channel[index] = max(-1, min(1, channel[index] * 2))
+        }
+        var outputPeak = 0.0
+        for index in 0..<count { outputPeak = max(outputPeak, abs(Double(channel[index]))) }
+        pushedBuffers += 1
+        if pushedBuffers <= 5 || pushedBuffers % 100 == 0 {
+            NSLog("idfon audio levels buffer=\(pushedBuffers) raw_rms=\(rawRMS) raw_peak=\(rawPeak) post_gain_rms=\(rawRMS * 2) post_gain_peak=\(outputPeak) clipped=\(outputPeak >= 0.999)")
+        }
+        if pushedBuffers <= 5 || pushedBuffers % 100 == 0 {
+            Self.log("idfon audio meter push buffer=\(pushedBuffers) samples=\(count) raw_rms=\(rawRMS) post_gain_peak=\(outputPeak)")
+        }
+        media_audio_push_samples(channel, count)
     }
 
     /// RMS of the first channel.
