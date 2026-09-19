@@ -75,6 +75,7 @@ final class VideoCall: NSObject {
     var activePeer: String? { peer ?? pendingInvite?.peer }
     private(set) var lastError: String?
     private var pendingInvite: (peer: String, ticket: String)?
+    private var joinedTicket: String?
 
     // MARK: - Outgoing stream set (docs/ui-design-notes.md §3 State 3)
 
@@ -105,7 +106,13 @@ final class VideoCall: NSObject {
         guard videoAvailable else { return }
         // Camera comes up on demand: a mic-first call publishes the video track
         // but doesn't start capture until the toggle is switched on.
-        if enabled { CameraPusher.shared.start() }
+        if enabled {
+            CameraPusher.shared.start()
+            NSLog("idfon video: enabling camera capture")
+        } else {
+            CameraPusher.shared.stop()
+            NSLog("idfon video: disabling camera capture")
+        }
         videoEnabled = enabled
         applySendState()
         notify()
@@ -133,6 +140,7 @@ final class VideoCall: NSObject {
     private let client = DaemonClient()
     private var frameTimer: Timer?
     private var framePath: String?
+    private var frameDeadline: Date?
     private var lastFrameSize = -1
     /// True while a decoded peer frame is on screen (for clearing it).
     private var peerFrameVisible = false
@@ -220,7 +228,7 @@ final class VideoCall: NSObject {
 
     /// Answers: watch + hear the caller, publish own camera, send the
     /// return-leg invite (own ticket) that makes the caller join us.
-    func answer() {
+    func answer(cameraOn: Bool = true) {
         guard state == .incoming, let pending = pendingInvite else { return }
         pendingInvite = nil
         peer = pending.peer
@@ -230,12 +238,13 @@ final class VideoCall: NSObject {
         audioAvailable = true
         videoAvailable = true
         audioEnabled = true
-        videoEnabled = false
+        videoEnabled = cameraOn
         notify()
         Task {
             do {
                 activateAudioSession()
                 AudioPusher.shared.start()
+                if cameraOn { CameraPusher.shared.start() }
                 await join(ticket: pending.ticket)
                 let own = await ffiString { media_live_start_with_source(1, 1, "push") }
                 guard !own.isEmpty else {
@@ -245,6 +254,7 @@ final class VideoCall: NSObject {
                 }
                 published = true
                 applySendState()
+                NSLog("idfon video answer media started audio=1 video=\(cameraOn ? 1 : 0)")
                 try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true))
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
@@ -282,6 +292,8 @@ final class VideoCall: NSObject {
         }
         guard invite.isStart, invite.isCall, !invite.ticket.isEmpty else { return } // file-share/audio invites: unsupported here
         if state == .calling || state == .inCall {
+            NSLog("idfon video return invite from \(peerID), state=\(state)")
+            peer = peerID
             // Return leg: the peer answered and is now publishing their
             // camera+mic — join without re-prompting (core.ts return-leg).
             Task { await join(ticket: invite.ticket) }
@@ -304,12 +316,17 @@ final class VideoCall: NSObject {
         activateAudioSession()
         let path = await ffiString { media_video_start(ticket) }
         guard !path.isEmpty else {
-            fail("video watch failed")
+            let error = await ffiString { media_video_last_error() }
+            fail("video watch failed\(error.isEmpty ? "" : ": \(error)")")
             return
         }
+        guard joinedTicket != ticket else { return }
+        joinedTicket = ticket
         _ = await Task.detached(priority: .userInitiated) { _ = media_live_subscribe(ticket) }.value
         if state == .idle { return } // hung up while subscribing
+        NSLog("idfon video watch started path=\(path)")
         framePath = path
+        frameDeadline = Date().addingTimeInterval(10)
         lastFrameSize = -1
         startFramePolling()
         if state == .calling { state = .inCall }
@@ -323,6 +340,8 @@ final class VideoCall: NSObject {
         frameTimer?.invalidate()
         frameTimer = nil
         framePath = nil
+        frameDeadline = nil
+        joinedTicket = nil
         lastFrameSize = -1
         Task.detached(priority: .userInitiated) {
             AudioPusher.shared.stop()
@@ -362,6 +381,10 @@ final class VideoCall: NSObject {
                 guard let self, let path = self.framePath else { return }
                 let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
                 guard size > 0 else {
+                    if let deadline = self.frameDeadline, Date() > deadline {
+                        self.fail("video frame timeout: \(String(cString: media_video_last_error()))")
+                        return
+                    }
                     // No frame written yet, or the FFI removed the stale JPEG
                     // (new subscription / peer camera off): clear the surface
                     // so a paused stream cannot masquerade as live video.
@@ -374,6 +397,7 @@ final class VideoCall: NSObject {
                 }
                 guard size != self.lastFrameSize else { return }
                 self.lastFrameSize = size
+                self.frameDeadline = nil
                 // JPEG decode off the main thread: a 720×1280 decode ~10x/s
                 // would otherwise eat main-thread time for the whole call.
                 // preparingForDisplay decodes eagerly on the calling thread.

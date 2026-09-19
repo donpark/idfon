@@ -143,6 +143,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             }
             fresh.addInput(input)
             let output = AVCaptureVideoDataOutput()
+            output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
             output.alwaysDiscardsLateVideoFrames = true
             output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "idfon.camera.frames.\(cameraPosition.rawValue)"))
             fresh.addOutput(output)
@@ -196,6 +197,10 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             NSLog("idfon camera push: frame #\(framesPushed) conn.active=\(connection.isActive) enabled=\(connection.isEnabled)")
         }
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_32BGRA else {
+            NSLog("idfon camera push: ignoring non-BGRA frame format=\(CVPixelBufferGetPixelFormatType(pb))")
+            return
+        }
         let width = CVPixelBufferGetWidth(pb)
         let height = CVPixelBufferGetHeight(pb)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pb)

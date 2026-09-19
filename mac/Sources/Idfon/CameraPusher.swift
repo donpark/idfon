@@ -131,6 +131,10 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_32BGRA else {
+            NSLog("idfon camera push: ignoring non-BGRA frame format=\(CVPixelBufferGetPixelFormatType(pb))")
+            return
+        }
         let width = CVPixelBufferGetWidth(pb)
         let height = CVPixelBufferGetHeight(pb)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pb)
