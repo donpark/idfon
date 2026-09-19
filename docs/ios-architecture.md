@@ -100,7 +100,7 @@ Key facts:
   the 104-byte `SUN_LEN`), device uses flat tmp path.
 - **On-device automation**: `ios/device.sh` builds/installs/launches on a physical
   iPhone via `devicectl`; launch arguments drive no-tap flows (`-dial`, `-answer`,
-  `-videodial`, `-camprobe`, `-memo`, `-pair`, `-pair-ticket`). `-sendfile <peer> <fileName>`
+  `-videodial`, `-memo`, `-pair`, `-pair-ticket`). `-sendfile <peer> <fileName>`
   (`Automation.swift`) opens the thread and calls the same `sendFile` the attachment
   picker reaches; `scripts/ios-device-test.sh` stages a file in the app container and
   asserts the `idfon tray:` / `idfon file:` markers. Purely visual behavior (tabs, Bar

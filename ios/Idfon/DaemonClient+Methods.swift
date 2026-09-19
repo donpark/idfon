@@ -10,6 +10,26 @@ extension DaemonClient {
         return (ready, name)
     }
 
+    func identities() async throws -> [IdentityInfo] {
+        guard let list = try await request(method: "identities")?["identities"]?.asArray else { return [] }
+        return try JSONDecoder().decode([IdentityInfo].self, from: JSONEncoder().encode(list))
+    }
+
+    func contactTicket(identity: String? = nil) async throws -> String {
+        var params: [String: AnyEncodable] = [:]
+        if let identity { params["identity"] = AnyEncodable(identity) }
+        guard let raw = try await request(method: "contact.ticket", params: params) else { return "" }
+        return String(data: try JSONEncoder().encode(raw), encoding: .utf8) ?? ""
+    }
+
+    func useIdentity(_ name: String) async throws {
+        _ = try await request(method: "identity.use", params: ["name": AnyEncodable(name)])
+    }
+
+    func createIdentity(_ name: String) async throws {
+        _ = try await request(method: "identity.create", params: ["name": AnyEncodable(name)])
+    }
+
     func peers() async throws -> [Peer] {
         guard let list = try await request(method: "peers")?["peers"]?.asArray else { return [] }
         let data = try JSONEncoder().encode(list)

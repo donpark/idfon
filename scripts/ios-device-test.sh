@@ -9,7 +9,7 @@
 #
 #   --peer      peer ref/name/id to send to (or $PEER)
 #   --file      local file to send; staged into the app's Documents directory
-#   --device    device to use (or $DEVICE); default = first paired available iPhone
+#   --device    device to use; otherwise $IPHONE_UDID, $IPHONE_NAME, or first connected iPhone
 #   --timeout   seconds to wait for the transfer to finish (default 60)
 #   --no-build  reuse the already-built/installed app (skips the Rust + app build)
 #
@@ -24,7 +24,7 @@ bundle_id=app.idfon
 
 peer="${PEER:-}"
 file=""
-device="${DEVICE:-}"
+device="${IPHONE_UDID:-${IPHONE_NAME:-${DEVICE:-}}}"
 timeout_s=60
 build=1
 
@@ -50,7 +50,8 @@ if [ -z "$device" ]; then
   # The device can report as busy for a moment after a previous run's teardown.
   for _ in 1 2 3 4 5; do
     device=$(xcrun devicectl list devices 2>/dev/null \
-      | grep "available" | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
+      | grep -E "connected.*physical|physical.*connected" \
+      | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
     if [ -n "$device" ]; then break; fi
     sleep 2
   done

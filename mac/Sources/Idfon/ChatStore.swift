@@ -59,12 +59,10 @@ final class ChatStore {
     func start() {
         guard !started else { return }
         started = true
-        Task { await hydrateHistory() }
-        Task { await runLoop() }
         Task {
-            if let id = try? await client.identityId() {
-                identityId = id
-            }
+            if let id = try? await client.identityId() { identityId = id }
+            await hydrateHistory()
+            await runLoop()
         }
     }
 
@@ -72,18 +70,17 @@ final class ChatStore {
     /// events are per-identity. The run loop keeps polling; the daemon now
     /// serves the new active identity.
     func switchIdentity(to name: String) {
-        messages = []
-        seenMessageIDs.removeAll()
-        recordingURLs = [:]
-        fileURLs = [:]
         Task {
             do {
                 let raw = try await client.request(method: "identity.use", params: ["name": AnyEncodable(name)])
+                messages = []
+                seenMessageIDs.removeAll()
+                recordingURLs = [:]
+                fileURLs = [:]
                 identityId = raw?["identity"]?["id"]?.stringValue ?? name
-                if let status = try? await client.status(), status.ready {
-                    selfPeerId = status.identityName
-                }
+                if let status = try? await client.status(), status.ready { selfPeerId = status.identityName }
                 if let id = try? await client.identityId() { identityId = id }
+                await hydrateHistory()
                 onBanner?("Switched to \(name)")
             } catch {
                 onBanner?("Identity switch failed: \(error.localizedDescription)")
@@ -95,6 +92,7 @@ final class ChatStore {
     /// Delivers an event (new or replayed) into the store.
     private func ingest(_ event: Event) {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
+        NSLog("idfon event: type=\(event.type) peer=\(peerId) text=\(text.prefix(48))")
         let messageID = event.messageId ?? event.eventId
         guard seenMessageIDs.insert(messageID).inserted else { return }
         // Call-control traffic (live invites, call_started/stopped) routes
@@ -102,6 +100,7 @@ final class ChatStore {
         // replayed after a relaunch are stale (app was closed when they
         // arrived) — ring only fresh ones, matching the GUI's drain logic.
         if LiveInvite.parse(text) != nil {
+            NSLog("idfon event: live invite stale=\(isStaleInvite(event))")
             if isStaleInvite(event) { return }
             LiveCall.shared.handleEnvelope(peer: peerId, text)
             VideoCall.shared.handleEnvelope(peer: peerId, text)
@@ -252,26 +251,37 @@ final class ChatStore {
 
     private func hydrateHistory() async {
         guard let events = try? await client.events(after: nil) else { return }
-        for event in events { ingest(event) }
+        for event in events.sorted(by: { (Double($0.timestamp) ?? 0) < (Double($1.timestamp) ?? 0) }) {
+            cursor = event.cursor
+            // Call invites/control are live-only. Replaying them on startup
+            // can resurrect an old call and steal the state machine from a
+            // newly launched caller.
+            if event.messageText.map({ LiveInvite.parse($0) != nil || $0 == "call_started" || $0 == "call_stopped" }) == true { continue }
+            ingest(event)
+        }
     }
 
     private func runLoop() async {
         while true {
             do {
-                let events = try await client.waitMessages(after: cursor)
+                // Poll retained events instead of relying solely on the daemon
+                // long-poll. This keeps the AppKit client alive across daemon
+                // restarts and catches return-leg call signals deterministically.
+                let events = try await client.events(after: cursor)
                 if events.isEmpty {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000) // idle breathing room
-                }
-                for event in events {
-                    cursor = event.cursor
-                    ingest(event)
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                } else {
+                    for event in events.sorted(by: { (Double($0.timestamp) ?? 0) < (Double($1.timestamp) ?? 0) }) {
+                        cursor = event.cursor
+                        ingest(event)
+                    }
                 }
             } catch let error as DaemonClient.DaemonError {
                 if let message = error.errorDescription, message.contains("cursor") {
-                    cursor = nil // older than retention: restart from retained history
+                    cursor = nil
                 } else {
-                    NSLog("idfon events: wait failed, backing off: \(error.localizedDescription)")
-                    try? await Task.sleep(nanoseconds: 2_000_000_000) // daemon down: back off
+                    NSLog("idfon events: poll failed, backing off: \(error.localizedDescription)")
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
                 }
             } catch {
                 NSLog("idfon events: unexpected error: \(error)")

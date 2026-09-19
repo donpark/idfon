@@ -41,9 +41,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let i = args.firstIndex(of: "-videodial"), args.count > i + 1 {
             VideoCall.shared.dial(args[i + 1])
         }
-        if args.contains("-camprobe") {
-            CameraPusher.shared.start()
-        }
         if let i = args.firstIndex(of: "-pair"), args.count > i + 1 {
             pairPeer(ticketJSON: args[i + 1], name: args.count > i + 2 ? args[i + 2] : "mac")
         }

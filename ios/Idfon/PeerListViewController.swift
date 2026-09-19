@@ -87,6 +87,8 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Contacts"
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "Identity", style: .plain, target: self, action: #selector(showIdentityPicker))
         navigationItem.backButtonDisplayMode = .generic // show "Back", not the callee's name
         navigationController?.navigationBar.prefersLargeTitles = true
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "peer")
@@ -104,6 +106,12 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         refresh()
+    }
+
+    @objc private func showIdentityPicker() {
+        let picker = IdentityPickerViewController()
+        picker.onChanged = { [weak self] in self?.refresh() }
+        present(UINavigationController(rootViewController: picker), animated: true)
     }
 
     @objc private func refresh() {

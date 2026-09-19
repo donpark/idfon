@@ -14,14 +14,15 @@ protocol ChatStoreObserver: AnyObject {
 /// The daemon remains the source of truth for incoming-event reconciliation.
 final class ChatStore {
     static let shared = ChatStore()
-    static let cursorKey = "idfon.event.cursor"
-    private static let messagesKey = "idfon.chat.messages"
+    private static func cursorKey(_ identity: String) -> String { "idfon.event.cursor.\(identity)" }
+    private static func messagesKey(_ identity: String) -> String { "idfon.chat.messages.\(identity)" }
 
     private let client = DaemonClient()
     private let queue = DispatchQueue(label: "app.idfon.chatstore")
 
     private(set) var messages: [ChatMessage] = []
     private var seenMessageIDs = Set<String>()
+    private(set) var identityId = "default"
 
     /// Registered screens, held weakly so a deallocated one drops out without
     /// an explicit unregister. Touched on the main queue only.
@@ -38,8 +39,8 @@ final class ChatStore {
     }
 
     private var cursor: String? {
-        get { UserDefaults.standard.string(forKey: Self.cursorKey) }
-        set { newValue.map { UserDefaults.standard.set($0, forKey: Self.cursorKey) } ?? UserDefaults.standard.removeObject(forKey: Self.cursorKey) }
+        get { UserDefaults.standard.string(forKey: Self.cursorKey(identityId)) }
+        set { newValue.map { UserDefaults.standard.set($0, forKey: Self.cursorKey(identityId)) } ?? UserDefaults.standard.removeObject(forKey: Self.cursorKey(identityId)) }
     }
 
     private var started = false
@@ -49,10 +50,22 @@ final class ChatStore {
     func start() {
         guard !started else { return }
         started = true
+        Task {
+            if let id = try? await client.identityId() { identityId = id }
+            selfPeerId = (try? await client.status())?.1 ?? selfPeerId
+            loadMessages()
+            await hydrateHistory()
+            await runLoop()
+        }
+    }
+
+    func switchIdentity(to name: String) async throws {
+        try await client.useIdentity(name)
+        messages = []
+        seenMessageIDs.removeAll()
+        identityId = (try? await client.identityId()) ?? name
         loadMessages()
-        Task { await hydrateHistory() }
-        Task { await runLoop() }
-        Task { selfPeerId = (try? await client.status())?.1 ?? selfPeerId }
+        notifyObservers()
     }
 
     /// Delivers an event (new or replayed) into the store on the main queue.
@@ -149,7 +162,7 @@ final class ChatStore {
     }
 
     private func loadMessages() {
-        guard let data = UserDefaults.standard.data(forKey: Self.messagesKey),
+        guard let data = UserDefaults.standard.data(forKey: Self.messagesKey(identityId)),
               let stored = try? JSONDecoder().decode([StoredMessage].self, from: data) else { return }
         messages = stored.map(\.message)
         seenMessageIDs = Set(messages.map(\.id))
@@ -157,18 +170,18 @@ final class ChatStore {
 
     private func persistMessages() {
         guard let data = try? JSONEncoder().encode(messages.map(StoredMessage.init)) else { return }
-        UserDefaults.standard.set(data, forKey: Self.messagesKey)
+        UserDefaults.standard.set(data, forKey: Self.messagesKey(identityId))
     }
 
-    private static func readKey(_ id: String) -> String { "idfon.chat.read.\(id)" }
+    private static func readKey(_ identity: String, _ id: String) -> String { "idfon.chat.read.\(identity).\(id)" }
 
     func markRead(_ conversation: Conversation) {
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.readKey(conversation.id))
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.readKey(identityId, conversation.id))
         notifyObservers()
     }
 
     func unreadCount(for conversation: Conversation) -> Int {
-        let readAt = UserDefaults.standard.double(forKey: Self.readKey(conversation.id))
+        let readAt = UserDefaults.standard.double(forKey: Self.readKey(identityId, conversation.id))
         return messages(for: conversation).filter { !$0.outgoing && $0.timestamp.timeIntervalSince1970 > readAt }.count
     }
 

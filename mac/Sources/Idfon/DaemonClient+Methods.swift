@@ -22,6 +22,13 @@ extension DaemonClient {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
+    func contactTicket(identity: String? = nil) async throws -> String {
+        var params: [String: AnyEncodable] = [:]
+        if let identity { params["identity"] = AnyEncodable(identity) }
+        guard let raw = try await requestWithLaunch(method: "contact.ticket", params: params) else { return "" }
+        return String(data: try JSONEncoder().encode(raw), encoding: .utf8) ?? ""
+    }
+
     func identityId() async throws -> String {
         guard let raw = try await requestWithLaunch(method: "status") else { return "default" }
         return raw["identity"]?["id"]?.stringValue
