@@ -104,6 +104,10 @@ extension DaemonClient {
         if let ticket = CapabilityTickets.ticket(for: peer) {
             params["capability_ticket"] = ticket
         }
+        // Call invites must survive transport hiccups (relay reconnects on
+        // the peer take tens of seconds); the receiving daemon dedupes by
+        // message id, so retries are safe.
+        params["retries"] = AnyEncodable(3)
         _ = try await request(method: "message.send", params: params)
     }
 

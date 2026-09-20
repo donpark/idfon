@@ -234,12 +234,11 @@ void  media_audio_push_samples(float const *pcm, size_t samples); // mono 48 kHz
 char *media_live_start_with_source(uint8_t audio, uint8_t video, char const *source); // "mic" | "push" | "file:<path>" | "ticket:<live-ticket>"
 ```
 
-`PushAudioSource` drains a caller-pushed queue in `pop_samples` (silence on
-underrun so the encoder keeps its 20 ms pacing; drop-oldest past 2 s so a stalled
-encoder cannot grow memory or add latency). Any holder of samples — a shell tap,
-a decoded remote stream, a file, a synth — can now feed the encoder with no new
-Rust source type. `media_live_start` is unchanged and still means `"mic"`.
-The source kinds are now:
+`PushAudioSource` drains a caller-pushed queue in `pop_samples` (wait for data
+instead of a free-running timer — the encoder is clocked by capture; see the
+latency design below). Any holder of samples — a shell tap, a decoded remote
+stream, a file, a synth — can now feed the encoder with no new Rust source
+type. `media_live_start` is unchanged and still means `"mic"`.
 
 - `mic` — the default local capture device;
 - `push` — caller-pushed mono 48 kHz f32 PCM;
@@ -258,6 +257,42 @@ to the caller; a remote stream is a legitimate daemon resource (its lifetime is
 network-observable); a file belongs to whoever opened it. The daemon file
 publish and the FFI device publish become the same operation with different
 source handles.
+
+## Latency design (WebRTC-shaped)
+
+The live-call path targets ~100-120 ms mouth-to-ear and, more importantly, does
+not ratchet upward after stalls. The shape follows WebRTC (verified E2E
+2026-09-20), and each piece exists because its absence was observed in the
+field:
+
+- **Sender side has no jitter buffer.** Capture pushes at real-time 48 kHz, so
+  queue depth *is* latency in samples. `pop_samples` waits for a frame's worth
+  of data (2 ms poll) instead of pacing with a free-running 20 ms timer — timer
+  overshoot made the consumer fall permanently behind capture, growing backlog
+  to the old 2 s capacity. The queue itself (`AUDIO_QUEUE`) is only an
+  allocation clamp now.
+- **Trim lives on the capture callback**, not in the pump. The pump stops being
+  polled under encoder/network backpressure, so any trim inside it never runs
+  exactly when it is needed; `media_audio_push_samples` runs in real time no
+  matter what and clamps depth to an adaptive target (2× the largest observed
+  capture burst, floor 40 ms). A device that ignores the 10 ms IO request
+  therefore gets a bigger target instead of having its bursts chopped.
+- **10 ms capture IO both platforms** (VoIP standard): mac sets
+  `kAudioDevicePropertyBufferFrameSize=512` on the default input device
+  (WaveformView); iOS sets `setPreferredIOBufferDuration(0.01)` (AudioPusher).
+  The mac tap otherwise delivered 4800-frame (~100 ms) bursts, which dominated
+  sender latency.
+- **Receiver playout must shrink.** The moq-audio sink parks ahead-writes and
+  never drains back on its own — after a stall + recovery burst the parked
+  delay was permanent, and stacked toward the 5 s observed in the field. The
+  decode loop now discards down to an 80 ms playout target before
+  `sink.write` (plain drop; time-stretch is the upgrade path).
+- Fixed costs: 20 ms Opus frames, ~50 ms sink device buffer, one-time 50 ms
+  startup prebuffer, decoder `latency_max` 50 ms (a skip threshold, not added
+  delay).
+
+End-of-call `audio queue gaps: overflow_samples=` in the daemon log is the
+health signal: nonzero means trims fired (stalls happened); steady state is 0.
 
 ## Live streaming through the daemon (synthetic, no microphone)
 

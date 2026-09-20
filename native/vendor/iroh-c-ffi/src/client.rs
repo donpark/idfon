@@ -29,7 +29,11 @@ pub const IDFON_EINVALID: i32 = -7; // response is not a valid protocol Response
 /// when `out` is null or the buffer is too small. A NULL or empty `profile`
 /// reads the `IDFON_PROFILE` environment variable.
 #[no_mangle]
-pub extern "C" fn idfon_client_socket_path(profile: *const c_char, out: *mut u8, cap: usize) -> i32 {
+pub extern "C" fn idfon_client_socket_path(
+    profile: *const c_char,
+    out: *mut u8,
+    cap: usize,
+) -> i32 {
     if out.is_null() {
         return IDFON_EARG;
     }
@@ -88,11 +92,12 @@ pub extern "C" fn idfon_client_request(
         unsafe { std::slice::from_raw_parts(req, req_len) }
     };
 
-    let mut client = match Client::connect_with_retry(path, Duration::from_millis(connect_timeout_ms as u64)) {
-        Ok(client) => client,
-        Err(ClientError::Connect(_)) => return IDFON_ECONNECT,
-        Err(_) => return IDFON_EARG,
-    };
+    let mut client =
+        match Client::connect_with_retry(path, Duration::from_millis(connect_timeout_ms as u64)) {
+            Ok(client) => client,
+            Err(ClientError::Connect(_)) => return IDFON_ECONNECT,
+            Err(_) => return IDFON_EARG,
+        };
     let response = match client.request(request) {
         Ok(response) => response,
         Err(error) => return error_code(&error),
@@ -152,8 +157,14 @@ mod tests {
         assert!(written > 0);
         assert_eq!(&buf[..written as usize], b"/tmp/idfon/idfond.sock");
         // Buffer too small and null out are argument errors.
-        assert_eq!(idfon_client_socket_path(std::ptr::null(), std::ptr::null_mut(), 0), IDFON_EARG);
-        assert_eq!(idfon_client_socket_path(std::ptr::null(), buf.as_mut_ptr(), 4), IDFON_EARG);
+        assert_eq!(
+            idfon_client_socket_path(std::ptr::null(), std::ptr::null_mut(), 0),
+            IDFON_EARG
+        );
+        assert_eq!(
+            idfon_client_socket_path(std::ptr::null(), buf.as_mut_ptr(), 4),
+            IDFON_EARG
+        );
     }
 
     #[test]
@@ -175,7 +186,15 @@ mod tests {
             IDFON_EARG
         );
         assert_eq!(
-            idfon_client_request(b"/tmp/x\0".as_ptr().cast(), std::ptr::null(), 5, &mut out, &mut out_len, &mut ok, 0),
+            idfon_client_request(
+                b"/tmp/x\0".as_ptr().cast(),
+                std::ptr::null(),
+                5,
+                &mut out,
+                &mut out_len,
+                &mut ok,
+                0
+            ),
             IDFON_EARG
         );
     }
@@ -217,7 +236,9 @@ mod tests {
             stream.read_exact(&mut request).unwrap();
             let response =
                 br#"{"version":1,"id":"t1","ok":true,"operation":"status","result":{}}"#.to_vec();
-            stream.write_all(&(response.len() as u32).to_be_bytes()).unwrap();
+            stream
+                .write_all(&(response.len() as u32).to_be_bytes())
+                .unwrap();
             stream.write_all(&response).unwrap();
         });
         let path = path.to_str().unwrap().to_owned();

@@ -91,12 +91,18 @@ final class VideoCall: NSObject {
     /// The own-media publish exists (set after `media_live_start` succeeds).
     private var published = false
 
-    /// Mute/unmute outgoing audio: disabled sends silence, capture stays open.
-    /// A toggle that lands while the publish is still in flight is recorded and
-    /// pushed once the session exists.
+    /// Enable/disable outgoing audio. Disabling sends silence (capture stays
+    /// open); enabling brings capture up on demand when the call started
+    /// video-only and the mic was never started.
     func setAudioEnabled(_ enabled: Bool) {
-        guard audioAvailable else { return }
         audioEnabled = enabled
+        // Capture comes up on demand: a video-only dial never started the mic.
+        if enabled && !AudioPusher.shared.running {
+            Task { [weak self] in
+                guard await AudioPusher.shared.startForCall() else { return }
+                self?.applySendState()
+            }
+        }
         applySendState()
         notify()
     }
@@ -148,6 +154,7 @@ final class VideoCall: NSObject {
     /// True while a decoded peer frame is on screen (for clearing it).
     private var peerFrameVisible = false
     private var framesDisplayed = 0
+    private var framePollInFlight = false
 
     // MARK: - FFI wrappers (blocking C calls must leave the main thread)
 
@@ -165,18 +172,18 @@ final class VideoCall: NSObject {
 
     // MARK: - Dialer
 
-    /// Starts a call publishing the selected tracks: session registry entry,
-    /// own publish, invite to the peer. `audio`/`video` are the staged stream
-    /// set (§3 State 2); both false is rejected by the FFI. The peer's answer
-    /// triggers the return leg in handleEnvelope.
+    /// Starts a call: session registry entry, own publish, invite to the
+    /// peer. Both tracks are always published; `audio`/`video` pick the
+    /// initially enabled streams and each can be toggled on or off in-call
+    /// (toggles bring capture up on demand). Both false is rejected.
     ///
-    /// `cameraOn: false` still publishes the video track but sends no frames
-    /// until the Bar's camera toggle is switched on — the default for calls
-    /// started from the nav bar (mic first).
+    /// `cameraOn: false` publishes the video track but sends no frames until
+    /// the Bar's camera toggle is switched on — the default for calls started
+    /// from the nav bar (mic first).
     func dial(_ peerRef: String, audio: Bool = true, video: Bool = true, cameraOn: Bool = true) {
         guard state == .idle, audio || video else { return }
-        audioAvailable = audio
-        videoAvailable = video
+        audioAvailable = true
+        videoAvailable = true
         audioEnabled = audio
         videoEnabled = video && cameraOn
         peer = peerRef
@@ -211,9 +218,16 @@ final class VideoCall: NSObject {
                     "mode": AnyEncodable("record"),
                 ])
                 activateAudioSession()
-                if audio { AudioPusher.shared.start() }
+                if audio {
+                    guard await AudioPusher.shared.startForCall() else {
+                        fail("microphone unavailable")
+                        return
+                    }
+                }
                 if video && cameraOn { CameraPusher.shared.start() }
-                let ticket = await ffiString { media_live_start_with_source(audio ? 1 : 0, video ? 1 : 0, "push") }
+                // Publish both tracks regardless of the staged stream set so
+                // either stream can be toggled on later in the call.
+                let ticket = await ffiString { media_live_start_with_source(1, 1, "push") }
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
@@ -248,7 +262,10 @@ final class VideoCall: NSObject {
         Task {
             do {
                 activateAudioSession()
-                AudioPusher.shared.start()
+                guard await AudioPusher.shared.startForCall() else {
+                    fail("microphone unavailable")
+                    return
+                }
                 if cameraOn { CameraPusher.shared.start() }
                 await join(ticket: pending.ticket)
                 let own = await ffiString { media_live_start_with_source(1, 1, "push") }
@@ -283,7 +300,13 @@ final class VideoCall: NSObject {
     func recoverStaleCall() {
         guard let peer = UserDefaults.standard.string(forKey: "idfon.video-call.peer") else { return }
         UserDefaults.standard.removeObject(forKey: "idfon.video-call.peer")
-        Task { try? await client.sendText(to: peer, "call_stopped") }
+        Task.detached(priority: .userInitiated) {
+            media_live_stop()
+            media_video_stop()
+            media_live_unsubscribe()
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await self.client.sendText(to: peer, "call_stopped")
+        }
     }
 
     // MARK: - Event routing (called by ChatStore via the main queue)
@@ -308,6 +331,12 @@ final class VideoCall: NSObject {
             // Return leg: the peer answered and is now publishing their
             // camera+mic — join without re-prompting (core.ts return-leg).
             Task { await join(ticket: invite.ticket) }
+        } else if state == .incoming {
+            // A newer invite from the same peer supersedes the stale pending call.
+            guard activePeer == peerID else { return }
+            pendingInvite = (peerID, invite.ticket)
+            NSLog("idfon video: replaced pending invite from \(peerID)")
+            notify()
         } else if state == .idle {
             pendingInvite = (peerID, invite.ticket)
             UserDefaults.standard.set(peerID, forKey: "idfon.video-call.peer")
@@ -336,7 +365,11 @@ final class VideoCall: NSObject {
             fail("video watch failed\(error.isEmpty ? "" : ": \(error)")")
             return
         }
-        _ = await Task.detached(priority: .userInitiated) { _ = media_live_subscribe(ticket) }.value
+        let subscribeResult = await Task.detached(priority: .userInitiated) { media_live_subscribe(ticket) }.value
+        guard subscribeResult == 0 else {
+            fail("video audio subscribe failed")
+            return
+        }
         if state == .idle { return } // hung up while subscribing
         NSLog("idfon video watch started path=\(path)")
         framePath = path
@@ -358,8 +391,10 @@ final class VideoCall: NSObject {
         frameDeadline = nil
         joinedTicket = nil
         lastFrameSize = -1
+        // AudioPusher tear-down must stay on the main queue (engine state is
+        // main-serialized); only the blocking FFI calls go to the background.
+        AudioPusher.shared.stop()
         Task.detached(priority: .userInitiated) {
-            AudioPusher.shared.stop()
             CameraPusher.shared.stop()
             media_live_stop()
             media_video_stop()
@@ -392,55 +427,52 @@ final class VideoCall: NSObject {
     /// artifact; reload only when its size changes.
     private func startFramePolling() {
         frameTimer?.invalidate()
-        // Timer fires on the main runloop; hop through the main actor for
-        // the MainActor-isolated state (mirrors Calls.swift startFramePolling).
         frameTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, let path = self.framePath else { return }
+            guard let self, !self.framePollInFlight, let path = self.framePath else { return }
+            self.framePollInFlight = true
+            Task.detached(priority: .userInitiated) { [weak self] in
                 let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
-                guard size > 0 else {
-                    if let deadline = self.frameDeadline, Date() > deadline {
-                        // No picture yet is normal: the peer's camera may be off
-                        // (calls start mic-first) and its video track only
-                        // exists once it enables it. Only a reported watch
-                        // failure ends the call.
-                        self.frameDeadline = nil
-                        let error = await self.ffiString { media_video_last_error() }
-                        if !error.isEmpty {
-                            self.fail("video watch failed: \(error)")
-                            return
-                        }
-                        NSLog("idfon video: no remote frame yet (peer camera off?)")
-                    }
-                    // No frame written yet, or the FFI removed the stale JPEG
-                    // (new subscription / peer camera off): clear the surface
-                    // so a paused stream cannot masquerade as live video.
-                    if self.peerFrameVisible {
-                        self.peerFrameVisible = false
-                        self.onFrame?(nil)
-                    }
-                    self.lastFrameSize = -1
-                    return
-                }
-                guard size != self.lastFrameSize else { return }
-                self.lastFrameSize = size
-                self.frameDeadline = nil
-                // JPEG decode off the main thread: a 720×1280 decode ~10x/s
-                // would otherwise eat main-thread time for the whole call.
-                // preparingForDisplay decodes eagerly on the calling thread.
-                Task.detached(priority: .userInitiated) { [weak self] in
-                    guard let self else { return }
-                    let image = UIImage(contentsOfFile: path)?.preparingForDisplay()
+                guard let self else { return }
+                if size <= 0 {
                     await MainActor.run {
-                        if image != nil {
-                            self.framesDisplayed += 1
-                            if self.framesDisplayed <= 5 || self.framesDisplayed % 60 == 0 {
-                                NSLog("idfon video: decoded frame #\(self.framesDisplayed) path=\(path)")
+                        self.framePollInFlight = false
+                        guard self.framePath == path else { return }
+                        if let deadline = self.frameDeadline, Date() > deadline {
+                            self.frameDeadline = nil
+                            Task { @MainActor in
+                                let error = await self.ffiString { media_video_last_error() }
+                                if !error.isEmpty { self.fail("video watch failed: \(error)") }
                             }
                         }
-                        self.peerFrameVisible = image != nil
-                        self.onFrame?(image)
+                        if self.peerFrameVisible {
+                            self.peerFrameVisible = false
+                            self.onFrame?(nil)
+                        }
+                        self.lastFrameSize = -1
                     }
+                    return
+                }
+                let shouldDecode = await MainActor.run {
+                    self.framePath == path && self.lastFrameSize != size
+                }
+                guard shouldDecode else {
+                    await MainActor.run { self.framePollInFlight = false }
+                    return
+                }
+                let image = UIImage(contentsOfFile: path)?.preparingForDisplay()
+                await MainActor.run {
+                    self.framePollInFlight = false
+                    guard self.framePath == path else { return }
+                    self.lastFrameSize = size
+                    self.frameDeadline = nil
+                    if image != nil {
+                        self.framesDisplayed += 1
+                        if self.framesDisplayed <= 5 || self.framesDisplayed % 60 == 0 {
+                            NSLog("idfon video: decoded frame #\(self.framesDisplayed) path=\(path)")
+                        }
+                    }
+                    self.peerFrameVisible = image != nil
+                    self.onFrame?(image)
                 }
             }
         }

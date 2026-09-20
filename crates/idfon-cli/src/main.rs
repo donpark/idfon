@@ -79,6 +79,8 @@ struct Cli {
 enum Command {
     /// Show daemon status
     Status,
+    /// Verify local identity and peer channel endpoint consistency
+    Doctor,
     /// Stop the background daemon
     Shutdown,
     /// Manage identities
@@ -638,6 +640,7 @@ fn run() -> io::Result<()> {
             send_rpc(socket, "status", json!({}), identity, cli.stdin_json)?,
             json,
         ),
+        Command::Doctor => cmd_doctor(socket, identity, json, cli.stdin_json),
         Command::Identity(IdentityCmd::List) => finish(
             send_rpc(socket, "identities", json!({}), identity, cli.stdin_json)?,
             json,
@@ -1102,6 +1105,71 @@ fn send_rpc(
         &mut client,
         &encode_json(&request).map_err(io::Error::other)?,
     )
+}
+
+fn cmd_doctor(
+    socket: &str,
+    identity: Option<&str>,
+    json: bool,
+    stdin_json: bool,
+) -> io::Result<()> {
+    let status = send_rpc(socket, "status", json!({}), identity, stdin_json)?;
+    let peers = send_rpc(socket, "peers", json!({}), identity, stdin_json)?;
+    let status_result = match &status.body {
+        ResponseBody::Success { result, .. } => result,
+        _ => return finish(status, json),
+    };
+    let peers_result = match &peers.body {
+        ResponseBody::Success { result, .. } => result,
+        _ => return finish(peers, json),
+    };
+    let local = status_result
+        .get("identity")
+        .and_then(|v| v.get("endpoint_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let mut checks = Vec::new();
+    for peer in peers_result
+        .get("peers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = peer.get("name").and_then(Value::as_str).unwrap_or("?");
+        let id = peer.get("id").and_then(Value::as_str).unwrap_or("");
+        let endpoint = peer
+            .get("endpoint_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        checks.push(json!({"name": name, "peer_id": id, "endpoint_id": endpoint, "matches_peer_id": !id.is_empty() && id == endpoint}));
+    }
+    let result = json!({"local_endpoint_id": local, "peers": checks});
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({"ok": true, "result": result}))
+                .map_err(io::Error::other)?
+        );
+    } else {
+        println!(
+            "local endpoint: {}",
+            if local.is_empty() { "(missing)" } else { local }
+        );
+        for check in &checks {
+            println!(
+                "channel {}: endpoint={} peer_id={} {}",
+                check["name"],
+                check["endpoint_id"],
+                check["peer_id"],
+                if check["matches_peer_id"] == true {
+                    "OK"
+                } else {
+                    "MISMATCH"
+                }
+            );
+        }
+    }
+    Ok(())
 }
 
 fn cmd_events(

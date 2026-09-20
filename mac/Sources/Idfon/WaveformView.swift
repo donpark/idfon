@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CoreAudio
 import CIdfon
 
 /// Messages-style dotted waveform. Port of ios/Idfon/LiveWaveformView.swift
@@ -174,7 +175,7 @@ final class AudioMeter {
             let line = "\(Date()) \(message)\n"
             if let data = line.data(using: .utf8) {
                 if FileManager.default.fileExists(atPath: url.path), let file = try? FileHandle(forWritingTo: url) {
-                    try? file.seekToEnd()
+                    _ = try? file.seekToEnd()
                     try? file.write(contentsOf: data)
                     try? file.close()
                 } else {
@@ -192,7 +193,11 @@ final class AudioMeter {
     private struct WeakWave { weak var view: WaveformView? }
     private var views: [WeakWave] = []
     private(set) var running = false
+    private var startInFlight = false
     private var tapInstalled = false
+    /// Completions waiting on the in-flight start attempt; called on main
+    /// once it settles (they read `running` for the outcome).
+    private var pendingStarts: [() -> Void] = []
     private var startGeneration = 0
     private static weak var activeInputMeter: AudioMeter?
     private static var inputTapInstalled = false
@@ -224,27 +229,85 @@ final class AudioMeter {
         if !views.contains(where: { $0.view === view }) { views.append(WeakWave(view: view)) }
     }
 
-    func start() {
+    func start(completion: (() -> Void)? = nil) {
         Self.log("idfon audio meter start requested running=\(running) tap=\(tapInstalled) push=\(pushToEncoder)")
-        guard !running, !tapInstalled else { return }
+        if let completion { pendingStarts.append(completion) }
+        if running { settle(); return }
+        guard !startInFlight else { return } // joins the in-flight attempt
+        if tapInstalled {
+            // Stale tap with no active meter: clear it instead of failing —
+            // installTap aborts when a tap is already on the engine.
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+            Self.inputTapInstalled = false
+        }
+        startInFlight = true
         startGeneration += 1
         let generation = startGeneration
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             Self.log("idfon audio meter permission granted=\(granted)")
-            guard granted, let self, !self.running else { return }
-            DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      generation == self.startGeneration,
-                      !self.running, !self.tapInstalled else { return }
+            guard granted, let self, !self.running else {
+                DispatchQueue.main.async { [weak self] in self?.settle() }
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self else {
+                    completion?()
+                    return
+                }
+                guard generation == self.startGeneration,
+                      !self.running, !self.tapInstalled else {
+                    self.startInFlight = false
+                    self.settle()
+                    return
+                }
                 // The input bus accepts only one tap process-wide. This can be
                 // hit during device changes when an old meter's permission
                 // callback arrives after the UI has created the replacement.
                 if let active = Self.activeInputMeter, active !== self { active.stop() }
                 let input = self.engine.inputNode
-                if Self.inputTapInstalled {
-                    input.removeTap(onBus: 0)
-                    Self.inputTapInstalled = false
+                // VoIP-standard 10 ms capture IO: the tap otherwise delivers
+                // 4800-frame (~100 ms) bursts on the default device. Best
+                // effort — some devices reject the smaller block; the tap
+                // callback log (frames=) shows what actually arrived.
+                var deviceID = AudioDeviceID(0)
+                var deviceSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+                var deviceAddr = AudioObjectPropertyAddress(
+                    mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                    mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: kAudioObjectPropertyElementMain)
+                if AudioObjectGetPropertyData(
+                    AudioObjectID(kAudioObjectSystemObject), &deviceAddr, 0, nil,
+                    &deviceSize, &deviceID) == noErr, deviceID != 0 {
+                    var frames = UInt32(512)
+                    var framesAddr = AudioObjectPropertyAddress(
+                        mSelector: kAudioDevicePropertyBufferFrameSize,
+                        mScope: kAudioObjectPropertyScopeGlobal,
+                        mElement: kAudioObjectPropertyElementMain)
+                    AudioObjectSetPropertyData(
+                        deviceID, &framesAddr, 0, nil,
+                        UInt32(MemoryLayout<UInt32>.size), &frames)
                 }
+                if Self.inputTapInstalled {
+                    self.tapInstalled = true
+                    Self.activeInputMeter = self
+                    do {
+                        if !self.engine.isRunning { try self.engine.start() }
+                        self.running = true
+                        self.startInFlight = false
+                        self.settle()
+                    } catch {
+                        self.startInFlight = false
+                        self.settle()
+                    }
+                    return
+                }
+                // AVAudioEngine throws an ObjC exception (and aborts the app)
+                // when installTap sees an existing tap; Swift cannot catch it.
+                // Always remove the bus tap after stopping the previous owner,
+                // even if our bookkeeping flag was lost during a route change.
+                input.removeTap(onBus: 0)
+                Self.inputTapInstalled = false
                 self.tapInstalled = false
                 let format = input.outputFormat(forBus: 0)
                 if self.pushToEncoder {
@@ -279,17 +342,37 @@ final class AudioMeter {
                     try self.engine.start()
                     self.installAudioObservers()
                     self.running = true
+                    self.startInFlight = false
                     Self.log("idfon audio meter engine started")
+                    self.settle()
                 } catch {
                     Self.log("idfon audio meter failed: \(error.localizedDescription)")
+                    self.startInFlight = false
+                    self.settle()
                 }
             }
         }
     }
 
+    func startForCall() async -> Bool {
+        await withCheckedContinuation { continuation in
+            start {
+                continuation.resume(returning: self.running)
+            }
+        }
+    }
+
+    /// Calls queued start completions; they read `running` for the outcome.
+    private func settle() {
+        let pending = pendingStarts
+        pendingStarts = []
+        pending.forEach { $0() }
+    }
+
     func stop() {
         startGeneration += 1
-        guard running || tapInstalled else { return }
+        startInFlight = false // a stop during an in-flight start discards it
+        guard running || tapInstalled else { pendingStarts = []; return }
         if tapInstalled {
             engine.inputNode.removeTap(onBus: 0)
             tapInstalled = false
@@ -300,6 +383,7 @@ final class AudioMeter {
         converter = nil
         removeAudioObservers()
         running = false
+        settle() // pending start callers observe running=false
     }
 
     private func installAudioObservers() {
@@ -307,7 +391,9 @@ final class AudioMeter {
         interruptionObserver = center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             guard let self, self.running else { return }
             self.stop()
-            self.start()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.start()
+            }
         }
     }
 
@@ -360,19 +446,16 @@ final class AudioMeter {
             windowSumSquares = 0
             windowPeak = 0
         }
-        // Keep the current gain only as an explicit measurement condition; do
-        // not claim normalization until sender/receiver levels are compared.
-        for index in 0..<count {
-            channel[index] = max(-1, min(1, channel[index] * 2))
-        }
-        var outputPeak = 0.0
-        for index in 0..<count { outputPeak = max(outputPeak, abs(Double(channel[index]))) }
+        // Do not apply fixed gain here: multiplying microphone samples by 2
+        // followed by hard clipping turns loud speech into harsh distortion.
+        // Keep the captured signal unchanged until a measured normalization
+        // policy exists.
         pushedBuffers += 1
         if pushedBuffers <= 5 || pushedBuffers % 100 == 0 {
-            NSLog("idfon audio levels buffer=\(pushedBuffers) raw_rms=\(rawRMS) raw_peak=\(rawPeak) post_gain_rms=\(rawRMS * 2) post_gain_peak=\(outputPeak) clipped=\(outputPeak >= 0.999)")
+            NSLog("idfon audio levels buffer=\(pushedBuffers) raw_rms=\(rawRMS) raw_peak=\(rawPeak)")
         }
         if pushedBuffers <= 5 || pushedBuffers % 100 == 0 {
-            Self.log("idfon audio meter push buffer=\(pushedBuffers) samples=\(count) raw_rms=\(rawRMS) post_gain_peak=\(outputPeak)")
+            Self.log("idfon audio meter push buffer=\(pushedBuffers) samples=\(count) rms=\(rawRMS) peak=\(rawPeak)")
         }
         media_audio_push_samples(channel, count)
     }
