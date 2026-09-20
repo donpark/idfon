@@ -25,7 +25,10 @@ pub extern "C" fn idfon_daemon_run(
         if pointer.is_null() {
             return None;
         }
-        unsafe { CStr::from_ptr(pointer) }.to_str().ok().map(|value| value.to_owned())
+        unsafe { CStr::from_ptr(pointer) }
+            .to_str()
+            .ok()
+            .map(|value| value.to_owned())
     };
     let (Some(socket), Some(data_dir)) = (to_option(socket_path), to_option(data_dir)) else {
         return IDFON_DAEMON_EARG;

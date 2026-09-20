@@ -107,6 +107,7 @@ final class ChatStore {
             return
         }
         if text == "call_started" || text == "call_stopped" {
+            if isStaleControl(event) { return }
             LiveCall.shared.handleControl(peer: peerId, text)
             VideoCall.shared.handleEnvelope(peer: peerId, text)
             return
@@ -124,6 +125,12 @@ final class ChatStore {
             fetchFile(ticket: ticket, name: name, sizeBytes: sizeBytes)
         }
         notifyObservers()
+    }
+
+    /// Replayed call controls older than 60s belong to past sessions.
+    private func isStaleControl(_ event: Event) -> Bool {
+        guard let ts = Double(event.timestamp), ts > 0 else { return false }
+        return Date().timeIntervalSince1970 - ts > 60
     }
 
     /// Replayed invites older than 60s are from past sessions; never ring.

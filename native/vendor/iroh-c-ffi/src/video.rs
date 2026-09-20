@@ -1,8 +1,14 @@
 //! Current decoded-video FFI bridge.
 
-use std::{sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock}, time::Duration};
 use iroh_live::{ticket::LiveTicket, Live};
 use safer_ffi::prelude::*;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+    time::Duration,
+};
 
 use crate::media::media_path;
 
@@ -23,7 +29,9 @@ fn video_error(message: impl Into<String>) {
     }
 }
 
-struct VideoSession { stop: Arc<AtomicBool> }
+struct VideoSession {
+    stop: Arc<AtomicBool>,
+}
 
 #[ffi_export]
 pub fn media_video_start(ticket: char_p::Ref<'_>) -> char_p::Box {
@@ -50,7 +58,13 @@ pub fn media_video_start(ticket: char_p::Ref<'_>) -> char_p::Box {
 
 #[ffi_export]
 pub fn media_video_last_error() -> char_p::Box {
-    VIDEO_ERROR.get_or_init(|| Mutex::new(String::new())).lock().map(|error| error.clone()).unwrap_or_default().try_into().unwrap()
+    VIDEO_ERROR
+        .get_or_init(|| Mutex::new(String::new()))
+        .lock()
+        .map(|error| error.clone())
+        .unwrap_or_default()
+        .try_into()
+        .unwrap()
 }
 
 #[ffi_export]
@@ -60,18 +74,35 @@ pub fn media_video_stop() {
     }
 }
 
-async fn video_loop(ticket: &str, frame_path: &std::path::Path, temp_path: &std::path::Path, stop: Arc<AtomicBool>) {
+async fn video_loop(
+    ticket: &str,
+    frame_path: &std::path::Path,
+    temp_path: &std::path::Path,
+    stop: Arc<AtomicBool>,
+) {
     let ticket = match ticket.parse::<LiveTicket>() {
         Ok(ticket) => ticket,
-        Err(error) => { video_error(format!("ticket parse failed: {error}")); return; }
+        Err(error) => {
+            video_error(format!("ticket parse failed: {error}"));
+            return;
+        }
     };
     let live = match Live::from_env().await {
         Ok(live) => live.spawn(),
-        Err(error) => { video_error(format!("live init failed: {error}")); return; }
+        Err(error) => {
+            video_error(format!("live init failed: {error}"));
+            return;
+        }
     };
-    let subscription = match live.subscribe(ticket.endpoint, &ticket.broadcast_name).await {
+    let subscription = match live
+        .subscribe(ticket.endpoint, &ticket.broadcast_name)
+        .await
+    {
         Ok(subscription) => subscription,
-        Err(error) => { video_error(format!("video subscribe failed: {error}")); return; }
+        Err(error) => {
+            video_error(format!("video subscribe failed: {error}"));
+            return;
+        }
     };
     let broadcast = subscription.broadcast();
     // The publisher registers its video rendition only once the first camera
@@ -80,12 +111,19 @@ async fn video_loop(ticket: &str, frame_path: &std::path::Path, temp_path: &std:
     // on for a while. The first catalog is therefore audio-only or empty; wait
     // for the rendition instead of failing on that snapshot.
     while !broadcast.has_video() {
-        if stop.load(Ordering::Relaxed) { live.shutdown().await; return; }
+        if stop.load(Ordering::Relaxed) {
+            live.shutdown().await;
+            return;
+        }
         tokio::time::sleep(STOP_POLL).await;
     }
     let track = match broadcast.video().await {
         Ok(track) => track,
-        Err(error) => { video_error(format!("video track failed: {error}")); live.shutdown().await; return; }
+        Err(error) => {
+            video_error(format!("video track failed: {error}"));
+            live.shutdown().await;
+            return;
+        }
     };
     track.enable_adaptation(subscription.signals().clone());
     while !stop.load(Ordering::Relaxed) {
@@ -94,13 +132,28 @@ async fn video_loop(ticket: &str, frame_path: &std::path::Path, temp_path: &std:
         let frame = match tokio::time::timeout(FRAME_IDLE, track.recv()).await {
             Ok(Some(frame)) => frame,
             Ok(None) => break,
-            Err(_) => { let _ = std::fs::remove_file(frame_path); continue; }
+            Err(_) => {
+                let _ = std::fs::remove_file(frame_path);
+                continue;
+            }
         };
-        let Ok(rgba) = frame.surface.into_rgba() else { continue };
+        let Ok(rgba) = frame.surface.into_rgba() else {
+            continue;
+        };
         let mut jpeg = Vec::new();
         let encoder = jpeg_encoder::Encoder::new(&mut jpeg, 80);
-        if encoder.encode(rgba.data(), rgba.width() as u16, rgba.height() as u16, jpeg_encoder::ColorType::Rgba).is_ok() {
-            if std::fs::write(temp_path, &jpeg).is_ok() { let _ = std::fs::rename(temp_path, frame_path); }
+        if encoder
+            .encode(
+                rgba.data(),
+                rgba.width() as u16,
+                rgba.height() as u16,
+                jpeg_encoder::ColorType::Rgba,
+            )
+            .is_ok()
+        {
+            if std::fs::write(temp_path, &jpeg).is_ok() {
+                let _ = std::fs::rename(temp_path, frame_path);
+            }
         } else {
             video_error("video JPEG encode failed");
         }

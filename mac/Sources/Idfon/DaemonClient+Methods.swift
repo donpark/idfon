@@ -86,6 +86,10 @@ extension DaemonClient {
             "idempotency_key": AnyEncodable("mac-\(UUID().uuidString)"),
         ]
         if let conversation { params["conversation"] = AnyEncodable(conversation) }
+        // Call invites must survive transport hiccups (relay reconnects on
+        // the peer take tens of seconds); the receiving daemon dedupes by
+        // message id, so retries are safe.
+        params["retries"] = AnyEncodable(3)
         _ = try await requestWithLaunch(method: "message.send", params: params)
     }
 

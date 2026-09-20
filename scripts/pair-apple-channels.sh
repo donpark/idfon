@@ -43,6 +43,12 @@ fi
 status=$($cli --socket "$socket" status --json)
 mac_ticket=$(printf '%s' "$status" | jq -c '.result.contact_ticket')
 mac_id=$(printf '%s' "$status" | jq -r '.result.identity.id')
+mac_local_endpoint=$(printf '%s' "$status" | jq -r '.result.identity.endpoint_id // empty')
+mac_ticket_endpoint=$(printf '%s' "$mac_ticket" | jq -r '.endpoint_id // .id // empty')
+[ -n "$mac_local_endpoint" ] && [ "$mac_local_endpoint" = "$mac_ticket_endpoint" ] || {
+  echo "Mac profile mismatch: status endpoint_id=$mac_local_endpoint ticket endpoint_id=$mac_ticket_endpoint" >&2
+  exit 1
+}
 [ "$mac_ticket" != null ] || { echo "Mac has no contact ticket" >&2; exit 1; }
 
 add_mac() {
@@ -101,12 +107,23 @@ wait "$launcher" 2>/dev/null || true
 ios_ticket=$(grep 'idfon self ticket:' "$log" | sed 's/.*idfon self ticket: //' | tail -1)
 [ -n "$ios_ticket" ] || { echo "iOS did not print its contact ticket" >&2; cat "$log" >&2; exit 1; }
 printf '%s' "$ios_ticket" | jq -e . >/dev/null || { echo "invalid iOS ticket" >&2; exit 1; }
+ios_endpoint=$(printf '%s' "$ios_ticket" | jq -r '.endpoint_id // .id // empty')
+[ -n "$ios_endpoint" ] || { echo "iOS ticket has no endpoint_id" >&2; exit 1; }
+mac_endpoint=$(printf '%s' "$mac_ticket" | jq -r '.endpoint_id // .id // empty')
+[ -n "$mac_endpoint" ] || { echo "Mac ticket has no endpoint_id" >&2; exit 1; }
+printf 'pairing endpoints: mac=%s iphone=%s\n' "$mac_endpoint" "$ios_endpoint"
 
 $cli --socket "$socket" peer remove iphone --identity "$mac_id" >/dev/null 2>&1 || true
 $cli --socket "$socket" peer remove mac-current --identity "$mac_id" >/dev/null 2>&1 || true
 add_mac iphone "$ios_ticket"
 if [ -n "$eve_ticket" ]; then add_mac eve "$eve_ticket"; fi
 
+stored_ios_endpoint=$($cli --socket "$socket" peer show iphone --identity "$mac_id" --json | jq -r '.result.peer.endpoint_id // empty')
+[ "$stored_ios_endpoint" = "$ios_endpoint" ] || {
+  echo "pairing verification failed: Mac iphone channel endpoint_id=$stored_ios_endpoint, iOS ticket endpoint_id=$ios_endpoint" >&2
+  exit 1
+}
+$cli --socket "$socket" doctor --identity "$mac_id"
 echo "paired active identities: Mac <-> iPhone${eve_ticket:+ and Eve}"
 echo "iOS device: $device"
 echo "Mac peer list:"

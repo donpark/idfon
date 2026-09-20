@@ -94,6 +94,7 @@ final class ChatStore {
             return
         }
         if text == "call_started" || text == "call_stopped" {
+            if isStaleControl(event) { return }
             DispatchQueue.main.async { Task { @MainActor in
                 LiveCall.shared.handleControl(peer: peerId, text)
                 VideoCall.shared.handleEnvelope(peer: peerId, text)
@@ -109,6 +110,12 @@ final class ChatStore {
         persistMessages()
         NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")
         notifyObservers()
+    }
+
+    /// Replayed call controls older than 60s belong to past sessions.
+    private func isStaleControl(_ event: Event) -> Bool {
+        guard let ts = Double(event.timestamp), ts > 0 else { return false }
+        return Date().timeIntervalSince1970 - ts > 60
     }
 
     /// Replayed invites older than 60s are from past calls; never ring.

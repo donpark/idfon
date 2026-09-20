@@ -111,6 +111,8 @@ final class LiveCall {
     private let client = DaemonClient()
     private var pendingInvite: (peer: String, ticket: String)?
     private var published = false
+    private var operationGeneration = 0
+    private var operation: Task<Void, Never>?
 
     var activePeer: String? {
         switch state {
@@ -128,11 +130,14 @@ final class LiveCall {
 
     func dial(_ peerId: String) {
         guard case .idle = state else { return }
+        operation?.cancel()
+        operationGeneration += 1
+        let generation = operationGeneration
         state = .calling(peer: peerId)
         UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
         audioEnabled = audioAvailable // this session carries audio from the start
         notify()
-        Task {
+        operation = Task {
             do {
                 // Registry entry (parity with core.ts live_start).
                 let identity = (try? await client.status())?.1 ?? "default"
@@ -144,9 +149,13 @@ final class LiveCall {
                     "mode": AnyEncodable("record"),
                 ])
                 LiveCallHarness.activateAudioSession()
-                AudioPusher.shared.start()
+                guard await AudioPusher.shared.startForCall() else {
+                    fail("microphone unavailable")
+                    return
+                }
+                guard operationGeneration == generation, !Task.isCancelled else { return }
                 let ticket = await ffiString { media_live_start_with_source(1, 0, "push") } // shell audio
-                guard !ticket.isEmpty else {
+                guard operationGeneration == generation, !Task.isCancelled, !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
                     return
@@ -172,14 +181,23 @@ final class LiveCall {
 
     func answer() {
         guard case .incoming(let peer) = state, let pending = pendingInvite else { return }
+        operation?.cancel()
+        operationGeneration += 1
+        let generation = operationGeneration
+        pendingInvite = nil
         state = .inCall(peer: peer)
         audioEnabled = audioAvailable
         notify()
-        Task {
+        operation = Task {
             do {
                 LiveCallHarness.activateAudioSession()
-                AudioPusher.shared.start()
-                await join(ticket: pending.ticket)
+                guard await AudioPusher.shared.startForCall() else {
+                    fail("microphone unavailable")
+                    return
+                }
+                let pendingTicket = pending.ticket
+                await join(ticket: pendingTicket)
+                guard operationGeneration == generation, !Task.isCancelled else { return }
                 // Torn down while subscribing (the subscribe failed and
                 // `fail` already ended the call): never publish into a dead
                 // session — that would leak a publisher with no call.
@@ -218,7 +236,12 @@ final class LiveCall {
     func recoverStaleCall() {
         guard let peer = UserDefaults.standard.string(forKey: "idfon.live-call.peer") else { return }
         UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
-        Task { try? await client.sendText(to: peer, "call_stopped") }
+        Task.detached(priority: .userInitiated) {
+            media_live_stop()
+            media_live_unsubscribe()
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await self.client.sendText(to: peer, "call_stopped")
+        }
     }
 
     // MARK: - Event routing (called by ChatStore on the main actor)
@@ -260,6 +283,15 @@ final class LiveCall {
         case .incoming, .idle:
             break
         }
+        // A newer invite from the same peer supersedes an unanswered one.
+        // This prevents a delayed duplicate from winning after a newer call.
+        if case .incoming(let pendingPeer) = state {
+            guard pendingPeer == peerID else { return }
+            pendingInvite = (peerID, invite.ticket)
+            NSLog("idfon live: replaced pending invite from \(peerID)")
+            notify()
+            return
+        }
         guard case .idle = state else { return } // video-call invites route to VideoCall
         pendingInvite = (peerID, invite.ticket)
         UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
@@ -280,7 +312,7 @@ final class LiveCall {
     /// Subscribes to a peer ticket without tearing the call down on failure.
     private func subscribe(ticket: String) async -> Bool {
         await Task.detached(priority: .userInitiated) { () -> Bool in
-            media_live_subscribe(ticket) == 1
+            media_live_subscribe(ticket) == 0
         }.value
     }
 
@@ -300,6 +332,9 @@ final class LiveCall {
                 Task { try? await client.sendText(to: peer, "call_stopped") }
             }
         }
+        operation?.cancel()
+        operation = nil
+        operationGeneration += 1
         published = false
         UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
         pendingInvite = nil

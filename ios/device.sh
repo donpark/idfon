@@ -31,7 +31,15 @@ elif [ -z "$device" ]; then
 fi
 
 echo "== installing to $device"
-xcrun devicectl device install app --device "$device" "$app"
+# CoreDevice can transiently invalidate its control channel while the phone
+# remains paired/available. Retry one time after rediscovering the device;
+# do not rebuild or silently select another device.
+if ! xcrun devicectl device install app --device "$device" "$app"; then
+  echo "device install failed; refreshing CoreDevice connection and retrying once" >&2
+  sleep 2
+  xcrun devicectl list devices >/dev/null
+  xcrun devicectl device install app --device "$device" "$app"
+fi
 
 echo "== launching"
 # `--` stops devicectl from parsing the app's own -flags (e.g. -dial) as its
