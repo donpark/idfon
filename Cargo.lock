@@ -1401,7 +1401,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.6",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -1798,7 +1798,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2374,26 +2374,7 @@ dependencies = [
  "derive_more",
  "hex",
  "lazy_static",
- "moq-net 0.2.20",
- "regex",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror 2.0.20",
- "url",
-]
-
-[[package]]
-name = "hang"
-version = "0.20.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e04341dc14f3ac51d0d2c7e384847f0b9b5edbd1e738c9025f6ecd9a8225aebe"
-dependencies = [
- "bytes",
- "derive_more",
- "hex",
- "lazy_static",
- "moq-net 0.2.21",
+ "moq-net",
  "regex",
  "serde",
  "serde_json",
@@ -2964,7 +2945,7 @@ dependencies = [
  "jpeg-encoder",
  "moq-audio",
  "moq-media",
- "moq-mux 0.9.15",
+ "moq-mux",
  "moq-video",
  "n0-future",
  "rustix 1.1.4",
@@ -3304,14 +3285,14 @@ dependencies = [
  "bytes",
  "data-encoding",
  "derive_more",
- "hang 0.20.12",
+ "hang",
  "iroh",
  "iroh-gossip",
  "iroh-mdns-peer-lookup",
  "iroh-moq",
  "iroh-tickets",
  "moq-media",
- "moq-net 0.2.21",
+ "moq-net",
  "n0-error",
  "n0-future",
  "n0-watcher",
@@ -3373,7 +3354,7 @@ version = "0.1.0"
 source = "git+https://github.com/n0-computer/iroh-live?rev=de7f43bfc466988f08b7e63acdd7fb295a9f9fd2#de7f43bfc466988f08b7e63acdd7fb295a9f9fd2"
 dependencies = [
  "iroh",
- "moq-net 0.2.21",
+ "moq-net",
  "n0-error",
  "n0-future",
  "tokio",
@@ -3722,7 +3703,6 @@ checksum = "3033155c4fffcd86959a9ebdfbcadbed7ec4bfcc2fb545469778f791adf704eb"
 dependencies = [
  "loom",
  "smallvec",
- "web-async",
 ]
 
 [[package]]
@@ -3948,10 +3928,10 @@ dependencies = [
  "cpal",
  "dispatch2",
  "fixed-resample",
- "hang 0.20.11",
+ "hang",
  "kio 0.5.8",
- "moq-mux 0.9.14",
- "moq-net 0.2.20",
+ "moq-mux",
+ "moq-net",
  "objc2",
  "objc2-av-foundation",
  "objc2-core-audio-types",
@@ -3972,17 +3952,6 @@ dependencies = [
 [[package]]
 name = "moq-flate"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f368711e97bee76e2276de4ba9e9a21bbd65353db9eb60988ef84e3902a1b3c3"
-dependencies = [
- "bytes",
- "flate2",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "moq-flate"
-version = "0.1.2"
 source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
 dependencies = [
  "bytes",
@@ -3998,26 +3967,8 @@ dependencies = [
  "bytes",
  "json-patch",
  "kio 0.5.8",
- "moq-flate 0.1.2 (git+https://github.com/Frando/moq?branch=iroh-live-3)",
- "moq-net 0.2.20",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
-name = "moq-json"
-version = "0.3.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9077e74122ac7b023cea74094e16eafec7542bfdc6b874fccd475927abf34f79"
-dependencies = [
- "bytes",
- "json-patch",
- "kio 0.5.9",
- "moq-flate 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "moq-net 0.2.21",
+ "moq-flate",
+ "moq-net",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -4031,18 +3982,7 @@ version = "0.2.6"
 source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
 dependencies = [
  "bytes",
- "moq-net 0.2.20",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "moq-loc"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ea3c2a6b4527fa7df13389ea455156e3f7f9329a89fe47b1dc681797360e08c"
-dependencies = [
- "bytes",
- "moq-net 0.2.21",
+ "moq-net",
  "thiserror 2.0.20",
 ]
 
@@ -4053,10 +3993,10 @@ source = "git+https://github.com/n0-computer/iroh-live?rev=de7f43bfc466988f08b7e
 dependencies = [
  "bytes",
  "derive_more",
- "hang 0.20.12",
+ "hang",
  "moq-audio",
- "moq-mux 0.9.15",
- "moq-net 0.2.21",
+ "moq-mux",
+ "moq-net",
  "moq-video",
  "n0-error",
  "n0-future",
@@ -4070,17 +4010,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
-]
-
-[[package]]
-name = "moq-msf"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c57b3394e7306358b8b59893e8859daf3ac6da3db594af8b756348c3d7ce2891"
-dependencies = [
- "serde",
- "serde_json",
- "serde_with",
 ]
 
 [[package]]
@@ -4102,46 +4031,13 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "h264-parser",
- "hang 0.20.11",
+ "hang",
  "kio 0.5.8",
  "memchr",
- "moq-json 0.3.10",
- "moq-loc 0.2.6",
- "moq-msf 0.4.2 (git+https://github.com/Frando/moq?branch=iroh-live-3)",
- "moq-net 0.2.20",
- "mp4-atom",
- "mpeg2ts",
- "num_enum",
- "scuffle-av1",
- "scuffle-h265",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "url",
- "web-async",
- "webm-iterable",
-]
-
-[[package]]
-name = "moq-mux"
-version = "0.9.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec297a3f084872d2c02c452938721c681d8f981f40058aa6ed0ea8698749e00a"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "bytes",
- "h264-parser",
- "hang 0.20.12",
- "kio 0.5.9",
- "memchr",
- "moq-json 0.3.11",
- "moq-loc 0.2.7",
- "moq-msf 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "moq-net 0.2.21",
+ "moq-json",
+ "moq-loc",
+ "moq-msf",
+ "moq-net",
  "mp4-atom",
  "mpeg2ts",
  "num_enum",
@@ -4167,26 +4063,6 @@ dependencies = [
  "bytes",
  "futures",
  "kio 0.5.8",
- "num_enum",
- "rand",
- "serde",
- "slab",
- "thiserror 2.0.20",
- "tracing",
- "web-async",
- "web-transport-trait",
-]
-
-[[package]]
-name = "moq-net"
-version = "0.2.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b09526f1f7794719488eeb9185672515916fd1e3c184ad57dfc935c2bc2ce422"
-dependencies = [
- "arrayvec",
- "bytes",
- "futures",
- "kio 0.5.9",
  "num_enum",
  "rand",
  "serde",
@@ -4234,12 +4110,12 @@ dependencies = [
  "cudarc",
  "dispatch2",
  "fast_image_resize",
- "hang 0.20.11",
+ "hang",
  "libc",
  "libloading 0.9.0",
  "linux-raw-sys 0.12.1",
- "moq-mux 0.9.14",
- "moq-net 0.2.20",
+ "moq-mux",
+ "moq-net",
  "moq-nvenc",
  "moq-vaapi",
  "ndk",
@@ -6026,7 +5902,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6085,7 +5961,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7851,7 +7727,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
