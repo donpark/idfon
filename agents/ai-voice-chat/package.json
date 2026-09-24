@@ -9,6 +9,7 @@
     "clean": "rm -rf .output dist"
   },
   "dependencies": {
+    "ai": "^7.0.113",
     "eve": "0.55.0",
     "eve-idfon-channel": "file:../../integrations/eve-idfon-channel",
     "ogg-opus-decoder": "^1.7.5",

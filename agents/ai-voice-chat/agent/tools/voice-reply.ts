@@ -13,6 +13,9 @@ import WebSocket from "ws";
 // EVE_IDFON_CHANNEL_SECRET (defaults match agents/*/agent/extensions/idfon.ts).
 
 const LIVE_URL = "wss://ai-gateway.vercel.sh/v1/live/sessions";
+// Text model for delegated work (delegation.created): any gateway model works;
+// this one is chosen so the voice layer's deeper questions get a strong model.
+const DELEGATION_MODEL = "openai/gpt-5.6-luna";
 const RATE = 24_000; // gpt-live-1: s16le mono 24 kHz, both directions
 const MAX_INPUT_SECONDS = 30; // ponytail: single-shot memo cap from the gpt-live guide; longer memos need a real duplex session
 const CHUNK_BYTES = 960; // 20 ms of s16le mono
@@ -69,6 +72,26 @@ function wavWrap(pcm: Buffer): Buffer {
 
 type LiveReply = { pcm: Buffer; transcript: string };
 
+/**
+ * Run delegated work on a gateway text model. Fire-and-forget from the
+ * session's perspective: the result is appended to the commentary channel
+ * and Live decides when/whether to speak it.
+ */
+async function handleDelegation(delegationId: string, context: () => string): Promise<string> {
+  const { generateText } = await import("ai");
+  const { text } = await generateText({
+    model: DELEGATION_MODEL,
+    prompt: [
+      "You assist a live voice conversation. Answer the delegated request concisely " +
+        "(the voice model will speak your answer aloud; plain text, no markdown).",
+      `Conversation so far:\n${context()}`, `Delegation id: ${delegationId}`,
+    ].join("\n\n"),
+    maxOutputTokens: 300,
+    abortSignal: AbortSignal.timeout(20_000),
+  });
+  return text;
+}
+
 /** One GPT-Live session: user PCM in, spoken reply PCM + transcript out. */
 function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
   const maxIn = RATE * 2 * MAX_INPUT_SECONDS;
@@ -81,6 +104,7 @@ function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
 
     const outChunks: Buffer[] = [];
     let transcript = "";
+    let inputTranscript = "";
     let started = false;
     let closing = false;
     let gotAudio = false;
@@ -164,9 +188,18 @@ function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
         lastOutputAt = Date.now();
       } else if (event.type === "session.output_transcript.delta") {
         transcript += event.delta;
+      } else if (event.type === "session.input_transcript.delta") {
+        inputTranscript += event.delta;
       } else if (event.type === "session.delegation.created") {
-        // No delegated backend; empty commentary lets Live proceed on its own.
-        send({ type: "session.commentary.append", delegation_id: event.delegation.id, content: "" });
+        // Delegated work runs on a gateway text model while the voice
+        // conversation continues; the result comes back on the commentary
+        // channel for Live to speak.
+        handleDelegation(event.delegation.id, () => [
+          inputTranscript ? `User said: ${inputTranscript}` : "(user speech not yet transcribed)",
+          transcript ? `Reply so far: ${transcript}` : "",
+        ].filter(Boolean).join("\n"))
+          .then((text) => send({ type: "session.commentary.append", delegation_id: event.delegation.id, content: text }))
+          .catch((error) => send({ type: "session.thinking.append", delegation_id: event.delegation.id, content: `Delegated work failed: ${error?.message ?? error}` }));
       } else if (event.type === "error") {
         finish(undefined, new Error(`gpt-live session error: ${event.error?.message ?? JSON.stringify(event.error)}`));
       } else if (event.type === "session.closed") {
