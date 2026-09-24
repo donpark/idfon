@@ -86,6 +86,11 @@ extension DaemonClient {
             "idempotency_key": AnyEncodable("mac-\(UUID().uuidString)"),
         ]
         if let conversation { params["conversation"] = AnyEncodable(conversation) }
+        // Gated peers (the Eve agent's holder) require their holder-signed
+        // ticket; ungated peers ignore it and use local grants.
+        if let ticket = CapabilityTickets.ticket(for: peer) {
+            params["capability_ticket"] = ticket
+        }
         // Call invites must survive transport hiccups (relay reconnects on
         // the peer take tens of seconds); the receiving daemon dedupes by
         // message id, so retries are safe.
