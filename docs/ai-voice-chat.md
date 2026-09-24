@@ -66,6 +66,21 @@ identity across restarts — pair once.
 AI_GATEWAY_API_KEY=... scripts/ai-voice-chat-serve.sh   # foreground
 ```
 
+The script stays in the foreground — run it in a terminal tab, tmux pane, or
+background it yourself; it is not a launchd/daemon service and dies with the
+shell that owns it. Re-running it is safe: it kills the previous instance's
+processes (tracked via pid files in the home dir), rebuilds only when the
+agent source changed, and restarts on the same identity.
+
+Check it is alive:
+
+```sh
+ps -p "$(cat ~/.idfon/ai-voice-chat/holder.pid)" >/dev/null && echo up
+# or end to end:
+idfon --socket /tmp/idfon/idfond.sock send ai-voice-chat \
+  --text "ping" --capability-ticket "$(cat ~/.idfon/ai-voice-chat/capability-ticket.json)"
+```
+
 It prints the two artifacts pairing needs (also written to
 `~/.idfon/ai-voice-chat/`): the **contact** (endpoint-addr JSON) and the
 **capability ticket** (holder-signed, subject-bound to the daemon).
