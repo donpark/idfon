@@ -234,11 +234,12 @@ function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
 export default defineTool({
   description:
     "Turn the user's voice message into a spoken reply using the GPT-Live voice model. " +
-    "Call it with the staged recording path from the user's message, plus optional extra " +
+    "Call it after a voice message arrives (omit the path to auto-detect the " +
+    "staged recording, or pass optional extra " +
     "guidance for the spoken reply. Returns the spoken reply's transcript and an " +
     "IDFON-DATA/1 envelope for the reply audio; include the envelope in your reply text.",
   inputSchema: z.object({
-    path: z.string().min(1).describe("Sandbox path of the staged voice recording, e.g. /workspace/attachments/.../recording.opus"),
+    path: z.string().min(1).optional().describe("Sandbox path of the staged voice recording; omit to auto-detect the newest staged recording"),
     durationMs: z.number().int().positive().optional().describe("Recording duration in ms from the IDFON-RECORDING/1 envelope"),
     guidance: z.string().optional().describe("Optional steering for the spoken reply (tone, what to emphasize)"),
   }),
@@ -246,6 +247,15 @@ export default defineTool({
     if (!process.env.AI_GATEWAY_API_KEY) throw new Error("AI_GATEWAY_API_KEY is not set");
 
     const sandbox = await ctx.getSandbox();
+    // Models often can't relay the exact staged path (sha subdirectory), so
+    // fall back to discovering the newest staged audio in /workspace/attachments.
+    if (!path) {
+      const found = await sandbox.run({
+        command: "find /workspace/attachments -type f -name '*.opus' 2>/dev/null | tail -n 1",
+      });
+      path = found.stdout.trim();
+      if (!path) throw new Error("no staged recording found in /workspace/attachments");
+    }
     const opus = await sandbox.readBinaryFile({ path });
     if (!opus || opus.length < 4) throw new Error(`recording not found at ${path}`);
     if (Buffer.from(opus.slice(0, 4)).toString("latin1") !== "OggS") {
