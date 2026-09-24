@@ -51,6 +51,15 @@ async function toPcm24k(opusBytes: Uint8Array): Promise<Buffer> {
   return out;
 }
 
+/** Drop trailing near-silence so the reply blob is just the spoken answer. */
+function trimTrailingSilence(pcm: Buffer): Buffer {
+  const threshold = 300;
+  let end = pcm.length;
+  while (end >= 2 && Math.abs(pcm.readInt16LE(end - 2)) <= threshold) end -= 2;
+  // keep a short fade-out tail so playback doesn't click
+  return pcm.subarray(0, Math.min(pcm.length, end + RATE * 2 * 0.25));
+}
+
 /** s16le mono 24 kHz PCM -> WAV container (holder accepts WAV blobs). */
 function wavWrap(pcm: Buffer): Buffer {
   const header = Buffer.alloc(44);
@@ -140,7 +149,7 @@ function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
     // once the spoken reply has gone quiet.
     const pacer = setInterval(() => {
       if (!started || closing) return;
-      if (offset >= input.length && gotAudio && Date.now() - lastOutputAt > REPLY_QUIET_MS) return close();
+      if (offset >= input.length && gotAudio && lastOutputAt > 0 && Date.now() - lastOutputAt > REPLY_QUIET_MS) return close();
       if (Date.now() - startTs > REPLY_MAX_MS + MAX_INPUT_SECONDS * 1000) return close();
       const chunk = Buffer.alloc(CHUNK_BYTES);
       if (offset < input.length) {
@@ -185,7 +194,15 @@ function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
       } else if (event.type === "session.output_audio.delta") {
         outChunks.push(Buffer.from(event.delta, "base64"));
         gotAudio = true;
-        lastOutputAt = Date.now();
+        // ponytail: Live streams silence deltas continuously, so quiet-window
+        // detection keys on audio energy, not delta recency — otherwise every
+        // silence delta resets the timer and we record ~30s of trailing silence
+        const chunk = outChunks[outChunks.length - 1];
+        let loud = false;
+        for (let i = 0; i + 1 < chunk.length; i += 2) {
+          if (Math.abs(chunk.readInt16LE(i)) > 300) { loud = true; break; }
+        }
+        if (loud) lastOutputAt = Date.now();
       } else if (event.type === "session.output_transcript.delta") {
         transcript += event.delta;
       } else if (event.type === "session.input_transcript.delta") {
@@ -203,7 +220,7 @@ function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
       } else if (event.type === "error") {
         finish(undefined, new Error(`gpt-live session error: ${event.error?.message ?? JSON.stringify(event.error)}`));
       } else if (event.type === "session.closed") {
-        finish({ pcm: Buffer.concat(outChunks), transcript: transcript.trim() });
+        finish({ pcm: trimTrailingSilence(Buffer.concat(outChunks)), transcript: transcript.trim() });
       }
     });
 
