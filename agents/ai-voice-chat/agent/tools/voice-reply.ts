@@ -16,6 +16,10 @@ const LIVE_URL = "wss://ai-gateway.vercel.sh/v1/live/sessions";
 // Text model for delegated work (delegation.created): any gateway model works;
 // this one is chosen so the voice layer's deeper questions get a strong model.
 const DELEGATION_MODEL = "openai/gpt-6-luna";
+// Bridge coordinates come from the channel extension's own config (the app
+// wires extensions/idfon.ts, and e2e scripts patch that file); env only as a
+// manual-override fallback.
+import idfonExtension from "eve-idfon-channel";
 const RATE = 24_000; // gpt-live-1: s16le mono 24 kHz, both directions
 const MAX_INPUT_SECONDS = 30; // ponytail: single-shot memo cap from the gpt-live guide; longer memos need a real duplex session
 const CHUNK_BYTES = 960; // 20 ms of s16le mono
@@ -24,8 +28,10 @@ const REPLY_QUIET_MS = 2000; // no output audio this long after audio began = re
 const REPLY_MAX_MS = 20_000; // hard reply window
 const SESSION_TIMEOUT_MS = 60_000;
 
-const bridgeUrl = () => process.env.EVE_IDFON_BRIDGE_URL ?? "http://127.0.0.1:18766";
-const bridgeSecret = () => process.env.EVE_IDFON_CHANNEL_SECRET ?? "m2-test-secret";
+const bridgeUrl = () =>
+  process.env.EVE_IDFON_BRIDGE_URL || idfonExtension.config?.bridgeUrl || "http://127.0.0.1:18766";
+const bridgeSecret = () =>
+  process.env.EVE_IDFON_CHANNEL_SECRET || idfonExtension.config?.secret || "m2-test-secret";
 
 /** Ogg Opus file (48 kHz float mono) -> s16le mono at 24 kHz. */
 async function toPcm24k(opusBytes: Uint8Array): Promise<Buffer> {
@@ -251,10 +257,15 @@ export default defineTool({
     // fall back to discovering the newest staged audio in /workspace/attachments.
     if (!path) {
       const found = await sandbox.run({
-        command: "find /workspace/attachments -type f -name '*.opus' 2>/dev/null | tail -n 1",
+        // the channel stages attachments without extensions (file-<sha>), so
+        // don't filter by name — take the newest file
+        command: "find /workspace/attachments -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -n 1",
       });
       path = found.stdout.trim();
-      if (!path) throw new Error("no staged recording found in /workspace/attachments");
+      if (!path) {
+        const listing = await sandbox.run({ command: "ls -la /workspace/attachments 2>&1 | head -5" });
+        throw new Error(`no staged recording found; attachments dir: ${listing.stdout || listing.stderr || "empty"}`);
+      }
     }
     const opus = await sandbox.readBinaryFile({ path });
     if (!opus || opus.length < 4) throw new Error(`recording not found at ${path}`);

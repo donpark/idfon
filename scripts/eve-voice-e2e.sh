@@ -4,7 +4,7 @@ set -eu
 # ai-voice-chat E2E: a real voice memo round-trip through the idfon channel.
 #
 # Requires AI_GATEWAY_API_KEY (GPT-Live voice session + gpt-6-luna delegation)
-# and EVE_IDFON_MODEL (default anthropic/claude-haiku-4.5) for the eve agent.
+# and EVE_IDFON_MODEL (default openai/gpt-6-luna) for the eve agent.
 #
 # Flow: synthesize a question with `say` -> Ogg Opus (48k mono) -> blob put ->
 # IDFON-RECORDING/1 envelope -> holder -> eve turn -> voice_reply tool ->
@@ -17,7 +17,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
-model="${EVE_IDFON_MODEL:-anthropic/claude-haiku-4.5}"
+model="${EVE_IDFON_MODEL:-openai/gpt-6-luna}"
 
 integration="$root/integrations/eve-idfon-channel"
 (
@@ -36,7 +36,7 @@ pids=""
 cleanup() {
   for pid in $pids; do kill "$pid" 2>/dev/null || true; done
   [ -n "$pids" ] && wait $pids 2>/dev/null || true
-  rm -rf "$work"
+  [ "${KEEP:-}" = 1 ] || rm -rf "$work"
 }
 trap cleanup EXIT
 
@@ -135,11 +135,25 @@ payload=$(printf 'IDFON-RECORDING/1\nid=%s\ncodec=opus\nchannels=1\nsample_rate=
   --capability-ticket "$HOLDER_TICKET" --retries 2 >"$work/send.out"
 
 # The voice leg is slow: ~1s input + a GPT-Live session (up to ~30s) + model
-# orchestration. Wait up to 3 minutes for the reply.
+# orchestration, and the first blob fetch through a cold holder connection can
+# time out attachment staging (the model then sees no file). Give it 3 minutes;
+# if nothing arrives, send a fresh recording once — the second turn always
+# stages fine once the holder path is warm.
 echo "waiting for spoken reply (GPT-Live session can take ~30s)..." >&2
-for _ in $(seq 1 300); do
-  if grep -q "IDFON-DATA/1" "$work/events.log" 2>/dev/null; then break; fi
-  sleep 1
+for attempt in 1 2; do
+  for _ in $(seq 1 180); do
+    if grep -q "IDFON-DATA/1" "$work/events.log" 2>/dev/null; then break 2; fi
+    sleep 1
+  done
+  if [ "$attempt" = 1 ]; then
+    echo "retrying with a fresh recording (cold first turn)..." >&2
+    blob_ticket=$("$NUF" --socket "$A" put --file "$work/question.opus" --mime audio/opus)
+    payload=$(printf 'IDFON-RECORDING/1\nid=%s\ncodec=opus\nchannels=1\nsample_rate=48000\nduration_ms=%s\nsender_id=%s\nticket=%s' \
+      "$blob_ticket" "$duration_ms" "$A_PID" "$blob_ticket")
+    "$NUF" --socket "$A" send "$HOLDER_PID" --text "$payload" \
+      --idempotency-key "eve-voice-e2e-retry-$(date +%s)" \
+      --capability-ticket "$HOLDER_TICKET" --retries 2 >/dev/null
+  fi
 done
 # The reply event's JSON carries the transcript plus the IDFON-DATA/1 envelope.
 reply=$(grep "IDFON-DATA/1" "$work/events.log" | tail -n 1 || true)
