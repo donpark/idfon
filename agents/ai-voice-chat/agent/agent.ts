@@ -1,12 +1,8 @@
 import { defineAgent } from "eve";
 
-// EVE_IDFON_MODEL overrides the model (same env var the other agents use);
-// default is the voice model this agent exists for.
-const model = process.env.EVE_IDFON_MODEL || "openai/gpt-live-1";
+// EVE_IDFON_MODEL overrides the model (same env var the other agents use).
+// gpt-live-1 is not addressed here directly — the voice_reply tool owns the
+// Live session; this model orchestrates turns and handles text.
+const model = process.env.EVE_IDFON_MODEL || "anthropic/claude-haiku-4.5";
 
-export default defineAgent({
-  model,
-  // ponytail: gpt-live-1 has no gateway context-window metadata yet; pin it
-  // (drop once the gateway catalog knows the model)
-  modelContextWindowTokens: 128000,
-});
+export default defineAgent({ model });
