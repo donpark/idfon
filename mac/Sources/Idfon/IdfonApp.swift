@@ -176,6 +176,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `-sendfile <peer> <path>` drives the real attachment path with no clicks
     /// (see `Automation.swift` / `scripts/mac-e2e.sh`).
     private func runAutomationIfRequested() {
+        // `-pair-ticket <peer-ref> <json|file>`: persist a capability ticket
+        // minted by the peer's holder so outbound sends pass its ingress gate
+        // (mac port of the iOS AppDelegate `-pair-ticket` flow).
+        let args = CommandLine.arguments
+        if let index = args.firstIndex(of: "-pair-ticket"), args.count > index + 2 {
+            let peer = args[index + 1]
+            let jsonOrPath = args[index + 2]
+            let json: String
+            if jsonOrPath.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") {
+                json = jsonOrPath
+            } else if let contents = try? String(contentsOfFile: jsonOrPath, encoding: .utf8) {
+                json = contents
+            } else {
+                Automation.mark("pair-ticket FAIL not JSON or a readable file")
+                return
+            }
+            if CapabilityTickets.store(json, for: peer) {
+                Automation.mark("pair-ticket stored for peer \(peer)")
+            } else {
+                Automation.mark("pair-ticket FAIL not a JSON object")
+            }
+        }
         guard let pending = Automation.pendingSendFile else { return }
         Task { @MainActor in
             // Let the window and daemon settle before touching media/threads.
