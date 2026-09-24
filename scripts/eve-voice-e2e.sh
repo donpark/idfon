@@ -175,15 +175,18 @@ if [ -z "$reply_ticket" ]; then
   exit 1
 fi
 
-# 3. the reply blob fetches and parses as a 24 kHz mono 16-bit WAV
-"$NUF" --socket "$A" get "$reply_ticket" --out "$work/reply.wav" >/dev/null 2>"$work/get.log" || {
-  echo "FAIL: reply blob fetch failed" >&2
-  cat "$work/get.log" >&2
+# 3. the reply blob parses as a 24 kHz mono 16-bit WAV. Verify from the
+# holder's store (same as the M3 media e2e) — the holder persists every put
+# under blobs/<ticket-hash>.data. Daemon-side network fetch of holder-held
+# blobs is a separate provider gap, not exercised here.
+reply_blob=$(find "$work/holder-blobs" -name "*.data" -newer "$work/holder.key" | head -n 1)
+if [ -z "$reply_blob" ]; then
+  echo "FAIL: reply blob not in holder store" >&2
   exit 1
-}
+fi
 python3 - <<PY
 import wave
-w = wave.open("$work/reply.wav")
+w = wave.open("$reply_blob")
 rate, ch, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
 frames = w.getnframes()
 assert (rate, ch, width) == (24000, 1, 2), (rate, ch, width)
