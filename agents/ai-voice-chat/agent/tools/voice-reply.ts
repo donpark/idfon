@@ -15,7 +15,7 @@ import WebSocket from "ws";
 const LIVE_URL = "wss://ai-gateway.vercel.sh/v1/live/sessions";
 // Text model for delegated work (delegation.created): any gateway model works;
 // this one is chosen so the voice layer's deeper questions get a strong model.
-const DELEGATION_MODEL = "openai/gpt-5.6-luna";
+const DELEGATION_MODEL = "openai/gpt-6-luna";
 const RATE = 24_000; // gpt-live-1: s16le mono 24 kHz, both directions
 const MAX_INPUT_SECONDS = 30; // ponytail: single-shot memo cap from the gpt-live guide; longer memos need a real duplex session
 const CHUNK_BYTES = 960; // 20 ms of s16le mono
