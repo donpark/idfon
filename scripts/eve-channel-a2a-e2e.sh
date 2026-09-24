@@ -88,7 +88,7 @@ B_EVE_PORT=$(port)
 
 make_app() {
   app=$1
-  cp -R "$root/scripts/eve-channel-app/." "$app/"
+  cp -R "$root/agents/message-echo/." "$app/"
   mkdir -p "$app/agent"
   cat >"$app/package.json" <<EOF
 {
