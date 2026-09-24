@@ -744,10 +744,13 @@ async fn handle_message(
             endpoint_id: remote_endpoint_id,
             idempotency_key: message.idempotency_key.clone(),
             conversation: message.conversation.clone(),
-            text: attachment
-                .as_ref()
-                .map(|(_, size)| format!("Attached file ({} bytes)", size.unwrap_or(0)))
-                .unwrap_or(text),
+            // Keep the original envelope text when the attachment type has no
+            // byte size (e.g. recordings carry duration_ms instead) so the
+            // agent sees the full metadata rather than "0 bytes".
+            text: match &attachment {
+                Some((_, Some(size))) => format!("Attached file ({} bytes)", size),
+                _ => text,
+            },
             blob_ticket: attachment.as_ref().map(|(ticket, _)| ticket.clone()),
             size_bytes: attachment.as_ref().and_then(|(_, size)| *size),
             a2a_depth,
@@ -1056,9 +1059,14 @@ async fn handle_peer_send(
 }
 
 fn parse_data_envelope(text: &str) -> Option<(String, Option<u64>)> {
+    // Both attachment envelope types carry `ticket=`; recordings also carry
+    // `duration_ms` etc. Size is only present on IDFON-DATA/1.
     let mut ticket = None;
     let mut size = None;
-    for line in text.strip_prefix("IDFON-DATA/1\n")?.lines() {
+    let prefix = text
+        .strip_prefix("IDFON-DATA/1\n")
+        .or_else(|| text.strip_prefix("IDFON-RECORDING/1\n"))?;
+    for line in prefix.lines() {
         let (key, value) = line.split_once('=')?;
         match key {
             "ticket" => ticket = Some(value.to_owned()),
@@ -1540,6 +1548,15 @@ mod tests {
             Some(("blob-ticket".into(), Some(42)))
         );
         assert_eq!(parse_data_envelope("hello"), None);
+    }
+
+    #[test]
+    fn recording_envelope_extracts_blob_ticket() {
+        let text = "IDFON-RECORDING/1\nid=x\ncodec=opus\nchannels=1\nsample_rate=48000\nduration_ms=1200\nsender_id=peer\nticket=blob-rec";
+        assert_eq!(
+            parse_data_envelope(text),
+            Some(("blob-rec".into(), None))
+        );
     }
 
     #[test]
