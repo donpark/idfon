@@ -165,6 +165,7 @@ components. See the platform-specific docs for details:
 - [npm distribution](docs/npm-distribution.md)
 - [MCP transport](docs/mcp-transport.md)
 - [Eve ingress channel](docs/idfon-eve-channel.md)
+- [ai-voice-chat agent](docs/ai-voice-chat.md)
 - [iOS architecture](docs/ios-architecture.md)
 - [Architecture plan](docs/architecture-plan.md)
 - [Troubleshooting](docs/troubleshooting.md)
