@@ -56,7 +56,7 @@ HOLDER_PID=$(printf '%s' "$HOLDER_ADDR" | jq -r .id)
 
 app="$work/app"
 mkdir -p "$app"
-cp -R "$root/scripts/eve-channel-app/." "$app/"
+cp -R "$root/agents/message-echo/." "$app/"
 cat >"$app/agent/agent.ts" <<'EOF'
 import { defineAgent } from "eve";
 import { mockModel } from "eve/evals";

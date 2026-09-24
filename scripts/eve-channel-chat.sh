@@ -14,7 +14,7 @@
 #                   it starts an interactive session)
 #   --model ID      AI Gateway model id (default $EVE_IDFON_MODEL, else
 #                   anthropic/claude-haiku-4.5)
-#   --agent-dir DIR Eve app to run (default scripts/eve-channel-app)
+#   --agent-dir DIR Eve app to run (default agents/message-echo)
 #   --timeout SECS  wait per reply (default 120)
 #   --no-build      reuse already-built binaries
 set -eu
@@ -23,7 +23,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
 model="${EVE_IDFON_MODEL:-anthropic/claude-haiku-4.5}"
-agent_src="$root/scripts/eve-channel-app"
+agent_src="$root/agents/message-echo"
 timeout_s=120
 build=1
 prompts=""

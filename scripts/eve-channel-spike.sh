@@ -5,7 +5,7 @@ set -eu
 # resume sessions by channel-local address, and auth must reach the session.
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-fixture="$root/scripts/eve-channel-spike-app"
+fixture="$root/agents/ai-chat"
 work=$(mktemp -d /tmp/eve-idfon-channel.XXXXXX)
 pid=""
 cleanup() {
