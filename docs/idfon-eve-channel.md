@@ -454,6 +454,7 @@ scripts assert on. Turns thread to one Eve session per peer id automatically.
 
 ## References
 
+- `docs/ai-voice-chat.md` — the voice agent built on this channel.
 - `docs/idfon-eve-channel-implementation-plan.md` — the milestone plan.
 - `docs/agent-conversation-plane.md` — the conversation plane; the C1 bridge
   this supersedes for Eve.
