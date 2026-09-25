@@ -4,7 +4,7 @@
 > (the framework-agnostic C1 bridge, superseded for Eve by this approach) and
 > `docs/mcp-transport.md` / `docs/mcp-agent-report.md` (idfon's tool transport).
 > Implementation history and acceptance coverage are tracked in
-`docs/idfon-eve-channel-implementation-plan.md`.
+`docs/idfon-eve-implementation-plan.md`.
 > Written 2026-09-14; revised 2026-09-14 (provider-owns-endpoint framing,
 > replies-over-iroh, Slack mapping, no-public-endpoint property).
 
@@ -285,13 +285,13 @@ lifetime does. Three shapes, in order of preference:
    startup hook, so the managed runner below is the current lifecycle coupling.
    Requires future Eve extension support for a bundled binary
    (`eve.extension.externalDependencies` covers native assets/SDKs).
-2. **Managed sidecar runner.** `integrations/eve-idfon-channel/managed.mjs`
+2. **Managed sidecar runner.** `integrations/eve-idfon/managed.mjs`
    owns the Rust holder and bridge as child processes, uses a stable socket/key,
    removes stale locks, forwards termination, and cleans up live publishers.
    Example:
    ```sh
-   node integrations/eve-idfon-channel/managed.mjs \
-     --holder-command ./eve-idfon-channel \
+   node integrations/eve-idfon/managed.mjs \
+     --holder-command ./eve-idfon \
      --key-file ~/.config/idfon/eve.key --socket /run/user/$UID/idfon-eve.sock \
      --blob-dir ~/.local/share/idfon/eve-blobs \
      --target http://127.0.0.1:52776 --secret "$IDFON_BRIDGE_SECRET" --port 18766
@@ -314,17 +314,17 @@ violation — the real cost is lifecycle, not legitimacy.
 
 ### npm distribution
 
-The provider publishes as the unscoped **`eve-idfon-channel`** package (the
+The provider publishes as the unscoped **`eve-idfon`** package (the
 `@idfon` org is not registered), and its version tracks the Cargo workspace
 until 1.0. The extension itself is plain TypeScript built by
 `eve extension build` in `prepare` (run explicitly from the repo root as
 `pnpm eve build` / `pnpm eve clean`, which also builds or cleans the agents);
 the Rust holder ships separately as
-per-platform packages `eve-idfon-channel-{darwin,linux}-{arm64,x64}` listed as
+per-platform packages `eve-idfon-{darwin,linux}-{arm64,x64}` listed as
 `optionalDependencies`, mirroring `cli/idfon`. `managed.mjs` (the package's
 `bin`) resolves the holder from the installed platform package, with
 `integrations/<pkg>` as a repo-layout fallback; `--holder-command` and
-`EVE_IDFON_CHANNEL_HOLDER` override it. `scripts/build-eve-channel.sh [TARGET]`
+`EVE_IDFON_HOLDER` override it. `scripts/build-eve.sh [TARGET]`
 populates a platform package (its `bin/` and generated `LICENSE-*` are
 gitignored, as with `cli/idfon-*`). No Windows package: the holder IPC is a
 Unix socket. Still open: the CI build/publish workflow, a publish script, and
@@ -337,7 +337,7 @@ a version-sync guard across the Cargo workspace, `cli/idfon`, and this package.
 links `idfon-client` (the agent has no daemon). The differences for the
 conversation channel:
 
-| | `idfon-mcp` (tools) | `eve-idfon-channel` (conversation) |
+| | `idfon-mcp` (tools) | `eve-idfon` (conversation) |
 |---|---|---|
 | ALPN | `idfon/mcp/1` | `idfon/message/1` (message plane) |
 | semantics | pure byte pump | parse/verify `MessageEnvelope`, normalize |
@@ -439,15 +439,15 @@ pattern.
 
 ## Chatting with an agent (CLI)
 
-`scripts/eve-channel-chat.sh` runs a real model-backed agent and chats with it
+`scripts/eve-chat.sh` runs a real model-backed agent and chats with it
 the same way you would with a human peer — `peer add`, `access allow`, `send`.
 There are no agent-only verbs; the holder's capability ticket is the agent's
 own ingress policy, supplied by the client only because that peer demands it.
 
 ```sh
-scripts/eve-channel-chat.sh --prompt "hello"          # one turn
-scripts/eve-channel-chat.sh                          # interactive, Ctrl-D to quit
-scripts/eve-channel-chat.sh --model openai/gpt-4.1-mini
+scripts/eve-chat.sh --prompt "hello"          # one turn
+scripts/eve-chat.sh                          # interactive, Ctrl-D to quit
+scripts/eve-chat.sh --model openai/gpt-4.1-mini
 ```
 
 The model is an AI Gateway id (`--model`, or `EVE_IDFON_MODEL`); unset in the
@@ -457,7 +457,7 @@ scripts assert on. Turns thread to one Eve session per peer id automatically.
 ## References
 
 - `docs/ai-voice-chat.md` — the voice agent built on this channel.
-- `docs/idfon-eve-channel-implementation-plan.md` — the milestone plan.
+- `docs/idfon-eve-implementation-plan.md` — the milestone plan.
 - `docs/agent-conversation-plane.md` — the conversation plane; the C1 bridge
   this supersedes for Eve.
 - `docs/mcp-implementation-plan.md`, `docs/mcp-transport.md`,

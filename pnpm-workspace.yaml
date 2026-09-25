@@ -3,5 +3,5 @@ packages:
   - 'ios'
   - 'mac'
   - 'cli'
-  - 'integrations/eve-idfon-channel'
+  - 'integrations/eve-idfon'
   

@@ -2,7 +2,7 @@ import Foundation
 
 /// Peer-scoped capability tickets minted out-of-band by the receiving side.
 /// Mac port of iOS `CapabilityTickets`: a holder that gates ingress (the Eve
-/// agent's `eve-idfon-channel`) rejects a message with no holder-signed,
+/// agent's `eve-idfon`) rejects a message with no holder-signed,
 /// subject-bound `message.receive` ticket. Provisioning is operator-driven —
 /// `-pair-ticket <agent-peer-id> <json|file>` (IdfonApp automation) stores it
 /// here, keyed by the peer id `sendText` passes as `to`.

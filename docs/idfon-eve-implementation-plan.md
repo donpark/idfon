@@ -25,16 +25,16 @@ sandboxed process that owns the endpoint, exactly like `idfon-mcp`. Do not link
 
 | milestone | commit | acceptance |
 |---|---|---|
-| docs (this plan + `idfon-eve-channel.md`) | — | — |
-| M0 contract spike | `47049b0` | `scripts/eve-channel-spike.sh` |
-| M1 endpoint holder | `47049b0` | `scripts/eve-channel-holder-e2e.sh` |
-| M2 Eve channel provider | `8c1e757` | `scripts/eve-channel-e2e.sh` |
-| M3 media — files in | `efdcf73` | `scripts/eve-channel-media-e2e.sh` |
-| M3 media — files out | `8976324` | `scripts/eve-channel-media-out-e2e.sh` |
-| M3 media — live streams | `8976324` | `scripts/eve-channel-live-e2e.sh` |
-| M4 HITL — approvals/input | `890071a` | `scripts/eve-channel-hitl-e2e.sh` |
-| M4 HITL — authorization/status flows | `9a1bf5b` | `scripts/eve-channel-hitl-e2e.sh` + holder IPC tests |
-| M5 agent-to-agent + isolation | `6e6592d` | `scripts/eve-channel-a2a-e2e.sh` |
+| docs (this plan + `idfon-eve.md`) | — | — |
+| M0 contract spike | `47049b0` | `scripts/eve-spike.sh` |
+| M1 endpoint holder | `47049b0` | `scripts/eve-holder-e2e.sh` |
+| M2 Eve channel provider | `8c1e757` | `scripts/eve-e2e.sh` |
+| M3 media — files in | `efdcf73` | `scripts/eve-media-e2e.sh` |
+| M3 media — files out | `8976324` | `scripts/eve-media-out-e2e.sh` |
+| M3 media — live streams | `8976324` | `scripts/eve-live-e2e.sh` |
+| M4 HITL — approvals/input | `890071a` | `scripts/eve-hitl-e2e.sh` |
+| M4 HITL — authorization/status flows | `9a1bf5b` | `scripts/eve-hitl-e2e.sh` + holder IPC tests |
+| M5 agent-to-agent + isolation | `6e6592d` | `scripts/eve-a2a-e2e.sh` |
 
 ## Resolved decisions
 
@@ -84,7 +84,7 @@ holder. This validates the M2 design cheaply.
 
 iroh, the endpoint holder, real peer verification, media, HITL, packaging.
 
-### Acceptance — `scripts/eve-channel-spike.sh`
+### Acceptance — `scripts/eve-spike.sh`
 
 1. `eve dev` the scratch app (or `eve start` on a temp port).
 2. POST turn 1 → assert a reply appears; capture the session id.
@@ -98,20 +98,20 @@ iroh, the endpoint holder, real peer verification, media, HITL, packaging.
 
 ### Goal
 
-A standalone binary `eve-idfon-channel` that owns an idfon endpoint, accepts
+A standalone binary `eve-idfon` that owns an idfon endpoint, accepts
 authenticated inbound messages, emits normalized turns on a local socket, and
 sends replies (and later, media/HITL events) back over `message.send`.
 
 ### In scope
 
-- New crate `crates/eve-idfon-channel`, binary `eve-idfon-channel`, added to
+- New crate `crates/eve-idfon`, binary `eve-idfon`, added to
   root `Cargo.toml` members.
 - Modes:
-  - `eve-idfon-channel serve --socket <path> [--key-file <path>] [--allow <peer-id>]...`
+  - `eve-idfon serve --socket <path> [--key-file <path>] [--allow <peer-id>]...`
     — bind the endpoint, serve `idfon/message/1`, write inbound turns to the
     socket, read outbound frames from the same socket, print the endpoint ticket
     on startup.
-- Identity: key from `--key-file` / `EVE_IDFON_CHANNEL_KEY`; ephemeral only with
+- Identity: key from `--key-file` / `EVE_IDFON_KEY`; ephemeral only with
   an explicit `--ephemeral` and a warning. (Same discipline as `idfon-mcp`: a
   stable key keeps grants valid across runs.)
 - Inbound: reuse `IrohTransport::serve(handler)` and
@@ -141,14 +141,14 @@ managed child.
 ### Architecture
 
 ```text
-idfon peer ──idfon/message/1──▶ eve-idfon-channel ──uds json──▶ <socket consumer>
+idfon peer ──idfon/message/1──▶ eve-idfon ──uds json──▶ <socket consumer>
                     ▲                                      │
                     └────────── message.send ◀──── reply.out┘
 ```
 
 ### Repo touchpoints
 
-- `crates/eve-idfon-channel/src/main.rs` — CLI, endpoint, IPC loop.
+- `crates/eve-idfon/src/main.rs` — CLI, endpoint, IPC loop.
 - Reuse, don't reinvent:
   - `idfon_core::IrohTransport::{bind_with_key, serve, send, open_bi_stream}`.
   - `idfon_core::{sign_message, verify_message, verify_capability_ticket}`.
@@ -156,11 +156,11 @@ idfon peer ──idfon/message/1──▶ eve-idfon-channel ──uds json──
 - The `idfon-mcp` crate is the structural template (CLI shape, key loading,
   `add_side_channel`, no `idfon-client` dependency).
 
-### Acceptance — `scripts/eve-channel-holder-e2e.sh`
+### Acceptance — `scripts/eve-holder-e2e.sh`
 
 1. Start a throwaway `idfond` peer (`IDFON_PROFILE`) with a grant to send to the
    holder.
-2. Start `eve-idfon-channel serve --socket <path> --key-file <path>`; read its
+2. Start `eve-idfon serve --socket <path> --key-file <path>`; read its
    ticket; add it as a peer to the daemon; issue a capability ticket.
 3. `idfon send <holder> "hello"` → assert a `turn.in` frame with the right
    `peer_id` and text on the socket.
@@ -198,7 +198,7 @@ reply, end to end, with the peer as the session principal.
 - A socket client module that:
   - connects to the holder socket, reads frames, dispatches to the channel,
   - writes `reply.out`/status frames from event handlers.
-- An idfon-provider extension package (`integrations/eve-idfon-channel/` or a
+- An idfon-provider extension package (`integrations/eve-idfon/` or a
   new `eve/` workspace member) so it is installable, with config for the socket
   path and (later) the key.
 - Packaging: **external sidecar** for M2 (operator runs the holder); the channel
@@ -211,20 +211,20 @@ Managed-child packaging; media; HITL; agent-to-agent; multi-thread UI; presence.
 ### Architecture
 
 ```text
-idfon peer ──▶ eve-idfon-channel ──uds──▶ idfon channel (defineChannel) ──▶ Eve session
+idfon peer ──▶ eve-idfon ──uds──▶ idfon channel (defineChannel) ──▶ Eve session
                       ▲                          │
                       └──── reply.out ◀── events (message.completed) ──┘
 ```
 
 ### Repo touchpoints
 
-- `integrations/eve-idfon-channel/` (or `eve/`) added to `pnpm-workspace.yaml`.
+- `integrations/eve-idfon/` (or `eve/`) added to `pnpm-workspace.yaml`.
 - Channel file lives in the consuming Eve app under `agent/channels/idfon.ts`;
   the extension contributes it. Route paths stay unprefixed; the channel id is
   namespaced by the extension mount.
 - No `idfond` changes. The user side is untouched.
 
-### Acceptance — `scripts/eve-channel-e2e.sh`
+### Acceptance — `scripts/eve-e2e.sh`
 
 1. Start the holder (M1) and a scratch Eve app with the idfon channel mounted,
    host/port set to loopback.
@@ -271,10 +271,10 @@ Capture (microphone/camera), rendition adaptation policy, recording storage UX.
    `IDFON-DATA/1` ticket envelope; assert the Eve turn includes the file part and
    `fetchFile` completes the holder fetch round trip.
 2. **Implemented:** `idfon__put` emits a blob ticket; `idfon get` fetches it
-   from the holder and compares bytes (`scripts/eve-channel-media-out-e2e.sh`).
+   from the holder and compares bytes (`scripts/eve-media-out-e2e.sh`).
 3. **Implemented:** `idfon__publish-live` emits live audio or video tickets;
    the peer subscribes and validates a decoded WAV or H.264 stream
-   (`scripts/eve-channel-live-e2e.sh`, with `EVE_LIVE_VIDEO=1` for video).
+   (`scripts/eve-live-e2e.sh`, with `EVE_LIVE_VIDEO=1` for video).
 
 ## Milestone 4 — human-in-the-loop
 
@@ -297,7 +297,7 @@ Approvals and elicitations park the turn and round-trip over idfon.
   peer receives the challenge/status but cannot impersonate the callback.
 
 
-### Acceptance — `scripts/eve-channel-hitl-e2e.sh`
+### Acceptance — `scripts/eve-hitl-e2e.sh`
 
 1. **Implemented:** trigger a tool with `approval: always()`.
 2. **Implemented:** assert the peer receives a request message with options.
@@ -331,7 +331,7 @@ A second agent (an idfon peer) can drive the agent, safely.
 
 Act-as-user delegation; multi-agent orchestration; a global agent directory.
 
-### Acceptance — `scripts/eve-channel-a2a-e2e.sh`
+### Acceptance — `scripts/eve-a2a-e2e.sh`
 
 1. Start two Eve agents with the idfon channel and a third fixture peer for
    the initial turn.
@@ -350,7 +350,7 @@ The remaining work is now operational rather than a missing milestone:
   bounded A2A fixture.
 - Decide whether the managed runner should become a future Eve lifecycle hook;
   Eve 0.55.0 custom channels do not expose a startup hook, so
-  `integrations/eve-idfon-channel/managed.mjs` is the explicit deployment
+  `integrations/eve-idfon/managed.mjs` is the explicit deployment
   entrypoint today.
 - Add capture-device and voice negotiation support if the product needs live
   microphone/camera input; file-backed audio/video output is covered.

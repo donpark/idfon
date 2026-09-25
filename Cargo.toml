@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/idfon-protocol", "crates/idfon-core", "crates/idfon-media", "crates/idfon-mcp", "crates/idfon-mcp-server", "crates/eve-idfon-channel", "crates/idfond", "crates/idfon-cli", "crates/idfon-client", "crates/idfon-daemon"]
+members = ["crates/idfon-protocol", "crates/idfon-core", "crates/idfon-media", "crates/idfon-mcp", "crates/idfon-mcp-server", "crates/eve-idfon", "crates/idfond", "crates/idfon-cli", "crates/idfon-client", "crates/idfon-daemon"]
 exclude = ["native/vendor/iroh-c-ffi"]
 
 [workspace.package]

@@ -1,5 +1,5 @@
 {
-  "name": "eve-idfon-channel-spike",
+  "name": "eve-idfon-spike",
   "private": true,
   "type": "module",
   "engines": { "node": ">=24" },

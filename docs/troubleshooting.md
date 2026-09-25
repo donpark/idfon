@@ -39,7 +39,7 @@ answered every turn — transcripts confirmed the model was replying.
 
 **Fixes.**
 
-- Caller side (`crates/eve-idfon-channel/src/call.rs`): a separate, earlier
+- Caller side (`crates/eve-idfon/src/call.rs`): a separate, earlier
   bug let the caller-leg pacing deficit (`cursor − target`) settle into a
   self-sustaining balance where every frame late-dropped forever — GPT-Live
   heard pure silence after the first exchange. `pump_caller_audio` now

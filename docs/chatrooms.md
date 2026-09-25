@@ -178,7 +178,7 @@ address = peer_id:conversation (threaded 1:1)
 address = conversation         (room: N senders → one session)
 ```
 
-Three 1:1-only assumptions in `integrations/eve-idfon-channel/extension/channels/idfon.ts`
+Three 1:1-only assumptions in `integrations/eve-idfon/extension/channels/idfon.ts`
 must not survive:
 
 1. **`sessionTargets` stores one peer.** A room session needs the member set, so
@@ -229,6 +229,6 @@ rooms take, or only 1:1 takes.
 - `docs/agent-conversation-plane.md` — C3: thread by peer + explicit
   `conversation_id`.
 - `docs/protocol.md` — `message.send`, grants, events, tickets.
-- `docs/idfon-eve-channel.md` — the channel address model.
+- `docs/idfon-eve.md` — the channel address model.
 - `crates/idfon-protocol/src/lib.rs` — `MessageEnvelope.conversation`,
   `CapabilityGrant.conversation`.

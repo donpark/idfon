@@ -6,9 +6,9 @@
 # verbs; the holder's capability ticket is the *agent's own* ingress policy,
 # not a distinction the client makes.
 #
-#   scripts/eve-channel-chat.sh --prompt "hello"                # one turn
-#   scripts/eve-channel-chat.sh --prompt "hi" --prompt "again"  # several turns
-#   scripts/eve-channel-chat.sh                                 # type turns, Ctrl-D to quit
+#   scripts/eve-chat.sh --prompt "hello"                # one turn
+#   scripts/eve-chat.sh --prompt "hi" --prompt "again"  # several turns
+#   scripts/eve-chat.sh                                 # type turns, Ctrl-D to quit
 #
 #   --prompt TEXT   send one turn and print the reply (repeatable; omitting
 #                   it starts an interactive session)
@@ -46,7 +46,7 @@ done
 # agent.ts reads this at runtime.
 export EVE_IDFON_MODEL="$model"
 
-integration="$root/integrations/eve-idfon-channel"
+integration="$root/integrations/eve-idfon"
 if [ "$build" = 1 ]; then
   (
     cd "$integration"
@@ -55,7 +55,7 @@ if [ "$build" = 1 ]; then
   )
   RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
     cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-  cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel
+  cargo build --release -p idfond -p idfon-cli -p eve-idfon
   codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 fi
 
@@ -69,7 +69,7 @@ cleanup() {
 trap cleanup EXIT
 
 NUF="$root/target/release/idfon"
-HOLDER="$root/target/release/eve-idfon-channel"
+HOLDER="$root/target/release/eve-idfon"
 A="$work/a/idfond.sock"
 HOLDER_SOCK="$work/holder.sock"
 mkdir -p "$work/a"
@@ -116,7 +116,7 @@ cat > "$app/package.json" <<EOF
   "type": "module",
   "dependencies": {
     "eve": "0.55.0",
-    "eve-idfon-channel": "file:$integration"
+    "eve-idfon": "file:$integration"
   }
 }
 EOF

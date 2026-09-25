@@ -10,7 +10,7 @@ import WebSocket from "ws";
 // ticket via the idfon bridge) plus the spoken reply transcript.
 //
 // Env: AI_GATEWAY_API_KEY (required), EVE_IDFON_BRIDGE_URL and
-// EVE_IDFON_CHANNEL_SECRET (defaults match agents/*/agent/extensions/idfon.ts).
+// EVE_IDFON_SECRET (defaults match agents/*/agent/extensions/idfon.ts).
 
 const LIVE_URL = "wss://ai-gateway.vercel.sh/v1/live/sessions";
 // Text model for delegated work (delegation.created): any gateway model works;
@@ -19,7 +19,7 @@ const DELEGATION_MODEL = "openai/gpt-6-luna";
 // Bridge coordinates come from the channel extension's own config (the app
 // wires extensions/idfon.ts, and e2e scripts patch that file); env only as a
 // manual-override fallback.
-import idfonExtension from "eve-idfon-channel";
+import idfonExtension from "eve-idfon";
 const RATE = 24_000; // gpt-live-1: s16le mono 24 kHz, both directions
 const MAX_INPUT_SECONDS = 30; // ponytail: single-shot memo cap from the gpt-live guide; longer memos need a real duplex session
 const CHUNK_BYTES = 960; // 20 ms of s16le mono
@@ -31,7 +31,7 @@ const SESSION_TIMEOUT_MS = 60_000;
 const bridgeUrl = () =>
   process.env.EVE_IDFON_BRIDGE_URL || idfonExtension.config?.bridgeUrl || "http://127.0.0.1:18766";
 const bridgeSecret = () =>
-  process.env.EVE_IDFON_CHANNEL_SECRET || idfonExtension.config?.secret || "m2-test-secret";
+  process.env.EVE_IDFON_SECRET || idfonExtension.config?.secret || "m2-test-secret";
 
 /** Ogg Opus file (48 kHz float mono) -> s16le mono at 24 kHz. */
 async function toPcm24k(opusBytes: Uint8Array): Promise<Buffer> {

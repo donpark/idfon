@@ -6,7 +6,7 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
-integration="$root/integrations/eve-idfon-channel"
+integration="$root/integrations/eve-idfon"
 (
   cd "$integration"
   npm install --no-audit --no-fund --silent
@@ -15,7 +15,7 @@ integration="$root/integrations/eve-idfon-channel"
 
 RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
   cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel
+cargo build --release -p idfond -p idfon-cli -p eve-idfon
 codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 
 work=$(mktemp -d /tmp/idfon-eve-a2a.XXXXXX)
@@ -30,7 +30,7 @@ cleanup() {
 trap cleanup EXIT
 
 NUF="$root/target/release/idfon"
-HOLDER="$root/target/release/eve-idfon-channel"
+HOLDER="$root/target/release/eve-idfon"
 A="$work/a/idfond.sock"
 C="$work/c/idfond.sock"
 A_SOCK="$work/a-holder.sock"
@@ -97,7 +97,7 @@ make_app() {
   "type": "module",
   "dependencies": {
     "eve": "0.55.0",
-    "eve-idfon-channel": "file:$integration"
+    "eve-idfon": "file:$integration"
   }
 }
 EOF
@@ -202,7 +202,7 @@ printf '%s' "$guard" | grep -q 'a2a_loop_guard'
 pids="$pids $!"
 
 "$NUF" --socket "$C" send "$A_HOLDER_PID" --text "send to B" \
-  --idempotency-key eve-channel-m5-start --capability-ticket "$A_TICKET" \
+  --idempotency-key eve-m5-start --capability-ticket "$A_TICKET" \
   --retries 5 >"$work/start.out"
 for _ in $(seq 1 400); do
   if grep -q "reply from eve-a: send to B" "$work/c-events.log"; then break; fi

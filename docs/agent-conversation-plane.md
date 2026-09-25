@@ -1,12 +1,12 @@
 # The Agent Conversation Plane — Scoping
 
 > **Status:** framework-agnostic fallback design; no generic bridge code. The
-> Eve implementation is tracked in `docs/idfon-eve-channel.md` and issue
+> Eve implementation is tracked in `docs/idfon-eve.md` and issue
 > [#11](https://github.com/donpark/idfon/issues/11). Follow-up to
 > `docs/mcp-agent-report.md` (design) and `docs/mcp-implementation-plan.md`
 > (M1–M5, implemented). Written 2026-09-13.
 >
-> **For Eve specifically, `docs/idfon-eve-channel.md` supersedes the C1 bridge
+> **For Eve specifically, `docs/idfon-eve.md` supersedes the C1 bridge
 > below:** an idfon ingress *channel* makes the peer identity the authenticated
 > principal and reuses the runtime's address→session, delivery, and HITL
 > machinery, instead of a bridge speaking the session API. The bridge shape
@@ -68,7 +68,7 @@ bridge.
 ## C1 concrete shape: the agent bridge
 
 > **Eve note:** prefer the idfon ingress-channel shape in
-> `docs/idfon-eve-channel.md`. The bridge below is the framework-agnostic form
+> `docs/idfon-eve.md`. The bridge below is the framework-agnostic form
 > for runtimes that offer no channel/edge extension point.
 
 The bridge is the only component that speaks the runtime's own API. It owns an

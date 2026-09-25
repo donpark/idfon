@@ -6,7 +6,7 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 fixture="$root/agents/ai-chat"
-work=$(mktemp -d /tmp/eve-idfon-channel.XXXXXX)
+work=$(mktemp -d /tmp/eve-idfon.XXXXXX)
 pid=""
 cleanup() {
   if [ -n "$pid" ]; then

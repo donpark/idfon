@@ -7,7 +7,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-integration="$root/integrations/eve-idfon-channel"
+integration="$root/integrations/eve-idfon"
 (
   cd "$integration"
   npm install --no-audit --no-fund --silent
@@ -16,7 +16,7 @@ integration="$root/integrations/eve-idfon-channel"
 
 RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
   cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel
+cargo build --release -p idfond -p idfon-cli -p eve-idfon
 codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 
 work=$(mktemp -d /tmp/idfon-eve-e2e.XXXXXX)
@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT
 
 NUF="$root/target/release/idfon"
-HOLDER="$root/target/release/eve-idfon-channel"
+HOLDER="$root/target/release/eve-idfon"
 A="$work/a/idfond.sock"
 HOLDER_SOCK="$work/holder.sock"
 mkdir -p "$work/a"
@@ -106,7 +106,7 @@ cat > "$app/package.json" <<EOF
   "type": "module",
   "dependencies": {
     "eve": "0.55.0",
-    "eve-idfon-channel": "file:$integration"
+    "eve-idfon": "file:$integration"
   }
 }
 EOF
@@ -197,7 +197,7 @@ PY
 }
 
 "$NUF" --socket "$A" send "$HOLDER_PID" --text deny \
-  --idempotency-key eve-channel-m4-deny \
+  --idempotency-key eve-m4-deny \
   --capability-ticket "$HOLDER_TICKET" --retries 2 >"$work/send-deny.out"
 for _ in $(seq 1 200); do
   if [ "$(grep -c 'IDFON-HITL/1' "$work/events.log" || true)" -ge 1 ]; then break; fi
@@ -207,7 +207,7 @@ request_id=$(request_id_at 1)
 sleep 3
 hitl_response "$request_id" cancel >"$work/deny-response.txt"
 send_response "$(cat "$work/deny-response.txt")" \
-  eve-channel-m4-deny-response "$work/respond-deny.out"
+  eve-m4-deny-response "$work/respond-deny.out"
 for _ in $(seq 1 200); do
   if grep -q "reply from eve: deny" "$work/events.log"; then break; fi
   sleep 0.1
@@ -220,7 +220,7 @@ if grep -q "M4_TOOL_EXECUTED" "$work/eve.log"; then
 fi
 
 "$NUF" --socket "$A" send "$HOLDER_PID" --text approve \
-  --idempotency-key eve-channel-m4-approve \
+  --idempotency-key eve-m4-approve \
   --capability-ticket "$HOLDER_TICKET" --retries 2 >"$work/send-approve.out"
 for _ in $(seq 1 200); do
   if [ "$(grep -c 'IDFON-HITL/1' "$work/events.log" || true)" -ge 2 ]; then break; fi
@@ -230,7 +230,7 @@ request_id=$(request_id_at 2)
 sleep 3
 hitl_response "$request_id" approve >"$work/approve-response.txt"
 send_response "$(cat "$work/approve-response.txt")" \
-  eve-channel-m4-approve-response "$work/respond-approve.out"
+  eve-m4-approve-response "$work/respond-approve.out"
 for _ in $(seq 1 200); do
   if grep -q "M4_TOOL_EXECUTED" "$work/eve.log"; then break; fi
   sleep 0.1

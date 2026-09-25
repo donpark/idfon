@@ -11,7 +11,7 @@
   "dependencies": {
     "ai": "^7.0.113",
     "eve": "0.66.3",
-    "eve-idfon-channel": "file:../../integrations/eve-idfon-channel",
+    "eve-idfon": "file:../../integrations/eve-idfon",
     "just-bash": "^3.4.2",
     "ogg-opus-decoder": "^1.7.5",
     "ws": "^8.21.3"

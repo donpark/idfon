@@ -7,7 +7,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-integration="$root/integrations/eve-idfon-channel"
+integration="$root/integrations/eve-idfon"
 (
   cd "$integration"
   npm install --no-audit --no-fund --silent
@@ -16,7 +16,7 @@ integration="$root/integrations/eve-idfon-channel"
 
 RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
   cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel
+cargo build --release -p idfond -p idfon-cli -p eve-idfon
 codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 
 work=$(mktemp -d /tmp/idfon-eve-e2e.XXXXXX)
@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT
 
 NUF="$root/target/release/idfon"
-HOLDER="$root/target/release/eve-idfon-channel"
+HOLDER="$root/target/release/eve-idfon"
 A="$work/a/idfond.sock"
 HOLDER_SOCK="$work/holder.sock"
 mkdir -p "$work/a"
@@ -66,7 +66,7 @@ cat > "$app/package.json" <<EOF
   "type": "module",
   "dependencies": {
     "eve": "0.55.0",
-    "eve-idfon-channel": "file:$integration"
+    "eve-idfon": "file:$integration"
   }
 }
 EOF
@@ -116,7 +116,7 @@ done
 pids="$pids $!"
 
 "$NUF" --socket "$A" send "$HOLDER_PID" --text hello \
-  --idempotency-key eve-channel-m2 \
+  --idempotency-key eve-m2 \
   --capability-ticket "$HOLDER_TICKET" --retries 2 >"$work/send.out"
 
 for _ in $(seq 1 200); do

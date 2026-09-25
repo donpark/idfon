@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build or clean every Eve artifact: the eve-idfon-channel extension first, then
+# Build or clean every Eve artifact: the eve-idfon extension first, then
 # every agent (agents get the extension's freshly built dist via the workspace
 # link, so the extension must come first).
 #
@@ -18,5 +18,5 @@ case "$action" in
     ;;
 esac
 
-pnpm --filter eve-idfon-channel "$action"
+pnpm --filter eve-idfon "$action"
 bash "$root/scripts/agent.sh" "$action" all

@@ -5,13 +5,13 @@ set -eu
 # the agent reply under the same conversation.
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
-integration="$root/integrations/eve-idfon-channel"
+integration="$root/integrations/eve-idfon"
 
 (
   cd "$integration"
   pnpm build >/dev/null
 )
-cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel >/dev/null
+cargo build --release -p idfond -p idfon-cli -p eve-idfon >/dev/null
 codesign --force -s - target/release/idfond >/dev/null
 
 work=$(mktemp -d /tmp/idfon-eve-room-e2e.XXXXXX)
@@ -24,7 +24,7 @@ cleanup() {
 trap cleanup EXIT
 
 NUF="$root/target/release/idfon"
-HOLDER="$root/target/release/eve-idfon-channel"
+HOLDER="$root/target/release/eve-idfon"
 HOLDER_SOCK="$work/holder.sock"
 mkdir -p "$work/a" "$work/b"
 printf '%064d' 17 > "$work/holder.key"
@@ -67,7 +67,7 @@ cat > "$app/package.json" <<EOF
   "type": "module",
   "dependencies": {
     "eve": "0.55.0",
-    "eve-idfon-channel": "file:$integration"
+    "eve-idfon": "file:$integration"
   }
 }
 EOF

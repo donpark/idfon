@@ -2,14 +2,14 @@ import Foundation
 
 /// Peer-scoped capability tickets minted out-of-band by the receiving side.
 ///
-/// A holder that gates ingress (the Eve agent's `eve-idfon-channel`) rejects a
+/// A holder that gates ingress (the Eve agent's `eve-idfon`) rejects a
 /// message with no holder-signed, subject-bound `message.receive` ticket. An
 /// ordinary idfon peer only needs a local grant, so a ticket is optional: when
 /// one is stored for the target peer it is attached to `message.send` and
 /// otherwise the daemon's grant path applies unchanged.
 ///
 /// Provisioning is operator-driven — only the holder can sign for itself:
-/// `eve-idfon-channel ticket --subject <ios-peer-id>` prints the JSON, and
+/// `eve-idfon ticket --subject <ios-peer-id>` prints the JSON, and
 /// `-pair-ticket <agent-peer-id> <json|file>` (AppDelegate) stores it here,
 /// keyed by the peer id that `sendText` passes as `to` (the `id` field of the
 /// `-pair` EndpointAddr JSON). See docs/ios-architecture.md.
