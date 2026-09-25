@@ -418,6 +418,10 @@ async fn start_call(
     // Drive the GPT-Live session + caller audio until the call ends. The
     // timeout only bounds startup; afterwards the task keeps running the call
     // in the background and cleans up through the `stop` flag.
+    // `live` MUST move into the task: it owns the iroh endpoint serving the
+    // return leg. Dropping it when start_call returns (after the startup
+    // timeout, ~20s in) aborts the endpoint ungracefully and every subscriber
+    // session dies — the "phone goes silent ~20s into the call" bug.
     let task = tokio::spawn(async move {
         let result = run_session(
             caller_ticket,
@@ -430,6 +434,7 @@ async fn start_call(
         .await;
         stop.store(true, Ordering::Relaxed);
         let _ = publisher.await;
+        drop(live);
         diagnostics.finish();
         if let Err(error) = &result {
             eprintln!("[eve-idfon-channel] live session failed: {error:#}");
