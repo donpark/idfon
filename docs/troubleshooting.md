@@ -3,6 +3,65 @@
 Notes on real failure modes observed during testing, their root causes, and
 the fixes. Kept so the same class of bug is easy to recognize next time.
 
+## iOS live call goes silent after the first reply (2026-09-24, FIXED)
+
+**Symptom.** Live voice calls to `ai-voice-chat` played the greeting, then
+the phone heard dead air while the holder kept publishing the full call
+(`published.wav` complete). The user hung up after ~28s; GPT-Live had
+answered every turn — transcripts confirmed the model was replying.
+
+**Diagnosis path.**
+
+1. Holder capture lanes (per-call dir under the audio-captures temp dir)
+   showed `published.wav` complete for the full call and zero
+   `caller_audio_late` events: the holder side was healthy.
+2. Pulled the phone's decode capture:
+   `xcrun devicectl device copy from --device <ID> --domain-type
+   appDataContainer --domain-identifier app.idfon --source tmp/idfon/received.wav`.
+   It contained only 18.7s of audio (the greeting), while `received-timing.csv`
+   showed a perfect 20 ms decode cadence right up to a clean stop — the mux
+   consumer returned `Ok(None)` ("track finished") ~20s in, and the FFI
+   subscribe loop treated it as a normal end **silently**.
+3. The phone's `IROH_C_LOG` trace showed no subscribe error, no session
+   death, no `subscribe complete` at that moment — the moq session stayed up
+   until hangup. The transport simply ended the track without telling anyone
+   who was listening.
+4. Mac repro with the exact phone decode config (`decode.latency_max = 50ms`,
+   via the `stream-recorder` example) captured the full 40.9s over
+   loopback/direct — so the trigger needs a real-network factor (phone is
+   behind NAT and served via the N0 relay; its trace shows relay-home and
+   relay connection-loss events). Suspected: the relay/route path declaring a
+   track boundary mid-publish (SUBSCRIBE_END / stream FIN).
+
+**Fixes.**
+
+- Caller side (`crates/eve-idfon-channel/src/call.rs`): a separate, earlier
+  bug let the caller-leg pacing deficit (`cursor − target`) settle into a
+  self-sustaining balance where every frame late-dropped forever — GPT-Live
+  heard pure silence after the first exchange. `pump_caller_audio` now
+  realigns `media_origin_pts` when the input queue is empty and the cursor
+  is ahead (stale bookkeeping, not backlog). Pacing extracted into a pure
+  `CallerPacer` with regression tests.
+- Return leg (`native/vendor/iroh-c-ffi/src/media.rs`): the subscribe loop
+  now logs an early track end loudly (`subscribe track ended early: ...`)
+  and re-subscribes (fresh Live endpoint, up to 5 attempts, 250 ms backoff)
+  while the call is still active. A relay/route boundary now costs a 1–3s
+  hiccup instead of dead air until hangup. `received.wav`/`timing.csv`
+  accumulate across attempts.
+- Holder logs `session.closed` with reason (`close_requested`/`expired`/
+  `content`/`remote_hangup`/`connection_lost`) so future dead-air calls
+  self-diagnose from `holder.log`.
+
+**Lesson.** On the subscriber side, a silent `Ok(None)` from the decode loop
+is indistinguishable from "publisher finished" and there is no signal of who
+declared the end — defensively re-subscribe while the call is active, and
+log the transition. When a phone-side capture ends early, pull BOTH sides'
+captures before theorizing: the holder's complete `published.wav` is what
+proved the phone-side loop was the one that died.
+
+**Rule of thumb.** `idfon get` live capture defaults to 15 seconds — pass a
+longer window when recording long broadcasts, or every repro looks broken.
+
 ## GUI sends rejected with `idempotency_key_conflict` (2026-08-30)
 
 **Symptom.** Sending a chat message from one GUI instance to another was

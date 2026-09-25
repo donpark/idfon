@@ -50,6 +50,7 @@ use tokio_websockets::{ClientBuilder, Message};
 const LIVE_URL: &str = "wss://ai-gateway.vercel.sh/v1/live/sessions";
 const CHUNK_SAMPLES: usize = 480; // 20 ms of 24 kHz mono
 const CHUNK_MS: u64 = 20;
+const MAX_INPUT_BUFFER: usize = 12_000; // 500 ms at 24 kHz
 const CALL_BROADCAST: &str = "idfon-live-agent";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -460,6 +461,110 @@ async fn start_call(
 mod tests {
     use super::*;
 
+    /// Simulates pump_caller_audio's steady loop: one 20 ms tick consumes, one
+    /// 480-sample frame arrives. Returns total late-dropped samples.
+    fn simulate(pacer: &mut CallerPacer, iterations: usize, frame_lag_us: u128) -> u64 {
+        let mut late_total = 0u64;
+        let mut pts = 0i128;
+        let mut queued_after_tick = 0usize;
+        for i in 0..iterations {
+            let mut pcm = [0i16; CHUNK_SAMPLES];
+            let (_, _) = pacer.tick(&mut pcm);
+            // Frame arrives after the tick consumed, trailing by frame_lag_us.
+            pts += (CHUNK_SAMPLES as i128) * 1_000_000 / 24_000;
+            let data = vec![100i16 + i as i16; CHUNK_SAMPLES];
+            late_total += pacer.accept_frame(pts - frame_lag_us as i128, &data);
+            queued_after_tick = pacer.input.len();
+        }
+        let _ = queued_after_tick;
+        late_total
+    }
+
+    /// Regression: a starved tick (queue empty, cursor runs one frame ahead of
+    /// pts) must not permanently mute the caller. Pre-fix, every subsequent
+    /// frame was late-dropped forever (seen live: mic dead from ~19.6s).
+    #[test]
+    fn frames_trailing_ticks_are_accepted_not_locked_out() {
+        let mut pacer = CallerPacer::new();
+        // Two starved ticks grow the deficit to 960 (pre-lock trigger).
+        pacer.tick(&mut [0i16; CHUNK_SAMPLES]);
+        pacer.tick(&mut [0i16; CHUNK_SAMPLES]);
+        // Frames now trail ticks by 5 ms every interval: was a permanent lock.
+        let late = simulate(&mut pacer, 50, 5_000);
+        assert_eq!(late, 0, "late-dropped frames after realign recovery");
+        // The caller's audio is in the queue, not silence.
+        assert!(pacer.input.len() > 0);
+    }
+
+    /// The 18.37s gap+burst pattern: three starved ticks, then three frames at
+    /// once. All must be accepted (the old code late-dropped the burst and,
+    /// depending on subsequent timing, could wedge into the lock).
+    #[test]
+    fn gap_then_burst_accepts_all_frames() {
+        let mut pacer = CallerPacer::new();
+        for _ in 0..3 {
+            pacer.tick(&mut [0i16; CHUNK_SAMPLES]);
+        }
+        for i in 0..3 {
+            let pts = (i + 1) as i128 * 20_000;
+            assert_eq!(pacer.accept_frame(pts, &[7i16; CHUNK_SAMPLES]), 0);
+        }
+        assert_eq!(pacer.input.len(), 3 * CHUNK_SAMPLES);
+        assert_eq!(pacer.dropped_samples, 0);
+    }
+
+    /// A forward pts jump (timestamp reset upward) fills capped silence and
+    /// counts the excess as dropped instead of allocating unbounded memory.
+    #[test]
+    fn forward_pts_jump_fill_is_capped() {
+        let mut pacer = CallerPacer::new();
+        // Establish a timeline first: the first frame defines the origin.
+        pacer.accept_frame(0, &[1i16; CHUNK_SAMPLES]);
+        pacer.accept_frame(20_000, &[1i16; CHUNK_SAMPLES]);
+        assert_eq!(pacer.input.len(), 2 * CHUNK_SAMPLES);
+        // Jump 60 s forward.
+        let late = pacer.accept_frame(60_000_000, &[9i16; CHUNK_SAMPLES]);
+        assert_eq!(late, 0);
+        assert_eq!(pacer.input.len(), MAX_INPUT_BUFFER);
+        // target jumped to 60 s worth of samples; everything beyond the capped
+        // fill is accounted as dropped, and the queue stays bounded.
+        let jump_samples = 60_000u64 * 24;
+        assert!(pacer.dropped_samples >= jump_samples - MAX_INPUT_BUFFER as u64);
+    }
+
+    /// A backward pts jump clamps target to 0 and late-drops while the queue
+    /// has backlog, but must recover via realign instead of locking forever.
+    #[test]
+    fn backward_pts_jump_recovers_via_realign() {
+        let mut pacer = CallerPacer::new();
+        // Establish a healthy timeline.
+        for i in 0..5 {
+            pacer.accept_frame(i * 20_000, &[1i16; CHUNK_SAMPLES]);
+            pacer.tick(&mut [0i16; CHUNK_SAMPLES]);
+        }
+        // Jump pts backwards 5 s, then keep streaming monotonically.
+        let mut late_after_jump = Vec::new();
+        for i in 0..100 {
+            let pts = -5_000_000 + (i as i128) * 20_000;
+            late_after_jump.push(pacer.accept_frame(pts, &[2i16; CHUNK_SAMPLES]));
+            pacer.tick(&mut [0i16; CHUNK_SAMPLES]);
+        }
+        assert!(late_after_jump.iter().all(|&late| late == 0));
+        assert_eq!(pacer.dropped_samples, 0);
+    }
+
+    /// A burst larger than the buffer trims from the front and bounds memory.
+    #[test]
+    fn overflow_trims_oldest_samples() {
+        let mut pacer = CallerPacer::new();
+        let big = vec![3i16; MAX_INPUT_BUFFER + 960];
+        let pts = (MAX_INPUT_BUFFER + 960) as i128 * 1_000_000 / 24_000;
+        let late = pacer.accept_frame(pts, &big);
+        assert_eq!(late, 0);
+        assert_eq!(pacer.input.len(), MAX_INPUT_BUFFER);
+        assert_eq!(pacer.dropped_samples, 960);
+    }
+
     #[test]
     fn parses_caller_return_address() {
         let id: EndpointId = "508fd877b2d8e41b3d70100d0bdecd275fbd7e09f63f6c41dba5c327c791b188"
@@ -532,6 +637,82 @@ fn fill_audio_frame(queue: &mut VecDeque<i16>, output: &mut [i16]) -> usize {
     }
     output[available..].fill(0);
     output.len() - available
+}
+
+/// Caller-audio pacing for `pump_caller_audio`: consumes on a fixed 20 ms
+/// wall-clock tick and accounts arriving frames against their pts timeline.
+/// Pure state machine so the late-drop/realign logic is unit-testable (the
+/// late-lock bug shipped because this lived inline in an async loop).
+struct CallerPacer {
+    input: VecDeque<i16>,
+    sent_samples: u64,
+    dropped_samples: u64,
+    origin_pts_us: Option<i128>,
+}
+
+impl CallerPacer {
+    fn new() -> Self {
+        Self {
+            input: VecDeque::with_capacity(MAX_INPUT_BUFFER),
+            sent_samples: 0,
+            dropped_samples: 0,
+            origin_pts_us: None,
+        }
+    }
+
+    /// Consumes one 20 ms frame for GPT-Live; missing samples play as silence.
+    /// Returns (queue_samples, missing_samples).
+    fn tick(&mut self, pcm: &mut [i16]) -> (usize, usize) {
+        let missing = fill_audio_frame(&mut self.input, pcm);
+        self.sent_samples += CHUNK_SAMPLES as u64;
+        (self.input.len(), missing)
+    }
+
+    /// Accounts one arriving frame: pts gap-fill, late-drop, overflow trim.
+    /// Returns the number of arriving samples late-dropped.
+    fn accept_frame(&mut self, pts_us: i128, data: &[i16]) -> u64 {
+        let cursor = self.sent_samples + self.dropped_samples + self.input.len() as u64;
+        let origin = *self
+            .origin_pts_us
+            .get_or_insert_with(|| pts_us - (cursor * 1_000_000 / 24_000) as i128);
+        let mut target = ((pts_us - origin).max(0) as u64 * 24_000) / 1_000_000;
+        // Late-lock recovery: cursor (wall-clock consumption) and pts advance at
+        // the same rate, so the deficit D = cursor - target settles into a
+        // self-sustaining balance: a starved tick adds 480 to D while each
+        // late-dropped frame's pts removes 480. Once frames arrive a few ms
+        // behind their ticks (zero queue headroom, seen live from ~19.6s in a
+        // 28s call), that balance locks every frame out — full silence to
+        // GPT-Live for the rest of the call, which only ever answered the first
+        // exchange. With an empty queue the deficit is stale bookkeeping from
+        // silence already sent; realign the media timeline instead of dropping.
+        if self.input.is_empty() && cursor > target {
+            self.origin_pts_us = Some(pts_us - (cursor * 1_000_000 / 24_000) as i128);
+            target = cursor;
+        }
+        let media_silence = target.saturating_sub(cursor);
+        if media_silence > 0 {
+            // Cap the fill: a large forward pts jump (e.g. a timestamp reset)
+            // must not allocate unbounded silence ahead of the MAX_INPUT_BUFFER
+            // trim; treat the excess as dropped.
+            if media_silence > MAX_INPUT_BUFFER as u64 {
+                self.dropped_samples += media_silence - MAX_INPUT_BUFFER as u64;
+            }
+            self.input.extend(
+                std::iter::repeat(0i16)
+                    .take(media_silence.min(MAX_INPUT_BUFFER as u64) as usize),
+            );
+        }
+        let cursor_after_gap = self.sent_samples + self.dropped_samples + self.input.len() as u64;
+        let late_samples = cursor_after_gap
+            .saturating_sub(target)
+            .min(data.len() as u64);
+        self.input.extend(data.iter().skip(late_samples as usize).copied());
+        while self.input.len() > MAX_INPUT_BUFFER {
+            self.input.pop_front();
+            self.dropped_samples += 1;
+        }
+        late_samples
+    }
 }
 
 fn rand_suffix() -> String {
@@ -676,8 +857,9 @@ async fn run_session(
                     finalized = true;
                     reader_finalized.store(true, Ordering::Relaxed);
                     eprintln!(
-                        "[eve-idfon-channel] GPT-Live session closed usage={}",
-                        event["usage"]
+                        "[eve-idfon-channel] GPT-Live session closed usage={} reason={}",
+                        event["usage"],
+                        event["reason"].as_str().unwrap_or("(none)"),
                     );
                     break;
                 }
@@ -896,7 +1078,6 @@ where
         moq_audio::decode::Consumer::new(broadcast.consumer(), &config, &name, decode).await?;
     eprintln!("[eve-idfon-channel] caller audio subscribed track={name}");
 
-    const MAX_INPUT_BUFFER: usize = 12_000; // 500 ms at 24 kHz
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel(8);
     let read_stop = Arc::clone(&stop);
     let mut reader = tokio::spawn(async move {
@@ -923,24 +1104,20 @@ where
         Duration::from_millis(CHUNK_MS),
     );
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut input = VecDeque::with_capacity(MAX_INPUT_BUFFER);
-    let mut sent_samples = 0u64;
+    let mut pacer = CallerPacer::new();
     let mut chunks = 0u64;
     let mut input_frames = 0u64;
     let mut underflow_samples = 0u64;
-    let mut dropped_samples = 0u64;
     let mut last_arrival: Option<Instant> = None;
     let mut expected_pts_us: Option<u128> = None;
-    let mut media_origin_pts: Option<i128> = None;
 
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 if stop.load(Ordering::Relaxed) { break; }
                 let mut pcm = [0i16; CHUNK_SAMPLES];
-                let missing = fill_audio_frame(&mut input, &mut pcm);
+                let (queue_samples, missing) = pacer.tick(&mut pcm);
                 underflow_samples += missing as u64;
-                let queue_samples = input.len();
                 let bytes: Vec<u8> = pcm.iter().flat_map(|sample| sample.to_le_bytes()).collect();
                 diagnostics.capture("caller_to_gpt", &bytes);
                 diagnostics.trace(json!({
@@ -959,11 +1136,10 @@ where
                     .await
                     .map_err(|error| anyhow!("GPT-Live send: {error}"))?;
                 chunks += 1;
-                sent_samples += CHUNK_SAMPLES as u64;
                 if chunks == 1 || chunks % 50 == 0 {
                     eprintln!("[eve-idfon-channel] caller appends={chunks} source_frames={input_frames} silence_samples={underflow_samples} queue_samples={queue_samples}");
                 }
-                if sent_samples >= REPLY_MAX_S * 24_000 { break; }
+                if pacer.sent_samples >= REPLY_MAX_S * 24_000 { break; }
             }
             item = frame_rx.recv() => {
                 match item {
@@ -992,33 +1168,17 @@ where
                         if arrival_gap_us > 30_000 || media_gap_us > 1_000 {
                             eprintln!("[eve-idfon-channel] caller timing gap arrival={arrival_gap_us}us media={media_gap_us}us pts={pts_us} samples={samples}");
                         }
-                        let cursor = sent_samples + dropped_samples + input.len() as u64;
-                        let origin = *media_origin_pts.get_or_insert_with(|| {
-                            pts_us as i128 - (cursor * 1_000_000 / 24_000) as i128
-                        });
-                        let target = ((pts_us as i128 - origin).max(0) as u64 * 24_000) / 1_000_000;
-                        let media_silence = target.saturating_sub(cursor);
-                        if media_silence > 0 {
-                            input.extend(std::iter::repeat(0).take(media_silence as usize));
-                        }
-                        let cursor_after_gap = sent_samples + dropped_samples + input.len() as u64;
-                        let late_samples = cursor_after_gap.saturating_sub(target).min(samples as u64);
+                        let frame_samples: Vec<i16> = frame.data
+                            .chunks_exact(2)
+                            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                            .collect();
+                        let late_samples = pacer.accept_frame(pts_us as i128, &frame_samples);
                         if late_samples > 0 {
                             diagnostics.trace(json!({
                                 "event": "caller_audio_late",
                                 "frame": input_frames,
                                 "dropped_samples": late_samples,
                             }));
-                        }
-                        input.extend(
-                            frame.data
-                                .chunks_exact(2)
-                                .skip(late_samples as usize)
-                                .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
-                        );
-                        while input.len() > MAX_INPUT_BUFFER {
-                            input.pop_front();
-                            dropped_samples += 1;
                         }
                     }
                     Some(Err(reason)) => {
@@ -1032,8 +1192,11 @@ where
     }
     reader.abort();
     let _ = (&mut reader).await;
-    if dropped_samples > 0 {
-        eprintln!("[eve-idfon-channel] caller input queue dropped {dropped_samples} old samples");
+    if pacer.dropped_samples > 0 {
+        eprintln!(
+            "[eve-idfon-channel] caller input queue dropped {} old samples",
+            pacer.dropped_samples
+        );
     }
     Ok(())
 }
