@@ -46,6 +46,7 @@ final class IncomingCallRouter {
     /// stay direct to both machines, since the mode governs presentation, not
     /// teardown.
     func route(peerId: String, envelope text: String) {
+        NSLog("idfon incoming-call route peer=\(peerId) mode=\(mode(for: peerId).rawValue)")
         if mode(for: peerId) == .callKit {
             if CallKitIncomingPresenter.isAvailable {
                 CallKitIncomingPresenter.present(peerId: peerId, text: text)

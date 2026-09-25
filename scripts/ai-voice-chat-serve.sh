@@ -58,6 +58,15 @@ with socket.socket() as s:
     s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])
 PY
 )
+# Reuse the previous bridge port when possible: the compiled .output bakes it
+# in, so a changed port means a full eve rebuild. Keep the port stable across
+# restarts (it is only a loopback port).
+if [ -d "$app/.output" ] && grep -q "bridgeUrl: \"http://127.0.0.1:[0-9]*\"" "$app/agent/extensions/idfon.ts" 2>/dev/null; then
+  prev_bridge=$(sed -n 's|.*bridgeUrl: "http://127.0.0.1:\([0-9]*\)".*|\1|p' "$app/agent/extensions/idfon.ts")
+  if [ -n "$prev_bridge" ] && ! lsof -nP -iTCP:"$prev_bridge" -sTCP:LISTEN >/dev/null 2>&1; then
+    bridge_port=$prev_bridge
+  fi
+fi
 if [ ! -d "$app/.output" ] || [ "${FORCE_BUILD:-}" = 1 ] || \
    [ "$root/agents/ai-voice-chat/agent/agent.ts" -nt "$app/.output" ]; then
   rm -rf "$app"
@@ -80,13 +89,22 @@ fi
 daemon_id=$("$cli" --socket "$socket" status --json | jq -r '.result.identity.endpoint_id // .result.identity.public_key // .result.identity.id')
 [ -n "$daemon_id" ] || { echo "cannot read daemon identity on $socket" >&2; exit 1; }
 
+# Every daemon peer may talk to the agent, so allow-list them all: the daemon
+# itself plus paired devices (iPhone etc.). Each sender also needs its own
+# subject-bound capability ticket, minted further down.
+allow_args=(--allow "$daemon_id")
+while IFS=$'\t' read -r peer_name endpoint; do
+  [ "$endpoint" = "$daemon_id" ] && continue
+  allow_args+=(--allow "$endpoint")
+done < <("$cli" --socket "$socket" peer list --json | jq -r '.result.peers[] | "\(.name)\t\(.endpoint_id // .id)"')
+
 # Stop anything from a previous run of THIS script.
 for pidfile in "$home"/holder.pid "$home"/bridge.pid "$home"/eve.pid; do
   if [ -f "$pidfile" ]; then kill "$(cat "$pidfile")" 2>/dev/null || true; rm -f "$pidfile"; fi
 done
 sleep 0.5
 "$root/target/release/eve-idfon-channel" --key-file "$key" serve \
-  --socket "$home/holder.sock" --allow "$daemon_id" --blob-dir "$home/blobs" \
+  --socket "$home/holder.sock" "${allow_args[@]}" --blob-dir "$home/blobs" \
   >"$home/holder.ticket" 2>"$home/holder.log" &
 echo $! > "$home/holder.pid"
 for _ in $(seq 1 150); do [ -s "$home/holder.ticket" ] && break; sleep 0.1; done
@@ -100,7 +118,7 @@ for _ in $(seq 1 150); do
   sleep 0.1
 done
 
-(cd "$app" && npx --offline eve start --host 127.0.0.1 --port "$eve_port") \
+(cd "$app" && exec "$app/node_modules/.bin/eve" start --host 127.0.0.1 --port "$eve_port") \
   >"$home/eve.log" 2>&1 &
 echo $! > "$home/eve.pid"
 for _ in $(seq 1 200); do
@@ -108,10 +126,15 @@ for _ in $(seq 1 200); do
   sleep 0.1
 done
 
-# Capability ticket: holder-signed, subject-bound to this daemon, covering the
-# message ingress the apps' sends need.
+# Capability tickets: holder-signed, subject-bound to each sender (the holder
+# rejects a ticket whose subject != the message's sender id), covering the
+# message ingress the apps' sends need. One file per peer.
 "$root/target/release/eve-idfon-channel" --key-file "$key" ticket \
   --subject "$daemon_id" > "$home/capability-ticket.json"
+while IFS=$'\t' read -r peer_name endpoint; do
+  "$root/target/release/eve-idfon-channel" --key-file "$key" ticket \
+    --subject "$endpoint" > "$home/capability-ticket-$endpoint.json"
+done < <("$cli" --socket "$socket" peer list --json | jq -r '.result.peers[] | "\(.name)\t\(.endpoint_id // .id)"' | awk -F'\t' '$2 != "" && $2 != "'"$daemon_id"'"')
 
 contact=$(head -n 1 "$home/holder.ticket")
 holder_pid=$(printf '%s' "$contact" | jq -r .id)
@@ -127,14 +150,20 @@ holder_pid=$(printf '%s' "$contact" | jq -r .id)
   echo
   echo "contact:  $contact"
   echo
-  echo "ticket:   $(cat "$home/capability-ticket.json")"
+  echo "ticket:   $(cat "$home/capability-ticket.json")   # subject: this daemon"
+  for f in "$home"/capability-ticket-*.json; do
+    [ -e "$f" ] || continue
+    echo "ticket:   $(cat "$f")"
+    echo "          ^ subject: peer $(basename "$f" .json | sed "s/capability-ticket-//")"
+  done
   echo
   echo "pairing:"
   echo "  # the peer id MUST be the holder's endpoint id (channel peers need id == endpoint id)"
+  echo "  # each app installs the ticket subject-bound to ITS OWN endpoint id"
   echo "  idfon --socket $socket peer add $holder_pid --name ai-voice-chat --endpoint-id $holder_pid --endpoint-addr \"\$(head -1 $home/holder.ticket)\""
   echo "  pnpm pair --eve-ticket \"\$(head -1 $home/holder.ticket)\""
   echo "  open Idfon.app with: -pair-ticket $holder_pid \"\$(cat $home/capability-ticket.json)\""
-  echo "  (iOS: devicectl launch ... -- -pair-ticket $holder_pid \"\$(cat $home/capability-ticket.json)\")"
+  echo "  (iOS: devicectl launch ... -- -pair-ticket $holder_pid \"\$(cat $home/capability-ticket-<ios-endpoint-id>.json)\")"
 } | tee "$home/pairing.txt"
 
 trap 'kill "$(cat "$home/holder.pid" 2>/dev/null)" "$(cat "$home/bridge.pid" 2>/dev/null)" "$(cat "$home/eve.pid" 2>/dev/null)" 2>/dev/null || true' EXIT

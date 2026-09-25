@@ -645,9 +645,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func callTapped() {
-        // Publishes audio + video but starts mic-only: the Bar's camera toggle
-        // turns video on, so there is one call entry instead of two (#4).
-        VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)
+        if peer.name == "ai-voice-chat" {
+            LiveCall.shared.dial(peer.id)
+        } else {
+            VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)
+        }
     }
 
     /// Automation entry (`idfon://dial` + the `idfon.dial` notification): the

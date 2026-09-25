@@ -87,7 +87,9 @@ final class ChatStore {
         // belonged to already happened) — never ring on them, else every
         // hangup resurrects a ghost call.
         if LiveInvite.parse(text) != nil {
-            if isStaleInvite(event) { return }
+            let stale = isStaleInvite(event)
+            NSLog("idfon live control received peer=\(peerId) message=\(messageID) stale=\(stale)")
+            if stale { return }
             DispatchQueue.main.async { Task { @MainActor in
                 IncomingCallRouter.shared.route(peerId: peerId, envelope: text)
             } }

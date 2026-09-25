@@ -2451,7 +2451,7 @@ fn update_operation(
         eprintln!("[idfond] operation state changed identity={} operation_id={} message_id={:?} status={:?}", identity, operation_id, operation.message_id, status);
         operation.status = status.clone();
         operation.updated_at = now();
-        let event_number = state.events.len() + 1;
+        let event_number = next_event_number(&state.events);
         let cursor = format!("cur_{event_number:020}");
         state.events.push(idfon_protocol::Event {
             event_id: format!("evt_{operation_id}_{event_number}"),
@@ -2665,7 +2665,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     };
     state.messages.push(envelope.clone());
     state.operations.push(operation.clone());
-    let cursor = format!("cur_{:020}", state.events.len() + 1);
+    let cursor = format!("cur_{:020}", next_event_number(&state.events));
     let identity = request_text(&request.params, "identity").unwrap_or_else(|| {
         state
             .identities
@@ -5526,13 +5526,22 @@ fn now() -> String {
         .to_string()
 }
 
+fn next_event_number(events: &[idfon_protocol::Event]) -> u64 {
+    events
+        .last()
+        .and_then(|event| event.cursor.strip_prefix("cur_"))
+        .and_then(|number| number.parse::<u64>().ok())
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
 fn record_state_event(
     state: &mut Store,
     identity: &str,
     event_type: &str,
     data: serde_json::Value,
 ) {
-    let number = state.events.len() + 1;
+    let number = next_event_number(&state.events);
     state.events.push(idfon_protocol::Event {
         event_id: format!("state-{event_type}-{number}"),
         cursor: format!("cur_{number:020}"),
@@ -5721,6 +5730,24 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn event_cursor_keeps_advancing_after_retention_fills() {
+        let event = |number: u64| idfon_protocol::Event {
+            event_id: format!("event-{number}"),
+            cursor: format!("cur_{number:020}"),
+            r#type: "test".into(),
+            timestamp: "0".into(),
+            identity: "default".into(),
+            data: serde_json::json!({}),
+        };
+        let mut events: Vec<_> = (1..=EVENT_RETENTION as u64).map(event).collect();
+        assert_eq!(next_event_number(&events), EVENT_RETENTION as u64 + 1);
+        events.push(event(EVENT_RETENTION as u64 + 1));
+        events.drain(..1);
+        assert_eq!(events.len(), EVENT_RETENTION);
+        assert_eq!(next_event_number(&events), EVENT_RETENTION as u64 + 2);
     }
 
     #[test]

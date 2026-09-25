@@ -128,19 +128,26 @@ final class LiveCall {
 
     // MARK: - Caller
 
-    func dial(_ peerId: String) {
+    func dial(_ peerRef: String) {
         guard case .idle = state else { return }
         operation?.cancel()
         operationGeneration += 1
         let generation = operationGeneration
-        state = .calling(peer: peerId)
-        UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
+        state = .calling(peer: peerRef)
+        UserDefaults.standard.set(peerRef, forKey: "idfon.live-call.peer")
         audioEnabled = audioAvailable // this session carries audio from the start
         notify()
         operation = Task {
             do {
+                // Resolve the ref (name/alias/id) to the canonical peer id: the
+                // capability-ticket store (and grants) key on the id, so sending
+                // the invite to a display name would skip the holder's gate.
+                let peerId = await client.resolvePeerId(peerRef)
+                guard case .calling(let current) = state, current == peerRef || current == peerId else { return }
+                state = .calling(peer: peerId)
                 // Registry entry (parity with core.ts live_start).
                 let identity = (try? await client.status())?.1 ?? "default"
+                let returnAddr = try await client.localEndpointAddr()
                 let peerBytes = Array(peerId.utf8.map { AnyEncodable(Int($0)) })
                 _ = try? await client.request(method: "media.session.start", params: [
                     "identity": AnyEncodable(identity),
@@ -168,9 +175,16 @@ final class LiveCall {
                     return
                 }
                 published = true
+                NSLog("idfon live call: caller audio published")
                 applySendState() // a toggle during `.calling` may predate the publish
-                // Audio invite: no media line (audio is the default).
-                try await client.sendText(to: peerId, "IDFON-LIVE/1\naction=start\nticket=\(ticket)")
+                UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
+                // Carry the daemon's current dial address: endpoint-id-only
+                // discovery is unreliable for inbound calls to suspended phones.
+                let encodedAddr = Data(returnAddr.utf8).base64EncodedString()
+                try await client.sendText(
+                    to: peerId,
+                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\nreturn_addr=\(encodedAddr)"
+                )
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
             }
@@ -240,7 +254,7 @@ final class LiveCall {
             media_live_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, "call_stopped")
+            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: "", call: false))
         }
     }
 
@@ -259,20 +273,31 @@ final class LiveCall {
     /// video envelopes are ignored here (VideoCall owns them) — but a stop
     /// ends our call too since the GUI sends one envelope for both.
     func handleEnvelope(peer peerID: String, _ text: String) {
-        guard let invite = LiveInvite.parse(text) else { return }
+        guard let invite = LiveInvite.parse(text) else {
+            NSLog("idfon live call: unparsed envelope from \(peerID)")
+            return
+        }
+        NSLog("idfon live call: envelope peer=\(peerID) state=\(String(describing: state)) start=\(invite.isStart) stop=\(invite.isStop) return=\(invite.isReturn) audio=\(invite.media == nil) ticket=\(!invite.ticket.isEmpty)")
         if invite.isStop {
             if case .idle = state { return }
             if activePeer == peerID { terminate(local: false) }
             return
         }
-        guard invite.isStart, invite.media == nil, !invite.ticket.isEmpty else { return }
+        guard invite.isStart, invite.media == nil, !invite.ticket.isEmpty else {
+            NSLog("idfon live call: ignored non-audio or incomplete start from \(peerID)")
+            return
+        }
         // Return leg: the peer we called answered and is publishing its mic.
         // Subscribe non-fatally (a failed subscribe must not tear down a call
         // we are already publishing into); `.calling` → `.inCall`. Another
         // peer's invite while busy is ignored (no steal).
         switch state {
         case .calling, .inCall:
-            guard activePeer == peerID else { return }
+            guard activePeer == peerID else {
+                NSLog("idfon live call: return leg peer mismatch active=\(activePeer ?? "nil") from=\(peerID)")
+                return
+            }
+            NSLog("idfon live call: return leg received from \(peerID)")
             Task {
                 if await !subscribe(ticket: invite.ticket) {
                     NSLog("idfon live call: return-leg subscribe failed")
@@ -281,7 +306,10 @@ final class LiveCall {
             }
             return
         case .incoming, .idle:
-            break
+            if invite.isReturn {
+                NSLog("idfon live call: ignored return leg without an active outgoing call from \(peerID)")
+                return
+            }
         }
         // A newer invite from the same peer supersedes an unanswered one.
         // This prevents a delayed duplicate from winning after a newer call.
@@ -311,9 +339,11 @@ final class LiveCall {
 
     /// Subscribes to a peer ticket without tearing the call down on failure.
     private func subscribe(ticket: String) async -> Bool {
-        await Task.detached(priority: .userInitiated) { () -> Bool in
-            media_live_subscribe(ticket) == 0
+        let result = await Task.detached(priority: .userInitiated) {
+            media_live_subscribe(ticket)
         }.value
+        NSLog("idfon live call: subscription start result=\(result)")
+        return result == 0
     }
 
     private func join(ticket: String) async {
@@ -326,11 +356,7 @@ final class LiveCall {
     private func terminate(local: Bool) {
         guard let peer = activePeer else { return }
         if local {
-            if published {
-                Task { try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: "", call: false)) }
-            } else {
-                Task { try? await client.sendText(to: peer, "call_stopped") }
-            }
+            Task { try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: "", call: false)) }
         }
         operation?.cancel()
         operation = nil

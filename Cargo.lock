@@ -1808,17 +1808,27 @@ dependencies = [
  "anyhow",
  "base64 0.23.1",
  "blake3",
+ "bytes",
  "chrono",
  "clap",
  "ed25519-dalek",
+ "futures-util",
+ "http",
  "idfon-core",
  "idfon-media",
  "idfon-protocol",
  "iroh",
  "iroh-blobs",
+ "iroh-live",
+ "moq-audio",
+ "moq-media",
+ "moq-net",
+ "n0-future",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-websockets",
 ]
 
 [[package]]
@@ -6983,6 +6993,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "webpki-roots",
 ]
 
 [[package]]

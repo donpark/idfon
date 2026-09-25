@@ -23,3 +23,15 @@ iroh-blobs = "0.103"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }
+# GPT-Live call relay (wss://). ring + webpki-roots are already in the tree.
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "ring", "rustls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+futures-util = "0.3"
+http = "1"
+bytes = "1"
+# Live-call relay: same revs/pins as idfon-media so the tree unifies.
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
+moq-audio = { version = "0.0.23", default-features = false }
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", package = "moq-media", default-features = false }
+moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
+n0-future = "0.3.2"

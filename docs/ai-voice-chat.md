@@ -91,13 +91,15 @@ It prints the two artifacts pairing needs (also written to
 # 1. contacts: adds the agent peer to the mac and iOS daemons
 pnpm pair --eve-ticket "$(head -1 ~/.idfon/ai-voice-chat/holder.ticket)"
 
-# 2. capability tickets (the holder gates ingress; subject-bound to each app)
+# 2. capability tickets (the holder gates ingress; each app needs the ticket
+#    subject-bound to ITS OWN endpoint id — one file per peer in the home dir):
 #    mac — launch with the automation arg:
 open -a Idfon --args \
   -pair-ticket "$HOLDER_PID" "$(cat ~/.idfon/ai-voice-chat/capability-ticket.json)"
-#    iOS:
+#    iOS (<IOS_PID> = the iPhone's endpoint id, e.g. from `idfon peer show iphone`):
 xcrun devicectl device process launch --device <udid> --terminate-existing \
-  app.idfon -- -pair-ticket "$HOLDER_PID" "$(cat ~/.idfon/ai-voice-chat/capability-ticket.json)"
+  app.idfon -- -pair-ticket "$HOLDER_PID" \
+  "$(cat ~/.idfon/ai-voice-chat/capability-ticket-$IOS_PID.json)"
 ```
 
 `$HOLDER_PID` is the holder's endpoint id (printed by the serve script; the
@@ -128,6 +130,26 @@ The e2e synthesizes a question with `say`, sends it as an
 carries a transcript and an envelope whose blob is a valid 24 kHz mono WAV.
 `KEEP=1` keeps the workdir for debugging.
 
+## Live calls
+
+For the `ai-voice-chat` peer, the iOS call button uses the audio-only
+`LiveCall` path (other peers retain video-capable calls). Its start invite
+carries `return_addr` (base64 serialized daemon `EndpointAddr`) so the holder
+can dial the phone's advertised addresses, and the holder marks its return leg
+with `return=1`. The app ignores replayed return legs when no outgoing call is
+active; startup recovery sends a versioned stop invite to the holder.
+
+The holder starts GPT-Live only after the return invite is acknowledged. It
+opens a MoQ router for the outgoing audio broadcast, streams caller PCM16 mono
+24 kHz, and sends `session.close` on hangup, waiting up to 15 seconds for
+`session.closed` before dropping a stuck socket. GPT-Live handles listen/speak
+turns over continuous input; the client does not run VAD or send a separate
+commit event. Keep forwarding microphone audio continuously.
+
+The iOS embedded daemon's event cursor must keep increasing after its 1,000
+event retention limit. Otherwise, the holder's return invite is persisted but
+isn't delivered to `ChatStore` after the saved cursor.
+
 ## Known gaps
 
 - Daemon-side network fetch of holder-held blobs returns `PeerOffline`
@@ -136,8 +158,6 @@ carries a transcript and an envelope whose blob is a valid 24 kHz mono WAV.
 - The first turn after a cold holder start can lose attachment staging
   (fetch races the holder connection); the e2e retries with a fresh
   recording, and the serve script's long-lived holder avoids it in practice.
-- `IDFON-FILE/1` attachments are acknowledged but not interpreted;
-  `IDFON-LIVE/1` invites are declined. Envelope-type routing leaves seams
-  for both.
+- `IDFON-FILE/1` attachments are acknowledged but not interpreted.
 - Delegation is wired but not yet exercised by a Live session that actually
   delegates; the commentary/thinking paths follow the published guide.

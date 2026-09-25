@@ -11,6 +11,7 @@ struct LiveInvite {
     /// "video-call" = live camera call.
     let media: String?
     let isCall: Bool // media=video-call (live camera call)
+    let isReturn: Bool // holder response to an outgoing call
     let ticket: String
 
     static func parse(_ text: String) -> LiveInvite? {
@@ -35,6 +36,7 @@ struct LiveInvite {
             isStop: action == "stop",
             media: media,
             isCall: media == "video-call",
+            isReturn: fields["return"] == "1",
             ticket: fields["ticket"] ?? ""
         )
     }
@@ -305,7 +307,7 @@ final class VideoCall: NSObject {
             media_video_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, "call_stopped")
+            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: "", call: true))
         }
     }
 
@@ -325,6 +327,10 @@ final class VideoCall: NSObject {
             return
         }
         guard invite.isStart, invite.isCall, !invite.ticket.isEmpty else { return } // file-share/audio invites: unsupported here
+        if invite.isReturn && state != .calling && state != .inCall {
+            NSLog("idfon video: ignored return leg without an active outgoing call from \(peerID)")
+            return
+        }
         if state == .calling || state == .inCall {
             NSLog("idfon video return invite from \(peerID), state=\(state)")
             peer = peerID

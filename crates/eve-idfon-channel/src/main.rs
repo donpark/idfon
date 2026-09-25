@@ -26,6 +26,9 @@ use idfon_protocol::{
 use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, EndpointId};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 use serde::{Deserialize, Serialize};
+
+mod call;
+use call::handle_live_text;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::UnixListener,
@@ -272,6 +275,9 @@ struct LivePublisherEntry {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // iroh enables both rustls providers in this binary; tokio-websockets needs
+    // an explicit process default when that feature combination is unified.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
     let key_file = cli.key_file;
     match cli.mode {
@@ -417,6 +423,8 @@ async fn serve(
         let out_tx = out_tx.clone();
         let allow = Arc::new(allow);
         let holder_peer_id = holder_peer_id.clone();
+        let transport_for_calls = Arc::clone(&transport);
+        let key_for_calls = key.clone();
         tokio::spawn(async move {
             transport
                 .serve_with_peer(move |message, remote_id| {
@@ -429,6 +437,8 @@ async fn serve(
                         out_tx.clone(),
                         allow.clone(),
                         holder_peer_id.clone(),
+                        Arc::clone(&transport_for_calls),
+                        key_for_calls.clone(),
                     )
                 })
                 .await
@@ -583,6 +593,8 @@ async fn handle_message(
     out_tx: mpsc::Sender<IpcFrame>,
     allow: Arc<Vec<String>>,
     holder_peer_id: String,
+    transport_for_calls: Arc<IrohTransport>,
+    key_for_calls: SigningKey,
 ) -> std::result::Result<MessageAck, TransportError> {
     let ticket = match validate_message(&message, &remote_endpoint_id, &allow, &holder_peer_id) {
         Ok(ticket) => ticket,
@@ -653,6 +665,12 @@ async fn handle_message(
                     .await;
                 return Err(TransportError::Failed(error.to_string()));
             }
+            if text.starts_with("IDFON-LIVE/1") {
+                eprintln!(
+                    "[eve-idfon-channel] duplicate live control ignored peer={} idempotency_key={}",
+                    message.sender.peer_id, message.idempotency_key
+                );
+            }
             return Ok(MessageAck {
                 message_id: message.message_id,
                 status: AckStatus::Duplicate,
@@ -669,6 +687,38 @@ async fn handle_message(
             return Err(TransportError::Failed(error.to_string()));
         }
         seen_guard.insert(key, wire_text);
+    }
+
+    // Deduplicate call controls before they mutate the active session; transport
+    // retries must not replace a call that is already running.
+    if text.starts_with("IDFON-LIVE/1") {
+        eprintln!(
+            "[eve-idfon-channel] dispatch live control message={} idempotency_key={}",
+            message.message_id, message.idempotency_key
+        );
+        match handle_live_text(
+            &text,
+            &message.sender.peer_id,
+            &message.sender.endpoint_id,
+            &transport_for_calls,
+            &key_for_calls,
+            &holder_peer_id,
+        )
+        .await
+        {
+            Ok(true) => {
+                return Ok(MessageAck {
+                    message_id: message.message_id,
+                    status: AckStatus::Accepted,
+                });
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return Err(TransportError::Failed(format!(
+                    "live call start failed: {error:#}"
+                )));
+            }
+        }
     }
 
     if let Some((event, data)) = parse_status_envelope(&text) {
