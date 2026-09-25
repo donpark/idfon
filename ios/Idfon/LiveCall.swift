@@ -21,8 +21,9 @@ enum LiveCallHarness {
     /// Configure the audio session before any daemon audio starts.
     static func activateAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP])
         try? session.setActive(true)
+        try? session.overrideOutputAudioPort(.none)
     }
 
     /// Dial a peer and stream the bundled WAV. Blocks until the callee hangs
