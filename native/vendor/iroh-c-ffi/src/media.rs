@@ -497,125 +497,51 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
             return;
         };
         let result = runtime.block_on(async move {
-            let live = Live::from_env().await?.spawn();
-            let subscription = live
-                .subscribe(ticket.endpoint, &ticket.broadcast_name)
-                .await?;
-            let broadcast = subscription.broadcast();
-            // The publisher writes an empty catalog first and adds the audio
-            // rendition once its encoder is probed, so the first snapshot a
-            // fast subscriber sees may not carry it yet: wait for it.
-            while !broadcast.has_audio() {
-                if thread_stop.load(Ordering::Relaxed) {
-                    live.shutdown().await;
-                    return anyhow::Ok(());
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            let catalog = broadcast.catalog();
-            let Some(name) = catalog.first_audio() else {
-                anyhow::bail!("broadcast has no audio track");
-            };
-            let config = catalog
-                .audio()
-                .get(name)
-                .ok_or_else(|| anyhow::anyhow!("audio catalog missing"))?;
-            let mut decode = moq_audio::decode::Config::new();
-            decode.format = Format::F32;
-            decode.sample_rate = Some(48_000);
-            decode.channels = Some(1);
-            // Keep a bounded playout budget so a late group is not discarded
-            // immediately. This is the decoder's jitter tolerance; the sink
-            // below adds its own ~50 ms device buffer.
-            decode.latency_max = Some(std::time::Duration::from_millis(50));
-            AUDIO_FRAMES_DECODED.store(0, Ordering::Relaxed);
-            let mut consumer =
-                moq_audio::decode::Consumer::new(broadcast.consumer(), config, name, decode)
-                    .await?;
-            let engine = moq_audio::playback::Engine::open({
-                let mut playback = moq_audio::playback::Config::default();
-                playback.device = OUTPUT_DEVICE.lock().unwrap().clone();
-                playback
-            })
-            .await?;
-            PLAYBACK_ENGINE.lock().unwrap().replace(engine.clone());
-            let mut playback_input = moq_audio::playback::Input::default();
-            playback_input.format = Format::F32;
-            playback_input.sample_rate = 48_000;
-            playback_input.channels = 1;
-            let mut sink = engine.sink(playback_input)?;
-            let control = sink.control();
-            control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
-            *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
-            // Do not start the speaker on the first arriving packet. A short
-            // startup prebuffer absorbs normal network/decoder scheduling
-            // jitter without turning the first late packet into a click.
-            const STARTUP_PREBUFFER_SAMPLES: usize = 2_400; // 50 ms @ 48 kHz mono
-            let mut startup = Vec::new();
-            let mut started = false;
-            let mut samples = Vec::new();
-            let capture_started = std::time::Instant::now();
-            let mut last_arrival = None;
-            let mut expected_pts_us: Option<u128> = None;
+            // Attempt loop: the subscriber sometimes sees the remote track end
+            // mid-call (observed on iOS ~20s in: mux consumer returned Ok(None)
+            // while the holder kept publishing — suspected relay/route boundary).
+            // A silent early end means dead air until hangup; treat it as
+            // transient and re-subscribe while the call is still active.
+            let mut samples: Vec<f32> = Vec::new();
             let mut timing = String::from("frame,arrival_us,arrival_gap_us,pts_us,media_gap_us,samples,sink_buffered_ms\n");
-            while !thread_stop.load(Ordering::Relaxed) {
-                let frame = match tokio::time::timeout(
-                    std::time::Duration::from_millis(200),
-                    consumer.read(),
+            let mut decoded_total = 0usize;
+            let capture_started = std::time::Instant::now();
+            let mut attempt = 0u32;
+            let result;
+            loop {
+                attempt += 1;
+                let res = subscribe_decode_once(
+                    ticket.clone(),
+                    &thread_stop,
+                    &mut samples,
+                    &mut timing,
+                    &mut decoded_total,
+                    capture_started,
+                    attempt,
                 )
-                .await
-                {
-                    Ok(frame) => frame?,
-                    Err(_) => continue,
-                };
-                let Some(frame) = frame else {
-                    break;
-                };
-                let decoded = AUDIO_FRAMES_DECODED.fetch_add(1, Ordering::Relaxed) + 1;
-                let arrived = std::time::Instant::now();
-                let arrival_us = capture_started.elapsed().as_micros();
-                let arrival_gap_us = last_arrival.map(|last: std::time::Instant| arrived.duration_since(last).as_micros()).unwrap_or(0);
-                let pts_us = frame.timestamp.as_micros();
-                let media_gap_us = expected_pts_us.map(|expected| pts_us.saturating_sub(expected)).unwrap_or(0);
-                let frame_samples = frame.data.len() / 4;
-                expected_pts_us = Some(pts_us + frame_samples as u128 * 1_000_000 / 48_000);
-                last_arrival = Some(arrived);
-                if decoded <= 3 || decoded % 100 == 0 || arrival_gap_us > 30_000 || media_gap_us > 1_000 {
-                    eprintln!("[media] audio frame decoded #{} arrival_gap={}us media_gap={}us samples={}", decoded, arrival_gap_us, media_gap_us, frame_samples);
-                }
-                timing.push_str(&format!("{decoded},{arrival_us},{arrival_gap_us},{pts_us},{media_gap_us},{frame_samples},{:.2}\n", sink.buffered().as_secs_f64() * 1_000.0));
-                if !started {
-                    startup.extend_from_slice(&frame.data);
-                    if startup.len() / 4 < STARTUP_PREBUFFER_SAMPLES {
-                        continue;
+                .await;
+                match res {
+                    Ok(_ended_by_stop) => {
+                        result = Ok(());
+                        break;
                     }
-                    sink.write(&startup)?;
-                    for chunk in startup.chunks_exact(4) {
-                        samples.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+                    Err(e) if e.downcast_ref::<SubscribeEndError>().is_some() => {
+                        if attempt >= 5 {
+                            eprintln!("[media] subscribe ended early after {attempt} attempts; giving up");
+                            result = anyhow::Ok(());
+                            break;
+                        }
+                        eprintln!(
+                            "[media] subscribe ended early (attempt {attempt}, {} frames); resubscribing",
+                            decoded_total
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                     }
-                    startup.clear();
-                    started = true;
-                } else {
-                    // NetEq-style shrink: the sink parks ahead-writes and never
-                    // drains back on its own, so discard down to the playout
-                    // target instead of ratcheting delay after every stall.
-                    const SINK_TARGET_LATENCY: f64 = 0.08; // 80 ms
-                    let buffered = sink.buffered().as_secs_f64();
-                    let mut data = frame.data.as_ref();
-                    if buffered > SINK_TARGET_LATENCY && data.len() >= 4 {
-                        let excess_samples = (((buffered - SINK_TARGET_LATENCY)
-                            * 48_000.0) as usize)
-                            .min(data.len() / 4);
-                        data = &data[excess_samples * 4..];
+                    Err(err) => {
+                        result = Err(err);
+                        break;
                     }
-                    sink.write(data)?;
                 }
-                for chunk in frame.data.chunks_exact(4) {
-                    samples.push(f32::from_le_bytes(chunk.try_into().unwrap()));
-                }
-            }
-            if !started && !startup.is_empty() {
-                sink.write(&startup)?;
             }
             let received_wav = media_path("received.wav");
             let received_timing = media_path("received-timing.csv");
@@ -623,8 +549,7 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
             std::fs::write(&received_timing, timing)?;
             eprintln!("[media] live audio captures wav={} timing={}", received_wav.display(), received_timing.display());
             PLAYBACK_CONTROL.lock().unwrap().take();
-            live.shutdown().await;
-            anyhow::Ok(())
+            result
         });
         if let Err(err) = result {
             eprintln!("live subscribe failed: {err:#}");
@@ -635,6 +560,178 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
         handle: Some(handle),
     });
     0
+}
+
+/// Why one subscribe attempt ended.
+#[derive(Debug)]
+enum SubscribeEndError {
+    #[allow(dead_code)]
+    ByStop,
+    Transient,
+}
+
+impl std::fmt::Display for SubscribeEndError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ByStop => write!(f, "stopped by caller"),
+            Self::Transient => write!(f, "track ended early (transient)"),
+        }
+    }
+}
+
+impl std::error::Error for SubscribeEndError {}
+
+/// One subscribe-and-decode attempt: connect, wait for the audio catalog,
+/// decode into `samples`/`timing` until the track ends or `stop` is set.
+/// Returns Ok(true) when the stop flag ended it, Ok(false) on an early track
+/// end (caller decides whether to retry), Err on transport/setup failure.
+async fn subscribe_decode_once(
+    ticket: LiveTicket,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    samples: &mut Vec<f32>,
+    timing: &mut String,
+    decoded_total: &mut usize,
+    capture_started: std::time::Instant,
+    attempt: u32,
+) -> anyhow::Result<bool> {
+    let live = Live::from_env().await?.spawn();
+    // The subscriber owns nothing across attempts except the accumulators; a
+    // fresh Live per attempt avoids reusing a possibly-torn-down endpoint.
+    let res = async {
+        let subscription = live
+            .subscribe(ticket.endpoint, &ticket.broadcast_name)
+            .await?;
+        let broadcast = subscription.broadcast();
+        // The publisher writes an empty catalog first and adds the audio
+        // rendition once its encoder is probed, so the first snapshot a
+        // fast subscriber sees may not carry it yet: wait for it.
+        while !broadcast.has_audio() {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(true);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let catalog = broadcast.catalog();
+        let Some(name) = catalog.first_audio() else {
+            anyhow::bail!("broadcast has no audio track");
+        };
+        let config = catalog
+            .audio()
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("audio catalog missing"))?;
+        let mut decode = moq_audio::decode::Config::new();
+        decode.format = Format::F32;
+        decode.sample_rate = Some(48_000);
+        decode.channels = Some(1);
+        // Keep a bounded playout budget so a late group is not discarded
+        // immediately. This is the decoder's jitter tolerance; the sink
+        // below adds its own ~50 ms device buffer.
+        decode.latency_max = Some(std::time::Duration::from_millis(50));
+        let mut consumer =
+            moq_audio::decode::Consumer::new(broadcast.consumer(), config, name, decode).await?;
+        let engine = moq_audio::playback::Engine::open({
+            let mut playback = moq_audio::playback::Config::default();
+            playback.device = OUTPUT_DEVICE.lock().unwrap().clone();
+            playback
+        })
+        .await?;
+        PLAYBACK_ENGINE.lock().unwrap().replace(engine.clone());
+        let mut playback_input = moq_audio::playback::Input::default();
+        playback_input.format = Format::F32;
+        playback_input.sample_rate = 48_000;
+        playback_input.channels = 1;
+        let mut sink = engine.sink(playback_input)?;
+        let control = sink.control();
+        control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
+        *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
+        // Do not start the speaker on the first arriving packet. A short
+        // startup prebuffer absorbs normal network/decoder scheduling
+        // jitter without turning the first late packet into a click.
+        const STARTUP_PREBUFFER_SAMPLES: usize = 2_400; // 50 ms @ 48 kHz mono
+        let mut startup = Vec::new();
+        let mut started = false;
+        let mut last_arrival = None;
+        let mut expected_pts_us: Option<u128> = None;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                if !started && !startup.is_empty() {
+                    let _ = sink.write(&startup);
+                }
+                return Ok(true);
+            }
+            let frame = match tokio::time::timeout(
+                std::time::Duration::from_millis(200),
+                consumer.read(),
+            )
+            .await
+            {
+                Ok(frame) => frame?,
+                Err(_) => continue,
+            };
+            let Some(frame) = frame else {
+                // Track ended. Normal only if the caller stopped it; otherwise
+                // the holder is still publishing and this is a transient break.
+                let media_secs = samples.len() as f64 / 48_000.0;
+                eprintln!(
+                    "[media] subscribe track ended early: attempt={attempt} decoded={decoded} media_secs={media_secs:.1} wall_secs={wall:.1}",
+                    decoded = decoded_total,
+                    wall = capture_started.elapsed().as_secs_f64(),
+                );
+                return Err(anyhow::anyhow!(SubscribeEndError::Transient));
+            };
+            let decoded = AUDIO_FRAMES_DECODED.fetch_add(1, Ordering::Relaxed) + 1;
+            *decoded_total = decoded as usize;
+            let arrived = std::time::Instant::now();
+            let arrival_us = capture_started.elapsed().as_micros();
+            let arrival_gap_us = last_arrival
+                .map(|last: std::time::Instant| arrived.duration_since(last).as_micros())
+                .unwrap_or(0);
+            let pts_us = frame.timestamp.as_micros();
+            let media_gap_us =
+                expected_pts_us.map(|expected| pts_us.saturating_sub(expected)).unwrap_or(0);
+            let frame_samples = frame.data.len() / 4;
+            expected_pts_us = Some(pts_us + frame_pts_gap_us(frame.data.as_ref()));
+            last_arrival = Some(arrived);
+            if decoded <= 3 || decoded % 100 == 0 || arrival_gap_us > 30_000 || media_gap_us > 1_000 {
+                eprintln!("[media] audio frame decoded #{} arrival_gap={}us media_gap={}us samples={}", decoded, arrival_gap_us, media_gap_us, frame_samples);
+            }
+            timing.push_str(&format!("{decoded},{arrival_us},{arrival_gap_us},{pts_us},{media_gap_us},{frame_samples},{:.2}\n", sink.buffered().as_secs_f64() * 1_000.0));
+            if !started {
+                startup.extend_from_slice(&frame.data);
+                if startup.len() / 4 < STARTUP_PREBUFFER_SAMPLES {
+                    continue;
+                }
+                sink.write(&startup)?;
+                startup.clear();
+                started = true;
+            } else {
+                // NetEq-style shrink: the sink parks ahead-writes and never
+                // drains back on its own, so discard down to the playout
+                // target instead of ratcheting delay after every stall.
+                const SINK_TARGET_LATENCY: f64 = 0.08; // 80 ms
+                let buffered = sink.buffered().as_secs_f64();
+                let mut data = frame.data.as_ref();
+                if buffered > SINK_TARGET_LATENCY && data.len() >= 4 {
+                    let excess_samples = (((buffered - SINK_TARGET_LATENCY)
+                        * 48_000.0) as usize)
+                        .min(data.len() / 4);
+                    data = &data[excess_samples * 4..];
+                }
+                sink.write(data)?;
+            }
+            for chunk in frame.data.chunks_exact(4) {
+                samples.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+            }
+        }
+    };
+    let out = res.await;
+    live.shutdown().await;
+    out
+}
+
+/// Expected pts gap in µs for one frame: samples/4 (f32 mono) at 48 kHz.
+fn frame_pts_gap_us(data: &[u8]) -> u128 {
+    (data.len() / 4) as u128 * 1_000_000 / 48_000
 }
 
 fn write_wav(path: &std::path::Path, samples: &[f32]) -> anyhow::Result<()> {
