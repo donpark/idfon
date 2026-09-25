@@ -10,6 +10,7 @@
     "cli": "pnpm --filter @idfon/cli",
     "ios": "pnpm --filter @idfon/ios",
     "mac": "pnpm --filter @idfon/mac",
+    "eve": "bash ./scripts/eve.sh",
     "pair": "bash ./scripts/pair-apple-channels.sh",
     "agent": "bash ./scripts/agent.sh"
   },

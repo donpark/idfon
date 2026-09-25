@@ -13,18 +13,18 @@ importers:
   integrations/eve-idfon-channel:
     dependencies:
       zod:
-        specifier: ^3.25.76
-        version: 3.25.76
+        specifier: ^4.6.5
+        version: 4.6.5
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.4
       eve:
-        specifier: 0.54.5
-        version: 0.54.5(ai@7.0.100(zod@3.25.76))
+        specifier: 0.66.3
+        version: 0.66.3(ai@7.0.100(zod@4.6.5))
       typescript:
-        specifier: ^5.8.3
-        version: 5.9.3
+        specifier: ^7.0.2
+        version: 7.0.2
 
   ios: {}
 
@@ -324,14 +324,15 @@ packages:
     resolution: {integrity: sha512-S8EFBKyznRwPVwayK187cYjvnpgC92xy+q0BIF++V965pfjMVVRbQ/HoTYGA/1EHmZ7E68k6Heq+4WnvVhOL5w==}
     hasBin: true
 
-  eve@0.54.5:
-    resolution: {integrity: sha512-Tq+vJQa8YIjuQJ5LIAFJzdht7F25e2jviPTHVy9dRCbRjinhXz/4cY2UwmkxH4Wq2jC9u1KjUhuVkRFRORuiQw==}
+  eve@0.66.3:
+    resolution: {integrity: sha512-oJkQdVrlmb1GFeaSUNY6IF71ttXjQdFnkKQP+84Qlvs/M+fUqMjGTqnwevQ+qFvc8KCswo3cbBohKOCGdgZPFg==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
       '@opentelemetry/api': ^1.0.0
-      ai: ^7.0.93
+      ai: ^7.0.105
       braintrust: ^3.0.0
+      chat: ^4.41.0
       dd-trace: ^6.13.0
       just-bash: ^3.1.0
       microsandbox: ^0.5.0
@@ -339,6 +340,8 @@ packages:
       '@opentelemetry/api':
         optional: true
       braintrust:
+        optional: true
+      chat:
         optional: true
       dd-trace:
         optional: true
@@ -435,26 +438,26 @@ packages:
   unstorage@2.0.0-alpha.10:
     resolution: {integrity: sha512-6h1veZp8gnp4dGllf0tDijoXxDYymJu251IpKKkrSVH+QHL6tXFbwG85KM+CBHSgpkkgtPuIiZ9oLCLP5+1Evw==}
 
-  zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+  zod@4.6.5:
+    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
 
 snapshots:
 
-  '@ai-sdk/gateway@4.0.81(zod@3.25.76)':
+  '@ai-sdk/gateway@4.0.81(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.14
-      '@ai-sdk/provider-utils': 5.0.40(zod@3.25.76)
+      '@ai-sdk/provider-utils': 5.0.40(zod@4.6.5)
       '@vercel/oidc': 3.2.0
-      zod: 3.25.76
+      zod: 4.6.5
 
-  '@ai-sdk/provider-utils@5.0.40(zod@3.25.76)':
+  '@ai-sdk/provider-utils@5.0.40(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.14
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
       undici: 7.29.1
-      zod: 3.25.76
+      zod: 4.6.5
 
   '@ai-sdk/provider@4.0.14':
     dependencies:
@@ -591,12 +594,12 @@ snapshots:
 
   '@workflow/serde@4.1.0': {}
 
-  ai@7.0.100(zod@3.25.76):
+  ai@7.0.100(zod@4.6.5):
     dependencies:
-      '@ai-sdk/gateway': 4.0.81(zod@3.25.76)
+      '@ai-sdk/gateway': 4.0.81(zod@4.6.5)
       '@ai-sdk/provider': 4.0.14
-      '@ai-sdk/provider-utils': 5.0.40(zod@3.25.76)
-      zod: 3.25.76
+      '@ai-sdk/provider-utils': 5.0.40(zod@4.6.5)
+      zod: 4.6.5
 
   consola@3.4.2: {}
 
@@ -613,9 +616,9 @@ snapshots:
       httpxy: 0.5.5
       srvx: 1.0.5
 
-  eve@0.54.5(ai@7.0.100(zod@3.25.76)):
+  eve@0.66.3(ai@7.0.100(zod@4.6.5)):
     dependencies:
-      ai: 7.0.100(zod@3.25.76)
+      ai: 7.0.100(zod@4.6.5)
       nitro: 3.0.260903-beta
       undici: 8.9.0
 
@@ -725,4 +728,4 @@ snapshots:
 
   unstorage@2.0.0-alpha.10: {}
 
-  zod@3.25.76: {}
+  zod@4.6.5: {}

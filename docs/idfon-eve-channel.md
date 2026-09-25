@@ -317,7 +317,9 @@ violation — the real cost is lifecycle, not legitimacy.
 The provider publishes as the unscoped **`eve-idfon-channel`** package (the
 `@idfon` org is not registered), and its version tracks the Cargo workspace
 until 1.0. The extension itself is plain TypeScript built by
-`eve extension build` in `prepare`; the Rust holder ships separately as
+`eve extension build` in `prepare` (run explicitly from the repo root as
+`pnpm eve build` / `pnpm eve clean`, which also builds or cleans the agents);
+the Rust holder ships separately as
 per-platform packages `eve-idfon-channel-{darwin,linux}-{arm64,x64}` listed as
 `optionalDependencies`, mirroring `cli/idfon`. `managed.mjs` (the package's
 `bin`) resolves the holder from the installed platform package, with

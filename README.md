@@ -156,6 +156,30 @@ components. See the platform-specific docs for details:
 - [Native SDK client](native/README.md)
 - iOS client (`ios/`)
 
+## Eve extension and agents
+
+The `eve-idfon-channel` extension and the agents under `agents/` are built
+separately from the native clients. `pnpm eve` builds the extension first,
+then every installed agent:
+
+```sh
+pnpm eve build      # eve-idfon-channel + all agents
+pnpm eve clean      # remove dist/.output everywhere
+```
+
+Individual agents are managed with `pnpm agent`:
+
+```sh
+pnpm agent build <name|all>     # eve build in agents/<name>
+pnpm agent clean <name|all>
+pnpm agent start <name>         # needs scripts/<name>-serve.sh
+pnpm agent restart <name>       # stop then start
+pnpm agent stop <name>
+```
+
+See [ai-voice-chat agent](docs/ai-voice-chat.md) and
+[Eve ingress channel](docs/idfon-eve-channel.md).
+
 ## Documentation
 
 - [Communication model](docs/communication-model.md)
