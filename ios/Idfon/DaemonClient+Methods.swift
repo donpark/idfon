@@ -22,6 +22,15 @@ extension DaemonClient {
         return String(data: try JSONEncoder().encode(raw), encoding: .utf8) ?? ""
     }
 
+    func localEndpointAddr() async throws -> String {
+        let identity = try await identityId()
+        let raw = try await request(method: "contact.ticket", params: ["identity": AnyEncodable(identity)])
+        guard let address = raw?["endpoint_addr"]?.stringValue else {
+            throw DaemonError.request("contact.ticket returned no endpoint address")
+        }
+        return address
+    }
+
     func useIdentity(_ name: String) async throws {
         _ = try await request(method: "identity.use", params: ["name": AnyEncodable(name)])
     }
@@ -34,6 +43,20 @@ extension DaemonClient {
         guard let list = try await request(method: "peers")?["peers"]?.asArray else { return [] }
         let data = try JSONEncoder().encode(list)
         return try JSONDecoder().decode([Peer].self, from: data)
+    }
+
+    /// Resolves a peer ref (name/alias/id) to the canonical peer id. Grant
+    /// subjects match `peer.id`, and the capability-ticket store is keyed by
+    /// it too — sending to a display name skips both.
+    func resolvePeerId(_ ref: String) async -> String {
+        guard let list = try? await request(method: "peers"),
+              let peers = list["peers"]?.asArray,
+              let match = peers.first(where: {
+                  $0["id"]?.stringValue == ref || $0["name"]?.stringValue == ref
+                      || $0["aliases"]?.asArray?.contains { $0.stringValue == ref } == true
+              }),
+              let id = match["id"]?.stringValue, !id.isEmpty else { return ref }
+        return id
     }
 
     /// Canonical identity id, which is what peer records are keyed by
