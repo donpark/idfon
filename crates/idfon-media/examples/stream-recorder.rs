@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
     decode_config.format = Format::F32;
     decode_config.sample_rate = Some(48_000);
     decode_config.channels = Some(1);
+    decode_config.latency_max = Some(std::time::Duration::from_millis(50));
     let mut decoder = Consumer::new(
         broadcast.consumer(), config, name, decode_config,
     ).await?;
