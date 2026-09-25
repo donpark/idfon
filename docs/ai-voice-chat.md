@@ -7,7 +7,7 @@ model over its AI Gateway Live WebSocket, with deep work delegated to
 `openai/gpt-6-luna`. It is a normal idfon peer — the Apple apps chat with it
 exactly as with a human.
 
-Companion to `docs/idfon-eve-channel.md` (the channel design) and
+Companion to `docs/idfon-eve.md` (the channel design) and
 `docs/audio-media.md` (recording formats).
 
 ## Architecture
@@ -62,7 +62,7 @@ agent. `pnpm eve build` does both (extension first, then every installed
 agent); `pnpm agent` manages one agent at a time:
 
 ```sh
-pnpm eve build                    # eve-idfon-channel + all agents
+pnpm eve build                    # eve-idfon + all agents
 pnpm eve clean                    # remove dist/.output everywhere
 
 pnpm agent build ai-voice-chat    # eve build in agents/ai-voice-chat

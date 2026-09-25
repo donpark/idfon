@@ -158,12 +158,12 @@ components. See the platform-specific docs for details:
 
 ## Eve extension and agents
 
-The `eve-idfon-channel` extension and the agents under `agents/` are built
+The `eve-idfon` extension and the agents under `agents/` are built
 separately from the native clients. `pnpm eve` builds the extension first,
 then every installed agent:
 
 ```sh
-pnpm eve build      # eve-idfon-channel + all agents
+pnpm eve build      # eve-idfon + all agents
 pnpm eve clean      # remove dist/.output everywhere
 ```
 
@@ -178,7 +178,7 @@ pnpm agent stop <name>
 ```
 
 See [ai-voice-chat agent](docs/ai-voice-chat.md) and
-[Eve ingress channel](docs/idfon-eve-channel.md).
+[Eve ingress channel](docs/idfon-eve.md).
 
 ## Documentation
 
@@ -188,7 +188,7 @@ See [ai-voice-chat agent](docs/ai-voice-chat.md) and
 - [Video media](docs/video-media.md)
 - [npm distribution](docs/npm-distribution.md)
 - [MCP transport](docs/mcp-transport.md)
-- [Eve ingress channel](docs/idfon-eve-channel.md)
+- [Eve ingress channel](docs/idfon-eve.md)
 - [ai-voice-chat agent](docs/ai-voice-chat.md)
 - [iOS architecture](docs/ios-architecture.md)
 - [Architecture plan](docs/architecture-plan.md)

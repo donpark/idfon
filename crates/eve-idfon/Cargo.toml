@@ -1,11 +1,11 @@
 [package]
-name = "eve-idfon-channel"
+name = "eve-idfon"
 version.workspace = true
 edition = "2021"
 license.workspace = true
 
 [[bin]]
-name = "eve-idfon-channel"
+name = "eve-idfon"
 path = "src/main.rs"
 
 [dependencies]

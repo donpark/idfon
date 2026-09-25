@@ -46,11 +46,11 @@ static NEXT_REPLY_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Parser)]
 #[command(
-    name = "eve-idfon-channel",
+    name = "eve-idfon",
     about = "idfon ingress channel endpoint holder"
 )]
 struct Cli {
-    /// Hex Ed25519 key file. `EVE_IDFON_CHANNEL_KEY` is used if unset.
+    /// Hex Ed25519 key file. `EVE_IDFON_KEY` is used if unset.
     #[arg(long, global = true, value_name = "FILE")]
     key_file: Option<PathBuf>,
     #[command(subcommand)]
@@ -337,17 +337,17 @@ fn load_key(path: Option<&Path>, ephemeral: bool) -> Result<SigningKey> {
             std::fs::read_to_string(path)
                 .with_context(|| format!("read key file {}", path.display()))?,
         ),
-        None => std::env::var("EVE_IDFON_CHANNEL_KEY").ok(),
+        None => std::env::var("EVE_IDFON_KEY").ok(),
     };
     match value.filter(|value| !value.trim().is_empty()) {
         Some(value) => idfon_core::decode_signing_key(value.trim())
             .ok_or_else(|| anyhow!("invalid key: expected 64 hex characters")),
         None if ephemeral => {
-            eprintln!("[eve-idfon-channel] WARNING: no stable key; using an ephemeral identity");
+            eprintln!("[eve-idfon] WARNING: no stable key; using an ephemeral identity");
             Ok(idfon_core::generate_identity())
         }
         None => Err(anyhow!(
-            "no key configured; pass --key-file, EVE_IDFON_CHANNEL_KEY, or --ephemeral"
+            "no key configured; pass --key-file, EVE_IDFON_KEY, or --ephemeral"
         )),
     }
 }
@@ -393,7 +393,7 @@ async fn serve(
         serde_json::to_string(&transport.endpoint().addr()).context("serialize endpoint ticket")?
     );
     eprintln!(
-        "[eve-idfon-channel] serving as {}",
+        "[eve-idfon] serving as {}",
         transport.endpoint().id()
     );
 
@@ -604,7 +604,7 @@ async fn handle_message(
         Ok(ticket) => ticket,
         Err(error) => {
             eprintln!(
-                "[eve-idfon-channel] rejected message={} sender={} signed_endpoint={} remote_endpoint={} ticket_issuer={:?} ticket_subject={:?}: {error}",
+                "[eve-idfon] rejected message={} sender={} signed_endpoint={} remote_endpoint={} ticket_issuer={:?} ticket_subject={:?}: {error}",
                 message.message_id,
                 message.sender.peer_id,
                 message.sender.endpoint_id,
@@ -671,7 +671,7 @@ async fn handle_message(
             }
             if text.starts_with("IDFON-LIVE/1") {
                 eprintln!(
-                    "[eve-idfon-channel] duplicate live control ignored peer={} idempotency_key={}",
+                    "[eve-idfon] duplicate live control ignored peer={} idempotency_key={}",
                     message.sender.peer_id, message.idempotency_key
                 );
             }
@@ -697,7 +697,7 @@ async fn handle_message(
     // retries must not replace a call that is already running.
     if text.starts_with("IDFON-LIVE/1") {
         eprintln!(
-            "[eve-idfon-channel] dispatch live control message={} idempotency_key={}",
+            "[eve-idfon] dispatch live control message={} idempotency_key={}",
             message.message_id, message.idempotency_key
         );
         match handle_live_text(
@@ -1438,7 +1438,7 @@ where
             }
             Ok(None) => break,
             Err(error) => {
-                eprintln!("[eve-idfon-channel] IPC read failed: {error}");
+                eprintln!("[eve-idfon] IPC read failed: {error}");
                 break;
             }
         }
@@ -1451,7 +1451,7 @@ where
 {
     while let Some(frame) = rx.recv().await {
         if let Err(error) = write_frame(&mut writer, &frame).await {
-            eprintln!("[eve-idfon-channel] IPC write failed: {error}");
+            eprintln!("[eve-idfon] IPC write failed: {error}");
             break;
         }
     }

@@ -1,7 +1,7 @@
 # idfon as a celld Ingress Adapter
 
-> **Status:** design; no code. Companion to `docs/idfon-eve-channel.md` (idfon as
-> an Eve ingress channel) and `docs/idfon-eve-channel-implementation-plan.md`
+> **Status:** design; no code. Companion to `docs/idfon-eve.md` (idfon as
+> an Eve ingress channel) and `docs/idfon-eve-implementation-plan.md`
 > (the endpoint holder). This document covers extending or forking
 > [denoland/celld](https://github.com/denoland/celld) so a cell can be reached
 > over **idfon channels** in addition to, or in place of, HTTP.
@@ -58,7 +58,7 @@ unchanged:
 
 This mirrors the idfon-side design: an agent is a peer with a durable session,
 and the ingress is an adapter — exactly the role `defineChannel` plays in
-`docs/idfon-eve-channel.md`.
+`docs/idfon-eve.md`.
 
 ## Architecture
 
@@ -145,7 +145,7 @@ shapes:
 | shape | how | cost |
 |---|---|---|
 | **one endpoint per node** | the node holds one idfon identity; agents are addressed by id/conversation, like HTTP hosts | grants/authorization are node-level; an agent is a tenant, not its own peer |
-| **one identity per agent** | one iroh endpoint (hence UDP socket) per cell | agent is a true peer with its own key and per-agent grants — what `docs/idfon-eve-channel.md` assumes (agent has a separate identity) |
+| **one identity per agent** | one iroh endpoint (hence UDP socket) per cell | agent is a true peer with its own key and per-agent grants — what `docs/idfon-eve.md` assumes (agent has a separate identity) |
 
 Candidate default: **node-level endpoint for v1**, keyed by a per-deployment
 idfon identity, with the addressed agent id carried in the envelope; revisit
@@ -186,8 +186,8 @@ M0/M1 are shared with the Eve plan — the endpoint holder is byte-identical.
 - **M0 — contract spike (no fork).** Prove the adapter shape against a stock
   celld by mapping an idfon-shaped synthetic request into a Worker's `fetch`
   over the existing HTTP listener (localhost). No celld changes. Reuses
-  `docs/idfon-eve-channel-implementation-plan.md` M0.
-- **M1 — endpoint holder.** `crates/eve-idfon-channel` (embeds `idfon-core`,
+  `docs/idfon-eve-implementation-plan.md` M0.
+- **M1 — endpoint holder.** `crates/eve-idfon` (embeds `idfon-core`,
   owns the endpoint, UDS JSON IPC, `verify_message` + capability ticket).
   Identical to the Eve plan's M1; build once, use from both adapters.
 - **M2 — celld iroh adapter (fork).** `crates/celld/iroh.rs`: bind the endpoint
@@ -207,7 +207,7 @@ M0/M1 are shared with the Eve plan — the endpoint holder is byte-identical.
 - **Later:** `idfon/mcp/1` on the same endpoint (tools axis, unchanged);
   managed-child packaging; per-agent keys.
 
-Acceptance scripts follow the existing style (`scripts/eve-channel-*.sh`,
+Acceptance scripts follow the existing style (`scripts/eve-*.sh`,
 `PASS:`/`FAIL:`, non-zero on first failure). celld's GCS/S3 bucket can be a
 local backend (`celld dev`) so the e2e needs no cloud.
 
@@ -230,8 +230,8 @@ local backend (`celld dev`) so the e2e needs no cloud.
 
 ## References
 
-- `docs/idfon-eve-channel.md` — idfon as an ingress channel; the adapter shape.
-- `docs/idfon-eve-channel-implementation-plan.md` — M0/M1, the shared endpoint
+- `docs/idfon-eve.md` — idfon as an ingress channel; the adapter shape.
+- `docs/idfon-eve-implementation-plan.md` — M0/M1, the shared endpoint
   holder.
 - `docs/agent-conversation-plane.md` — the framework-agnostic bridge.
 - denoland/celld — `README.md`, `docs/README.md`, `crates/celld/lib.rs`

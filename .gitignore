@@ -16,9 +16,9 @@ cli/idfon-*/bin/
 # generated copies of the root license files
 cli/idfon-*/LICENSE-*
 
-# eve channel platform packages: built by scripts/build-eve-channel.sh
-integrations/eve-idfon-channel-*/bin/
-integrations/eve-idfon-channel-*/LICENSE-*
+# eve channel platform packages: built by scripts/build-eve.sh
+integrations/eve-idfon-*/bin/
+integrations/eve-idfon-*/LICENSE-*
 # local agent/tooling state — not repo content
 .pi/
 .agents/

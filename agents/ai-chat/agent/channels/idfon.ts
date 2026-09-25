@@ -1,7 +1,7 @@
 import { appendFileSync } from "node:fs";
 import { defineChannel, POST } from "eve/channels";
 
-const replyFile = process.env.EVE_SPIKE_REPLY_FILE ?? "/tmp/eve-channel-spike-replies.ndjson";
+const replyFile = process.env.EVE_SPIKE_REPLY_FILE ?? "/tmp/eve-spike-replies.ndjson";
 
 const authFor = (peerId: string) => ({
   authenticator: "idfon-spike",

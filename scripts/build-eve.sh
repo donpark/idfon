@@ -1,10 +1,10 @@
 #!/bin/sh
 # Build the idfon Eve channel endpoint holder and populate the matching npm
-# platform package (bin/eve-idfon-channel) for the eve-idfon-channel package.
+# platform package (bin/eve-idfon) for the eve-idfon package.
 #
 # Usage:
-#   scripts/build-eve-channel.sh          # host target (what CI runs: one runner per target)
-#   scripts/build-eve-channel.sh TARGET   # cross build (same targets/toolchain notes as build-cli.sh):
+#   scripts/build-eve.sh          # host target (what CI runs: one runner per target)
+#   scripts/build-eve.sh TARGET   # cross build (same targets/toolchain notes as build-cli.sh):
 #                                           x86_64-/aarch64-apple-darwin   native macOS SDK cross
 #                                           x86_64-/aarch64-unknown-linux-gnu  cargo zigbuild; needs a
 #                                           native Linux machine or sysroot for the ALSA headers
@@ -23,12 +23,12 @@ if [ "$target" != "$host" ]; then
 fi
 
 case "$target" in
-  aarch64-apple-darwin) pkg=eve-idfon-channel-darwin-arm64 ;;
-  x86_64-apple-darwin) pkg=eve-idfon-channel-darwin-x64 ;;
-  x86_64-unknown-linux-gnu) pkg=eve-idfon-channel-linux-x64 ;;
-  aarch64-unknown-linux-gnu) pkg=eve-idfon-channel-linux-arm64 ;;
+  aarch64-apple-darwin) pkg=eve-idfon-darwin-arm64 ;;
+  x86_64-apple-darwin) pkg=eve-idfon-darwin-x64 ;;
+  x86_64-unknown-linux-gnu) pkg=eve-idfon-linux-x64 ;;
+  aarch64-unknown-linux-gnu) pkg=eve-idfon-linux-arm64 ;;
   *)
-    echo "build-eve-channel.sh: unsupported target: $target" >&2
+    echo "build-eve.sh: unsupported target: $target" >&2
     exit 1
     ;;
 esac
@@ -40,7 +40,7 @@ if [ "$target" != "$host" ]; then
   case "$target" in
     *linux-gnu)
       command -v cargo-zigbuild >/dev/null 2>&1 || {
-        echo "build-eve-channel.sh: linux cross needs cargo-zigbuild (brew install zig cargo-zigbuild)" >&2
+        echo "build-eve.sh: linux cross needs cargo-zigbuild (brew install zig cargo-zigbuild)" >&2
         exit 1
       }
       build="cargo zigbuild"
@@ -48,19 +48,19 @@ if [ "$target" != "$host" ]; then
   esac
 fi
 
-$build --release -p eve-idfon-channel $cross_flag
+$build --release -p eve-idfon $cross_flag
 
 if [ -n "$cross_flag" ]; then out="target/$target/release"; else out="target/release"; fi
 case "$target" in
   *apple-darwin)
     # A relink can leave an ad-hoc signature that no longer matches the pages;
     # the kernel then SIGKILLs the process at exec ("Code Signature Invalid").
-    codesign --force -s - "$out/eve-idfon-channel"
+    codesign --force -s - "$out/eve-idfon"
     ;;
 esac
 
 pkgdir="$root/integrations/$pkg"
 mkdir -p "$pkgdir/bin"
-cp "$out/eve-idfon-channel" "$pkgdir/bin/"
+cp "$out/eve-idfon" "$pkgdir/bin/"
 cp "$root/LICENSE-APACHE" "$root/LICENSE-MIT" "$pkgdir/"
-echo "build-eve-channel.sh: populated $pkgdir/bin ($target)"
+echo "build-eve.sh: populated $pkgdir/bin ($target)"

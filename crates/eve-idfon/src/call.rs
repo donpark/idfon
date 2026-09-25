@@ -116,7 +116,7 @@ impl CallDiagnostics {
         match std::fs::create_dir_all(&dir) {
             Ok(()) => {
                 eprintln!(
-                    "[eve-idfon-channel] audio diagnostics dir={}",
+                    "[eve-idfon] audio diagnostics dir={}",
                     dir.display()
                 );
                 Self(Some(Arc::new(CallDiagnosticsInner {
@@ -126,7 +126,7 @@ impl CallDiagnostics {
                 })))
             }
             Err(error) => {
-                eprintln!("[eve-idfon-channel] audio diagnostics disabled: {error}");
+                eprintln!("[eve-idfon] audio diagnostics disabled: {error}");
                 Self::default()
             }
         }
@@ -179,14 +179,14 @@ impl CallDiagnostics {
             ("published.wav", &buffers.published),
         ] {
             if let Err(error) = write_pcm_wav(&inner.dir.join(name), pcm) {
-                eprintln!("[eve-idfon-channel] audio capture write failed {name}: {error}");
+                eprintln!("[eve-idfon] audio capture write failed {name}: {error}");
             }
         }
         if let Err(error) = std::fs::write(
             inner.dir.join("timing.jsonl"),
             buffers.trace.join("\n") + "\n",
         ) {
-            eprintln!("[eve-idfon-channel] timing trace write failed: {error}");
+            eprintln!("[eve-idfon] timing trace write failed: {error}");
         }
     }
 }
@@ -265,7 +265,7 @@ fn active_call() -> &'static Mutex<Option<CallHandle>> {
 fn stop_active_call(reason: &str) {
     if let Some(handle) = active_call().lock().expect("call mutex poisoned").take() {
         handle.stop.store(true, Ordering::Relaxed);
-        eprintln!("[eve-idfon-channel] call stopped: {reason}");
+        eprintln!("[eve-idfon] call stopped: {reason}");
     }
 }
 
@@ -303,7 +303,7 @@ pub async fn handle_live_text(
         .parse::<EndpointId>()
         .map_err(|error| anyhow!("invalid caller endpoint id: {error}"))?;
     eprintln!(
-        "[eve-idfon-channel] call invite peer={sender_peer_id} explicit_return_addr={} response_codec={} response_rate={}",
+        "[eve-idfon] call invite peer={sender_peer_id} explicit_return_addr={} response_codec={} response_rate={}",
         invite.return_addr.is_some(),
         profile.codec,
         profile.sample_rate
@@ -327,7 +327,7 @@ pub async fn handle_live_text(
     )
     .await
     {
-        eprintln!("[eve-idfon-channel] call failed: {error:#}");
+        eprintln!("[eve-idfon] call failed: {error:#}");
         stop_active_call("start failed");
         return Err(error);
     }
@@ -402,7 +402,7 @@ async fn start_call(
                 break;
             }
             Err(error) => {
-                eprintln!("[eve-idfon-channel] return-leg send retry {attempt}: {error}");
+                eprintln!("[eve-idfon] return-leg send retry {attempt}: {error}");
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
@@ -413,7 +413,7 @@ async fn start_call(
         diagnostics.finish();
         anyhow::bail!("return-leg invite never acknowledged");
     }
-    eprintln!("[eve-idfon-channel] call accepted from {caller_peer_id}, return leg sent");
+    eprintln!("[eve-idfon] call accepted from {caller_peer_id}, return leg sent");
 
     // Drive the GPT-Live session + caller audio until the call ends. The
     // timeout only bounds startup; afterwards the task keeps running the call
@@ -437,7 +437,7 @@ async fn start_call(
         drop(live);
         diagnostics.finish();
         if let Err(error) = &result {
-            eprintln!("[eve-idfon-channel] live session failed: {error:#}");
+            eprintln!("[eve-idfon] live session failed: {error:#}");
         }
         result
     });
@@ -798,7 +798,7 @@ async fn run_session(
 ) -> Result<()> {
     let ws = connect_live(&api_key).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
-    eprintln!("[eve-idfon-channel] GPT-Live session ready");
+    eprintln!("[eve-idfon] GPT-Live session ready");
 
     // WS → broadcast: decode base64 s16 24 kHz chunks straight into the queue.
     let reader_stop = Arc::clone(&stop);
@@ -815,7 +815,7 @@ async fn run_session(
             let message = match event {
                 Ok(message) => message,
                 Err(error) => {
-                    eprintln!("[eve-idfon-channel] GPT-Live websocket read failed: {error}");
+                    eprintln!("[eve-idfon] GPT-Live websocket read failed: {error}");
                     break;
                 }
             };
@@ -823,20 +823,20 @@ async fn run_session(
                 continue;
             };
             let Ok(event) = serde_json::from_str::<serde_json::Value>(text) else {
-                eprintln!("[eve-idfon-channel] ignored non-JSON GPT-Live event");
+                eprintln!("[eve-idfon] ignored non-JSON GPT-Live event");
                 continue;
             };
             match event["type"].as_str().unwrap_or_default() {
                 "session.input_transcript.delta" => {
                     input_text_chars += event["delta"].as_str().unwrap_or_default().len();
                     eprintln!(
-                        "[eve-idfon-channel] GPT-Live input transcript chars={input_text_chars}"
+                        "[eve-idfon] GPT-Live input transcript chars={input_text_chars}"
                     );
                 }
                 "session.output_transcript.delta" => {
                     output_text_chars += event["delta"].as_str().unwrap_or_default().len();
                     eprintln!(
-                        "[eve-idfon-channel] GPT-Live output transcript chars={output_text_chars}"
+                        "[eve-idfon] GPT-Live output transcript chars={output_text_chars}"
                     );
                 }
                 "session.output_audio.delta" => {
@@ -854,7 +854,7 @@ async fn run_session(
                             "dropped_samples": dropped_samples,
                         }));
                         if output_chunks == 1 || output_chunks % 50 == 0 {
-                            eprintln!("[eve-idfon-channel] GPT-Live audio out chunks={output_chunks} bytes={output_bytes}");
+                            eprintln!("[eve-idfon] GPT-Live audio out chunks={output_chunks} bytes={output_bytes}");
                         }
                     }
                 }
@@ -862,14 +862,14 @@ async fn run_session(
                     finalized = true;
                     reader_finalized.store(true, Ordering::Relaxed);
                     eprintln!(
-                        "[eve-idfon-channel] GPT-Live session closed usage={} reason={}",
+                        "[eve-idfon] GPT-Live session closed usage={} reason={}",
                         event["usage"],
                         event["reason"].as_str().unwrap_or("(none)"),
                     );
                     break;
                 }
                 "error" => {
-                    eprintln!("[eve-idfon-channel] GPT-Live error: {}", event["error"]);
+                    eprintln!("[eve-idfon] GPT-Live error: {}", event["error"]);
                     break;
                 }
                 _ => {}
@@ -877,7 +877,7 @@ async fn run_session(
         }
         reader_stop.store(true, Ordering::Relaxed);
         eprintln!(
-            "[eve-idfon-channel] GPT-Live reader done finalized={finalized} audio_chunks={output_chunks} audio_bytes={output_bytes} input_text_chars={input_text_chars} output_text_chars={output_text_chars}"
+            "[eve-idfon] GPT-Live reader done finalized={finalized} audio_chunks={output_chunks} audio_bytes={output_bytes} input_text_chars={input_text_chars} output_text_chars={output_text_chars}"
         );
         finalized
     });
@@ -897,16 +897,16 @@ async fn run_session(
             result = pump_caller_audio(caller_ticket, &mut ws_tx, pump_stop, pacer_diagnostics, profile) => result,
         };
         if let Err(error) = result {
-            eprintln!("[eve-idfon-channel] caller audio ended: {error:#}");
+            eprintln!("[eve-idfon] caller audio ended: {error:#}");
         }
         if !pacer_finalized.load(Ordering::Relaxed) {
             let close = Message::text(json!({"type": "session.close"}).to_string());
             match tokio::time::timeout(Duration::from_secs(2), ws_tx.send(close)).await {
-                Ok(Ok(())) => eprintln!("[eve-idfon-channel] GPT-Live session.close sent"),
+                Ok(Ok(())) => eprintln!("[eve-idfon] GPT-Live session.close sent"),
                 Ok(Err(error)) => {
-                    eprintln!("[eve-idfon-channel] GPT-Live session.close failed: {error}")
+                    eprintln!("[eve-idfon] GPT-Live session.close failed: {error}")
                 }
-                Err(_) => eprintln!("[eve-idfon-channel] GPT-Live session.close timed out"),
+                Err(_) => eprintln!("[eve-idfon] GPT-Live session.close timed out"),
             }
         }
         pacer_stop.store(true, Ordering::Relaxed);
@@ -916,29 +916,29 @@ async fn run_session(
         result = &mut reader => {
             stop.store(true, Ordering::Relaxed);
             if let Err(error) = tokio::time::timeout(Duration::from_secs(2), &mut pacer).await {
-                eprintln!("[eve-idfon-channel] audio pump cleanup timed out: {error}");
+                eprintln!("[eve-idfon] audio pump cleanup timed out: {error}");
                 pacer.abort();
             }
             match result {
                 Ok(finalized) => finalized,
                 Err(error) => {
-                    eprintln!("[eve-idfon-channel] GPT-Live reader task failed: {error}");
+                    eprintln!("[eve-idfon] GPT-Live reader task failed: {error}");
                     false
                 }
             }
         }
         result = &mut pacer => {
             if let Err(error) = result {
-                eprintln!("[eve-idfon-channel] caller audio task failed: {error}");
+                eprintln!("[eve-idfon] caller audio task failed: {error}");
             }
             match tokio::time::timeout(SESSION_CLOSE_TIMEOUT, &mut reader).await {
                 Ok(Ok(finalized)) => finalized,
                 Ok(Err(error)) => {
-                    eprintln!("[eve-idfon-channel] GPT-Live reader task failed: {error}");
+                    eprintln!("[eve-idfon] GPT-Live reader task failed: {error}");
                     false
                 }
                 Err(_) => {
-                    eprintln!("[eve-idfon-channel] GPT-Live close timed out; dropping websocket reader");
+                    eprintln!("[eve-idfon] GPT-Live close timed out; dropping websocket reader");
                     reader.abort();
                     let _ = reader.await;
                     false
@@ -947,7 +947,7 @@ async fn run_session(
         }
     };
     if !finalized {
-        eprintln!("[eve-idfon-channel] GPT-Live finalization unconfirmed");
+        eprintln!("[eve-idfon] GPT-Live finalization unconfirmed");
     }
     stop_active_call("session ended");
     Ok(())
@@ -959,7 +959,7 @@ async fn connect_live(
 ) -> Result<
     tokio_websockets::WebSocketStream<tokio_websockets::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
-    eprintln!("[eve-idfon-channel] connecting to GPT-Live");
+    eprintln!("[eve-idfon] connecting to GPT-Live");
     let builder = ClientBuilder::from_uri(LIVE_URL.parse().context("parse live url")?)
         .add_header(
             "authorization".parse().context("header name")?,
@@ -1005,7 +1005,7 @@ async fn connect_live(
     })
     .await
     .context("GPT-Live session.start timed out")??;
-    eprintln!("[eve-idfon-channel] GPT-Live session.started");
+    eprintln!("[eve-idfon] GPT-Live session.started");
     Ok(ws)
 }
 
@@ -1043,7 +1043,7 @@ where
                 break;
             }
             Err(error) => {
-                eprintln!("[eve-idfon-channel] caller subscribe retry {attempt}: {error:#}");
+                eprintln!("[eve-idfon] caller subscribe retry {attempt}: {error:#}");
                 live.shutdown().await;
             }
         }
@@ -1070,7 +1070,7 @@ where
         "caller invite requested {expected_profile:?}, but media catalog advertises {actual_profile:?}"
     );
     eprintln!(
-        "[eve-idfon-channel] caller track={name} codec={} rate={}",
+        "[eve-idfon] caller track={name} codec={} rate={}",
         actual_codec, config.sample_rate
     );
     // Decode to GPT-Live's PCM format; a matching 24 kHz PCM track needs no resampling.
@@ -1081,7 +1081,7 @@ where
     decode.latency_max = Some(Duration::from_millis(100));
     let mut consumer =
         moq_audio::decode::Consumer::new(broadcast.consumer(), &config, &name, decode).await?;
-    eprintln!("[eve-idfon-channel] caller audio subscribed track={name}");
+    eprintln!("[eve-idfon] caller audio subscribed track={name}");
 
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel(8);
     let read_stop = Arc::clone(&stop);
@@ -1142,7 +1142,7 @@ where
                     .map_err(|error| anyhow!("GPT-Live send: {error}"))?;
                 chunks += 1;
                 if chunks == 1 || chunks % 50 == 0 {
-                    eprintln!("[eve-idfon-channel] caller appends={chunks} source_frames={input_frames} silence_samples={underflow_samples} queue_samples={queue_samples}");
+                    eprintln!("[eve-idfon] caller appends={chunks} source_frames={input_frames} silence_samples={underflow_samples} queue_samples={queue_samples}");
                 }
                 if pacer.sent_samples >= REPLY_MAX_S * 24_000 { break; }
             }
@@ -1171,7 +1171,7 @@ where
                             "peak": peak,
                         }));
                         if arrival_gap_us > 30_000 || media_gap_us > 1_000 {
-                            eprintln!("[eve-idfon-channel] caller timing gap arrival={arrival_gap_us}us media={media_gap_us}us pts={pts_us} samples={samples}");
+                            eprintln!("[eve-idfon] caller timing gap arrival={arrival_gap_us}us media={media_gap_us}us pts={pts_us} samples={samples}");
                         }
                         let frame_samples: Vec<i16> = frame.data
                             .chunks_exact(2)
@@ -1187,7 +1187,7 @@ where
                         }
                     }
                     Some(Err(reason)) => {
-                        eprintln!("[eve-idfon-channel] caller audio ended: {reason}");
+                        eprintln!("[eve-idfon] caller audio ended: {reason}");
                         break;
                     }
                     None => break,
@@ -1199,7 +1199,7 @@ where
     let _ = (&mut reader).await;
     if pacer.dropped_samples > 0 {
         eprintln!(
-            "[eve-idfon-channel] caller input queue dropped {} old samples",
+            "[eve-idfon] caller input queue dropped {} old samples",
             pacer.dropped_samples
         );
     }
@@ -1252,7 +1252,7 @@ async fn publish_gpt_audio(
                 CHUNK_MS * 1_000
             };
             if frame == 1 || frame % 50 == 0 {
-                eprintln!("[eve-idfon-channel] audio frame={frame} queue_samples={available} underflow_samples={missing} total_underflow={total_underflow}");
+                eprintln!("[eve-idfon] audio frame={frame} queue_samples={available} underflow_samples={missing} total_underflow={total_underflow}");
             }
             let bytes: Vec<u8> = data
                 .iter()
@@ -1305,5 +1305,5 @@ async fn publish_gpt_audio(
     while !stop.load(Ordering::Relaxed) {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    eprintln!("[eve-idfon-channel] call broadcast closed");
+    eprintln!("[eve-idfon] call broadcast closed");
 }

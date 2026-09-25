@@ -19,7 +19,7 @@ cd "$root"
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
 model="${EVE_IDFON_MODEL:-openai/gpt-6-luna}"
 
-integration="$root/integrations/eve-idfon-channel"
+integration="$root/integrations/eve-idfon"
 (
   cd "$integration"
   npm install --no-audit --no-fund --silent
@@ -28,7 +28,7 @@ integration="$root/integrations/eve-idfon-channel"
 
 RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
   cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel
+cargo build --release -p idfond -p idfon-cli -p eve-idfon
 codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 
 work=$(mktemp -d /tmp/idfon-voice-e2e.XXXXXX)
@@ -41,7 +41,7 @@ cleanup() {
 trap cleanup EXIT
 
 NUF="$root/target/release/idfon"
-HOLDER="$root/target/release/eve-idfon-channel"
+HOLDER="$root/target/release/eve-idfon"
 A="$work/a/idfond.sock"
 HOLDER_SOCK="$work/holder.sock"
 mkdir -p "$work/a"
@@ -73,9 +73,9 @@ cp -R "$root/agents/ai-voice-chat/agent" "$root/agents/ai-voice-chat/package.jso
   "$root/agents/ai-voice-chat/package-lock.json" "$app/"
 # Reuse the agent's installed node_modules; a fresh npm install adds minutes.
 cp -R "$root/agents/ai-voice-chat/node_modules" "$app/node_modules"
-# eve-idfon-channel is installed as a relative symlink into the repo; repoint
+# eve-idfon is installed as a relative symlink into the repo; repoint
 # it so the app builds outside the repo tree.
-ln -sfn "$integration" "$app/node_modules/eve-idfon-channel"
+ln -sfn "$integration" "$app/node_modules/eve-idfon"
 bridge_port=$(python3 - <<'PY'
 import socket
 with socket.socket() as s:

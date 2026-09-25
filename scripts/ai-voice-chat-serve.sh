@@ -24,7 +24,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cli="${IDFON_CLI:-$root/target/release/idfon}"
 socket="${IDFON_SOCKET:-/tmp/idfon/idfond.sock}"
 home="${EVE_VOICE_HOME:-$HOME/.idfon/ai-voice-chat}"
-integration="$root/integrations/eve-idfon-channel"
+integration="$root/integrations/eve-idfon"
 
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
 model="${EVE_IDFON_MODEL:-openai/gpt-6-luna}"
@@ -35,12 +35,12 @@ key="$home/holder.key"
 if [ ! -s "$key" ]; then printf '%064d' "$((RANDOM * RANDOM))" > "$key"; fi
 
 # Build once; skip when binaries and the compiled app are current.
-if [ ! -x "$root/target/release/eve-idfon-channel" ] || [ "${FORCE_BUILD:-}" = 1 ]; then
+if [ ! -x "$root/target/release/eve-idfon" ] || [ "${FORCE_BUILD:-}" = 1 ]; then
   RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
     cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-  cargo build --release -p idfond -p idfon-cli -p eve-idfon-channel
+  cargo build --release -p idfond -p idfon-cli -p eve-idfon
   codesign --force -s - "$root/target/release/libiroh_c_ffi.dylib" \
-    "$root/target/release/eve-idfon-channel" "$root/target/release/idfond"
+    "$root/target/release/eve-idfon" "$root/target/release/idfond"
 fi
 
 app="$home/app"
@@ -74,9 +74,9 @@ if [ ! -d "$app/.output" ] || [ "${FORCE_BUILD:-}" = 1 ] || \
   cp -R "$root/agents/ai-voice-chat/agent" "$root/agents/ai-voice-chat/package.json" \
     "$root/agents/ai-voice-chat/package-lock.json" "$app/"
   cp -R "$root/agents/ai-voice-chat/node_modules" "$app/node_modules"
-  # eve-idfon-channel is a relative symlink inside the agent's node_modules;
+  # eve-idfon is a relative symlink inside the agent's node_modules;
   # repoint it at the repo checkout.
-  ln -sfn "$integration" "$app/node_modules/eve-idfon-channel"
+  ln -sfn "$integration" "$app/node_modules/eve-idfon"
 fi
 # Patch the app's bridge wiring to the chosen port BEFORE building.
 sed -i '' "s|bridgeUrl: \"http://127.0.0.1:[0-9]*\"|bridgeUrl: \"http://127.0.0.1:$bridge_port\"|" \
@@ -103,7 +103,7 @@ for pidfile in "$home"/holder.pid "$home"/bridge.pid "$home"/eve.pid; do
   if [ -f "$pidfile" ]; then kill "$(cat "$pidfile")" 2>/dev/null || true; rm -f "$pidfile"; fi
 done
 sleep 0.5
-"$root/target/release/eve-idfon-channel" --key-file "$key" serve \
+"$root/target/release/eve-idfon" --key-file "$key" serve \
   --socket "$home/holder.sock" "${allow_args[@]}" --blob-dir "$home/blobs" \
   >"$home/holder.ticket" 2>"$home/holder.log" &
 echo $! > "$home/holder.pid"
@@ -129,10 +129,10 @@ done
 # Capability tickets: holder-signed, subject-bound to each sender (the holder
 # rejects a ticket whose subject != the message's sender id), covering the
 # message ingress the apps' sends need. One file per peer.
-"$root/target/release/eve-idfon-channel" --key-file "$key" ticket \
+"$root/target/release/eve-idfon" --key-file "$key" ticket \
   --subject "$daemon_id" > "$home/capability-ticket.json"
 while IFS=$'\t' read -r peer_name endpoint; do
-  "$root/target/release/eve-idfon-channel" --key-file "$key" ticket \
+  "$root/target/release/eve-idfon" --key-file "$key" ticket \
     --subject "$endpoint" > "$home/capability-ticket-$endpoint.json"
 done < <("$cli" --socket "$socket" peer list --json | jq -r '.result.peers[] | "\(.name)\t\(.endpoint_id // .id)"' | awk -F'\t' '$2 != "" && $2 != "'"$daemon_id"'"')
 

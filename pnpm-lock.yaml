@@ -10,7 +10,7 @@ importers:
 
   cli: {}
 
-  integrations/eve-idfon-channel:
+  integrations/eve-idfon:
     dependencies:
       zod:
         specifier: ^4.6.5

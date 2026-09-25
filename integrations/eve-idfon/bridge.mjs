@@ -50,7 +50,7 @@ function processFrames() {
         method: "POST",
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
-      }).catch((error) => console.error(`[eve-idfon-channel] ${value.type} delivery failed: ${error}`));
+      }).catch((error) => console.error(`[eve-idfon] ${value.type} delivery failed: ${error}`));
     } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
       const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
       const waiter = pending.get(key);
@@ -63,7 +63,7 @@ function processFrames() {
         pending.delete(key);
         waiter.reject(new Error(`${value.code}: ${value.message}`));
       }
-      console.error(`[eve-idfon-channel] holder error: ${value.code}: ${value.message}`);
+      console.error(`[eve-idfon] holder error: ${value.code}: ${value.message}`);
     }
   }
 }
@@ -72,7 +72,7 @@ holder.on("data", (chunk) => {
   input = Buffer.concat([input, chunk]);
   try { processFrames(); } catch (error) { console.error(error); holder.destroy(error); }
 });
-holder.on("error", (error) => { console.error(`[eve-idfon-channel] holder IPC: ${error}`); process.exitCode = 1; });
+holder.on("error", (error) => { console.error(`[eve-idfon] holder IPC: ${error}`); process.exitCode = 1; });
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
@@ -292,4 +292,4 @@ const server = createServer(async (request, response) => {
     response.writeHead(502); response.end(`${error}\n`);
   }
 });
-server.listen(port, "127.0.0.1", () => console.error(`[eve-idfon-channel] bridge listening on ${port}`));
+server.listen(port, "127.0.0.1", () => console.error(`[eve-idfon] bridge listening on ${port}`));

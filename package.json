@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "clean": "pnpm cli clean && pnpm mac clean && pnpm ios clean && pnpm native clean && pnpm --filter eve-idfon-channel clean",
+    "clean": "pnpm cli clean && pnpm mac clean && pnpm ios clean && pnpm native clean && pnpm --filter eve-idfon clean",
     "native": "pnpm --filter @idfon/native",
     "all": "pnpm --filter @idfon/*",
     "cli": "pnpm --filter @idfon/cli",
