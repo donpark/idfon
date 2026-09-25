@@ -278,6 +278,10 @@ async fn main() -> Result<()> {
     // iroh enables both rustls providers in this binary; tokio-websockets needs
     // an explicit process default when that feature combination is unified.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    // MoQ/iroh diagnostics go to /tmp/idfon-holder-<pid>.log; env IROH_C_LOG
+    // controls the filter (default info). Essential for debugging silent
+    // subscription stalls on the live-call return leg.
+    iroh_c_ffi::util::init_tracing(PathBuf::from(format!("/tmp/idfon-holder-{}.log", std::process::id())));
     let cli = Cli::parse();
     let key_file = cli.key_file;
     match cli.mode {
