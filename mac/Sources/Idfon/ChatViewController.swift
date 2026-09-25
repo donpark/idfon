@@ -207,6 +207,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                     status = "Calling…"
                 default:
                     buttons = [headerSymbolButton("phone.arrow.up.right", #selector(callTapped), "Start call"),
+                               headerButton("Audio", #selector(audioProfileTapped)),
                                headerSymbolButton("arrow.down.doc", #selector(shareVideoTapped), "Share a video file"),
                                headerSymbolButton("person.crop.circle", #selector(peerDetailsTapped), "Peer details")]
                 }
@@ -864,7 +865,31 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     // MARK: - Calls
 
-    @objc private func callTapped() { video.dial(peer.id, cameraOn: false) }
+    @objc private func callTapped() {
+        if peer.name == "ai-voice-chat" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
+            live.dial(peer.id)
+        } else {
+            video.dial(peer.id, cameraOn: false)
+        }
+    }
+
+    @objc private func audioProfileTapped() {
+        let selected = ContactAudioProfiles.profile(for: peer.id)
+        let alert = NSAlert()
+        alert.messageText = "Audio profile"
+        alert.informativeText = "Current: \(selected.title). Saved for \(conversation.title)."
+        alert.addButton(withTitle: ContactAudioProfile.opus48k.title)
+        alert.addButton(withTitle: ContactAudioProfile.pcm24k.title)
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            ContactAudioProfiles.set(.opus48k, for: peer.id)
+        case .alertSecondButtonReturn:
+            ContactAudioProfiles.set(.pcm24k, for: peer.id)
+        default:
+            break
+        }
+    }
 
     /// Ends whichever machine owns the call (fullscreen stage + Bar).
     @objc private func endCallTapped() {

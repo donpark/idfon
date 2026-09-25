@@ -161,10 +161,10 @@ private extension WaveformView.Mode {
 /// (which does not exist on macOS).
 ///
 /// With `pushToEncoder` set, the same tap also feeds the live publisher's
-/// generic audio ingest (`media_audio_push_samples`) as 48 kHz mono f32. Only
-/// the live-call meter does so: in the dylib's "push" mode the Rust side does
-/// not open the mic, so this tap is the call's sole capture and its levels are
-/// the very samples the peer hears (issue #7). Memo meters leave it off.
+/// generic audio ingest (`media_audio_push_samples`) at the selected mono f32
+/// rate. The live-call meter is the sole mic capture in the dylib's "push"
+/// mode, and these are the samples the peer hears (issue #7). Memo meters leave
+/// it off.
 final class AudioMeter {
     static let shared = AudioMeter()
     private static let logQueue = DispatchQueue(label: "idfon.audio-meter-log")
@@ -207,11 +207,15 @@ final class AudioMeter {
     /// the call's sole capture; leaving it off (memo meters) only displays.
     var pushToEncoder = false
 
-    /// The ingest format the dylib's `PushAudioSource` expects.
-    private static let pipelineFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
+    /// The ingest rate defaults to 48 kHz and is selected per call/contact.
+    private var targetSampleRate = 48_000
+    private var outputFormat: AVAudioFormat?
     /// Hardware format -> ingest format; keeps its resampler state across taps.
     private var converter: AVAudioConverter?
+
+    private func pipelineFormat() -> AVAudioFormat {
+        AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(targetSampleRate), channels: 1, interleaved: false)!
+    }
     private var interruptionObserver: NSObjectProtocol?
     private var pushedBuffers = 0
     private var callbackBuffers = 0
@@ -229,8 +233,14 @@ final class AudioMeter {
         if !views.contains(where: { $0.view === view }) { views.append(WeakWave(view: view)) }
     }
 
-    func start(completion: (() -> Void)? = nil) {
-        Self.log("idfon audio meter start requested running=\(running) tap=\(tapInstalled) push=\(pushToEncoder)")
+    func configureForCall(sampleRate: Int) {
+        guard sampleRate == 24_000 || sampleRate == 48_000 else { return }
+        targetSampleRate = sampleRate
+    }
+
+    func start(sampleRate: Int? = nil, completion: (() -> Void)? = nil) {
+        if let sampleRate { configureForCall(sampleRate: sampleRate) }
+        Self.log("idfon audio meter start requested running=\(running) tap=\(tapInstalled) push=\(pushToEncoder) rate=\(targetSampleRate)")
         if let completion { pendingStarts.append(completion) }
         if running { settle(); return }
         guard !startInFlight else { return } // joins the in-flight attempt
@@ -311,12 +321,14 @@ final class AudioMeter {
                 self.tapInstalled = false
                 let format = input.outputFormat(forBus: 0)
                 if self.pushToEncoder {
-                    self.converter = AVAudioConverter(from: format, to: Self.pipelineFormat)
-                self.pushedBuffers = 0
-                self.callbackBuffers = 0
-                self.windowSamples = 0
-                self.windowSumSquares = 0
-                self.windowPeak = 0
+                    let outputFormat = self.pipelineFormat()
+                    self.converter = AVAudioConverter(from: format, to: outputFormat)
+                    self.outputFormat = outputFormat
+                    self.pushedBuffers = 0
+                    self.callbackBuffers = 0
+                    self.windowSamples = 0
+                    self.windowSumSquares = 0
+                    self.windowPeak = 0
                     if self.converter == nil {
                         // Non-standard hardware format: keep metering but drop the
                         // push rather than publish wrong-speed audio.
@@ -354,9 +366,10 @@ final class AudioMeter {
         }
     }
 
-    func startForCall() async -> Bool {
-        await withCheckedContinuation { continuation in
-            start {
+    func startForCall(sampleRate: Int = 48_000) async -> Bool {
+        configureForCall(sampleRate: sampleRate)
+        return await withCheckedContinuation { continuation in
+            start(sampleRate: sampleRate) {
                 continuation.resume(returning: self.running)
             }
         }
@@ -381,6 +394,7 @@ final class AudioMeter {
         if Self.activeInputMeter === self { Self.activeInputMeter = nil }
         engine.stop()
         converter = nil
+        outputFormat = nil
         removeAudioObservers()
         running = false
         settle() // pending start callers observe running=false
@@ -392,7 +406,8 @@ final class AudioMeter {
             guard let self, self.running else { return }
             self.stop()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                self?.start()
+                guard let self else { return }
+                self.start(sampleRate: self.targetSampleRate)
             }
         }
     }
@@ -411,10 +426,10 @@ final class AudioMeter {
     /// to the dylib. `.noDataNow` after one buffer lets the converter retain its
     /// resampler state for the next tap.
     private func push(_ buffer: AVAudioPCMBuffer) {
-        guard let converter else { return }
-        let ratio = Self.pipelineFormat.sampleRate / buffer.format.sampleRate
+        guard let converter, let outputFormat else { return }
+        let ratio = Double(targetSampleRate) / buffer.format.sampleRate
         let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
-        guard let out = AVAudioPCMBuffer(pcmFormat: Self.pipelineFormat, frameCapacity: capacity) else { return }
+        guard let out = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
         var consumed = false
         var error: NSError?
         let status = converter.convert(to: out, error: &error) { _, outStatus in
@@ -439,7 +454,7 @@ final class AudioMeter {
         windowSamples += count
         windowSumSquares += rawSum
         windowPeak = max(windowPeak, rawPeak)
-        if windowSamples >= 48_000 {
+        if windowSamples >= targetSampleRate {
             let windowRMS = (windowSumSquares / Double(windowSamples)).squareRoot()
             Self.log("idfon audio meter 1s window samples=\(windowSamples) rms=\(windowRMS) peak=\(windowPeak)")
             windowSamples = 0

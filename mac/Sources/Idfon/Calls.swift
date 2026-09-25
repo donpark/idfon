@@ -88,6 +88,8 @@ final class LiveCall {
 
     func dial(_ peerId: String) {
         guard case .idle = state else { return }
+        let profile = ContactAudioProfiles.profile(for: peerId)
+        AudioMeter.shared.configureForCall(sampleRate: profile.sampleRate)
         operation?.cancel()
         operationGeneration += 1
         audioEnabled = true // this session carries audio from the start
@@ -107,12 +109,14 @@ final class LiveCall {
                     "mode": AnyEncodable("record"),
                 ])
                 AudioMeter.shared.pushToEncoder = true
-                guard await AudioMeter.shared.startForCall() else {
+                guard await AudioMeter.shared.startForCall(sampleRate: profile.sampleRate) else {
                     fail("microphone unavailable")
                     return
                 }
                 guard operationGeneration == generation, !Task.isCancelled else { return }
-                let ticket = await ffiString { media_live_start_with_source(1, 0, "push") } // audio from the shell tap
+                let ticket = await ffiString {
+                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate))
+                }
                 guard operationGeneration == generation, !Task.isCancelled, !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
@@ -126,8 +130,10 @@ final class LiveCall {
                 }
                 published = true
                 applySendState()
-                // Audio invite: no media line (audio is the default).
-                try await client.sendText(to: peerId, "IDFON-LIVE/1\naction=start\nticket=\(ticket)")
+                try await client.sendText(
+                    to: peerId,
+                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                )
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
             }
@@ -138,6 +144,8 @@ final class LiveCall {
 
     func answer() {
         guard case .incoming(let peer) = state, let pending = pendingInvite else { return }
+        let profile = ContactAudioProfiles.profile(for: pending.peer)
+        AudioMeter.shared.configureForCall(sampleRate: profile.sampleRate)
         audioEnabled = true
         operation?.cancel()
         operationGeneration += 1
@@ -156,11 +164,13 @@ final class LiveCall {
                 // Publish our own mic so audio is two-way, then send the
                 // return-leg invite (own ticket) that makes the caller join us.
                 AudioMeter.shared.pushToEncoder = true
-                guard await AudioMeter.shared.startForCall() else {
+                guard await AudioMeter.shared.startForCall(sampleRate: profile.sampleRate) else {
                     fail("microphone unavailable")
                     return
                 }
-                let own = await ffiString { media_live_start_with_source(1, 0, "push") } // audio from the shell tap
+                let own = await ffiString {
+                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate))
+                }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
@@ -168,8 +178,10 @@ final class LiveCall {
                 }
                 published = true
                 applySendState()
-                // Audio invite: no media line (audio is the default).
-                try await client.sendText(to: pending.peer, "IDFON-LIVE/1\naction=start\nticket=\(own)")
+                try await client.sendText(
+                    to: pending.peer,
+                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                )
                 // Informational parity with core.ts's video answer branch.
                 try await client.sendText(to: pending.peer, "call_started")
             } catch {
