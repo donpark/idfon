@@ -150,6 +150,10 @@ The iOS embedded daemon's event cursor must keep increasing after its 1,000
 event retention limit. Otherwise, the holder's return invite is persisted but
 isn't delivered to `ChatStore` after the saved cursor.
 
+Mid-call dead air on the phone (track ending early, silent re-subscribe
+behavior, pacing) is covered in `docs/troubleshooting.md` → "iOS live call
+goes silent after the first reply".
+
 ## Known gaps
 
 - Daemon-side network fetch of holder-held blobs returns `PeerOffline`
