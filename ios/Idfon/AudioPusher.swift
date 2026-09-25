@@ -1,7 +1,7 @@
 import AVFoundation
 
 /// Shell-side call capture: taps the AVAudioEngine input, converts to the
-/// dylib's ingest format (48 kHz mono f32) and pushes it through
+/// contact profile's mono f32 sample rate (48 kHz by default), and pushes it through
 /// `media_audio_push_samples`.
 ///
 /// In the dylib's "push" mode the Rust side does not open the microphone, so
@@ -18,6 +18,7 @@ final class AudioPusher {
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
+    private var outputFormat: AVAudioFormat?
     private(set) var running = false
     private var tapInstalled = false
     private var generation = 0
@@ -27,18 +28,27 @@ final class AudioPusher {
     private var pendingStarts: [() -> Void] = []
     private var observers: [NSObjectProtocol] = []
     private var restartAfterInterruption = false
+    private var targetSampleRate = 48_000
 
-    private static let pipelineFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: 48_000,
-        channels: 1,
-        interleaved: false
-    )!
+    private func pipelineFormat() -> AVAudioFormat {
+        AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Double(targetSampleRate),
+            channels: 1,
+            interleaved: false
+        )!
+    }
 
     private init() {}
 
-    func start(completion: (() -> Void)? = nil) {
-        runOnMain {
+    func start(sampleRate: Int = 48_000, completion: (() -> Void)? = nil) {
+        runOnMain { [weak self] in
+            guard let self else { completion?(); return }
+            guard sampleRate == 24_000 || sampleRate == 48_000 else {
+                completion?()
+                return
+            }
+            self.targetSampleRate = sampleRate
             if self.running {
                 completion?()
                 return
@@ -54,9 +64,9 @@ final class AudioPusher {
         }
     }
 
-    func startForCall() async -> Bool {
+    func startForCall(sampleRate: Int = 48_000) async -> Bool {
         await withCheckedContinuation { continuation in
-            start {
+            start(sampleRate: sampleRate) {
                 continuation.resume(returning: self.running)
             }
         }
@@ -91,12 +101,14 @@ final class AudioPusher {
             input.removeTap(onBus: 0)
             tapInstalled = false
             let format = input.outputFormat(forBus: 0)
-            guard let converter = AVAudioConverter(from: format, to: Self.pipelineFormat) else {
+            let pipelineFormat = pipelineFormat()
+            guard let converter = AVAudioConverter(from: format, to: pipelineFormat) else {
                 NSLog("idfon audio push: no converter for \(format)")
                 startInFlight = false
                 return
             }
             self.converter = converter
+            self.outputFormat = pipelineFormat
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                 self?.push(buffer)
             }
@@ -134,6 +146,7 @@ final class AudioPusher {
         }
         engine.stop()
         converter = nil
+        outputFormat = nil
         running = false
         startInFlight = false
         settle()
@@ -157,7 +170,7 @@ final class AudioPusher {
                 }
             } else if value == AVAudioSession.InterruptionType.ended.rawValue, self.restartAfterInterruption {
                 self.restartAfterInterruption = false
-                self.start()
+                self.start(sampleRate: self.targetSampleRate)
             }
         })
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] note in
@@ -181,13 +194,13 @@ final class AudioPusher {
     }
 
     private func push(_ buffer: AVAudioPCMBuffer) {
-        guard let converter else { return }
-        let ratio = Self.pipelineFormat.sampleRate / buffer.format.sampleRate
+        guard let converter, let outputFormat else { return }
+        let ratio = Double(targetSampleRate) / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(
             (Double(buffer.frameLength) * ratio).rounded(.up)
         ) + 64
         guard let output = AVAudioPCMBuffer(
-            pcmFormat: Self.pipelineFormat,
+            pcmFormat: outputFormat,
             frameCapacity: capacity
         ) else { return }
 

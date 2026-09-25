@@ -121,8 +121,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // callee's name when a thread is stacked on another.
         navigationItem.backButtonDisplayMode = .generic
         if !conversation.isRoom {
+            let profile = UIBarButtonItem(image: UIImage(systemName: "waveform"), style: .plain, target: self, action: #selector(audioProfileTapped))
+            profile.accessibilityLabel = "Audio profile"
             navigationItem.rightBarButtonItems = [
                 UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"), style: .plain, target: self, action: #selector(callTapped)),
+                profile,
             ]
         }
 
@@ -645,11 +648,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func callTapped() {
-        if peer.name == "ai-voice-chat" {
+        if peer.name == "ai-voice-chat" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
             LiveCall.shared.dial(peer.id)
         } else {
             VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)
         }
+    }
+
+    @objc private func audioProfileTapped() {
+        let selected = ContactAudioProfiles.profile(for: peer.id)
+        let alert = UIAlertController(title: "Audio profile", message: "Saved for \(conversation.title). Applies to audio calls.", preferredStyle: .actionSheet)
+        for profile in ContactAudioProfile.allCases {
+            let title = profile == selected ? "✓ \(profile.title)" : profile.title
+            alert.addAction(UIAlertAction(title: title, style: .default) { _ in
+                ContactAudioProfiles.set(profile, for: self.peer.id)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItems?.last
+        present(alert, animated: true)
     }
 
     /// Automation entry (`idfon://dial` + the `idfon.dial` notification): the

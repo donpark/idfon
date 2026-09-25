@@ -770,7 +770,7 @@ media_audio_probe (
     uint64_t duration_ms);
 
 /** \brief
- *  Pushes caller-supplied mono 48 kHz f32 PCM into the generic live audio
+ *  Pushes caller-supplied mono f32 PCM at the active publisher's sample rate into the generic live audio
  *  source. Pair with `media_live_start_with_source(audio, video, "push")`.
  *
  *  `samples` is the number of f32 values (mono: samples == frames). Null or
@@ -895,6 +895,15 @@ media_live_start_with_source (
     uint8_t audio,
     uint8_t video,
     char const * source);
+
+/** Publishes pushed audio using the selected Opus/48 kHz or PCM/24 kHz profile. */
+char *
+media_live_start_with_profile (
+    uint8_t audio,
+    uint8_t video,
+    char const * source,
+    char const * codec,
+    uint32_t sample_rate);
 
 /** \brief
  *  Stops the live microphone broadcast.

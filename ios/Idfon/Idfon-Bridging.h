@@ -33,7 +33,8 @@ char *media_live_start(uint8_t audio, uint8_t video); // publish the selected tr
 // "push" (samples supplied through media_audio_push_samples). Makes the
 // source a caller decision instead of a hardwired default input.
 char *media_live_start_with_source(uint8_t audio, uint8_t video, char const *source);
-// Push mono 48 kHz f32 PCM into the "push" source.
+char *media_live_start_with_profile(uint8_t audio, uint8_t video, char const *source, char const *codec, uint32_t sample_rate);
+// Push mono f32 PCM at the sample rate selected for the active publisher.
 void media_audio_push_samples(const float *pcm, size_t samples);
 void media_live_stop(void);                  // stop own publish
 uint8_t media_live_subscribe(char const *ticket); // hear the peer (decodes + plays)
