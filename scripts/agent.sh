@@ -14,19 +14,72 @@ available_agents() {
   done
 }
 
+all_agents() {
+  local directory candidate
+  for directory in "$root"/agents/*; do
+    [[ -d "$directory" ]] || continue
+    candidate=${directory##*/}
+    printf '%s ' "$candidate"
+  done
+}
+
 usage() {
-  printf 'Usage: pnpm agent {start|stop} <name>\nServed agents: %s\n' "$(available_agents)" >&2
+  printf 'Usage: pnpm agent {start|stop|restart|build|clean} <name|all>\nServed agents: %s\n' "$(available_agents)" >&2
   exit 2
 }
 
-[[ "$action" == start || "$action" == stop ]] || usage
+[[ "$action" == start || "$action" == stop || "$action" == restart || "$action" == build || "$action" == clean ]] || usage
 [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || usage
 
+# 'all' fans out to every agent: build/clean cover every agents/<name> dir,
+# start/stop/restart cover the served subset (those with a *-serve.sh).
+if [[ "$name" == all ]]; then
+  case "$action" in
+    build|clean) targets=$(all_agents) ;;
+    *) targets=$(available_agents) ;;
+  esac
+  status=0
+  for target in $targets; do
+    bash "$0" "$action" "$target" || status=1
+  done
+  exit "$status"
+fi
+
 serve="$root/scripts/$name-serve.sh"
-[[ -d "$root/agents/$name" && -f "$serve" ]] || {
-  echo "no serve script registered for agent '$name'" >&2
-  usage
-}
+if [[ "$action" == build || "$action" == clean ]]; then
+  [[ -d "$root/agents/$name" ]] || {
+    echo "no agent '$name' under agents/" >&2
+    usage
+  }
+else
+  [[ -d "$root/agents/$name" && -f "$serve" ]] || {
+    echo "no serve script registered for agent '$name'" >&2
+    usage
+  }
+fi
+
+agent_dir="$root/agents/$name"
+
+if [[ "$action" == build ]]; then
+  eve="$agent_dir/node_modules/.bin/eve"
+  if [[ ! -x "$eve" ]]; then
+    echo "skipped $name: no installed eve (run npm install in agents/$name)" >&2
+    exit 0
+  fi
+  (cd "$agent_dir" && "$eve" build)
+  exit 0
+fi
+
+if [[ "$action" == clean ]]; then
+  rm -rf "$agent_dir/.output" "$agent_dir/dist"
+  echo "cleaned $name"
+  exit 0
+fi
+
+if [[ "$action" == restart ]]; then
+  bash "$0" stop "$name" || true
+  action=start
+fi
 
 home=${EVE_VOICE_HOME:-"$HOME/.idfon/$name"}
 pidfile="$home/serve.pid"

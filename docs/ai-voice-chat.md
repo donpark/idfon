@@ -55,6 +55,27 @@ idfon peer ──IDFON-RECORDING/1──▶ daemon ──▶ holder ──bridge
   Opus input — the one decode on the way in is mandatory; the reply is stored
   as WAV, so no encode).
 
+## Building
+
+The agent consumes the workspace extension, so build the extension before the
+agent. `pnpm eve build` does both (extension first, then every installed
+agent); `pnpm agent` manages one agent at a time:
+
+```sh
+pnpm eve build                    # eve-idfon-channel + all agents
+pnpm eve clean                    # remove dist/.output everywhere
+
+pnpm agent build ai-voice-chat    # eve build in agents/ai-voice-chat
+pnpm agent clean ai-voice-chat
+pnpm agent restart ai-voice-chat  # stop then start; needs AI_GATEWAY_API_KEY
+```
+
+`pnpm agent build all` / `clean all` cover every `agents/*` directory and skip
+agents without an installed `eve`; `start`/`stop`/`restart` apply only to
+agents with a `scripts/<name>-serve.sh`. The extension is also rebuilt by its
+`prepare` script on `pnpm install`, and lazily by an agent's `eve build` when
+`dist/extension/_manifest.json` is stale.
+
 ## Serving the agent
 
 `scripts/ai-voice-chat-serve.sh` runs the whole stack against the real daemon

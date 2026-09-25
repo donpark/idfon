@@ -86,6 +86,8 @@ same model for the Rust **endpoint holder** binary: platform packages
 `eve-idfon-channel-{darwin,linux}-{arm64,x64}` as `optionalDependencies`,
 populated by `scripts/build-eve-channel.sh [TARGET]` and resolved by
 `managed.mjs` (the package's `bin`) with `--holder-command` as the override.
-The Eve extension is plain JS built by `eve extension build` in `prepare`, and
-the package version tracks the Cargo workspace until 1.0. No Windows package —
+The Eve extension is plain JS built by `eve extension build` in `prepare`
+(also run explicitly as `pnpm eve build` / `pnpm eve clean` from the repo
+root, which then builds or cleans the agents under `agents/`), and the package
+version tracks the Cargo workspace until 1.0. No Windows package —
 the holder IPC is a Unix socket. CI build/publish is not wired yet.
