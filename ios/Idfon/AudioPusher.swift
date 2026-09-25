@@ -89,7 +89,7 @@ final class AudioPusher {
             try session.setCategory(
                 .playAndRecord,
                 mode: .voiceChat,
-                options: [.defaultToSpeaker, .allowBluetoothHFP]
+                options: [.allowBluetoothHFP]
             )
             try session.setActive(true)
             // VoIP-standard 10 ms capture IO (WebRTC does the same): small

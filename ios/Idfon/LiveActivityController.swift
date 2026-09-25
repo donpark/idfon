@@ -1,4 +1,5 @@
 import UIKit
+import AVFAudio
 
 /// Owns the Live Activity Bar's window host for one scene and translates the
 /// active call machine's state (`LiveCall` or `VideoCall`) into Bar models and
@@ -60,6 +61,7 @@ final class LiveActivityController: NSObject {
     /// call is really sending (and hides toggles for absent tracks).
     private var micOn = false
     private var camOn = false
+    private var speakerOn = false
 
     private var elapsed: TimeInterval = 0
     private var startedAt: Date?
@@ -217,7 +219,9 @@ final class LiveActivityController: NSObject {
         if next != previous, next != .idle {
             micOn = machine?.audioEnabled ?? false
             camOn = machine?.videoEnabled ?? false
+            speakerOn = false
         }
+        if next == .idle { speakerOn = false }
         phase = next
 
         if next == .inCall {
@@ -266,6 +270,7 @@ final class LiveActivityController: NSObject {
             model.phase = phase
             model.micOn = micOn
             model.camOn = camOn
+            model.speakerOn = speakerOn
             model.audioAvailable = machine?.audioAvailable ?? true
             model.videoAvailable = machine?.videoAvailable ?? true
             model.elapsed = elapsed
@@ -317,11 +322,23 @@ final class LiveActivityController: NSObject {
         case .open: openPeerThread(peerId)
         case .toggleMic: toggleSendState(peerId: peerId, mic: true)
         case .toggleCam: toggleSendState(peerId: peerId, mic: false)
+        case .toggleSpeaker: toggleSpeakerphone()
         // Session Tray actions (§4): Cancel aborts the transfer; pause/Stop is
         // for media streams, which have no producer yet.
         case .cancelRow(let id): TransferCenter.shared.cancel(id: id)
         case .togglePauseRow: break
         }
+    }
+
+    private func toggleSpeakerphone() {
+        let enabled = !speakerOn
+        do {
+            try AVAudioSession.sharedInstance().overrideOutputAudioPort(enabled ? .speaker : .none)
+            speakerOn = enabled
+        } catch {
+            NSLog("idfon audio route change failed: \(error.localizedDescription)")
+        }
+        render()
     }
 
     /// In-call toggles gate the active machine's outgoing streams (send/no-send

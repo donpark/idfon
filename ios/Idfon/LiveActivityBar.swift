@@ -28,6 +28,7 @@ struct LiveActivityBarModel: Equatable {
     var phase: Phase = .idle
     var micOn = false
     var camOn = false
+    var speakerOn = false
     /// Stream set the session actually carries (§3 State 3): a call can only
     /// toggle the tracks it was started with, so a toggle for an absent track
     /// is hidden rather than shown as if it worked. Calls publish both, so
@@ -59,7 +60,7 @@ struct LiveActivityBarModel: Equatable {
 }
 
 enum LiveActivityBarIntent: Equatable {
-    case toggleMic, toggleCam, end, answer, decline
+    case toggleMic, toggleCam, toggleSpeaker, end, answer, decline
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill tapped: navigate to the owning thread.
     case open
@@ -84,6 +85,7 @@ final class LiveActivityBar: UIView {
     private let statusLabel = UILabel()
     private let micButton = UIButton(configuration: .tinted())
     private let camButton = UIButton(configuration: .tinted())
+    private let speakerButton = UIButton(configuration: .tinted())
     private let declineButton = UIButton(configuration: .filled())
     private let answerButton = UIButton(configuration: .filled())
     private let verbButton = UIButton(configuration: .filled())
@@ -153,6 +155,7 @@ final class LiveActivityBar: UIView {
         }
         control(micButton, "mic.slash.fill", "Microphone", #selector(micTapped))
         control(camButton, "video.slash.fill", "Camera", #selector(camTapped))
+        control(speakerButton, "ear", "Phone earpiece", #selector(speakerTapped))
         control(declineButton, "phone.down.fill", "Decline", #selector(declineTapped))
         control(answerButton, "phone.fill", "Answer", #selector(answerTapped))
         control(verbButton, "phone.down.fill", "End", #selector(verbTapped))
@@ -169,7 +172,7 @@ final class LiveActivityBar: UIView {
         controlsStack.axis = .horizontal
         controlsStack.spacing = 8
         controlsStack.alignment = .center
-        [micButton, camButton, declineButton, answerButton, verbButton].forEach(controlsStack.addArrangedSubview)
+        [micButton, camButton, speakerButton, declineButton, answerButton, verbButton].forEach(controlsStack.addArrangedSubview)
 
         headerStack.axis = .horizontal
         headerStack.spacing = 12
@@ -242,6 +245,11 @@ final class LiveActivityBar: UIView {
         let togglesActive = model.phase == .calling || model.phase == .inCall
         micButton.isHidden = compact || !togglesActive || !model.audioAvailable
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
+        speakerButton.isHidden = compact || model.phase != .inCall || !model.audioAvailable
+        speakerButton.configuration?.image = UIImage(systemName: model.speakerOn ? "speaker.wave.2.fill" : "ear")
+        speakerButton.configuration?.baseForegroundColor = model.speakerOn ? .tintColor : .secondaryLabel
+        speakerButton.accessibilityLabel = model.speakerOn ? "Speakerphone" : "Phone earpiece"
+        speakerButton.accessibilityValue = model.speakerOn ? "on" : "off"
         micButton.configuration?.image = UIImage(systemName: model.micOn ? "mic.fill" : "mic.slash.fill")
         camButton.configuration?.image = UIImage(systemName: model.camOn ? "video.fill" : "video.slash.fill")
         micButton.configuration?.baseForegroundColor = model.micOn ? .tintColor : .secondaryLabel
@@ -301,6 +309,7 @@ final class LiveActivityBar: UIView {
 
     @objc private func micTapped() { onIntent?(.toggleMic) }
     @objc private func camTapped() { onIntent?(.toggleCam) }
+    @objc private func speakerTapped() { onIntent?(.toggleSpeaker) }
     @objc private func declineTapped() { onIntent?(.decline) }
     @objc private func answerTapped() { onIntent?(.answer) }
     @objc private func openTapped() { onIntent?(.open) }
