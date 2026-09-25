@@ -189,6 +189,15 @@ final class LiveCall {
                     to: peerId,
                     "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)"
                 )
+                // Dial watchdog: the invite was accepted for delivery, but if the
+                // return leg never lands (peer offline, relay flap, network
+                // transition), do not hang in .calling forever.
+                for _ in 0..<40 {
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                    guard operationGeneration == generation, !Task.isCancelled else { return }
+                    if case .calling = state {} else { return } // answered, failed, or hung up
+                }
+                fail("no answer (peer unreachable)")
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
             }
