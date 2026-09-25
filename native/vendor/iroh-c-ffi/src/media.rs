@@ -527,13 +527,14 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                     }
                     Err(e) if e.downcast_ref::<SubscribeEndError>().is_some() => {
                         if attempt >= 5 {
-                            eprintln!("[media] subscribe ended early after {attempt} attempts; giving up");
+                            tracing::warn!(attempt, "subscribe ended early after 5 attempts; giving up");
                             result = anyhow::Ok(());
                             break;
                         }
-                        eprintln!(
-                            "[media] subscribe ended early (attempt {attempt}, {} frames); resubscribing",
-                            decoded_total
+                        tracing::warn!(
+                            attempt,
+                            frames = decoded_total,
+                            "subscribe ended early; resubscribing"
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                     }
@@ -552,6 +553,7 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
             result
         });
         if let Err(err) = result {
+            tracing::error!("live subscribe failed: {err:#}");
             eprintln!("live subscribe failed: {err:#}");
         }
     });
@@ -652,12 +654,29 @@ async fn subscribe_decode_once(
         let mut started = false;
         let mut last_arrival = None;
         let mut expected_pts_us: Option<u128> = None;
+        // The holder publishes continuous frames (silence on underflow), so a
+        // multi-second frame gap while the call is active means the
+        // subscription stalled (observed on iOS: the publisher's serve stream
+        // died without SUBSCRIBE_END, and consumer.read() then never returns
+        // — neither frames nor a track end). Treat it like an early end.
+        const FRAME_STALL: std::time::Duration = std::time::Duration::from_secs(4);
+        let mut last_frame = std::time::Instant::now();
         loop {
             if stop.load(Ordering::Relaxed) {
                 if !started && !startup.is_empty() {
                     let _ = sink.write(&startup);
                 }
                 return Ok(true);
+            }
+            if last_frame.elapsed() >= FRAME_STALL {
+                tracing::warn!(
+                    attempt,
+                    decoded = *decoded_total,
+                    media_secs = samples.len() as f64 / 48_000.0,
+                    stall_secs = last_frame.elapsed().as_secs_f64(),
+                    "subscribe stalled: no frames for 4s; treating as early track end"
+                );
+                return Err(anyhow::anyhow!(SubscribeEndError::Transient));
             }
             let frame = match tokio::time::timeout(
                 std::time::Duration::from_millis(200),
@@ -672,13 +691,16 @@ async fn subscribe_decode_once(
                 // Track ended. Normal only if the caller stopped it; otherwise
                 // the holder is still publishing and this is a transient break.
                 let media_secs = samples.len() as f64 / 48_000.0;
-                eprintln!(
-                    "[media] subscribe track ended early: attempt={attempt} decoded={decoded} media_secs={media_secs:.1} wall_secs={wall:.1}",
+                tracing::warn!(
+                    attempt,
                     decoded = decoded_total,
-                    wall = capture_started.elapsed().as_secs_f64(),
+                    media_secs,
+                    wall_secs = capture_started.elapsed().as_secs_f64(),
+                    "subscribe track ended early"
                 );
                 return Err(anyhow::anyhow!(SubscribeEndError::Transient));
             };
+            last_frame = std::time::Instant::now();
             let decoded = AUDIO_FRAMES_DECODED.fetch_add(1, Ordering::Relaxed) + 1;
             *decoded_total = decoded as usize;
             let arrived = std::time::Instant::now();

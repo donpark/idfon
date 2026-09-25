@@ -24,8 +24,12 @@ answered every turn — transcripts confirmed the model was replying.
    subscribe loop treated it as a normal end **silently**.
 3. The phone's `IROH_C_LOG` trace showed no subscribe error, no session
    death, no `subscribe complete` at that moment — the moq session stayed up
-   until hangup. The transport simply ended the track without telling anyone
-   who was listening.
+   until hangup. The follow-up call (with re-subscribe instrumentation
+   installed) proved it is a **stall, not a clean end**: no new Live endpoint
+   was ever created for a re-subscribe attempt, and `consumer.read()` never
+   returned — the publisher's serve stream died without SUBSCRIBE_END, so
+   the subscriber-side mux consumer blocks forever (neither frames nor a
+   track end). Suspected upstream moq-lite/iroh-live bug.
 4. Mac repro with the exact phone decode config (`decode.latency_max = 50ms`,
    via the `stream-recorder` example) captured the full 40.9s over
    loopback/direct — so the trigger needs a real-network factor (phone is
@@ -43,21 +47,28 @@ answered every turn — transcripts confirmed the model was replying.
   is ahead (stale bookkeeping, not backlog). Pacing extracted into a pure
   `CallerPacer` with regression tests.
 - Return leg (`native/vendor/iroh-c-ffi/src/media.rs`): the subscribe loop
-  now logs an early track end loudly (`subscribe track ended early: ...`)
-  and re-subscribes (fresh Live endpoint, up to 5 attempts, 250 ms backoff)
-  while the call is still active. A relay/route boundary now costs a 1–3s
-  hiccup instead of dead air until hangup. `received.wav`/`timing.csv`
-  accumulate across attempts.
+  treats two signals as transient while the call is active and re-subscribes
+  (fresh Live endpoint, up to 5 attempts, 250 ms backoff): an explicit early
+  track end (`Ok(None)`) and a ≥4s frame stall (the holder publishes
+  continuous frames — silence on underflow — so any multi-second gap means
+  the subscription is broken even when no end was declared). A dead
+  subscription now costs a 1–3s hiccup instead of dead air until hangup.
+  `received.wav`/`timing.csv` accumulate across attempts; the transition is
+  logged to the device trace (`subscribe track ended early` /
+  `subscribe stalled`).
 - Holder logs `session.closed` with reason (`close_requested`/`expired`/
   `content`/`remote_hangup`/`connection_lost`) so future dead-air calls
   self-diagnose from `holder.log`.
 
-**Lesson.** On the subscriber side, a silent `Ok(None)` from the decode loop
-is indistinguishable from "publisher finished" and there is no signal of who
-declared the end — defensively re-subscribe while the call is active, and
-log the transition. When a phone-side capture ends early, pull BOTH sides'
-captures before theorizing: the holder's complete `published.wav` is what
-proved the phone-side loop was the one that died.
+**Lesson.** A subscriber-side decode loop that stops getting frames is
+indistinguishable from a hung reader unless you instrument both paths: a
+track can die as a silent stall (no `Ok(None)`, no error) when the remote
+serve stream dies without an end declaration. Treat "no frames for N
+seconds" as fatal too, and re-subscribe while the call is active. The
+holder's complete `published.wav` is what proved the phone-side loop was
+the one that died — pull BOTH sides' captures before theorizing.
+Diagnostics must go through `tracing` (`tmp/idfon-<pid>.log`): plain
+`eprintln!` output is not captured anywhere on-device.
 
 **Rule of thumb.** `idfon get` live capture defaults to 15 seconds — pass a
 longer window when recording long broadcasts, or every repro looks broken.
