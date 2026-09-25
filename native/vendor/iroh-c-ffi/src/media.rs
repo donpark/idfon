@@ -14,7 +14,9 @@ use std::{
 use iroh::{endpoint::presets, protocol::Router, Endpoint};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 use iroh_live::{ticket::LiveTicket, Live};
-use moq_audio::encode::{Options as AudioOptions, Publication, PublicationOptions};
+use moq_audio::encode::{
+    Codec as AudioCodec, Options as AudioOptions, Publication, PublicationOptions,
+};
 use moq_audio::{Format, Frame as AudioFrame};
 use moq_media::publish::{AudioSource, LocalBroadcast, VideoRendition, VideoSource};
 use moq_video::{Frame as VideoFrame, Size, Surface};
@@ -25,6 +27,7 @@ use crate::util::tokio_executor;
 
 const AUDIO_CAPACITY: usize = 48_000 * 2;
 static AUDIO_QUEUE: Mutex<Option<Arc<Mutex<VecDeque<f32>>>>> = Mutex::new(None);
+static AUDIO_QUEUE_RATE: AtomicUsize = AtomicUsize::new(48_000);
 static AUDIO_SAMPLES_PUSHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static AUDIO_SAMPLES_NONZERO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static AUDIO_FRAMES_ENCODED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -36,7 +39,8 @@ static AUDIO_QUEUE_OVERFLOW_SAMPLES: std::sync::atomic::AtomicU64 =
 static LIVE: Mutex<Option<LiveSession>> = Mutex::new(None);
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static MEDIA_SCOPE: Mutex<Option<PathBuf>> = Mutex::new(None);
-static LIVE_CONFIG: Mutex<Option<(bool, bool, bool, Option<PathBuf>)>> = Mutex::new(None);
+static LIVE_CONFIG: Mutex<Option<(bool, bool, bool, Option<PathBuf>, AudioCodec, u32)>> =
+    Mutex::new(None);
 static AUDIO_ENABLED: AtomicBool = AtomicBool::new(true);
 static VIDEO_ENABLED: AtomicBool = AtomicBool::new(false);
 static SUBSCRIBER: Mutex<Option<Subscriber>> = Mutex::new(None);
@@ -94,49 +98,61 @@ fn audio_queue() -> Arc<Mutex<VecDeque<f32>>> {
         .clone()
 }
 
-// Trim floor: two 20 ms frames. The real target scales with the observed
-// capture burst (a device that ignores the 10 ms IO request must not have its
-// bursts eaten by the trim every callback).
-const AUDIO_MIN_TARGET_LATENCY: usize = 1_920; // 40 ms
 /// Largest single capture push seen, so the trim target fits the device.
 static AUDIO_MAX_BURST: AtomicUsize = AtomicUsize::new(0);
 
-fn audio_stream(queue: Arc<Mutex<VecDeque<f32>>>) -> BoxStream<AudioFrame> {
-    Box::pin(unfold((queue, 0u64), |(queue, pts)| async move {
-        let mut data = vec![0.0f32; 960];
-        if AUDIO_ENABLED.load(Ordering::Relaxed) {
-            // Capture-clocked: wait for a frame's worth of samples instead of
-            // pacing by a free-running 20 ms timer, whose overshoot made the
-            // consumer fall permanently behind real-time capture.
-            loop {
-                if queue.lock().ok()?.len() >= 960 {
-                    break;
+fn audio_stream(queue: Arc<Mutex<VecDeque<f32>>>, sample_rate: u32) -> BoxStream<AudioFrame> {
+    let frame_samples = sample_rate as usize / 50;
+    let mut ticker = tokio::time::interval_at(
+        tokio::time::Instant::now() + std::time::Duration::from_millis(20),
+        std::time::Duration::from_millis(20),
+    );
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    Box::pin(unfold(
+        (queue, 0u64, ticker, None::<std::time::Instant>),
+        move |(queue, pts, mut ticker, last_tick)| async move {
+            ticker.tick().await;
+            let now = std::time::Instant::now();
+            let tick_gap_us = last_tick
+                .map(|last| now.duration_since(last).as_micros())
+                .unwrap_or(20_000);
+            let mut data = vec![0.0f32; frame_samples];
+            let (missing, depth) = if AUDIO_ENABLED.load(Ordering::Relaxed) {
+                let mut q = queue.lock().ok()?;
+                let available = q.len().min(frame_samples);
+                for sample in data.iter_mut() {
+                    *sample = q.pop_front().unwrap_or(0.0);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            }
-            let mut q = queue.lock().ok()?;
-            for sample in data.iter_mut() {
-                *sample = q.pop_front().unwrap_or(0.0);
+                (frame_samples - available, q.len())
+            } else {
+                if let Ok(mut q) = queue.lock() {
+                    q.clear();
+                }
+                (0, 0)
+            };
+            if missing > 0 {
+                AUDIO_QUEUE_UNDERRUN_SAMPLES.fetch_add(missing as u64, Ordering::Relaxed);
             }
             let encoded = AUDIO_FRAMES_ENCODED.fetch_add(1, Ordering::Relaxed) + 1;
-            if encoded <= 3 || encoded % 100 == 0 {
-                eprintln!("[media] audio frame encoded #{}", encoded);
+            if encoded <= 3 || encoded % 50 == 0 || missing > 0 || tick_gap_us > 30_000 {
+                eprintln!(
+                    "[media] audio frame={} rate={} queue={} underflow={} samples tick_gap={}us",
+                    encoded, sample_rate, depth, missing, tick_gap_us
+                );
             }
-        } else {
-            // Muted: publish silence on the 20 ms cadence and drain the queue
-            // so unmute never replays stale audio.
-            if let Ok(mut q) = queue.lock() {
-                q.clear();
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        let bytes: Vec<u8> = data.into_iter().flat_map(f32::to_le_bytes).collect();
-        let timestamp = moq_net::Timestamp::from_micros(pts).ok()?;
-        Some((
-            AudioFrame::new(bytes::Bytes::from(bytes), timestamp),
-            (queue, pts + 20_000),
-        ))
-    }))
+            let bytes: Vec<u8> = data.into_iter().flat_map(f32::to_le_bytes).collect();
+            let pts_delta = if tick_gap_us > 30_000 {
+                tick_gap_us as u64
+            } else {
+                20_000
+            };
+            let timestamp = moq_net::Timestamp::from_micros(pts).ok()?;
+            Some((
+                AudioFrame::new(bytes::Bytes::from(bytes), timestamp),
+                (queue, pts + pts_delta, ticker, Some(now)),
+            ))
+        },
+    ))
 }
 
 fn video_stream() -> BoxStream<VideoFrame> {
@@ -163,7 +179,20 @@ fn start_live(
     video: bool,
     push_audio: bool,
     file_audio: Option<PathBuf>,
+    codec: AudioCodec,
+    sample_rate: u32,
 ) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        (8_000..=48_000).contains(&sample_rate) && sample_rate % 50 == 0,
+        "unsupported live audio sample rate: {sample_rate}"
+    );
+    AUDIO_ENABLED.store(true, Ordering::Relaxed);
+    AUDIO_QUEUE_RATE.store(sample_rate as usize, Ordering::Relaxed);
+    AUDIO_QUEUE_UNDERRUN_SAMPLES.store(0, Ordering::Relaxed);
+    AUDIO_QUEUE_OVERFLOW_SAMPLES.store(0, Ordering::Relaxed);
+    AUDIO_SAMPLES_PUSHED.store(0, Ordering::Relaxed);
+    AUDIO_SAMPLES_NONZERO.store(0, Ordering::Relaxed);
+    AUDIO_FRAMES_ENCODED.store(0, Ordering::Relaxed);
     if push_audio {
         // Capture starts before the publisher so permission/device setup can
         // overlap network startup. Discard that startup backlog rather than
@@ -183,18 +212,20 @@ fn start_live(
             let broadcast = live.publish(&name)?;
             if audio {
                 let mut options = AudioOptions::default();
-                options.codec = moq_audio::encode::Codec::Opus;
-                options.bitrate = Some(BITRATE.load(Ordering::Relaxed) as u32);
+                options.codec = codec;
+                options.sample_rate = Some(sample_rate);
+                options.bitrate =
+                    (codec == AudioCodec::Opus).then(|| BITRATE.load(Ordering::Relaxed) as u32);
                 // Device capture is the default live source; pushed PCM remains
                 // available through `media_audio_push_samples` for shell-owned taps.
                 let source = if push_audio {
                     AudioSource::Frames {
                         input: moq_audio::encode::Input {
                             format: Format::F32,
-                            sample_rate: 48_000,
+                            sample_rate,
                             channels: 1,
                         },
-                        frames: audio_stream(audio_queue()),
+                        frames: audio_stream(audio_queue(), sample_rate),
                     }
                 } else if let Some(path) = file_audio {
                     let file = moq_media::audio_file::AudioFile::open(path, false)?;
@@ -246,7 +277,14 @@ fn start_live(
 
 #[ffi_export]
 pub fn media_live_start(audio: u8, video: u8) -> char_p::Box {
-    media_live_start_inner(audio != 0, video != 0, false, None)
+    media_live_start_inner(
+        audio != 0,
+        video != 0,
+        false,
+        None,
+        AudioCodec::Opus,
+        48_000,
+    )
 }
 
 fn media_live_start_inner(
@@ -254,10 +292,20 @@ fn media_live_start_inner(
     video: bool,
     push_audio: bool,
     file_audio: Option<PathBuf>,
+    codec: AudioCodec,
+    sample_rate: u32,
 ) -> char_p::Box {
-    match start_live(audio, video, push_audio, file_audio.clone()) {
+    match start_live(
+        audio,
+        video,
+        push_audio,
+        file_audio.clone(),
+        codec,
+        sample_rate,
+    ) {
         Ok(ticket) => {
-            *LIVE_CONFIG.lock().unwrap() = Some((audio, video, push_audio, file_audio));
+            *LIVE_CONFIG.lock().unwrap() =
+                Some((audio, video, push_audio, file_audio, codec, sample_rate));
             ticket.try_into().unwrap()
         }
         Err(_) => String::new().try_into().unwrap(),
@@ -275,7 +323,62 @@ pub fn media_live_start_with_source(audio: u8, video: u8, source: char_p::Ref<'_
         *LAST_ERROR.lock().unwrap() = Some(format!("unknown live source: {source}"));
         return String::new().try_into().unwrap();
     }
-    media_live_start_inner(audio != 0, video != 0, source == "push", file)
+    media_live_start_inner(
+        audio != 0,
+        video != 0,
+        source == "push",
+        file,
+        AudioCodec::Opus,
+        48_000,
+    )
+}
+
+fn supported_audio_profile(codec: AudioCodec, sample_rate: u32) -> bool {
+    matches!(
+        (codec, sample_rate),
+        (AudioCodec::Opus, 48_000) | (AudioCodec::Pcm, 24_000)
+    )
+}
+
+#[ffi_export]
+pub fn media_live_start_with_profile(
+    audio: u8,
+    video: u8,
+    source: char_p::Ref<'_>,
+    codec: char_p::Ref<'_>,
+    sample_rate: u32,
+) -> char_p::Box {
+    let codec = match codec.to_str() {
+        "opus" => AudioCodec::Opus,
+        "pcm" => AudioCodec::Pcm,
+        other => {
+            *LAST_ERROR.lock().unwrap() = Some(format!("unknown live audio codec: {other}"));
+            return String::new().try_into().unwrap();
+        }
+    };
+    if !supported_audio_profile(codec, sample_rate) {
+        *LAST_ERROR.lock().unwrap() = Some(format!(
+            "unsupported live audio profile: {codec} at {sample_rate} Hz"
+        ));
+        return String::new().try_into().unwrap();
+    }
+    let source = source.to_str();
+    let file = source
+        .strip_prefix("file:")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    if source != "mic" && source != "push" && file.is_none() {
+        *LAST_ERROR.lock().unwrap() = Some(format!("unknown live source: {source}"));
+        return String::new().try_into().unwrap();
+    }
+    media_live_start_inner(
+        audio != 0,
+        video != 0,
+        source == "push",
+        file,
+        codec,
+        sample_rate,
+    )
 }
 
 #[ffi_export]
@@ -283,14 +386,18 @@ pub fn media_audio_push_samples(pcm: *const f32, samples: usize) {
     if pcm.is_null() || samples == 0 {
         return;
     }
+    let rate = AUDIO_QUEUE_RATE.load(Ordering::Relaxed) as u64;
     let pushed = AUDIO_SAMPLES_PUSHED.fetch_add(samples as u64, Ordering::Relaxed) + samples as u64;
-    if pushed <= 2_000 || pushed % 48_000 < samples as u64 {
-        eprintln!("[media] audio samples pushed total={}", pushed);
+    if pushed <= 2_000 || pushed % rate < samples as u64 {
+        eprintln!(
+            "[media] audio samples pushed total={} rate={}",
+            pushed, rate
+        );
     }
     let input = unsafe { std::slice::from_raw_parts(pcm, samples) };
     let nonzero = input.iter().filter(|sample| sample.abs() > 0.0001).count() as u64;
     AUDIO_SAMPLES_NONZERO.fetch_add(nonzero, Ordering::Relaxed);
-    if pushed <= 2_000 || pushed % 48_000 < samples as u64 {
+    if pushed <= 2_000 || pushed % rate < samples as u64 {
         let peak = input
             .iter()
             .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
@@ -307,11 +414,11 @@ pub fn media_audio_push_samples(pcm: *const f32, samples: usize) {
         // Trim here, on the capture callback: this runs in real time even when
         // the encoder pump is starved by network backpressure, so backlog
         // cannot ratchet up to the queue capacity while the pump is blocked.
-        // (Queue depth IS latency: capture pushes at real-time 48 kHz.)
+        // (Queue depth IS latency: capture pushes at the selected sample rate.)
         let burst = AUDIO_MAX_BURST
             .fetch_max(samples, Ordering::Relaxed)
             .max(samples);
-        let target = (burst * 2).max(AUDIO_MIN_TARGET_LATENCY);
+        let target = (burst * 2).max(rate as usize * 40 / 1_000);
         let excess = q.len().saturating_sub(target);
         if excess > 0 {
             AUDIO_QUEUE_OVERFLOW_SAMPLES.fetch_add(excess as u64, Ordering::Relaxed);
@@ -421,6 +528,7 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
             // immediately. This is the decoder's jitter tolerance; the sink
             // below adds its own ~50 ms device buffer.
             decode.latency_max = Some(std::time::Duration::from_millis(50));
+            AUDIO_FRAMES_DECODED.store(0, Ordering::Relaxed);
             let mut consumer =
                 moq_audio::decode::Consumer::new(broadcast.consumer(), config, name, decode)
                     .await?;
@@ -446,6 +554,10 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
             let mut startup = Vec::new();
             let mut started = false;
             let mut samples = Vec::new();
+            let capture_started = std::time::Instant::now();
+            let mut last_arrival = None;
+            let mut expected_pts_us: Option<u128> = None;
+            let mut timing = String::from("frame,arrival_us,arrival_gap_us,pts_us,media_gap_us,samples,sink_buffered_ms\n");
             while !thread_stop.load(Ordering::Relaxed) {
                 let frame = match tokio::time::timeout(
                     std::time::Duration::from_millis(200),
@@ -460,9 +572,18 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                     break;
                 };
                 let decoded = AUDIO_FRAMES_DECODED.fetch_add(1, Ordering::Relaxed) + 1;
-                if decoded <= 3 || decoded % 100 == 0 {
-                    eprintln!("[media] audio frame decoded #{}", decoded);
+                let arrived = std::time::Instant::now();
+                let arrival_us = capture_started.elapsed().as_micros();
+                let arrival_gap_us = last_arrival.map(|last: std::time::Instant| arrived.duration_since(last).as_micros()).unwrap_or(0);
+                let pts_us = frame.timestamp.as_micros();
+                let media_gap_us = expected_pts_us.map(|expected| pts_us.saturating_sub(expected)).unwrap_or(0);
+                let frame_samples = frame.data.len() / 4;
+                expected_pts_us = Some(pts_us + frame_samples as u128 * 1_000_000 / 48_000);
+                last_arrival = Some(arrived);
+                if decoded <= 3 || decoded % 100 == 0 || arrival_gap_us > 30_000 || media_gap_us > 1_000 {
+                    eprintln!("[media] audio frame decoded #{} arrival_gap={}us media_gap={}us samples={}", decoded, arrival_gap_us, media_gap_us, frame_samples);
                 }
+                timing.push_str(&format!("{decoded},{arrival_us},{arrival_gap_us},{pts_us},{media_gap_us},{frame_samples},{:.2}\n", sink.buffered().as_secs_f64() * 1_000.0));
                 if !started {
                     startup.extend_from_slice(&frame.data);
                     if startup.len() / 4 < STARTUP_PREBUFFER_SAMPLES {
@@ -496,7 +617,11 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
             if !started && !startup.is_empty() {
                 sink.write(&startup)?;
             }
-            write_wav(&media_path("received.wav"), &samples)?;
+            let received_wav = media_path("received.wav");
+            let received_timing = media_path("received-timing.csv");
+            write_wav(&received_wav, &samples)?;
+            std::fs::write(&received_timing, timing)?;
+            eprintln!("[media] live audio captures wav={} timing={}", received_wav.display(), received_timing.display());
             PLAYBACK_CONTROL.lock().unwrap().take();
             live.shutdown().await;
             anyhow::Ok(())
@@ -633,10 +758,10 @@ pub fn media_audio_switch_input(device: char_p::Ref<'_>) -> u8 {
     }
     *INPUT_DEVICE.lock().unwrap() = Some(id);
     let config = LIVE_CONFIG.lock().unwrap().clone();
-    if let Some((audio, video, push, file)) = config {
+    if let Some((audio, video, push, file, codec, sample_rate)) = config {
         media_live_stop();
-        if start_live(audio, video, push, file.clone()).is_ok() {
-            *LIVE_CONFIG.lock().unwrap() = Some((audio, video, push, file));
+        if start_live(audio, video, push, file.clone(), codec, sample_rate).is_ok() {
+            *LIVE_CONFIG.lock().unwrap() = Some((audio, video, push, file, codec, sample_rate));
         }
     }
     0
@@ -947,6 +1072,16 @@ pub fn media_shutdown() {
 
 #[cfg(test)]
 mod tests {
+    use super::AudioCodec;
+
+    #[test]
+    fn voice_agent_profiles_are_supported_but_other_rates_are_not() {
+        assert!(super::supported_audio_profile(AudioCodec::Opus, 48_000));
+        assert!(super::supported_audio_profile(AudioCodec::Pcm, 24_000));
+        assert!(!super::supported_audio_profile(AudioCodec::Pcm, 48_000));
+        assert!(!super::supported_audio_profile(AudioCodec::Opus, 24_000));
+    }
+
     #[test]
     fn media_path_is_stable() {
         assert!(super::media_path("x").ends_with("x"));

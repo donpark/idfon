@@ -10,8 +10,8 @@
 //!    holder intercepts it (before Eve sees it) and calls [`start_call`].
 //! 2. The holder opens one GPT-Live WS session, subscribes the caller's audio
 //!    (decode to s16 24 kHz mono → `session.input_audio.append`), and publishes
-//!    its own side (`session.output_audio.delta` → push queue → Live
-//!    broadcast; the encoder resamples to the codec rate).
+//!    its own side (`session.output_audio.delta` → push queue → Live broadcast)
+//!    using the codec/rate advertised in the caller's invite.
 //! 3. The holder sends the return-leg invite carrying its own ticket, so the
 //!    caller subscribes and the call goes two-way (`.calling` → `.inCall`).
 //! 4. `action=stop` text, a WS close, or a dead subscriber tears the call
@@ -23,11 +23,12 @@
 
 use std::{
     collections::VecDeque,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -37,25 +38,185 @@ use futures_util::{SinkExt, StreamExt};
 use idfon_core::transport::{IrohTransport, MessageTransport};
 use iroh::{EndpointAddr, EndpointId};
 use iroh_live::{ticket::LiveTicket, Live};
-use moq_audio::{encode::Options as AudioOptions, Format, Frame as AudioFrame};
+use moq_audio::{
+    encode::{Codec as AudioCodec, Options as AudioOptions},
+    Format, Frame as AudioFrame,
+};
 use moq_media::publish::{AudioSource, LocalBroadcast};
 use n0_future::{boxed::BoxStream, stream::unfold};
 use serde_json::json;
 use tokio_websockets::{ClientBuilder, Message};
 
 const LIVE_URL: &str = "wss://ai-gateway.vercel.sh/v1/live/sessions";
-const CHUNK_SAMPLES: usize = 960; // 20 ms of 24 kHz mono
+const CHUNK_SAMPLES: usize = 480; // 20 ms of 24 kHz mono
 const CHUNK_MS: u64 = 20;
 const CALL_BROADCAST: &str = "idfon-live-agent";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(15);
 const REPLY_MAX_S: u64 = 120; // ponytail: one spoken turn cap; a real turn-taking policy is a bigger design
+const CAPTURE_MAX_BYTES: usize = 24_000 * 2 * REPLY_MAX_S as usize;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AudioProfile {
+    codec: AudioCodec,
+    sample_rate: u32,
+}
+
+impl Default for AudioProfile {
+    fn default() -> Self {
+        Self {
+            codec: AudioCodec::Opus,
+            sample_rate: 48_000,
+        }
+    }
+}
+
+fn parse_audio_profile(codec: Option<&str>, sample_rate: Option<u32>) -> Result<AudioProfile> {
+    match (codec, sample_rate) {
+        (None, None) => Ok(AudioProfile::default()),
+        (Some("opus"), Some(48_000)) => Ok(AudioProfile {
+            codec: AudioCodec::Opus,
+            sample_rate: 48_000,
+        }),
+        (Some("pcm"), Some(24_000)) => Ok(AudioProfile {
+            codec: AudioCodec::Pcm,
+            sample_rate: 24_000,
+        }),
+        _ => {
+            anyhow::bail!("unsupported caller audio profile: codec={codec:?} rate={sample_rate:?}")
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct CallDiagnostics(Option<Arc<CallDiagnosticsInner>>);
+
+struct CallDiagnosticsInner {
+    dir: PathBuf,
+    started: Instant,
+    buffers: Mutex<CaptureBuffers>,
+}
+
+#[derive(Default)]
+struct CaptureBuffers {
+    caller_wire: Vec<u8>,
+    caller_to_gpt: Vec<u8>,
+    gpt_output: Vec<u8>,
+    published: Vec<u8>,
+    trace: Vec<String>,
+}
+
+impl CallDiagnostics {
+    fn new() -> Self {
+        let root = std::env::var_os("IDFON_AUDIO_CAPTURE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("idfon-audio-captures"));
+        let dir = root.join(format!("call-{}-{}", std::process::id(), rand_suffix()));
+        match std::fs::create_dir_all(&dir) {
+            Ok(()) => {
+                eprintln!(
+                    "[eve-idfon-channel] audio diagnostics dir={}",
+                    dir.display()
+                );
+                Self(Some(Arc::new(CallDiagnosticsInner {
+                    dir,
+                    started: Instant::now(),
+                    buffers: Mutex::new(CaptureBuffers::default()),
+                })))
+            }
+            Err(error) => {
+                eprintln!("[eve-idfon-channel] audio diagnostics disabled: {error}");
+                Self::default()
+            }
+        }
+    }
+
+    fn capture(&self, lane: &str, bytes: &[u8]) {
+        let Some(inner) = &self.0 else { return };
+        let Ok(mut buffers) = inner.buffers.lock() else {
+            return;
+        };
+        let target = match lane {
+            "caller_wire" => &mut buffers.caller_wire,
+            "caller_to_gpt" => &mut buffers.caller_to_gpt,
+            "gpt_output" => &mut buffers.gpt_output,
+            "published" => &mut buffers.published,
+            _ => return,
+        };
+        let count = bytes
+            .len()
+            .min(CAPTURE_MAX_BYTES.saturating_sub(target.len()));
+        target.extend_from_slice(&bytes[..count]);
+    }
+
+    fn trace(&self, mut event: serde_json::Value) {
+        let Some(inner) = &self.0 else { return };
+        if let Some(object) = event.as_object_mut() {
+            object.insert(
+                "elapsed_us".into(),
+                serde_json::json!(inner.started.elapsed().as_micros()),
+            );
+        }
+        if let Ok(line) = serde_json::to_string(&event) {
+            if let Ok(mut buffers) = inner.buffers.lock() {
+                if buffers.trace.len() < 100_000 {
+                    buffers.trace.push(line);
+                }
+            }
+        }
+    }
+
+    fn finish(&self) {
+        let Some(inner) = &self.0 else { return };
+        let Ok(buffers) = inner.buffers.lock() else {
+            return;
+        };
+        for (name, pcm) in [
+            ("caller-wire.wav", &buffers.caller_wire),
+            ("caller-to-gpt.wav", &buffers.caller_to_gpt),
+            ("gpt-output.wav", &buffers.gpt_output),
+            ("published.wav", &buffers.published),
+        ] {
+            if let Err(error) = write_pcm_wav(&inner.dir.join(name), pcm) {
+                eprintln!("[eve-idfon-channel] audio capture write failed {name}: {error}");
+            }
+        }
+        if let Err(error) = std::fs::write(
+            inner.dir.join("timing.jsonl"),
+            buffers.trace.join("\n") + "\n",
+        ) {
+            eprintln!("[eve-idfon-channel] timing trace write failed: {error}");
+        }
+    }
+}
+
+fn write_pcm_wav(path: &std::path::Path, pcm: &[u8]) -> std::io::Result<()> {
+    let pcm = &pcm[..pcm.len() & !1];
+    let data_len = pcm.len() as u32;
+    let mut wav = Vec::with_capacity(44 + pcm.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&24_000u32.to_le_bytes());
+    wav.extend_from_slice(&48_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend_from_slice(pcm);
+    std::fs::write(path, wav)
+}
 
 struct LiveInvite {
     is_start: bool,
     is_stop: bool,
     ticket: Option<LiveTicket>,
     return_addr: Option<EndpointAddr>,
+    audio_codec: Option<String>,
+    audio_sample_rate: Option<u32>,
 }
 
 fn parse_invite(text: &str) -> Option<LiveInvite> {
@@ -71,11 +232,21 @@ fn parse_invite(text: &str) -> Option<LiveInvite> {
         .find_map(|line| line.strip_prefix("return_addr="))
         .and_then(|value| BASE64.decode(value).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let audio_codec = rest
+        .lines()
+        .find_map(|line| line.strip_prefix("audio_codec="))
+        .map(str::to_owned);
+    let audio_sample_rate = rest
+        .lines()
+        .find_map(|line| line.strip_prefix("audio_sample_rate="))
+        .and_then(|value| value.parse().ok());
     Some(LiveInvite {
         is_start: action == "start",
         is_stop: action == "stop",
         ticket,
         return_addr,
+        audio_codec,
+        audio_sample_rate,
     })
 }
 
@@ -123,6 +294,7 @@ pub async fn handle_live_text(
         Ok(key) if !key.is_empty() => key,
         _ => return Ok(false),
     };
+    let profile = parse_audio_profile(invite.audio_codec.as_deref(), invite.audio_sample_rate)?;
     let ticket = invite
         .ticket
         .ok_or_else(|| anyhow!("live call start is missing its media ticket"))?;
@@ -130,8 +302,10 @@ pub async fn handle_live_text(
         .parse::<EndpointId>()
         .map_err(|error| anyhow!("invalid caller endpoint id: {error}"))?;
     eprintln!(
-        "[eve-idfon-channel] call invite peer={sender_peer_id} explicit_return_addr={}",
-        invite.return_addr.is_some()
+        "[eve-idfon-channel] call invite peer={sender_peer_id} explicit_return_addr={} response_codec={} response_rate={}",
+        invite.return_addr.is_some(),
+        profile.codec,
+        profile.sample_rate
     );
     let caller_addr = match invite.return_addr {
         Some(address) if address.id == endpoint_id => address,
@@ -148,6 +322,7 @@ pub async fn handle_live_text(
         Arc::clone(transport),
         key.clone(),
         api_key,
+        profile,
     )
     .await
     {
@@ -169,6 +344,7 @@ async fn start_call(
     transport: Arc<IrohTransport>,
     key: SigningKey,
     api_key: String,
+    profile: AudioProfile,
 ) -> Result<()> {
     stop_active_call("replaced by a newer call");
     let stop = Arc::new(AtomicBool::new(false));
@@ -188,11 +364,13 @@ async fn start_call(
     let broadcast = live
         .publish(CALL_BROADCAST)
         .context("publish call broadcast")?;
-    let out_bus = QueueSink::new();
-    tokio::spawn(publish_gpt_audio(
+    let diagnostics = CallDiagnostics::new();
+    let out_bus = QueueSink::new(diagnostics.clone());
+    let publisher = tokio::spawn(publish_gpt_audio(
         broadcast,
         out_bus.clone(),
         Arc::clone(&stop),
+        profile,
     ));
     let own_ticket = LiveTicket::new(live.endpoint().id(), CALL_BROADCAST).serialize();
 
@@ -204,7 +382,10 @@ async fn start_call(
         holder_endpoint_id.to_string(),
         format!("eve_call_return_{call_id}"),
         idfon_protocol::MessageContent::Text {
-            text: format!("IDFON-LIVE/1\naction=start\nticket={own_ticket}\nreturn=1"),
+            text: format!(
+                "IDFON-LIVE/1\naction=start\nticket={own_ticket}\nreturn=1\naudio_codec={}\naudio_sample_rate={}",
+                profile.codec, profile.sample_rate
+            ),
         },
         format!("eve-call-{caller_peer_id}-return-{call_id}"),
         None,
@@ -225,14 +406,30 @@ async fn start_call(
             }
         }
     }
-    anyhow::ensure!(sent, "return-leg invite never acknowledged");
+    if !sent {
+        stop.store(true, Ordering::Relaxed);
+        let _ = publisher.await;
+        diagnostics.finish();
+        anyhow::bail!("return-leg invite never acknowledged");
+    }
     eprintln!("[eve-idfon-channel] call accepted from {caller_peer_id}, return leg sent");
 
     // Drive the GPT-Live session + caller audio until the call ends. The
     // timeout only bounds startup; afterwards the task keeps running the call
     // in the background and cleans up through the `stop` flag.
     let task = tokio::spawn(async move {
-        let result = run_session(caller_ticket, out_bus, api_key, Arc::clone(&stop)).await;
+        let result = run_session(
+            caller_ticket,
+            out_bus,
+            api_key,
+            Arc::clone(&stop),
+            diagnostics.clone(),
+            profile,
+        )
+        .await;
+        stop.store(true, Ordering::Relaxed);
+        let _ = publisher.await;
+        diagnostics.finish();
         if let Err(error) = &result {
             eprintln!("[eve-idfon-channel] live session failed: {error:#}");
         }
@@ -276,6 +473,65 @@ mod tests {
         .unwrap();
         assert_eq!(invite.return_addr.unwrap().id, id);
     }
+
+    #[test]
+    fn caller_profile_is_mirrored_and_legacy_invites_default_to_opus() {
+        let invite = parse_invite(
+            "IDFON-LIVE/1\naction=start\nticket=t\naudio_codec=pcm\naudio_sample_rate=24000",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_audio_profile(invite.audio_codec.as_deref(), invite.audio_sample_rate).unwrap(),
+            AudioProfile {
+                codec: AudioCodec::Pcm,
+                sample_rate: 24_000
+            },
+        );
+        assert_eq!(
+            parse_audio_profile(None, None).unwrap(),
+            AudioProfile {
+                codec: AudioCodec::Opus,
+                sample_rate: 48_000
+            },
+        );
+        assert!(parse_audio_profile(Some("pcm"), Some(48_000)).is_err());
+    }
+
+    #[test]
+    fn pcm_capture_wav_and_delta_byte_carry_are_valid() {
+        let sink = QueueSink::new(CallDiagnostics::default());
+        assert_eq!(sink.push(&[0x34]), (0, 0));
+        assert_eq!(sink.push(&[0x12, 0x78, 0x56]), (2, 0));
+        let queue = sink.queue.lock().unwrap();
+        assert_eq!(
+            queue.samples.iter().copied().collect::<Vec<_>>(),
+            [0x1234, 0x5678]
+        );
+        drop(queue);
+        let mut output = [9i16; 4];
+        assert_eq!(
+            fill_audio_frame(&mut VecDeque::from([7, 8]), &mut output),
+            2
+        );
+        assert_eq!(output, [7, 8, 0, 0]);
+
+        let path = std::env::temp_dir().join(format!("idfon-audio-{}.wav", rand_suffix()));
+        write_pcm_wav(&path, &[0x34, 0x12]).unwrap();
+        let wav = std::fs::read(&path).unwrap();
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 24_000);
+        assert_eq!(&wav[44..], &[0x34, 0x12]);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+fn fill_audio_frame(queue: &mut VecDeque<i16>, output: &mut [i16]) -> usize {
+    let available = queue.len().min(output.len());
+    for sample in &mut output[..available] {
+        *sample = queue.pop_front().unwrap_or(0);
+    }
+    output[available..].fill(0);
+    output.len() - available
 }
 
 fn rand_suffix() -> String {
@@ -288,30 +544,60 @@ fn rand_suffix() -> String {
 
 /// PCM hand-off from the GPT-Live reader into the broadcast encoder: s16le
 /// samples (24 kHz mono), bounded so a stall cannot ratchet memory.
+#[derive(Default)]
+struct QueueData {
+    samples: VecDeque<i16>,
+    trailing_byte: Option<u8>,
+}
+
 #[derive(Clone)]
 struct QueueSink {
-    queue: Arc<Mutex<VecDeque<i16>>>,
+    queue: Arc<Mutex<QueueData>>,
+    diagnostics: CallDiagnostics,
 }
 
 impl QueueSink {
-    fn new() -> Self {
+    fn new(diagnostics: CallDiagnostics) -> Self {
         Self {
-            queue: Arc::new(Mutex::new(VecDeque::with_capacity(1 << 13))),
+            queue: Arc::new(Mutex::new(QueueData {
+                samples: VecDeque::with_capacity(1 << 13),
+                trailing_byte: None,
+            })),
+            diagnostics,
         }
     }
 
-    fn push(&self, samples: &[u8]) {
-        if let Ok(mut queue) = self.queue.lock() {
-            queue.extend(
-                samples
-                    .chunks_exact(2)
-                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
-            );
-            // Cap at ~10 s of 24 kHz audio; drop the oldest.
-            while queue.len() > 240_000 {
-                queue.pop_front();
+    fn push(&self, bytes: &[u8]) -> (usize, usize) {
+        let Ok(mut queue) = self.queue.lock() else {
+            return (0, 0);
+        };
+        let mut offset = 0;
+        if let Some(previous) = queue.trailing_byte.take() {
+            if let Some(&first) = bytes.first() {
+                queue
+                    .samples
+                    .push_back(i16::from_le_bytes([previous, first]));
+                offset = 1;
+            } else {
+                queue.trailing_byte = Some(previous);
             }
         }
+        while offset + 1 < bytes.len() {
+            queue
+                .samples
+                .push_back(i16::from_le_bytes([bytes[offset], bytes[offset + 1]]));
+            offset += 2;
+        }
+        if offset < bytes.len() {
+            queue.trailing_byte = Some(bytes[offset]);
+        }
+        // Cap at ~10 s of 24 kHz audio; drop the oldest.
+        let mut dropped = 0;
+        while queue.samples.len() > 240_000 {
+            queue.samples.pop_front();
+            dropped += 1;
+        }
+        (queue.samples.len(), dropped)
     }
 }
 
@@ -321,6 +607,8 @@ async fn run_session(
     out_bus: QueueSink,
     api_key: String,
     stop: Arc<AtomicBool>,
+    diagnostics: CallDiagnostics,
+    profile: AudioProfile,
 ) -> Result<()> {
     let ws = connect_live(&api_key).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
@@ -328,6 +616,7 @@ async fn run_session(
 
     // WS → broadcast: decode base64 s16 24 kHz chunks straight into the queue.
     let reader_stop = Arc::clone(&stop);
+    let reader_diagnostics = diagnostics.clone();
     let session_finalized = Arc::new(AtomicBool::new(false));
     let reader_finalized = Arc::clone(&session_finalized);
     let mut reader = tokio::spawn(async move {
@@ -369,7 +658,15 @@ async fn run_session(
                     {
                         output_chunks += 1;
                         output_bytes += delta.len();
-                        out_bus.push(&delta);
+                        reader_diagnostics.capture("gpt_output", &delta);
+                        let (queue_samples, dropped_samples) = out_bus.push(&delta);
+                        reader_diagnostics.trace(json!({
+                            "event": "gpt_audio_delta",
+                            "chunk": output_chunks,
+                            "bytes": delta.len(),
+                            "queue_samples": queue_samples,
+                            "dropped_samples": dropped_samples,
+                        }));
                         if output_chunks == 1 || output_chunks % 50 == 0 {
                             eprintln!("[eve-idfon-channel] GPT-Live audio out chunks={output_chunks} bytes={output_bytes}");
                         }
@@ -400,6 +697,7 @@ async fn run_session(
 
     // Caller audio → WS; on hangup, cancel the pump and close GPT-Live cleanly.
     let pacer_stop = Arc::clone(&stop);
+    let pacer_diagnostics = diagnostics.clone();
     let pacer_finalized = Arc::clone(&session_finalized);
     let mut pacer = tokio::spawn(async move {
         let pump_stop = Arc::clone(&pacer_stop);
@@ -409,7 +707,7 @@ async fn run_session(
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             } => Ok(()),
-            result = pump_caller_audio(caller_ticket, &mut ws_tx, pump_stop) => result,
+            result = pump_caller_audio(caller_ticket, &mut ws_tx, pump_stop, pacer_diagnostics, profile) => result,
         };
         if let Err(error) = result {
             eprintln!("[eve-idfon-channel] caller audio ended: {error:#}");
@@ -530,6 +828,8 @@ async fn pump_caller_audio<S>(
     ticket: LiveTicket,
     ws_tx: &mut S,
     stop: Arc<AtomicBool>,
+    diagnostics: CallDiagnostics,
+    expected_profile: AudioProfile,
 ) -> Result<()>
 where
     S: futures_util::Sink<Message> + Unpin + Send,
@@ -576,7 +876,17 @@ where
         .get(&name)
         .ok_or_else(|| anyhow!("caller audio catalog entry disappeared"))?
         .clone();
-    // Decode straight to s16 mono at the GPT-Live rate — the consumer resamples.
+    let actual_codec = config.codec.to_string();
+    let actual_profile = parse_audio_profile(Some(&actual_codec), Some(config.sample_rate))?;
+    anyhow::ensure!(
+        actual_profile == expected_profile,
+        "caller invite requested {expected_profile:?}, but media catalog advertises {actual_profile:?}"
+    );
+    eprintln!(
+        "[eve-idfon-channel] caller track={name} codec={} rate={}",
+        actual_codec, config.sample_rate
+    );
+    // Decode to GPT-Live's PCM format; a matching 24 kHz PCM track needs no resampling.
     let mut decode = moq_audio::decode::Config::new();
     decode.format = Format::S16;
     decode.sample_rate = Some(24_000);
@@ -586,100 +896,231 @@ where
         moq_audio::decode::Consumer::new(broadcast.consumer(), &config, &name, decode).await?;
     eprintln!("[eve-idfon-channel] caller audio subscribed track={name}");
 
-    let mut sent = 0u64;
-    let mut chunks = 0u64;
-    let mut voiced_chunks = 0u64;
-    while !stop.load(Ordering::Relaxed) {
-        let frame = tokio::time::timeout(Duration::from_millis(200), consumer.read()).await;
-        match frame {
-            Ok(Ok(Some(frame))) => {
-                // Frames arrive ~20 ms worth each; forward them at the pace
-                // they arrive (decoders already run on the network clock).
-                let samples = frame.data.len() / 2;
-                let peak = frame
-                    .data
-                    .chunks_exact(2)
-                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]]).unsigned_abs())
-                    .max()
-                    .unwrap_or(0);
-                chunks += 1;
-                if peak > 300 {
-                    voiced_chunks += 1;
+    const MAX_INPUT_BUFFER: usize = 12_000; // 500 ms at 24 kHz
+    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel(8);
+    let read_stop = Arc::clone(&stop);
+    let mut reader = tokio::spawn(async move {
+        while !read_stop.load(Ordering::Relaxed) {
+            match consumer.read().await {
+                Ok(Some(frame)) => {
+                    if frame_tx.send(Ok(frame)).await.is_err() {
+                        break;
+                    }
                 }
-                ws_tx
-                    .send(Message::text(
-                        json!({
-                            "type": "session.input_audio.append",
-                            "audio": BASE64.encode(&frame.data),
-                        })
-                        .to_string(),
-                    ))
-                    .await
-                    .map_err(|error| anyhow!("GPT-Live send: {error}"))?;
-                sent += samples as u64;
-                if chunks == 1 || chunks % 50 == 0 {
-                    eprintln!("[eve-idfon-channel] caller audio in chunks={chunks} voiced={voiced_chunks} samples={sent} peak={peak}");
-                }
-                // Cap streamed input (REPLY_MAX_S): stop feeding so Live can
-                // finish its turn; the call stays up until the peer hangs up.
-                if sent > (REPLY_MAX_S as u64) * 24_000 {
+                Ok(None) => {
+                    let _ = frame_tx.send(Err("caller track ended".into())).await;
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(CHUNK_MS)).await;
+                Err(error) => {
+                    let _ = frame_tx.send(Err(error.to_string())).await;
+                    break;
+                }
             }
-            Ok(Ok(None)) => break, // caller's broadcast ended (hangup)
-            Ok(Err(_)) => break,   // decode error on a 1:1 call = hangup, not a failure
-            Err(_) => continue,    // read timeout: keep waiting while the call is up
         }
+    });
+    let mut tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_millis(CHUNK_MS),
+        Duration::from_millis(CHUNK_MS),
+    );
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut input = VecDeque::with_capacity(MAX_INPUT_BUFFER);
+    let mut sent_samples = 0u64;
+    let mut chunks = 0u64;
+    let mut input_frames = 0u64;
+    let mut underflow_samples = 0u64;
+    let mut dropped_samples = 0u64;
+    let mut last_arrival: Option<Instant> = None;
+    let mut expected_pts_us: Option<u128> = None;
+    let mut media_origin_pts: Option<i128> = None;
+
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                if stop.load(Ordering::Relaxed) { break; }
+                let mut pcm = [0i16; CHUNK_SAMPLES];
+                let missing = fill_audio_frame(&mut input, &mut pcm);
+                underflow_samples += missing as u64;
+                let queue_samples = input.len();
+                let bytes: Vec<u8> = pcm.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+                diagnostics.capture("caller_to_gpt", &bytes);
+                diagnostics.trace(json!({
+                    "event": "caller_input_append",
+                    "chunk": chunks + 1,
+                    "samples": CHUNK_SAMPLES,
+                    "queue_samples": queue_samples,
+                    "silence_samples": missing,
+                    "total_silence_samples": underflow_samples,
+                }));
+                ws_tx
+                    .send(Message::text(json!({
+                        "type": "session.input_audio.append",
+                        "audio": BASE64.encode(&bytes),
+                    }).to_string()))
+                    .await
+                    .map_err(|error| anyhow!("GPT-Live send: {error}"))?;
+                chunks += 1;
+                sent_samples += CHUNK_SAMPLES as u64;
+                if chunks == 1 || chunks % 50 == 0 {
+                    eprintln!("[eve-idfon-channel] caller appends={chunks} source_frames={input_frames} silence_samples={underflow_samples} queue_samples={queue_samples}");
+                }
+                if sent_samples >= REPLY_MAX_S * 24_000 { break; }
+            }
+            item = frame_rx.recv() => {
+                match item {
+                    Some(Ok(frame)) => {
+                        input_frames += 1;
+                        let samples = frame.data.len() / 2;
+                        let peak = frame.data.chunks_exact(2)
+                            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]).unsigned_abs())
+                            .max().unwrap_or(0);
+                        let arrived = Instant::now();
+                        let arrival_gap_us = last_arrival.map(|last| arrived.duration_since(last).as_micros()).unwrap_or(0);
+                        let pts_us = frame.timestamp.as_micros();
+                        let media_gap_us = expected_pts_us.map(|expected| pts_us.saturating_sub(expected)).unwrap_or(0);
+                        expected_pts_us = Some(pts_us + samples as u128 * 1_000_000 / 24_000);
+                        last_arrival = Some(arrived);
+                        diagnostics.capture("caller_wire", &frame.data);
+                        diagnostics.trace(json!({
+                            "event": "caller_audio_frame",
+                            "frame": input_frames,
+                            "pts_us": pts_us,
+                            "arrival_gap_us": arrival_gap_us,
+                            "media_gap_us": media_gap_us,
+                            "samples": samples,
+                            "peak": peak,
+                        }));
+                        if arrival_gap_us > 30_000 || media_gap_us > 1_000 {
+                            eprintln!("[eve-idfon-channel] caller timing gap arrival={arrival_gap_us}us media={media_gap_us}us pts={pts_us} samples={samples}");
+                        }
+                        let cursor = sent_samples + dropped_samples + input.len() as u64;
+                        let origin = *media_origin_pts.get_or_insert_with(|| {
+                            pts_us as i128 - (cursor * 1_000_000 / 24_000) as i128
+                        });
+                        let target = ((pts_us as i128 - origin).max(0) as u64 * 24_000) / 1_000_000;
+                        let media_silence = target.saturating_sub(cursor);
+                        if media_silence > 0 {
+                            input.extend(std::iter::repeat(0).take(media_silence as usize));
+                        }
+                        let cursor_after_gap = sent_samples + dropped_samples + input.len() as u64;
+                        let late_samples = cursor_after_gap.saturating_sub(target).min(samples as u64);
+                        if late_samples > 0 {
+                            diagnostics.trace(json!({
+                                "event": "caller_audio_late",
+                                "frame": input_frames,
+                                "dropped_samples": late_samples,
+                            }));
+                        }
+                        input.extend(
+                            frame.data
+                                .chunks_exact(2)
+                                .skip(late_samples as usize)
+                                .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
+                        );
+                        while input.len() > MAX_INPUT_BUFFER {
+                            input.pop_front();
+                            dropped_samples += 1;
+                        }
+                    }
+                    Some(Err(reason)) => {
+                        eprintln!("[eve-idfon-channel] caller audio ended: {reason}");
+                        break;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    reader.abort();
+    let _ = (&mut reader).await;
+    if dropped_samples > 0 {
+        eprintln!("[eve-idfon-channel] caller input queue dropped {dropped_samples} old samples");
     }
     Ok(())
 }
 
-/// Publishes our call side: drains `queue` at a 20 ms 48 kHz-free cadence —
-/// the input is s16 @ 24 kHz and the encoder resamples to the codec rate.
-/// Silence while empty so the caller never hears dead air under the greeting.
-async fn publish_gpt_audio(broadcast: LocalBroadcast, sink: QueueSink, stop: Arc<AtomicBool>) {
+/// Publishes one 20 ms frame per clock tick; underflow is silence, not a stalled track.
+async fn publish_gpt_audio(
+    broadcast: LocalBroadcast,
+    sink: QueueSink,
+    stop: Arc<AtomicBool>,
+    profile: AudioProfile,
+) {
     let stream_stop = Arc::clone(&stop);
+    let mut tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_millis(CHUNK_MS),
+        Duration::from_millis(CHUNK_MS),
+    );
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let stream: BoxStream<AudioFrame> = Box::pin(unfold(
-        (sink, 0u64, 0u64, stream_stop),
-        |(sink, pts, frames, stop)| async move {
+        (
+            sink,
+            0u64,
+            0u64,
+            0u64,
+            stream_stop,
+            tick,
+            None::<Instant>,
+            profile,
+        ),
+        move |(sink, pts, frames, underflow_samples, stop, mut tick, last_tick, profile)| async move {
+            tick.tick().await;
+            if stop.load(Ordering::Relaxed) {
+                return None;
+            }
             let mut data = vec![0i16; CHUNK_SAMPLES];
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    return None;
-                }
-                {
-                    let Ok(queue) = sink.queue.lock() else {
-                        return None;
-                    };
-                    if queue.len() >= CHUNK_SAMPLES {
-                        break;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-            if let Ok(mut queue) = sink.queue.lock() {
-                for sample in data.iter_mut() {
-                    *sample = queue.pop_front().unwrap_or(0);
-                }
-            }
+            let mut queue = sink.queue.lock().ok()?;
+            let missing = fill_audio_frame(&mut queue.samples, &mut data);
+            let available = CHUNK_SAMPLES - missing;
+            drop(queue);
             let frame = frames + 1;
+            let total_underflow = underflow_samples + missing as u64;
+            let now = Instant::now();
+            let tick_gap_us = last_tick
+                .map(|last| now.duration_since(last).as_micros())
+                .unwrap_or(CHUNK_MS as u128 * 1_000);
+            let pts_delta = if tick_gap_us > 30_000 {
+                tick_gap_us as u64
+            } else {
+                CHUNK_MS * 1_000
+            };
             if frame == 1 || frame % 50 == 0 {
-                eprintln!("[eve-idfon-channel] audio frames published={frame}");
+                eprintln!("[eve-idfon-channel] audio frame={frame} queue_samples={available} underflow_samples={missing} total_underflow={total_underflow}");
             }
             let bytes: Vec<u8> = data
                 .iter()
                 .flat_map(|sample| sample.to_le_bytes())
                 .collect();
+            sink.diagnostics.capture("published", &bytes);
+            sink.diagnostics.trace(json!({
+                "event": "published_audio_frame",
+                "frame": frame,
+                "pts_us": pts,
+                "tick_gap_us": tick_gap_us,
+                "queue_samples": available,
+                "underflow_samples": missing,
+                "total_underflow_samples": total_underflow,
+                "codec": profile.codec.to_string(),
+                "sample_rate": profile.sample_rate,
+            }));
             let timestamp = moq_net::Timestamp::from_micros(pts).ok()?;
             Some((
                 AudioFrame::new(bytes::Bytes::from(bytes), timestamp),
-                (sink, pts + CHUNK_MS as u64 * 1_000, frame, stop),
+                (
+                    sink,
+                    pts + pts_delta,
+                    frame,
+                    total_underflow,
+                    stop,
+                    tick,
+                    Some(now),
+                    profile,
+                ),
             ))
         },
     ));
     let mut options = AudioOptions::default();
-    options.codec = moq_audio::encode::Codec::Opus;
+    options.codec = profile.codec;
+    options.sample_rate = Some(profile.sample_rate);
     broadcast.audio().set_with(
         AudioSource::Frames {
             input: moq_audio::encode::Input {

@@ -155,13 +155,16 @@ final class LiveCall {
                     "kind": AnyEncodable("live_audio"),
                     "mode": AnyEncodable("record"),
                 ])
+                let profile = ContactAudioProfiles.profile(for: peerId)
                 LiveCallHarness.activateAudioSession()
-                guard await AudioPusher.shared.startForCall() else {
+                guard await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate) else {
                     fail("microphone unavailable")
                     return
                 }
                 guard operationGeneration == generation, !Task.isCancelled else { return }
-                let ticket = await ffiString { media_live_start_with_source(1, 0, "push") } // shell audio
+                let ticket = await ffiString {
+                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate))
+                }
                 guard operationGeneration == generation, !Task.isCancelled, !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
@@ -175,7 +178,7 @@ final class LiveCall {
                     return
                 }
                 published = true
-                NSLog("idfon live call: caller audio published")
+                NSLog("idfon live call: caller audio published profile=\(profile.rawValue)")
                 applySendState() // a toggle during `.calling` may predate the publish
                 UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
                 // Carry the daemon's current dial address: endpoint-id-only
@@ -183,7 +186,7 @@ final class LiveCall {
                 let encodedAddr = Data(returnAddr.utf8).base64EncodedString()
                 try await client.sendText(
                     to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\nreturn_addr=\(encodedAddr)"
+                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)"
                 )
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
@@ -204,8 +207,9 @@ final class LiveCall {
         notify()
         operation = Task {
             do {
+                let profile = ContactAudioProfiles.profile(for: pending.peer)
                 LiveCallHarness.activateAudioSession()
-                guard await AudioPusher.shared.startForCall() else {
+                guard await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate) else {
                     fail("microphone unavailable")
                     return
                 }
@@ -218,16 +222,22 @@ final class LiveCall {
                 guard case .inCall = state else { return }
                 // Publish our own mic so audio is two-way, then send the
                 // return-leg invite (own ticket) that makes the caller join us.
-                let own = await ffiString { media_live_start_with_source(1, 0, "push") } // shell audio
+                let own = await ffiString {
+                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate))
+                }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
                     return
                 }
                 published = true
+                NSLog("idfon live call: callee audio published profile=\(profile.rawValue)")
                 applySendState() // the mic toggle drives a real published session now
                 // Audio invite: no media line (audio is the default).
-                try await client.sendText(to: pending.peer, "IDFON-LIVE/1\naction=start\nticket=\(own)")
+                try await client.sendText(
+                    to: pending.peer,
+                    "IDFON-LIVE/1\naction=start\nticket=\(own)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                )
                 // Informational parity with core.ts's video answer branch.
                 try await client.sendText(to: pending.peer, "call_started")
             } catch {

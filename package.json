@@ -10,7 +10,8 @@
     "cli": "pnpm --filter @idfon/cli",
     "ios": "pnpm --filter @idfon/ios",
     "mac": "pnpm --filter @idfon/mac",
-    "pair": "bash ./scripts/pair-apple-channels.sh"
+    "pair": "bash ./scripts/pair-apple-channels.sh",
+    "agent": "bash ./scripts/agent.sh"
   },
   "author": "Don Park",
   "license": "(MIT OR Apache-2.0)",
