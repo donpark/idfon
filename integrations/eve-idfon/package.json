@@ -1,6 +1,6 @@
 {
   "name": "eve-idfon",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Eve ingress channel that turns an idfon peer into a first-class Eve agent contact: cryptographic peer-identity auth, no public endpoint.",
   "license": "(MIT OR Apache-2.0)",
   "repository": {
@@ -49,10 +49,10 @@
     "zod": "^4.6.5"
   },
   "optionalDependencies": {
-    "eve-idfon-darwin-arm64": "0.5.0",
-    "eve-idfon-darwin-x64": "0.5.0",
-    "eve-idfon-linux-arm64": "0.5.0",
-    "eve-idfon-linux-x64": "0.5.0"
+    "eve-idfon-darwin-arm64": "0.6.0",
+    "eve-idfon-darwin-x64": "0.6.0",
+    "eve-idfon-linux-arm64": "0.6.0",
+    "eve-idfon-linux-x64": "0.6.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
