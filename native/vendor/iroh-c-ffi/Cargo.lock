@@ -3152,6 +3152,7 @@ dependencies = [
  "data-encoding",
  "idfon-client",
  "idfon-daemon",
+ "idfon-media",
  "idfon-protocol",
  "iroh",
  "iroh-blobs",

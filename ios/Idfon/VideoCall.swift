@@ -2,6 +2,47 @@ import Foundation
 import UIKit
 import AVFAudio
 
+/// Latest in-memory video frame from the Rust bridge. Opt-in via
+/// IDFON_VIDEO_INMEMORY=1; the default keeps the video-frame.jpg artifact.
+private final class VideoFrameInbox {
+    static let shared = VideoFrameInbox()
+    private let lock = NSLock()
+    private var latest: (data: Data, width: Int, height: Int)?
+
+    func deliver(data: Data, width: Int, height: Int) {
+        lock.lock()
+        latest = (data, width, height)
+        lock.unlock()
+    }
+
+    func clear() {
+        lock.lock()
+        latest = nil
+        lock.unlock()
+    }
+
+    func take() -> (Data, Int, Int)? {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = latest
+        latest = nil
+        return value
+    }
+}
+
+/// C callback invoked on a Rust media thread. The inbox is a singleton, so no
+/// Swift object lifetime crosses the FFI boundary. The buffer is borrowed;
+/// copy before returning. `len == 0` means "clear".
+private let videoRenderCallback: @convention(c) (UnsafeRawPointer?, UnsafePointer<UInt8>?, Int, UInt32, UInt32, UInt64) -> Void = { _, data, len, width, height, _ in
+    guard let data, len > 0, width > 0, height > 0 else {
+        VideoFrameInbox.shared.clear()
+        return
+    }
+    autoreleasepool {
+        VideoFrameInbox.shared.deliver(data: Data(bytes: data, count: len), width: Int(width), height: Int(height))
+    }
+}
+
 /// Parsed IDFON-LIVE/1 invite envelope (native/src/core.ts parseLiveInvite).
 /// Shape: "IDFON-LIVE/1\naction=start\nmedia=video-call\nticket=<ticket>"
 struct LiveInvite {
@@ -150,6 +191,7 @@ final class VideoCall: NSObject {
 
     private let client = DaemonClient()
     private var frameTimer: Timer?
+    private let inMemoryVideoFrames = ProcessInfo.processInfo.environment["IDFON_VIDEO_INMEMORY"] == "1"
     private var framePath: String?
     private var frameDeadline: Date?
     private var lastFrameSize = -1
@@ -365,6 +407,10 @@ final class VideoCall: NSObject {
         guard joinedTicket != ticket else { return }
         joinedTicket = ticket
         activateAudioSession()
+        if inMemoryVideoFrames {
+            VideoFrameInbox.shared.clear()
+            _ = media_video_set_render_cb(nil, videoRenderCallback)
+        }
         let path = await ffiString { media_video_start(ticket) }
         guard !path.isEmpty else {
             let error = await ffiString { media_video_last_error() }
@@ -393,6 +439,10 @@ final class VideoCall: NSObject {
         }
         frameTimer?.invalidate()
         frameTimer = nil
+        if inMemoryVideoFrames {
+            media_video_clear_render_cb()
+            VideoFrameInbox.shared.clear()
+        }
         framePath = nil
         frameDeadline = nil
         joinedTicket = nil
@@ -434,7 +484,12 @@ final class VideoCall: NSObject {
     private func startFramePolling() {
         frameTimer?.invalidate()
         frameTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self, !self.framePollInFlight, let path = self.framePath else { return }
+            guard let self else { return }
+            if self.inMemoryVideoFrames {
+                self.pollInMemoryFrame()
+                return
+            }
+            guard !self.framePollInFlight, let path = self.framePath else { return }
             self.framePollInFlight = true
             Task.detached(priority: .userInitiated) { [weak self] in
                 let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
@@ -480,6 +535,40 @@ final class VideoCall: NSObject {
                     self.peerFrameVisible = image != nil
                     self.onFrame?(image)
                 }
+            }
+        }
+    }
+
+    private func pollInMemoryFrame() {
+        guard let (data, width, height) = VideoFrameInbox.shared.take() else {
+            if peerFrameVisible {
+                peerFrameVisible = false
+                onFrame?(nil)
+            }
+            return
+        }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let provider = CGDataProvider(data: data as CFData)
+            let cg = provider.flatMap {
+                CGImage(
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bitsPerPixel: 32,
+                    bytesPerRow: width * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                    provider: $0,
+                    decode: nil,
+                    shouldInterpolate: false,
+                    intent: .defaultIntent
+                )
+            }
+            let image = cg.map { UIImage(cgImage: $0) }
+            await MainActor.run {
+                guard let self else { return }
+                self.peerFrameVisible = image != nil
+                self.onFrame?(image)
             }
         }
     }
