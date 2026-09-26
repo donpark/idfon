@@ -6,6 +6,7 @@
 
 use std::{
     collections::VecDeque,
+    ffi::c_void,
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     sync::{Arc, Mutex},
@@ -24,8 +25,8 @@ use n0_future::{boxed::BoxStream, stream::unfold};
 use safer_ffi::prelude::*;
 
 use idfon_media::seam::{
-    audio_frames, video_frames, AudioCapture, AudioInput, DeviceAudioCapture, FileAudioCapture,
-    VideoCapture,
+    audio_frames, video_frames, AudioCapture, AudioInput, AudioPlayback, DeviceAudioCapture,
+    FileAudioCapture, VideoCapture,
 };
 
 use crate::util::tokio_executor;
@@ -62,6 +63,25 @@ static INPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 static OUTPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 static VOLUME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(100);
 static BITRATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(32_000);
+
+/// Optional shell-owned audio playback. When absent, decoded audio goes to the
+/// bundled moq playback device; when set, the shell gets interleaved f32 PCM.
+type AudioPlaybackFn = unsafe extern "C" fn(*const c_void, *const u8, usize, u32, u32, u64);
+static AUDIO_PLAYBACK_CB: Mutex<Option<(usize, AudioPlaybackFn)>> = Mutex::new(None);
+
+#[ffi_export]
+pub fn media_audio_set_playback_cb(
+    ctx: *const c_void,
+    cb: unsafe extern "C" fn(*const c_void, *const u8, usize, u32, u32, u64),
+) -> u8 {
+    *AUDIO_PLAYBACK_CB.lock().unwrap() = Some((ctx as usize, cb));
+    0
+}
+
+#[ffi_export]
+pub fn media_audio_clear_playback_cb() {
+    *AUDIO_PLAYBACK_CB.lock().unwrap() = None;
+}
 
 struct LiveSession {
     live: Live,
@@ -203,6 +223,95 @@ struct ShellVideoCapture;
 impl VideoCapture for ShellVideoCapture {
     fn into_source(self: Box<Self>) -> VideoSource {
         video_frames(video_stream())
+    }
+}
+
+/// Bundled fallback: decoded audio to the platform output device via moq.
+struct DevicePlayback {
+    engine: moq_audio::playback::Engine,
+    sink: moq_audio::playback::Sink,
+    control: moq_audio::playback::Control,
+    input: AudioInput,
+}
+
+impl DevicePlayback {
+    async fn open(device: Option<String>, input: AudioInput) -> anyhow::Result<Self> {
+        let engine = moq_audio::playback::Engine::open({
+            let mut config = moq_audio::playback::Config::default();
+            config.device = device;
+            config
+        })
+        .await
+        .map_err(|err| anyhow::anyhow!("playback engine: {err}"))?;
+        let mut spec = moq_audio::playback::Input::default();
+        spec.format = input.format;
+        spec.sample_rate = input.sample_rate;
+        spec.channels = input.channels;
+        let sink = engine
+            .sink(spec)
+            .map_err(|err| anyhow::anyhow!("playback sink: {err}"))?;
+        let control = sink.control();
+        Ok(Self {
+            engine,
+            sink,
+            control,
+            input,
+        })
+    }
+
+    fn engine(&self) -> moq_audio::playback::Engine {
+        self.engine.clone()
+    }
+
+    fn control(&self) -> moq_audio::playback::Control {
+        self.control.clone()
+    }
+}
+
+impl AudioPlayback for DevicePlayback {
+    fn input(&self) -> AudioInput {
+        self.input
+    }
+
+    fn write(&mut self, pcm: &[u8], _pts_us: u64) -> anyhow::Result<()> {
+        self.sink
+            .write(pcm)
+            .map_err(|err| anyhow::anyhow!("playback write: {err}"))
+    }
+
+    fn buffered(&self) -> std::time::Duration {
+        self.sink.buffered()
+    }
+
+    fn set_volume(&mut self, volume: f32) {
+        self.control.set_volume(volume);
+    }
+}
+
+/// Platform adapter: decoded audio handed to the shell.
+struct CallbackPlayback {
+    ctx: usize,
+    cb: AudioPlaybackFn,
+    input: AudioInput,
+}
+
+impl AudioPlayback for CallbackPlayback {
+    fn input(&self) -> AudioInput {
+        self.input
+    }
+
+    fn write(&mut self, pcm: &[u8], pts_us: u64) -> anyhow::Result<()> {
+        unsafe {
+            (self.cb)(
+                self.ctx as *const c_void,
+                pcm.as_ptr(),
+                pcm.len(),
+                self.input.sample_rate,
+                self.input.channels,
+                pts_us,
+            );
+        }
+        Ok(())
     }
 }
 
@@ -690,21 +799,26 @@ async fn subscribe_decode_once(
         decode.latency_max = Some(std::time::Duration::from_millis(50));
         let mut consumer =
             moq_audio::decode::Consumer::new(broadcast.consumer(), config, name, decode).await?;
-        let engine = moq_audio::playback::Engine::open({
-            let mut playback = moq_audio::playback::Config::default();
-            playback.device = OUTPUT_DEVICE.lock().unwrap().clone();
-            playback
-        })
-        .await?;
-        PLAYBACK_ENGINE.lock().unwrap().replace(engine.clone());
-        let mut playback_input = moq_audio::playback::Input::default();
-        playback_input.format = Format::F32;
-        playback_input.sample_rate = 48_000;
-        playback_input.channels = 1;
-        let mut sink = engine.sink(playback_input)?;
-        let control = sink.control();
-        control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
-        *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
+        let input = AudioInput {
+            format: Format::F32,
+            sample_rate: 48_000,
+            channels: 1,
+        };
+        let mut playback: Box<dyn AudioPlayback> = match *AUDIO_PLAYBACK_CB.lock().unwrap() {
+            Some((ctx, cb)) => Box::new(CallbackPlayback { ctx, cb, input }),
+            None => {
+                let device = OUTPUT_DEVICE.lock().unwrap().clone();
+                let device_playback = DevicePlayback::open(device, input).await?;
+                PLAYBACK_ENGINE
+                    .lock()
+                    .unwrap()
+                    .replace(device_playback.engine());
+                let control = device_playback.control();
+                control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
+                *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
+                Box::new(device_playback)
+            }
+        };
         // Do not start the speaker on the first arriving packet. A short
         // startup prebuffer absorbs normal network/decoder scheduling
         // jitter without turning the first late packet into a click.
@@ -723,7 +837,7 @@ async fn subscribe_decode_once(
         loop {
             if stop.load(Ordering::Relaxed) {
                 if !started && !startup.is_empty() {
-                    let _ = sink.write(&apply_playback_gain(&startup));
+                    let _ = playback.write(&apply_playback_gain(&startup), 0);
                 }
                 return Ok(true);
             }
@@ -776,13 +890,13 @@ async fn subscribe_decode_once(
             if decoded <= 3 || decoded % 100 == 0 || arrival_gap_us > 30_000 || media_gap_us > 1_000 {
                 eprintln!("[media] audio frame decoded #{} arrival_gap={}us media_gap={}us samples={}", decoded, arrival_gap_us, media_gap_us, frame_samples);
             }
-            timing.push_str(&format!("{decoded},{arrival_us},{arrival_gap_us},{pts_us},{media_gap_us},{frame_samples},{:.2}\n", sink.buffered().as_secs_f64() * 1_000.0));
+            timing.push_str(&format!("{decoded},{arrival_us},{arrival_gap_us},{pts_us},{media_gap_us},{frame_samples},{:.2}\n", playback.buffered().as_secs_f64() * 1_000.0));
             if !started {
                 startup.extend_from_slice(&frame.data);
                 if startup.len() / 4 < STARTUP_PREBUFFER_SAMPLES {
                     continue;
                 }
-                sink.write(&apply_playback_gain(&startup))?;
+                playback.write(&apply_playback_gain(&startup), pts_us as u64)?;
                 startup.clear();
                 started = true;
             } else {
@@ -790,7 +904,7 @@ async fn subscribe_decode_once(
                 // drains back on its own, so discard down to the playout
                 // target instead of ratcheting delay after every stall.
                 const SINK_TARGET_LATENCY: f64 = 0.08; // 80 ms
-                let buffered = sink.buffered().as_secs_f64();
+                let buffered = playback.buffered().as_secs_f64();
                 let mut data = frame.data.as_ref();
                 if buffered > SINK_TARGET_LATENCY && data.len() >= 4 {
                     let excess_samples = (((buffered - SINK_TARGET_LATENCY)
@@ -798,7 +912,7 @@ async fn subscribe_decode_once(
                         .min(data.len() / 4);
                     data = &data[excess_samples * 4..];
                 }
-                sink.write(&apply_playback_gain(data))?;
+                playback.write(&apply_playback_gain(data), pts_us as u64)?;
             }
             for chunk in frame.data.chunks_exact(4) {
                 samples.push(f32::from_le_bytes(chunk.try_into().unwrap()));

@@ -10,14 +10,20 @@
 ## What shipped
 
 - `crates/idfon-media/src/seam.rs`: `AudioCapture` / `VideoCapture` /
-  `VideoRender` traits, `AudioInput`, and bundled `FileAudioCapture` /
-  `FileVideoCapture` / `DeviceAudioCapture`.
-- `idfon-media` call sites route through the seam (`live.rs`, `video.rs`).
+  `VideoRender` / `AudioPlayback` traits, `AudioInput`, and bundled
+  `FileAudioCapture` / `FileVideoCapture` / `DeviceAudioCapture`.
+- `idfon-media` call sites route through the seam (`live.rs`, `video.rs`,
+  `service.rs` device capture).
 - `iroh-c-ffi` capture adapters (`ShellAudioCapture`, `ShellVideoCapture`)
   route `start_live`; the render loop takes a `Box<dyn VideoRender>` with a
   `DiskRender` fallback (`video-frame.jpg`, used only when no callback is set).
 - New FFI: `media_video_set_render_cb` / `media_video_clear_render_cb`
-  (`CallbackRender` hands decoded RGBA straight to the shell; `len == 0` = clear).
+  (`CallbackRender` hands decoded RGBA straight to the shell; `len == 0` = clear),
+  and `media_audio_set_playback_cb` / `media_audio_clear_playback_cb`
+  (`CallbackPlayback` hands decoded interleaved f32 PCM to the shell). The live
+  subscribe path picks `CallbackPlayback` when registered, else the bundled
+  `DevicePlayback` (moq output device) — so `DevicePlayback` is the seam's
+  device-I/O adapter and a shell can replace it.
 - iOS/mac Swift register the callback unconditionally and render frames in
   memory; they no longer read `video-frame.jpg`. The Native SDK GUI does not
   register one, so it keeps using the artifact. **Not device-tested.**
@@ -125,8 +131,12 @@ adapter function. idfon code references the traits.
    verification still pending — flip back if it regresses.
 3. **Native GUI render.** Requires a Native SDK image path from memory, or an
    agreed file/cache handoff. Deferred until the Native SDK supports it.
-4. **Device I/O adapter.** Platform capture/playback behind the traits; bundled
-   `cpal`/`moq_audio` remains the fallback impl.
+4. **Device I/O adapter.** DONE for routing: live subscribe selects
+   `CallbackPlayback` (shell) or `DevicePlayback` (bundled moq output, with
+   `media_audio_set_playback_cb` exposed), and device capture routes through
+   `DeviceAudioCapture`. The Swift playback adapter itself is not wired yet —
+   it is the one place where a wrong implementation makes calls silent, across
+   four call paths (LiveCall/VideoCall × iOS/mac). Next.
 5. **Codec adapter.** Only if a platform needs it; gated by capability
    negotiation. Opus stays bundled unless the codec fork is taken.
 

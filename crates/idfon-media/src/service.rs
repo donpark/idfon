@@ -3,8 +3,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use iroh_live::{media::publish::{AudioSource, LocalBroadcast}, Live};
-use moq_audio::capture::Config as AudioCaptureConfig;
+use iroh_live::{media::publish::LocalBroadcast, Live};
+
+use crate::seam::{AudioCapture, DeviceAudioCapture};
 use idfon_protocol::{MediaKind, MediaSession};
 use thiserror::Error;
 
@@ -117,7 +118,9 @@ impl MediaSessionHandle {
         let broadcast = live
             .publish(&name)
             .map_err(|_| MediaServiceError::MediaUnavailable)?;
-        broadcast.audio().set(AudioSource::Device(AudioCaptureConfig::default()));
+        broadcast
+            .audio()
+            .set(Box::new(DeviceAudioCapture::new(None)).into_source());
         let ticket = iroh_live::ticket::LiveTicket::new(live.endpoint().id(), &name).serialize();
         *self.publisher.lock().expect("publisher poisoned") = Some(LivePublisher {
             live,
