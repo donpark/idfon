@@ -1,4 +1,5 @@
 import UIKit
+import AVFoundation
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -7,6 +8,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         ChatStore.shared.start()
         LiveCall.shared.recoverStaleCall()
         VideoCall.shared.recoverStaleCall()
+        AudioPlaybackSink.shared.register()
         setVideoRotation()
         smokeCheckStatus()
         handleLaunchArguments()
@@ -247,5 +249,115 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
         }
+    }
+}
+
+/// Plays decoded call audio from the Rust bridge (`media_audio_set_playback_cb`)
+/// through AVAudioEngine. The FFI delivers interleaved f32 PCM (mono, 48 kHz)
+/// from a media thread; buffers are scheduled on a dedicated queue and playback
+/// idles out after a short silence. If the engine cannot start, the callback is
+/// cleared so Rust falls back to its own output device on the next subscribe.
+final class AudioPlaybackSink {
+    static let shared = AudioPlaybackSink()
+    private let queue = DispatchQueue(label: "idfon.audio.playback")
+    private let format = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+    )!
+    private var engine: AVAudioEngine?
+    private var player: AVAudioPlayerNode?
+    private var pending = 0
+    private var idle: DispatchWorkItem?
+
+    func register() {
+        _ = media_audio_set_playback_cb(nil, audioPlaybackCallback)
+    }
+
+    func unregister() {
+        media_audio_clear_playback_cb()
+        queue.async { self.stop() }
+    }
+
+    fileprivate func enqueue(_ data: Data, sampleRate: Double, channels: UInt32) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard channels == 1, sampleRate == 48_000 else { return }
+            guard self.ensureStarted() else { return }
+            guard let player = self.player, self.pending < 4 else { return }
+            let frames = data.count / 4
+            guard frames > 0,
+                  let buffer = AVAudioPCMBuffer(
+                      pcmFormat: self.format,
+                      frameCapacity: AVAudioFrameCount(frames)
+                  )
+            else { return }
+            buffer.frameLength = AVAudioFrameCount(frames)
+            if let dst = buffer.floatChannelData?[0] {
+                data.withUnsafeBytes { raw in
+                    guard let src = raw.bindMemory(to: Float.self).baseAddress else { return }
+                    dst.update(from: src, count: frames)
+                }
+            }
+            self.pending += 1
+            player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                self?.queue.async { self?.pending = max(0, (self?.pending ?? 1) - 1) }
+            }
+            self.restartIdle()
+        }
+    }
+
+    private func ensureStarted() -> Bool {
+        if engine != nil { return true }
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            NSLog("idfon audio playback failed to start: \(error)")
+            media_audio_clear_playback_cb()
+            return false
+        }
+        player.play()
+        self.engine = engine
+        self.player = player
+        return true
+    }
+
+    private func stop() {
+        idle?.cancel()
+        idle = nil
+        player?.stop()
+        engine?.stop()
+        engine = nil
+        player = nil
+        pending = 0
+    }
+
+    private func restartIdle() {
+        idle?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.queue.async { if self.pending == 0 { self.stop() } }
+        }
+        idle = work
+        queue.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+}
+
+private let audioPlaybackCallback: @convention(c) (
+    UnsafeRawPointer?, UnsafePointer<UInt8>?, Int, UInt32, UInt32, UInt64
+) -> Void = { _, data, len, sampleRate, channels, _ in
+    guard let data, len > 0 else { return }
+    autoreleasepool {
+        AudioPlaybackSink.shared.enqueue(
+            Data(bytes: data, count: len),
+            sampleRate: Double(sampleRate),
+            channels: channels
+        )
     }
 }

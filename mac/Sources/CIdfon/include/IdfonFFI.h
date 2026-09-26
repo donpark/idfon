@@ -48,7 +48,7 @@ void media_live_unsubscribe(void);
 // Optional shell-owned audio playback. Register before media_live_subscribe;
 // when set, decoded interleaved f32 PCM goes to the callback instead of the
 // bundled output device. The buffer is borrowed (copy before returning).
-void media_audio_set_playback_cb(void const *ctx,
+uint8_t media_audio_set_playback_cb(void const *ctx,
     void (*cb)(void const *ctx, uint8_t const *data, size_t len, uint32_t sample_rate, uint32_t channels, uint64_t pts_us));
 void media_audio_clear_playback_cb(void);
 // Push one camera frame from the shell's AVCaptureSession into the dylib's
@@ -63,7 +63,7 @@ void media_video_stop(void);
 // Optional in-memory renderer. Register before media_video_start; when set,
 // decoded RGBA frames go to the callback instead of video-frame.jpg. The
 // buffer is borrowed (copy before returning); len == 0 means "clear".
-void media_video_set_render_cb(void const *ctx,
+uint8_t media_video_set_render_cb(void const *ctx,
     void (*cb)(void const *ctx, uint8_t const *data, size_t len, uint32_t width, uint32_t height, uint64_t pts_ms));
 void media_video_clear_render_cb(void);
 char *media_live_last_error(void);           // last publish failure ("" if none)

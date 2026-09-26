@@ -131,12 +131,12 @@ adapter function. idfon code references the traits.
    verification still pending — flip back if it regresses.
 3. **Native GUI render.** Requires a Native SDK image path from memory, or an
    agreed file/cache handoff. Deferred until the Native SDK supports it.
-4. **Device I/O adapter.** DONE for routing: live subscribe selects
-   `CallbackPlayback` (shell) or `DevicePlayback` (bundled moq output, with
-   `media_audio_set_playback_cb` exposed), and device capture routes through
-   `DeviceAudioCapture`. The Swift playback adapter itself is not wired yet —
-   it is the one place where a wrong implementation makes calls silent, across
-   four call paths (LiveCall/VideoCall × iOS/mac). Next.
+4. **Device I/O adapter.** DONE: live subscribe selects `CallbackPlayback`
+   (shell) or `DevicePlayback` (bundled moq output), and device capture routes
+   through `DeviceAudioCapture`. iOS/mac register `AudioPlaybackSink`
+   (AVAudioEngine) at launch and play decoded PCM in memory; if the engine
+   cannot start it clears the callback so Rust falls back to its own output on
+   the next subscribe. **Not device-tested.**
 5. **Codec adapter.** Only if a platform needs it; gated by capability
    negotiation. Opus stays bundled unless the codec fork is taken.
 
