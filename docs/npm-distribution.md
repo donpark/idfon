@@ -68,10 +68,19 @@ pin exact versions, so a partial publish breaks installs on platforms whose
 package is missing (optional deps that fail to resolve are silently skipped,
 and the launcher then errors at first command).
 
-- **CI** (default): push tag `npm-v*` → `.github/workflows/cli.yml` builds all
-  four targets on native runners, smoke-tests, packs, and publishes all five.
-  Requires the `NPM_TOKEN` repo secret. Re-runs are idempotent via npm's
-  duplicate-version rejection.
+- **CI** (default): `.github/workflows/cli.yml` has two jobs. `build` runs on
+  `main` pushes (and PRs) whose paths touch the CLI, builds all four targets on
+  native runners, smoke-tests, and uploads the platform tarballs as artifacts
+  — it does **not** publish. `publish` is gated on
+  `if: startsWith(github.ref, 'refs/tags/npm-v')`, so it only runs when the
+  workflow executes with an `npm-v*` tag ref. Because `on.push` lists only
+  `branches: [main]` (no tags), pushing the tag triggers nothing: create and
+  push the tag, then dispatch it explicitly —
+  `gh workflow run cli.yml --ref npm-v0.6.0`. That rebuilds all four targets,
+  then downloads the artifacts and publishes all five packages. Requires the
+  `NPM_TOKEN` repo secret. Re-runs are idempotent via npm's duplicate-version
+  rejection. So a normal `main` push only builds; publishing always needs an
+  `npm-v*` tag ref.
 - **Local**: `npm login` once, then
   `npm publish` in `cli/idfon` and each `cli/idfon-*` dir.
 
