@@ -2,8 +2,9 @@ import AppKit
 import Foundation
 import CIdfon
 
-/// Latest in-memory video frame from the Rust bridge. Opt-in via
-/// IDFON_VIDEO_INMEMORY=1; the default keeps the video-frame.jpg artifact.
+/// Latest in-memory video frame from the Rust bridge. The mac shell always
+/// registers a renderer; the FFI falls back to video-frame.jpg only when no
+/// callback is set (e.g. the Native SDK GUI).
 private final class VideoFrameInbox {
     static let shared = VideoFrameInbox()
     private let lock = NSLock()
@@ -462,10 +463,6 @@ final class VideoCall {
 
     private let client = DaemonClient()
     private var frameTimer: Timer?
-    private let inMemoryVideoFrames = ProcessInfo.processInfo.environment["IDFON_VIDEO_INMEMORY"] == "1"
-    private var framePath: String?
-    private var frameDeadline: Date?
-    private var lastFrameSize = -1
 
     private var peer: String?
     private var callStartedAt: Date?
@@ -767,10 +764,8 @@ final class VideoCall {
         // waitForReturnInvite; the second must not restart the watch.
         guard joinedTicket != ticket else { return }
         joinedTicket = ticket
-        if inMemoryVideoFrames {
-            VideoFrameInbox.shared.clear()
-            _ = media_video_set_render_cb(nil, videoRenderCallback)
-        }
+        VideoFrameInbox.shared.clear()
+        _ = media_video_set_render_cb(nil, videoRenderCallback)
         let path = await ffiString { media_video_start(ticket) }
         guard !path.isEmpty else {
             let error = await ffiString { media_video_last_error() }
@@ -786,9 +781,6 @@ final class VideoCall {
         }
         if state == .idle { return } // hung up while subscribing
         NSLog("idfon video watch started path=\(path)")
-        framePath = path
-        frameDeadline = Date().addingTimeInterval(10)
-        lastFrameSize = -1
         startFramePolling()
         if state == .calling { state = .inCall }
         notify()
@@ -801,14 +793,9 @@ final class VideoCall {
         }
         frameTimer?.invalidate()
         frameTimer = nil
-        if inMemoryVideoFrames {
-            media_video_clear_render_cb()
-            VideoFrameInbox.shared.clear()
-        }
-        framePath = nil
-        frameDeadline = nil
+        media_video_clear_render_cb()
+        VideoFrameInbox.shared.clear()
         joinedTicket = nil
-        lastFrameSize = -1
         watching = false
         lastFrame = nil
         published = false
@@ -841,69 +828,14 @@ final class VideoCall {
     }
 
     /// Rewrites the remote frame into the UI ~10x/s. The FFI renames a new
-    /// The current bridge publishes decoded frames through an atomic native
-    /// image artifact; reload only when its size changes.
+    /// Pulls the latest in-memory frame from the Rust bridge ~10x/s.
     private func startFramePolling() {
         frameTimer?.invalidate()
         // Timer fires on the main runloop; hop through the main actor for
         // the MainActor-isolated state.
         frameTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
-                if self.inMemoryVideoFrames {
-                    self.pollInMemoryFrame()
-                    return
-                }
-                guard let path = self.framePath else { return }
-                let size = await Task.detached(priority: .userInitiated) {
-                    (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
-                }.value
-                guard size > 0 else {
-                    if let deadline = self.frameDeadline, Date() > deadline {
-                        // No picture yet is normal: the peer's camera may be off
-                        // (calls start mic-first) and its video track only
-                        // exists once it enables it. Only a reported watch
-                        // failure ends the call.
-                        self.frameDeadline = nil
-                        let error = await self.ffiString { media_video_last_error() }
-                        if !error.isEmpty {
-                            self.fail("video watch failed: \(error)")
-                            return
-                        }
-                        NSLog("idfon video: no remote frame yet (peer camera off?)")
-                    }
-                    // No frame written yet, or the FFI removed the stale JPEG
-                    // (new subscription / peer camera off). Drop any frame
-                    // still on screen so a paused stream cannot masquerade as
-                    // live video.
-                    if self.lastFrame != nil {
-                        self.lastFrame = nil
-                        self.onFrame?(nil)
-                    }
-                    self.lastFrameSize = -1
-                    return
-                }
-                guard size != self.lastFrameSize else { return }
-                self.lastFrameSize = size
-                self.frameDeadline = nil
-                // Decode off the main thread: a JPEG decode ~10x/s would
-                // otherwise eat main-thread time for the whole call.
-                // kCGImageSourceShouldCacheImmediately forces eager decode
-                // on the calling thread; NSImage(contentsOfFile:) defers it
-                // to first draw (main).
-                Task.detached(priority: .userInitiated) { [weak self] in
-                    guard let self else { return }
-                    let url = URL(fileURLWithPath: path) as CFURL
-                    let src = CGImageSourceCreateWithURL(url, nil)
-                    let cg = src.flatMap {
-                        CGImageSourceCreateImageAtIndex($0, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
-                    }
-                    let image = cg.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
-                    await MainActor.run {
-                        self.lastFrame = image
-                        self.onFrame?(image)
-                    }
-                }
+                self?.pollInMemoryFrame()
             }
         }
     }

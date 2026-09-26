@@ -32,13 +32,6 @@ pub trait VideoCapture: Send {
     fn into_source(self: Box<Self>) -> VideoSource;
 }
 
-/// Decoded audio sink: device playback, WAV recorder, or test double.
-pub trait AudioPlayback: Send + Sync {
-    fn input(&self) -> AudioInput;
-    fn play(&self, frame: AudioFrame);
-    fn set_volume(&self, volume: f32);
-}
-
 /// Decoded video sink: platform renderer, disk artifact, or test double.
 pub trait VideoRender: Send + Sync {
     fn present(&self, frame: VideoFrame);
@@ -130,24 +123,6 @@ impl AudioCapture for DeviceAudioCapture {
         let mut config = moq_audio::capture::Config::default();
         config.source = moq_audio::capture::Source::Microphone(self.device);
         AudioSource::Device(config)
-    }
-}
-
-/// Test double: counts presentations without touching a device or the disk.
-#[derive(Default)]
-pub struct CountingRender {
-    frames: std::sync::atomic::AtomicU64,
-}
-
-impl CountingRender {
-    pub fn count(&self) -> u64 {
-        self.frames.load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-impl VideoRender for CountingRender {
-    fn present(&self, _frame: VideoFrame) {
-        self.frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
