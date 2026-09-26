@@ -41,7 +41,7 @@ Bump the remaining **major** versions, one dependency (or small group) at a time
 - iOS is **device-only, never simulator**: use `pnpm ios build` and `pnpm ios device` (install + launch on Don's iPhone). Do not use `--sim`, `pnpm ios start`, or simulator destinations; `ios/Vendor/sim/` is irrelevant.
 - Raw cargo is fine for the Rust iteration loop: `cargo check --workspace --all-targets`, `cargo test --workspace --all-targets`, and vendored checks/tests from `native/` via `cargo check --manifest-path vendor/iroh-c-ffi/Cargo.toml` and `cargo test --manifest-path vendor/iroh-c-ffi/Cargo.toml --lib`. Product artifacts still go through the pnpm entrypoints.
 - Two lockfiles: the workspace `Cargo.lock` and `native/vendor/iroh-c-ffi/Cargo.lock` (the vendor crate is `exclude`d from the workspace).
-- Commit after each dependency (or logical group). Version stays in lockstep at `0.5.0` (`[workspace.package]` + npm packages) — bump manually if needed.
+- Commit after each dependency (or logical group). Version stays in lockstep at `0.6.0` (`[workspace.package]` + npm packages) — bump manually if needed.
 - Generated artifacts are not repo content: `ios/Vendor/` is gitignored, `mac/Vendor/*.dylib` is now gitignored, `cli/idfon-*/bin/` is gitignored.
 
 ## Suggested sequence
