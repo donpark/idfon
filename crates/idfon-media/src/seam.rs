@@ -8,6 +8,7 @@
 //! adapters are live sinks invoked per decoded frame.
 
 use std::path::Path;
+use std::time::Duration;
 
 use moq_audio::{Format, Frame as AudioFrame};
 use moq_media::publish::{AudioSource, VideoSource};
@@ -37,6 +38,22 @@ pub trait VideoRender: Send + Sync {
     fn present(&self, frame: VideoFrame);
     /// No live frames are available any more (peer camera off / track ended).
     fn clear(&self) {}
+}
+
+/// Decoded-audio sink: platform playback or the bundled device engine.
+///
+/// `write` takes interleaved PCM in `input()`'s layout, already gain-applied
+/// by the caller. `buffered` is the sink's lead over the speaker (zero for
+/// sinks that pace themselves).
+pub trait AudioPlayback: Send {
+    fn input(&self) -> AudioInput;
+    fn write(&mut self, pcm: &[u8], pts_us: u64) -> anyhow::Result<()>;
+    fn buffered(&self) -> Duration {
+        Duration::ZERO
+    }
+    fn set_volume(&mut self, volume: f32) {
+        let _ = volume;
+    }
 }
 
 /// A frame-stream audio source (shell push or file decode).
