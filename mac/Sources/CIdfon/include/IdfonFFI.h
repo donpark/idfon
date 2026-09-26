@@ -54,6 +54,12 @@ void media_video_push_frame(uint8_t const *data, size_t len, uint32_t width, uin
 char *media_video_start(char const *ticket);
 char *media_video_last_error(void);
 void media_video_stop(void);
+// Optional in-memory renderer. Register before media_video_start; when set,
+// decoded RGBA frames go to the callback instead of video-frame.jpg. The
+// buffer is borrowed (copy before returning); len == 0 means "clear".
+void media_video_set_render_cb(void const *ctx,
+    void (*cb)(void const *ctx, uint8_t const *data, size_t len, uint32_t width, uint32_t height, uint64_t pts_ms));
+void media_video_clear_render_cb(void);
 char *media_live_last_error(void);           // last publish failure ("" if none)
 
 // Media file scope: subsequent media artifacts (video-frame.jpg, recordings,

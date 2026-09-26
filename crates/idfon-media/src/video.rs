@@ -1,19 +1,19 @@
 //! Current MoQ video integration.
 //!
 //! Video is built from the current `moq-media` source model. Pre-encoded Annex-B
-//! H.264 uses `VideoSource::AnnexB`; MP4/MKV/TS/FLV inputs use the current
+//! H.264 uses `FileVideoCapture`; MP4/MKV/TS/FLV inputs use the current
 //! `moq_mux::import::Container` path.
 
 use std::path::Path;
 
-use bytes::Bytes;
 use iroh::protocol::ProtocolHandler as _;
 use iroh_live::{ticket::LiveTicket, Call, Live};
-use moq_media::{publish::{VideoRendition, VideoSource}, video::Size};
+use moq_media::{publish::VideoRendition, video::Size};
 use moq_video::encode::{Config as EncodeConfig, Encoder};
-use n0_future::boxed::BoxStream;
 
 use crate::live::build_endpoint;
+use crate::seam::FileVideoCapture;
+use crate::seam::VideoCapture;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Quality { Low, Mid, High, Highest }
@@ -80,9 +80,9 @@ impl VideoPublisher {
                 Ok::<_, anyhow::Error>((live, None, Some(catalog), Some(import_task), ticket))
             } else {
                 let broadcast = live.publish(&name)?;
-                let source = annexb_source(&path)?;
+                let capture = FileVideoCapture::annexb(&path)?;
                 broadcast.video().set_renditions(
-                    source,
+                    Box::new(capture).into_source(),
                     presets.iter().map(|preset| {
                         let (name, size) = match preset {
                             VideoPreset::P180 => ("180p", Size { width: 320, height: 180 }),
@@ -106,16 +106,6 @@ impl VideoPublisher {
         drop(self.catalog);
         let _ = self.runtime.block_on(self.live.shutdown());
     }
-}
-
-fn annexb_source(path: &Path) -> anyhow::Result<VideoSource> {
-    let data = std::fs::read(path)
-        .map_err(|err| anyhow::anyhow!("cannot read {}: {err}", path.display()))?;
-    if !data.windows(4).any(|w| w == [0, 0, 0, 1]) {
-        anyhow::bail!("video source must be Annex-B H.264 or a supported container")
-    }
-    let stream: BoxStream<Bytes> = Box::pin(n0_future::stream::iter([Bytes::from(data)]));
-    Ok(VideoSource::AnnexB(stream))
 }
 
 pub fn listen_to_h264(
@@ -186,7 +176,7 @@ pub fn dial_to_peer(
             let call_path = Call::path(live.endpoint().id());
             let broadcast = live.publish(&call_path)?;
             broadcast.video().set_renditions(
-                annexb_source(&path)?,
+                Box::new(FileVideoCapture::annexb(&path)?).into_source(),
                 vec![VideoRendition::new("video")],
             )?;
             let addr: iroh::EndpointAddr = serde_json::from_str(&peer_addr)?;

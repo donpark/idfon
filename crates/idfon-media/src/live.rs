@@ -10,17 +10,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use moq_media::{
-    audio_file::AudioFile,
-    publish::AudioSource,
-    subscribe::RemoteBroadcast,
-};
+use moq_media::subscribe::RemoteBroadcast;
 use moq_audio::decode::{Config as AudioDecodeConfig, Consumer as AudioConsumer};
 use moq_audio::Format;
 use moq_audio::encode::Options as AudioOptions;
 use iroh_live::{ticket::LiveTicket, Live};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh::protocol::ProtocolHandler as _;
+
+use crate::seam::AudioCapture;
+use crate::seam::FileAudioCapture;
 
 /// A running file-source publisher. Holds the live endpoint, router, and
 /// broadcast; the tokio runtime is owned by this struct (a runtime dropped
@@ -79,17 +78,13 @@ impl LivePublisher {
                 Ok(broadcast) => broadcast,
                 Err(err) => return fail(format!("publish: {err:#}")),
             };
-            let source = match AudioFile::open(&path, loop_playback) {
-                Ok(source) => source,
+            let capture = match FileAudioCapture::open(&path, loop_playback) {
+                Ok(capture) => capture,
                 Err(err) => return fail(format!("audio file source: {err:#}")),
             };
-            broadcast.audio().set_with(
-                AudioSource::Frames {
-                    input: source.input(),
-                    frames: source.into_stream(),
-                },
-                AudioOptions::default(),
-            );
+            broadcast
+                .audio()
+                .set_with(Box::new(capture).into_source(), AudioOptions::default());
             let ticket = LiveTicket::new(live.endpoint().id(), &name).serialize();
             let _ = tx.send(Ok((live.clone(), ticket)));
             // Hold the broadcast open until stop()/shutdown.
@@ -215,14 +210,10 @@ async fn stream_peer(
     let live = Live::builder(endpoint).with_router().spawn();
     let call_path = iroh_live::Call::path(live.endpoint().id());
     let broadcast = live.publish(&call_path)?;
-    let source = AudioFile::open(path, loop_playback)?;
-    broadcast.audio().set_with(
-        AudioSource::Frames {
-            input: source.input(),
-            frames: source.into_stream(),
-        },
-        AudioOptions::default(),
-    );
+    let capture = FileAudioCapture::open(path, loop_playback)?;
+    broadcast
+        .audio()
+        .set_with(Box::new(capture).into_source(), AudioOptions::default());
     let call = iroh_live::Call::dial(&live, addr)
         .await
         .map_err(|err| anyhow::anyhow!("dial call: {err}"))?;

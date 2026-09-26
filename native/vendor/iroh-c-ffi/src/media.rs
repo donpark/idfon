@@ -23,6 +23,11 @@ use moq_video::{Frame as VideoFrame, Size, Surface};
 use n0_future::{boxed::BoxStream, stream::unfold};
 use safer_ffi::prelude::*;
 
+use idfon_media::seam::{
+    audio_frames, video_frames, AudioCapture, AudioInput, DeviceAudioCapture, FileAudioCapture,
+    VideoCapture,
+};
+
 use crate::util::tokio_executor;
 
 const AUDIO_CAPACITY: usize = 48_000 * 2;
@@ -174,6 +179,33 @@ fn video_stream() -> BoxStream<VideoFrame> {
     }))
 }
 
+/// Platform capture adapter: PCM pushed by the shell via `media_audio_push_samples`.
+struct ShellAudioCapture {
+    sample_rate: u32,
+}
+
+impl AudioCapture for ShellAudioCapture {
+    fn into_source(self: Box<Self>) -> AudioSource {
+        audio_frames(
+            AudioInput {
+                format: Format::F32,
+                sample_rate: self.sample_rate,
+                channels: 1,
+            },
+            audio_stream(audio_queue(), self.sample_rate),
+        )
+    }
+}
+
+/// Platform capture adapter: RGBA frames pushed by the shell via `media_video_push_frame`.
+struct ShellVideoCapture;
+
+impl VideoCapture for ShellVideoCapture {
+    fn into_source(self: Box<Self>) -> VideoSource {
+        video_frames(video_stream())
+    }
+}
+
 fn start_live(
     audio: bool,
     video: bool,
@@ -216,38 +248,23 @@ fn start_live(
                 options.sample_rate = Some(sample_rate);
                 options.bitrate =
                     (codec == AudioCodec::Opus).then(|| BITRATE.load(Ordering::Relaxed) as u32);
-                // Device capture is the default live source; pushed PCM remains
-                // available through `media_audio_push_samples` for shell-owned taps.
-                let source = if push_audio {
-                    AudioSource::Frames {
-                        input: moq_audio::encode::Input {
-                            format: Format::F32,
-                            sample_rate,
-                            channels: 1,
-                        },
-                        frames: audio_stream(audio_queue(), sample_rate),
-                    }
+                // Capture device is the default live source; shell-pushed PCM
+                // remains available through `media_audio_push_samples`.
+                let capture: Box<dyn AudioCapture> = if push_audio {
+                    Box::new(ShellAudioCapture { sample_rate })
                 } else if let Some(path) = file_audio {
-                    let file = moq_media::audio_file::AudioFile::open(path, false)?;
-                    AudioSource::Frames {
-                        input: file.input(),
-                        frames: file.into_stream(),
-                    }
+                    Box::new(FileAudioCapture::open(&path, false)?)
                 } else {
-                    AudioSource::Device({
-                        let mut config = moq_audio::capture::Config::default();
-                        config.source = moq_audio::capture::Source::Microphone(
-                            INPUT_DEVICE.lock().unwrap().clone(),
-                        );
-                        config
-                    })
+                    Box::new(DeviceAudioCapture::new(
+                        INPUT_DEVICE.lock().unwrap().clone(),
+                    ))
                 };
-                broadcast.audio().set_with(source, options);
+                broadcast.audio().set_with(capture.into_source(), options);
             }
             if video {
                 VIDEO_ENABLED.store(true, Ordering::Relaxed);
                 broadcast.video().set_renditions(
-                    VideoSource::Frames(video_stream()),
+                    Box::new(ShellVideoCapture).into_source(),
                     vec![VideoRendition::new("video")],
                 )?;
             }
