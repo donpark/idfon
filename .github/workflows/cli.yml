@@ -76,7 +76,7 @@ jobs:
         # "./" prefix: bare "cli/<pkg>" parses as a GitHub shorthand spec and
         # npm tries to clone it over ssh instead of packing the local dir.
         run: npm pack "./cli/${{ matrix.pkg }}"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.pkg }}
           path: "*.tgz"
@@ -93,7 +93,7 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
