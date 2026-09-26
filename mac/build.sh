@@ -9,16 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
 
-if [ ! -f "$ROOT/native/vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib" ]; then
-  echo "building libiroh_c_ffi.dylib (first run, several minutes)..."
-  (cd "$ROOT/native/vendor/iroh-c-ffi" && RUSTFLAGS="-A unexpected_cfgs" cargo build --release)
-fi
-if [ ! -f "$ROOT/target/release/idfond" ]; then
-  echo "building idfond..."
-  (cd "$ROOT" && cargo build --release -p idfond)
-fi
-mkdir -p Vendor
-cp "$ROOT/native/vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib" Vendor/
+./build-deps.sh
 
 swift build -c release
 
