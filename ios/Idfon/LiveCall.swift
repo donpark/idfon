@@ -147,6 +147,7 @@ final class LiveCall {
         UserDefaults.standard.set(peerRef, forKey: "idfon.live-call.peer")
         audioEnabled = audioAvailable // this session carries audio from the start
         notify()
+        CallTonePlayer.shared.start(.ringback)
         operation = Task {
             do {
                 // Resolve the ref (name/alias/id) to the canonical peer id: the
@@ -224,6 +225,7 @@ final class LiveCall {
         state = .inCall(peer: peer)
         audioEnabled = audioAvailable
         notify()
+        CallTonePlayer.shared.stop()
         operation = Task {
             do {
                 let profile = ContactAudioProfiles.profile(for: pending.peer)
@@ -269,6 +271,7 @@ final class LiveCall {
         guard case .incoming(let peer) = state else { return }
         state = .idle
         notify()
+        CallTonePlayer.shared.stop()
         Task { try? await client.sendText(to: peer, "call_stopped") }
     }
 
@@ -327,6 +330,7 @@ final class LiveCall {
                 return
             }
             NSLog("idfon live call: return leg received from \(peerID)")
+            CallTonePlayer.shared.start(.answered)
             Task {
                 if await !subscribe(ticket: invite.ticket) {
                     NSLog("idfon live call: return-leg subscribe failed")
@@ -354,6 +358,7 @@ final class LiveCall {
         UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
         state = .incoming(peer: peerID)
         notify()
+        CallTonePlayer.shared.start(.ringtone)
     }
 
     // MARK: - Internals
@@ -393,6 +398,7 @@ final class LiveCall {
         published = false
         UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
         pendingInvite = nil
+        CallTonePlayer.shared.stop()
         audioEnabled = false
         videoEnabled = false
         AudioPusher.shared.stop()

@@ -138,6 +138,7 @@ final class LiveCall {
         UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
         state = .calling(peer: peerId)
         notify()
+        CallTonePlayer.shared.start(.ringback)
         let generation = operationGeneration
         operation = Task {
             do {
@@ -195,6 +196,7 @@ final class LiveCall {
         pendingInvite = nil
         state = .inCall(peer: peer)
         notify()
+        CallTonePlayer.shared.stop()
         operation = Task {
             do {
                 let pendingTicket = pending.ticket
@@ -237,6 +239,7 @@ final class LiveCall {
         state = .idle
         UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
         notify()
+        CallTonePlayer.shared.stop()
         Task { try? await client.sendText(to: peer, "call_stopped") }
     }
 
@@ -273,6 +276,7 @@ final class LiveCall {
         switch state {
         case .calling, .inCall:
             guard activePeer == peerID else { return }
+            CallTonePlayer.shared.start(.answered)
             Task {
                 if await !subscribe(ticket: invite.ticket) {
                     NSLog("idfon live call: return-leg subscribe failed")
@@ -296,6 +300,7 @@ final class LiveCall {
         UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
         state = .incoming(peer: peerID)
         notify()
+        CallTonePlayer.shared.start(.ringtone)
         onIncoming?(peerID)
     }
 
@@ -399,6 +404,7 @@ final class LiveCall {
         audioEnabled = false
         videoEnabled = false
         pendingInvite = nil
+        CallTonePlayer.shared.stop()
         AudioMeter.shared.stop()
         Task.detached(priority: .userInitiated) {
             media_live_stop()
@@ -574,6 +580,7 @@ final class VideoCall {
         callStartedAt = Date()
         state = .calling
         notify()
+        CallTonePlayer.shared.start(.ringback)
         Task {
             do {
                 // Resolve the peer ref (name/alias/id) to the canonical peer
@@ -647,6 +654,7 @@ final class VideoCall {
         audioEnabled = !watchOnly
         videoEnabled = false
         notify()
+        CallTonePlayer.shared.stop()
         Task {
             do {
                 await join(ticket: pending.ticket)
@@ -682,6 +690,7 @@ final class VideoCall {
         pendingIsWatchOnly = false
         state = .idle
         notify()
+        CallTonePlayer.shared.stop()
         // call_stopped mirrors core.ts live_decline so the caller's UI clears.
         Task { try? await client.sendText(to: pending.peer, "call_stopped") }
     }
@@ -731,6 +740,7 @@ final class VideoCall {
             pendingIsWatchOnly = watchOnly
             state = watchOnly ? .watching : .incoming
             notify()
+            if !watchOnly { CallTonePlayer.shared.start(.ringtone) }
             onIncoming?(peerID, watchOnly)
         }
     }
@@ -764,6 +774,11 @@ final class VideoCall {
         // waitForReturnInvite; the second must not restart the watch.
         guard joinedTicket != ticket else { return }
         joinedTicket = ticket
+        if state == .calling {
+            CallTonePlayer.shared.start(.answered) // caller: answer cue
+        } else {
+            CallTonePlayer.shared.stop() // callee: stop the incoming ringtone
+        }
         VideoFrameInbox.shared.clear()
         _ = media_video_set_render_cb(nil, videoRenderCallback)
         let path = await ffiString { media_video_start(ticket) }
@@ -795,6 +810,7 @@ final class VideoCall {
         frameTimer = nil
         media_video_clear_render_cb()
         VideoFrameInbox.shared.clear()
+        CallTonePlayer.shared.stop()
         joinedTicket = nil
         watching = false
         lastFrame = nil
