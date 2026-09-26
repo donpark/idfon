@@ -1,8 +1,8 @@
 # Media adapter seam
 
-> Design note. Status: **slice #1 landed** (trait seam + FFI callback API,
-> zero behavior change; in-memory Swift renderer is opt-in and unverified on
-> device). This describes the interface boundary that lets idfon keep media
+> Design note. Status: **slice #1 landed; in-memory render is the default on
+> the iOS/mac shells** (trait seam + FFI callback; device verification
+> pending). This describes the interface boundary that lets idfon keep media
 > processing native-but-modular: capture, codec, and render are supplied by
 > the platform shell (or a bundled fallback), while idfon owns the seam and
 > the transport/session logic.
@@ -10,16 +10,17 @@
 ## What shipped
 
 - `crates/idfon-media/src/seam.rs`: `AudioCapture` / `VideoCapture` /
-  `AudioPlayback` / `VideoRender` traits, `AudioInput`, `CountingRender`, and
-  bundled `FileAudioCapture` / `FileVideoCapture` / `DeviceAudioCapture`.
+  `VideoRender` traits, `AudioInput`, and bundled `FileAudioCapture` /
+  `FileVideoCapture` / `DeviceAudioCapture`.
 - `idfon-media` call sites route through the seam (`live.rs`, `video.rs`).
 - `iroh-c-ffi` capture adapters (`ShellAudioCapture`, `ShellVideoCapture`)
   route `start_live`; the render loop takes a `Box<dyn VideoRender>` with a
-  `DiskRender` fallback (today's `video-frame.jpg` behavior, unchanged).
+  `DiskRender` fallback (`video-frame.jpg`, used only when no callback is set).
 - New FFI: `media_video_set_render_cb` / `media_video_clear_render_cb`
   (`CallbackRender` hands decoded RGBA straight to the shell; `len == 0` = clear).
-- iOS/mac Swift: opt-in `IDFON_VIDEO_INMEMORY=1` path renders in memory and
-  skips the artifact; default off keeps current behavior. **Not device-tested.**
+- iOS/mac Swift register the callback unconditionally and render frames in
+  memory; they no longer read `video-frame.jpg`. The Native SDK GUI does not
+  register one, so it keeps using the artifact. **Not device-tested.**
 
 ## Motivation
 
@@ -119,9 +120,9 @@ adapter function. idfon code references the traits.
 
 1. ~~Establish the seam, no behavior change.~~ **Done** (`seam.rs`, adapters,
    routing, `DiskRender` fallback). Verified with seam unit tests.
-2. ~~Swift render adapter.~~ **Opt-in done** (`IDFON_VIDEO_INMEMORY=1`);
-   device verification pending. Once verified, make in-memory the default and
-   delete the artifact polling for those shells.
+2. ~~Swift render adapter.~~ **Done**: iOS/mac register the callback and
+   render in memory; the file polling is deleted for those shells. Device
+   verification still pending — flip back if it regresses.
 3. **Native GUI render.** Requires a Native SDK image path from memory, or an
    agreed file/cache handoff. Deferred until the Native SDK supports it.
 4. **Device I/O adapter.** Platform capture/playback behind the traits; bundled

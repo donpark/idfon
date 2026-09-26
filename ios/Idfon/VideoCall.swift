@@ -2,8 +2,9 @@ import Foundation
 import UIKit
 import AVFAudio
 
-/// Latest in-memory video frame from the Rust bridge. Opt-in via
-/// IDFON_VIDEO_INMEMORY=1; the default keeps the video-frame.jpg artifact.
+/// Latest in-memory video frame from the Rust bridge. The iOS shell always
+/// registers a renderer; the FFI falls back to video-frame.jpg only when no
+/// callback is set (e.g. the Native SDK GUI).
 private final class VideoFrameInbox {
     static let shared = VideoFrameInbox()
     private let lock = NSLock()
@@ -191,14 +192,8 @@ final class VideoCall: NSObject {
 
     private let client = DaemonClient()
     private var frameTimer: Timer?
-    private let inMemoryVideoFrames = ProcessInfo.processInfo.environment["IDFON_VIDEO_INMEMORY"] == "1"
-    private var framePath: String?
-    private var frameDeadline: Date?
-    private var lastFrameSize = -1
     /// True while a decoded peer frame is on screen (for clearing it).
     private var peerFrameVisible = false
-    private var framesDisplayed = 0
-    private var framePollInFlight = false
 
     // MARK: - FFI wrappers (blocking C calls must leave the main thread)
 
@@ -407,10 +402,8 @@ final class VideoCall: NSObject {
         guard joinedTicket != ticket else { return }
         joinedTicket = ticket
         activateAudioSession()
-        if inMemoryVideoFrames {
-            VideoFrameInbox.shared.clear()
-            _ = media_video_set_render_cb(nil, videoRenderCallback)
-        }
+        VideoFrameInbox.shared.clear()
+        _ = media_video_set_render_cb(nil, videoRenderCallback)
         let path = await ffiString { media_video_start(ticket) }
         guard !path.isEmpty else {
             let error = await ffiString { media_video_last_error() }
@@ -424,10 +417,6 @@ final class VideoCall: NSObject {
         }
         if state == .idle { return } // hung up while subscribing
         NSLog("idfon video watch started path=\(path)")
-        framePath = path
-        framesDisplayed = 0
-        frameDeadline = Date().addingTimeInterval(10)
-        lastFrameSize = -1
         startFramePolling()
         if state == .calling { state = .inCall }
         notify()
@@ -439,14 +428,9 @@ final class VideoCall: NSObject {
         }
         frameTimer?.invalidate()
         frameTimer = nil
-        if inMemoryVideoFrames {
-            media_video_clear_render_cb()
-            VideoFrameInbox.shared.clear()
-        }
-        framePath = nil
-        frameDeadline = nil
+        media_video_clear_render_cb()
+        VideoFrameInbox.shared.clear()
         joinedTicket = nil
-        lastFrameSize = -1
         // AudioPusher tear-down must stay on the main queue (engine state is
         // main-serialized); only the blocking FFI calls go to the background.
         AudioPusher.shared.stop()
@@ -481,61 +465,11 @@ final class VideoCall: NSObject {
     /// Rewrites the remote frame into the UI ~10x/s. The FFI renames a new
     /// The current bridge supplies decoded frames through a native image
     /// artifact; reload only when its size changes.
+    /// Pulls the latest in-memory frame from the Rust bridge ~10x/s.
     private func startFramePolling() {
         frameTimer?.invalidate()
         frameTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            if self.inMemoryVideoFrames {
-                self.pollInMemoryFrame()
-                return
-            }
-            guard !self.framePollInFlight, let path = self.framePath else { return }
-            self.framePollInFlight = true
-            Task.detached(priority: .userInitiated) { [weak self] in
-                let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? Int ?? -1
-                guard let self else { return }
-                if size <= 0 {
-                    await MainActor.run {
-                        self.framePollInFlight = false
-                        guard self.framePath == path else { return }
-                        if let deadline = self.frameDeadline, Date() > deadline {
-                            self.frameDeadline = nil
-                            Task { @MainActor in
-                                let error = await self.ffiString { media_video_last_error() }
-                                if !error.isEmpty { self.fail("video watch failed: \(error)") }
-                            }
-                        }
-                        if self.peerFrameVisible {
-                            self.peerFrameVisible = false
-                            self.onFrame?(nil)
-                        }
-                        self.lastFrameSize = -1
-                    }
-                    return
-                }
-                let shouldDecode = await MainActor.run {
-                    self.framePath == path && self.lastFrameSize != size
-                }
-                guard shouldDecode else {
-                    await MainActor.run { self.framePollInFlight = false }
-                    return
-                }
-                let image = UIImage(contentsOfFile: path)?.preparingForDisplay()
-                await MainActor.run {
-                    self.framePollInFlight = false
-                    guard self.framePath == path else { return }
-                    self.lastFrameSize = size
-                    self.frameDeadline = nil
-                    if image != nil {
-                        self.framesDisplayed += 1
-                        if self.framesDisplayed <= 5 || self.framesDisplayed % 60 == 0 {
-                            NSLog("idfon video: decoded frame #\(self.framesDisplayed) path=\(path)")
-                        }
-                    }
-                    self.peerFrameVisible = image != nil
-                    self.onFrame?(image)
-                }
-            }
+            self?.pollInMemoryFrame()
         }
     }
 
