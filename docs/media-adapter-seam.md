@@ -18,12 +18,11 @@
   route `start_live`; the render loop takes a `Box<dyn VideoRender>` with a
   `DiskRender` fallback (`video-frame.jpg`, used only when no callback is set).
 - New FFI: `media_video_set_render_cb` / `media_video_clear_render_cb`
-  (`CallbackRender` hands decoded RGBA straight to the shell; `len == 0` = clear),
-  and `media_audio_set_playback_cb` / `media_audio_clear_playback_cb`
-  (`CallbackPlayback` hands decoded interleaved f32 PCM to the shell). The live
-  subscribe path picks `CallbackPlayback` when registered, else the bundled
-  `DevicePlayback` (moq output device) — so `DevicePlayback` is the seam's
-  device-I/O adapter and a shell can replace it.
+  (`CallbackRender` hands decoded RGBA straight to the shell; `len == 0` = clear).
+- Audio playback stays on the bundled moq engine (`DevicePlayback` behind the
+  `AudioPlayback` seam). A shell playback callback was tried and removed: the
+  per-frame AVAudioEngine path lacked the engine's jitter buffer and crackled
+  in live calls, and moq already drives the platform output device correctly.
 - iOS/mac Swift register the callback unconditionally and render frames in
   memory; they no longer read `video-frame.jpg`. The Native SDK GUI does not
   register one, so it keeps using the artifact. **Not device-tested.**
@@ -131,12 +130,10 @@ adapter function. idfon code references the traits.
    verification still pending — flip back if it regresses.
 3. **Native GUI render.** Requires a Native SDK image path from memory, or an
    agreed file/cache handoff. Deferred until the Native SDK supports it.
-4. **Device I/O adapter.** DONE: live subscribe selects `CallbackPlayback`
-   (shell) or `DevicePlayback` (bundled moq output), and device capture routes
-   through `DeviceAudioCapture`. iOS/mac register `AudioPlaybackSink`
-   (AVAudioEngine) at launch and play decoded PCM in memory; if the engine
-   cannot start it clears the callback so Rust falls back to its own output on
-   the next subscribe. **Not device-tested.**
+4. **Device I/O adapter.** Capture routes through `DeviceAudioCapture`; live
+   subscribe plays through the bundled `DevicePlayback` (moq output device,
+   own thread, jitter-buffered). A shell audio-playback callback was tried and
+   removed — see the note above; re-add only with a real jitter buffer.
 5. **Codec adapter.** Only if a platform needs it; gated by capability
    negotiation. Opus stays bundled unless the codec fork is taken.
 

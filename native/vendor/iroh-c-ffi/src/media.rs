@@ -6,7 +6,6 @@
 
 use std::{
     collections::VecDeque,
-    ffi::c_void,
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     sync::{Arc, Mutex},
@@ -63,25 +62,6 @@ static INPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 static OUTPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 static VOLUME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(100);
 static BITRATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(32_000);
-
-/// Optional shell-owned audio playback. When absent, decoded audio goes to the
-/// bundled moq playback device; when set, the shell gets interleaved f32 PCM.
-type AudioPlaybackFn = unsafe extern "C" fn(*const c_void, *const u8, usize, u32, u32, u64);
-static AUDIO_PLAYBACK_CB: Mutex<Option<(usize, AudioPlaybackFn)>> = Mutex::new(None);
-
-#[ffi_export]
-pub fn media_audio_set_playback_cb(
-    ctx: *const c_void,
-    cb: unsafe extern "C" fn(*const c_void, *const u8, usize, u32, u32, u64),
-) -> u8 {
-    *AUDIO_PLAYBACK_CB.lock().unwrap() = Some((ctx as usize, cb));
-    0
-}
-
-#[ffi_export]
-pub fn media_audio_clear_playback_cb() {
-    *AUDIO_PLAYBACK_CB.lock().unwrap() = None;
-}
 
 struct LiveSession {
     live: Live,
@@ -285,33 +265,6 @@ impl AudioPlayback for DevicePlayback {
 
     fn set_volume(&mut self, volume: f32) {
         self.control.set_volume(volume);
-    }
-}
-
-/// Platform adapter: decoded audio handed to the shell.
-struct CallbackPlayback {
-    ctx: usize,
-    cb: AudioPlaybackFn,
-    input: AudioInput,
-}
-
-impl AudioPlayback for CallbackPlayback {
-    fn input(&self) -> AudioInput {
-        self.input
-    }
-
-    fn write(&mut self, pcm: &[u8], pts_us: u64) -> anyhow::Result<()> {
-        unsafe {
-            (self.cb)(
-                self.ctx as *const c_void,
-                pcm.as_ptr(),
-                pcm.len(),
-                self.input.sample_rate,
-                self.input.channels,
-                pts_us,
-            );
-        }
-        Ok(())
     }
 }
 
@@ -804,21 +757,20 @@ async fn subscribe_decode_once(
             sample_rate: 48_000,
             channels: 1,
         };
-        let mut playback: Box<dyn AudioPlayback> = match *AUDIO_PLAYBACK_CB.lock().unwrap() {
-            Some((ctx, cb)) => Box::new(CallbackPlayback { ctx, cb, input }),
-            None => {
-                let device = OUTPUT_DEVICE.lock().unwrap().clone();
-                let device_playback = DevicePlayback::open(device, input).await?;
-                PLAYBACK_ENGINE
-                    .lock()
-                    .unwrap()
-                    .replace(device_playback.engine());
-                let control = device_playback.control();
-                control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
-                *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
-                Box::new(device_playback)
-            }
-        };
+        // Shell-owned playback was removed: moq's engine already drives the
+        // platform output device on its own thread, with a jitter buffer the
+        // per-frame shell path lacked (it crackled). The seam stays so a shell
+        // adapter can be re-added deliberately.
+        let device = OUTPUT_DEVICE.lock().unwrap().clone();
+        let device_playback = DevicePlayback::open(device, input).await?;
+        PLAYBACK_ENGINE
+            .lock()
+            .unwrap()
+            .replace(device_playback.engine());
+        let control = device_playback.control();
+        control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
+        *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
+        let mut playback: Box<dyn AudioPlayback> = Box::new(device_playback);
         // Do not start the speaker on the first arriving packet. A short
         // startup prebuffer absorbs normal network/decoder scheduling
         // jitter without turning the first late packet into a click.
