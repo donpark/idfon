@@ -478,7 +478,7 @@ final class VideoCall: NSObject {
     private func startFramePolling() {
         frameTimer?.invalidate()
         frameTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            self?.pollInMemoryFrame()
+            Task { @MainActor in self?.pollInMemoryFrame() }
         }
     }
 
@@ -508,8 +508,8 @@ final class VideoCall: NSObject {
                 )
             }
             let image = cg.map { UIImage(cgImage: $0) }
+            guard let self else { return }
             await MainActor.run {
-                guard let self else { return }
                 self.peerFrameVisible = image != nil
                 self.onFrame?(image)
             }

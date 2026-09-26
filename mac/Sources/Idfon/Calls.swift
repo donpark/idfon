@@ -882,8 +882,8 @@ final class VideoCall {
                 )
             }
             let image = cg.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
+            guard let self else { return }
             await MainActor.run {
-                guard let self else { return }
                 self.lastFrame = image
                 self.onFrame?(image)
             }
