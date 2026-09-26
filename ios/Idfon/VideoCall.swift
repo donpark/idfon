@@ -229,6 +229,7 @@ final class VideoCall: NSObject {
         UserDefaults.standard.set(peerRef, forKey: "idfon.video-call.peer")
         state = .calling
         notify()
+        CallTonePlayer.shared.start(.ringback)
         Task {
             do {
                 // Resolve the peer ref (name/alias/id) to the canonical peer
@@ -328,6 +329,7 @@ final class VideoCall: NSObject {
         pendingInvite = nil
         state = .idle
         notify()
+        CallTonePlayer.shared.stop()
         // call_stopped mirrors core.ts live_decline so the caller's UI clears.
         Task { try? await client.sendText(to: pending.peer, "call_stopped") }
     }
@@ -389,6 +391,7 @@ final class VideoCall: NSObject {
             videoAvailable = true
             state = .incoming
             notify()
+            CallTonePlayer.shared.start(.ringtone)
         }
     }
 
@@ -401,6 +404,11 @@ final class VideoCall: NSObject {
         // delivery); restarting the watch would drop the live frame artifact.
         guard joinedTicket != ticket else { return }
         joinedTicket = ticket
+        if state == .calling {
+            CallTonePlayer.shared.start(.answered) // caller: answer cue
+        } else {
+            CallTonePlayer.shared.stop() // callee: stop the incoming ringtone
+        }
         activateAudioSession()
         VideoFrameInbox.shared.clear()
         _ = media_video_set_render_cb(nil, videoRenderCallback)
@@ -428,6 +436,7 @@ final class VideoCall: NSObject {
         }
         frameTimer?.invalidate()
         frameTimer = nil
+        CallTonePlayer.shared.stop()
         media_video_clear_render_cb()
         VideoFrameInbox.shared.clear()
         joinedTicket = nil
