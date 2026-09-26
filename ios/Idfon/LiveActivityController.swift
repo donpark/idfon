@@ -219,7 +219,9 @@ final class LiveActivityController: NSObject {
         if next != previous, next != .idle {
             micOn = machine?.audioEnabled ?? false
             camOn = machine?.videoEnabled ?? false
-            speakerOn = false
+            // LiveCall.activateAudioSession() starts on the loudspeaker; keep
+            // the button in sync so the first tap switches to the earpiece.
+            speakerOn = true
         }
         if next == .idle { speakerOn = false }
         phase = next

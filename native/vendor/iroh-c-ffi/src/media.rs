@@ -583,6 +583,48 @@ impl std::fmt::Display for SubscribeEndError {
 
 impl std::error::Error for SubscribeEndError {}
 
+/// Phone-side makeup gain for live-call playback.
+///
+/// iOS routes a `.playAndRecord` + `.voiceChat` session through
+/// VoiceProcessingIO, which drops output gain, and there is no public API to
+/// adjust it (StackOverflow 17528057 / 13502293). Compensate in software,
+/// soft-clipping with `tanh` so loud passages limit instead of wrapping.
+/// Override with `IDFON_PLAYBACK_GAIN_DB`; the default covers the typical
+/// VoiceProcessingIO drop.
+const PLAYBACK_GAIN_DB_DEFAULT: f32 = 12.0;
+
+fn playback_gain() -> f32 {
+    // VoiceProcessingIO's output drop is iOS-only; leave other platforms at
+    // unity (macOS has the media volume slider to compensate).
+    if !cfg!(target_os = "ios") {
+        return 1.0;
+    }
+    static GAIN: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *GAIN.get_or_init(|| {
+        let db = std::env::var("IDFON_PLAYBACK_GAIN_DB")
+            .ok()
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|value| value.is_finite())
+            .unwrap_or(PLAYBACK_GAIN_DB_DEFAULT);
+        10f32.powf(db / 20.0)
+    })
+}
+
+/// Apply [`playback_gain`] to interleaved f32 PCM bytes, soft-clipping with
+/// `tanh`. Returns the input unchanged at unity gain.
+fn apply_playback_gain(data: &[u8]) -> Vec<u8> {
+    let gain = playback_gain();
+    if gain == 1.0 {
+        return data.to_vec();
+    }
+    let mut out = Vec::with_capacity(data.len());
+    for chunk in data.chunks_exact(4) {
+        let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        out.extend_from_slice(&(sample * gain).tanh().to_le_bytes());
+    }
+    out
+}
+
 /// One subscribe-and-decode attempt: connect, wait for the audio catalog,
 /// decode into `samples`/`timing` until the track ends or `stop` is set.
 /// Returns Ok(true) when the stop flag ended it, Ok(false) on an early track
@@ -664,7 +706,7 @@ async fn subscribe_decode_once(
         loop {
             if stop.load(Ordering::Relaxed) {
                 if !started && !startup.is_empty() {
-                    let _ = sink.write(&startup);
+                    let _ = sink.write(&apply_playback_gain(&startup));
                 }
                 return Ok(true);
             }
@@ -723,7 +765,7 @@ async fn subscribe_decode_once(
                 if startup.len() / 4 < STARTUP_PREBUFFER_SAMPLES {
                     continue;
                 }
-                sink.write(&startup)?;
+                sink.write(&apply_playback_gain(&startup))?;
                 startup.clear();
                 started = true;
             } else {
@@ -739,7 +781,7 @@ async fn subscribe_decode_once(
                         .min(data.len() / 4);
                     data = &data[excess_samples * 4..];
                 }
-                sink.write(data)?;
+                sink.write(&apply_playback_gain(data))?;
             }
             for chunk in frame.data.chunks_exact(4) {
                 samples.push(f32::from_le_bytes(chunk.try_into().unwrap()));

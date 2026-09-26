@@ -88,10 +88,15 @@ final class AudioPusher {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(
                 .playAndRecord,
-                mode: .voiceChat,
-                options: [.allowBluetoothHFP]
+                mode: .default,
+                options: [.allowBluetoothHFP, .defaultToSpeaker]
             )
             try session.setActive(true)
+            // Route before mode: `.voiceChat` bakes VoiceProcessingIO's output
+            // gain from the route active at mode-set time, so set the speaker
+            // first or the output stays at the quiet receiver gain.
+            try? session.overrideOutputAudioPort(.speaker)
+            try session.setMode(.voiceChat)
             // VoIP-standard 10 ms capture IO (WebRTC does the same): small
             // bursts keep the sender FIFO near-empty. Best effort — HFP or
             // device limits may grant more.
