@@ -5,6 +5,7 @@
   "scripts": {
     "clean": "rm -rf build .build",
     "build": "bash build.sh",
+    "build:deps": "bash build-deps.sh",
     "start": "open build/Idfon.app"
   }
 }
