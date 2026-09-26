@@ -45,6 +45,10 @@ dependent amount (StackOverflow 17528057, 13502293, 57612695).
   `IDFON_PLAYBACK_GAIN_DB`. macOS is deliberately left at unity (no VPIO; it
   has the media-volume slider, and a pre-slider soft-clip could not be undone).
 
+**Verified** (2026-09-25): with the route log showing `Speaker` and the
+playback log showing `gain=3.98x`, GPT-Live's voice is at a normal level on
+the iPhone.
+
 **Lesson.** For "too quiet," pull both captures first (holder
 `published.wav` vs phone `received.wav`): if both are full-scale, the loss is
 the output unit, not gain. `scripts/eve-volume-trace.sh` captures the iOS
