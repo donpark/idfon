@@ -3,6 +3,55 @@
 Notes on real failure modes observed during testing, their root causes, and
 the fixes. Kept so the same class of bug is easy to recognize next time.
 
+## iOS live-call audio too quiet; volume buttons barely change it (2026-09-25, FIXED)
+
+**Symptom.** On the iPhone, GPT-Live's voice during an `ai-voice-chat` live
+call was too quiet, and raising the hardware / Control Center volume barely
+changed it (the slider sometimes appeared to fall back between turns).
+
+**Diagnosis path.**
+
+1. Holder capture (`published.wav` / `gpt-output.wav` in the per-call audio
+   captures dir) was full-scale — mean ~-29 dB, peak ~-8 dB — so the source
+   was not quiet.
+2. Pulled the phone's decode capture (`received.wav`; see the
+   `devicectl device copy from` command in the next section): also full-scale
+   (peak ~-6 dB, 48 kHz s16), so the network decode was not the cause.
+3. A 1 Hz probe in the call UI (`AVAudioSession.outputVolume` / category /
+   mode / route) showed `out=1.0` (system volume max), `route=Speaker`,
+   `mode=VoiceChat` for the whole call — a full-scale stream on the
+   loudspeaker at max volume. `moq-audio`'s playback `Gain` is unity
+   (`Gain::new()` = 1.0), and nothing in the app or FFI touches system
+   volume. The loss had to be inside the output unit.
+
+**Root cause.** `.playAndRecord` + `.voiceChat` makes iOS use the
+**VoiceProcessingIO** unit (for echo cancellation). Its output gain is set
+internally by the OS from the session category / IO unit, and there is **no
+public API to adjust it** — it is quieter than RemoteIO by a version-
+dependent amount (StackOverflow 17528057, 13502293, 57612695).
+
+**Fixes.**
+
+- Session setup (`ios/Idfon/LiveCall.swift`, `ios/Idfon/AudioPusher.swift`):
+  keep `.defaultToSpeaker` and `overrideOutputAudioPort(.speaker)`. Order
+  matters — set `.voiceChat` in the `setCategory` call and move the route
+  override **last**; calling `setMode(.voiceChat)` *after*
+  `overrideOutputAudioPort()` re-evaluates the route and drops back to the
+  quiet receiver.
+- Playback gain (`native/vendor/iroh-c-ffi/src/media.rs`, iOS-only via
+  `cfg!(target_os = "ios")`): compensate for the VoiceProcessingIO drop in
+  software — `PLAYBACK_GAIN_DB_DEFAULT` (+12 dB) with a `tanh` soft-clip so
+  loud passages limit instead of wrapping. Override with
+  `IDFON_PLAYBACK_GAIN_DB`. macOS is deliberately left at unity (no VPIO; it
+  has the media-volume slider, and a pre-slider soft-clip could not be undone).
+
+**Lesson.** For "too quiet," pull both captures first (holder
+`published.wav` vs phone `received.wav`): if both are full-scale, the loss is
+the output unit, not gain. `scripts/eve-volume-trace.sh` captures the iOS
+console plus the holder log in one command; note that
+`xcrun devicectl device process launch --console` ignores SIGINT, so the
+script runs it as a child and kills it on Ctrl-C.
+
 ## iOS live call goes silent after the first reply (2026-09-24, FIXED)
 
 **Symptom.** Live voice calls to `ai-voice-chat` played the greeting, then

@@ -173,7 +173,11 @@ isn't delivered to `ChatStore` after the saved cursor.
 
 Mid-call dead air on the phone (track ending early, silent re-subscribe
 behavior, pacing) is covered in `docs/troubleshooting.md` → "iOS live call
-goes silent after the first reply".
+goes silent after the first reply". Low GPT-Live playback volume on iOS is
+covered there too ("iOS live-call audio too quiet"): `.voiceChat` routes
+through VoiceProcessingIO, whose output gain has no public API, so the phone
+compensates with a soft-clipped makeup gain (`IDFON_PLAYBACK_GAIN_DB`, iOS
+only).
 
 ## Known gaps
 
