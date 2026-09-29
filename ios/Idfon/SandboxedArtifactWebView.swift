@@ -46,8 +46,11 @@ private final class ArtifactSchemeHandler: NSObject, WKURLSchemeHandler {
 /// store, no native bridge, and every load except the in-memory artifact bytes
 /// blocked. HTML renders as itself; other media is wrapped in a minimal shell so
 /// the browser renders it as-is.
-final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate {
+final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptMessageHandler {
     private var handler: ArtifactSchemeHandler!
+    /// Reports the clicked element as a text range over the artifact's source
+    /// bytes, so the existing text resolver handles it (no HTML parser needed).
+    var onElementSelection: ((ArtifactSelector) -> Void)?
 
     init(data: Data, mime: String) {
         let handler = ArtifactSchemeHandler()
@@ -64,7 +67,10 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate {
         // The handler must be registered on the configuration before the web
         // view is created.
         configuration.setURLSchemeHandler(handler, forURLScheme: ArtifactSchemeHandler.scheme)
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: Self.selectionScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         super.init(frame: .zero, configuration: configuration)
+        configuration.userContentController.add(self, name: "idfonSelect")
         self.handler = handler
         navigationDelegate = self
         allowsLinkPreview = false
@@ -121,6 +127,11 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate {
         }
     }
 
+    /// Toggle click-to-select. While off, the page stays interactive.
+    func setSelectionMode(_ on: Bool) {
+        evaluateJavaScript("window.__idfonSelectMode = \(on ? "true" : "false");")
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
@@ -128,4 +139,35 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate {
     ) {
         decisionHandler(navigationAction.request.url?.scheme == ArtifactSchemeHandler.scheme ? .allow : .cancel)
     }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "idfonSelect",
+              let body = message.body as? [String: Any],
+              let start = body["start"] as? NSNumber,
+              let end = body["end"] as? NSNumber else { return }
+        onElementSelection?(.text(
+            start: start.uint64Value,
+            end: end.uint64Value,
+            quote: body["quote"] as? String))
+    }
+
+    private static let selectionScript = """
+    window.__idfonSelectMode = false;
+    document.addEventListener('click', function (event) {
+      if (!window.__idfonSelectMode) return;
+      event.preventDefault();
+      event.stopPropagation();
+      var el = event.target;
+      if (!el || !el.outerHTML) return;
+      var full = document.documentElement.outerHTML;
+      var outer = el.outerHTML;
+      var index = full.indexOf(outer);
+      if (index < 0) return;
+      var encoder = new TextEncoder();
+      var start = encoder.encode(full.slice(0, index)).length;
+      var end = start + encoder.encode(outer).length;
+      var quote = (el.innerText || el.textContent || '').slice(0, 4000);
+      window.webkit.messageHandlers.idfonSelect.postMessage({ start: start, end: end, quote: quote });
+    }, true);
+    """
 }

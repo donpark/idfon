@@ -54,6 +54,10 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     private var textView: UITextView?
     private var imageView: UIImageView?
     private var overlay: SelectionOverlay?
+    private var webView: SandboxedArtifactWebView?
+    private var selectButton: UIBarButtonItem?
+    private var selectMode = false
+    private var pendingElement: ArtifactSelector?
     private lazy var askButton = UIBarButtonItem(
         title: "Ask", style: .done, target: self, action: #selector(askTapped))
     private lazy var shareButton = UIBarButtonItem(
@@ -165,8 +169,15 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             || webMime.hasPrefix("audio/") || webMime.hasPrefix("video/")
         if usesWebView {
             let web = SandboxedArtifactWebView(data: data, mime: artifact.mime)
+            web.onElementSelection = { [weak self] selector in
+                self?.pendingElement = selector
+                self?.askButton.isEnabled = true
+            }
             setBody(web)
             web.heightAnchor.constraint(greaterThanOrEqualToConstant: 420).isActive = true
+            webView = web
+            selectButton = UIBarButtonItem(title: "Select", style: .plain, target: self, action: #selector(toggleSelectMode))
+            navigationItem.rightBarButtonItems = [askButton, selectButton!]
         } else if artifact.mime.hasPrefix("image/"), let image = UIImage(data: data) {
             let imageView = UIImageView(image: image)
             imageView.contentMode = .scaleAspectFit
@@ -209,7 +220,10 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
         let url = directory.appendingPathComponent((artifact.title as NSString).lastPathComponent)
         if (try? data.write(to: url)) != nil {
             sharedURL = url
-            navigationItem.rightBarButtonItems = [askButton, shareButton]
+            var items = [askButton]
+            if let selectButton { items.append(selectButton) }
+            items.append(shareButton)
+            navigationItem.rightBarButtonItems = items
         }
     }
 
@@ -218,6 +232,11 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     }
 
     @objc private func askTapped() {
+        if let pendingElement {
+            onReference?(pendingElement, nil)
+            dismiss(animated: true)
+            return
+        }
         if let textView, textView.selectedRange.length > 0 {
             let ns = textView.text as NSString
             let range = textView.selectedRange
@@ -265,6 +284,12 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
         let size = CGSize(width: image.width * scale, height: image.height * scale)
         return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
                       width: size.width, height: size.height)
+    }
+
+    @objc private func toggleSelectMode() {
+        selectMode.toggle()
+        webView?.setSelectionMode(selectMode)
+        selectButton?.title = selectMode ? "Selecting…" : "Select"
     }
 
     @objc private func dismissSelf() {
