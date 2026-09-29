@@ -68,9 +68,9 @@ rather than silently degraded.
 - On inbound `MessageReference`, the channel resolves each ref before the model
   sees the turn: slice the text range, extract the JSON subtree, or preview the
   whole artifact (`read_reference`), and pass the extracted content plus the
-  reference as turn context. Region/time cropping is not implemented yet; those
-  return the selector so the model can say what it covers instead of guessing.
-  A `note` on the ref is user intent and is passed through.
+  reference as turn context. A region arrives already cropped as the turn's
+  attachment; time-range selection is still unhandled. A `note` on the ref is
+  user intent and is passed through.
 - When a selection cannot be resolved (blob not local, peer offline), the agent
   still receives the selector and the `quote`/`metadata` so it can ask rather
   than hallucinate.
@@ -102,9 +102,11 @@ rather than silently degraded.
    voice memo. (The holder's attachment parser stops at the next envelope, so a
    memo can carry a reference.) A ref carries the artifact's blob ticket, so it
    is self-contained. The channel's `read_reference` tool fetches the blob and
-   resolves text ranges, JSON pointers, and whole-content previews. Remaining:
-   region/time cropping (the tool returns the coordinates and asks the model to
-   say so rather than guess).
+   resolves text ranges, JSON pointers, and whole-content previews. A region
+   selection is cropped **app-side** (the app holds the pixels) and sent as the
+   turn's attachment, so the agent gets the exact image; the tool returns the
+   coordinates. Remaining: time-range selection and a confirmed vision path
+   (the model must be able to see the cropped attachment).
 5. **Rich renderers** — json-render for structured results, sandboxed web view
    for HTML, paged PDF, media transports.
 6. **Remote view** — gateway/`idfon://` fetch for artifacts not held locally.

@@ -56,7 +56,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private var composerTextView: NSTextView?
 
     // A pending artifact reference attached to the next sent turn.
-    private var pendingReference: (artifact: Artifact, selector: ArtifactSelector)?
+    private var pendingReference: (artifact: Artifact, selector: ArtifactSelector, preview: Data?)?
     private let referenceBar = NSStackView()
     private let referenceLabel = NSTextField(labelWithString: "")
 
@@ -892,26 +892,41 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let pending = pendingReference
         pendingReference = nil
         updateReferenceBar()
-        let kind: MessageKind
-        let wire: String
-        if let pending {
-            let message = MessageReference(text: text, refs: [
-                ArtifactRef(artifactId: pending.artifact.artifactId, selector: pending.selector, blobTicket: pending.artifact.blobTicket, note: nil),
-            ])
-            guard let envelope = ArtifactEnvelope.encodeReference(message) else { return }
-            kind = .reference(message)
-            wire = envelope
-        } else {
-            kind = .text(text)
-            wire = text
+        guard let pending else {
+            store.appendOutgoing(ChatMessage(id: id, peerId: peerId, kind: .text(text), outgoing: true, status: "Sending", conversation: conversation.room?.id))
+            Task {
+                do {
+                    if let room = conversation.room {
+                        try await client.sendRoom(room.id, text: text)
+                    } else {
+                        try await client.sendText(to: peer.id, text)
+                    }
+                    store.updateMessage(id: id) { $0.status = "Sent" }
+                } catch {
+                    store.updateMessage(id: id) { $0.status = "Failed" }
+                    showBanner(error.localizedDescription)
+                }
+            }
+            return
         }
-        store.appendOutgoing(ChatMessage(id: id, peerId: peerId, kind: kind, outgoing: true, status: "Sending", conversation: conversation.room?.id))
+        let message = MessageReference(text: text, refs: [
+            ArtifactRef(artifactId: pending.artifact.artifactId, selector: pending.selector, blobTicket: pending.artifact.blobTicket, note: nil),
+        ])
+        guard let refEnvelope = ArtifactEnvelope.encodeReference(message) else { return }
+        store.appendOutgoing(ChatMessage(id: id, peerId: peerId, kind: .reference(message), outgoing: true, status: "Sending", conversation: conversation.room?.id))
         Task {
             do {
+                // A cropped region rides as an attachment so the agent gets the
+                // pixels; the question lives in the reference envelope.
+                var envelope = refEnvelope
+                if let preview = pending.preview,
+                   let ticket = try? await client.putData(preview, resourceId: "crop-\(UUID().uuidString)") {
+                    envelope = "IDFON-DATA/1\nticket=\(ticket)\nsize=\(preview.count)\n" + refEnvelope
+                }
                 if let room = conversation.room {
-                    try await client.sendRoom(room.id, text: wire)
+                    try await client.sendRoom(room.id, text: envelope)
                 } else {
-                    try await client.sendText(to: peer.id, wire)
+                    try await client.sendText(to: peer.id, envelope)
                 }
                 store.updateMessage(id: id) { $0.status = "Sent" }
             } catch {
@@ -1064,9 +1079,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
               let message = history.first(where: { $0.id == messageId }),
               case .artifact(let artifact) = message.kind else { return }
         let detail = ArtifactDetailViewController(artifact: artifact)
-        detail.onReference = { [weak self] selector in
+        detail.onReference = { [weak self] selector, preview in
             guard let self else { return }
-            self.pendingReference = (artifact, selector)
+            self.pendingReference = (artifact, selector, preview)
             self.updateReferenceBar()
             if let textView = self.composerTextView {
                 self.view.window?.makeFirstResponder(textView)

@@ -35,9 +35,11 @@ spoken part short — the artifact carries the detail.
 When the user points at part of an artifact, their turn carries an
 `IDFON-REF/1` envelope naming the artifact, its `blob_ticket`, and the selected
 region/text/time. Call `read_reference` with the ticket and selector before
-answering, then answer about the returned content. If the selector is a region
-or time range the tool cannot crop yet, say what the selection covers and offer
-to describe the whole artifact instead of guessing.
+answering, then answer about the returned content. For a text or JSON selection
+the tool returns the exact content. For a region, the app crops the selected
+area and sends it as this turn's attachment — look at that image if you can see
+images; if you cannot, say the region was selected but ask for a description of
+the whole artifact instead of guessing.
 - `IDFON-LIVE/1` (live call invite): decline politely; live calls are not
   supported with this agent.
 
