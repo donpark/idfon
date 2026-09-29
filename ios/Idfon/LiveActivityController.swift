@@ -381,6 +381,22 @@ final class LiveActivityController: NSObject {
         return chat
     }
 
+    /// Opens the thread for an `idfon://` resource link. The ref may be a peer
+    /// id, name, alias, or endpoint id (`Peer.matches(ref:)`).
+    func openThread(peerRef: String) {
+        guard let navigationController = visibleNavigationController else { return }
+        Task { @MainActor in
+            let peer = await resolvePeer(peerRef)
+            if let existing = navigationController.viewControllers
+                .compactMap({ $0 as? ChatViewController })
+                .first(where: { $0.peer.id == peer.id }) {
+                navigationController.popToViewController(existing, animated: true)
+            } else {
+                navigationController.pushViewController(ChatViewController(peer: peer), animated: true)
+            }
+        }
+    }
+
     /// Opens the peer's thread unless it is already the visible one.
     private func openPeerThreadIfNeeded(_ peerId: String) {
         let visible = (visibleNavigationController?.visibleViewController as? ChatViewController)?.peer.id
@@ -404,12 +420,12 @@ final class LiveActivityController: NSObject {
         return peerId.count > 13 ? "@\(peerId.prefix(8))…" : "@\(peerId)"
     }
 
-    private func resolvePeer(_ peerId: String) async -> Peer {
-        if let match = (try? await client.peers())?.first(where: { $0.id == peerId || $0.name == peerId }) {
+    private func resolvePeer(_ ref: String) async -> Peer {
+        if let match = (try? await client.peers())?.first(where: { $0.matches(ref: ref) }) {
             if let name = match.name, !name.isEmpty { peerNames[match.id] = name }
             return match
         }
-        return Peer(id: peerId, name: nil, endpointId: nil, aliases: nil, callMode: nil)
+        return Peer(id: ref, name: nil, endpointId: nil, aliases: nil, callMode: nil)
     }
 }
 

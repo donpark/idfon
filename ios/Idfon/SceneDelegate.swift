@@ -92,27 +92,24 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         return nav
     }
 
-    /// Deep links for call testing/automation:
-    ///   idfon://dial/<peer-ref>  — dial a peer (streams the bundled WAV)
-    ///   idfon://answer           — arm auto-answer
+    /// `idfon://` deep links (grammar: `IdfonURL`):
+    ///   idfon://<peer-ref>[/path]  — open that peer's thread
+    ///   idfon://dial/<peer-ref>    — dial a peer (streams the bundled WAV)
+    ///   idfon://videodial/<ref>    — start a video call
+    ///   idfon://answer             — arm auto-answer
+    /// The resource path is parsed but not yet routed to a screen.
     private func handleURL(_ context: UIOpenURLContext) {
-        let url = context.url
-        guard url.scheme == "idfon" else { return }
-        NSLog("idfon openURL: \(url)")
-        let parts = url.host.map { [$0] + url.pathComponents } ?? url.pathComponents
-        switch parts.first {
-        case "dial":
-            if let ref = parts.dropFirst().first {
-                NotificationCenter.default.post(name: .init("idfon.dial"), object: nil, userInfo: ["ref": ref])
-            }
-        case "videodial":
-            if let ref = parts.dropFirst().first {
-                VideoCall.shared.dial(ref)
-            }
-        case "answer":
+        guard let link = IdfonURL(context.url) else { return }
+        NSLog("idfon openURL: \(context.url)")
+        switch link {
+        case .dial(let ref):
+            NotificationCenter.default.post(name: .init("idfon.dial"), object: nil, userInfo: ["ref": ref])
+        case .videoDial(let ref):
+            VideoCall.shared.dial(ref)
+        case .answer:
             NotificationCenter.default.post(name: .init("idfon.answer"), object: nil)
-        default:
-            break
+        case .resource(let ref, _):
+            liveActivity?.openThread(peerRef: ref)
         }
     }
 }

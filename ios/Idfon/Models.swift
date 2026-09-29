@@ -86,6 +86,17 @@ struct Peer: Decodable, Identifiable {
 
     /// Absent or unrecognized `call_mode` resolves to the Bar (interim default).
     var incomingCallMode: IncomingCallMode { callMode ?? .bar }
+
+    /// True when `ref` names this peer: id, name, endpoint id, alias, or any
+    /// known device endpoint id — the daemon's peer `ref` rule (docs/protocol.md)
+    /// plus this app's device list. Used to resolve `idfon://<ref>` deeplinks.
+    func matches(ref: String) -> Bool {
+        id == ref
+            || name == ref
+            || endpointId == ref
+            || (aliases?.contains(ref) ?? false)
+            || devices.contains(where: { $0.endpointId == ref })
+    }
 }
 
 /// The single navigation target used by both direct chats and rooms.

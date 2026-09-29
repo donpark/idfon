@@ -19,6 +19,16 @@ struct Peer: Decodable, Identifiable, Hashable {
     }
 
     var displayName: String { name ?? id }
+
+    /// True when `ref` names this peer: id, name, endpoint id, or alias — the
+    /// daemon's peer `ref` rule (docs/protocol.md). Used to resolve
+    /// `idfon://<ref>` deeplinks.
+    func matches(ref: String) -> Bool {
+        id == ref
+            || name == ref
+            || endpointId == ref
+            || (aliases?.contains(ref) ?? false)
+    }
 }
 
 /// The single navigation target used by both direct chats and rooms.
