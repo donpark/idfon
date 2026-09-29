@@ -2996,14 +2996,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "idfon-gateway"
+version = "0.6.0"
+dependencies = [
+ "bytes",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "idfon-core",
+ "iroh",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "idfon-mcp"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
  "idfon-core",
  "idfon-protocol",
  "iroh",
+ "percent-encoding",
  "serde_json",
  "tokio",
 ]

@@ -4,6 +4,8 @@
 //! iroh bi-stream speaking `idfon/mcp/1`. The stream profile is a pure byte
 //! pump: it never parses MCP, never re-frames, and never rewrites JSON.
 
+mod fs;
+
 use std::{path::Path, process::Stdio};
 
 use anyhow::{anyhow, Context, Result};
@@ -55,10 +57,26 @@ enum Mode {
         #[arg(long, value_name = "PATH")]
         uds: Option<std::path::PathBuf>,
     },
+    /// Serve a directory as MCP resources over stdio
+    /// (`idfon://<account>/fs/<path>`). Run it under `serve --command` to expose
+    /// the folder over `idfon/mcp/1`.
+    Fs {
+        /// Directory to expose (read-only).
+        #[arg(long, value_name = "DIR")]
+        root: std::path::PathBuf,
+        /// Account id used to build resource URIs.
+        #[arg(long, value_name = "ACCOUNT")]
+        account: String,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // The resource server is stdio-only and needs no identity; handle it before
+    // `load_key`, which would otherwise mint an ephemeral key.
+    if let Mode::Fs { root, account } = &cli.mode {
+        return fs::serve(root, account);
+    }
     let key = load_key(cli.key_file.as_deref())?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -72,6 +90,7 @@ fn main() -> Result<()> {
                     account_id,
                 } => serve(key, mcp_command, contact, account_id).await,
                 Mode::Connect { peer, uds } => connect(key, peer, uds).await,
+                Mode::Fs { .. } => unreachable!("handled before the runtime"),
             }
         })
 }
