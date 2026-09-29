@@ -124,3 +124,5 @@ rather than silently degraded.
 
 Slices 2–4 are the demo: speak a question, get an artifact in the thread, open
 it, point at a region, ask again by voice.
+
+Manual runbook for the end-to-end pass: `docs/idfon-artifacts-testing.md`.
