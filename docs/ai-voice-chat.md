@@ -144,7 +144,10 @@ when a turn produces something worth viewing (a report, table, JSON, chart),
 it stores the bytes through the bridge's `/blob/put` and returns an
 `IDFON-ARTIFACT/1` envelope the model appends to its reply. The apps split the
 reply text from the envelope and show the artifact as an openable card in the
-thread (see `docs/idfon-artifacts.md`).
+thread (see `docs/idfon-artifacts.md`). When the user points at part of an
+artifact, the turn is an `IDFON-REF/1` envelope and the agent calls
+`read_reference` (`agent/tools/read-reference.ts`) to fetch the referenced
+content before answering.
 
 ## Testing
 
