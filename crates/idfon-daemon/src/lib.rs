@@ -344,6 +344,10 @@ impl Store {
             };
             identity.public_key = Some(idfon_core::peer_id(&key));
         }
+        // Backfill the derived account handle for peers stored before it existed.
+        for peer in &mut self.peers {
+            ensure_account_alias(peer);
+        }
         self.save(data_dir)
     }
 
@@ -1504,6 +1508,20 @@ fn identity_id_of(state: &Store, identity_ref: &str) -> String {
         .find(|identity| identity.id == identity_ref || identity.name == identity_ref)
         .map(|identity| identity.id.clone())
         .unwrap_or_else(|| identity_ref.to_owned())
+}
+
+/// Ensures a peer carries its derived account handle (`blake3(peer.id)`) as an
+/// alias, so `idfon://<handle>` resolves without the handle being carried in
+/// tickets. Idempotent; never removes caller aliases — a 64-hex alias may be a
+/// device endpoint id, which `ref` matching also accepts.
+fn ensure_account_alias(peer: &mut idfon_protocol::Peer) {
+    if peer.id.is_empty() {
+        return;
+    }
+    let handle = idfon_core::account_alias(&peer.id);
+    if !peer.aliases.iter().any(|alias| alias == &handle) {
+        peer.aliases.push(handle);
+    }
 }
 
 /// Resolve a peer ref (id, name, or alias) to a peer id. Unknown refs are kept
@@ -4350,7 +4368,7 @@ fn peer_add(
             false,
         );
     }
-    let peer = idfon_protocol::Peer {
+    let mut peer = idfon_protocol::Peer {
         id: id.into(),
         identity,
         name,
@@ -4405,6 +4423,7 @@ fn peer_add(
             .unwrap_or_default(),
         call_mode,
     };
+    ensure_account_alias(&mut peer);
     state
         .peers
         .retain(|candidate| !(candidate.identity == peer.identity && candidate.id == peer.id));
@@ -4609,6 +4628,7 @@ fn peer_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     if let Some(call_mode) = call_mode {
         peer.call_mode = call_mode;
     }
+    ensure_account_alias(peer);
     let updated = peer.clone();
     record_state_event(
         &mut state,
@@ -6249,8 +6269,59 @@ mod tests {
                 .unwrap()
                 .active
         );
-        assert_eq!(state.peers[0].aliases, vec!["alice@work"]);
+        assert!(state.peers[0].aliases.iter().any(|alias| alias == "alice@work"));
+        assert!(state.peers[0]
+            .aliases
+            .contains(&idfon_core::account_alias("peer-1")));
         assert!(dir.join("identity-work.key").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn peer_carries_its_derived_account_handle() {
+        let dir = temp_dir("account-handle");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let add = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "add".into(),
+                method: "peer.add".into(),
+                params: serde_json::json!({"id": "peer-1", "name": "Alice"}),
+            },
+            &store,
+        );
+        assert!(add.ok);
+        let handle = idfon_core::account_alias("peer-1");
+        let state = store.lock().unwrap();
+        let peer = state.peers.iter().find(|peer| peer.id == "peer-1").unwrap();
+        assert!(peer.aliases.contains(&handle));
+        // The handle resolves like any other ref, without being carried.
+        assert_eq!(resolve_peer_id(&state, "default", &handle), "peer-1");
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_backfills_the_derived_account_handle() {
+        let dir = temp_dir("account-handle-backfill");
+        {
+            let mut state = Store::load(&dir).unwrap();
+            state.peers.push(idfon_protocol::Peer {
+                id: "peer-1".into(),
+                identity: "default".into(),
+                name: "Alice".into(),
+                endpoint_id: None,
+                endpoint_addr: None,
+                devices: Vec::new(),
+                aliases: Vec::new(),
+                call_mode: Default::default(),
+            });
+            let data_dir = state.data_dir.clone();
+            state.save(&data_dir).unwrap();
+        }
+        let state = Store::load(&dir).unwrap();
+        let peer = state.peers.iter().find(|peer| peer.id == "peer-1").unwrap();
+        assert!(peer.aliases.contains(&idfon_core::account_alias("peer-1")));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -30,6 +30,17 @@ pub fn peer_id(key: &SigningKey) -> String {
     encode_hex(key.verifying_key().as_bytes())
 }
 
+/// Stable, non-revealing account handle: `blake3(account_id)` in lowercase hex.
+///
+/// Every contact already carries `account_id`, so the handle is derivable rather
+/// than carried: `idfon://<handle>` addresses the account without exposing the
+/// account key. It is 32 bytes / 64 hex — the same shape as a peer id — which is
+/// fine because refs are resolved by matching a field set, not by dispatching on
+/// shape (see the daemon's `resolve_peer_id`).
+pub fn account_alias(account_id: &str) -> String {
+    encode_hex(blake3::hash(account_id.as_bytes()).as_bytes())
+}
+
 pub fn encode_signing_key(key: &SigningKey) -> String {
     encode_hex(&key.to_bytes())
 }

@@ -46,6 +46,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// `idfon://` deep links (grammar: `IdfonURL`):
+    ///   idfon://<peer-ref>[/path]  — select that peer's chat
+    ///   idfon://dial/<peer-ref>    — dial a peer
+    ///   idfon://videodial/<ref>    — start a video call
+    ///   idfon://answer             — arm auto-answer
+    /// The resource path is parsed but not yet routed to a screen.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let link = IdfonURL(url) else { continue }
+            NSLog("idfon openURL: \(url)")
+            switch link {
+            case .resource(let ref, _):
+                openPeerThread(ref: ref)
+            case .dial(let ref):
+                LiveCall.shared.dial(ref)
+            case .videoDial(let ref):
+                VideoCall.shared.dial(ref)
+            case .answer:
+                waitForIncomingCall(video: false)
+            }
+        }
+    }
+
+    /// Selects the peer's chat, or a synthetic peer when the ref names nobody
+    /// (same fallback the automation paths use).
+    private func openPeerThread(ref: String) {
+        let match = app.peers.first(where: { $0.matches(ref: ref) })
+            ?? Peer(id: ref, name: nil, endpointId: nil, aliases: nil)
+        app.select(match)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     private func buildWindow() {
         // Plain manual split: fixed sidebar, flexible detail. (NSSplitView-
         // Controller's sidebar item sizing fought with our root views.)
