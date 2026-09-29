@@ -47,6 +47,10 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     private var textView: NSTextView?
     private var imageView: NSImageView?
     private var selectionView: SelectionView?
+    private var webView: SandboxedArtifactWebView?
+    private var selectButton: NSButton?
+    private var selectMode = false
+    private var pendingElement: ArtifactSelector?
     private lazy var askButton = NSButton(title: "Ask", target: self, action: #selector(askTapped))
 
     /// Called with the selection when the user asks about part of the artifact,
@@ -78,11 +82,15 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
         askButton.isEnabled = false
         let done = NSButton(title: "Done", target: self, action: #selector(doneTapped))
         done.bezelStyle = .rounded
+        let select = NSButton(title: "Select", target: self, action: #selector(toggleSelectMode))
+        select.bezelStyle = .rounded
+        select.isHidden = true
+        selectButton = select
 
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
 
-        for view in [title, meta, scroll, askButton, done] {
+        for view in [title, meta, scroll, askButton, select, done] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
@@ -94,6 +102,8 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
             done.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
             askButton.centerYAnchor.constraint(equalTo: title.centerYAnchor),
             askButton.trailingAnchor.constraint(equalTo: done.leadingAnchor, constant: -8),
+            select.centerYAnchor.constraint(equalTo: title.centerYAnchor),
+            select.trailingAnchor.constraint(equalTo: askButton.leadingAnchor, constant: -8),
             meta.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
             meta.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
             meta.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
@@ -146,7 +156,14 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
             || webMime == "application/pdf"
             || webMime.hasPrefix("audio/") || webMime.hasPrefix("video/")
         if usesWebView {
-            setDocument(SandboxedArtifactWebView(data: data, mime: artifact.mime))
+            let web = SandboxedArtifactWebView(data: data, mime: artifact.mime)
+            web.onElementSelection = { [weak self] selector in
+                self?.pendingElement = selector
+                self?.askButton.isEnabled = true
+            }
+            setDocument(web)
+            webView = web
+            selectButton?.isHidden = false
         } else if artifact.mime.hasPrefix("image/"), let image = NSImage(data: data) {
             let imageView = NSImageView(frame: NSRect(origin: .zero, size: image.size))
             imageView.image = image
@@ -190,6 +207,11 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     }
 
     @objc private func askTapped() {
+        if let pendingElement {
+            onReference?(pendingElement, nil)
+            dismiss(self)
+            return
+        }
         if let textView, textView.selectedRange().length > 0 {
             let ns = textView.string as NSString
             let range = textView.selectedRange()
@@ -237,6 +259,12 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
         let size = CGSize(width: image.width * scale, height: image.height * scale)
         return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
                       width: size.width, height: size.height)
+    }
+
+    @objc private func toggleSelectMode() {
+        selectMode.toggle()
+        webView?.setSelectionMode(selectMode)
+        selectButton?.title = selectMode ? "Selecting…" : "Select"
     }
 
     @objc private func doneTapped() {

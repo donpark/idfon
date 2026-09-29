@@ -57,9 +57,10 @@ rather than silently degraded.
   source is an in-memory custom scheme — non-persistent data store, no native
   bridge, content rule list blocking every other load, and navigation cancelled
   off-scheme. The same view renders images/PDF/audio/video as-is through a
-  minimal shell, so media artifacts need no separate player. HTML artifacts are
-  also the natural place to add element selection next (a tap maps to an
-  `Element` selector).
+  minimal shell, so media artifacts need no separate player. Element selection
+  is implemented: in Select mode a tap computes the clicked element's byte range
+  in the serialized document and sends it as a `Text` selector over the HTML
+  source, so the existing text resolver handles it without an HTML parser.
 - **Annotate → ask:** a tool in the detail screen selects a `selector` (drag a
   region, select text, mark a time range, tap a JSON node). The composer then
   shows a reference chip; the sent turn is a `MessageReference`. Voice is
@@ -115,8 +116,8 @@ rather than silently degraded.
    coordinates. Remaining: time-range selection and a confirmed vision path
    (the model must be able to see the cropped attachment).
 5. **Rich renderers** — *landed:* a sandboxed web view for HTML/SVG and for
-   image/PDF/audio/video as-is. Remaining: json-render for structured results
-   (or a native tree), and element selection inside HTML.
+   image/PDF/audio/video as-is, with element selection. Remaining: json-render
+   for structured results (or a native tree).
 6. **Remote view** — gateway/`idfon://` fetch for artifacts not held locally.
 
 Slices 2–4 are the demo: speak a question, get an artifact in the thread, open
