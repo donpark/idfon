@@ -191,9 +191,11 @@ only).
 
 ## Known gaps
 
-- Daemon-side network fetch of holder-held blobs returns `PeerOffline`
-  (provider gap shared with the blob lessons in `docs/cli-data.md`); the e2e
-  verifies the reply from the holder's store directly.
+- Daemon-side network fetch of holder-held blobs returned `PeerOffline` when
+  the fetch relied on pkarr alone. It now seeds the ticket's own addresses
+  through `MemoryLookup` before downloading
+  (`crates/idfon-daemon/src/blob.rs`); still needs a live holder+daemon e2e to
+  confirm, since the existing e2e reads the holder's store directly.
 - The first turn after a cold holder start can lose attachment staging
   (fetch races the holder connection); the e2e retries with a fresh
   recording, and the serve script's long-lived holder avoids it in practice.

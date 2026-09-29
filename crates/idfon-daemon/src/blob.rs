@@ -4,7 +4,7 @@ use std::{
 };
 
 use iroh::protocol::Router;
-use iroh::{endpoint::presets, Endpoint};
+use iroh::{address_lookup::memory::MemoryLookup, endpoint::presets, Endpoint};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 
 struct BlobProvider {
@@ -75,7 +75,14 @@ pub async fn fetch(ticket: String, root: PathBuf) -> anyhow::Result<PathBuf> {
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        let endpoint = Endpoint::bind(presets::N0).await?;
+        // The ticket carries the provider's own addresses (direct and relay).
+        // Seed them so the download does not depend on pkarr having propagated —
+        // that race was the PeerOffline failure for freshly published blobs.
+        let lookup = MemoryLookup::from_endpoint_info([ticket.addr().clone()]);
+        let endpoint = Endpoint::builder(presets::N0)
+            .address_lookup(lookup)
+            .bind()
+            .await?;
         let result = fetch_with(&ticket, &endpoint, &root).await;
         endpoint.close().await;
         match result {
