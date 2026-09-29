@@ -90,7 +90,10 @@ reciprocal peer always takes the default.
 The `wait`/`events` methods below are how received messages surface: a
 `message.received` event with `data: { message_id, peer_id, text }`. Signaled
 blob transfers ride the same path as text with an `IDFON-DATA/1` envelope
-(`ticket=`, `size=` lines).
+(`ticket=`, `size=` lines). Artifacts and selections use the same mechanism:
+an `IDFON-ARTIFACT/1` envelope publishes a durable result and an `IDFON-REF/1`
+envelope asks about part of one. A message body may carry reply text followed by
+one or more trailing `IDFON-*/1` envelopes; see `docs/idfon-artifacts.md`.
 
 ### Events
 
