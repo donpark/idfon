@@ -140,7 +140,14 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func render(_ data: Data) {
-        if artifact.mime.hasPrefix("image/"), let image = NSImage(data: data) {
+        let webMime = artifact.mime.lowercased()
+        let usesWebView = artifact.kind == .html
+            || webMime.contains("html") || webMime.contains("svg")
+            || webMime == "application/pdf"
+            || webMime.hasPrefix("audio/") || webMime.hasPrefix("video/")
+        if usesWebView {
+            setDocument(SandboxedArtifactWebView(data: data, mime: artifact.mime))
+        } else if artifact.mime.hasPrefix("image/"), let image = NSImage(data: data) {
             let imageView = NSImageView(frame: NSRect(origin: .zero, size: image.size))
             imageView.image = image
             imageView.imageScaling = .scaleProportionallyUpOrDown

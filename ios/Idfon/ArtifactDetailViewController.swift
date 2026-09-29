@@ -158,7 +158,16 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     }
 
     private func render(_ data: Data) {
-        if artifact.mime.hasPrefix("image/"), let image = UIImage(data: data) {
+        let webMime = artifact.mime.lowercased()
+        let usesWebView = artifact.kind == .html
+            || webMime.contains("html") || webMime.contains("svg")
+            || webMime == "application/pdf"
+            || webMime.hasPrefix("audio/") || webMime.hasPrefix("video/")
+        if usesWebView {
+            let web = SandboxedArtifactWebView(data: data, mime: artifact.mime)
+            setBody(web)
+            web.heightAnchor.constraint(greaterThanOrEqualToConstant: 420).isActive = true
+        } else if artifact.mime.hasPrefix("image/"), let image = UIImage(data: data) {
             let imageView = UIImageView(image: image)
             imageView.contentMode = .scaleAspectFit
             imageView.isUserInteractionEnabled = true
