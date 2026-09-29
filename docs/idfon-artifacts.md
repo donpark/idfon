@@ -1,0 +1,100 @@
+# Artifacts and multimodal references
+
+> **Status:** model landed (`crates/idfon-protocol/src/artifacts.rs`); the rest
+> is scoped here. Direction: 2026-09-29.
+
+Voice chat with an idfon agent is **multimodal chat**. A turn is not just text
+or audio: the agent produces **artifacts** (a chart, a document, a JSON result,
+a rendered report), they appear in the **chat thread** as openable items, the
+user opens one in a **detail screen**, and — the part that makes it more than a
+file attachment — the user can **point at a region of an artifact and ask about
+it**. The next turn carries that selection, so the agent reasons about the exact
+thing the user indicated rather than the artifact as a whole.
+
+This is the product, not a later milestone. The pieces below are ordered so each
+one is usable on its own.
+
+## Data model
+
+The types live in `crates/idfon-protocol/src/artifacts.rs` and travel as
+message-text envelopes, so there is **no protocol-version bump**: a peer that
+does not know them sees an unknown `IDFON-*/1` envelope as plain text.
+
+- `Artifact { artifact_id, kind, mime, title, size_bytes, blob_ticket?,
+  source_message_id?, conversation?, metadata, created_at }`.
+  `kind` is a coarse `Document | Image | Audio | Video | Data | Html | Live`;
+  `mime` stays authoritative. `metadata` carries renderer hints (a json-render
+  catalog id, a live stream ticket, dimensions). A non-`Live` artifact must have
+  a `blob_ticket`.
+- `ArtifactSelector` — the selection, normalized so it survives zoom and
+  different render sizes:
+  - `Whole`
+  - `Text { start, end, quote? }` (UTF-8 byte offsets)
+  - `Region { x, y, width, height, page? }` (unit square)
+  - `TimeRange { start_ms, end_ms }`
+  - `JsonPointer { pointer }` (RFC 6901)
+  - `Element { path }` (rendered markup)
+- `ArtifactRef { artifact_id, selector, note? }`.
+- `MessageReference { text, refs: [ArtifactRef] }` — a user turn that asks about
+  one or more selections.
+
+Envelopes: `IDFON-ARTIFACT/1\n<json>` (agent → thread) and
+`IDFON-REF/1\n<json>` (user → agent). Decoders validate; an empty range, an
+out-of-bounds region, an empty ref list, or a non-envelope body is rejected
+rather than silently degraded.
+
+## Thread UX
+
+- An artifact renders as a **card** in the thread: title, kind icon, a small
+  preview when the blob is already local, and an open affordance. It is a peer
+  of the existing text/recording/file cells, not a replacement.
+- **Detail screen:** full-screen render chosen by `kind` — text/markdown,
+  image (zoom/pan), PDF (paged), audio/video (transport), structured data
+  (json-render or a tree), HTML (the sandboxed web view). This is where the
+  gateway/WebView work connects: the detail view fetches bytes either from a
+  local blob or through `idfon://<account>/artifacts/<id>`.
+- **Annotate → ask:** a tool in the detail screen selects a `selector` (drag a
+  region, select text, mark a time range, tap a JSON node). The composer then
+  shows a reference chip; the sent turn is a `MessageReference`. Voice is
+  unaffected — you can speak the question with the chip attached.
+- Artifacts are **immutable**; a revision is a new `artifact_id` with
+  `metadata.revision_of`. The thread pins the id it was sent with.
+
+## Agent side
+
+- A tool (working name `add_artifact`) publishes an agent output: stores the
+  bytes as a blob, builds an `Artifact`, and sends it as an `IDFON-ARTIFACT/1`
+  turn. The holder already has `blob.put` and the `IDFON-DATA/1` path to reuse.
+- On inbound `MessageReference`, the channel resolves each ref before the model
+  sees the turn: crop the region, slice the text range, sample the time range,
+  extract the JSON subtree — and pass the extracted content plus the reference
+  as turn context. A `note` on the ref is user intent and is passed through.
+- When a selection cannot be resolved (blob not local, peer offline), the agent
+  still receives the selector and the `quote`/`metadata` so it can ask rather
+  than hallucinate.
+
+## Storage and transport
+
+- Bytes live in `iroh-blobs`, content-addressed; the artifact record is the
+  metadata around a ticket.
+- The daemon keeps a per-identity **artifact registry** (like `MediaResource`),
+  so the thread can list and re-open artifacts after a restart.
+- Remote detail view uses the same `idfon-gateway`/MCP-resource path as any
+  other idfon resource: `idfon://<account>/artifacts/<id>` resolves to the blob.
+  Live artifacts use stream tickets (MoQ), not blobs.
+
+## Slices
+
+1. **Model** — `artifacts.rs` types, validation, envelope codec, tests. *Landed.*
+2. **Thread** — parse both envelopes in the apps, render an artifact card, open
+   a detail screen for the kinds we can already render locally (text/image).
+3. **Agent emit** — `add_artifact` tool in the Eve channel + holder `blob.put`
+   wiring, so a real turn produces a real artifact.
+4. **Reference capture** — detail-screen selection UI, composer chip, send
+   `IDFON-REF/1`; channel-side resolution (crop/slice) into turn context.
+5. **Rich renderers** — json-render for structured results, sandboxed web view
+   for HTML, paged PDF, media transports.
+6. **Remote view** — gateway/`idfon://` fetch for artifacts not held locally.
+
+Slices 2–4 are the demo: speak a question, get an artifact in the thread, open
+it, point at a region, ask again by voice.
