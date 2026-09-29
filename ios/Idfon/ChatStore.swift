@@ -156,6 +156,20 @@ final class ChatStore {
             case .text(let value): kind = "text"; text = value; ticket = nil; name = nil; sizeBytes = nil; durationMs = nil
             case .recording(let value, let duration, _): kind = "recording"; text = nil; ticket = value; name = nil; sizeBytes = nil; durationMs = duration
             case .file(let value, let fileName, let size, _): kind = "file"; text = nil; ticket = value; name = fileName; sizeBytes = size; durationMs = nil
+            case .artifact(let artifact):
+                kind = "artifact"
+                text = ArtifactEnvelope.encodeArtifact(artifact)
+                ticket = artifact.blobTicket
+                name = artifact.title
+                sizeBytes = Int(artifact.sizeBytes)
+                durationMs = nil
+            case .reference(let reference):
+                kind = "reference"
+                text = ArtifactEnvelope.encodeReference(reference)
+                ticket = nil
+                name = nil
+                sizeBytes = nil
+                durationMs = nil
             }
         }
 
@@ -164,6 +178,7 @@ final class ChatStore {
             switch kind {
             case "recording": messageKind = .recording(ticket: ticket ?? "", durationMs: durationMs ?? 0, localURL: nil)
             case "file": messageKind = .file(ticket: ticket ?? "", name: name ?? "file", sizeBytes: sizeBytes ?? 0, localURL: nil)
+            case "artifact", "reference": messageKind = MessageKind.parse(text ?? "")
             default: messageKind = .text(text ?? "")
             }
             return ChatMessage(id: id, peerId: peerId, kind: messageKind, outgoing: outgoing, timestamp: timestamp, conversation: conversation)

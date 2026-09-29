@@ -578,6 +578,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// Fetch-on-demand for a received file, then offer it. Deliberately not part
     /// of ingest: a large file isn't pulled down until the recipient asks.
+    @objc private func artifactTapped(_ sender: UIButton) {
+        guard case .artifact(let artifact) = messages[sender.tag].kind else { return }
+        present(UINavigationController(rootViewController: ArtifactDetailViewController(artifact: artifact)), animated: true)
+    }
+
     @objc private func fileTapped(_ sender: UIButton) {
         let message = messages[sender.tag]
         guard case .file(let ticket, let name, _, let localURL) = message.kind else { return }
@@ -748,6 +753,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             button.addTarget(self, action: #selector(fileTapped(_:)), for: .touchUpInside)
             button.tag = indexPath.row
             cell.accessoryView = button
+        case .artifact(let artifact):
+            cell.messageLabel.text = artifact.title
+            cell.messageLabel.textColor = .link
+            cell.detailLabel.text = "Artifact · \(artifact.kind.rawValue) · tap to open"
+            let button = UIButton(type: .system)
+            button.setImage(UIImage(systemName: artifact.kind.glyph), for: .normal)
+            button.addTarget(self, action: #selector(artifactTapped(_:)), for: .touchUpInside)
+            button.tag = indexPath.row
+            cell.accessoryView = button
+        case .reference(let reference):
+            cell.messageLabel.text = reference.text.isEmpty ? "Asked about an artifact" : reference.text
+            cell.detailLabel.text = "\(reference.refs.count) reference\(reference.refs.count == 1 ? "" : "s")"
+            cell.accessoryView = nil
         }
         cell.isUserInteractionEnabled = true
         return cell
