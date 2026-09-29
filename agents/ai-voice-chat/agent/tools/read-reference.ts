@@ -70,14 +70,25 @@ export default defineTool({
       }
       case "whole":
         return { kind: "text", content: bytes.toString("utf8").slice(0, MAX_PREVIEW) };
+      case "region":
+        // The app crops the region and sends it as this turn's attachment, so a
+        // vision-capable model can see the exact pixels; the selector carries
+        // the coordinates for reference.
+        return {
+          kind: "region",
+          coordinates: selector,
+          note:
+            "The selected region was cropped and attached to this turn; look at " +
+            "that image. If you cannot see images, say the region was selected " +
+            "but you need a description of the whole artifact.",
+        };
       default:
         return {
           kind: type,
           coordinates: selector,
           note:
-            "Region/time/element selections are not cropped yet; the envelope " +
-            "carries the coordinates and any quote. If you cannot answer from " +
-            "that, say so instead of guessing.",
+            "This selection cannot be resolved yet; the envelope carries the " +
+            "coordinates. Say what it covers instead of guessing.",
         };
     }
   },

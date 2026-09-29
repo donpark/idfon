@@ -59,8 +59,9 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     private lazy var shareButton = UIBarButtonItem(
         barButtonSystemItem: .action, target: self, action: #selector(shareTapped))
 
-    /// Called with the selection when the user asks about part of the artifact.
-    var onReference: ((ArtifactSelector) -> Void)?
+    /// Called with the selection when the user asks about part of the artifact,
+    /// plus a PNG of the selected region when one was cropped.
+    var onReference: ((ArtifactSelector, Data?) -> Void)?
 
     init(artifact: Artifact) {
         self.artifact = artifact
@@ -214,7 +215,7 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             let prefix = ns.substring(to: range.location)
             let selected = ns.substring(with: range)
             let start = UInt64(prefix.lengthOfBytes(using: .utf8))
-            onReference?(.text(start: start, end: start + UInt64(selected.lengthOfBytes(using: .utf8)), quote: selected))
+            onReference?(.text(start: start, end: start + UInt64(selected.lengthOfBytes(using: .utf8)), quote: selected), nil)
             dismiss(animated: true)
             return
         }
@@ -225,14 +226,27 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             let unit = { (value: CGFloat) in min(max(Double(value), 0), 1) }
             let x = unit((selection.minX - imageRect.minX) / imageRect.width)
             let y = unit((selection.minY - imageRect.minY) / imageRect.height)
-            onReference?(.region(
-                x: x,
-                y: y,
-                width: min(unit(selection.width / imageRect.width), 1 - x),
-                height: min(unit(selection.height / imageRect.height), 1 - y),
-                page: nil))
+            let width = min(unit(selection.width / imageRect.width), 1 - x)
+            let height = min(unit(selection.height / imageRect.height), 1 - y)
+            let preview = imageView.image.flatMap {
+                Self.crop($0, to: CGRect(x: x, y: y, width: width, height: height))
+            }
+            onReference?(.region(x: x, y: y, width: width, height: height, page: nil), preview)
             dismiss(animated: true)
         }
+    }
+
+    /// Crops the source image to a normalized (top-left) region as PNG, so the
+    /// agent can be handed the exact pixels rather than only coordinates.
+    static func crop(_ image: UIImage, to region: CGRect) -> Data? {
+        guard let cg = image.cgImage, region.width > 0, region.height > 0 else { return nil }
+        let width = CGFloat(cg.width), height = CGFloat(cg.height)
+        let rect = CGRect(
+            x: region.minX * width, y: region.minY * height,
+            width: region.width * width, height: region.height * height
+        ).integral
+        guard let cropped = cg.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: cropped).pngData()
     }
 
     /// The image's rendered rect inside `bounds` for `contentMode = .scaleAspectFit`.

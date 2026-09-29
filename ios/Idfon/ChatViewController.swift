@@ -60,7 +60,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var composerHeight: NSLayoutConstraint!
 
     // A pending artifact reference attached to the next sent turn.
-    private var pendingReference: (artifact: Artifact, selector: ArtifactSelector)?
+    private var pendingReference: (artifact: Artifact, selector: ArtifactSelector, preview: Data?)?
     private let referenceChip = UIView()
     private let referenceChipLabel = UILabel()
     private var referenceChipHeight: NSLayoutConstraint!
@@ -419,9 +419,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             let message = MessageReference(text: text, refs: [
                 ArtifactRef(artifactId: pending.artifact.artifactId, selector: pending.selector, blobTicket: pending.artifact.blobTicket, note: nil),
             ])
-            guard let envelope = ArtifactEnvelope.encodeReference(message) else { return }
+            guard let refEnvelope = ArtifactEnvelope.encodeReference(message) else { return }
             ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .reference(message), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
             Task {
+                // A cropped region rides as an attachment so the agent gets the
+                // pixels; the question lives in the reference envelope.
+                var envelope = refEnvelope
+                if let preview = pending.preview,
+                   let ticket = try? await client.putData(preview, resourceId: "crop-\(UUID().uuidString)") {
+                    envelope = "IDFON-DATA/1\nticket=\(ticket)\nsize=\(preview.count)\n" + refEnvelope
+                }
                 if let room = conversation.room {
                     try? await client.sendRoom(room.id, text: envelope)
                 } else {
@@ -654,9 +661,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     @objc private func artifactTapped(_ sender: UIButton) {
         guard case .artifact(let artifact) = messages[sender.tag].kind else { return }
         let detail = ArtifactDetailViewController(artifact: artifact)
-        detail.onReference = { [weak self] selector in
+        detail.onReference = { [weak self] selector, preview in
             guard let self else { return }
-            self.pendingReference = (artifact, selector)
+            self.pendingReference = (artifact, selector, preview)
             self.updateReferenceChip()
             self.composerText.becomeFirstResponder()
         }
