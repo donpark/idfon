@@ -521,6 +521,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func sendMemo() {
         guard let url = memoURL else { return }
+        // Claim any pending reference now; it rides with the memo.
+        let pending = pendingReference
+        pendingReference = nil
+        updateReferenceChip()
         let durationMs = Int(memoDuration * 1000)
         showCallStatus("Sending voice message…")
         // §4: the upload rides the Session Tray while it's in flight, and its
@@ -540,7 +544,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                         TransferCenter.shared.update(id: transferId, fraction: fraction, bytesPerSecond: rate)
                     }
                 }
-                let envelope = """
+                var envelope = """
                 IDFON-RECORDING/1
                 id=\(UUID().uuidString)
                 codec=pcm
@@ -549,8 +553,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 sender_id=\(ChatStore.shared.selfPeerId)
                 ticket=\(ticket)
                 """
+                var reference: MessageReference?
+                if let pending {
+                    let message = MessageReference(text: "", refs: [
+                        ArtifactRef(artifactId: pending.artifact.artifactId, selector: pending.selector, blobTicket: pending.artifact.blobTicket, note: nil),
+                    ])
+                    if let refEnvelope = ArtifactEnvelope.encodeReference(message) {
+                        envelope += "\n\(refEnvelope)"
+                        reference = message
+                    }
+                }
                 try await sendConversationText(envelope)
-                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id, kind: .recording(ticket: ticket, durationMs: durationMs, localURL: url), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
+                let outgoingPeerId = conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id
+                ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: outgoingPeerId, kind: .recording(ticket: ticket, durationMs: durationMs, localURL: url), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
+                if let reference {
+                    ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: outgoingPeerId, kind: .reference(reference), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
+                }
                 try? FileManager.default.removeItem(at: url)
                 TransferCenter.shared.finish(id: transferId)
                 self.memoURL = nil

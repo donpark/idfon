@@ -96,14 +96,15 @@ rather than silently degraded.
    bridge (`/blob/put`) and returns an `IDFON-ARTIFACT/1` envelope the model
    appends to its reply text; no holder or bridge change was needed. *Landed
    (ai-voice-chat).*
-4. **Reference capture** — *iOS landed:* the detail screen selects an image
-   region (drag) or a text range, the composer shows a reference chip, and the
-   sent turn is an `IDFON-REF/1` message. A ref carries the artifact's blob
-   ticket, so it is self-contained for the agent. The channel has a
-   `read_reference` tool that fetches the blob and resolves text ranges, JSON
-   pointers, and whole-content previews into turn context. Remaining: the mac
-   selection UI, and region/time cropping (the tool returns the coordinates and
-   asks the model to say so rather than guess).
+4. **Reference capture** — *landed (iOS + mac):* the detail screen selects an
+   image region (drag) or a text range, the composer shows a reference chip, and
+   the sent turn is an `IDFON-REF/1` message — typed, or riding along with a
+   voice memo. (The holder's attachment parser stops at the next envelope, so a
+   memo can carry a reference.) A ref carries the artifact's blob ticket, so it
+   is self-contained. The channel's `read_reference` tool fetches the blob and
+   resolves text ranges, JSON pointers, and whole-content previews. Remaining:
+   region/time cropping (the tool returns the coordinates and asks the model to
+   say so rather than guess).
 5. **Rich renderers** — json-render for structured results, sandboxed web view
    for HTML, paged PDF, media transports.
 6. **Remote view** — gateway/`idfon://` fetch for artifacts not held locally.
