@@ -164,6 +164,10 @@ enum MessageKind {
     /// File transfer: blob ticket + display name/size. `localURL` is set once
     /// the blob has been fetched to local storage (nil until then).
     case file(ticket: String, name: String, sizeBytes: Int, localURL: URL?)
+    /// A durable agent output the user can open in a detail screen.
+    case artifact(Artifact)
+    /// A turn that asks about a selection inside an artifact.
+    case reference(MessageReference)
 
     static let recordingPrefix = "IDFON-RECORDING/1\n"
     static let filePrefix = "IDFON-FILE/1\n"
@@ -186,6 +190,8 @@ enum MessageKind {
                               durationMs: Int(fields["duration_ms"] ?? "") ?? 0,
                               localURL: nil)
         }
+        if let artifact = ArtifactEnvelope.decodeArtifact(text) { return .artifact(artifact) }
+        if let reference = ArtifactEnvelope.decodeReference(text) { return .reference(reference) }
         return .text(text)
     }
 
@@ -222,6 +228,9 @@ struct ChatMessage: Identifiable {
         case .text(let text): return text
         case .recording: return "Voice message"
         case .file(_, let name, _, _): return name
+        case .artifact(let artifact): return artifact.title
+        case .reference(let reference):
+            return reference.text.isEmpty ? "Asked about an artifact" : reference.text
         }
     }
 }
