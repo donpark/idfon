@@ -59,6 +59,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var audioMeter: AudioMeter!
     private var composerHeight: NSLayoutConstraint!
 
+    // A pending artifact reference attached to the next sent turn.
+    private var pendingReference: (artifact: Artifact, selector: ArtifactSelector)?
+    private let referenceChip = UIView()
+    private let referenceChipLabel = UILabel()
+    private var referenceChipHeight: NSLayoutConstraint!
+
     // recording state
     enum ComposerMode { case normal, recording, review }
     private var mode: ComposerMode = .normal { didSet { applyMode() } }
@@ -233,6 +239,29 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         reviewWaveform.translatesAutoresizingMaskIntoConstraints = false
 
+        referenceChip.translatesAutoresizingMaskIntoConstraints = false
+        referenceChip.backgroundColor = .tertiarySystemBackground
+        referenceChip.layer.cornerRadius = 15
+        referenceChip.isHidden = true
+        referenceChipLabel.translatesAutoresizingMaskIntoConstraints = false
+        referenceChipLabel.font = .preferredFont(forTextStyle: .footnote)
+        referenceChipLabel.lineBreakMode = .byTruncatingMiddle
+        referenceChip.addSubview(referenceChipLabel)
+        let clearReference = UIButton(type: .system)
+        clearReference.translatesAutoresizingMaskIntoConstraints = false
+        clearReference.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        clearReference.tintColor = .secondaryLabel
+        clearReference.addTarget(self, action: #selector(clearReferenceTapped), for: .touchUpInside)
+        referenceChip.addSubview(clearReference)
+        NSLayoutConstraint.activate([
+            referenceChipLabel.leadingAnchor.constraint(equalTo: referenceChip.leadingAnchor, constant: 12),
+            referenceChipLabel.centerYAnchor.constraint(equalTo: referenceChip.centerYAnchor),
+            referenceChipLabel.trailingAnchor.constraint(equalTo: clearReference.leadingAnchor, constant: -6),
+            clearReference.centerYAnchor.constraint(equalTo: referenceChip.centerYAnchor),
+            clearReference.trailingAnchor.constraint(equalTo: referenceChip.trailingAnchor, constant: -8),
+            clearReference.widthAnchor.constraint(equalToConstant: 24),
+        ])
+
         // Inline live-video bar: tap to expand the fullscreen call screen.
         videoBar.translatesAutoresizingMaskIntoConstraints = false
         videoBar.backgroundColor = .secondarySystemBackground
@@ -259,6 +288,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         view.addSubview(tableView)
         view.addSubview(callStatusLabel)
         view.addSubview(waveformView)
+        view.addSubview(referenceChip)
         view.addSubview(composerBar)
         composerBar.addSubview(composerText)
         composerBar.addSubview(attachButton)
@@ -271,6 +301,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composerBar.addSubview(reviewWaveform)
 
         composerHeight = composerText.heightAnchor.constraint(equalToConstant: 40)
+        referenceChipHeight = referenceChip.heightAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
             videoBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -293,8 +324,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
             waveformView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             waveformView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            waveformView.bottomAnchor.constraint(equalTo: composerBar.topAnchor, constant: -8),
+            waveformView.bottomAnchor.constraint(equalTo: referenceChip.topAnchor, constant: -8),
             waveformHeight,
+
+            referenceChip.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            referenceChip.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            referenceChip.bottomAnchor.constraint(equalTo: composerBar.topAnchor, constant: -6),
+            referenceChipHeight,
 
             composerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             composerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
@@ -375,6 +411,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composerText.text = ""
         textViewDidChange(composerText)
         let peerId = conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id
+        // A pending artifact selection turns this turn into a reference.
+        let pending = pendingReference
+        pendingReference = nil
+        updateReferenceChip()
+        if let pending {
+            let message = MessageReference(text: text, refs: [
+                ArtifactRef(artifactId: pending.artifact.artifactId, selector: pending.selector, blobTicket: pending.artifact.blobTicket, note: nil),
+            ])
+            guard let envelope = ArtifactEnvelope.encodeReference(message) else { return }
+            ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .reference(message), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
+            Task {
+                if let room = conversation.room {
+                    try? await client.sendRoom(room.id, text: envelope)
+                } else {
+                    try? await client.sendText(to: peer.id, envelope)
+                }
+            }
+            return
+        }
         ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .text(text), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
         Task {
             if let room = conversation.room {
@@ -580,7 +635,41 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// of ingest: a large file isn't pulled down until the recipient asks.
     @objc private func artifactTapped(_ sender: UIButton) {
         guard case .artifact(let artifact) = messages[sender.tag].kind else { return }
-        present(UINavigationController(rootViewController: ArtifactDetailViewController(artifact: artifact)), animated: true)
+        let detail = ArtifactDetailViewController(artifact: artifact)
+        detail.onReference = { [weak self] selector in
+            guard let self else { return }
+            self.pendingReference = (artifact, selector)
+            self.updateReferenceChip()
+            self.composerText.becomeFirstResponder()
+        }
+        present(UINavigationController(rootViewController: detail), animated: true)
+    }
+
+    private func updateReferenceChip() {
+        guard let pending = pendingReference else {
+            referenceChip.isHidden = true
+            referenceChipHeight.constant = 0
+            return
+        }
+        referenceChipLabel.text = "\(pending.artifact.title) · \(Self.selectorSummary(pending.selector))"
+        referenceChip.isHidden = false
+        referenceChipHeight.constant = 34
+    }
+
+    @objc private func clearReferenceTapped() {
+        pendingReference = nil
+        updateReferenceChip()
+    }
+
+    private static func selectorSummary(_ selector: ArtifactSelector) -> String {
+        switch selector {
+        case .whole: return "whole"
+        case .text(_, _, let quote): return quote.map { "“\($0.prefix(24))”" } ?? "text"
+        case .region: return "region"
+        case .timeRange: return "time range"
+        case .jsonPointer(let pointer): return pointer
+        case .element(let path): return path
+        }
     }
 
     @objc private func fileTapped(_ sender: UIButton) {

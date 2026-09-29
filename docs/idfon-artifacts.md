@@ -94,8 +94,13 @@ rather than silently degraded.
    bridge (`/blob/put`) and returns an `IDFON-ARTIFACT/1` envelope the model
    appends to its reply text; no holder or bridge change was needed. *Landed
    (ai-voice-chat).*
-4. **Reference capture** — detail-screen selection UI, composer chip, send
-   `IDFON-REF/1`; channel-side resolution (crop/slice) into turn context.
+4. **Reference capture** — *iOS landed:* the detail screen selects an image
+   region (drag) or a text range, the composer shows a reference chip, and the
+   sent turn is an `IDFON-REF/1` message. A ref carries the artifact's blob
+   ticket, so it is self-contained for the agent. Remaining: the mac selection
+   UI, and a channel-side tool that resolves a region/json selection (fetch the
+   blob, crop/extract) into turn context. Text selections already carry their
+   `quote`, so the agent can answer them without a tool.
 5. **Rich renderers** — json-render for structured results, sandboxed web view
    for HTML, paged PDF, media transports.
 6. **Remote view** — gateway/`idfon://` fetch for artifacts not held locally.

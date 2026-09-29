@@ -74,10 +74,11 @@ if case .artifact(let artifact) = MessageKind.parse(artifactEnvelope) {
 }
 
 let referenceEnvelope = "IDFON-REF/1\n" + """
-{"text":"what is this?","refs":[{"artifact_id":"art-1","selector":{"type":"region","x":0.1,"y":0.2,"width":0.3,"height":0.4}}]}
+{"text":"what is this?","refs":[{"artifact_id":"art-1","blob_ticket":"tkt-9","selector":{"type":"region","x":0.1,"y":0.2,"width":0.3,"height":0.4}}]}
 """
 if case .reference(let reference) = MessageKind.parse(referenceEnvelope) {
     check(reference.refs.count == 1, "one reference")
+    check(reference.refs[0].blobTicket == "tkt-9", "reference carries the ticket")
     if case .region(let x, _, _, _, _) = reference.refs[0].selector {
         check(abs(x - 0.1) < 1e-9, "region x")
     } else {

@@ -167,6 +167,10 @@ impl ArtifactSelector {
 pub struct ArtifactRef {
     pub artifact_id: String,
     pub selector: ArtifactSelector,
+    /// Content address, so a reference is self-contained for a consumer that
+    /// does not hold the artifact record. Absent for live artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_ticket: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -320,12 +324,15 @@ mod tests {
                 refs: vec![ArtifactRef {
                     artifact_id: "art-1".into(),
                     selector,
+                    blob_ticket: Some("tkt-1".into()),
                     note: None,
                 }],
             };
             let encoded = encode_reference(&reference).unwrap();
             assert!(is_reference(&encoded));
-            assert_eq!(decode_reference(&encoded).unwrap(), reference);
+            let decoded = decode_reference(&encoded).unwrap();
+            assert_eq!(decoded, reference);
+            assert_eq!(decoded.refs[0].blob_ticket.as_deref(), Some("tkt-1"));
         }
     }
 

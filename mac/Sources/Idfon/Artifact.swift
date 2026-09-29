@@ -122,11 +122,14 @@ enum ArtifactSelector: Codable, Equatable {
 struct ArtifactRef: Codable, Equatable {
     let artifactId: String
     let selector: ArtifactSelector
+    /// Content address, so a reference is self-contained for the consumer.
+    let blobTicket: String?
     let note: String?
 
     enum CodingKeys: String, CodingKey {
         case selector, note
         case artifactId = "artifact_id"
+        case blobTicket = "blob_ticket"
     }
 }
 
