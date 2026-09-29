@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod artifacts;
+pub use artifacts::*;
+
 pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
