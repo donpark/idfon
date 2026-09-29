@@ -55,6 +55,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
     private var composerTextView: NSTextView?
 
+    // A pending artifact reference attached to the next sent turn.
+    private var pendingReference: (artifact: Artifact, selector: ArtifactSelector)?
+    private let referenceBar = NSStackView()
+    private let referenceLabel = NSTextField(labelWithString: "")
+
     // memo state
     private var memo: VoiceMemo?
     private var memoURL: URL?
@@ -119,7 +124,20 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         composer.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 10, right: 12)
         rebuildComposer()
 
-        let outer = NSStackView(views: [headerRow, bannerBox, videoPanel ?? NSView(), tableScrollView, composer])
+        referenceBar.orientation = .horizontal
+        referenceBar.spacing = 6
+        referenceBar.edgeInsets = NSEdgeInsets(top: 2, left: 12, bottom: 2, right: 12)
+        referenceLabel.font = NSFont.systemFont(ofSize: 11)
+        referenceLabel.lineBreakMode = .byTruncatingMiddle
+        let clearReference = NSButton(
+            image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Clear reference")!,
+            target: self, action: #selector(clearReferenceTapped))
+        clearReference.isBordered = false
+        referenceBar.addArrangedSubview(referenceLabel)
+        referenceBar.addArrangedSubview(clearReference)
+        referenceBar.isHidden = true
+
+        let outer = NSStackView(views: [headerRow, bannerBox, videoPanel ?? NSView(), tableScrollView, referenceBar, composer])
         outer.orientation = .vertical
         outer.spacing = 0
         outer.edgeInsets = NSEdgeInsets()
@@ -870,13 +888,30 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         composerTextView.string = ""
         let id = "local-\(UUID().uuidString)"
         let peerId = conversation.isRoom ? store.selfPeerId : peer.id
-        store.appendOutgoing(ChatMessage(id: id, peerId: peerId, kind: .text(text), outgoing: true, status: "Sending", conversation: conversation.room?.id))
+        // A pending artifact selection turns this turn into a reference.
+        let pending = pendingReference
+        pendingReference = nil
+        updateReferenceBar()
+        let kind: MessageKind
+        let wire: String
+        if let pending {
+            let message = MessageReference(text: text, refs: [
+                ArtifactRef(artifactId: pending.artifact.artifactId, selector: pending.selector, blobTicket: pending.artifact.blobTicket, note: nil),
+            ])
+            guard let envelope = ArtifactEnvelope.encodeReference(message) else { return }
+            kind = .reference(message)
+            wire = envelope
+        } else {
+            kind = .text(text)
+            wire = text
+        }
+        store.appendOutgoing(ChatMessage(id: id, peerId: peerId, kind: kind, outgoing: true, status: "Sending", conversation: conversation.room?.id))
         Task {
             do {
                 if let room = conversation.room {
-                    try await client.sendRoom(room.id, text: text)
+                    try await client.sendRoom(room.id, text: wire)
                 } else {
-                    try await client.sendText(to: peer.id, text)
+                    try await client.sendText(to: peer.id, wire)
                 }
                 store.updateMessage(id: id) { $0.status = "Sent" }
             } catch {
@@ -1028,7 +1063,41 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         guard let messageId = sender.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),
               case .artifact(let artifact) = message.kind else { return }
-        presentAsSheet(ArtifactDetailViewController(artifact: artifact))
+        let detail = ArtifactDetailViewController(artifact: artifact)
+        detail.onReference = { [weak self] selector in
+            guard let self else { return }
+            self.pendingReference = (artifact, selector)
+            self.updateReferenceBar()
+            if let textView = self.composerTextView {
+                self.view.window?.makeFirstResponder(textView)
+            }
+        }
+        presentAsSheet(detail)
+    }
+
+    private func updateReferenceBar() {
+        guard let pending = pendingReference else {
+            referenceBar.isHidden = true
+            return
+        }
+        referenceLabel.stringValue = "\(pending.artifact.title) · \(Self.selectorSummary(pending.selector))"
+        referenceBar.isHidden = false
+    }
+
+    @objc private func clearReferenceTapped() {
+        pendingReference = nil
+        updateReferenceBar()
+    }
+
+    private static func selectorSummary(_ selector: ArtifactSelector) -> String {
+        switch selector {
+        case .whole: return "whole"
+        case .text(_, _, let quote): return quote.map { "“\($0.prefix(24))”" } ?? "text"
+        case .region: return "region"
+        case .timeRange: return "time range"
+        case .jsonPointer(let pointer): return pointer
+        case .element(let path): return path
+        }
     }
 
     @objc private func revealFileTapped(_ sender: NSButton) {
