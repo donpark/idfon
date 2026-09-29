@@ -1,7 +1,9 @@
 # Artifacts and multimodal references
 
-> **Status:** model landed (`crates/idfon-protocol/src/artifacts.rs`); the rest
-> is scoped here. Direction: 2026-09-29.
+> **Status:** the model, thread UI (iOS + mac), agent emit and resolve,
+> references (text / image region / HTML element), and the sandboxed web view
+> are landed. Remaining: json-render for structured results, time-range
+> selection, and device/vision verification. Direction: 2026-09-29.
 
 Voice chat with an idfon agent is **multimodal chat**. A turn is not just text
 or audio: the agent produces **artifacts** (a chart, a document, a JSON result,
@@ -89,9 +91,9 @@ rather than silently degraded.
   metadata around a ticket.
 - The daemon keeps a per-identity **artifact registry** (like `MediaResource`),
   so the thread can list and re-open artifacts after a restart.
-- Remote detail view uses the same `idfon-gateway`/MCP-resource path as any
-  other idfon resource: `idfon://<account>/artifacts/<id>` resolves to the blob.
-  Live artifacts use stream tickets (MoQ), not blobs.
+- Remote detail view uses the same gateway/MCP-resource path as any other
+  idfon resource (`docs/idfon-gateway.md`): `idfon://<account>/artifacts/<id>`
+  resolves to the blob. Live artifacts use stream tickets (MoQ), not blobs.
 
 ## Slices
 
