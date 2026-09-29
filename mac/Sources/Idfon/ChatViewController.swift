@@ -647,7 +647,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let message = history[row]
         let height: CGFloat
         switch message.kind {
-        case .recording, .file:
+        case .recording, .file, .artifact, .reference:
             height = 46
         case .text(let text):
             height = textHeight(for: message, text: text)
@@ -780,6 +780,52 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 reveal.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
                 reveal.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
                 reveal.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+            ])
+        case .artifact(let artifact):
+            let icon = NSImageView()
+            icon.image = NSImage(systemSymbolName: artifact.kind.glyph, accessibilityDescription: "Artifact")
+            icon.contentTintColor = .controlAccentColor
+            let label = NSTextField(labelWithString: "\(artifact.title)\n\(artifact.kind.rawValue) · \(ByteCountFormatter.string(fromByteCount: Int64(artifact.sizeBytes), countStyle: .file))")
+            label.font = NSFont.systemFont(ofSize: 12)
+            label.maximumNumberOfLines = 2
+            label.lineBreakMode = .byTruncatingMiddle
+            let open = NSButton(title: "Open", target: self, action: #selector(artifactTapped(_:)))
+            open.bezelStyle = .rounded
+            open.identifier = NSUserInterfaceItemIdentifier(message.id)
+            for view in [icon, label, open] {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                bubble.addSubview(view)
+            }
+            NSLayoutConstraint.activate([
+                icon.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
+                icon.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                icon.widthAnchor.constraint(equalToConstant: 18),
+                label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+                label.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                label.widthAnchor.constraint(lessThanOrEqualToConstant: 240),
+                open.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
+                open.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                open.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+            ])
+        case .reference(let reference):
+            let icon = NSImageView()
+            icon.image = NSImage(systemSymbolName: "text.bubble", accessibilityDescription: "Reference")
+            icon.contentTintColor = .secondaryLabelColor
+            let label = NSTextField(labelWithString: reference.text.isEmpty ? "Asked about an artifact" : reference.text)
+            label.font = NSFont.systemFont(ofSize: 12)
+            label.maximumNumberOfLines = 2
+            label.lineBreakMode = .byTruncatingTail
+            for view in [icon, label] {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                bubble.addSubview(view)
+            }
+            NSLayoutConstraint.activate([
+                icon.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
+                icon.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                icon.widthAnchor.constraint(equalToConstant: 18),
+                label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+                label.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                label.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
             ])
         }
 
@@ -978,6 +1024,13 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// Reveals a received file in Finder, fetching it first if the eager ingest
     /// fetch hasn't landed.
+    @objc private func artifactTapped(_ sender: NSButton) {
+        guard let messageId = sender.identifier?.rawValue,
+              let message = history.first(where: { $0.id == messageId }),
+              case .artifact(let artifact) = message.kind else { return }
+        presentAsSheet(ArtifactDetailViewController(artifact: artifact))
+    }
+
     @objc private func revealFileTapped(_ sender: NSButton) {
         guard let messageId = sender.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),

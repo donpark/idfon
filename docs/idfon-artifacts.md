@@ -86,10 +86,14 @@ rather than silently degraded.
 ## Slices
 
 1. **Model** — `artifacts.rs` types, validation, envelope codec, tests. *Landed.*
-2. **Thread** — parse both envelopes in the apps, render an artifact card, open
-   a detail screen for the kinds we can already render locally (text/image).
-3. **Agent emit** — `add_artifact` tool in the Eve channel + holder `blob.put`
-   wiring, so a real turn produces a real artifact.
+2. **Thread** — both apps parse the envelopes, render an artifact card, and
+   open a detail screen (text/image). Message bodies are split into reply text
+   plus trailing envelopes, so a transcript followed by an envelope renders as
+   two items instead of raw text. *Landed (iOS + mac).*
+3. **Agent emit** — the `add_artifact` tool stores bytes through the idfon
+   bridge (`/blob/put`) and returns an `IDFON-ARTIFACT/1` envelope the model
+   appends to its reply text; no holder or bridge change was needed. *Landed
+   (ai-voice-chat).*
 4. **Reference capture** — detail-screen selection UI, composer chip, send
    `IDFON-REF/1`; channel-side resolution (crop/slice) into turn context.
 5. **Rich renderers** — json-render for structured results, sandboxed web view

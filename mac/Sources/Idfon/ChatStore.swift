@@ -112,17 +112,30 @@ final class ChatStore {
             VideoCall.shared.handleEnvelope(peer: peerId, text)
             return
         }
-        let kind = MessageKind.parse(text)
+        // A turn can carry reply text plus one or more trailing envelopes
+        // (a transcript followed by an artifact, say). Keep the first part on
+        // the event id so replay dedupe still holds.
         let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
-        let message = ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, status: nil, timestamp: timestamp, conversation: event.conversationId)
-        messages.append(message)
-        if case .recording(let ticket, _) = kind {
-            onBanner?("Received voice message")
-            fetchRecording(ticket: ticket)
-        }
-        if case .file(let ticket, let name, let sizeBytes) = kind {
-            onBanner?("Received file")
-            fetchFile(ticket: ticket, name: name, sizeBytes: sizeBytes)
+        let (preamble, envelopes) = MessageBody.parse(text)
+        var parts: [(String, MessageKind)] = []
+        if let preamble { parts.append((preamble, .text(preamble))) }
+        for envelope in envelopes { parts.append((envelope, MessageKind.parse(envelope))) }
+        if parts.isEmpty { parts.append((text, .text(text))) }
+        for (index, part) in parts.enumerated() {
+            let partID = index == 0 ? messageID : "\(messageID)#\(index)"
+            messages.append(ChatMessage(id: partID, peerId: peerId, kind: part.1, outgoing: false, status: nil, timestamp: timestamp, conversation: event.conversationId))
+            switch part.1 {
+            case .recording(let ticket, _):
+                onBanner?("Received voice message")
+                fetchRecording(ticket: ticket)
+            case .file(let ticket, let name, let sizeBytes):
+                onBanner?("Received file")
+                fetchFile(ticket: ticket, name: name, sizeBytes: sizeBytes)
+            case .artifact:
+                onBanner?("Received artifact")
+            default:
+                break
+            }
         }
         notifyObservers()
     }

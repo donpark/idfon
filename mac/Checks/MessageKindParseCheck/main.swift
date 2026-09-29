@@ -2,6 +2,7 @@
 // Models.swift is Foundation-only, so this runs on the host with plain swiftc:
 //
 //   swiftc -o /tmp/mkpcheck mac/Sources/Idfon/Models.swift \
+//     mac/Sources/Idfon/Artifact.swift \
 //     mac/Checks/MessageKindParseCheck/main.swift
 //   /tmp/mkpcheck
 //
@@ -59,5 +60,47 @@ if case .recording(let ticket, let durationMs) = MessageKind.parse(recordingEnve
 } else {
     check(false, "recording envelope parses as .recording")
 }
+
+// Artifact and reference envelopes (see docs/idfon-artifacts.md).
+let artifactEnvelope = "IDFON-ARTIFACT/1\n" + """
+{"artifact_id":"art-1","kind":"data","mime":"application/json","title":"Q3","size_bytes":42,"blob_ticket":"tkt","created_at":"2026-09-29T00:00:00Z"}
+"""
+if case .artifact(let artifact) = MessageKind.parse(artifactEnvelope) {
+    check(artifact.artifactId == "art-1", "artifact id")
+    check(artifact.kind == .data, "artifact kind")
+    check(artifact.blobTicket == "tkt", "artifact ticket")
+} else {
+    check(false, "artifact envelope parses as .artifact")
+}
+
+let referenceEnvelope = "IDFON-REF/1\n" + """
+{"text":"what is this?","refs":[{"artifact_id":"art-1","selector":{"type":"region","x":0.1,"y":0.2,"width":0.3,"height":0.4}}]}
+"""
+if case .reference(let reference) = MessageKind.parse(referenceEnvelope) {
+    check(reference.refs.count == 1, "one reference")
+    if case .region(let x, _, _, _, _) = reference.refs[0].selector {
+        check(abs(x - 0.1) < 1e-9, "region x")
+    } else {
+        check(false, "region selector")
+    }
+} else {
+    check(false, "reference envelope parses as .reference")
+}
+
+// A reply can be text plus a trailing envelope; MessageBody splits them.
+let combined = "Here is your summary.\nIDFON-ARTIFACT/1\n"
+    + """
+{"artifact_id":"art-2","kind":"document","mime":"text/markdown","title":"s.md","size_bytes":1,"blob_ticket":"t","created_at":"2026-09-29T00:00:00Z"}
+"""
+let split = MessageBody.parse(combined)
+check(split.text?.hasPrefix("Here is your summary") == true, "preamble kept")
+check(split.envelopes.count == 1, "one embedded envelope")
+if case .artifact(let embedded) = MessageKind.parse(split.envelopes[0]) {
+    check(embedded.artifactId == "art-2", "embedded artifact")
+} else {
+    check(false, "embedded artifact parses")
+}
+let plainSplit = MessageBody.parse("just text")
+check(plainSplit.text == "just text" && plainSplit.envelopes.isEmpty, "plain text unsplit")
 
 print("ALL OK")

@@ -139,6 +139,13 @@ After pairing, chat with the `ai-voice-chat` peer from either app: text gets
 a text reply, a voice memo gets transcript text plus an `IDFON-DATA/1`
 envelope whose ticket fetches the playable WAV reply.
 
+The agent also has an `add_artifact` tool (`agent/tools/add-artifact.ts`):
+when a turn produces something worth viewing (a report, table, JSON, chart),
+it stores the bytes through the bridge's `/blob/put` and returns an
+`IDFON-ARTIFACT/1` envelope the model appends to its reply. The apps split the
+reply text from the envelope and show the artifact as an openable card in the
+thread (see `docs/idfon-artifacts.md`).
+
 ## Testing
 
 ```sh

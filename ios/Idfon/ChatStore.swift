@@ -103,12 +103,22 @@ final class ChatStore {
             } }
             return
         }
-        let kind = MessageKind.parse(text)
-        if case .file(_, let name, let sizeBytes, _) = kind {
-            NSLog("idfon file: received name=\(name) size=\(sizeBytes)")
-        }
+        // A turn can carry reply text plus one or more trailing envelopes
+        // (a transcript followed by an artifact, say). Keep the first part on
+        // the event id so replay dedupe and seen-ids still hold.
         let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
-        messages.append(ChatMessage(id: event.messageId ?? event.eventId, peerId: peerId, kind: kind, outgoing: false, timestamp: timestamp, conversation: event.conversationId))
+        let (preamble, envelopes) = MessageBody.parse(text)
+        var parts: [(String, MessageKind)] = []
+        if let preamble { parts.append((preamble, .text(preamble))) }
+        for envelope in envelopes { parts.append((envelope, MessageKind.parse(envelope))) }
+        if parts.isEmpty { parts.append((text, .text(text))) }
+        for (index, part) in parts.enumerated() {
+            let partID = index == 0 ? messageID : "\(messageID)#\(index)"
+            if case .file(_, let name, let sizeBytes, _) = part.1 {
+                NSLog("idfon file: received name=\(name) size=\(sizeBytes)")
+            }
+            messages.append(ChatMessage(id: partID, peerId: peerId, kind: part.1, outgoing: false, timestamp: timestamp, conversation: event.conversationId))
+        }
         persistMessages()
         NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")
         notifyObservers()

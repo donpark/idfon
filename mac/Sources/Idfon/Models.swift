@@ -104,6 +104,10 @@ enum MessageKind {
     /// File transfer (§5): blob ticket + display name/size. The downloaded file
     /// lives in `ChatStore.fileURLs[ticket]`.
     case file(ticket: String, name: String, sizeBytes: Int)
+    /// A durable agent output the user can open in a detail screen.
+    case artifact(Artifact)
+    /// A turn that asks about a selection inside an artifact.
+    case reference(MessageReference)
 
     static let recordingPrefix = "IDFON-RECORDING/1\n"
     static let filePrefix = "IDFON-FILE/1\n"
@@ -119,10 +123,14 @@ enum MessageKind {
                          name: fields["name"] ?? "file",
                          sizeBytes: Int(fields["size"] ?? "") ?? 0)
         }
-        guard text.hasPrefix(recordingPrefix) else { return .text(text) }
-        let fields = envelopeFields(text, prefix: recordingPrefix)
-        guard let ticket = fields["ticket"], !ticket.isEmpty else { return .text(text) }
-        return .recording(ticket: ticket, durationMs: Int(fields["duration_ms"] ?? "") ?? 0)
+        if text.hasPrefix(recordingPrefix) {
+            let fields = envelopeFields(text, prefix: recordingPrefix)
+            guard let ticket = fields["ticket"], !ticket.isEmpty else { return .text(text) }
+            return .recording(ticket: ticket, durationMs: Int(fields["duration_ms"] ?? "") ?? 0)
+        }
+        if let artifact = ArtifactEnvelope.decodeArtifact(text) { return .artifact(artifact) }
+        if let reference = ArtifactEnvelope.decodeReference(text) { return .reference(reference) }
+        return .text(text)
     }
 
     /// `key=value` lines after the envelope header; split on the first `=` so
@@ -134,6 +142,53 @@ enum MessageKind {
             if pair.count == 2 { fields[String(pair[0])] = String(pair[1]) }
         }
         return fields
+    }
+}
+
+/// Splits a message body into human text plus any embedded `IDFON-*/1`
+/// envelopes. Agents append envelopes after their reply text (a spoken
+/// transcript followed by an `IDFON-DATA/1` or `IDFON-ARTIFACT/1` envelope),
+/// so one daemon event can carry both.
+enum MessageBody {
+    static let prefixes = [
+        "IDFON-ARTIFACT/1\n",
+        "IDFON-REF/1\n",
+        "IDFON-DATA/1\n",
+        "IDFON-RECORDING/1\n",
+        "IDFON-FILE/1\n",
+        "IDFON-LIVE/1\n",
+    ]
+
+    static func parse(_ text: String) -> (text: String?, envelopes: [String]) {
+        var starts: [String.Index] = []
+        var search = text.startIndex
+        while let index = firstPrefix(in: text, from: search) {
+            starts.append(index)
+            search = text.index(after: index)
+        }
+        guard let first = starts.first else {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed.isEmpty ? nil : text, [])
+        }
+        let preamble = String(text[text.startIndex..<first])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var envelopes: [String] = []
+        for (index, start) in starts.enumerated() {
+            let end = index + 1 < starts.count ? starts[index + 1] : text.endIndex
+            envelopes.append(String(text[start..<end])
+                .trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return (preamble.isEmpty ? nil : preamble, envelopes)
+    }
+
+    private static func firstPrefix(in text: String, from search: String.Index) -> String.Index? {
+        var best: String.Index?
+        for prefix in prefixes {
+            if let range = text.range(of: prefix, range: search..<text.endIndex) {
+                if best == nil || range.lowerBound < best! { best = range.lowerBound }
+            }
+        }
+        return best
     }
 }
 
@@ -156,6 +211,9 @@ struct ChatMessage: Identifiable {
         case .text(let text): return text
         case .recording: return "Voice message"
         case .file(_, let name, _): return name
+        case .artifact(let artifact): return artifact.title
+        case .reference(let reference):
+            return reference.text.isEmpty ? "Asked about an artifact" : reference.text
         }
     }
 }

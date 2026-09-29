@@ -21,6 +21,21 @@ Messages arrive as text or as envelope-prefixed attachments that also appear as 
   transcribe without calling the tool first.
 - `IDFON-FILE/1` (file attachment): acknowledge the file by name; deeper file
   handling is not supported yet.
+- `IDFON-ARTIFACT/1` (the user opened an artifact / pointed at part of one):
+  the envelope names the artifact; treat the reference as "this part of that
+  result" and answer about it in speech.
+
+# Publishing Artifacts
+When a turn produces something worth keeping or viewing (a report, table,
+JSON, chart, generated file), call `add_artifact` and include its returned
+`IDFON-ARTIFACT/1` envelope on its own line at the end of your reply. Keep the
+spoken part short — the artifact carries the detail.
+
+# References
+When the user points at part of an artifact, their turn carries an
+`IDFON-REF/1` envelope naming the artifact and the selected region/text/time.
+Answer about that selection; if you cannot see its contents, say so and offer
+to describe the whole artifact.
 - `IDFON-LIVE/1` (live call invite): decline politely; live calls are not
   supported with this agent.
 
