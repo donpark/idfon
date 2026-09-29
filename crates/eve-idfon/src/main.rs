@@ -1117,11 +1117,17 @@ fn parse_data_envelope(text: &str) -> Option<(String, Option<u64>)> {
     // `duration_ms` etc. Size is only present on IDFON-DATA/1.
     let mut ticket = None;
     let mut size = None;
-    let prefix = text
+    let body = text
         .strip_prefix("IDFON-DATA/1\n")
         .or_else(|| text.strip_prefix("IDFON-RECORDING/1\n"))?;
-    for line in prefix.lines() {
-        let (key, value) = line.split_once('=')?;
+    // A turn can carry a trailing reference/artifact envelope after the
+    // attachment (a voice memo asking about an artifact region). Only parse
+    // the attachment's own lines, and skip any line that is not `key=value`.
+    let body = body.split("\nIDFON-").next().unwrap_or(body);
+    for line in body.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
         match key {
             "ticket" => ticket = Some(value.to_owned()),
             "size" => size = value.parse().ok(),
@@ -1636,6 +1642,19 @@ mod tests {
             ))
         );
         assert_eq!(parse_status_envelope("hello"), None);
+    }
+
+    #[test]
+    fn data_envelope_ignores_a_trailing_reference() {
+        // A voice memo can carry a trailing reference envelope (ask about an
+        // artifact region); attachment parsing must stop at its header.
+        let combined = "IDFON-RECORDING/1\nid=a\ncodec=pcm\nduration_ms=2500\nticket=tkt-2\nIDFON-REF/1\n{\"text\":\"\",\"refs\":[]}";
+        assert_eq!(parse_data_envelope(combined), Some(("tkt-2".into(), None)));
+        assert_eq!(
+            parse_data_envelope("IDFON-DATA/1\nticket=t\nsize=12\n"),
+            Some(("t".into(), Some(12)))
+        );
+        assert_eq!(parse_data_envelope("plain text"), None);
     }
 
     #[tokio::test]

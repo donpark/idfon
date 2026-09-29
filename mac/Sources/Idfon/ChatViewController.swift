@@ -1297,10 +1297,14 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     private func sendRecording(fileURL: URL, durationMs: Int, codec: String, sampleRate: String) async {
+        // Claim any pending reference now; it rides with the memo.
+        let pending = pendingReference
+        pendingReference = nil
+        updateReferenceBar()
         do {
             let data = try Data(contentsOf: fileURL)
             let ticket = try await client.putData(data, resourceId: "memo-\(UUID().uuidString)")
-            let envelope = """
+            var envelope = """
             IDFON-RECORDING/1
             id=\(UUID().uuidString)
             codec=\(codec)
@@ -1309,9 +1313,23 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             sender_id=\(store.selfPeerId)
             ticket=\(ticket)
             """
+            var reference: MessageReference?
+            if let pending {
+                let message = MessageReference(text: "", refs: [
+                    ArtifactRef(artifactId: pending.artifact.artifactId, selector: pending.selector, blobTicket: pending.artifact.blobTicket, note: nil),
+                ])
+                if let refEnvelope = ArtifactEnvelope.encodeReference(message) {
+                    envelope += "\n\(refEnvelope)"
+                    reference = message
+                }
+            }
             try await sendConversationText(envelope)
             await MainActor.run {
-                store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: conversation.isRoom ? store.selfPeerId : peer.id, kind: .recording(ticket: ticket, durationMs: durationMs), outgoing: true, status: "Sent", conversation: conversation.room?.id))
+                let outgoingPeerId = conversation.isRoom ? store.selfPeerId : peer.id
+                store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: outgoingPeerId, kind: .recording(ticket: ticket, durationMs: durationMs), outgoing: true, status: "Sent", conversation: conversation.room?.id))
+                if let reference {
+                    store.appendOutgoing(ChatMessage(id: "local-\(UUID().uuidString)", peerId: outgoingPeerId, kind: .reference(reference), outgoing: true, status: "Sent", conversation: conversation.room?.id))
+                }
                 store.cacheRecording(ticket, url: fileURL)
                 self.showBanner("Audio sent")
             }
