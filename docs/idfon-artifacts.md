@@ -66,9 +66,11 @@ rather than silently degraded.
   bytes as a blob, builds an `Artifact`, and sends it as an `IDFON-ARTIFACT/1`
   turn. The holder already has `blob.put` and the `IDFON-DATA/1` path to reuse.
 - On inbound `MessageReference`, the channel resolves each ref before the model
-  sees the turn: crop the region, slice the text range, sample the time range,
-  extract the JSON subtree — and pass the extracted content plus the reference
-  as turn context. A `note` on the ref is user intent and is passed through.
+  sees the turn: slice the text range, extract the JSON subtree, or preview the
+  whole artifact (`read_reference`), and pass the extracted content plus the
+  reference as turn context. Region/time cropping is not implemented yet; those
+  return the selector so the model can say what it covers instead of guessing.
+  A `note` on the ref is user intent and is passed through.
 - When a selection cannot be resolved (blob not local, peer offline), the agent
   still receives the selector and the `quote`/`metadata` so it can ask rather
   than hallucinate.
@@ -97,10 +99,11 @@ rather than silently degraded.
 4. **Reference capture** — *iOS landed:* the detail screen selects an image
    region (drag) or a text range, the composer shows a reference chip, and the
    sent turn is an `IDFON-REF/1` message. A ref carries the artifact's blob
-   ticket, so it is self-contained for the agent. Remaining: the mac selection
-   UI, and a channel-side tool that resolves a region/json selection (fetch the
-   blob, crop/extract) into turn context. Text selections already carry their
-   `quote`, so the agent can answer them without a tool.
+   ticket, so it is self-contained for the agent. The channel has a
+   `read_reference` tool that fetches the blob and resolves text ranges, JSON
+   pointers, and whole-content previews into turn context. Remaining: the mac
+   selection UI, and region/time cropping (the tool returns the coordinates and
+   asks the model to say so rather than guess).
 5. **Rich renderers** — json-render for structured results, sandboxed web view
    for HTML, paged PDF, media transports.
 6. **Remote view** — gateway/`idfon://` fetch for artifacts not held locally.
