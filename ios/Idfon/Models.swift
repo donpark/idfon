@@ -207,6 +207,53 @@ enum MessageKind {
     }
 }
 
+/// Splits a message body into human text plus any embedded `IDFON-*/1`
+/// envelopes. Agents append envelopes after their reply text (a spoken
+/// transcript followed by an `IDFON-DATA/1` or `IDFON-ARTIFACT/1` envelope),
+/// so one daemon event can carry both.
+enum MessageBody {
+    static let prefixes = [
+        "IDFON-ARTIFACT/1\n",
+        "IDFON-REF/1\n",
+        "IDFON-DATA/1\n",
+        "IDFON-RECORDING/1\n",
+        "IDFON-FILE/1\n",
+        "IDFON-LIVE/1\n",
+    ]
+
+    static func parse(_ text: String) -> (text: String?, envelopes: [String]) {
+        var starts: [String.Index] = []
+        var search = text.startIndex
+        while let index = firstPrefix(in: text, from: search) {
+            starts.append(index)
+            search = text.index(after: index)
+        }
+        guard let first = starts.first else {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed.isEmpty ? nil : text, [])
+        }
+        let preamble = String(text[text.startIndex..<first])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var envelopes: [String] = []
+        for (index, start) in starts.enumerated() {
+            let end = index + 1 < starts.count ? starts[index + 1] : text.endIndex
+            envelopes.append(String(text[start..<end])
+                .trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return (preamble.isEmpty ? nil : preamble, envelopes)
+    }
+
+    private static func firstPrefix(in text: String, from search: String.Index) -> String.Index? {
+        var best: String.Index?
+        for prefix in prefixes {
+            if let range = text.range(of: prefix, range: search..<text.endIndex) {
+                if best == nil || range.lowerBound < best! { best = range.lowerBound }
+            }
+        }
+        return best
+    }
+}
+
 struct ChatMessage: Identifiable {
     let id: String
     let peerId: String
