@@ -101,13 +101,16 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
     }
 
     private func addContentRules() {
+        // Block first, then whitelist: `ignore-previous-rules` only undoes
+        // blocks that appear *before* it. With the block last, the document
+        // itself was blocked and the web view rendered blank.
         let json = """
-        [{"trigger":{"url-filter":"^idfon-artifact://"},"action":{"type":"ignore-previous-rules"}},
-         {"trigger":{"url-filter":"^data:"},"action":{"type":"ignore-previous-rules"}},
-         {"trigger":{"url-filter":".*"},"action":{"type":"block"}}]
+        [{"trigger":{"url-filter":".*"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^idfon-artifact://"},"action":{"type":"ignore-previous-rules"}},
+         {"trigger":{"url-filter":"^data:"},"action":{"type":"ignore-previous-rules"}}]
         """
         WKContentRuleListStore.default().compileContentRuleList(
-            forIdentifier: "idfon-artifact-block", encodedContentRuleList: json
+            forIdentifier: "idfon-artifact-block-v2", encodedContentRuleList: json
         ) { [weak self] list, _ in
             guard let list else { return }
             self?.configuration.userContentController.add(list)
