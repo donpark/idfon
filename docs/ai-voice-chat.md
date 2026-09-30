@@ -210,6 +210,50 @@ through VoiceProcessingIO, whose output gain has no public API, so the phone
 compensates with a soft-clipped makeup gain (`IDFON_PLAYBACK_GAIN_DB`, iOS
 only).
 
+### Sessions and context (design note)
+
+Text and voice are two separate LM sessions with separate contexts, by
+necessity of the Live API — not a missing feature:
+
+- **Text** runs on the orchestrator model (`EVE_IDFON_MODEL`, default
+  `openai/gpt-6-luna`) in a persistent Eve session keyed by peer id.
+- **Voice** runs on `openai/gpt-live-1` in an ephemeral session per memo/call.
+  Its input channel is audio only (`session.input_audio.append`); text exists
+  only as output/derived data (`*_transcript.delta`) and one-way steering
+  (`commentary/thinking/instructions.append`). There is no text-turn input, so
+  a typed message cannot be a turn in a Live session.
+
+The two meet only at the delegation boundary: `session.delegation.created`
+fires a synthetic one-shot turn into the orchestrator (so tools like
+`add_artifact` run), and the result is spoken back via `commentary.append`.
+`IDFON-CALL/1` transcript bubbles in the chat are display only — they are not
+added to the orchestrator's prompt. So after a text exchange and a call, the
+voice model does not know what was texted, and the text model sees the call
+only through that one delegation.
+
+There is no single established standard for unifying this; the choice is
+**which context owner wins**, with four common shapes:
+
+1. **One owner, voice as I/O adapter.** The orchestrator owns context; every
+   voice turn's transcript is appended to it and replies are spoken back. Most
+   common with realtime APIs, and the smallest step from today's plumbing.
+2. **Shared memory both write.** Two live sessions reading/writing one store
+   (summaries/rolling transcript), synced at turn boundaries. Native for each
+   model; risks staleness and double-writing.
+3. **Mode handoff.** Hand the text context in as the Live session's initial
+   instructions; summarize the call back into the text context at hangup.
+   Session-bounded, no continuous sync.
+4. **Text into the realtime session.** The cleanest, but unavailable here:
+   APIs like OpenAI Realtime accept `conversation.item.create` text, making
+   typed and spoken turns the same session. GPT-Live has no such channel,
+   which is what forces the split.
+
+Recommended direction if this is ever picked up: (1)/(3) — let the Eve
+orchestrator own context and drive speech through commentary. The pieces
+exist (`IDFON-CALL/1` transcripts, `delegation`, `commentary.append`); the
+missing link is piping call transcripts into the orchestrator session rather
+than only into the chat UI.
+
 ## Known gaps
 
 - Daemon-side network fetch of holder-held blobs returned `PeerOffline` when
