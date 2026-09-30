@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 idfon-core = { path = "../idfon-core" }
 idfon-protocol = { path = "../idfon-protocol" }

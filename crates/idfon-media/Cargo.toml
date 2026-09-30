@@ -30,7 +30,11 @@ moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc
 moq-audio = { version = "0.0.23", default-features = false, features = ["aac", "capture", "playback"] }
 moq-video = "0.0.23"
 n0-future = "0.3.2"
-# rustix 1.1.5 currently fails to compile with hick's limited feature set.
+# Version pin, not a direct dependency: rustix 1.1.5 fails to compile under
+# hick's limited feature set (iroh-live -> iroh-mdns-peer-lookup -> hick ->
+# agnostic-net/hick-udp, and getifs), because the `timespec` module is
+# feature-gated out there. Hold the graph at 1.1.4; drop the pin when the
+# upstream feature set is fixed.
 rustix = "=1.1.4"
 jpeg-encoder = "0.7"
 # fMP4/MKV/TS/FLV/H.264 import (video file demuxing) and the in-memory
