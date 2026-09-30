@@ -56,6 +56,20 @@ console plus the holder log in one command; note that
 `xcrun devicectl device process launch --console` ignores SIGINT, so the
 script runs it as a child and kills it on Ctrl-C.
 
+## Live-call playback crackles / breaks up (2026-09-26, FIXED; re-verified 2026-09-29)
+
+**Symptom.** Call playback broke up into crackles rather than steady audio.
+
+**Cause and fix.** The shell had replaced moq's bundled playback engine with a
+per-frame `CallbackPlayback` (`AudioPlaybackSink`) driven from Swift. That
+delivered raw frames without moq's jitter buffer, so any arrival jitter broke
+the stream. `313850d` reverts to the bundled `DevicePlayback` — jitter-
+buffered, in-process — and keeps the `AudioPlayback` seam. Both apps dropped
+their in-process shell playback path.
+
+**Verified** (2026-09-29): user attested live that crackle and the earlier
+low-volume problem are both gone.
+
 ## iOS live call goes silent after the first reply (2026-09-24, FIXED)
 
 **Symptom.** Live voice calls to `ai-voice-chat` played the greeting, then

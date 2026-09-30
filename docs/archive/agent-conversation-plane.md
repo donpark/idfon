@@ -3,7 +3,7 @@
 > **Status:** framework-agnostic fallback design; no generic bridge code. The
 > Eve implementation is tracked in `docs/idfon-eve.md` and issue
 > [#11](https://github.com/donpark/idfon/issues/11). Follow-up to
-> `docs/mcp-agent-report.md` (design) and `docs/mcp-implementation-plan.md`
+> `docs/archive/mcp-agent-report.md` (design) and `docs/archive/mcp-implementation-plan.md`
 > (M1–M5, implemented). Written 2026-09-13.
 >
 > **For Eve specifically, `docs/idfon-eve.md` supersedes the C1 bridge
@@ -178,10 +178,10 @@ whole feature and C2–C4 stay deferred.
 
 ## References
 
-- `docs/mcp-agent-report.md` — three planes, voice negotiation, risks,
+- `docs/archive/mcp-agent-report.md` — three planes, voice negotiation, risks,
   roadmap.
 - `docs/mcp-transport.md` — the `idfon/mcp/1` binding.
-- `docs/mcp-implementation-plan.md` — implemented M1–M5 and follow-ups.
+- `docs/archive/mcp-implementation-plan.md` — implemented M1–M5 and follow-ups.
 - `docs/communication-model.md` — message delivery and grants.
 - Eve (https://eve.dev) — a concrete agent framework with a durable session
   API and a streamed event contract; a candidate first target for the bridge.

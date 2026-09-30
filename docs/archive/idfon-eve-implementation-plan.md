@@ -3,7 +3,7 @@
 > **Status:** M0–M5 agent messaging, M4 HITL/status flows, and M3 files-in,
 > files-out, live audio, and live video are implemented. Remaining operational
 > work, including the validated iOS text-agent demo, is documented in `docs/ios-architecture.md`.
-> Design: MCP bridge pattern from `docs/mcp-implementation-plan.md` (M1–M5,
+> Design: MCP bridge pattern from `docs/archive/mcp-implementation-plan.md` (M1–M5,
 > implemented). Prototyping stage: no legacy or migration constraints. Eve
 > channel contract as of 2026-09-14 (`defineChannel`, routes/events,
 > `from(address).send`, `sessionAuth`, `turnPolicy`, `audience`, extensions;
