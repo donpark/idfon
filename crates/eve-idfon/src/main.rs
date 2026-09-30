@@ -247,6 +247,10 @@ struct ReplyTarget {
     endpoint_id: String,
     conversation: Option<String>,
     a2a_depth: Option<u8>,
+    /// Set for a turn delegated from a live call: the reply text is also fed
+    /// back to the GPT-Live session as `(delegation_id, spoken_text)` so the
+    /// voice model can say the result.
+    live_commentary: Option<(String, mpsc::UnboundedSender<(String, String)>)>,
 }
 
 type Targets = Arc<Mutex<HashMap<String, ReplyTarget>>>;
@@ -707,6 +711,8 @@ async fn handle_message(
             &transport_for_calls,
             &key_for_calls,
             &holder_peer_id,
+            Arc::clone(&targets),
+            out_tx.clone(),
         )
         .await
         {
@@ -788,6 +794,7 @@ async fn handle_message(
             endpoint_id: remote_endpoint_id.clone(),
             conversation: message.conversation.clone(),
             a2a_depth,
+            live_commentary: None,
         },
     );
     drop(targets_guard);
@@ -872,6 +879,10 @@ async fn handle_reply(
         .parse()
         .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
     let target_addr = EndpointAddr::new(endpoint_id);
+    // A live-call delegation also wants the spoken text (envelopes stripped)
+    // fed back to the GPT-Live session; capture it before `text` moves.
+    let commentary = target.live_commentary.clone();
+    let commentary_text = commentary.as_ref().map(|_| strip_envelopes(&text));
     let message_id = format!(
         "eve_reply_{}",
         NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed)
@@ -905,7 +916,28 @@ async fn handle_reply(
         })
         .await
         .map_err(|_| anyhow!("IPC client disconnected"))?;
+    if let (Some((delegation_id, sender)), Some(spoken)) = (commentary, commentary_text) {
+        if !spoken.is_empty() {
+            let _ = sender.send((delegation_id, spoken));
+        }
+    }
     Ok(())
+}
+
+/// Drop trailing `IDFON-*/1` envelope blocks, keeping only the spoken text a
+/// voice session should say. Envelope headers are the first line of a block.
+fn strip_envelopes(text: &str) -> String {
+    let mut cut = text.len();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.starts_with("IDFON-") && trimmed.ends_with("/1") {
+            cut = offset;
+            break;
+        }
+        offset += line.len();
+    }
+    text[..cut].trim_end().to_string()
 }
 
 async fn handle_status(
@@ -1677,5 +1709,15 @@ mod tests {
         assert!(
             matches!(read_frame(&mut reader).await.unwrap(), Some(IpcFrame::TurnIn { text, .. }) if text == "hello")
         );
+    }
+
+    #[test]
+    fn strip_envelopes_keeps_only_spoken_text() {
+        assert_eq!(strip_envelopes("Pong."), "Pong.");
+        assert_eq!(
+            strip_envelopes("Here you go.\nIDFON-ARTIFACT/1\n{\"a\":1}"),
+            "Here you go."
+        );
+        assert_eq!(strip_envelopes("IDFON-DATA/1\n{}"), "");
     }
 }
