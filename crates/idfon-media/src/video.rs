@@ -273,6 +273,8 @@ mod tests {
     #[test]
     fn parses_presets() {
         assert_eq!("180p".parse(), Ok(VideoPreset::P180));
-        assert!("1080p".parse::<VideoPreset>().is_err());
+        assert_eq!("p1080".parse(), Ok(VideoPreset::P1080));
+        // An unknown preset is the error case, not a supported one.
+        assert!("1440p".parse::<VideoPreset>().is_err());
     }
 }
