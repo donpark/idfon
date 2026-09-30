@@ -130,7 +130,7 @@ private extension LiveWaveformView.Mode {
 
 /// Mic amplitude meter for the call screen: taps the session input and feeds
 /// normalized RMS to a LiveWaveformView. Display-only — the daemon owns the
-/// call's capture pipeline (docs/native-shells-plan.md "call screen contract").
+/// call's capture pipeline (docs/archive/native-shells-plan.md "call screen contract").
 final class AudioMeter {
     private let engine = AVAudioEngine()
     private weak var view: LiveWaveformView?

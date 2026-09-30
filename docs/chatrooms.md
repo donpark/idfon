@@ -2,7 +2,7 @@
 
 > **Status:** room UI, direct fan-out, and hybrid gossip transport are implemented. Companion to
 > `docs/communication-model.md` (group/broadcast modes) and
-> `docs/agent-conversation-plane.md` (C3: thread by peer + explicit
+> `docs/archive/agent-conversation-plane.md` (C3: thread by peer + explicit
 > `conversation_id`). Written 2026-09-15.
 
 ## The answer in one line
@@ -226,7 +226,7 @@ rooms take, or only 1:1 takes.
 ## References
 
 - `docs/communication-model.md` — group/broadcast modes, grants, policy.
-- `docs/agent-conversation-plane.md` — C3: thread by peer + explicit
+- `docs/archive/agent-conversation-plane.md` — C3: thread by peer + explicit
   `conversation_id`.
 - `docs/protocol.md` — `message.send`, grants, events, tickets.
 - `docs/idfon-eve.md` — the channel address model.

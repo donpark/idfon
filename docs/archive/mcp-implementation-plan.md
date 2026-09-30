@@ -4,7 +4,7 @@
 > stage: no legacy or migration constraints. MCP revision **2026-07-28**.
 >
 > Read the two companion docs first (`docs/mcp-transport.md`,
-> `docs/mcp-agent-report.md`). This plan resolved their open decisions into
+> `docs/archive/mcp-agent-report.md`). This plan resolved their open decisions into
 > defaults; each milestone below is implemented and has an acceptance script.
 
 ## How to use this
@@ -55,7 +55,7 @@ scripts green, and the user-side frontends (macOS and iOS Swift, and the
   connection, so configuring it needs no restart; `IDFON_MCP_COMMAND` still
   overrides per process. `peer.show` reports `mcp_transport_granted`.
 - **Conversation plane.** Scoped (not implemented) in
-  `docs/agent-conversation-plane.md`: users talking to an agent is peer
+  `docs/archive/agent-conversation-plane.md`: users talking to an agent is peer
   messaging plus an external agent runtime, not a new transport.
 
 ## Resolved decisions

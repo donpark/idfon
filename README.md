@@ -182,17 +182,9 @@ See [ai-voice-chat agent](docs/ai-voice-chat.md) and
 
 ## Documentation
 
-- [Communication model](docs/communication-model.md)
-- [CLI data transfer and live streaming](docs/cli-data.md)
-- [Audio media](docs/audio-media.md)
-- [Video media](docs/video-media.md)
-- [npm distribution](docs/npm-distribution.md)
-- [MCP transport](docs/mcp-transport.md)
-- [Eve ingress channel](docs/idfon-eve.md)
-- [ai-voice-chat agent](docs/ai-voice-chat.md)
-- [iOS architecture](docs/ios-architecture.md)
-- [Architecture plan](docs/architecture-plan.md)
-- [Troubleshooting](docs/troubleshooting.md)
+Start at [docs/README.md](docs/README.md) — the index of current docs by topic.
+`docs/archive/` holds historical research and pre-implementation plans, kept
+for lineage only.
 
 ## Development
 

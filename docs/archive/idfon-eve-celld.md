@@ -1,7 +1,7 @@
 # idfon as a celld Ingress Adapter
 
 > **Status:** design; no code. Companion to `docs/idfon-eve.md` (idfon as
-> an Eve ingress channel) and `docs/idfon-eve-implementation-plan.md`
+> an Eve ingress channel) and `docs/archive/idfon-eve-implementation-plan.md`
 > (the endpoint holder). This document covers extending or forking
 > [denoland/celld](https://github.com/denoland/celld) so a cell can be reached
 > over **idfon channels** in addition to, or in place of, HTTP.
@@ -186,7 +186,7 @@ M0/M1 are shared with the Eve plan — the endpoint holder is byte-identical.
 - **M0 — contract spike (no fork).** Prove the adapter shape against a stock
   celld by mapping an idfon-shaped synthetic request into a Worker's `fetch`
   over the existing HTTP listener (localhost). No celld changes. Reuses
-  `docs/idfon-eve-implementation-plan.md` M0.
+  `docs/archive/idfon-eve-implementation-plan.md` M0.
 - **M1 — endpoint holder.** `crates/eve-idfon` (embeds `idfon-core`,
   owns the endpoint, UDS JSON IPC, `verify_message` + capability ticket).
   Identical to the Eve plan's M1; build once, use from both adapters.
@@ -231,9 +231,9 @@ local backend (`celld dev`) so the e2e needs no cloud.
 ## References
 
 - `docs/idfon-eve.md` — idfon as an ingress channel; the adapter shape.
-- `docs/idfon-eve-implementation-plan.md` — M0/M1, the shared endpoint
+- `docs/archive/idfon-eve-implementation-plan.md` — M0/M1, the shared endpoint
   holder.
-- `docs/agent-conversation-plane.md` — the framework-agnostic bridge.
+- `docs/archive/agent-conversation-plane.md` — the framework-agnostic bridge.
 - denoland/celld — `README.md`, `docs/README.md`, `crates/celld/lib.rs`
   (actor/`on_event` mailbox), `crates/celld/js.rs` (isolate + ops),
   `crates/celld/js/tcp.rs` (outbound op precedent), `crates/celld/startup.rs`
