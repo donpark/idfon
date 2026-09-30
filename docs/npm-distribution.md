@@ -76,7 +76,7 @@ and the launcher then errors at first command).
   workflow executes with an `npm-v*` tag ref. Because `on.push` lists only
   `branches: [main]` (no tags), pushing the tag triggers nothing: create and
   push the tag, then dispatch it explicitly —
-  `gh workflow run cli.yml --ref npm-v0.6.0`. That rebuilds all four targets,
+  `gh workflow run cli.yml --ref npm-v0.7.0`. That rebuilds all four targets,
   then downloads the artifacts and publishes all five packages. Requires the
   `NPM_TOKEN` repo secret. Re-runs are idempotent via npm's duplicate-version
   rejection. So a normal `main` push only builds; publishing always needs an
@@ -86,7 +86,7 @@ and the launcher then errors at first command).
 
 Launch gate: the repo goes public first; `npm view idfon` confirmed the name
 free (2026-09-06). Platform packages use the same version as the Cargo
-workspace — bump in lockstep (currently 0.6.0).
+workspace — bump in lockstep (currently 0.7.0).
 
 ## The Eve channel package
 
