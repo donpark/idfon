@@ -68,7 +68,9 @@ if [ -d "$app/.output" ] && grep -q "bridgeUrl: \"http://127.0.0.1:[0-9]*\"" "$a
   fi
 fi
 if [ ! -d "$app/.output" ] || [ "${FORCE_BUILD:-}" = 1 ] || \
-   [ "$root/agents/ai-voice-chat/agent/agent.ts" -nt "$app/.output" ]; then
+   [ "$root/agents/ai-voice-chat/agent/agent.ts" -nt "$app/.output" ] || \
+   [ "$root/agents/ai-voice-chat/package.json" -nt "$app/.output" ] || \
+   [ "$root/agents/ai-voice-chat/agent/extensions/idfon.ts" -nt "$app/.output" ]; then
   rm -rf "$app"
   mkdir -p "$app"
   cp -R "$root/agents/ai-voice-chat/agent" "$root/agents/ai-voice-chat/package.json" \
@@ -89,14 +91,23 @@ fi
 daemon_id=$("$cli" --socket "$socket" status --json | jq -r '.result.identity.endpoint_id // .result.identity.public_key // .result.identity.id')
 [ -n "$daemon_id" ] || { echo "cannot read daemon identity on $socket" >&2; exit 1; }
 
-# Every daemon peer may talk to the agent, so allow-list them all: the daemon
-# itself plus paired devices (iPhone etc.). Each sender also needs its own
-# subject-bound capability ticket, minted further down.
+# Every sender the agent should accept: the daemon itself, every daemon peer,
+# and every endpoint we have already minted a subject-bound ticket for. The
+# ticket files keep devices reachable across a daemon state reset, which
+# empties peer list while the devices still hold their tickets. Each sender
+# also needs its own ticket, minted further down.
+extra_senders() {
+  "$cli" --socket "$socket" peer list --json \
+    | jq -r '.result.peers[]? | (.endpoint_id // .id) | select(. != null)' 2>/dev/null
+  for f in "$home"/capability-ticket-*.json; do
+    [ -e "$f" ] || continue
+    basename "$f" .json | sed 's/^capability-ticket-//'
+  done
+}
 allow_args=(--allow "$daemon_id")
-while IFS=$'\t' read -r peer_name endpoint; do
-  [ "$endpoint" = "$daemon_id" ] && continue
-  allow_args+=(--allow "$endpoint")
-done < <("$cli" --socket "$socket" peer list --json | jq -r '.result.peers[] | "\(.name)\t\(.endpoint_id // .id)"')
+while IFS= read -r endpoint; do
+  [ -n "$endpoint" ] && [ "$endpoint" != "$daemon_id" ] && allow_args+=(--allow "$endpoint")
+done < <(extra_senders | awk '!seen[$0]++')
 
 # Stop anything from a previous run of THIS script.
 for pidfile in "$home"/holder.pid "$home"/bridge.pid "$home"/eve.pid; do
@@ -131,10 +142,10 @@ done
 # message ingress the apps' sends need. One file per peer.
 "$root/target/release/eve-idfon" --key-file "$key" ticket \
   --subject "$daemon_id" > "$home/capability-ticket.json"
-while IFS=$'\t' read -r peer_name endpoint; do
+while IFS= read -r endpoint; do
   "$root/target/release/eve-idfon" --key-file "$key" ticket \
     --subject "$endpoint" > "$home/capability-ticket-$endpoint.json"
-done < <("$cli" --socket "$socket" peer list --json | jq -r '.result.peers[] | "\(.name)\t\(.endpoint_id // .id)"' | awk -F'\t' '$2 != "" && $2 != "'"$daemon_id"'"')
+done < <(extra_senders | awk '!seen[$0]++')
 
 contact=$(head -n 1 "$home/holder.ticket")
 holder_pid=$(printf '%s' "$contact" | jq -r .id)
