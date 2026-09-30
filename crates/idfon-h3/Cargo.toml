@@ -1,0 +1,17 @@
+[package]
+name = "idfon-h3"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+axum = "0.8"
+http = "1"
+idfon-core = { path = "../idfon-core" }
+iroh = "1"
+iroh-h3-axum = "0.4"
+iroh-h3-client = "0.5"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+
+[dev-dependencies]
+idfon-protocol = { path = "../idfon-protocol" }

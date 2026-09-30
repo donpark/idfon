@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DaemonRuntime.configure()
         ChatStore.shared.start()
+        Task { await DaemonClient().startSharedProvider() }
         LiveCall.shared.recoverStaleCall()
         VideoCall.shared.recoverStaleCall()
         buildMenu()
@@ -275,7 +276,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mediaItem.submenu = mediaMenu
         main.addItem(mediaItem)
 
+        let sessionsMenu = NSMenu(title: "Sessions")
+        let persist = NSMenuItem(
+            title: "Persist Session Logs", action: #selector(togglePersistLogs), keyEquivalent: "")
+        persist.state = SessionStore.shared.persistLogs ? .on : .off
+        sessionsMenu.addItem(persist)
+        let sessionsItem = NSMenuItem()
+        sessionsItem.title = "Sessions"
+        sessionsItem.submenu = sessionsMenu
+        main.addItem(sessionsItem)
+
         NSApp.mainMenu = main
+    }
+
+    /// Session logs are ephemeral cache by default; this opt-in moves them to
+    /// Application Support so a session survives cache pressure.
+    @objc private func togglePersistLogs(_ sender: NSMenuItem) {
+        let next = !SessionStore.shared.persistLogs
+        SessionStore.shared.persistLogs = next
+        sender.state = next ? .on : .off
+        ChatStore.shared.onBanner?(next ? "Persisting session logs" : "Session logs are ephemeral")
     }
 
     @objc private func emergencyStop() {

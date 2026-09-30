@@ -14,15 +14,27 @@ mod live;
 mod mcp;
 
 use futures_util::StreamExt;
-use idfon_core::transport::{
-    room_topic, FakeTransport, MessageTransport, SideChannelGuard, SYNC_ALPN,
+use axum::{
+    extract::{Path as AxumPath, State},
+    http::StatusCode,
+    response::{IntoResponse, Response as AxumResponse},
+    routing::get,
+    Router as AxumRouter,
 };
+use idfon_core::transport::{
+    room_topic, FakeTransport, IrohTransport, MessageTransport, SideChannelGuard, SYNC_ALPN,
+};
+use idfon_gateway::{
+    AccountResolver, Authorizer, Config as GatewayConfig, GatewayHandle, IrohBackend,
+};
+use idfon_h3::{serve_router, H3Server, RemoteId};
 use idfon_media::service::MediaService;
 use idfon_protocol::{
     encode_json, validate_request, ApiError, ErrorCode, Identity, Request, Response, ResponseBody,
     PROTOCOL_VERSION,
 };
 use iroh::endpoint::Connection;
+use iroh::EndpointAddr;
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use rusqlite::OptionalExtension;
 use tokio::{
@@ -101,6 +113,18 @@ impl TransportMode {
                 .join()
                 .ok()?
         })
+    }
+
+    /// Async accessor for an identity's iroh transport, for handlers that
+    /// already run on the daemon runtime (unlike [`Self::current_transport`]).
+    async fn current_transport_async(
+        &self,
+        identity: &str,
+    ) -> Option<Arc<idfon_core::transport::IrohTransport>> {
+        match self {
+            Self::Iroh(manager) => manager.current(identity).await,
+            Self::Fake(_) => None,
+        }
     }
 
     async fn add_identity(&self, identity: &str, key: [u8; 32]) -> io::Result<String> {
@@ -246,8 +270,6 @@ struct Store {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mcp_command: Option<String>,
     #[serde(default)]
-    resources: Vec<idfon_protocol::MediaResource>,
-    #[serde(default)]
     sessions: Vec<idfon_protocol::MediaSession>,
     #[serde(skip)]
     data_dir: PathBuf,
@@ -312,7 +334,6 @@ impl Store {
                     revoked_tickets: Vec::new(),
                     mcp_discovery: Vec::new(),
                     mcp_command: None,
-                    resources: Vec::new(),
                     sessions: Vec::new(),
                     data_dir: data_dir.to_path_buf(),
                 };
@@ -483,6 +504,9 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
         ));
     }
     let _data_lock = DataLock::acquire(&data_dir)?;
+    // Chunked-upload staging is transient by definition; a crash can leave an
+    // accumulator behind, so sweep it on every boot.
+    let _ = std::fs::remove_dir_all(data_dir.join("staging"));
     let store = Arc::new(Mutex::new(Store::load(&data_dir)?));
     let media_service = Arc::new(MediaService::default());
     let _ = MEDIA_SERVICE.set((*media_service).clone());
@@ -732,6 +756,50 @@ async fn serve(
                 request_text(&request.params, "identity").as_deref(),
             );
             write_frame(&mut stream, &payload).await?;
+            continue;
+        }
+        if request.method == "gateway.start" {
+            let identity = request_text(&request.params, "identity")
+                .unwrap_or_else(|| session_identity.clone());
+            let response = gateway_start(&request, &store, &transport, &identity).await;
+            write_frame(
+                &mut stream,
+                &encode_json(&response).map_err(io::Error::other)?,
+            )
+            .await?;
+            continue;
+        }
+        if request.method == "gateway.stop" {
+            let identity = request_text(&request.params, "identity")
+                .unwrap_or_else(|| session_identity.clone());
+            let response = gateway_stop(&request, &identity);
+            write_frame(
+                &mut stream,
+                &encode_json(&response).map_err(io::Error::other)?,
+            )
+            .await?;
+            continue;
+        }
+        if request.method == "provider.start" {
+            let identity = request_text(&request.params, "identity")
+                .unwrap_or_else(|| session_identity.clone());
+            let response = provider_start(&request, &store, &transport, &identity).await;
+            write_frame(
+                &mut stream,
+                &encode_json(&response).map_err(io::Error::other)?,
+            )
+            .await?;
+            continue;
+        }
+        if request.method == "provider.stop" {
+            let identity = request_text(&request.params, "identity")
+                .unwrap_or_else(|| session_identity.clone());
+            let response = provider_stop(&request, &identity);
+            write_frame(
+                &mut stream,
+                &encode_json(&response).map_err(io::Error::other)?,
+            )
+            .await?;
             continue;
         }
         if request.method == "daemon.shutdown" {
@@ -1173,6 +1241,346 @@ fn contact_ticket(
     }
 }
 
+/// One loopback gateway per identity, started on demand by `gateway.start`.
+struct GatewayInstance {
+    addr: std::net::SocketAddr,
+    token: String,
+    // Dropped (and thus aborted) with the registry entry.
+    _handle: GatewayHandle,
+}
+
+static GATEWAYS: OnceLock<Mutex<HashMap<String, GatewayInstance>>> = OnceLock::new();
+
+fn gateways() -> &'static Mutex<HashMap<String, GatewayInstance>> {
+    GATEWAYS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Resolves an `idfon://` account ref against the peer store, exactly as
+/// `peer.show` and message send do: id, name, alias, or endpoint id. Uses the
+/// peer's dial target, so multi-device routing is preserved.
+struct PeerStoreResolver {
+    store: Arc<Mutex<Store>>,
+    identity: String,
+}
+
+impl AccountResolver for PeerStoreResolver {
+    fn resolve(&self, account: &str) -> Option<EndpointAddr> {
+        let state = self.store.lock().expect("store mutex poisoned");
+        let peer = state.peers.iter().find(|peer| {
+            peer.identity == self.identity
+                && (peer.id == account
+                    || peer.name == account
+                    || peer.aliases.iter().any(|alias| alias == account)
+                    || peer.knows_endpoint(account))
+        })?;
+        let (_, address) = peer.dial_targets().into_iter().next()?;
+        serde_json::from_str(&address).ok()
+    }
+}
+
+/// The loopback gateway is bearer-token gated; the token is the boundary and is
+/// only handed out over the 0600 daemon socket.
+struct TokenOnly;
+
+impl Authorizer for TokenOnly {
+    fn authorize(&self, _account: &str, _path: &str) -> bool {
+        true
+    }
+}
+
+/// Binds a loopback gateway for `identity` using its live iroh transport.
+///
+/// ponytail: the endpoint is captured at start, so `transport.rebind` leaves it
+/// stale; restart the gateway after a rebind once anything rebinds in practice.
+async fn start_gateway(
+    store: Arc<Mutex<Store>>,
+    identity: &str,
+    transport: &Arc<IrohTransport>,
+) -> io::Result<GatewayInstance> {
+    let backend = IrohBackend::new(
+        transport,
+        PeerStoreResolver {
+            store,
+            identity: identity.to_owned(),
+        },
+    )
+    .map_err(io::Error::other)?;
+    let token = idfon_core::encode_signing_key(&idfon_core::generate_identity());
+    let handle = idfon_gateway::serve(
+        GatewayConfig {
+            token: Some(token.clone()),
+            ..GatewayConfig::default()
+        },
+        backend,
+        TokenOnly,
+    )
+    .await?;
+    Ok(GatewayInstance {
+        addr: handle.local_addr(),
+        token,
+        _handle: handle,
+    })
+}
+
+fn gateway_value(identity: &str, addr: std::net::SocketAddr, token: &str) -> serde_json::Value {
+    serde_json::json!({
+        "identity": identity,
+        "addr": addr.to_string(),
+        "url": format!("http://127.0.0.1:{}/", addr.port()),
+        "token": token,
+    })
+}
+
+/// Idempotently starts the identity's gateway and returns its address + token.
+async fn gateway_start(
+    request: &Request,
+    store: &Arc<Mutex<Store>>,
+    transport: &Arc<TransportMode>,
+    identity: &str,
+) -> Response {
+    if let Some(instance) = gateways()
+        .lock()
+        .expect("gateway registry poisoned")
+        .get(identity)
+    {
+        return success(
+            request,
+            gateway_value(identity, instance.addr, &instance.token),
+        );
+    }
+    let Some(iroh) = transport.current_transport_async(identity).await else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            format!("identity {identity} has no iroh transport"),
+            false,
+        );
+    };
+    match start_gateway(Arc::clone(store), identity, &iroh).await {
+        Ok(instance) => {
+            let value = gateway_value(identity, instance.addr, &instance.token);
+            gateways()
+                .lock()
+                .expect("gateway registry poisoned")
+                .insert(identity.to_owned(), instance);
+            success(request, value)
+        }
+        Err(error) => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            format!("gateway.start failed: {error}"),
+            false,
+        ),
+    }
+}
+
+fn gateway_stop(request: &Request, identity: &str) -> Response {
+    let stopped = gateways()
+        .lock()
+        .expect("gateway registry poisoned")
+        .remove(identity)
+        .is_some();
+    success(
+        request,
+        serde_json::json!({"identity": identity, "stopped": stopped}),
+    )
+}
+
+/// Capability a caller must hold to read this identity's media resources.
+const CAPABILITY_RESOURCE_READ: &str = "resource.read";
+
+/// Per-identity HTTP/3 provider over the local media-resource store.
+struct ProviderInstance {
+    // Dropping the server aborts it and unregisters the ALPN forwarder.
+    _h3: H3Server,
+}
+
+static PROVIDERS: OnceLock<Mutex<HashMap<String, ProviderInstance>>> = OnceLock::new();
+
+fn providers() -> &'static Mutex<HashMap<String, ProviderInstance>> {
+    PROVIDERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Clone)]
+struct ProviderState {
+    store: Arc<Mutex<Store>>,
+    identity: String,
+    /// Live, user-visible directory served in place. The daemon keeps no copy
+    /// and no inventory: a path is resolved on request, so a rename or delete on
+    /// disk is reflected immediately.
+    root: PathBuf,
+}
+
+/// Authorizes the caller: the QUIC handshake authenticated its endpoint id, so
+/// map that to a peer of this identity and require the `resource.read` grant.
+fn authorize_resource_read(state: &ProviderState, remote: &str) -> Result<(), AxumResponse> {
+    let store = state.store.lock().expect("store mutex poisoned");
+    let Some(peer) = store
+        .peers
+        .iter()
+        .find(|peer| peer.identity == state.identity && peer.knows_endpoint(remote))
+    else {
+        return Err((StatusCode::FORBIDDEN, "unknown caller").into_response());
+    };
+    if !has_grant(
+        &store,
+        &state.identity,
+        &peer.id,
+        &idfon_protocol::Capability::new(CAPABILITY_RESOURCE_READ),
+    ) {
+        return Err((StatusCode::FORBIDDEN, "resource.read not granted").into_response());
+    }
+    Ok(())
+}
+
+/// `<data_dir>/staging/<identity>/<id>` for a validated relative `id`. This is
+/// the transient accumulator for a chunked `media.resource.put`: the bytes are
+/// published to the blob store and the ticket is the artifact, so there is no
+/// durable resource directory. Staging is swept on startup and pruned by age;
+/// `None` when the id is not a safe relative path.
+fn staging_file(data_dir: &Path, identity: &str, id: &str) -> Option<PathBuf> {
+    Some(
+        data_dir
+            .join("staging")
+            .join(idfon_core::path::safe_relative_path(identity)?)
+            .join(idfon_core::path::safe_relative_path(id)?),
+    )
+}
+
+/// Removes staging files older than an hour. A single-chunk put has no `finish`
+/// to consume its staging copy, so leaked accumulators are bounded by age.
+fn prune_staging(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            prune_staging(&path);
+            continue;
+        }
+        if let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) {
+            if modified.elapsed().map(|age| age.as_secs() > 3600).unwrap_or(false) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+/// `GET /fs/<path>` — reads a file from the identity's live shared root for a
+/// granted caller. The root is served in place: no copy, no registry, so a
+/// rename or delete on disk shows up on the next request. The path is validated
+/// lexically and re-checked after canonicalization so a symlink cannot escape.
+async fn provider_resource_get(
+    State(state): State<ProviderState>,
+    RemoteId(remote): RemoteId,
+    AxumPath(path): AxumPath<String>,
+) -> AxumResponse {
+    if let Err(response) = authorize_resource_read(&state, &remote.to_string()) {
+        return response;
+    }
+    let Some(rel) = idfon_core::path::safe_relative_path(&path) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
+    let Ok(root) = std::fs::canonicalize(&state.root) else {
+        return (StatusCode::NOT_FOUND, "shared root unavailable").into_response();
+    };
+    let Ok(target) = std::fs::canonicalize(root.join(rel)) else {
+        return (StatusCode::NOT_FOUND, "no such file").into_response();
+    };
+    if !target.starts_with(&root) {
+        return (StatusCode::FORBIDDEN, "path escapes the shared root").into_response();
+    }
+    let Ok(bytes) = std::fs::read(&target) else {
+        return (StatusCode::NOT_FOUND, "no such file").into_response();
+    };
+    let mime = idfon_core::path::mime_for(&target);
+    ([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response()
+}
+
+fn provider_router(state: ProviderState) -> AxumRouter {
+    AxumRouter::new()
+        .route("/fs/{*path}", get(provider_resource_get))
+        .with_state(state)
+}
+
+/// Idempotently starts the identity's H3 resource provider.
+async fn provider_start(
+    request: &Request,
+    store: &Arc<Mutex<Store>>,
+    transport: &Arc<TransportMode>,
+    identity: &str,
+) -> Response {
+    if providers()
+        .lock()
+        .expect("provider registry poisoned")
+        .contains_key(identity)
+    {
+        return success(request, serde_json::json!({"identity": identity, "serving": true}));
+    }
+    let Some(root) = request_text(&request.params, "root") else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "root is required (the user-visible directory to serve)".into(),
+            false,
+        );
+    };
+    let root = match std::fs::canonicalize(&root) {
+        Ok(path) if path.is_dir() => path,
+        _ => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                format!("root is not a directory: {root}"),
+                false,
+            )
+        }
+    };
+    let Some(iroh) = transport.current_transport_async(identity).await else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            format!("identity {identity} has no iroh transport"),
+            false,
+        );
+    };
+    let served = root.display().to_string();
+    let h3 = serve_router(
+        &iroh,
+        provider_router(ProviderState {
+            store: Arc::clone(store),
+            identity: identity.to_owned(),
+            root,
+        }),
+    );
+    providers()
+        .lock()
+        .expect("provider registry poisoned")
+        .insert(identity.to_owned(), ProviderInstance { _h3: h3 });
+    success(
+        request,
+        serde_json::json!({"identity": identity, "serving": true, "root": served}),
+    )
+}
+
+fn provider_stop(request: &Request, identity: &str) -> Response {
+    let stopped = providers()
+        .lock()
+        .expect("provider registry poisoned")
+        .remove(identity)
+        .is_some();
+    success(
+        request,
+        serde_json::json!({"identity": identity, "stopped": stopped}),
+    )
+}
+
 fn dispatch(request: Request, store: &Arc<Mutex<Store>>) -> Response {
     let transport = Arc::new(TransportMode::Fake(FakeTransport::default()));
     dispatch_with_transport(request, store, &transport)
@@ -1321,13 +1729,8 @@ fn dispatch_with_transport(
         "access.check" => access_check(&request, store),
         "media.session.start" => media_session_start(&request, store),
         "media.session.stop" => media_session_stop(&request, store),
-        "media.resource.register" => media_resource_register(&request, store),
         "media.resource.put" => media_resource_put(&request, store),
         "media.resource.fetch" => media_resource_fetch(&request, store),
-        "media.resource.get" => media_resource_get(&request, store),
-        "media.resource.delete" => media_resource_delete(&request, store),
-        "media.resource.gc" => media_resource_gc(&request, store),
-        "media.resources" => media_resources(&request, store),
         "media.sessions" => media_sessions(&request, store),
         "media.live.publish" => live::live_publish(&request),
         "media.live.dial" => live_dial_dispatch(&request, store),
@@ -3451,7 +3854,18 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
     let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let resource_path = {
         let state = store.lock().expect("store mutex poisoned");
-        state.data_dir.join("resources").join(&identity).join(id)
+        match staging_file(&state.data_dir, &identity, id) {
+            Some(path) => path,
+            None => {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    "invalid resource_id".into(),
+                    false,
+                )
+            }
+        }
     };
     // Chunked mode: `append: true` appends to the stored resource; `finish:
     // true` publishes the stored resource as a blob and returns its ticket.
@@ -3485,7 +3899,16 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
         return media_resource_append(request, &resource_path, &identity, id, &data);
     }
     let state = store.lock().expect("store mutex poisoned");
-    let path = state.data_dir.join("resources").join(&identity).join(id);
+    prune_staging(&state.data_dir.join("staging"));
+    let Some(path) = staging_file(&state.data_dir, &identity, id) else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "invalid resource_id".into(),
+            false,
+        );
+    };
     if let Some(parent) = path.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
             return error_response(
@@ -3506,9 +3929,6 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             true,
         );
     }
-    if let Some(error) = write_resource_mime(request, &path) {
-        return error;
-    }
     let blob_ticket = match blob::run_put(state.data_dir.join("blobs"), data.clone()) {
         Ok((ticket, _)) => ticket.to_string(),
         Err(error) => {
@@ -3523,26 +3943,8 @@ fn media_resource_put(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
     };
     success(
         request,
-        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": data.len(), "content_hash": blake3::hash(&data).to_hex().to_string(), "blob_ticket": blob_ticket, "mime": stored_mime(&path)}),
+        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": data.len(), "content_hash": blake3::hash(&data).to_hex().to_string(), "blob_ticket": blob_ticket}),
     )
-}
-
-/// Persists the optional `mime` param next to the resource bytes. Returns an
-/// error response on I/O failure.
-fn write_resource_mime(request: &Request, path: &std::path::Path) -> Option<Response> {
-    let mime = request_text(&request.params, "mime")?;
-    let mut sidecar = path.as_os_str().to_owned();
-    sidecar.push(".mime");
-    match std::fs::write(std::path::PathBuf::from(sidecar), mime) {
-        Ok(()) => None,
-        Err(error) => Some(error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::Internal,
-            error.to_string(),
-            true,
-        )),
-    }
 }
 
 fn media_resource_append(
@@ -3577,9 +3979,6 @@ fn media_resource_append(
                     error.to_string(),
                     true,
                 );
-            }
-            if let Some(error) = write_resource_mime(request, path) {
-                return error;
             }
             let size_bytes = file.metadata().map(|meta| meta.len()).unwrap_or(0);
             success(
@@ -3638,20 +4037,12 @@ fn media_resource_finish(
             );
         }
     };
+    // The staging copy is transient; the ticket is the artifact now.
+    let _ = std::fs::remove_file(path);
     success(
         request,
-        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": bytes.len(), "content_hash": blake3::hash(&bytes).to_hex().to_string(), "blob_ticket": blob_ticket, "mime": stored_mime(path)}),
+        serde_json::json!({"identity": identity, "resource_id": id, "size_bytes": bytes.len(), "content_hash": blake3::hash(&bytes).to_hex().to_string(), "blob_ticket": blob_ticket}),
     )
-}
-
-/// Reads the optional mime sidecar written by `media.resource.put`.
-fn stored_mime(path: &std::path::Path) -> Option<String> {
-    let mut sidecar = path.as_os_str().to_owned();
-    sidecar.push(".mime");
-    std::fs::read_to_string(std::path::PathBuf::from(sidecar))
-        .ok()
-        .map(|mime| mime.trim().to_string())
-        .filter(|mime| !mime.is_empty())
 }
 
 /// Decodes the `bytes` JSON array into a `Vec<u8>`, rejecting non-byte values.
@@ -3694,7 +4085,6 @@ fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Respons
             false,
         );
     };
-    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let state = store.lock().expect("store mutex poisoned");
     let bytes = if let Some(ticket) = request
         .params
@@ -3714,7 +4104,13 @@ fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Respons
             }
         }
     } else {
-        std::fs::read(state.data_dir.join("resources").join(&identity).join(id))
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "blob_ticket is required".into(),
+            false,
+        );
     };
     match bytes {
         Ok(bytes) => {
@@ -3772,182 +4168,6 @@ fn media_resource_fetch(request: &Request, store: &Arc<Mutex<Store>>) -> Respons
             true,
         ),
     }
-}
-
-fn media_resource_register(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
-    let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
-    let resource: idfon_protocol::MediaResource =
-        match serde_json::from_value(request.params.get("resource").cloned().unwrap_or_default()) {
-            Ok(resource) => resource,
-            Err(error) => {
-                return error_response(
-                    request.id.clone(),
-                    &request.method,
-                    ErrorCode::InvalidRequest,
-                    error.to_string(),
-                    false,
-                )
-            }
-        };
-    let mut resource = resource;
-    resource.identity = identity;
-    let mut state = store.lock().expect("store mutex poisoned");
-    if state
-        .resources
-        .iter()
-        .any(|item| item.identity == resource.identity && item.resource_id == resource.resource_id)
-    {
-        return error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::InvalidRequest,
-            "resource already exists".into(),
-            false,
-        );
-    }
-    state.resources.push(resource.clone());
-    let data_dir = state.data_dir.clone();
-    if let Err(error) = state.save(&data_dir) {
-        return error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::Internal,
-            error.to_string(),
-            true,
-        );
-    }
-    success(request, serde_json::json!({"resource": resource}))
-}
-
-fn media_resource_get(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
-    let Some(id) = request
-        .params
-        .get("resource_id")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::InvalidRequest,
-            "resource_id is required".into(),
-            false,
-        );
-    };
-    let state = store.lock().expect("store mutex poisoned");
-    match state.resources.iter().find(|resource| {
-        resource.resource_id == id
-            && request_text(&request.params, "identity")
-                .is_none_or(|identity| resource.identity == identity)
-    }) {
-        Some(resource) => success(request, serde_json::json!({"resource": resource})),
-        None => error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::InvalidRequest,
-            "resource not found".into(),
-            false,
-        ),
-    }
-}
-
-fn media_resource_delete(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
-    let Some(id) = request
-        .params
-        .get("resource_id")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::InvalidRequest,
-            "resource_id is required".into(),
-            false,
-        );
-    };
-    let identity = request_text(&request.params, "identity");
-    let mut state = store.lock().expect("store mutex poisoned");
-    let before = state.resources.len();
-    state.resources.retain(|resource| {
-        !(resource.resource_id == id
-            && identity
-                .as_deref()
-                .is_none_or(|value| resource.identity == value))
-    });
-    let resource_dir = identity.as_deref().unwrap_or("default");
-    let _ = std::fs::remove_file(state.data_dir.join("resources").join(resource_dir).join(id));
-    if before == state.resources.len() {
-        return error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::InvalidRequest,
-            "resource not found".into(),
-            false,
-        );
-    }
-    let data_dir = state.data_dir.clone();
-    if let Err(error) = state.save(&data_dir) {
-        return error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::Internal,
-            error.to_string(),
-            true,
-        );
-    }
-    success(request, serde_json::json!({"deleted": id}))
-}
-
-fn media_resource_gc(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
-    let identity = request_text(&request.params, "identity");
-    let mut state = store.lock().expect("store mutex poisoned");
-    let mut removed = 0usize;
-    let data_root = state.data_dir.join("resources");
-    let resources = std::mem::take(&mut state.resources);
-    let mut kept = Vec::with_capacity(resources.len());
-    for resource in resources {
-        if (identity
-            .as_deref()
-            .is_none_or(|value| resource.identity == value)
-            && data_root
-                .join(&resource.identity)
-                .join(&resource.resource_id)
-                .exists())
-            || identity
-                .as_deref()
-                .is_some_and(|value| resource.identity != value)
-        {
-            kept.push(resource);
-        } else {
-            removed += 1;
-        }
-    }
-    state.resources = kept;
-    let data_dir = state.data_dir.clone();
-    if let Err(error) = state.save(&data_dir) {
-        return error_response(
-            request.id.clone(),
-            &request.method,
-            ErrorCode::Internal,
-            error.to_string(),
-            true,
-        );
-    }
-    success(request, serde_json::json!({"removed": removed}))
-}
-
-fn media_resources(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
-    let state = store.lock().expect("store mutex poisoned");
-    let identity = request_text(&request.params, "identity");
-    let resources: Vec<_> = state
-        .resources
-        .iter()
-        .filter(|resource| {
-            identity
-                .as_deref()
-                .is_none_or(|value| resource.identity == value)
-        })
-        .collect();
-    success(request, serde_json::json!({"resources": resources}))
 }
 
 fn media_sessions(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
@@ -5752,6 +5972,387 @@ mod tests {
         ))
     }
 
+    async fn http_get(addr: std::net::SocketAddr, path: &str, token: &str) -> (u16, String) {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.expect("write");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await.expect("read");
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let status = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        let body = text
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_owned())
+            .unwrap_or_default();
+        (status, body)
+    }
+
+    /// End-to-end: the daemon's embedded gateway resolves an `idfon://` account
+    /// handle through the peer store and fetches the peer's resource over H3.
+    #[tokio::test]
+    async fn gateway_resolves_account_handle_and_fetches_over_h3() {
+        let dir = temp_dir("gateway-h3");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let transport = Arc::new(
+            TransportMode::new("iroh", Some([21; 32]))
+                .await
+                .unwrap(),
+        );
+
+        // The peer: a real folder provider served over H3.
+        let root = temp_dir("gateway-h3-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("hello.txt"), "hello from peer").unwrap();
+        let server = Arc::new(
+            IrohTransport::bind_with_key(Some([22; 32]))
+                .await
+                .unwrap(),
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(5), server.endpoint().online()).await;
+        let router = idfon_mcp::fs::router(&root, "acct-1").unwrap();
+        let _h3 = idfon_h3::serve_router(&server, router);
+        let accept_transport = Arc::clone(&server);
+        let accept = tokio::spawn(async move {
+            let _ = accept_transport
+                .serve(|_| async {
+                    Err::<idfon_protocol::MessageAck, idfon_core::transport::TransportError>(
+                        idfon_core::transport::TransportError::Failed(
+                            "message path unused".into(),
+                        ),
+                    )
+                })
+                .await;
+        });
+
+        // A known contact whose account handle is what the URL will carry.
+        let account_id = "acct-1";
+        {
+            let mut state = store.lock().unwrap();
+            let mut peer = idfon_protocol::Peer {
+                id: account_id.into(),
+                identity: "default".into(),
+                name: "Alice".into(),
+                endpoint_id: Some(server.endpoint().id().to_string()),
+                endpoint_addr: Some(serde_json::to_string(&server.endpoint().addr()).unwrap()),
+                devices: Vec::new(),
+                aliases: Vec::new(),
+                call_mode: idfon_protocol::IncomingCallMode::default(),
+            };
+            ensure_account_alias(&mut peer);
+            state.peers.push(peer);
+        }
+
+        let request = Request {
+            version: PROTOCOL_VERSION,
+            id: "gateway-start".into(),
+            method: "gateway.start".into(),
+            params: serde_json::json!({"identity": "default"}),
+        };
+        let response = gateway_start(&request, &store, &transport, "default").await;
+        let (addr, token) = match response.body {
+            ResponseBody::Success { result, .. } => (
+                result["addr"].as_str().unwrap().parse().unwrap(),
+                result["token"].as_str().unwrap().to_owned(),
+            ),
+            ResponseBody::Failure { error, .. } => panic!("gateway.start failed: {}", error.message),
+        };
+
+        let handle = idfon_core::account_alias(account_id);
+        let (status, body) = http_get(addr, &format!("/{handle}/fs/hello.txt"), &token).await;
+        assert_eq!(status, 200);
+        assert_eq!(body, "hello from peer");
+
+        // Unknown refs never reach the peer.
+        let (status, _) = http_get(addr, "/0000/fs/hello.txt", &token).await;
+        assert_eq!(status, 404);
+
+        // The token is the boundary.
+        let (status, _) = http_get(addr, &format!("/{handle}/fs/hello.txt"), "wrong").await;
+        assert_eq!(status, 401);
+
+        gateways().lock().unwrap().remove("default");
+        accept.abort();
+        drop(_h3);
+        server.endpoint().close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The daemon's H3 provider serves media resources only to a caller whose
+    /// endpoint maps to a peer holding the `resource.read` grant.
+    #[tokio::test]
+    async fn provider_serves_a_live_shared_root_to_a_granted_peer() {
+        let dir = temp_dir("provider-grant");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let transport = Arc::new(TransportMode::new("iroh", Some([31; 32])).await.unwrap());
+        let caller = IrohTransport::bind_with_key(Some([32; 32])).await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), caller.endpoint().online()).await;
+
+        // The user's live shared directory, served in place (no copy, no record).
+        let shared = dir.join("shared");
+        std::fs::create_dir_all(shared.join("session_1/chart")).unwrap();
+        std::fs::write(shared.join("notes.txt"), "secret bytes").unwrap();
+        std::fs::write(shared.join("session_1/chart/artifact.html"), "<h1>hi</h1>").unwrap();
+
+        {
+            let mut state = store.lock().unwrap();
+            state.peers.push(idfon_protocol::Peer {
+                id: "caller".into(),
+                identity: "default".into(),
+                name: "Caller".into(),
+                endpoint_id: Some(caller.endpoint().id().to_string()),
+                endpoint_addr: Some(serde_json::to_string(&caller.endpoint().addr()).unwrap()),
+                devices: Vec::new(),
+                aliases: Vec::new(),
+                call_mode: idfon_protocol::IncomingCallMode::default(),
+            });
+            state.grants.push(idfon_protocol::CapabilityGrant {
+                capability: idfon_protocol::Capability::new("resource.read"),
+                identity: "default".into(),
+                subject: "caller".into(),
+                conversation: None,
+                active_at: "0".into(),
+                expires_at: None,
+                revision: 1,
+                revoked_at: None,
+            });
+        }
+
+        // The provider router registers a side channel; dispatching needs the
+        // transport's accept loop running.
+        let serving = transport
+            .current_transport_async("default")
+            .await
+            .expect("default transport bound");
+        let server_addr = serving.endpoint().addr();
+        let accept_transport = Arc::clone(&serving);
+        let accept = tokio::spawn(async move {
+            let _ = accept_transport
+                .serve(|_| async {
+                    Err::<idfon_protocol::MessageAck, idfon_core::transport::TransportError>(
+                        idfon_core::transport::TransportError::Failed("unused".into()),
+                    )
+                })
+                .await;
+        });
+
+        let request = Request {
+            version: PROTOCOL_VERSION,
+            id: "provider-start".into(),
+            method: "provider.start".into(),
+            params: serde_json::json!({"identity": "default", "root": shared.display().to_string()}),
+        };
+        assert!(provider_start(&request, &store, &transport, "default").await.ok);
+
+        let client = idfon_h3::H3Client::new(&caller).unwrap();
+        client.add_address(&server_addr);
+
+        let response = client.get(&server_addr, "/fs/notes.txt").send().await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.headers.get("content-type").unwrap(), "text/plain");
+        assert_eq!(response.bytes().await.unwrap(), &b"secret bytes"[..]);
+
+        let response = client
+            .get(&server_addr, "/fs/session_1/chart/artifact.html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.headers.get("content-type").unwrap(), "text/html");
+
+        // Served in place: a delete shows up on the next request...
+        std::fs::remove_file(shared.join("notes.txt")).unwrap();
+        let response = client.get(&server_addr, "/fs/notes.txt").send().await.unwrap();
+        assert_eq!(response.status, 404);
+
+        // ...and so does a rename (old path gone, new path live).
+        std::fs::rename(
+            shared.join("session_1/chart/artifact.html"),
+            shared.join("session_1/chart/renamed.html"),
+        )
+        .unwrap();
+        let response = client
+            .get(&server_addr, "/fs/session_1/chart/artifact.html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status, 404);
+        let response = client
+            .get(&server_addr, "/fs/session_1/chart/renamed.html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200);
+
+        // Revoking the grant closes the provider without a restart.
+        store.lock().unwrap().grants.clear();
+        let response = client
+            .get(&server_addr, "/fs/session_1/chart/renamed.html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status, 403);
+
+        providers().lock().unwrap().remove("default");
+        accept.abort();
+        caller.endpoint().close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The full remote-view path: a producer writes a path-named artifact
+    /// through the real `media.resource.put` (what the agent bridge does), and a
+    /// granted peer fetches it through the loopback gateway by account handle —
+    /// no registration step anywhere.
+    #[tokio::test]
+    async fn peer_fetches_a_shared_file_through_the_gateway() {
+        let producer_dir = temp_dir("artifact-producer");
+        let producer_store = Arc::new(Mutex::new(Store::load(&producer_dir).unwrap()));
+        let producer_transport = Arc::new(
+            TransportMode::new("iroh", Some([41; 32])).await.unwrap(),
+        );
+        let consumer_transport = IrohTransport::bind_with_key(Some([42; 32]))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            consumer_transport.endpoint().online(),
+        )
+        .await;
+
+        // This test gets its own identity so its global PROVIDERS entry cannot
+        // collide with the other provider test when the suite runs in parallel.
+        producer_transport.add_identity("e2e", [43; 32]).await.unwrap();
+        let producer = producer_transport
+            .current_transport_async("e2e")
+            .await
+            .expect("producer transport bound");
+        let producer_addr = producer.endpoint().addr();
+        {
+            let mut state = producer_store.lock().unwrap();
+            state.peers.push(idfon_protocol::Peer {
+                id: "consumer".into(),
+                identity: "e2e".into(),
+                name: "Consumer".into(),
+                endpoint_id: Some(consumer_transport.endpoint().id().to_string()),
+                endpoint_addr: Some(
+                    serde_json::to_string(&consumer_transport.endpoint().addr()).unwrap(),
+                ),
+                devices: Vec::new(),
+                aliases: Vec::new(),
+                call_mode: idfon_protocol::IncomingCallMode::default(),
+            });
+            state.grants.push(idfon_protocol::CapabilityGrant {
+                capability: idfon_protocol::Capability::new("resource.read"),
+                identity: "e2e".into(),
+                subject: "consumer".into(),
+                conversation: None,
+                active_at: "0".into(),
+                expires_at: None,
+                revision: 1,
+                revoked_at: None,
+            });
+        }
+
+        let accept_transport = Arc::clone(&producer);
+        let accept = tokio::spawn(async move {
+            let _ = accept_transport
+                .serve(|_| async {
+                    Err::<idfon_protocol::MessageAck, idfon_core::transport::TransportError>(
+                        idfon_core::transport::TransportError::Failed("unused".into()),
+                    )
+                })
+                .await;
+        });
+        // The user (or producer) saves a file into the user-visible shared dir;
+        // the daemon serves it in place.
+        let shared = producer_dir.join("shared");
+        std::fs::create_dir_all(shared.join("session_1/chart")).unwrap();
+        std::fs::write(shared.join("session_1/chart/result.html"), "<h1>chart</h1>").unwrap();
+
+        let start = Request {
+            version: PROTOCOL_VERSION,
+            id: "provider-start".into(),
+            method: "provider.start".into(),
+            params: serde_json::json!({"identity": "e2e", "root": shared.display().to_string()}),
+        };
+        assert!(provider_start(&start, &producer_store, &producer_transport, "e2e")
+            .await
+            .ok);
+
+        // The consumer resolves the producer's account handle to its endpoint,
+        // then fetches through the local gateway over H3.
+        let consumer_dir = temp_dir("artifact-consumer");
+        let consumer_store = Arc::new(Mutex::new(Store::load(&consumer_dir).unwrap()));
+        let account_id = "producer-acct";
+        {
+            let mut state = consumer_store.lock().unwrap();
+            let mut peer = idfon_protocol::Peer {
+                id: account_id.into(),
+                identity: "default".into(),
+                name: "Producer".into(),
+                endpoint_id: Some(producer.endpoint().id().to_string()),
+                endpoint_addr: Some(serde_json::to_string(&producer_addr).unwrap()),
+                devices: Vec::new(),
+                aliases: Vec::new(),
+                call_mode: idfon_protocol::IncomingCallMode::default(),
+            };
+            ensure_account_alias(&mut peer);
+            state.peers.push(peer);
+        }
+        let backend = IrohBackend::new(
+            &consumer_transport,
+            PeerStoreResolver {
+                store: Arc::clone(&consumer_store),
+                identity: "default".into(),
+            },
+        )
+        .unwrap();
+        let handle = idfon_gateway::serve(
+            GatewayConfig {
+                token: Some("tok".into()),
+                ..GatewayConfig::default()
+            },
+            backend,
+            TokenOnly,
+        )
+        .await
+        .unwrap();
+
+        let account = idfon_core::account_alias(account_id);
+        let (status, body) = http_get(
+            handle.local_addr(),
+            &format!("/{account}/fs/session_1/chart/result.html"),
+            "tok",
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body, "<h1>chart</h1>");
+
+        providers().lock().unwrap().remove("e2e");
+        accept.abort();
+        drop(handle);
+        consumer_transport.endpoint().close().await;
+        std::fs::remove_dir_all(producer_dir).unwrap();
+        std::fs::remove_dir_all(consumer_dir).unwrap();
+    }
+
+    #[test]
+    fn staging_file_rejects_traversal() {
+        let root = PathBuf::from("/tmp/idfon-resource-root");
+        assert_eq!(
+            staging_file(&root, "default", "session/a.txt"),
+            Some(root.join("staging/default/session/a.txt"))
+        );
+        assert!(staging_file(&root, "default", "../secret").is_none());
+        assert!(staging_file(&root, "../default", "a.txt").is_none());
+    }
+
     #[test]
     fn event_cursor_keeps_advancing_after_retention_fills() {
         let event = |number: u64| idfon_protocol::Event {
@@ -6793,7 +7394,7 @@ mod tests {
     }
 
     #[test]
-    fn media_resource_put_and_fetch_round_trip() {
+    fn media_resource_put_publishes_a_ticket() {
         let dir = temp_dir("resource");
         let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
         let put = dispatch(
@@ -6805,7 +7406,16 @@ mod tests {
             },
             &store,
         );
-        assert!(put.ok);
+        match put.body {
+            ResponseBody::Success { result, .. } => {
+                assert_eq!(result["size_bytes"], 3);
+                assert!(result["blob_ticket"]
+                    .as_str()
+                    .is_some_and(|ticket| ticket.starts_with("blob")));
+            }
+            _ => panic!("resource put failed"),
+        }
+        // The ticket is the only way to the bytes; a bare resource_id is refused.
         let fetch = dispatch(
             Request {
                 version: PROTOCOL_VERSION,
@@ -6815,18 +7425,21 @@ mod tests {
             },
             &store,
         );
-        assert!(fetch.ok);
-        match fetch.body {
-            ResponseBody::Success { result, .. } => {
-                assert_eq!(result["bytes"], serde_json::json!([1, 2, 3]))
+        assert!(matches!(
+            fetch.body,
+            ResponseBody::Failure {
+                error: ApiError {
+                    code: ErrorCode::InvalidRequest,
+                    ..
+                },
+                ..
             }
-            _ => panic!("resource fetch failed"),
-        }
+        ));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn chunked_put_and_sliced_fetch_round_trip() {
+    fn chunked_put_finishes_with_a_ticket() {
         let dir = temp_dir("chunked");
         let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
         for chunk in [[1u8, 2, 3], [4, 5, 6]] {
@@ -6865,44 +7478,8 @@ mod tests {
             }
             _ => panic!("finish did not succeed"),
         }
-        // Slicing works against the local resource branch too, so this stays
-        // off the network (ticket fetches are covered by scripts/test-e2e.sh).
-        let slice = |offset: u64, length: u64| {
-            dispatch(
-                Request {
-                    version: PROTOCOL_VERSION,
-                    id: "slice".into(),
-                    method: "media.resource.fetch".into(),
-                    params: serde_json::json!({"resource_id": "res-c", "offset": offset, "length": length}),
-                },
-                &store,
-            )
-        };
-        let first = slice(0, 4);
-        match first.body {
-            ResponseBody::Success { result, .. } => {
-                assert_eq!(result["bytes"], serde_json::json!([1, 2, 3, 4]));
-                assert_eq!(result["total_size"], 6);
-            }
-            _ => panic!("slice fetch failed"),
-        }
-        let rest = slice(4, 10);
-        match rest.body {
-            ResponseBody::Success { result, .. } => {
-                assert_eq!(result["bytes"], serde_json::json!([5, 6]));
-            }
-            _ => panic!("tail slice failed"),
-        }
-        assert!(matches!(
-            slice(99, 1).body,
-            ResponseBody::Failure {
-                error: ApiError {
-                    code: ErrorCode::InvalidRequest,
-                    ..
-                },
-                ..
-            }
-        ));
+        // The staging accumulator is transient: consumed by the finish above.
+        assert!(!dir.join("staging/default/res-c").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

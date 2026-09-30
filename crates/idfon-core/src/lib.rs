@@ -6,6 +6,7 @@ use getrandom::{rand_core::UnwrapErr, SysRng};
 use serde::Serialize;
 use thiserror::Error;
 
+pub mod path;
 pub mod transport;
 
 #[derive(Debug, Error, PartialEq, Eq)]

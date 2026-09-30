@@ -8,10 +8,11 @@
 use std::{
     fs,
     io::{self, BufRead, Write},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
+use axum::response::IntoResponse;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
@@ -175,7 +176,7 @@ impl FsServer {
                 out.push(json!({
                     "uri": self.uri(&encode_path(&relpath)),
                     "name": relpath,
-                    "mimeType": mime_for(&path),
+                    "mimeType": idfon_core::path::mime_for(&path),
                 }));
             }
             rel.pop();
@@ -206,23 +207,7 @@ impl FsServer {
                 "uri is not valid UTF-8".to_owned(),
             )
         })?;
-        let rel = Path::new(decoded.as_ref());
-        if rel.is_absolute() || rel.components().any(|c| !matches!(c, Component::Normal(_))) {
-            return Err((ERR_INVALID_PARAMS, "invalid path".to_owned()));
-        }
-        let target = fs::canonicalize(self.root.join(rel))
-            .map_err(|_| (ERR_INVALID_PARAMS, format!("not found: {decoded}")))?;
-        if !target.starts_with(&self.root) || !target.is_file() {
-            return Err((ERR_INVALID_PARAMS, format!("not found: {decoded}")));
-        }
-        let meta = fs::metadata(&target)
-            .map_err(|_| (ERR_INVALID_PARAMS, format!("not found: {decoded}")))?;
-        if meta.len() > MAX_READ_BYTES {
-            return Err((ERR_INVALID_PARAMS, "resource too large".to_owned()));
-        }
-        let bytes = fs::read(&target)
-            .map_err(|_| (ERR_INVALID_PARAMS, format!("not found: {decoded}")))?;
-        let mime = mime_for(&target);
+        let (bytes, mime) = self.read_file(decoded.as_ref())?;
         let entry = match String::from_utf8(bytes) {
             Ok(text) => json!({"uri": uri, "mimeType": mime, "text": text}),
             Err(error) => json!({
@@ -234,9 +219,58 @@ impl FsServer {
         Ok(json!({"resultType": "complete", "contents": [entry]}))
     }
 
+    /// Traversal-safe read of a root-relative path, shared by the MCP and H3
+    /// surfaces. Rejects absolute paths, `..`, and symlinks that escape the
+    /// root; returns the bytes and a mime type.
+    pub fn read_file(&self, rel_path: &str) -> Result<(Vec<u8>, String), (i64, String)> {
+        let Some(rel) = idfon_core::path::safe_relative_path(rel_path) else {
+            return Err((ERR_INVALID_PARAMS, "invalid path".to_owned()));
+        };
+        let target = fs::canonicalize(self.root.join(rel))
+            .map_err(|_| (ERR_INVALID_PARAMS, format!("not found: {rel_path}")))?;
+        if !target.starts_with(&self.root) || !target.is_file() {
+            return Err((ERR_INVALID_PARAMS, format!("not found: {rel_path}")));
+        }
+        let meta = fs::metadata(&target)
+            .map_err(|_| (ERR_INVALID_PARAMS, format!("not found: {rel_path}")))?;
+        if meta.len() > MAX_READ_BYTES {
+            return Err((ERR_INVALID_PARAMS, "resource too large".to_owned()));
+        }
+        let bytes = fs::read(&target)
+            .map_err(|_| (ERR_INVALID_PARAMS, format!("not found: {rel_path}")))?;
+        Ok((bytes, idfon_core::path::mime_for(&target)))
+    }
+
     fn uri(&self, encoded_path: &str) -> String {
         format!("idfon://{}/fs/{}", self.account, encoded_path)
     }
+}
+
+/// Read-only HTTP/3 view of a folder root for `idfon_h3::serve_router`.
+///
+/// `GET /fs/<path>` returns the raw bytes with a mime type; the same traversal
+/// and size checks as the MCP resource surface apply. This is the provider that
+/// `idfon://<account>/fs/<path>` resolves to.
+pub fn router(root: &Path, account: &str) -> Result<axum::Router> {
+    let server = std::sync::Arc::new(FsServer::new(root, account)?);
+    Ok(axum::Router::new().route(
+        "/fs/{*path}",
+        axum::routing::get(
+            move |axum::extract::Path(path): axum::extract::Path<String>| {
+                let server = std::sync::Arc::clone(&server);
+                async move {
+                    match server.read_file(&path) {
+                        Ok((bytes, mime)) => {
+                            ([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response()
+                        }
+                        Err((_, message)) => {
+                            (axum::http::StatusCode::NOT_FOUND, message).into_response()
+                        }
+                    }
+                }
+            },
+        ),
+    ))
 }
 
 fn encode_path(rel: &str) -> String {
@@ -244,36 +278,6 @@ fn encode_path(rel: &str) -> String {
         .map(|segment| utf8_percent_encode(segment, SEGMENT).to_string())
         .collect::<Vec<_>>()
         .join("/")
-}
-
-fn mime_for(path: &Path) -> String {
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let mime = match extension.as_str() {
-        "txt" | "log" => "text/plain",
-        "md" => "text/markdown",
-        "json" => "application/json",
-        "csv" => "text/csv",
-        "html" | "htm" => "text/html",
-        "xml" => "application/xml",
-        "yaml" | "yml" => "application/yaml",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "pdf" => "application/pdf",
-        "wav" => "audio/wav",
-        "mp3" => "audio/mpeg",
-        "opus" | "ogg" => "audio/ogg",
-        "mp4" => "video/mp4",
-        "zip" => "application/zip",
-        _ => "application/octet-stream",
-    };
-    mime.to_owned()
 }
 
 fn success(id: Value, result: Value) -> Value {

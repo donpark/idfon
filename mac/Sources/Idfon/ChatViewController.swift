@@ -1078,7 +1078,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         guard let messageId = sender.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),
               case .artifact(let artifact) = message.kind else { return }
-        let detail = ArtifactDetailViewController(artifact: artifact)
+        let detail = ArtifactDetailViewController(artifact: artifact, peerRef: message.peerId)
         detail.onReference = { [weak self] selector, preview in
             guard let self else { return }
             self.pendingReference = (artifact, selector, preview)

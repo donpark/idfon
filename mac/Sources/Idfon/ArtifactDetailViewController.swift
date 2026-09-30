@@ -41,6 +41,9 @@ private final class SelectionView: NSView {
 /// `ArtifactSelector` for the composer to attach as a reference.
 final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     private let artifact: Artifact
+    /// The peer the artifact came from, when known. Enables a remote fetch
+    /// through the gateway if the blob is not held locally.
+    private let peerRef: String?
     private let client = DaemonClient()
     private let scroll = NSScrollView()
     private var rendered: NSView?
@@ -51,14 +54,17 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     private var selectButton: NSButton?
     private var selectMode = false
     private var pendingElement: ArtifactSelector?
+    /// Bytes of the rendered artifact, for "Save to Shared".
+    private var renderedData: Data?
     private lazy var askButton = NSButton(title: "Ask", target: self, action: #selector(askTapped))
 
     /// Called with the selection when the user asks about part of the artifact,
     /// plus a PNG of the selected region when one was cropped.
     var onReference: ((ArtifactSelector, Data?) -> Void)?
 
-    init(artifact: Artifact) {
+    init(artifact: Artifact, peerRef: String? = nil) {
         self.artifact = artifact
+        self.peerRef = peerRef
         super.init(nibName: nil, bundle: nil)
         preferredContentSize = NSSize(width: 720, height: 560)
     }
@@ -86,11 +92,14 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
         select.bezelStyle = .rounded
         select.isHidden = true
         selectButton = select
+        let saveToShared = NSButton(
+            title: "Save to Shared", target: self, action: #selector(saveToSharedTapped))
+        saveToShared.bezelStyle = .rounded
 
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
 
-        for view in [title, meta, scroll, askButton, select, done] {
+        for view in [title, meta, scroll, askButton, select, saveToShared, done] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
@@ -104,6 +113,8 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
             askButton.trailingAnchor.constraint(equalTo: done.leadingAnchor, constant: -8),
             select.centerYAnchor.constraint(equalTo: title.centerYAnchor),
             select.trailingAnchor.constraint(equalTo: askButton.leadingAnchor, constant: -8),
+            saveToShared.centerYAnchor.constraint(equalTo: title.centerYAnchor),
+            saveToShared.trailingAnchor.constraint(equalTo: select.leadingAnchor, constant: -8),
             meta.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
             meta.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
             meta.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
@@ -134,14 +145,10 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func load() {
-        guard let ticket = artifact.blobTicket else {
-            message("This artifact has no stored content (live or pending).")
-            return
-        }
         message("Loading…")
         Task {
             do {
-                let data = try await client.fetchBlob(ticket)
+                let data = try await self.loadBytes()
                 await MainActor.run { self.render(data) }
             } catch {
                 await MainActor.run { self.message("Could not load artifact: \(error.localizedDescription)") }
@@ -149,7 +156,34 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    /// Local blob first; if it is unavailable (or there is no ticket) and the
+    /// artifact came from a peer, fetch it over the gateway
+    /// (`idfon://<peer>/fs/<artifact_id>`). `artifact_id` is a path in the
+    /// producer's shared root (`session/folder/file.html`). The root is live, so
+    /// nothing is cached: a file the owner deleted or renamed is gone on the
+    /// next request.
+    private func loadBytes() async throws -> Data {
+        if let peerRef,
+           let cached = SessionStore.shared.cachedArtifact(peer: peerRef, path: artifact.artifactId) {
+            return cached
+        }
+        if let ticket = artifact.blobTicket,
+           let data = try? await client.fetchBlob(ticket), !data.isEmpty {
+            if let peerRef {
+                SessionStore.shared.cacheArtifact(peer: peerRef, path: artifact.artifactId, data: data)
+            }
+            return data
+        }
+        guard let peerRef else {
+            throw DaemonClient.DaemonError.request("artifact content is not available locally")
+        }
+        // Live shared-root fetch: never cached.
+        return try await client.fetchRemoteResource(
+            account: peerRef, path: "/fs/\(artifact.artifactId)")
+    }
+
     private func render(_ data: Data) {
+        renderedData = data
         let webMime = artifact.mime.lowercased()
         let usesWebView = artifact.kind == .html
             || webMime.contains("html") || webMime.contains("svg")
@@ -265,6 +299,27 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
         selectMode.toggle()
         webView?.setSelectionMode(selectMode)
         selectButton?.title = selectMode ? "Selecting…" : "Select"
+    }
+
+    /// Promotes the fetched artifact into the user-visible shared directory the
+    /// daemon serves, so a granted peer can fetch it at `idfon://<account>/fs/…`.
+    @objc private func saveToSharedTapped() {
+        guard let data = renderedData else {
+            message("Still loading…")
+            return
+        }
+        guard let url = SharedFolder.save(data, name: artifact.title) else {
+            message("Could not save to Shared")
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Saved to Shared"
+        alert.informativeText = url.path
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     @objc private func doneTapped() {

@@ -15,7 +15,6 @@ protocol ChatStoreObserver: AnyObject {
 final class ChatStore {
     static let shared = ChatStore()
     private static func cursorKey(_ identity: String) -> String { "idfon.event.cursor.\(identity)" }
-    private static func messagesKey(_ identity: String) -> String { "idfon.chat.messages.\(identity)" }
 
     private let client = DaemonClient()
     private let queue = DispatchQueue(label: "app.idfon.chatstore")
@@ -195,8 +194,10 @@ final class ChatStore {
         }
     }
 
+    /// Session log lives in the app-side session cache (ephemeral by default,
+    /// opt-in persistence via `SessionStore.persistLogs`), not UserDefaults.
     private func loadMessages() {
-        guard let data = UserDefaults.standard.data(forKey: Self.messagesKey(identityId)),
+        guard let data = SessionStore.shared.loadSnapshot(identity: identityId),
               let stored = try? JSONDecoder().decode([StoredMessage].self, from: data) else { return }
         messages = stored.map(\.message)
         seenMessageIDs = Set(messages.map(\.id))
@@ -204,7 +205,7 @@ final class ChatStore {
 
     private func persistMessages() {
         guard let data = try? JSONEncoder().encode(messages.map(StoredMessage.init)) else { return }
-        UserDefaults.standard.set(data, forKey: Self.messagesKey(identityId))
+        SessionStore.shared.saveSnapshot(identity: identityId, data: data)
     }
 
     private static func readKey(_ identity: String, _ id: String) -> String { "idfon.chat.read.\(identity).\(id)" }

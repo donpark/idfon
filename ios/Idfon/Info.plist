@@ -41,6 +41,18 @@
 	</array>
 	<key>UIRequiresFullScreen</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- The local gateway is loopback HTTP; ATS must allow it. -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!-- Documents shows up in Files / the document picker, so saved and shared
+	     files are user-visible and selectable. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Idfon uses the microphone for live calls.</string>
 	<key>NSCameraUsageDescription</key>
