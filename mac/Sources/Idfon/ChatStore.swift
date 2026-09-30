@@ -116,6 +116,14 @@ final class ChatStore {
         // (a transcript followed by an artifact, say). Keep the first part on
         // the event id so replay dedupe still holds.
         let timestamp = Double(event.timestamp).map(Date.init(timeIntervalSince1970:)) ?? Date()
+        // Cache with the session log so history survives the daemon's temporary
+        // event buffer (opt-in persistence via SessionStore.persistLogs).
+        SessionStore.shared.append(
+            identity: identityId,
+            conversation: event.conversationId,
+            SessionStore.StoredMessage(
+                id: messageID, peerId: peerId, text: text, outgoing: false,
+                timestamp: timestamp, conversation: event.conversationId))
         let (preamble, envelopes) = MessageBody.parse(text)
         var parts: [(String, MessageKind)] = []
         if let preamble { parts.append((preamble, .text(preamble))) }
@@ -269,7 +277,30 @@ final class ChatStore {
         return latest.sorted { $0.value > $1.value }.map(\.key)
     }
 
+    /// Rebuilds chat items from one cached session-log line. Mirrors the split
+    /// in `ingest` (preamble text plus trailing envelopes).
+    private func restore(_ stored: SessionStore.StoredMessage) {
+        guard seenMessageIDs.insert(stored.id).inserted else { return }
+        let (preamble, envelopes) = MessageBody.parse(stored.text)
+        var parts: [(String, MessageKind)] = []
+        if let preamble { parts.append((preamble, .text(preamble))) }
+        for envelope in envelopes { parts.append((envelope, MessageKind.parse(envelope))) }
+        if parts.isEmpty { parts.append((stored.text, .text(stored.text))) }
+        for (index, part) in parts.enumerated() {
+            let partID = index == 0 ? stored.id : "\(stored.id)#\(index)"
+            messages.append(ChatMessage(
+                id: partID, peerId: stored.peerId, kind: part.1,
+                outgoing: stored.outgoing, status: nil,
+                timestamp: stored.timestamp, conversation: stored.conversation))
+        }
+    }
+
     private func hydrateHistory() async {
+        // App-side session cache first; the daemon replay below dedupes against
+        // these ids, so restored history is not appended twice.
+        for stored in SessionStore.shared.load(identity: identityId) {
+            restore(stored)
+        }
         guard let events = try? await client.events(after: nil) else { return }
         for event in events.sorted(by: { (Double($0.timestamp) ?? 0) < (Double($1.timestamp) ?? 0) }) {
             cursor = event.cursor

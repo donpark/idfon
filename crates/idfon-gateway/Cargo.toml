@@ -11,6 +11,11 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 idfon-core = { path = "../idfon-core" }
+idfon-h3 = { path = "../idfon-h3" }
 iroh = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync"] }
+
+[dev-dependencies]
+axum = "0.8"
+idfon-protocol = { path = "../idfon-protocol" }

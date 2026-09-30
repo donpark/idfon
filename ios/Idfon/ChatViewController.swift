@@ -660,7 +660,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// of ingest: a large file isn't pulled down until the recipient asks.
     @objc private func artifactTapped(_ sender: UIButton) {
         guard case .artifact(let artifact) = messages[sender.tag].kind else { return }
-        let detail = ArtifactDetailViewController(artifact: artifact)
+        let detail = ArtifactDetailViewController(artifact: artifact, peerRef: messages[sender.tag].peerId)
         detail.onReference = { [weak self] selector, preview in
             guard let self else { return }
             self.pendingReference = (artifact, selector, preview)

@@ -121,6 +121,43 @@ enum Command {
     /// Fetch a ticket to stdout or --out FILE (blob tickets fetch bytes,
     /// iroh-live: tickets capture live audio)
     Get(GetArgs),
+    /// Loopback HTTP gateway for `idfon://` resources
+    #[command(subcommand)]
+    Gateway(GatewayCmd),
+    /// Serve this identity's stored resources over HTTP/3 to granted peers
+    #[command(subcommand)]
+    Provider(ProviderCmd),
+    /// Fetch an `idfon://<account>/<path>` resource through the gateway
+    Fetch(FetchArgs),
+}
+
+#[derive(Subcommand)]
+enum ProviderCmd {
+    /// Serve a user-visible directory at `GET /fs/<path>` to granted peers
+    Start {
+        /// Absolute path of the directory to serve (live, in place)
+        #[arg(long, value_name = "DIR")]
+        root: String,
+    },
+    /// Stop this identity's H3 resource provider
+    Stop,
+}
+
+#[derive(Subcommand)]
+enum GatewayCmd {
+    /// Bind this identity's loopback gateway; prints its URL and token
+    Start,
+    /// Stop this identity's loopback gateway
+    Stop,
+}
+
+#[derive(clap::Args)]
+struct FetchArgs {
+    /// `idfon://<account>/<path>` resource URL
+    url: String,
+    /// Write the body to FILE instead of stdout
+    #[arg(long)]
+    out: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -560,6 +597,25 @@ fn run() -> io::Result<()> {
                 cmd_get(socket, &args.ticket, args.out.as_ref(), identity)
             }
         }
+        Command::Gateway(GatewayCmd::Start) => cmd_gateway_start(socket, identity, json),
+        Command::Gateway(GatewayCmd::Stop) => {
+            finish(send_rpc(socket, "gateway.stop", json!({}), identity, false)?, json)
+        }
+        Command::Provider(ProviderCmd::Start { root }) => finish(
+            send_rpc(
+                socket,
+                "provider.start",
+                json!({"root": root}),
+                identity,
+                false,
+            )?,
+            json,
+        ),
+        Command::Provider(ProviderCmd::Stop) => finish(
+            send_rpc(socket, "provider.stop", json!({}), identity, false)?,
+            json,
+        ),
+        Command::Fetch(args) => cmd_fetch(socket, &args.url, args.out.as_ref(), identity),
         Command::Recv(args) => {
             if args.stream {
                 cmd_answer(
@@ -1069,6 +1125,101 @@ fn finish(response: Response, json: bool) -> io::Result<()> {
     } else {
         Err(io::Error::other("request failed"))
     }
+}
+
+/// Binds the identity's loopback gateway and prints URL + token (or the full
+/// envelope with `--json`).
+fn cmd_gateway_start(socket: &str, identity: Option<&str>, json: bool) -> io::Result<()> {
+    let response = send_rpc(socket, "gateway.start", json!({}), identity, false)?;
+    let result = match &response.body {
+        ResponseBody::Success { result, .. } => result.clone(),
+        _ => return finish(response, json),
+    };
+    if json {
+        return finish(response, true);
+    }
+    println!("gateway {}", result["url"].as_str().unwrap_or_default());
+    println!("token   {}", result["token"].as_str().unwrap_or_default());
+    Ok(())
+}
+
+/// Fetches an `idfon://<account>/<path>` resource through the local gateway,
+/// either to stdout or `--out FILE`.
+fn cmd_fetch(
+    socket: &str,
+    url: &str,
+    out: Option<&String>,
+    identity: Option<&str>,
+) -> io::Result<()> {
+    use std::io::Write as _;
+
+    let (account, path) = split_idfon_url(url)?;
+    let response = send_rpc(socket, "gateway.start", json!({}), identity, false)?;
+    let result = match &response.body {
+        ResponseBody::Success { result, .. } => result,
+        _ => return finish(response, false),
+    };
+    let addr = result["addr"].as_str().unwrap_or_default();
+    let token = result["token"].as_str().unwrap_or_default();
+    let (status, body) = http_get(addr, &format!("/{account}{path}"), token)?;
+    if status != 200 {
+        return Err(io::Error::other(format!(
+            "gateway returned {status}: {}",
+            String::from_utf8_lossy(&body).trim()
+        )));
+    }
+    match out {
+        Some(file) => std::fs::write(file, &body)?,
+        None => io::stdout().write_all(&body)?,
+    }
+    Ok(())
+}
+
+/// Splits `idfon://<account>/<path>` into the account and a leading-slash path.
+fn split_idfon_url(url: &str) -> io::Result<(String, String)> {
+    let rest = url.strip_prefix("idfon://").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected idfon://<account>/<path>",
+        )
+    })?;
+    let (account, path) = match rest.split_once('/') {
+        Some((account, path)) => (account, format!("/{path}")),
+        None => (rest, "/".to_string()),
+    };
+    if account.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing account",
+        ));
+    }
+    Ok((account.to_string(), path))
+}
+
+/// Minimal loopback HTTP/1.1 GET. The gateway answers with a known-length body
+/// (hyper `Full`), so there is no chunked decoding to do.
+fn http_get(addr: &str, path: &str, token: &str) -> io::Result<(u16, Vec<u8>)> {
+    use std::io::{Read, Write};
+
+    let mut stream = std::net::TcpStream::connect(addr)?;
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes())?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw)?;
+    let split = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed HTTP response"))?;
+    let status = String::from_utf8_lossy(&raw[..split])
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0);
+    Ok((status, raw[split..].to_vec()))
 }
 
 fn inject_identity(params: &mut Value, identity: Option<&str>) {
@@ -1951,4 +2102,42 @@ fn cmd_answer(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_idfon_resource_urls() {
+        assert_eq!(
+            split_idfon_url("idfon://acct/fs/a.txt").unwrap(),
+            ("acct".to_string(), "/fs/a.txt".to_string())
+        );
+        assert_eq!(
+            split_idfon_url("idfon://acct").unwrap(),
+            ("acct".to_string(), "/".to_string())
+        );
+        assert!(split_idfon_url("https://x/y").is_err());
+        assert!(split_idfon_url("idfon:///x").is_err());
+    }
+
+    #[test]
+    fn http_get_parses_status_and_body() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+                .unwrap();
+        });
+        let (status, body) = http_get(&addr, "/x", "tok").unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"hello");
+        server.join().unwrap();
+    }
 }

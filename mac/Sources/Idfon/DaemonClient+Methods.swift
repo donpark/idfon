@@ -139,12 +139,65 @@ extension DaemonClient {
             "endpoint_addr": AnyEncodable(endpointAddr),
             "identity": AnyEncodable(identity),
         ])
-        for capability in ["message.send", "message.receive", "live.audio.subscribe"] {
+        for capability in ["message.send", "message.receive", "live.audio.subscribe", "resource.read"] {
             _ = try await requestWithLaunch(method: "access.grant", params: [
                 "identity": AnyEncodable(identity),
                 "subject": AnyEncodable(accountId),
                 "capability": AnyEncodable(capability),
             ])
         }
+    }
+
+    /// Exposes the app's user-visible `Documents/Shared` directory to granted
+    /// peers at `GET /fs/<path>`. Idempotent, and the daemon serves the dir in
+    /// place — anything the user drops into it in Finder is shareable; a rename
+    /// or delete is reflected immediately. Retries while the daemon wakes up.
+    func startSharedProvider() async {
+        guard let documents = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let shared = documents.appendingPathComponent("Shared", isDirectory: true)
+        try? FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        for attempt in 0..<5 {
+            do {
+                _ = try await requestWithLaunch(method: "provider.start", params: [
+                    "root": AnyEncodable(shared.path),
+                ])
+                return
+            } catch {
+                try? await Task.sleep(nanoseconds: 500_000_000 * UInt64(attempt + 1))
+            }
+        }
+    }
+
+    /// Binds this identity's loopback gateway. Returns the base address
+    /// (host:port) and the bearer token every request must carry.
+    func gatewayStart() async throws -> (addr: String, token: String) {
+        guard let result = try await request(method: "gateway.start"),
+              let addr = result["addr"]?.stringValue,
+              let token = result["token"]?.stringValue else {
+            throw DaemonError.request("gateway.start returned no address")
+        }
+        return (addr, token)
+    }
+
+    /// Fetches a peer resource through the loopback gateway. `account` is a
+    /// peer ref the daemon resolves (id, alias, endpoint id); `path` starts
+    /// with `/`.
+    func fetchRemoteResource(account: String, path: String) async throws -> Data {
+        let gateway = try await gatewayStart()
+        guard let url = URL(string: "http://\(gateway.addr)/\(account)\(path)") else {
+            throw DaemonError.request("invalid gateway URL for \(account)")
+        }
+        var httpRequest = URLRequest(url: url)
+        httpRequest.setValue("Bearer \(gateway.token)", forHTTPHeaderField: "Authorization")
+        httpRequest.timeoutInterval = 30
+        let (data, response) = try await URLSession.shared.data(for: httpRequest)
+        guard let http = response as? HTTPURLResponse else {
+            throw DaemonError.request("gateway returned no HTTP response")
+        }
+        guard http.statusCode == 200 else {
+            throw DaemonError.request("gateway returned HTTP \(http.statusCode)")
+        }
+        return data
     }
 }

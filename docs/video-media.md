@@ -167,8 +167,8 @@ decodes with software openh264.
 
 ## File transfer mime tagging
 
-`media.resource.put` accepts a `mime` parameter persisted next to the
-resource and returned by the finish/get responses. The CLI infers it from the
-file extension (`idfon put --file clip.mp4` tags `video/mp4`) and accepts
-`--mime` to override. `media.resource.register` already carried the full
-`MediaResource` (its `codec` field) for GUI callers.
+`media.resource.put` publishes bytes to the blob store and returns a ticket;
+there is no persisted resource record (a `mime` param is accepted and ignored —
+the bytes' type travels separately, e.g. the `IDFON-*` envelope or the file
+extension). The CLI infers nothing daemon-side; `idfon put --file clip.mp4`
+relies on the ticket plus the receiving client's own knowledge.

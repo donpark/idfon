@@ -54,7 +54,7 @@ rather than silently degraded.
   image (zoom/pan), PDF (paged), audio/video (transport), structured data
   (json-render or a tree), HTML (the sandboxed web view). This is where the
   gateway/WebView work connects: the detail view fetches bytes either from a
-  local blob or through `idfon://<account>/artifacts/<id>`.
+  local blob or through `idfon://<account>/fs/<artifact_id>`.
 - **Sandboxed web view:** untrusted HTML/SVG renders in a `WKWebView` whose only
   source is an in-memory custom scheme — non-persistent data store, no native
   bridge, content rule list blocking every other load, and navigation cancelled
@@ -92,8 +92,8 @@ rather than silently degraded.
 - The daemon keeps a per-identity **artifact registry** (like `MediaResource`),
   so the thread can list and re-open artifacts after a restart.
 - Remote detail view uses the same gateway/MCP-resource path as any other
-  idfon resource (`docs/idfon-gateway.md`): `idfon://<account>/artifacts/<id>`
-  resolves to the blob. Live artifacts use stream tickets (MoQ), not blobs.
+  idfon resource (`docs/idfon-gateway.md`): `idfon://<account>/fs/<path>`
+  resolves to the bytes. Live artifacts use stream tickets (MoQ), not blobs.
 
 ## Slices
 
@@ -120,7 +120,18 @@ rather than silently degraded.
 5. **Rich renderers** — *landed:* a sandboxed web view for HTML/SVG and for
    image/PDF/audio/video as-is, with element selection. Remaining: json-render
    for structured results (or a native tree).
-6. **Remote view** — gateway/`idfon://` fetch for artifacts not held locally.
+6. **Remote view** — artifacts live in the app-side **session cache** with the
+   session log (ephemeral, opt-in persist); opening one fetches by ticket, or
+   from the owner's live shared root (`idfon://<peer>/fs/<path>`) when the bytes
+   are not local. The daemon serves that shared root in place, no registry and no
+   copy, so a delete/rename is reflected immediately and nothing is cached.
+   Sharing is a local-file operation: fetch if remote, then the OS share sheet.
+   The app-side `SessionStore` now holds the log + cached artifact bytes
+   (ephemeral cache by default, opt-in `persistLogs`), so the daemon event store
+   is only a transient buffer. The mac Sessions menu toggles `persistLogs`, and
+   the artifact detail's **Save to Shared** writes the bytes into the served
+   `Documents/Shared` directory. Remaining: per-session `resource.read` scoping
+   only if a shared root ever holds more than one tenant.
 
 Slices 2–4 are the demo: speak a question, get an artifact in the thread, open
 it, point at a region, ask again by voice.

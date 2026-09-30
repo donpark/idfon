@@ -29,12 +29,10 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use idfon_core::transport::IrohTransport;
-use iroh::{EndpointAddr, EndpointId};
+use idfon_h3::H3Client;
+use iroh::EndpointAddr;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
-
-/// ALPN for the minimal resource-fetch stream (path in, bytes out).
-pub const GATEWAY_ALPN: &[u8] = b"idfon/gateway/1";
 
 /// Upper bound on a single fetched resource body.
 pub const MAX_RESOURCE_BYTES: usize = 8 * 1024 * 1024;
@@ -101,6 +99,14 @@ impl GatewayHandle {
 
     /// Stops accepting new connections. In-flight requests are not aborted.
     pub fn shutdown(self) {
+        self.task.abort();
+    }
+}
+
+impl Drop for GatewayHandle {
+    fn drop(&mut self) {
+        // The doc promises dropping aborts the accept loop; detaching the
+        // JoinHandle would leave the listener task running.
         self.task.abort();
     }
 }
@@ -274,52 +280,77 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Default backend: fetch a resource from a peer over iroh.
+/// Resolves an `idfon://` account ref to a dialable peer.
 ///
-/// The account must be an endpoint id; alias resolution belongs to the embedder
-/// (it owns the peer store). The wire format is a placeholder.
-// ponytail: minimal protocol — write the path, read the body, assume
-// `application/octet-stream`. Replace with the resource-roots protocol when a
-// provider layer exists.
+/// Ref resolution needs the peer store, which the gateway does not own, so the
+/// embedder supplies this. `account` is whatever the HTTP request named — the
+/// derived `blake3(account_id)` handle in the canonical case, but any ref the
+/// embedder chooses to accept (account id, endpoint id, alias, name). Returning
+/// `None` yields 404.
+pub trait AccountResolver: Send + Sync + 'static {
+    fn resolve(&self, account: &str) -> Option<EndpointAddr>;
+}
+
+/// Default backend: fetch a resource from a peer over HTTP/3.
+///
+/// The peer hosts an axum router with [`idfon_h3::serve_router`]; this issues a
+/// `GET <path>` over [`idfon_h3::ALPN`] and returns the response body.
 pub struct IrohBackend {
-    transport: Arc<IrohTransport>,
+    client: H3Client,
+    resolver: Arc<dyn AccountResolver>,
 }
 
 impl IrohBackend {
-    pub fn new(transport: Arc<IrohTransport>) -> Self {
-        Self { transport }
+    pub fn new(
+        transport: &IrohTransport,
+        resolver: impl AccountResolver,
+    ) -> Result<Self, GatewayError> {
+        Ok(Self {
+            client: H3Client::new(transport)
+                .map_err(|error| GatewayError::Backend(error.to_string()))?,
+            resolver: Arc::new(resolver),
+        })
     }
 }
 
 impl Backend for IrohBackend {
     async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
-        let id: EndpointId = account
-            .parse()
-            .map_err(|_| GatewayError::UnknownAccount(account.to_owned()))?;
-        let addr = EndpointAddr::new(id);
-        let (connection, mut send, mut recv) = self
-            .transport
-            .open_bi_stream(&addr, GATEWAY_ALPN)
+        let addr = self
+            .resolver
+            .resolve(account)
+            .ok_or_else(|| GatewayError::UnknownAccount(account.to_owned()))?;
+        // A peer's direct addresses change over time; refresh per request.
+        self.client.add_address(&addr);
+        let response = self
+            .client
+            .get(&addr, path)
+            .send()
             .await
             .map_err(|error| GatewayError::Backend(error.to_string()))?;
-        send.write_all(path.as_bytes())
+        if response.status == StatusCode::NOT_FOUND {
+            return Err(GatewayError::NotFound(path.to_owned()));
+        }
+        if !response.status.is_success() {
+            return Err(GatewayError::Backend(format!(
+                "peer returned {}",
+                response.status
+            )));
+        }
+        let content_type = response
+            .headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let body = response
+            .bytes()
             .await
-            .map_err(|error| GatewayError::Backend(error.to_string()))?;
-        send.write_all(b"\n")
-            .await
-            .map_err(|error| GatewayError::Backend(error.to_string()))?;
-        send.finish()
-            .map_err(|error| GatewayError::Backend(error.to_string()))?;
-        let body = recv
-            .read_to_end(MAX_RESOURCE_BYTES)
-            .await
-            .map_err(|error| GatewayError::Backend(error.to_string()))?;
-        // Hold the connection until the body is fully read.
-        drop(connection);
-        Ok(Resource {
-            content_type: "application/octet-stream".to_owned(),
-            body,
-        })
+            .map_err(|error| GatewayError::Backend(error.to_string()))?
+            .to_vec();
+        if body.len() > MAX_RESOURCE_BYTES {
+            return Err(GatewayError::Backend("resource too large".to_owned()));
+        }
+        Ok(Resource { content_type, body })
     }
 }
 

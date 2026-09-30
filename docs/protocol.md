@@ -181,9 +181,8 @@ fetch).
 
 | method | params | result |
 |---|---|---|
-| `media.resource.put` | `{ resource_id, bytes: [..], append, finish }` | `{ identity, resource_id, size_bytes, content_hash, blob_ticket }` |
-| `media.resource.fetch` | `{ ticket/blob ticket ... }` | `{ bytes: [..], ... }` — chunked fetch |
-| `media.resource.get` / `delete` / `gc` / `register` / `resources` | — | resource management |
+| `media.resource.put` | `{ resource_id, bytes: [..], append, finish }` | `{ identity, resource_id, size_bytes, content_hash, blob_ticket }` — chunks stage in `data_dir/staging/`, the ticket is the artifact |
+| `media.resource.fetch` | `{ resource_id, blob_ticket, offset?, length? }` | `{ bytes: [..], total_size }` — chunked fetch; the ticket is required |
 | `media.live.publish` | `{ file, loop?, relay?, name? }` | `{ ticket, id }` — broadcast; ticket is a bearer capability |
 | `media.live.dial` | `{ to, file, relay?, seconds? }` | 1:1 session; blocks until the callee hangs up; no ticket (session-scoped) |
 | `media.live.answer` / `subscribe` | — | callee/subscription side |

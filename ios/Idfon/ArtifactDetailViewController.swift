@@ -46,10 +46,15 @@ private final class SelectionOverlay: UIView {
 /// an `ArtifactSelector` for the composer to attach as a reference.
 final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     private let artifact: Artifact
+    /// The peer the artifact came from, when known. Enables a remote fetch
+    /// through the gateway if the blob is not held locally.
+    private let peerRef: String?
     private let client = DaemonClient()
     private let stack = UIStackView()
     private var body: UIView?
     private var sharedURL: URL?
+    /// Bytes of the rendered artifact, for "Save to Shared".
+    private var renderedData: Data?
 
     private var textView: UITextView?
     private var imageView: UIImageView?
@@ -62,13 +67,16 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
         title: "Ask", style: .done, target: self, action: #selector(askTapped))
     private lazy var shareButton = UIBarButtonItem(
         barButtonSystemItem: .action, target: self, action: #selector(shareTapped))
+    private lazy var saveButton = UIBarButtonItem(
+        title: "Shared", style: .plain, target: self, action: #selector(saveToSharedTapped))
 
     /// Called with the selection when the user asks about part of the artifact,
     /// plus a PNG of the selected region when one was cropped.
     var onReference: ((ArtifactSelector, Data?) -> Void)?
 
-    init(artifact: Artifact) {
+    init(artifact: Artifact, peerRef: String? = nil) {
         self.artifact = artifact
+        self.peerRef = peerRef
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -146,19 +154,41 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     }
 
     private func load() {
-        guard let ticket = artifact.blobTicket else {
-            message("This artifact has no stored content (live or pending).")
-            return
-        }
         message("Loading…")
         Task {
             do {
-                let data = try await client.fetchBlob(ticket)
+                let data = try await self.loadBytes()
                 await MainActor.run { self.render(data) }
             } catch {
                 await MainActor.run { self.message("Could not load artifact: \(error.localizedDescription)") }
             }
         }
+    }
+
+    /// Local blob first; if it is unavailable (or there is no ticket) and the
+    /// artifact came from a peer, fetch it over the gateway
+    /// (`idfon://<peer>/fs/<artifact_id>`). `artifact_id` is a path in the
+    /// producer's shared root (`session/folder/file.html`). The root is live, so
+    /// nothing is cached: a file the owner deleted or renamed is gone on the
+    /// next request.
+    private func loadBytes() async throws -> Data {
+        if let peerRef,
+           let cached = SessionStore.shared.cachedArtifact(peer: peerRef, path: artifact.artifactId) {
+            return cached
+        }
+        if let ticket = artifact.blobTicket,
+           let data = try? await client.fetchBlob(ticket), !data.isEmpty {
+            if let peerRef {
+                SessionStore.shared.cacheArtifact(peer: peerRef, path: artifact.artifactId, data: data)
+            }
+            return data
+        }
+        guard let peerRef else {
+            throw DaemonClient.DaemonError.request("artifact content is not available locally")
+        }
+        // Live shared-root fetch: never cached.
+        return try await client.fetchRemoteResource(
+            account: peerRef, path: "/fs/\(artifact.artifactId)")
     }
 
     private func render(_ data: Data) {
@@ -214,6 +244,7 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             message("No preview for \(artifact.mime) yet.")
         }
 
+        renderedData = data
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("idfon-artifacts", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -222,9 +253,28 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             sharedURL = url
             var items = [askButton]
             if let selectButton { items.append(selectButton) }
+            items.append(saveButton)
             items.append(shareButton)
             navigationItem.rightBarButtonItems = items
         }
+    }
+
+    /// Promotes the fetched artifact into the user-visible shared directory the
+    /// daemon serves, so a granted peer can fetch it at `idfon://<account>/fs/…`.
+    @objc private func saveToSharedTapped() {
+        guard let data = renderedData else { return }
+        let title: String
+        let detail: String?
+        if let url = SharedFolder.save(data, name: artifact.title) {
+            title = "Saved to Shared"
+            detail = url.lastPathComponent
+        } else {
+            title = "Could not save to Shared"
+            detail = nil
+        }
+        let alert = UIAlertController(title: title, message: detail, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {

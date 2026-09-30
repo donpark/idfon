@@ -4,14 +4,14 @@
 //! iroh bi-stream speaking `idfon/mcp/1`. The stream profile is a pure byte
 //! pump: it never parses MCP, never re-frames, and never rewrites JSON.
 
-mod fs;
+use idfon_mcp::fs;
 
 use std::{path::Path, process::Stdio};
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use idfon_core::transport::{pump, IrohTransport, TransportError};
-use idfon_protocol::{McpContactTicket, McpDiscover, McpPeer};
+use idfon_protocol::{McpContactTicket, McpDiscover, McpPeer, MessageAck};
 use iroh::{endpoint::Connection, EndpointAddr, EndpointId};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -68,6 +68,17 @@ enum Mode {
         #[arg(long, value_name = "ACCOUNT")]
         account: String,
     },
+    /// Serve a directory over HTTP/3 (`idfon/http3/1`) as `GET /fs/<path>`,
+    /// for `idfon://<account>/fs/<path>` via the gateway. Prints an endpoint
+    /// ticket and runs until ctrl_c.
+    Expose {
+        /// Directory to expose (read-only).
+        #[arg(long, value_name = "DIR")]
+        root: std::path::PathBuf,
+        /// Account id used to build resource URIs.
+        #[arg(long, value_name = "ACCOUNT")]
+        account: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -90,6 +101,7 @@ fn main() -> Result<()> {
                     account_id,
                 } => serve(key, mcp_command, contact, account_id).await,
                 Mode::Connect { peer, uds } => connect(key, peer, uds).await,
+                Mode::Expose { root, account } => expose(key, root, account).await,
                 Mode::Fs { .. } => unreachable!("handled before the runtime"),
             }
         })
@@ -266,6 +278,48 @@ async fn connect(
     up.context("stdin -> peer")?;
     down.context("peer -> stdout")?;
     connection.close(0u32.into(), b"client done");
+    Ok(())
+}
+
+/// Serves a folder over HTTP/3 for the gateway's `idfon://<account>/fs/<path>`.
+///
+// ponytail: like `fs` over stdio, the explicit `--root` is the boundary — any
+// peer that can dial the endpoint may read it. Add grant checks (remote id →
+// account → `access.check`) when exposing daemon-owned resources.
+async fn expose(key: [u8; 32], root: std::path::PathBuf, account: String) -> Result<()> {
+    let transport = std::sync::Arc::new(
+        IrohTransport::bind_with_key(Some(key))
+            .await
+            .context("bind iroh endpoint")?,
+    );
+    let router = fs::router(&root, &account)?;
+    let _h3 = idfon_h3::serve_router(&transport, router);
+    // Inbound H3 connections are dispatched by the transport's accept loop.
+    let accept_transport = std::sync::Arc::clone(&transport);
+    tokio::spawn(async move {
+        let _ = accept_transport
+            .serve(|_| async {
+                Err::<MessageAck, TransportError>(TransportError::Failed(
+                    "idfon-mcp expose carries only idfon/http3/1".into(),
+                ))
+            })
+            .await;
+    });
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        transport.endpoint().online(),
+    )
+    .await;
+    println!(
+        "{}",
+        serde_json::to_string(&transport.endpoint().addr()).context("serialize endpoint ticket")?
+    );
+    eprintln!(
+        "[idfon-mcp] exposing {} over idfon/http3/1 as {}",
+        root.display(),
+        transport.endpoint().id()
+    );
+    tokio::signal::ctrl_c().await.context("wait for ctrl_c")?;
     Ok(())
 }
 

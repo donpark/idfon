@@ -5,6 +5,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         DaemonBootstrap.start()
         ChatStore.shared.start()
+        Task { await DaemonClient().startSharedProvider() }
         LiveCall.shared.recoverStaleCall()
         VideoCall.shared.recoverStaleCall()
         setVideoRotation()
@@ -171,7 +172,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 "endpoint_addr": AnyEncodable(endpointAddr),
                 "identity": AnyEncodable(identity),
             ])
-            for capability in ["message.send", "message.receive", "live.audio.subscribe"] {
+            for capability in ["message.send", "message.receive", "live.audio.subscribe", "resource.read"] {
                 _ = try await client.request(method: "access.grant", params: [
                     "identity": AnyEncodable(identity),
                     "subject": AnyEncodable(accountId),
