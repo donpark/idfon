@@ -669,8 +669,22 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             height = 46
         case .text(let text):
             height = textHeight(for: message, text: text)
+        case .callTranscript(let transcript):
+            height = transcriptHeight(transcript)
         }
         return height + (conversation.isRoom && !message.outgoing ? 16 : 0)
+    }
+
+    /// Measured like `textHeight`, but uncached: a transcript snapshot mutates
+    /// the same message id as it streams, so a cached height would clip.
+    private func transcriptHeight(_ transcript: CallTranscript) -> CGFloat {
+        let who = transcript.role == "agent" ? "Agent" : "You"
+        let width = max(view.bounds.width - 140, 120)
+        let size = renderText("\(who): \(transcript.text)").boundingRect(
+            with: NSSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil).size
+        return ceil(size.height) + 22
     }
 
     /// Cached bubble row height; measured from the same attributed string the
@@ -825,6 +839,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 open.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
                 open.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
             ])
+            bubble.identifier = NSUserInterfaceItemIdentifier(message.id)
+            bubble.addGestureRecognizer(NSClickGestureRecognizer(
+                target: self, action: #selector(artifactBubbleTapped(_:))))
         case .reference(let reference):
             let icon = NSImageView()
             icon.image = NSImage(systemSymbolName: "text.bubble", accessibilityDescription: "Reference")
@@ -844,6 +861,27 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
                 label.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
                 label.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+            ])
+        case .callTranscript(let transcript):
+            let tv = NSTextView()
+            tv.isEditable = false
+            tv.isSelectable = true
+            tv.drawsBackground = false
+            tv.textColor = transcript.role == "agent" ? .labelColor : .secondaryLabelColor
+            tv.textContainerInset = .zero
+            tv.textContainer?.lineFragmentPadding = 0
+            let who = transcript.role == "agent" ? "Agent" : "You"
+            let suffix = transcript.final ? "" : " …"
+            tv.textStorage?.setAttributedString(renderText("\(who): \(transcript.text)\(suffix)"))
+            tv.translatesAutoresizingMaskIntoConstraints = false
+            bubble.addSubview(tv)
+            NSLayoutConstraint.activate([
+                tv.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 6),
+                tv.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
+                tv.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
+                tv.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                tv.heightAnchor.constraint(equalToConstant: transcriptHeight(transcript) - 18),
+                bubble.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
             ])
         }
 
@@ -1078,7 +1116,23 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         guard let messageId = sender.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),
               case .artifact(let artifact) = message.kind else { return }
-        let detail = ArtifactDetailViewController(artifact: artifact, peerRef: message.peerId)
+        openArtifact(artifact, peerId: message.peerId)
+    }
+
+    /// The whole artifact card opens, not just the "Open" button.
+    @objc private func artifactBubbleTapped(_ gesture: NSClickGestureRecognizer) {
+        guard let messageId = gesture.view?.identifier?.rawValue,
+              let message = history.first(where: { $0.id == messageId }),
+              case .artifact(let artifact) = message.kind else { return }
+        openArtifact(artifact, peerId: message.peerId)
+    }
+
+    private func openArtifact(_ artifact: Artifact, peerId: String) {
+        // The bubble gesture and the "Open" button can both fire on one click.
+        if presentedViewControllers?.contains(where: { $0 is ArtifactDetailViewController }) == true {
+            return
+        }
+        let detail = ArtifactDetailViewController(artifact: artifact, peerRef: peerId)
         detail.onReference = { [weak self] selector, preview in
             guard let self else { return }
             self.pendingReference = (artifact, selector, preview)

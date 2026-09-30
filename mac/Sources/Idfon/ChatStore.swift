@@ -131,6 +131,16 @@ final class ChatStore {
         if parts.isEmpty { parts.append((text, .text(text))) }
         for (index, part) in parts.enumerated() {
             let partID = index == 0 ? messageID : "\(messageID)#\(index)"
+            // Transcript snapshots stream for one turn: upsert the bubble by
+            // turn id instead of appending a new one per snapshot.
+            if case .callTranscript(let transcript) = part.1,
+               let existing = messages.firstIndex(where: {
+                   if case .callTranscript(let current) = $0.kind { return current.turnId == transcript.turnId }
+                   return false
+               }) {
+                messages[existing].kind = part.1
+                continue
+            }
             messages.append(ChatMessage(id: partID, peerId: peerId, kind: part.1, outgoing: false, status: nil, timestamp: timestamp, conversation: event.conversationId))
             switch part.1 {
             case .recording(let ticket, _):
@@ -288,6 +298,14 @@ final class ChatStore {
         if parts.isEmpty { parts.append((stored.text, .text(stored.text))) }
         for (index, part) in parts.enumerated() {
             let partID = index == 0 ? stored.id : "\(stored.id)#\(index)"
+            if case .callTranscript(let transcript) = part.1,
+               let existing = messages.firstIndex(where: {
+                   if case .callTranscript(let current) = $0.kind { return current.turnId == transcript.turnId }
+                   return false
+               }) {
+                messages[existing].kind = part.1
+                continue
+            }
             messages.append(ChatMessage(
                 id: partID, peerId: stored.peerId, kind: part.1,
                 outgoing: stored.outgoing, status: nil,

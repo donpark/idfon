@@ -157,6 +157,39 @@ struct Event: Decodable {
     var conversationId: String? { data["conversation"]?.stringValue }
 }
 
+/// One speaker's transcript snapshot for a live-call turn. The holder streams
+/// coalesced snapshots; the app upserts by `turnId` and closes the bubble on
+/// `final`.
+struct CallTranscript: Codable, Equatable {
+    let callId: String
+    let turnId: String
+    let role: String // "caller" | "agent"
+    let text: String
+    let final: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case callId = "call_id"
+        case turnId = "turn_id"
+        case role, text
+        case final = "final"
+    }
+}
+
+enum CallEnvelope {
+    static let prefix = "IDFON-CALL/1\n"
+
+    static func decodeCall(_ text: String) -> CallTranscript? {
+        guard text.hasPrefix(prefix) else { return nil }
+        let body = String(text.dropFirst(prefix.count))
+        return try? JSONDecoder().decode(CallTranscript.self, from: Data(body.utf8))
+    }
+
+    static func encodeCall(_ transcript: CallTranscript) -> String? {
+        guard let data = try? JSONEncoder().encode(transcript) else { return nil }
+        return prefix + String(decoding: data, as: UTF8.self)
+    }
+}
+
 enum MessageKind {
     case text(String)
     /// Voice message: blob ticket + duration (ms) for playback UI.
@@ -168,6 +201,8 @@ enum MessageKind {
     case artifact(Artifact)
     /// A turn that asks about a selection inside an artifact.
     case reference(MessageReference)
+    /// A live-call transcript snapshot (spoken turn shown as a chat bubble).
+    case callTranscript(CallTranscript)
 
     static let recordingPrefix = "IDFON-RECORDING/1\n"
     static let filePrefix = "IDFON-FILE/1\n"
@@ -190,6 +225,7 @@ enum MessageKind {
                               durationMs: Int(fields["duration_ms"] ?? "") ?? 0,
                               localURL: nil)
         }
+        if let call = CallEnvelope.decodeCall(text) { return .callTranscript(call) }
         if let artifact = ArtifactEnvelope.decodeArtifact(text) { return .artifact(artifact) }
         if let reference = ArtifactEnvelope.decodeReference(text) { return .reference(reference) }
         return .text(text)
@@ -218,6 +254,7 @@ enum MessageBody {
         "IDFON-DATA/1\n",
         "IDFON-RECORDING/1\n",
         "IDFON-FILE/1\n",
+        "IDFON-CALL/1\n",
         "IDFON-LIVE/1\n",
     ]
 
@@ -278,6 +315,7 @@ struct ChatMessage: Identifiable {
         case .artifact(let artifact): return artifact.title
         case .reference(let reference):
             return reference.text.isEmpty ? "Asked about an artifact" : reference.text
+        case .callTranscript(let transcript): return transcript.text
         }
     }
 }
