@@ -177,6 +177,27 @@ opens a MoQ router for the outgoing audio broadcast, streams caller PCM16 mono
 turns over continuous input; the client does not run VAD or send a separate
 commit event. Keep forwarding microphone audio continuously.
 
+### Live transcripts and delegated artifacts
+
+During a call the holder forwards GPT-Live's input and output transcripts to
+the caller as `IDFON-CALL/1` message envelopes, so the chat view shows the
+spoken turns as bubbles. Envelopes carry coalesced **snapshots** (the full text
+so far for a `turn_id`), throttled to ~2.5/second; a turn starts on a speaker
+switch or a >1.2 s pause, and `final: true` closes the bubble. Both apps upsert
+by `turn_id` (append on first snapshot, replace the bubble thereafter) and
+persist the raw envelope, so reload restores the same coalesced bubbles.
+
+GPT-Live's Live API has no tools, so the holder starts the session with
+`delegation: {type: "client"}`. On `session.delegation.created` the holder runs
+the delegated request as a normal Eve turn through the bridge (the same
+`turn.in` → `/reply` path a chat message uses), with the caller's identity as
+the session address. The agent's reply — text plus any `IDFON-ARTIFACT/1`
+envelope from `add_artifact` — is routed to the caller's thread mid-call, and
+the envelope-stripped text is appended back to the session as
+`session.commentary.append` (`delegation_id` pinned) so GPT-Live speaks the
+result. The live instructions tell the model to keep spoken turns short and
+delegate anything the caller should look at.
+
 The iOS embedded daemon's event cursor must keep increasing after its 1,000
 event retention limit. Otherwise, the holder's return invite is persisted but
 isn't delivered to `ChatStore` after the saved cursor.
@@ -199,6 +220,13 @@ only).
 - The first turn after a cold holder start can lose attachment staging
   (fetch races the holder connection); the e2e retries with a fresh
   recording, and the serve script's long-lived holder avoids it in practice.
+- Blob tickets embed the holder's blob-provider endpoint, which is bound
+  fresh on each holder start (`idfon_daemon::blob::put`), so a ticket issued
+  before a holder restart can no longer be fetched (`PeerOffline`). Fine while
+  the holder keeps running; a persisted provider identity would fix restarts.
 - `IDFON-FILE/1` attachments are acknowledged but not interpreted.
-- Delegation is wired but not yet exercised by a Live session that actually
-  delegates; the commentary/thinking paths follow the published guide.
+- Live-call transcript turn boundaries are heuristic (speaker switch or a
+  1.2 s gap); a long mid-turn pause splits one spoken turn into two bubbles.
+- The voice-memo `voice_reply` path also uses client delegation but answers via
+  `generateText` directly, so it does not produce artifacts; only the live-call
+  path routes delegation through the Eve agent.

@@ -36,6 +36,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use idfon_core::transport::{IrohTransport, MessageTransport};
+use idfon_protocol::{CallSpeaker, CallTranscript, MessageContent};
 use iroh::{EndpointAddr, EndpointId};
 use iroh_live::{ticket::LiveTicket, Live};
 use moq_audio::{
@@ -45,7 +46,10 @@ use moq_audio::{
 use moq_media::publish::{AudioSource, LocalBroadcast};
 use n0_future::{boxed::BoxStream, stream::unfold};
 use serde_json::json;
+use tokio::sync::mpsc;
 use tokio_websockets::{ClientBuilder, Message};
+
+use crate::{IpcFrame, ReplyTarget, Targets};
 
 const LIVE_URL: &str = "wss://ai-gateway.vercel.sh/v1/live/sessions";
 const CHUNK_SAMPLES: usize = 480; // 20 ms of 24 kHz mono
@@ -56,6 +60,103 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(15);
 const REPLY_MAX_S: u64 = 120; // ponytail: one spoken turn cap; a real turn-taking policy is a bigger design
 const CAPTURE_MAX_BYTES: usize = 24_000 * 2 * REPLY_MAX_S as usize;
+// Transcript streaming: a new turn starts on a speaker switch or a pause this
+// long; snapshots are sent at most this often so a turn is a few messages, not
+// one per delta.
+const TRANSCRIPT_TURN_GAP: Duration = Duration::from_millis(1200);
+const TRANSCRIPT_SNAPSHOT: Duration = Duration::from_millis(400);
+const TRANSCRIPT_MAX_CHARS: usize = 2000;
+
+/// A deep-work request emitted by GPT-Live during a live call. The holder
+/// forwards it to the Eve agent (which owns `add_artifact`); `reply` carries
+/// `(delegation_id, spoken_text)` back to the live session's commentary so the
+/// voice model can say the result.
+pub struct Delegation {
+    pub delegation_id: String,
+    pub request: String,
+    pub reply: mpsc::UnboundedSender<(String, String)>,
+}
+
+/// Coalesces GPT-Live transcript deltas into per-turn snapshots.
+struct TranscriptStream {
+    call_id: String,
+    speaker: Option<CallSpeaker>,
+    turn_id: String,
+    text: String,
+    turn_seq: u64,
+    last_delta: Option<Instant>,
+    last_snapshot: Option<Instant>,
+    last_caller_text: String,
+}
+
+impl TranscriptStream {
+    fn new(call_id: String) -> Self {
+        Self {
+            turn_id: format!("{call_id}-0"),
+            call_id,
+            speaker: None,
+            text: String::new(),
+            turn_seq: 0,
+            last_delta: None,
+            last_snapshot: None,
+            last_caller_text: String::new(),
+        }
+    }
+
+    fn push(&mut self, speaker: CallSpeaker, delta: &str, out: &mpsc::UnboundedSender<CallTranscript>) {
+        let now = Instant::now();
+        let gap = self
+            .last_delta
+            .map(|last| now.duration_since(last))
+            .unwrap_or(TRANSCRIPT_TURN_GAP);
+        let switched = self.speaker != Some(speaker);
+        if (switched || gap > TRANSCRIPT_TURN_GAP) && !self.text.is_empty() {
+            self.flush(true, out);
+            self.turn_seq += 1;
+            self.turn_id = format!("{}-{}", self.call_id, self.turn_seq);
+        }
+        self.speaker = Some(speaker);
+        self.text.push_str(delta);
+        while self.text.len() > TRANSCRIPT_MAX_CHARS {
+            let mut boundary = self.text.len() - TRANSCRIPT_MAX_CHARS;
+            while !self.text.is_char_boundary(boundary) {
+                boundary += 1;
+            }
+            self.text.drain(..boundary);
+        }
+        self.last_delta = Some(now);
+        if speaker == CallSpeaker::Caller {
+            self.last_caller_text = self.text.clone();
+        }
+        let due = self
+            .last_snapshot
+            .map(|last| now.duration_since(last) >= TRANSCRIPT_SNAPSHOT)
+            .unwrap_or(true);
+        if due {
+            self.flush(false, out);
+        }
+    }
+
+    fn latest_caller_text(&self) -> String {
+        self.last_caller_text.trim().to_string()
+    }
+
+    fn flush(&mut self, r#final: bool, out: &mpsc::UnboundedSender<CallTranscript>) {
+        if self.text.is_empty() {
+            return;
+        }
+        let speaker = self.speaker.unwrap_or(CallSpeaker::Caller);
+        let transcript = match speaker {
+            CallSpeaker::Caller => CallTranscript::caller(&self.call_id, &self.turn_id, &self.text, r#final),
+            CallSpeaker::Agent => CallTranscript::agent(&self.call_id, &self.turn_id, &self.text, r#final),
+        };
+        let _ = out.send(transcript);
+        self.last_snapshot = Some(Instant::now());
+        if r#final {
+            self.text.clear();
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AudioProfile {
@@ -278,6 +379,8 @@ pub async fn handle_live_text(
     transport: &Arc<IrohTransport>,
     key: &SigningKey,
     holder_endpoint_id: &str,
+    targets: Targets,
+    out_tx: mpsc::Sender<IpcFrame>,
 ) -> Result<bool> {
     let Some(invite) = parse_invite(text) else {
         return Ok(false);
@@ -315,6 +418,47 @@ pub async fn handle_live_text(
         }
         None => EndpointAddr::new(endpoint_id), // legacy callers rely on discovery
     };
+    // Delegated deep work from the live session runs as a normal Eve turn: the
+    // consumer registers a reply target for each request so the agent's reply
+    // (text + any `IDFON-ARTIFACT/1` envelope) is routed to the caller, while
+    // the stripped text also reaches the live session's commentary.
+    let (delegation_tx, mut delegation_rx) = mpsc::unbounded_channel::<Delegation>();
+    {
+        let peer_id = sender_peer_id.to_string();
+        let endpoint_id = sender_endpoint_id.to_string();
+        let targets = Arc::clone(&targets);
+        let out_tx = out_tx.clone();
+        tokio::spawn(async move {
+            while let Some(delegation) = delegation_rx.recv().await {
+                let reply_key = format!("{peer_id}:live-delegation-{}", delegation.delegation_id);
+                targets.lock().await.insert(
+                    reply_key.clone(),
+                    ReplyTarget {
+                        peer_id: peer_id.clone(),
+                        endpoint_id: endpoint_id.clone(),
+                        conversation: None,
+                        a2a_depth: None,
+                        live_commentary: Some((delegation.delegation_id.clone(), delegation.reply)),
+                    },
+                );
+                let frame = IpcFrame::TurnIn {
+                    message_id: reply_key,
+                    peer_id: peer_id.clone(),
+                    endpoint_id: endpoint_id.clone(),
+                    idempotency_key: format!("live-delegation-{}", delegation.delegation_id),
+                    conversation: None,
+                    text: delegation.request,
+                    blob_ticket: None,
+                    size_bytes: None,
+                    a2a_depth: None,
+                    capabilities: None,
+                };
+                if out_tx.send(frame).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
     if let Err(error) = start_call(
         ticket,
         caller_addr,
@@ -324,6 +468,7 @@ pub async fn handle_live_text(
         key.clone(),
         api_key,
         profile,
+        delegation_tx,
     )
     .await
     {
@@ -346,6 +491,7 @@ async fn start_call(
     key: SigningKey,
     api_key: String,
     profile: AudioProfile,
+    delegation_tx: mpsc::UnboundedSender<Delegation>,
 ) -> Result<()> {
     stop_active_call("replaced by a newer call");
     let stop = Arc::new(AtomicBool::new(false));
@@ -422,6 +568,7 @@ async fn start_call(
     // return leg. Dropping it when start_call returns (after the startup
     // timeout, ~20s in) aborts the endpoint ungracefully and every subscriber
     // session dies — the "phone goes silent ~20s into the call" bug.
+    let holder_endpoint_id = holder_endpoint_id.to_string();
     let task = tokio::spawn(async move {
         let result = run_session(
             caller_ticket,
@@ -430,6 +577,12 @@ async fn start_call(
             Arc::clone(&stop),
             diagnostics.clone(),
             profile,
+            transport,
+            key,
+            holder_endpoint_id,
+            caller_addr,
+            caller_peer_id,
+            delegation_tx,
         )
         .await;
         stop.store(true, Ordering::Relaxed);
@@ -568,6 +721,38 @@ mod tests {
         assert_eq!(late, 0);
         assert_eq!(pacer.input.len(), MAX_INPUT_BUFFER);
         assert_eq!(pacer.dropped_samples, 960);
+    }
+
+    #[test]
+    fn transcript_stream_coalesces_turns() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<CallTranscript>();
+        let mut stream = TranscriptStream::new("call-0".into());
+        stream.push(CallSpeaker::Caller, "Hello", &tx);
+        stream.push(CallSpeaker::Caller, " world", &tx);
+        stream.push(CallSpeaker::Agent, "Hi there", &tx);
+        stream.flush(true, &tx);
+        drop(tx);
+        let mut snapshots = Vec::new();
+        while let Ok(item) = rx.try_recv() {
+            snapshots.push(item);
+        }
+        assert!(snapshots
+            .iter()
+            .any(|t| t.role == CallSpeaker::Caller && t.text == "Hello world" && t.r#final));
+        assert!(snapshots
+            .iter()
+            .any(|t| t.role == CallSpeaker::Agent && t.text == "Hi there" && t.r#final));
+        assert!(snapshots.iter().all(|t| t.call_id == "call-0"));
+        // The caller turn and agent turn get distinct ids.
+        let caller_turn = snapshots
+            .iter()
+            .find(|t| t.role == CallSpeaker::Caller)
+            .unwrap();
+        let agent_turn = snapshots
+            .iter()
+            .find(|t| t.role == CallSpeaker::Agent)
+            .unwrap();
+        assert_ne!(caller_turn.turn_id, agent_turn.turn_id);
     }
 
     #[test]
@@ -795,22 +980,71 @@ async fn run_session(
     stop: Arc<AtomicBool>,
     diagnostics: CallDiagnostics,
     profile: AudioProfile,
+    transport: Arc<IrohTransport>,
+    key: SigningKey,
+    holder_endpoint_id: String,
+    caller_addr: EndpointAddr,
+    caller_peer_id: String,
+    delegation_tx: mpsc::UnboundedSender<Delegation>,
 ) -> Result<()> {
     let ws = connect_live(&api_key).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
-    eprintln!("[eve-idfon] GPT-Live session ready");
+    eprintln!("[eve-idfon] GPT-Live session ready peer={caller_peer_id}");
+
+    let call_id = rand_suffix();
+    // Delegated replies arrive as `(delegation_id, spoken_text)` and are fed to
+    // GPT-Live as commentary by the task that owns `ws_tx`.
+    let (commentary_tx, commentary_rx) = mpsc::unbounded_channel::<(String, String)>();
+    // Transcript snapshots are signed and sent off the reader loop so a slow
+    // send cannot stall audio; one task preserves snapshot order.
+    let (transcript_tx, mut transcript_rx) = mpsc::unbounded_channel::<CallTranscript>();
+    {
+        let transport = Arc::clone(&transport);
+        let key = key.clone();
+        let holder_endpoint_id = holder_endpoint_id.clone();
+        let caller_addr = caller_addr.clone();
+        tokio::spawn(async move {
+            let mut seq = 0u64;
+            while let Some(transcript) = transcript_rx.recv().await {
+                seq += 1;
+                let Ok(text) = idfon_protocol::encode_call_transcript(&transcript) else {
+                    continue;
+                };
+                let message_id = format!("eve_call_transcript_{}_{}", transcript.turn_id, seq);
+                let envelope = match idfon_core::sign_message(
+                    &key,
+                    holder_endpoint_id.clone(),
+                    message_id.clone(),
+                    MessageContent::Text { text },
+                    format!("{message_id}-{}", u8::from(transcript.r#final)),
+                    None,
+                ) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        eprintln!("[eve-idfon] call transcript sign failed: {error}");
+                        continue;
+                    }
+                };
+                if let Err(error) = transport.send(&caller_addr, &envelope).await {
+                    eprintln!("[eve-idfon] call transcript send failed: {error}");
+                }
+            }
+        });
+    }
 
     // WS → broadcast: decode base64 s16 24 kHz chunks straight into the queue.
     let reader_stop = Arc::clone(&stop);
     let reader_diagnostics = diagnostics.clone();
     let session_finalized = Arc::new(AtomicBool::new(false));
     let reader_finalized = Arc::clone(&session_finalized);
+    let reader_commentary = commentary_tx.clone();
     let mut reader = tokio::spawn(async move {
         let mut output_chunks = 0usize;
         let mut output_bytes = 0usize;
         let mut input_text_chars = 0usize;
         let mut output_text_chars = 0usize;
         let mut finalized = false;
+        let mut stream = TranscriptStream::new(call_id);
         while let Some(event) = ws_rx.next().await {
             let message = match event {
                 Ok(message) => message,
@@ -828,16 +1062,38 @@ async fn run_session(
             };
             match event["type"].as_str().unwrap_or_default() {
                 "session.input_transcript.delta" => {
-                    input_text_chars += event["delta"].as_str().unwrap_or_default().len();
+                    let delta = event["delta"].as_str().unwrap_or_default();
+                    input_text_chars += delta.len();
+                    stream.push(CallSpeaker::Caller, delta, &transcript_tx);
                     eprintln!(
                         "[eve-idfon] GPT-Live input transcript chars={input_text_chars}"
                     );
                 }
                 "session.output_transcript.delta" => {
-                    output_text_chars += event["delta"].as_str().unwrap_or_default().len();
+                    let delta = event["delta"].as_str().unwrap_or_default();
+                    output_text_chars += delta.len();
+                    stream.push(CallSpeaker::Agent, delta, &transcript_tx);
                     eprintln!(
                         "[eve-idfon] GPT-Live output transcript chars={output_text_chars}"
                     );
+                }
+                "session.delegation.created" => {
+                    let delegation_id = event["delegation"]["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    if !delegation_id.is_empty() {
+                        let said = stream.latest_caller_text();
+                        let request = format!(
+                            "[live voice call] The caller said: \"{said}\". Build what they asked for now; if it is something to look at (an explanation, report, diagram, chart, or web page), publish it with add_artifact and keep the spoken reply brief."
+                        );
+                        let _ = delegation_tx.send(Delegation {
+                            delegation_id,
+                            request,
+                            reply: reader_commentary.clone(),
+                        });
+                        eprintln!("[eve-idfon] live delegation dispatched");
+                    }
                 }
                 "session.output_audio.delta" => {
                     if let Some(delta) = event["delta"].as_str().and_then(|d| BASE64.decode(d).ok())
@@ -875,6 +1131,7 @@ async fn run_session(
                 _ => {}
             }
         }
+        stream.flush(true, &transcript_tx);
         reader_stop.store(true, Ordering::Relaxed);
         eprintln!(
             "[eve-idfon] GPT-Live reader done finalized={finalized} audio_chunks={output_chunks} audio_bytes={output_bytes} input_text_chars={input_text_chars} output_text_chars={output_text_chars}"
@@ -894,7 +1151,7 @@ async fn run_session(
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             } => Ok(()),
-            result = pump_caller_audio(caller_ticket, &mut ws_tx, pump_stop, pacer_diagnostics, profile) => result,
+            result = pump_caller_audio(caller_ticket, &mut ws_tx, pump_stop, pacer_diagnostics, profile, commentary_rx) => result,
         };
         if let Err(error) = result {
             eprintln!("[eve-idfon] caller audio ended: {error:#}");
@@ -975,11 +1232,15 @@ async fn connect_live(
             "session": {
                 "model": "openai/gpt-live-1",
                 "store": false,
+                "delegation": { "type": "client" },
                 "audio": { "format": { "type": "audio/pcm", "rate": 24_000 } },
                 "instructions": "You are on a live phone call with one person. \
                  Greet them briefly when the call connects, then converse naturally. \
                  Keep spoken turns short and conversational, like a phone call. \
-                 Plain speech only: no markdown, no lists, no emoji.",
+                 If the caller asks for something to look at - a written explanation, \
+                 report, diagram, chart, or web page - briefly say you are putting it \
+                 together, then delegate it; the assistant builds it and sends it to \
+                 their chat. Plain speech only: no markdown, no lists, no emoji.",
             },
         })
         .to_string(),
@@ -1017,6 +1278,7 @@ async fn pump_caller_audio<S>(
     stop: Arc<AtomicBool>,
     diagnostics: CallDiagnostics,
     expected_profile: AudioProfile,
+    mut commentary_rx: mpsc::UnboundedReceiver<(String, String)>,
 ) -> Result<()>
 where
     S: futures_util::Sink<Message> + Unpin + Send,
@@ -1145,6 +1407,16 @@ where
                     eprintln!("[eve-idfon] caller appends={chunks} source_frames={input_frames} silence_samples={underflow_samples} queue_samples={queue_samples}");
                 }
                 if pacer.sent_samples >= REPLY_MAX_S * 24_000 { break; }
+            }
+            Some((delegation_id, content)) = commentary_rx.recv() => {
+                ws_tx
+                    .send(Message::text(json!({
+                        "type": "session.commentary.append",
+                        "content": content,
+                        "delegation_id": delegation_id,
+                    }).to_string()))
+                    .await
+                    .map_err(|error| anyhow!("GPT-Live commentary send: {error}"))?;
             }
             item = frame_rx.recv() => {
                 match item {
