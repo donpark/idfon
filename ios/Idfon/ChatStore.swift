@@ -113,6 +113,16 @@ final class ChatStore {
         if parts.isEmpty { parts.append((text, .text(text))) }
         for (index, part) in parts.enumerated() {
             let partID = index == 0 ? messageID : "\(messageID)#\(index)"
+            // Transcript snapshots stream for one turn: upsert the bubble by
+            // turn id instead of appending a new one per snapshot.
+            if case .callTranscript(let transcript) = part.1,
+               let existing = messages.firstIndex(where: {
+                   if case .callTranscript(let current) = $0.kind { return current.turnId == transcript.turnId }
+                   return false
+               }) {
+                messages[existing].kind = part.1
+                continue
+            }
             if case .file(_, let name, let sizeBytes, _) = part.1 {
                 NSLog("idfon file: received name=\(name) size=\(sizeBytes)")
             }
@@ -179,6 +189,13 @@ final class ChatStore {
                 name = nil
                 sizeBytes = nil
                 durationMs = nil
+            case .callTranscript(let transcript):
+                kind = "call"
+                text = CallEnvelope.encodeCall(transcript)
+                ticket = nil
+                name = nil
+                sizeBytes = nil
+                durationMs = nil
             }
         }
 
@@ -187,7 +204,7 @@ final class ChatStore {
             switch kind {
             case "recording": messageKind = .recording(ticket: ticket ?? "", durationMs: durationMs ?? 0, localURL: nil)
             case "file": messageKind = .file(ticket: ticket ?? "", name: name ?? "file", sizeBytes: sizeBytes ?? 0, localURL: nil)
-            case "artifact", "reference": messageKind = MessageKind.parse(text ?? "")
+            case "artifact", "reference", "call": messageKind = MessageKind.parse(text ?? "")
             default: messageKind = .text(text ?? "")
             }
             return ChatMessage(id: id, peerId: peerId, kind: messageKind, outgoing: outgoing, timestamp: timestamp, conversation: conversation)
@@ -199,7 +216,22 @@ final class ChatStore {
     private func loadMessages() {
         guard let data = SessionStore.shared.loadSnapshot(identity: identityId),
               let stored = try? JSONDecoder().decode([StoredMessage].self, from: data) else { return }
-        messages = stored.map(\.message)
+        // Rebuild with the same per-turn coalescing as live ingest, so streamed
+        // transcript snapshots reload as one bubble each.
+        var loaded: [ChatMessage] = []
+        for entry in stored {
+            let message = entry.message
+            if case .callTranscript(let transcript) = message.kind,
+               let existing = loaded.firstIndex(where: {
+                   if case .callTranscript(let current) = $0.kind { return current.turnId == transcript.turnId }
+                   return false
+               }) {
+                loaded[existing].kind = message.kind
+                continue
+            }
+            loaded.append(message)
+        }
+        messages = loaded
         seenMessageIDs = Set(messages.map(\.id))
     }
 

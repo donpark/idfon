@@ -659,8 +659,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Fetch-on-demand for a received file, then offer it. Deliberately not part
     /// of ingest: a large file isn't pulled down until the recipient asks.
     @objc private func artifactTapped(_ sender: UIButton) {
-        guard case .artifact(let artifact) = messages[sender.tag].kind else { return }
-        let detail = ArtifactDetailViewController(artifact: artifact, peerRef: messages[sender.tag].peerId)
+        guard let indexPath = indexPath(for: sender), messages.indices.contains(indexPath.row),
+              case .artifact(let artifact) = messages[indexPath.row].kind else { return }
+        openArtifact(artifact, peerId: messages[indexPath.row].peerId)
+    }
+
+    /// Row tap target for artifact cards: the whole card opens, not just the
+    /// small glyph button (whose tag can also go stale while messages stream in).
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: false)
+        guard messages.indices.contains(indexPath.row),
+              case .artifact(let artifact) = messages[indexPath.row].kind else { return }
+        openArtifact(artifact, peerId: messages[indexPath.row].peerId)
+    }
+
+    private func indexPath(for view: UIView) -> IndexPath? {
+        let center = view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: tableView)
+        return tableView.indexPathForRow(at: center)
+    }
+
+    private func openArtifact(_ artifact: Artifact, peerId: String) {
+        let detail = ArtifactDetailViewController(artifact: artifact, peerRef: peerId)
         detail.onReference = { [weak self] selector, preview in
             guard let self else { return }
             self.pendingReference = (artifact, selector, preview)
@@ -879,6 +898,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         case .reference(let reference):
             cell.messageLabel.text = reference.text.isEmpty ? "Asked about an artifact" : reference.text
             cell.detailLabel.text = "\(reference.refs.count) reference\(reference.refs.count == 1 ? "" : "s")"
+            cell.accessoryView = nil
+        case .callTranscript(let transcript):
+            cell.setAlignment(outgoing: transcript.role != "agent")
+            cell.messageLabel.text = transcript.text
+            cell.messageLabel.textColor = transcript.role == "agent" ? .label : .secondaryLabel
+            let who = transcript.role == "agent" ? "Agent" : "You"
+            cell.detailLabel.text = transcript.final ? "\(who) · spoken" : "\(who) · speaking…"
             cell.accessoryView = nil
         }
         cell.isUserInteractionEnabled = true
