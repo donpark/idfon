@@ -254,6 +254,77 @@ exist (`IDFON-CALL/1` transcripts, `delegation`, `commentary.append`); the
 missing link is piping call transcripts into the orchestrator session rather
 than only into the chat UI.
 
+## Decision: fix the coupling before swapping transport or front-end (2026-10-01)
+
+Status: **decision**, not implemented. Reached while reviewing whether to move
+the GPT-Live connection off WebSocket to WebRTC; the research is collected in
+`docs/archive/idfon-harness.md` and `docs/archive/omini-duplex-omni.md`.
+
+**The fault line is context ownership, not transport.** GPT-Live currently owns
+a voice context while the Eve orchestrator owns the text context, and the two
+are never reconciled. Delegation is *not* the defect — it is the intended
+pattern: `idfon-harness.md` states a passthrough proxy suffices only for pure
+conversation or <1 s read-only tools, and the agent loop exists precisely
+because audio needs <500 ms while multi-step, durable, and HITL work does not
+fit inside it. The missing link is the transcript→orchestrator hop named
+above (design option 1/3), not the split itself.
+
+**WebRTC verdict is contingent, not a clear no.** `omini-duplex-omni.md`
+records OpenAI's guidance: WebRTC for browsers/mobile clients, WebSocket for
+server-to-server. The holder is middle-tier server, so the current
+`wss://ai-gateway.vercel.sh/v1/live/sessions` connection (`crates/eve-idfon/src/call.rs`,
+`agents/ai-voice-chat/agent/tools/voice-reply.ts`) is the recommended transport
+for this topology. WebRTC only becomes worthwhile if the client is routed
+directly to the voice session (proxy-minted ephemeral token, the thin-proxy
+pattern in `idfon-harness.md`) — which removes the holder from the media path
+and with it the delegation/artifact/identity layer. Confirm whether the
+gateway exposes any SDP/WebRTC endpoint before treating this as an option.
+
+**Full-duplex is a category; GPT-Live-1 is one implementation.** The native
+omni path is not dead — `omini-duplex-omni.md` documents a self-hosted Moshi +
+local controller LM pattern (inner-monologue text stream as the bridge) that
+directly implements "full-duplex voice front-end + local LM doing agentic
+chores". Its costs are recorded there too: resource contention, latency
+calibration (a slow controller needs barge-in/context-cancel), codec fidelity
+(Mimi ~1.1 kbps, the "waterlogged" sound), and the same semantic-continuity
+problem. Cascade trades those for rebuilding turn-taking (VAD, partial STT,
+soft-abort, backchannel filter, semantic abort, AEC, spoken-vs-heard sync).
+
+Decision:
+
+1. **Couple first.** Pipe `IDFON-CALL/1` transcripts into the orchestrator
+   session (design option 1/3). Every voice front-end is degraded until this
+   exists, and it is required by both the cascade and native branches.
+2. **Voice is a channel capability, not an agent feature.** `voice_reply` is a
+   per-agent tool today (`agents/ai-voice-chat/agent/tools/voice-reply.ts`);
+   the holder already owns the duplex transport, transcripts, and delegation.
+   Expose `speak(text)` / `present(artifact)` from the channel so agents stay
+   audio-agnostic.
+3. **Front-end resolved to cascade STT + TTS.** With the coupling fixed, the
+   voice side-channel is a shared service that renders agent text and returns
+   user transcripts; its engine is STT + TTS behind the text boundary. This is
+   chosen over a full-duplex model because the side-channel exists to serve
+   *other agents'* content: cascade gives verbatim rendering, multi-voice
+   selection, streaming partial transcripts, deterministic text logging, and a
+   single context owner. Full-duplex models add native barge-in/backchannel,
+   which is conversational polish, not a structural need — and the
+   `speak(text, voice)` signature itself requires a multi-voice backend a
+   single-voice realtime model cannot provide. GPT-Live-1 was adopted as a
+   familiar/new model, not because duplex is load-bearing; full-duplex is
+   demoted to an optional experiment judged only against the text boundary.
+   A viral-trend voice belongs in **voice selection** (a TTS voice library),
+   not in the transport/architecture.
+
+The answer changes if: the product needs realtime conversational UX (a phone
+call rather than spoken notifications/answers), or the gateway offers WebRTC
+and client-direct realtime becomes viable. Because the boundary is text, that
+swap happens inside the voice service with no change to any agent's contract —
+which is the point of fixing the coupling first. Call latency should be
+measured before blaming the WS hop rather than the phone→holder MoQ leg.
+
+Follow-on: [`voice-side-channel.md`](voice-side-channel.md) turns this decision
+into a service plan — requirements, STT/TTS candidate evaluation, and phasing.
+
 ## Known gaps
 
 - Daemon-side network fetch of holder-held blobs returned `PeerOffline` when
