@@ -3204,6 +3204,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "idfon-voice"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "idfond"
 version = "0.7.0"
 dependencies = [
