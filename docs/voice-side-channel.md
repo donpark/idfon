@@ -1,8 +1,9 @@
 # Voice side-channel service
 
-> **Status: design, P0 implemented** (2026-10-01). The record-only coupling in
+> **Status: design, P0–P1 implemented** (2026-10-01). The record-only coupling in
 > "Writing to Eve history" (§P0 implementation) ships in `crates/eve-idfon`
-> and the `eve-idfon` extension; P1+ remain design. Follow-on to the decision in
+> and the `eve-idfon` extension; the provider seam (§P1 implementation) ships
+> as `crates/idfon-voice`. P2+ remain design. Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
@@ -228,6 +229,23 @@ to the cascade.
   observable. This is well inside the N1 budget; the voice hops, not this
   resolver, dominate end-to-end.
 
+### P1 implementation
+
+- **Seam** (`crates/idfon-voice`, no engine deps): `VoiceEngine` is a stateless
+  `Send + Sync` factory — one per host (N3) — that hands out boxed
+  `SttSession` / `TtsSession` / `Endpointer`. `TtsSession` consumes agent text
+  **deltas** and returns PCM batched at sentence boundaries (F11 groundwork);
+  `SttSession` returns `Partial`/`Final` events; `Endpointer` reports
+  `SpeechStarted`/`SpeechEnded`. `AudioFormat`/`PcmChunk`/WAV wrapping are
+  provider-neutral.
+- **Stub** (`StubVoiceEngine`): deterministic and offline — STT transcribes
+  nothing, TTS emits silence whose length tracks the text, and the endpointer
+  uses the same energy gate the call path already uses. For tests and the
+  offline gate only; never a production default.
+- **Offline gate**: `scripts/voice-pipeline-check.sh` runs
+  `cargo run --offline -p idfon-voice --example pipeline` (text → PCM → WAV)
+  and validates the WAV. No network, no credentials.
+
 ### Placement
 
 Under A2, the voice component runs **at the channel edge (the per-agent
@@ -418,8 +436,10 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   user-role instruction resolver, `gpt-live-delegation` provenance, and the
   dropped spoken readback; Eve overhead measured (§P0 implementation). This is
   decision #1.
-- **P1 — provider seam.** `VoiceEngine` trait (STT + TTS + endpointing) with a
-  silent/stub engine; no-network pipeline test.
+- **P1 — provider seam.** **Implemented** (2026-10-01): `crates/idfon-voice`
+  defines `VoiceEngine` (STT + TTS + endpointing sessions) with a
+  deterministic `StubVoiceEngine`; `scripts/voice-pipeline-check.sh` runs the
+  text → PCM → WAV gate offline (§P1 implementation).
 - **P2 — listen.** STT + one authoritative endpointer per topology; partial and
   final events; **room-addressed sessions rejected** (voice is 1:1).
 - **P3 — speak (turn-level)** with a **deterministic director** (focus = callee,

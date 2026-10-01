@@ -1,0 +1,11 @@
+[package]
+name = "idfon-voice"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+anyhow = "1"
