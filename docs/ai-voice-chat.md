@@ -256,7 +256,7 @@ than only into the chat UI.
 
 ## Decision: fix the coupling before swapping transport or front-end (2026-10-01)
 
-Status: **decision**, not implemented. Reached while reviewing whether to move
+Status: **decision, #1 implemented** (2026-10-01). Reached while reviewing whether to move
 the GPT-Live connection off WebSocket to WebRTC; the research is collected in
 `docs/archive/idfon-harness.md` and `docs/archive/omini-duplex-omni.md`.
 
@@ -295,6 +295,10 @@ Decision:
 1. **Couple first.** Pipe `IDFON-CALL/1` transcripts into the orchestrator
    session (design option 1/3). Every voice front-end is degraded until this
    exists, and it is required by both the cascade and native branches.
+   **Implemented as P0** (#18): the holder buffers call transcripts + a hangup
+   summary, and the `eve-idfon` extension drains them into the session as a
+   user-role dynamic instruction at the next turn boundary — recording never
+   triggers a turn. See `voice-side-channel.md` §P0 implementation.
 2. **Voice is a channel capability, not an agent feature.** `voice_reply` is a
    per-agent tool today (`agents/ai-voice-chat/agent/tools/voice-reply.ts`);
    the holder already owns the duplex transport, transcripts, and delegation.

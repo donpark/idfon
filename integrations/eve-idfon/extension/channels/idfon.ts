@@ -14,6 +14,8 @@ type TurnIn = {
   size_bytes?: number;
   a2a_depth?: number;
   capabilities?: string[];
+  // Provenance for holder-injected turns (e.g. `gpt-live-delegation`).
+  source?: string;
 };
 
 type SessionMember = {
@@ -33,7 +35,9 @@ const sessionTargets = new Map<string, SessionTarget>();
 const roomTargets = new Map<string, SessionTarget>();
 let replyTail: Promise<void> = Promise.resolve();
 
-function authFor(turn: Pick<TurnIn, "peer_id" | "endpoint_id" | "capabilities">) {
+function authFor(
+  turn: Pick<TurnIn, "peer_id" | "endpoint_id" | "capabilities" | "source">,
+) {
   return {
     authenticator: "idfon",
     principalId: turn.peer_id,
@@ -42,6 +46,9 @@ function authFor(turn: Pick<TurnIn, "peer_id" | "endpoint_id" | "capabilities">)
       peer_id: turn.peer_id,
       endpoint_id: turn.endpoint_id,
       capabilities: turn.capabilities ?? [],
+      // Holder-injected turns carry distinct provenance so F10/approval
+      // policies can tell them from real client messages.
+      ...(turn.source ? { idfon_source: turn.source } : {}),
     },
   };
 }

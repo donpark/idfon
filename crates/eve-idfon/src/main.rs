@@ -28,6 +28,7 @@ use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as 
 use serde::{Deserialize, Serialize};
 
 mod call;
+mod records;
 use call::handle_live_text;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -113,6 +114,11 @@ enum IpcFrame {
         a2a_depth: Option<u8>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capabilities: Option<Vec<String>>,
+        /// Provenance for turns injected by the holder rather than a real
+        /// client message (e.g. `gpt-live-delegation`). Reaches Eve as a
+        /// distinct auth attribute so approval/F10 policies can tell it apart.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
     },
     #[serde(rename = "reply.out")]
     ReplyOut {
@@ -213,6 +219,17 @@ enum IpcFrame {
         request_id: String,
         ticket: String,
         size_bytes: u64,
+    },
+    #[serde(rename = "records.drain")]
+    RecordsDrain {
+        request_id: String,
+        peer_id: String,
+        turn_id: String,
+    },
+    #[serde(rename = "records.drain.result")]
+    RecordsDrainResult {
+        request_id: String,
+        records: Vec<serde_json::Value>,
     },
     #[serde(rename = "live.publish")]
     LivePublish {
@@ -501,6 +518,24 @@ async fn serve(
                 )
                 .await
             }
+            IpcFrame::RecordsDrain {
+                request_id,
+                peer_id,
+                turn_id,
+            } => {
+                let records = records::store()
+                    .drain(&peer_id, &turn_id)
+                    .into_iter()
+                    .filter_map(|record| serde_json::to_value(record).ok())
+                    .collect();
+                out_tx
+                    .send(IpcFrame::RecordsDrainResult {
+                        request_id,
+                        records,
+                    })
+                    .await
+                    .map_err(|_| anyhow!("IPC client disconnected"))
+            }
             IpcFrame::LivePublish {
                 request_id,
                 path,
@@ -698,8 +733,10 @@ async fn handle_message(
     }
 
     // Deduplicate call controls before they mutate the active session; transport
-    // retries must not replace a call that is already running.
-    if text.starts_with("IDFON-LIVE/1") {
+    // retries must not replace a call that is already running. Voice is 1:1
+    // only, so a room-addressed control never opens a session — it falls
+    // through and is handled as ordinary (text-only) content.
+    if text.starts_with("IDFON-LIVE/1") && message.conversation.is_none() {
         eprintln!(
             "[eve-idfon] dispatch live control message={} idempotency_key={}",
             message.message_id, message.idempotency_key
@@ -729,6 +766,11 @@ async fn handle_message(
                 )));
             }
         }
+    } else if text.starts_with("IDFON-LIVE/1") {
+        eprintln!(
+            "[eve-idfon] room-addressed live control rejected (voice is 1:1) peer={}",
+            message.sender.peer_id
+        );
     }
 
     if let Some((event, data)) = parse_status_envelope(&text) {
@@ -822,6 +864,7 @@ async fn handle_message(
                     .map(|capability| capability.0.to_string())
                     .collect(),
             ),
+            source: None,
         })
         .await
         .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -1702,6 +1745,7 @@ mod tests {
             size_bytes: None,
             a2a_depth: None,
             capabilities: None,
+            source: None,
         };
         let (mut writer, mut reader) = duplex(4096);
         write_frame(&mut writer, &frame).await.unwrap();

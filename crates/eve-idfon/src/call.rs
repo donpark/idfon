@@ -25,7 +25,7 @@ use std::{
     collections::VecDeque,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
@@ -49,7 +49,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_websockets::{ClientBuilder, Message};
 
-use crate::{IpcFrame, ReplyTarget, Targets};
+use crate::{records, IpcFrame, ReplyTarget, Targets};
 
 const LIVE_URL: &str = "wss://ai-gateway.vercel.sh/v1/live/sessions";
 const CHUNK_SAMPLES: usize = 480; // 20 ms of 24 kHz mono
@@ -452,6 +452,7 @@ pub async fn handle_live_text(
                     size_bytes: None,
                     a2a_depth: None,
                     capabilities: None,
+                    source: Some("gpt-live-delegation".into()),
                 };
                 if out_tx.send(frame).await.is_err() {
                     break;
@@ -636,6 +637,17 @@ mod tests {
         }
         let _ = queued_after_tick;
         late_total
+    }
+
+    #[test]
+    fn delegated_reply_readback_is_dropped_once() {
+        let pending = Arc::new(Mutex::new(VecDeque::new()));
+        note_delegated_spoken(&pending, "  Two plus two is four.  ");
+        // Whitespace-normalized readback matches and is consumed once.
+        assert!(take_delegated_spoken(&pending, "Two plus two is four."));
+        assert!(!take_delegated_spoken(&pending, "Two plus two is four."));
+        // An unrelated caller utterance is never dropped.
+        assert!(!take_delegated_spoken(&pending, "What time is it?"));
     }
 
     /// Regression: a starved tick (queue empty, cursor runs one frame ahead of
@@ -913,6 +925,47 @@ fn rand_suffix() -> String {
     format!("{nanos:08x}")
 }
 
+/// Whitespace-normalized text for comparing a delegated reply with GPT-Live's
+/// spoken readback of it.
+fn normalize_spoken(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn note_delegated_spoken(pending: &Mutex<VecDeque<String>>, text: &str) {
+    let normalized = normalize_spoken(text);
+    if normalized.is_empty() {
+        return;
+    }
+    if let Ok(mut queue) = pending.lock() {
+        queue.push_back(normalized);
+        while queue.len() > 8 {
+            queue.pop_front();
+        }
+    }
+}
+
+/// True when `spoken` is GPT-Live reading back a delegated reply; consumes the
+/// matching pending entry so a repeated phrase is not dropped twice.
+fn take_delegated_spoken(pending: &Mutex<VecDeque<String>>, spoken: &str) -> bool {
+    let normalized = normalize_spoken(spoken);
+    if normalized.is_empty() {
+        return false;
+    }
+    let head = |text: &str| text.chars().take(48).collect::<String>();
+    if let Ok(mut queue) = pending.lock() {
+        let hit = queue.iter().position(|candidate| {
+            candidate == &normalized
+                || normalized.starts_with(&head(candidate))
+                || candidate.starts_with(&head(&normalized))
+        });
+        if let Some(index) = hit {
+            queue.remove(index);
+            return true;
+        }
+    }
+    false
+}
+
 /// PCM hand-off from the GPT-Live reader into the broadcast encoder: s16le
 /// samples (24 kHz mono), bounded so a stall cannot ratchet memory.
 #[derive(Default)]
@@ -991,21 +1044,52 @@ async fn run_session(
     let (mut ws_tx, mut ws_rx) = ws.split();
     eprintln!("[eve-idfon] GPT-Live session ready peer={caller_peer_id}");
 
+    let call_started = Instant::now();
+    let turn_count = Arc::new(AtomicU64::new(0));
     let call_id = rand_suffix();
     // Delegated replies arrive as `(delegation_id, spoken_text)` and are fed to
     // GPT-Live as commentary by the task that owns `ws_tx`.
     let (commentary_tx, commentary_rx) = mpsc::unbounded_channel::<(String, String)>();
     // Transcript snapshots are signed and sent off the reader loop so a slow
-    // send cannot stall audio; one task preserves snapshot order.
+    // send cannot stall audio; one task preserves snapshot order. Finals are
+    // also written to the durable voice-record buffer keyed by the caller
+    // (P0: recording never triggers an Eve turn).
     let (transcript_tx, mut transcript_rx) = mpsc::unbounded_channel::<CallTranscript>();
-    {
+    // Spoken copies of delegated replies: GPT-Live reads them back as output
+    // transcripts, which must not be recorded as a second copy of a reply the
+    // Eve agent already wrote into its own history.
+    let delegated_spoken: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let transcript_task = {
         let transport = Arc::clone(&transport);
         let key = key.clone();
         let holder_endpoint_id = holder_endpoint_id.clone();
         let caller_addr = caller_addr.clone();
+        let caller_peer_id = caller_peer_id.clone();
+        let delegated_spoken = Arc::clone(&delegated_spoken);
+        let turn_count = Arc::clone(&turn_count);
         tokio::spawn(async move {
             let mut seq = 0u64;
             while let Some(transcript) = transcript_rx.recv().await {
+                if transcript.r#final {
+                    turn_count.fetch_add(1, Ordering::Relaxed);
+                    let speaker = match transcript.role {
+                        CallSpeaker::Caller => "caller",
+                        CallSpeaker::Agent => "agent",
+                    };
+                    if speaker == "agent"
+                        && take_delegated_spoken(&delegated_spoken, &transcript.text)
+                    {
+                        continue;
+                    }
+                    records::store().append(
+                        &caller_peer_id,
+                        records::VoiceRecord::transcript(
+                            &transcript.call_id,
+                            speaker,
+                            &transcript.text,
+                        ),
+                    );
+                }
                 seq += 1;
                 let Ok(text) = idfon_protocol::encode_call_transcript(&transcript) else {
                     continue;
@@ -1029,8 +1113,8 @@ async fn run_session(
                     eprintln!("[eve-idfon] call transcript send failed: {error}");
                 }
             }
-        });
-    }
+        })
+    };
 
     // WS → broadcast: decode base64 s16 24 kHz chunks straight into the queue.
     let reader_stop = Arc::clone(&stop);
@@ -1038,13 +1122,14 @@ async fn run_session(
     let session_finalized = Arc::new(AtomicBool::new(false));
     let reader_finalized = Arc::clone(&session_finalized);
     let reader_commentary = commentary_tx.clone();
+    let reader_call_id = call_id.clone();
     let mut reader = tokio::spawn(async move {
         let mut output_chunks = 0usize;
         let mut output_bytes = 0usize;
         let mut input_text_chars = 0usize;
         let mut output_text_chars = 0usize;
         let mut finalized = false;
-        let mut stream = TranscriptStream::new(call_id);
+        let mut stream = TranscriptStream::new(reader_call_id);
         while let Some(event) = ws_rx.next().await {
             let message = match event {
                 Ok(message) => message,
@@ -1065,17 +1150,13 @@ async fn run_session(
                     let delta = event["delta"].as_str().unwrap_or_default();
                     input_text_chars += delta.len();
                     stream.push(CallSpeaker::Caller, delta, &transcript_tx);
-                    eprintln!(
-                        "[eve-idfon] GPT-Live input transcript chars={input_text_chars}"
-                    );
+                    eprintln!("[eve-idfon] GPT-Live input transcript chars={input_text_chars}");
                 }
                 "session.output_transcript.delta" => {
                     let delta = event["delta"].as_str().unwrap_or_default();
                     output_text_chars += delta.len();
                     stream.push(CallSpeaker::Agent, delta, &transcript_tx);
-                    eprintln!(
-                        "[eve-idfon] GPT-Live output transcript chars={output_text_chars}"
-                    );
+                    eprintln!("[eve-idfon] GPT-Live output transcript chars={output_text_chars}");
                 }
                 "session.delegation.created" => {
                     let delegation_id = event["delegation"]["id"]
@@ -1151,7 +1232,7 @@ async fn run_session(
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             } => Ok(()),
-            result = pump_caller_audio(caller_ticket, &mut ws_tx, pump_stop, pacer_diagnostics, profile, commentary_rx) => result,
+            result = pump_caller_audio(caller_ticket, &mut ws_tx, pump_stop, pacer_diagnostics, profile, commentary_rx, Arc::clone(&delegated_spoken)) => result,
         };
         if let Err(error) = result {
             eprintln!("[eve-idfon] caller audio ended: {error:#}");
@@ -1203,6 +1284,17 @@ async fn run_session(
             }
         }
     };
+    // Let the transcript task finish the queue (its sender lives in the reader
+    // task, which has ended) so the hangup summary is recorded last.
+    let _ = tokio::time::timeout(Duration::from_secs(5), transcript_task).await;
+    records::store().append(
+        &caller_peer_id,
+        records::VoiceRecord::call_summary(
+            &call_id,
+            call_started.elapsed().as_secs(),
+            turn_count.load(Ordering::Relaxed),
+        ),
+    );
     if !finalized {
         eprintln!("[eve-idfon] GPT-Live finalization unconfirmed");
     }
@@ -1279,6 +1371,7 @@ async fn pump_caller_audio<S>(
     diagnostics: CallDiagnostics,
     expected_profile: AudioProfile,
     mut commentary_rx: mpsc::UnboundedReceiver<(String, String)>,
+    delegated_spoken: Arc<Mutex<VecDeque<String>>>,
 ) -> Result<()>
 where
     S: futures_util::Sink<Message> + Unpin + Send,
@@ -1409,6 +1502,7 @@ where
                 if pacer.sent_samples >= REPLY_MAX_S * 24_000 { break; }
             }
             Some((delegation_id, content)) = commentary_rx.recv() => {
+                note_delegated_spoken(&delegated_spoken, &content);
                 ws_tx
                     .send(Message::text(json!({
                         "type": "session.commentary.append",
