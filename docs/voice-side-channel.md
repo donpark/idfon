@@ -1,6 +1,8 @@
 # Voice side-channel service
 
-> **Status: design.** Not implemented. Follow-on to the decision in
+> **Status: design, P0 implemented** (2026-10-01). The record-only coupling in
+> "Writing to Eve history" (§P0 implementation) ships in `crates/eve-idfon`
+> and the `eve-idfon` extension; P1+ remain design. Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
@@ -28,7 +30,9 @@ This design is the **cascade voice side-channel**.
   sets one) must not open a voice session. This is an **explicit exception** to
   `chatrooms.md`'s "1:1 equivalence, no room-only code path", and must be
   recorded there. **Enforcement lives in `handle_live_text`** (before the
-  `IDFON-LIVE/1` dispatch at `main.rs:702`) and is **P0**, not P2.
+  `IDFON-LIVE/1` dispatch in `main.rs`) and is **P0**, not P2. In the P0
+  implementation the guard is the `message.conversation.is_none()` condition on
+  that dispatch, so a room-addressed control falls through as ordinary content.
   Room-addressed turns and **room voice memos** are passed through **text-only**
   (not transcribed). Tested.
 - **A single-agent focus** is therefore the callee. The "Alice, …" override and
@@ -192,6 +196,37 @@ on it (`idfon-eve.md`). Two separate rules:
 The GPT-Live-era P0 transcript is a recording, not a user-signed turn: its
 holder-side lines are labeled history, and the client-signing rule applies only
 to the cascade.
+
+### P0 implementation
+
+- **Store** (`crates/eve-idfon/src/records.rs`): one JSON file per 1:1 peer
+  address under `$IDFON_VOICE_RECORDS_DIR`, else `$EVE_VOICE_HOME/voice-records`
+  (the serve script sets `EVE_VOICE_HOME=~/.idfon/ai-voice-chat`), else
+  `$HOME/.idfon/eve-voice-records`. Append-only records with a fixed
+  `kind`/`speaker` schema (`transcript` for caller/agent finals, `call_summary`
+  at hangup); `drain` advances a cursor, so the buffer survives a holder
+  restart. Per-peer records are capped (oldest trimmed, cursor advanced).
+- **Fetch**: the resolver POSTs `{peer_id, turn_id}` to the loopback bridge
+  `/records/drain`, which forwards `records.drain` over holder IPC. `drain` is
+  **idempotent per `turnId`**: a replayed/resumed turn returns nothing.
+- **Resolver**: `integrations/eve-idfon/extension/instructions/voice-records.ts`
+  is a `defineDynamic` **user-role** instruction on `turn.started`; it emits the
+  records as escaped JSON (`speaker` is a fixed enum, so a transcript cannot
+  forge a label). No records → `null` (no history entry). A bridge failure
+  returns `null` and leaves the records buffered.
+- **Rooms**: a `conversation`-addressed live control is not intercepted
+  (voice is 1:1) and falls through as text-only content.
+- **Delegation provenance**: `IpcFrame::TurnIn` carries `source`; a live
+  delegation sets `source=gpt-live-delegation`, which the channel exposes as the
+  `idfon_source` auth attribute. GPT-Live's spoken readback of the delegated
+  reply is matched (whitespace-normalized) and dropped before it is recorded or
+  sent as a transcript bubble, so the reply is recorded once (in the Eve turn).
+- **Eve overhead (N1)**: measured on the loopback drain path (debug holder +
+  bridge, 21-record payload, 300 iterations): first (cold, loads file) 20 ms;
+  warmed **p50 1.9 ms / p95 2.8 ms / max 4.0 ms**. The resolver logs
+  `voice records drained count=… in …ms turn=…` so the live per-turn cost stays
+  observable. This is well inside the N1 budget; the voice hops, not this
+  resolver, dominate end-to-end.
 
 ### Placement
 
@@ -378,10 +413,11 @@ Linux/x86_64, so Apple-first uses MLX or Pocket TTS on CPU.
 
 Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
 
-- **P0 — couple first, record-only.** Wire the transcript **recording**
-  mechanism ("Writing to Eve history") with a swappable source. GPT-Live-era
-  utterances are recorded, never `send()`-triggered. Measure Eve overhead for
-  N1. This is decision #1.
+- **P0 — couple first, record-only.** **Implemented** (2026-10-01): durable
+  holder-side record buffer, idempotent bridge drain, `eve-idfon` dynamic
+  user-role instruction resolver, `gpt-live-delegation` provenance, and the
+  dropped spoken readback; Eve overhead measured (§P0 implementation). This is
+  decision #1.
 - **P1 — provider seam.** `VoiceEngine` trait (STT + TTS + endpointing) with a
   silent/stub engine; no-network pipeline test.
 - **P2 — listen.** STT + one authoritative endpointer per topology; partial and
