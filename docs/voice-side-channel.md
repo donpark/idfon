@@ -1,9 +1,11 @@
 # Voice side-channel service
 
-> **Status: design, P0–P1 implemented** (2026-10-01). The record-only coupling in
+> **Status: design, P0–P2 implemented** (2026-10-01). The record-only coupling in
 > "Writing to Eve history" (§P0 implementation) ships in `crates/eve-idfon`
 > and the `eve-idfon` extension; the provider seam (§P1 implementation) ships
-> as `crates/idfon-voice`. P2+ remain design. Follow-on to the decision in
+> as `crates/idfon-voice`, and the listen-side turn semantics + room gate
+> (§P2 implementation) ship in `idfon-voice` and the holder. P3+ remain design.
+> Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
@@ -246,6 +248,26 @@ to the cascade.
   `cargo run --offline -p idfon-voice --example pipeline` (text → PCM → WAV)
   and validates the WAV. No network, no credentials.
 
+### P2 implementation
+
+- **Listen semantics** (`crates/idfon-voice/src/listen.rs`): `ListenSession`
+  wraps one `SttSession` + one `Endpointer`. Partials are replaceable (never
+  agent context); a Final is delivered **once** per turn and then the turn
+  closes. `ListenOutput` also surfaces the endpoint transition so the caller
+  can drive barge-in even when the endpointer is not authoritative.
+- **One authoritative endpointer (F3)**: `EndpointAuthority::Client` means the
+  on-device endpointer decides and the service endpointer is advisory, with
+  `SttSession::flush` (end utterance, keep session) used at hangup;
+  `EndpointAuthority::Service` finalizes on `SpeechEnded` via `flush`. The
+  seam separates `flush` (end utterance) from `finish` (end call).
+- **Voice is 1:1 only**: the holder tracks room membership by **distinct
+  senders** per `conversation` (`crates/eve-idfon/src/rooms.rs`) and
+  `handle_live_text` rejects a room control before parsing the invite, falling
+  through as a text turn. A threaded 1:1 (one sender) is allowed; a room (two
+  or more distinct senders) is not. Known ceiling: a room whose second member
+  has never posted looks like a thread. The exception is recorded in
+  `docs/chatrooms.md`.
+
 ### Placement
 
 Under A2, the voice component runs **at the channel edge (the per-agent
@@ -440,8 +462,10 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   defines `VoiceEngine` (STT + TTS + endpointing sessions) with a
   deterministic `StubVoiceEngine`; `scripts/voice-pipeline-check.sh` runs the
   text → PCM → WAV gate offline (§P1 implementation).
-- **P2 — listen.** STT + one authoritative endpointer per topology; partial and
-  final events; **room-addressed sessions rejected** (voice is 1:1).
+- **P2 — listen.** **Implemented** (2026-10-01): `ListenSession` maps caller
+  audio to replaceable partials and a final-once turn event with one
+  authoritative endpointer (client or service); the holder gates voice to 1:1
+  by room membership (§P2 implementation).
 - **P3 — speak (turn-level)** with a **deterministic director** (focus = callee,
   modality default). TTS + registry + `voice.speak` grant.
 - **P4 — realtime streaming.** Agent reply deltas → incremental TTS (F11);

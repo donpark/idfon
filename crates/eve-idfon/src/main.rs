@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 mod call;
 mod records;
+mod rooms;
 use call::handle_live_text;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -691,6 +692,12 @@ async fn handle_message(
         return Err(TransportError::Failed(error.to_string()));
     }
     let attachment = parse_data_envelope(&text);
+    // Voice is 1:1 only: track room membership by distinct senders so a
+    // conversation-addressed call can be rejected without assuming that any
+    // set `conversation` is a room (a threaded 1:1 sets one too).
+    if let Some(conversation) = &message.conversation {
+        rooms::registry().observe(conversation, &message.sender.peer_id);
+    }
     let key = (
         message.sender.peer_id.clone(),
         message.idempotency_key.clone(),
@@ -734,9 +741,10 @@ async fn handle_message(
 
     // Deduplicate call controls before they mutate the active session; transport
     // retries must not replace a call that is already running. Voice is 1:1
-    // only, so a room-addressed control never opens a session — it falls
-    // through and is handled as ordinary (text-only) content.
-    if text.starts_with("IDFON-LIVE/1") && message.conversation.is_none() {
+    // only; room membership is recorded per inbound message (below) and the
+    // room check lives in `handle_live_text`, which falls through to a text
+    // turn for a room.
+    if text.starts_with("IDFON-LIVE/1") {
         eprintln!(
             "[eve-idfon] dispatch live control message={} idempotency_key={}",
             message.message_id, message.idempotency_key
@@ -745,6 +753,7 @@ async fn handle_message(
             &text,
             &message.sender.peer_id,
             &message.sender.endpoint_id,
+            message.conversation.as_deref(),
             &transport_for_calls,
             &key_for_calls,
             &holder_peer_id,
@@ -766,11 +775,6 @@ async fn handle_message(
                 )));
             }
         }
-    } else if text.starts_with("IDFON-LIVE/1") {
-        eprintln!(
-            "[eve-idfon] room-addressed live control rejected (voice is 1:1) peer={}",
-            message.sender.peer_id
-        );
     }
 
     if let Some((event, data)) = parse_status_envelope(&text) {

@@ -376,12 +376,21 @@ pub async fn handle_live_text(
     text: &str,
     sender_peer_id: &str,
     sender_endpoint_id: &str,
+    conversation: Option<&str>,
     transport: &Arc<IrohTransport>,
     key: &SigningKey,
     holder_endpoint_id: &str,
     targets: Targets,
     out_tx: mpsc::Sender<IpcFrame>,
 ) -> Result<bool> {
+    // Voice is 1:1 only. A room (>= 2 distinct senders) never opens a voice
+    // session; the control falls through and is handled as text content.
+    if crate::rooms::registry().is_room(conversation) {
+        eprintln!(
+            "[eve-idfon] room-addressed live control rejected (voice is 1:1) peer={sender_peer_id} conversation={conversation:?}"
+        );
+        return Ok(false);
+    }
     let Some(invite) = parse_invite(text) else {
         return Ok(false);
     };

@@ -23,9 +23,11 @@ use std::path::Path;
 
 use anyhow::Result;
 
+pub mod listen;
 pub mod stub;
 pub mod wav;
 
+pub use listen::{EndpointAuthority, ListenOutput, ListenSession};
 pub use stub::StubVoiceEngine;
 pub use wav::write_pcm_wav;
 
@@ -94,6 +96,13 @@ pub trait SttSession: Send {
     /// Feed interleaved s16 PCM in the session's format; return any events the
     /// provider produced (zero or more partials, at most one final per turn).
     fn push(&mut self, pcm: &[i16]) -> Result<Vec<TranscriptEvent>>;
+    /// End the current utterance **without ending the session**, returning any
+    /// buffered final text. Used when an authoritative endpointer (not the
+    /// provider's own VAD) closes a turn. Defaults to [`finish`] for providers
+    /// that cannot separate the two.
+    fn flush(&mut self) -> Result<Option<String>> {
+        self.finish()
+    }
     /// Flush provider state at end of call; returns a trailing final if any.
     fn finish(&mut self) -> Result<Option<String>>;
 }

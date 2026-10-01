@@ -214,6 +214,14 @@ A 1:1 chat is a room of two with `conversation = None`: same envelope, same
 grants, same `message.send`. Nothing in R0–R3 should add a code path that only
 rooms take, or only 1:1 takes.
 
+**Explicit exception — voice is 1:1 only (P2, epic #17).** The voice
+side-channel (`docs/voice-side-channel.md`) refuses to open a call in a room,
+and room turns/voice memos are text-only. This is the one deliberate
+room-vs-1:1 branch: a *room* is decided **by membership** (two or more distinct
+senders in a `conversation`), not by `conversation` being set — a threaded 1:1
+also sets one. The holder gates it in `handle_live_text`
+(`crates/eve-idfon/src/rooms.rs`).
+
 ## Open questions
 
 - Should `conversation` be bound to the recipient, or is one shared topic id
