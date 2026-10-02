@@ -1,11 +1,13 @@
 # Voice side-channel service
 
-> **Status: design, P0–P2 implemented** (2026-10-01). The record-only coupling in
+> **Status: design, P0–P3 implemented** (2026-10-01). The record-only coupling in
 > "Writing to Eve history" (§P0 implementation) ships in `crates/eve-idfon`
 > and the `eve-idfon` extension; the provider seam (§P1 implementation) ships
 > as `crates/idfon-voice`, and the listen-side turn semantics + room gate
-> (§P2 implementation) ship in `idfon-voice` and the holder. P3+ remain design.
-> Follow-on to the decision in
+> (§P2 implementation) ship in `idfon-voice` and the holder; turn-level speak,
+> the model registry, the `voice.speak` gate, and the deterministic director
+> (§P3 implementation) ship in `idfon-voice`. P4+ remain design. Follow-on to
+> the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
@@ -268,6 +270,29 @@ to the cascade.
   has never posted looks like a thread. The exception is recorded in
   `docs/chatrooms.md`.
 
+### P3 implementation
+
+- **Model registry** (`idfon-voice/src/registry.rs`): `ModelRegistry` maps
+  `speak(text, voice)` to a `VoiceModel { engine, model, voice, tier, license,
+  languages, size_bytes, sha256 }`. `bundled()` carries the offline stub as the
+  default plus downloadable Kokoro rows with license/size metadata; resolution
+  accepts canonical `engine:model:voice`, `model:voice`, bare voice, or model.
+- **`voice.speak` grant** (`idfon-voice/src/speak.rs`):
+  `Capability::VoiceSpeak` added to the open protocol namespace; `SpeakAuthorizer`
+  enforces the grant plus a sliding-window rate cap and a character cap. Issued
+  by the listening client; enforced at the holder.
+- **Deterministic director** (`idfon-voice/src/director.rs`): closed directive
+  set (`route`/`set_focus`/`present`/`suppress`/`preempt`/`defer`), append-only
+  log, `route` target validated against the principal's sessions, and
+  **explicit `speak()` beats `suppress`/`defer`** (F9 actor-wins).
+- **Speaker label + audit** (`idfon-voice/src/audit.rs`): closed `Speaker` enum
+  (`caller`/`agent`/`director`/`voice-service`/`system`) and an append-only
+  `AuditLog`. The holder signs the label when it emits a wire envelope.
+- **Turn-level speak** (`idfon-voice/src/service.rs`): `VoiceService::speak_turn`
+  authorizes, resolves the voice, synthesizes one completed turn, and records an
+  `Agent`-labelled utterance; denied/unknown-voice turns record nothing and
+  speak nothing. Streaming/clause batching is P4.
+
 ### Placement
 
 Under A2, the voice component runs **at the channel edge (the per-agent
@@ -467,7 +492,11 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   authoritative endpointer (client or service); the holder gates voice to 1:1
   by room membership (§P2 implementation).
 - **P3 — speak (turn-level)** with a **deterministic director** (focus = callee,
-  modality default). TTS + registry + `voice.speak` grant.
+  modality default). **Implemented** (2026-10-01): `VoiceService::speak_turn`
+  resolves a `VoiceModel` from the registry, enforces the `voice.speak` grant
+  with rate/length caps, synthesizes, and records an `Agent`-labelled utterance
+  in the holder audit log; `DeterministicDirector` owns focus/modality/timing
+  (§P3 implementation).
 - **P4 — realtime streaming.** Agent reply deltas → incremental TTS (F11);
   deterministic envelope/artifact stripping; bridge batching; barge-in
   cancel/steer + drop-cancelled; `playback.truncated` recorded.
