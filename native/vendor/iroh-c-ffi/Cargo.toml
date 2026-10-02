@@ -71,6 +71,12 @@ block2 = "0.6"
 [target.'cfg(target_os = "macos")'.dependencies]
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
 
+# Apple on-device voice seam: the Rust VoiceEngine drives a Swift engine over a
+# C ABI (see src/voice.rs). iOS only — the Swift symbols are defined by the app,
+# so a host build/test of this crate must not reference them.
+[target.'cfg(target_os = "ios")'.dependencies]
+idfon-voice = { path = "../../../crates/idfon-voice", features = ["apple-ffi"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
 

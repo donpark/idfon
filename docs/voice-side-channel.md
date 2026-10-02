@@ -356,10 +356,17 @@ to the cascade.
   no LGPL `num2words` dependency. It is applied in `synthesize_to_wav` and
   `VoiceService::speak_turn` (the audit keeps the original agent text), and
   `scripts/voice-pipeline-check.sh` asserts the normalization.
+- **Rust seam bridge** (`idfon-voice/src/apple_ffi.rs` +
+  `native/vendor/iroh-c-ffi/src/voice.rs` + `ios/Idfon/OnDeviceVoiceBridge.swift`):
+  the app registers its Swift engine's C functions with `idfon_voice_set_bindings`,
+  and `AppleVoiceEngine` implements the Rust `VoiceEngine` by calling them
+  (whole-utterance; s16 mono PCM). `idfon_voice_apple_selftest` runs the Rust
+  seam end to end and **verified on an iPhone 16**: Rust → Swift TTS
+  (58,368 samples @ 22050) → Swift on-device STT → `The quick brown fox jumps
+  over the lazy dog`.
 - **Not done**: the MLX model engines on Mac/iOS (now optional given the
-  Apple-native path), the remote-engine fallback selection, and bridging this
-  Swift provider into the Rust `VoiceEngine` seam for the cascade consumer. The
-  seam and registry tier are in place to receive them.
+  Apple-native path) and the remote-engine fallback selection; the macOS app
+  does not yet register an engine (the FFI bridge is iOS-gated).
 
 ### P7 implementation
 

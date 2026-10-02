@@ -8,6 +8,8 @@ pub mod media;
 pub mod stream;
 pub mod util;
 pub mod video;
+#[cfg(target_os = "ios")]
+pub mod voice;
 
 /// The following function is only necessary for the header generation.
 #[cfg(feature = "headers")]

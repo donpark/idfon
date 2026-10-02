@@ -10,8 +10,21 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         VideoCall.shared.recoverStaleCall()
         setVideoRotation()
         smokeCheckStatus()
+        registerVoiceEngine()
         handleLaunchArguments()
         return true
+    }
+
+    /// Wires the Swift on-device engine into the Rust `idfon-voice` seam over
+    /// the C ABI (`idfon_voice_set_bindings`).
+    private func registerVoiceEngine() {
+        let status = idfon_voice_set_bindings(
+            idfon_apple_voice_tts,
+            idfon_apple_voice_stt,
+            idfon_apple_voice_free,
+            idfon_apple_voice_free_text
+        )
+        NSLog("idfon voice: registered apple engine status=\(status)")
     }
 
     /// Legacy nokhwa rotation hook; the Swift CameraPusher path rotates
@@ -71,6 +84,21 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         if args.contains("-voicelisten") {
             OnDeviceVoice.shared.runListenSmokeTest()
+        }
+        if args.contains("-voiceffi") {
+            DispatchQueue.global(qos: .userInitiated).async {
+                Automation.mark("voice: ffi start")
+                let result: String
+                if let pointer = idfon_voice_apple_selftest() {
+                    result = String(cString: pointer)
+                    rust_free_string(pointer)
+                } else {
+                    result = "nil"
+                }
+                Automation.mark("voice: ffi result=\(result)")
+                Automation.mark(result.hasPrefix("error:") ? "voice: FAIL" : "voice: PASS")
+                Automation.mark("voice: done")
+            }
         }
         if let i = args.firstIndex(of: "-memo"), args.count > i + 2, let seconds = TimeInterval(args[i + 1]) {
             let ref = args[i + 2]

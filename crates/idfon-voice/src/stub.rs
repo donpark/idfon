@@ -105,7 +105,7 @@ impl TtsSession for StubTts {
 /// after a sustained quiet tail. Mirrors the energy gate the call path already
 /// uses (`|s16| > 300`); good enough for the offline gate, replaced by the
 /// provider's semantic VAD in P2.
-struct EnergyEndpointer {
+pub(crate) struct EnergyEndpointer {
     format: AudioFormat,
     speaking: bool,
     quiet_frames: usize,
@@ -116,7 +116,7 @@ const ENERGY_THRESHOLD: i16 = 300;
 const ENDPOINT_QUIET_MS: usize = 800;
 
 impl EnergyEndpointer {
-    fn new(format: AudioFormat) -> Self {
+    pub(crate) fn new(format: AudioFormat) -> Self {
         Self {
             format,
             speaking: false,

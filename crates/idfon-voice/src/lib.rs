@@ -23,6 +23,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
+#[cfg(feature = "apple-ffi")]
+pub mod apple_ffi;
 pub mod arbiter;
 pub mod audit;
 pub mod bargein;
