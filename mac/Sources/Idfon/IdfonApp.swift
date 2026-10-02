@@ -198,6 +198,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 OnDeviceVoice.shared.runListeningTest()
             }
         }
+        if let i = args.firstIndex(of: "-voiceagenttext"), args.count > i + 2 {
+            let ref = args[i + 1]
+            let text = args[i + 2]
+            Task { @MainActor in VoiceAgentSession.shared.runText(peerRef: ref, text: text) }
+        }
+        if let i = args.firstIndex(of: "-voiceagent"), args.count > i + 1 {
+            let ref = args[i + 1]
+            let turns = args.count > i + 2 ? (Int(args[i + 2]) ?? 1) : 1
+            Task { @MainActor in VoiceAgentSession.shared.run(peerRef: ref, turns: turns) }
+        }
     }
 
     private func waitForIncomingCall(video: Bool) {

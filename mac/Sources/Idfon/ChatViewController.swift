@@ -225,6 +225,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                     status = "Calling…"
                 default:
                     buttons = [headerSymbolButton("phone.arrow.up.right", #selector(callTapped), "Start call"),
+                               headerSymbolButton("waveform.badge.mic", #selector(voiceAgentTapped), "Voice conversation"),
                                headerButton("Audio", #selector(audioProfileTapped)),
                                headerSymbolButton("arrow.down.doc", #selector(shareVideoTapped), "Share a video file"),
                                headerSymbolButton("person.crop.circle", #selector(peerDetailsTapped), "Peer details")]
@@ -234,6 +235,30 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         callLabel.stringValue = status
         headerRow.arrangedSubviews.filter { $0 is NSButton }.forEach { headerRow.removeArrangedSubview($0); $0.removeFromSuperview() }
         buttons.forEach { headerRow.insertView($0, at: 0, in: .leading) }
+    }
+
+    /// Toggle the client-side (A1) voice agent for this 1:1 peer.
+    @objc private func voiceAgentTapped() {
+        let session = VoiceAgentSession.shared
+        if session.isActive {
+            session.stop()
+            return
+        }
+        session.onState = { [weak self] state in self?.applyVoiceState(state) }
+        session.start(peerRef: peer.id)
+    }
+
+    private func applyVoiceState(_ state: VoiceAgentSession.State) {
+        switch state {
+        case .idle:
+            callLabel.stringValue = ""
+        case .listening(let text):
+            callLabel.stringValue = text.isEmpty ? "Listening…" : text
+        case .thinking:
+            callLabel.stringValue = "Thinking…"
+        case .speaking:
+            callLabel.stringValue = "Speaking…"
+        }
     }
 
     // MARK: - Banner
