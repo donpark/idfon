@@ -25,6 +25,18 @@ cli="${IDFON_CLI:-$root/target/release/idfon}"
 socket="${IDFON_SOCKET:-/tmp/idfon/idfond.sock}"
 agent="${EVE_AGENT:-ai-voice-chat}"
 home="${EVE_VOICE_HOME:-$HOME/.idfon/$agent}"
+mkdir -p "$home"
+# Pin the holder's UDP port so its endpoint address survives restarts and the
+# apps do not need re-pairing. Deterministic per agent, persisted, overridable.
+port_file="$home/endpoint-port"
+if [ -n "${EVE_VOICE_PORT:-}" ]; then
+  endpoint_port="$EVE_VOICE_PORT"
+elif [ -s "$port_file" ]; then
+  endpoint_port=$(cat "$port_file")
+else
+  endpoint_port=$((58000 + $(printf '%s' "$agent" | cksum | awk '{print $1}') % 1000))
+fi
+printf '%s' "$endpoint_port" > "$port_file" 2>/dev/null || true
 integration="$root/integrations/eve-idfon"
 
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
@@ -115,7 +127,7 @@ for pidfile in "$home"/holder.pid "$home"/bridge.pid "$home"/eve.pid; do
   if [ -f "$pidfile" ]; then kill "$(cat "$pidfile")" 2>/dev/null || true; rm -f "$pidfile"; fi
 done
 sleep 0.5
-"$root/target/release/eve-idfon" --key-file "$key" serve \
+IDFON_ENDPOINT_PORT="$endpoint_port" "$root/target/release/eve-idfon" --key-file "$key" serve \
   --socket "$home/holder.sock" "${allow_args[@]}" --blob-dir "$home/blobs" \
   >"$home/holder.ticket" 2>"$home/holder.log" &
 echo $! > "$home/holder.pid"
@@ -158,7 +170,7 @@ holder_pid=$(printf '%s' "$contact" | jq -r .id)
 "$cli" --socket "$socket" access allow --subject "$holder_pid" --capability message.send >/dev/null
 "$cli" --socket "$socket" access allow --subject "$holder_pid" --capability message.receive >/dev/null
 {
-  echo "$agent agent is up (holder $holder_pid, bridge :$bridge_port, eve :$eve_port)"
+  echo "$agent agent is up (holder $holder_pid, endpoint udp :$endpoint_port, bridge :$bridge_port, eve :$eve_port)"
   echo
   echo "contact:  $contact"
   echo
