@@ -26,6 +26,7 @@ final class OnDeviceVoice: NSObject {
         case recognizerUnavailable
         case onDeviceUnavailable
         case denied
+        case recognitionTimedOut
 
         var errorDescription: String? {
             switch self {
@@ -33,6 +34,7 @@ final class OnDeviceVoice: NSObject {
             case .recognizerUnavailable: return "no en-US recognizer"
             case .onDeviceUnavailable: return "on-device recognition unavailable"
             case .denied: return "speech recognition not authorized"
+            case .recognitionTimedOut: return "no speech recognized before timeout"
             }
         }
     }
@@ -115,6 +117,122 @@ final class OnDeviceVoice: NSObject {
                     done = true
                     completion(.success(result.bestTranscription.formattedString))
                 }
+            }
+        }
+    }
+
+    // MARK: - Live microphone → on-device STT
+
+    private var audioEngine: AVAudioEngine?
+    private var listenTask: SFSpeechRecognitionTask?
+    private var listenRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var listenDone: ((Result<String, Error>) -> Void)?
+    private var latestPartial = ""
+
+    /// Start listening on the microphone and transcribe entirely on device.
+    /// Partials are logged as they arrive; the first final result completes.
+    func startListening(completion: @escaping (Result<String, Error>) -> Void) {
+        AVAudioApplication.requestRecordPermission { granted in
+            guard granted else {
+                completion(.failure(VoiceError.denied))
+                return
+            }
+            SFSpeechRecognizer.requestAuthorization { status in
+                guard status == .authorized else {
+                    completion(.failure(VoiceError.denied))
+                    return
+                }
+                guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
+                      recognizer.supportsOnDeviceRecognition
+                else {
+                    completion(.failure(VoiceError.onDeviceUnavailable))
+                    return
+                }
+
+                let session = AVAudioSession.sharedInstance()
+                try? session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+                try? session.setActive(true, options: .notifyOthersOnDeactivation)
+
+                let request = SFSpeechAudioBufferRecognitionRequest()
+                request.requiresOnDeviceRecognition = true
+                request.shouldReportPartialResults = true
+                self.listenRequest = request
+                self.listenDone = completion
+
+                let engine = AVAudioEngine()
+                let input = engine.inputNode
+                let format = input.outputFormat(forBus: 0)
+                input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+                    request.append(buffer)
+                }
+                engine.prepare()
+                do {
+                    try engine.start()
+                } catch {
+                    completion(.failure(error))
+                    return
+                }
+                self.audioEngine = engine
+
+                self.listenTask = recognizer.recognitionTask(with: request) { result, error in
+                    if let result {
+                        let text = result.bestTranscription.formattedString
+                        self.latestPartial = text
+                        Automation.mark("voice: partial \(text)")
+                        if result.isFinal {
+                            self.finishListening(.success(text))
+                            return
+                        }
+                    }
+                    if let error {
+                        self.finishListening(.failure(error))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stop the microphone and recognition.
+    func stopListening() {
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine = nil
+        listenRequest?.endAudio()
+        listenRequest = nil
+        listenTask?.cancel()
+        listenTask = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func finishListening(_ result: Result<String, Error>) {
+        let completion = listenDone
+        listenDone = nil
+        stopListening()
+        completion?(result)
+    }
+
+    /// `-voicelisten`: wait for one on-device transcription of live speech. A
+    /// recognizer that only produced partials by the deadline still counts as
+    /// "heard" — the point is that the microphone reached on-device STT.
+    func runListenSmokeTest(timeout: TimeInterval = 45) {
+        latestPartial = ""
+        Automation.mark("voice: listening")
+        startListening { result in
+            switch result {
+            case .failure(let error):
+                Automation.mark("voice: FAIL listen \(error.localizedDescription)")
+            case .success(let text):
+                Automation.mark("voice: heard transcript=\(text)")
+                Automation.mark("voice: PASS")
+            }
+            Automation.mark("voice: done")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self, self.listenDone != nil else { return }
+            if self.latestPartial.isEmpty {
+                self.finishListening(.failure(VoiceError.recognitionTimedOut))
+            } else {
+                self.finishListening(.success(self.latestPartial))
             }
         }
     }
