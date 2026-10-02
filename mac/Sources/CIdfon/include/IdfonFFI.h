@@ -94,6 +94,11 @@ void media_shutdown(void);
 void iroh_enable_tracing(void);              // tracing -> /tmp/idfon-<pid>.log (IROH_C_LOG filter)
 void rust_free_string(char *ptr);
 
+// P5 barge-in/echo filters (native/vendor/iroh-c-ffi src/voice.rs) so the mac
+// shell reuses the Rust rules instead of reimplementing them.
+uint8_t idfon_voice_is_cancellable(const char *text, uint8_t playing, uint8_t in_tool_window);
+uint8_t idfon_voice_is_echo(const char *spoken, const char *heard);
+
 #define IDFON_OK 0
 #define IDFON_EARG -1
 #define IDFON_EREQUEST -2

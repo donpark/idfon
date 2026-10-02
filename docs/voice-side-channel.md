@@ -2,9 +2,10 @@
 
 > **Status: design, P0–P6 offline slices implemented** (2026-10-01). All
 > service-side phases have landed in `idfon-voice`/`crates/eve-idfon` and the
-> `eve-idfon` extension (see §P0–§P6 implementations); the P5 native halves
-> (iOS full barge-in, macOS AEC/gated capture) and the P6 on-device MLX engines
-> need the Apple apps/models, and the P7 human listening test has not been run.
+> `eve-idfon` extension (see §P0–§P6 implementations); the P5 natives are
+> **iOS full barge-in (with AEC) and macOS gated barge-in, both verified on
+> device** — macOS AEC itself remains unimplemented, and the P6 on-device MLX
+> engines are optional; the P7 human listening test has not been run.
 > P7's test gate and engine decision are recorded (§P7 implementation).
 > Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
@@ -342,9 +343,17 @@ to the cascade.
   stopped it. **AEC requires `AVAudioInputNode.setVoiceProcessingEnabled(true)`**
   — `.voiceChat` mode alone left the mic hearing the agent (all partials were
   correctly dropped as echo, which is how the missing AEC surfaced).
-- **Native gap**: macOS gated capture and **macOS AEC** remain app-side work;
-  per the design, macOS AEC is the real work item and P4 streaming cannot be
-  called the live-call gate on macOS before it lands.
+- **macOS gated barge-in** (`mac/Sources/Idfon/MacSpeechTranscriber.swift`):
+  uses the new `SpeechAnalyzer` + `SpeechTranscriber` (`.progressiveTranscription`
+  reporting options) with `AnalyzerInputConverter` for live volatile partials,
+  plus the same Rust filters over the CIdfon C ABI. **Verified**: the caller's
+  "Hello" over playback engaged and stopped it. macOS has no usable AEC here, so
+  it is **gated + text-layer echo suppression**, not full duplex.
+- **Native gap**: **macOS AEC** (VoiceProcessingIO / `AVAudioInputNode`
+  voice-processing) is not implemented — `setVoiceProcessingEnabled(true)` on
+  this Mac suppressed the mic entirely, so the design's gated fallback is used.
+  This remains the real work item before P4 streaming can be called the
+  live-call gate on macOS.
 
 ### P6 implementation
 
@@ -601,10 +610,12 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   `BargeInController` in `idfon-voice`; the channel forwards
   `message.appended` deltas over the loopback bridge to the holder
   (§P4 implementation).
-- **P5 — turn-taking & echo.** **Service core implemented** (2026-10-01):
+- **P5 — turn-taking & echo.** **Implemented + verified on device**
+  (2026-10-01):
   one-speaker `Arbiter` with the F9 closed non-actor kinds, `EchoSuppressor`
-  with the pending-approval exemption, and barge-in filters/modes. Native
-  iOS full barge-in + macOS AEC/gated capture remain (§P5 implementation).
+  with the pending-approval exemption, barge-in filters/modes, iOS full
+  barge-in (AEC via `setVoiceProcessingEnabled`) and macOS gated barge-in
+  (`SpeechAnalyzer` partials + Rust filters). macOS AEC remains.
 - **P6 — on-device.** **Apple-native path implemented + verified** (2026-10-01):
   `AVSpeechSynthesizer`/`SFSpeechRecognizer` on-device round trip verified on an
   iPhone 16; native G2P landed and is covered by the pipeline check. MLX model

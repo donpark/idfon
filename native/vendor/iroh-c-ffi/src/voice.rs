@@ -1,35 +1,14 @@
-//! Apple on-device voice seam (iOS): expose the Rust `idfon-voice` engine so
-//! the cascade can consume the Swift provider.
+//! Voice C ABI for the native shells.
 //!
-//! The app registers its Swift engine once with [`idfon_voice_set_bindings`];
-//! [`idfon_voice_apple_selftest`] then runs a full TTS -> PCM -> STT round trip
-//! through the Rust seam and returns the transcript (or `error:...`). The
-//! caller frees the result with `rust_free_string`.
+//! - **Filters (all Apple platforms)**: `idfon_voice_is_cancellable` and
+//!   `idfon_voice_is_echo` reuse the Rust P5 barge-in/echo rules so the shells
+//!   do not reimplement them.
+//! - **Apple engine bridge (iOS)**: the app registers its Swift engine with
+//!   `idfon_voice_set_bindings`; `idfon_voice_apple_selftest` runs a full
+//!   TTS -> PCM -> STT round trip through the Rust seam and returns the
+//!   transcript (or `error:...`). Free the result with `rust_free_string`.
 
-use std::ffi::{c_char, CStr, CString};
-
-use anyhow::{bail, Result};
-use idfon_voice::apple_ffi::{
-    set_bindings, AppleVoiceBindings, AppleVoiceEngine, FreeBytesFn, FreeTextFn, SttFn, TtsFn,
-};
-use idfon_voice::{AudioFormat, VoiceEngine};
-
-/// Register the Swift engine's C functions. Returns 0 on success.
-#[no_mangle]
-pub extern "C" fn idfon_voice_set_bindings(
-    tts: TtsFn,
-    stt: SttFn,
-    free_bytes: FreeBytesFn,
-    free_text: FreeTextFn,
-) -> i32 {
-    set_bindings(AppleVoiceBindings {
-        tts,
-        stt,
-        free_bytes,
-        free_text,
-    });
-    0
-}
+use std::ffi::{c_char, CStr};
 
 /// Barge-in filter (P5): whether `text` may cancel playback. The client owns
 /// the barge-in state; this reuses the Rust rule (backchannel/sub-minimum and
@@ -64,45 +43,75 @@ pub extern "C" fn idfon_voice_is_echo(spoken: *const c_char, heard: *const c_cha
     u8::from(suppressor.is_echo(&heard))
 }
 
-/// Runs the Rust seam against the Swift Apple engine; returns a Rust-owned
-/// C string (transcript, or `error:...`). Requires the bindings to be set.
-#[no_mangle]
-pub extern "C" fn idfon_voice_apple_selftest() -> *mut c_char {
-    let text = match run() {
-        Ok(transcript) => transcript,
-        Err(error) => format!("error:{error:#}"),
+#[cfg(target_os = "ios")]
+mod engine {
+    use std::ffi::{c_char, CString};
+
+    use anyhow::{bail, Result};
+    use idfon_voice::apple_ffi::{
+        set_bindings, AppleVoiceBindings, AppleVoiceEngine, FreeBytesFn, FreeTextFn, SttFn, TtsFn,
     };
-    CString::new(text).unwrap_or_default().into_raw()
-}
+    use idfon_voice::{AudioFormat, VoiceEngine};
 
-fn run() -> Result<String> {
-    eprintln!("[idfon voice] seam: tts start");
-    let engine = AppleVoiceEngine::new();
-    let mut tts = engine.tts("default", AudioFormat::PCM_24K_MONO)?;
-    let phrase = "the quick brown fox jumps over the lazy dog";
-    let mut chunks = tts.push_text(phrase)?;
-    chunks.extend(tts.finish()?);
-
-    let format = chunks
-        .first()
-        .map(|chunk| chunk.format)
-        .unwrap_or(AudioFormat::PCM_24K_MONO);
-    let samples: Vec<i16> = chunks.into_iter().flat_map(|chunk| chunk.samples).collect();
-    eprintln!(
-        "[idfon voice] seam: tts samples={} rate={}",
-        samples.len(),
-        format.sample_rate
-    );
-    if samples.is_empty() {
-        bail!("tts produced no samples");
+    /// Register the Swift engine's C functions. Returns 0 on success.
+    #[no_mangle]
+    pub extern "C" fn idfon_voice_set_bindings(
+        tts: TtsFn,
+        stt: SttFn,
+        free_bytes: FreeBytesFn,
+        free_text: FreeTextFn,
+    ) -> i32 {
+        set_bindings(AppleVoiceBindings {
+            tts,
+            stt,
+            free_bytes,
+            free_text,
+        });
+        0
     }
 
-    eprintln!("[idfon voice] seam: stt start");
-    let mut stt = engine.stt(format)?;
-    stt.push(&samples)?;
-    let transcript = stt.finish()?.unwrap_or_default();
-    if transcript.trim().is_empty() {
-        bail!("stt produced no transcript");
+    /// Runs the Rust seam against the Swift Apple engine; returns a Rust-owned
+    /// C string (transcript, or `error:...`). Requires the bindings to be set.
+    #[no_mangle]
+    pub extern "C" fn idfon_voice_apple_selftest() -> *mut c_char {
+        let text = match run() {
+            Ok(transcript) => transcript,
+            Err(error) => format!("error:{error:#}"),
+        };
+        CString::new(text)
+            .unwrap_or_default()
+            .into_raw()
     }
-    Ok(transcript)
+
+    fn run() -> Result<String> {
+        eprintln!("[idfon voice] seam: tts start");
+        let engine = AppleVoiceEngine::new();
+        let mut tts = engine.tts("default", AudioFormat::PCM_24K_MONO)?;
+        let phrase = "the quick brown fox jumps over the lazy dog";
+        let mut chunks = tts.push_text(phrase)?;
+        chunks.extend(tts.finish()?);
+
+        let format = chunks
+            .first()
+            .map(|chunk| chunk.format)
+            .unwrap_or(AudioFormat::PCM_24K_MONO);
+        let samples: Vec<i16> = chunks.into_iter().flat_map(|chunk| chunk.samples).collect();
+        eprintln!(
+            "[idfon voice] seam: tts samples={} rate={}",
+            samples.len(),
+            format.sample_rate
+        );
+        if samples.is_empty() {
+            bail!("tts produced no samples");
+        }
+
+        eprintln!("[idfon voice] seam: stt start");
+        let mut stt = engine.stt(format)?;
+        stt.push(&samples)?;
+        let transcript = stt.finish()?.unwrap_or_default();
+        if transcript.trim().is_empty() {
+            bail!("stt produced no transcript");
+        }
+        Ok(transcript)
+    }
 }

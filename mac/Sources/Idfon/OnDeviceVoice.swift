@@ -1,0 +1,361 @@
+import AVFAudio
+import AVFoundation
+import CIdfon
+import Foundation
+import Speech
+
+/// Apple-native on-device voice provider for macOS (P6/A1): `AVSpeechSynthesizer`
+/// for TTS and `SFSpeechRecognizer` with `requiresOnDeviceRecognition` for STT.
+///
+/// P5 barge-in: `runBargeInExercise` plays a synthesized answer while the mic
+/// listens with voice processing (AEC) enabled, and engages on the first
+/// cancellable, non-echo partial. The barge-in/echo rules come from Rust over
+/// the CIdfon C ABI (`idfon_voice_is_cancellable` / `idfon_voice_is_echo`).
+final class OnDeviceVoice: NSObject {
+    static let shared = OnDeviceVoice()
+
+    private let queue = DispatchQueue(label: "app.idfon.mac.ondevicevoice")
+    private var synthesizer: AVSpeechSynthesizer?
+    private var audioEngine: AVAudioEngine?
+    private var listenTask: SFSpeechRecognitionTask?
+    private var listenRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var listenDone: ((Result<String, Error>) -> Void)?
+    private var latestPartial = ""
+    var bargeInPlayer: AVAudioPlayer?
+    private var macTranscriber: Any?
+
+    private func stopMacTranscriber() {
+        if #available(macOS 26.0, *), let transcriber = macTranscriber as? MacSpeechTranscriber {
+            transcriber.stop()
+        }
+        macTranscriber = nil
+    }
+
+    private final class SynthesisState {
+        var file: AVAudioFile?
+        var frames = 0
+        var finished = false
+    }
+
+    enum VoiceError: LocalizedError {
+        case synthesisFailed
+        case recognizerUnavailable
+        case onDeviceUnavailable
+        case denied
+        case recognitionTimedOut
+
+        var errorDescription: String? {
+            switch self {
+            case .synthesisFailed: return "no audio synthesized"
+            case .recognizerUnavailable: return "no en-US recognizer"
+            case .onDeviceUnavailable: return "on-device recognition unavailable"
+            case .denied: return "microphone or speech recognition not authorized"
+            case .recognitionTimedOut: return "no speech recognized before timeout"
+            }
+        }
+    }
+
+    /// Synthesize `text` to a file entirely on device; reports the frame count.
+    func synthesize(
+        _ text: String,
+        to url: URL,
+        completion: @escaping (Result<Int, Error>) -> Void
+    ) {
+        let state = SynthesisState()
+        let synthesizer = AVSpeechSynthesizer()
+        self.synthesizer = synthesizer
+        try? FileManager.default.removeItem(at: url)
+
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+
+        synthesizer.write(utterance) { [weak self] buffer in
+            guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+            self?.queue.async {
+                if pcm.frameLength == 0 {
+                    guard !state.finished else { return }
+                    state.finished = true
+                    self?.synthesizer = nil
+                    if state.frames > 0 {
+                        completion(.success(state.frames))
+                    } else {
+                        completion(.failure(VoiceError.synthesisFailed))
+                    }
+                    return
+                }
+                if state.file == nil {
+                    state.file = try? AVAudioFile(forWriting: url, settings: pcm.format.settings)
+                }
+                guard let file = state.file else { return }
+                do {
+                    try file.write(from: pcm)
+                    state.frames += Int(pcm.frameLength)
+                } catch {
+                    NSLog("idfon voice: tts write failed \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Blocking wrapper: synthesize and convert to s16 mono PCM.
+    func synthesizePCM(_ text: String) -> (rate: UInt32, data: Data)? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("idfon-mac-ffi-tts.wav")
+        let semaphore = DispatchSemaphore(value: 0)
+        var ok = false
+        let start = {
+            self.synthesize(text, to: url) { result in
+                if case .success = result { ok = true }
+                semaphore.signal()
+            }
+        }
+        if Thread.isMainThread { start() } else { DispatchQueue.main.async(execute: start) }
+        guard semaphore.wait(timeout: .now() + 30) == .success, ok else { return nil }
+        guard let file = try? AVAudioFile(forReading: url) else { return nil }
+        let format = file.processingFormat
+        let frames = AVAudioFrameCount(file.length)
+        guard frames > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)
+        else { return nil }
+        do { try file.read(into: buffer) } catch { return nil }
+        guard let channels = buffer.floatChannelData else { return nil }
+        let count = Int(buffer.frameLength)
+        let channelCount = max(1, Int(format.channelCount))
+        var data = Data(capacity: count * 2)
+        for frame in 0..<count {
+            var sum: Float = 0
+            for channel in 0..<channelCount { sum += channels[channel][frame] }
+            let value = max(-1, min(1, sum / Float(channelCount)))
+            var sample = Int16(value * 32767).littleEndian
+            withUnsafeBytes(of: &sample) { data.append(contentsOf: $0) }
+        }
+        return (UInt32(format.sampleRate.rounded()), data)
+    }
+
+    /// Minimal 16-bit mono RIFF/WAVE wrapper.
+    static func pcmWav(_ pcm: Data, sampleRate: UInt32) -> Data? {
+        guard pcm.count % 2 == 0 else { return nil }
+        var wav = Data(capacity: 44 + pcm.count)
+        func append(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) } }
+        func append16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) } }
+        let dataLen = UInt32(pcm.count)
+        wav.append(contentsOf: Array("RIFF".utf8))
+        append(36 + dataLen)
+        wav.append(contentsOf: Array("WAVEfmt ".utf8))
+        append(16)
+        append16(1)
+        append16(1)
+        append(sampleRate)
+        append(sampleRate * 2)
+        append16(2)
+        append16(16)
+        wav.append(contentsOf: Array("data".utf8))
+        append(dataLen)
+        wav.append(pcm)
+        return wav
+    }
+
+    /// Start listening on the microphone and transcribe entirely on device.
+    func startListening(
+        enableVoiceProcessing: Bool = false,
+        onPartial: ((String) -> Void)? = nil,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        Automation.mark("voice: listen start")
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            Automation.mark("voice: mic granted=\(granted)")
+            guard granted else {
+                completion(.failure(VoiceError.denied))
+                return
+            }
+            SFSpeechRecognizer.requestAuthorization { status in
+                Automation.mark("voice: speech auth=\(status.rawValue)")
+                guard status == .authorized else {
+                    completion(.failure(VoiceError.denied))
+                    return
+                }
+                guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
+                      recognizer.supportsOnDeviceRecognition
+                else {
+                    completion(.failure(VoiceError.onDeviceUnavailable))
+                    return
+                }
+
+                let request = SFSpeechAudioBufferRecognitionRequest()
+                request.requiresOnDeviceRecognition = true
+                request.shouldReportPartialResults = true
+                self.listenRequest = request
+                self.listenDone = completion
+
+                let engine = AVAudioEngine()
+                let input = engine.inputNode
+                if enableVoiceProcessing {
+                    do {
+                        try input.setVoiceProcessingEnabled(true)
+                        Automation.mark("voice: voice-processing enabled")
+                    } catch {
+                        Automation.mark("voice: voice-processing FAIL \(error.localizedDescription)")
+                    }
+                }
+                let format = input.outputFormat(forBus: 0)
+                Automation.mark("voice: input rate=\(format.sampleRate) ch=\(format.channelCount)")
+                var tapBuffers = 0
+                input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+                    tapBuffers += 1
+                    if tapBuffers == 1 || tapBuffers % 500 == 0 {
+                        Automation.mark("voice: tap buffers=\(tapBuffers) frames=\(buffer.frameLength)")
+                    }
+                    request.append(buffer)
+                }
+                engine.prepare()
+                do {
+                    try engine.start()
+                } catch {
+                    completion(.failure(error))
+                    return
+                }
+                self.audioEngine = engine
+
+                self.listenTask = recognizer.recognitionTask(with: request) { result, error in
+                    if let result {
+                        let text = result.bestTranscription.formattedString
+                        self.latestPartial = text
+                        Automation.mark("voice: partial \(text)")
+                        onPartial?(text)
+                        if result.isFinal {
+                            self.finishListening(.success(text))
+                            return
+                        }
+                    }
+                    if let error {
+                        self.finishListening(.failure(error))
+                    }
+                }
+            }
+        }
+    }
+
+    func stopListening() {
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine = nil
+        listenRequest?.endAudio()
+        listenRequest = nil
+        listenTask?.cancel()
+        listenTask = nil
+    }
+
+    func finishListening(_ result: Result<String, Error>) {
+        let completion = listenDone
+        listenDone = nil
+        stopListening()
+        completion?(result)
+    }
+
+    /// `-bargein`: play a synthesized answer while the mic listens with voice
+    /// processing (AEC); the first cancellable, non-echo partial engages.
+    func runBargeInExercise(timeout: TimeInterval = 40) {
+        Automation.mark("voice: bargein start")
+        let phrase = "Here is a longer answer that keeps talking for a while so "
+            + "you have time to interrupt me by speaking over the top of it. "
+            + "I will keep going and going and going so please just start "
+            + "talking whenever you are ready and it will stop."
+        guard let pcm = synthesizePCM(phrase),
+              let wav = Self.pcmWav(pcm.data, sampleRate: pcm.rate)
+        else {
+            Automation.mark("voice: FAIL bargein synth")
+            Automation.mark("voice: done")
+            return
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("idfon-mac-bargein.wav")
+        guard (try? wav.write(to: url)) != nil,
+              let player = try? AVAudioPlayer(contentsOf: url)
+        else {
+            Automation.mark("voice: FAIL bargein player")
+            Automation.mark("voice: done")
+            return
+        }
+        bargeInPlayer = player
+        Automation.mark("voice: bargein prepared seconds=\(player.duration)")
+
+        let handle: (String) -> Void = { [weak self] text in
+            guard let self, player.isPlaying else { return }
+            let cancellable = idfon_voice_is_cancellable(text, 1, 0) != 0
+            let echo = idfon_voice_is_echo(phrase, text) != 0
+            if cancellable && !echo {
+                player.stop()
+                self.bargeInPlayer = nil
+                self.stopMacTranscriber()
+                Automation.mark("voice: bargein engaged transcript=\(text)")
+                Automation.mark("voice: PASS")
+                Automation.mark("voice: done")
+                self.finishListening(.success(text))
+            } else {
+                Automation.mark("voice: bargein ignored echo=\(echo) text=\(text)")
+            }
+        }
+
+        // macOS 26+ uses the progressive SpeechAnalyzer for live partials;
+        // legacy SFSpeechRecognizer on macOS only finalizes.
+        if #available(macOS 26.0, *) {
+            let transcriber = MacSpeechTranscriber()
+            macTranscriber = transcriber
+            var attempts = 0
+            func startAnalyzer() {
+                attempts += 1
+                Task {
+                    do {
+                        try await transcriber.start(
+                            onText: { text, _ in handle(text) },
+                            onError: { message in
+                                // livesub recovers from transient RecogRejected
+                                // by resetting; retry a bounded number of times.
+                                Automation.mark("voice: analyzer error attempt=\(attempts) \(message)")
+                                transcriber.stop()
+                                if attempts < 3, player.isPlaying {
+                                    startAnalyzer()
+                                } else {
+                                    Automation.mark("voice: FAIL bargein listen \(message)")
+                                    Automation.mark("voice: done")
+                                }
+                            }
+                        )
+                    } catch {
+                        Automation.mark("voice: FAIL bargein listen \(error.localizedDescription)")
+                        Automation.mark("voice: done")
+                    }
+                }
+            }
+            startAnalyzer()
+        } else {
+            startListening(enableVoiceProcessing: true, onPartial: handle) { result in
+                if case .failure(let error) = result {
+                    Automation.mark("voice: FAIL bargein listen \(error.localizedDescription)")
+                    Automation.mark("voice: done")
+                }
+            }
+        }
+
+        Automation.mark("voice: SPEAK NOW in 2s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            player.play()
+            Automation.mark("voice: bargein playing")
+            DispatchQueue.main.asyncAfter(deadline: .now() + player.duration + 1) { [weak self] in
+                guard let self, let current = self.bargeInPlayer, !current.isPlaying else { return }
+                self.bargeInPlayer = nil
+                self.stopMacTranscriber()
+                Automation.mark("voice: FAIL bargein no interruption")
+                Automation.mark("voice: done")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self, self.bargeInPlayer != nil else { return }
+            self.bargeInPlayer = nil
+            self.stopMacTranscriber()
+            Automation.mark("voice: FAIL bargein no interruption")
+            Automation.mark("voice: done")
+        }
+    }
+}
