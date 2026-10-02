@@ -349,11 +349,15 @@ to the cascade.
   plus the same Rust filters over the CIdfon C ABI. **Verified**: the caller's
   "Hello" over playback engaged and stopped it. macOS has no usable AEC here, so
   it is **gated + text-layer echo suppression**, not full duplex.
-- **Native gap**: **macOS AEC** (VoiceProcessingIO / `AVAudioInputNode`
-  voice-processing) is not implemented — `setVoiceProcessingEnabled(true)` on
-  this Mac suppressed the mic entirely, so the design's gated fallback is used.
-  This remains the real work item before P4 streaming can be called the
-  live-call gate on macOS.
+- **macOS AEC** is implemented behind `IDFON_MACOS_AEC=1`: enabling
+  `AVAudioInputNode.setVoiceProcessingEnabled(true)` with the tap at
+  `format: nil` hooks up the system VoiceProcessingIO (AEC + noise
+  suppression). It is **off by default** because the device matters: on this
+  Mac the default input is the **LG UltraFine Display Audio (USB)**, which
+  accepts the call but then delivers silence — the documented gotcha for
+  unsupported USB devices. On a machine with a supported (e.g. built-in) mic, set the env
+  var; otherwise the verified **gated + text-layer echo suppression** path is
+  used. Still the P5 work item before macOS can claim full-duplex barge-in.
 
 ### P6 implementation
 
