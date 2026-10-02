@@ -1,10 +1,11 @@
 #!/bin/bash
 # On-device P6 smoke test: Apple-native TTS (AVSpeechSynthesizer) plus an
 # on-device STT (SFSpeechRecognizer, requiresOnDeviceRecognition) round trip
-# over the synthesized file. No network. With --listen, transcribes live speech
-# from the microphone instead (you speak after launch).
+# over the synthesized file. No network. --listen transcribes live microphone
+# speech instead (you speak after launch); --ffi drives the same engine through
+# the Rust idfon-voice seam over the C ABI.
 #
-#   scripts/ios-voice-provider-test.sh [--device <id-or-name>] [--no-build] [--listen]
+#   scripts/ios-voice-provider-test.sh [--device <id>] [--no-build] [--listen|--ffi]
 #
 # First run prompts for Speech Recognition (and Microphone with --listen)
 # permission; tap Allow once.
@@ -22,7 +23,8 @@ while [ $# -gt 0 ]; do
     --device) device="$2"; shift 2;;
     --no-build) build=0; shift;;
     --listen) mode_args=(-voicelisten); mode_label="live mic -> on-device STT"; wait_s=75; shift;;
-    *) echo "usage: $0 [--device UDID] [--no-build] [--listen]" >&2; exit 2;;
+    --ffi) mode_args=(-voiceffi); mode_label="Rust seam -> Swift engine (TTS+STT)"; wait_s=45; shift;;
+    *) echo "usage: $0 [--device UDID] [--no-build] [--listen|--ffi]" >&2; exit 2;;
   esac
 done
 if [ -z "$device" ]; then

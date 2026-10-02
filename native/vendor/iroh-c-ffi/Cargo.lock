@@ -3041,6 +3041,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "idfon-voice"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "idfon-protocol",
+]
+
+[[package]]
 name = "idna"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3304,6 +3312,7 @@ dependencies = [
  "idfon-daemon",
  "idfon-media",
  "idfon-protocol",
+ "idfon-voice",
  "iroh",
  "iroh-blobs",
  "iroh-live",

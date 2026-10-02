@@ -3473,6 +3473,7 @@ dependencies = [
  "idfon-daemon",
  "idfon-media",
  "idfon-protocol",
+ "idfon-voice",
  "iroh",
  "iroh-blobs",
  "iroh-live",

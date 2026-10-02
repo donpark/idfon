@@ -7,6 +7,11 @@ license.workspace = true
 [lib]
 crate-type = ["rlib"]
 
+[features]
+default = []
+# Swift-implemented Apple engine behind a C ABI (iOS only; see src/apple_ffi.rs).
+apple-ffi = []
+
 [dependencies]
 anyhow = "1"
 idfon-protocol = { path = "../idfon-protocol" }

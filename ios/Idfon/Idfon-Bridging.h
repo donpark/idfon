@@ -56,6 +56,19 @@ void media_shutdown(void);
 void iroh_enable_tracing(void);              // tracing -> /tmp/idfon-<pid>.log (IROH_C_LOG filter)
 void rust_free_string(char *ptr);
 
+// Apple on-device voice seam (native/vendor/iroh-c-ffi src/voice.rs +
+// idfon-voice apple-ffi). The app registers its Swift engine once, then the
+// Rust VoiceEngine drives it. selftest returns a transcript or "error:...";
+// free with rust_free_string. PCM is s16 little-endian mono.
+typedef uint8_t *(*idfon_voice_tts_fn)(const char *text, uint32_t *out_sample_rate, size_t *out_len);
+typedef int32_t (*idfon_voice_stt_fn)(const uint8_t *pcm, size_t pcm_len, uint32_t sample_rate, char **out_text);
+typedef void (*idfon_voice_free_fn)(uint8_t *ptr, size_t len);
+typedef void (*idfon_voice_free_text_fn)(char *ptr);
+int32_t idfon_voice_set_bindings(idfon_voice_tts_fn tts, idfon_voice_stt_fn stt,
+                                 idfon_voice_free_fn free_bytes,
+                                 idfon_voice_free_text_fn free_text);
+char *idfon_voice_apple_selftest(void);
+
 #define IDFON_OK 0
 #define IDFON_EARG -1
 #define IDFON_EREQUEST -2
