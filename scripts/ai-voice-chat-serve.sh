@@ -23,7 +23,8 @@ set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cli="${IDFON_CLI:-$root/target/release/idfon}"
 socket="${IDFON_SOCKET:-/tmp/idfon/idfond.sock}"
-home="${EVE_VOICE_HOME:-$HOME/.idfon/ai-voice-chat}"
+agent="${EVE_AGENT:-ai-voice-chat}"
+home="${EVE_VOICE_HOME:-$HOME/.idfon/$agent}"
 integration="$root/integrations/eve-idfon"
 
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
@@ -68,14 +69,14 @@ if [ -d "$app/.output" ] && grep -q "bridgeUrl: \"http://127.0.0.1:[0-9]*\"" "$a
   fi
 fi
 if [ ! -d "$app/.output" ] || [ "${FORCE_BUILD:-}" = 1 ] || \
-   [ "$root/agents/ai-voice-chat/agent/agent.ts" -nt "$app/.output" ] || \
-   [ "$root/agents/ai-voice-chat/package.json" -nt "$app/.output" ] || \
-   [ "$root/agents/ai-voice-chat/agent/extensions/idfon.ts" -nt "$app/.output" ]; then
+   [ "$root/agents/$agent/agent/agent.ts" -nt "$app/.output" ] || \
+   [ "$root/agents/$agent/package.json" -nt "$app/.output" ] || \
+   [ "$root/agents/$agent/agent/extensions/idfon.ts" -nt "$app/.output" ]; then
   rm -rf "$app"
   mkdir -p "$app"
-  cp -R "$root/agents/ai-voice-chat/agent" "$root/agents/ai-voice-chat/package.json" \
-    "$root/agents/ai-voice-chat/package-lock.json" "$app/"
-  cp -R "$root/agents/ai-voice-chat/node_modules" "$app/node_modules"
+  cp -R "$root/agents/$agent/agent" "$root/agents/$agent/package.json" \
+    "$root/agents/$agent/package-lock.json" "$app/"
+  cp -R "$root/agents/$agent/node_modules" "$app/node_modules"
   # eve-idfon is a relative symlink inside the agent's node_modules;
   # repoint it at the repo checkout.
   ln -sfn "$integration" "$app/node_modules/eve-idfon"
@@ -157,7 +158,7 @@ holder_pid=$(printf '%s' "$contact" | jq -r .id)
 "$cli" --socket "$socket" access allow --subject "$holder_pid" --capability message.send >/dev/null
 "$cli" --socket "$socket" access allow --subject "$holder_pid" --capability message.receive >/dev/null
 {
-  echo "ai-voice-chat agent is up (holder $holder_pid, bridge :$bridge_port, eve :$eve_port)"
+  echo "$agent agent is up (holder $holder_pid, bridge :$bridge_port, eve :$eve_port)"
   echo
   echo "contact:  $contact"
   echo
@@ -171,7 +172,7 @@ holder_pid=$(printf '%s' "$contact" | jq -r .id)
   echo "pairing:"
   echo "  # the peer id MUST be the holder's endpoint id (channel peers need id == endpoint id)"
   echo "  # each app installs the ticket subject-bound to ITS OWN endpoint id"
-  echo "  idfon --socket $socket peer add $holder_pid --name ai-voice-chat --endpoint-id $holder_pid --endpoint-addr \"\$(head -1 $home/holder.ticket)\""
+  echo "  idfon --socket $socket peer add $holder_pid --name $agent --endpoint-id $holder_pid --endpoint-addr \"\$(head -1 $home/holder.ticket)\""
   echo "  pnpm pair --eve-ticket \"\$(head -1 $home/holder.ticket)\""
   echo "  open Idfon.app with: -pair-ticket $holder_pid \"\$(cat $home/capability-ticket.json)\""
   echo "  (iOS: devicectl launch ... -- -pair-ticket $holder_pid \"\$(cat $home/capability-ticket-<ios-endpoint-id>.json)\")"
