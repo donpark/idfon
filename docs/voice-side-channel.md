@@ -425,8 +425,9 @@ prompt shows "Listening…" / "Thinking…" / the live partial); `-voiceagent <p
 [turns]` drives it headlessly and `-voiceagenttext <peer> <text>` verifies the
 send/await/speak half without a live utterance. The macOS app mirrors the loop
 (`mac/Sources/Idfon/VoiceAgentSession.swift`, `MacSpeechTranscriber` on 26+,
-SFSpeech below) with a matching header button; Mac-side verification needs the
-Mac daemon paired with the agent (grants + capability ticket). **Verified on an
+SFSpeech below) with a matching header button. **Verified on this Mac** once
+paired (daemon `message.send`/`receive` grants + the holder's capability
+ticket): heard "Hello?" → reply "Hi, I'm here." → spoken. **Verified on an
 iPhone 16** against the running agent — the full mic loop (spoke "Hello" →
 `heard=Hello` → reply "Hello! How can I help?" → spoken) and the text-driven
 half ("…capital of France…" → "the capital of France is Paris."). This is the
