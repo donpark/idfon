@@ -53,6 +53,7 @@ const keyFile = values.get("--key-file");
 const blobDir = values.get("--blob-dir") || resolve(dirname(socket || "."), "blobs");
 const port = Number(values.get("--port"));
 const liveTtlSecs = Number(values.get("--live-ttl-secs") || 3600);
+const liveConfig = values.get("--live-config");
 if (!holderCommand || !target || !secret || !socket || !keyFile || !Number.isInteger(port) || port < 1 || port > 65535) {
   usage(
     `--target, --secret, --socket, --key-file, and --port are required, and a` +
@@ -72,7 +73,7 @@ if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(targetUrl.hostname)) {
 
 function usage(error) {
   if (error) console.error(`eve-idfon managed: ${error}`);
-  console.error("usage: managed.mjs [--holder-command PATH] --target URL --secret VALUE --socket PATH --key-file FILE --port PORT [--blob-dir PATH] [--allow PEER_ID]...");
+  console.error("usage: managed.mjs [--holder-command PATH] [--live-config FILE] --target URL --secret VALUE --socket PATH --key-file FILE --port PORT [--blob-dir PATH] [--allow PEER_ID]...");
   process.exit(2);
 }
 
@@ -160,6 +161,8 @@ try {
   await acquireLock();
   const holderArgs = ["--key-file", keyFile, "serve", "--socket", socket, "--blob-dir", blobDir, "--live-ttl-secs", String(liveTtlSecs)];
   for (const peer of allows) holderArgs.push("--allow", peer);
+  // Opaque agent/channel metadata for a registered live-call handler.
+  if (liveConfig) holderArgs.push("--live-config", liveConfig);
   holder = spawn(holderCommand, holderArgs, { stdio: ["ignore", "pipe", "inherit"] });
   const ticket = await waitForEndpoint(holder);
   process.stdout.write(`${JSON.stringify(ticket)}\n`);

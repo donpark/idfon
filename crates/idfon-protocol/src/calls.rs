@@ -1,7 +1,7 @@
 //! Live-call transcript envelope.
 //!
-//! The ai-voice-chat holder forwards GPT-Live's input/output transcripts to the
-//! caller as `IDFON-CALL/1` message envelopes so the chat view can show the
+//! A live-call holder forwards the voice model's input/output transcripts to
+//! the caller as `IDFON-CALL/1` message envelopes so the chat view can show the
 //! spoken turns as bubbles. Each message is a **snapshot** of the text so far
 //! for one `turn_id`; the app upserts by `turn_id` and the `final` flag closes
 //! the bubble. Snapshots are throttled by the holder, so a turn produces a
@@ -19,7 +19,7 @@ pub const CALL_PREFIX: &str = "IDFON-CALL/1\n";
 pub enum CallSpeaker {
     /// The person on the call.
     Caller,
-    /// The agent's voice (GPT-Live).
+    /// The agent's voice.
     Agent,
 }
 

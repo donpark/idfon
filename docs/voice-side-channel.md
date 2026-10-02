@@ -27,7 +27,7 @@ This design is the **cascade voice side-channel**.
 
 - **Voice memos, spoken answers, and live calls** all use the cascade
   (STT → agent → TTS). `ai-voice-chat`'s GPT-Live relay
-  (`crates/eve-idfon/src/call.rs`,
+  (`crates/idfon-live-gpt/src/lib.rs`,
   `agents/ai-voice-chat/agent/tools/voice-reply.ts`) is **demo scaffolding to be
   retired**; realtime live-call UX is delivered by streaming (F11), not by
   keeping GPT-Live. GPT-Live is **retired at P4 (iOS) / P5 (macOS)**; until then
@@ -37,7 +37,7 @@ This design is the **cascade voice side-channel**.
   room **by membership** (not merely a set `conversation` — threaded 1:1 also
   sets one) must not open a voice session. This is an **explicit exception** to
   `chatrooms.md`'s "1:1 equivalence, no room-only code path", and must be
-  recorded there. **Enforcement lives in `handle_live_text`** (before the
+  recorded there. **Enforcement lives in the registered live-call handler** (before the
   `IDFON-LIVE/1` dispatch in `main.rs`) and is **P0**, not P2. In the P0
   implementation the guard is the `message.conversation.is_none()` condition on
   that dispatch, so a room-addressed control falls through as ordinary content.
@@ -172,7 +172,7 @@ provides **no provider-message queue** (`channels/overview.mdx`). Consequences:
   returns). Records land before the current delivery, so ordering is preserved.
 - **Two P0 `send()` exceptions, both explicit:**
   1. **cascade turns** — the client-signed user message is the turn input;
-  2. **GPT-Live delegation** — `call.rs` turns `session.delegation.created` into
+  2. **GPT-Live delegation** — the live-call handler turns `session.delegation.created` into
      a normal Eve turn today. It is tagged with provenance
      (`source=gpt-live-delegation`, a distinct auth attribute) so F10/approval
      policies treat it as non-user input; its turn boundary is where the record
@@ -267,7 +267,7 @@ to the cascade.
   seam separates `flush` (end utterance) from `finish` (end call).
 - **Voice is 1:1 only**: the holder tracks room membership by **distinct
   senders** per `conversation` (`crates/eve-idfon/src/rooms.rs`) and
-  `handle_live_text` rejects a room control before parsing the invite, falling
+  the live-call handler rejects a room control before parsing the invite, falling
   through as a text turn. A threaded 1:1 (one sender) is allowed; a room (two
   or more distinct senders) is not. Known ceiling: a room whose second member
   has never posted looks like a thread. The exception is recorded in
@@ -690,7 +690,7 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
 ## Retention
 
 - **Audio capture is opt-in and off by default.** The holder currently writes
-  caller/agent WAVs to the temp dir on every call (`call.rs` `CallDiagnostics`),
+  caller/agent WAVs to the temp dir on every call (idfon-live-gpt CallDiagnostics),
   and the **client writes call audio too** (`audio-media.md`: `received.wav`,
   and the subscribed-call WAV keeps running). The opt-in default and the
   "no audio persisted" test must cover **both holder and client**.

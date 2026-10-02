@@ -11,7 +11,7 @@ changed it (the slider sometimes appeared to fall back between turns).
 
 **Diagnosis path.**
 
-1. Holder capture (`published.wav` / `gpt-output.wav` in the per-call audio
+1. Holder capture (`published.wav` / `agent-output.wav` in the per-call audio
    captures dir) was full-scale — mean ~-29 dB, peak ~-8 dB — so the source
    was not quiet.
 2. Pulled the phone's decode capture (`received.wav`; see the
@@ -106,7 +106,7 @@ answered every turn — transcripts confirmed the model was replying.
 
 **Fixes.**
 
-- Caller side (`crates/eve-idfon/src/call.rs`): a separate, earlier
+- Caller side (`crates/idfon-live-gpt/src/lib.rs`): a separate, earlier
   bug let the caller-leg pacing deficit (`cursor − target`) settle into a
   self-sustaining balance where every frame late-dropped forever — GPT-Live
   heard pure silence after the first exchange. `pump_caller_audio` now

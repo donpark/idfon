@@ -319,6 +319,23 @@ documented `defineChannel` surfaces, and the endpoint is the provider's
 "platform client". The in-process shape is therefore **not** a contract
 violation — the real cost is lifecycle, not legitimacy.
 
+### Live-call handlers and channel metadata
+
+Live-call behavior is **not** part of the platform. The generic holder parses
+`IDFON-LIVE/1` controls and dispatches them to a handler registered against
+the capability the control needs (`live.audio.publish` / `live.video.publish`)
+via the seam in `crates/eve-idfon/src/live.rs` (`LiveCallHandler` +
+`LiveCallRegistry`). A concrete relay lives with its agent
+(`crates/idfon-live-gpt` is the `gpt-live-1` handler), and the composition root
+that wants live calls builds the registry (`eve-idfon-gpt`); the generic
+`eve-idfon` build registers none and lets invites fall through as text.
+
+Agent-specific values — provider endpoint, model, credential env name, voice,
+persona/instructions, broadcast id, delegation provenance, turn-taking cap —
+are **channel metadata**, declared by the agent's Eve extension (`live`) and
+forwarded to the holder as opaque JSON (`serve --live-config FILE`). The
+platform never reads them; the handler deserializes what it needs.
+
 ### npm distribution
 
 The provider publishes as the unscoped **`eve-idfon`** package (the
