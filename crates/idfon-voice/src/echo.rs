@@ -51,10 +51,17 @@ impl EchoSuppressor {
         if spoken.is_empty() || heard.is_empty() {
             return false;
         }
-        if heard.len() >= 4 && (spoken.contains(&heard) || heard.contains(&spoken)) {
+        let spoken_tokens: Vec<&str> = spoken.split(' ').collect();
+        let heard_tokens: Vec<&str> = heard.split(' ').collect();
+        // A long heard phrase appearing contiguously in our speech is echo.
+        let run = longest_common_run(&spoken_tokens, &heard_tokens);
+        if heard_tokens.len() >= 4 && run == heard_tokens.len() {
             return true;
         }
-        overlap_ratio(&spoken, &heard) >= self.threshold
+        // Otherwise require a substantial *contiguous* match. Token-overlap
+        // alone falsely drops short commands whose words all appear somewhere
+        // in a long spoken answer ("stop" matches "... it will stop").
+        heard_tokens.len() >= 3 && (run as f64 / heard_tokens.len() as f64) >= self.threshold
     }
 }
 
@@ -71,16 +78,22 @@ fn contains_word(text: &str, word: &str) -> bool {
     !word.is_empty() && normalize(text).split(' ').any(|token| token == word)
 }
 
-/// Fraction of the shorter text's tokens present in the longer.
-fn overlap_ratio(a: &str, b: &str) -> f64 {
-    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    let short: Vec<&str> = short.split(' ').collect();
-    let long: Vec<&str> = long.split(' ').collect();
-    if short.is_empty() {
-        return 0.0;
+/// Length of the longest contiguous run of tokens shared by `a` and `b`.
+fn longest_common_run(a: &[&str], b: &[&str]) -> usize {
+    let mut best = 0;
+    for (i, token) in a.iter().enumerate() {
+        for (j, other) in b.iter().enumerate() {
+            if token != other {
+                continue;
+            }
+            let mut len = 0;
+            while i + len < a.len() && j + len < b.len() && a[i + len] == b[j + len] {
+                len += 1;
+            }
+            best = best.max(len);
+        }
     }
-    let shared = short.iter().filter(|token| long.contains(token)).count();
-    shared as f64 / short.len() as f64
+    best
 }
 
 #[cfg(test)]
@@ -108,5 +121,21 @@ mod tests {
         // Without the pending approval, the same final is suppressed as echo.
         suppressor.set_pending_approval_keywords(Vec::new());
         assert!(suppressor.is_echo("I approve the transfer"));
+    }
+
+    #[test]
+    fn short_commands_are_not_echo_of_a_long_answer() {
+        let mut suppressor = EchoSuppressor::new();
+        suppressor.set_spoken(concat!(
+            "Here is a longer answer that keeps talking for a while so you have ",
+            "time to interrupt me by speaking over the top of it. I will keep ",
+            "going so please just start talking whenever you are ready and it will stop.",
+        ));
+        // Words all appear in the spoken answer, but this is the caller, not echo.
+        assert!(!suppressor.is_echo("Just stop, stop talking"));
+        assert!(!suppressor.is_echo("Stop"));
+        assert!(!suppressor.is_echo("just start"));
+        // A contiguous echo of the answer is still suppressed.
+        assert!(suppressor.is_echo("here is a longer answer"));
     }
 }

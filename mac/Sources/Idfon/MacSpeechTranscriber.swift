@@ -23,6 +23,9 @@ final class MacSpeechTranscriber {
     private var lastPartial = ""
     private var fedFrames: AVAudioFramePosition = 0
     private var inputConverter: Any?
+    /// True when VoiceProcessingIO is active; its multi-channel input format is
+    /// fed via the manual converter rather than AnalyzerInputConverter.
+    private var aecEnabled = false
 
     init(locale: Locale = Locale.current) {
         self.locale = locale
@@ -123,6 +126,7 @@ final class MacSpeechTranscriber {
         if ProcessInfo.processInfo.environment["IDFON_MACOS_AEC"] == "1" {
             do {
                 try input.setVoiceProcessingEnabled(true)
+                aecEnabled = true
                 Automation.mark("voice: voice-processing enabled")
             } catch {
                 Automation.mark("voice: voice-processing unsupported: \(error.localizedDescription)")
@@ -136,7 +140,7 @@ final class MacSpeechTranscriber {
         )
         // macOS 27 provides the official analyzer input converter, which turns
         // an arbitrary AVAudioEngine buffer into format-correct AnalyzerInputs.
-        if #available(macOS 27.0, *) {
+        if #available(macOS 27.0, *), !aecEnabled {
             inputConverter = try await AnalyzerInputConverter.converter(
                 compatibleWith: [detector, transcriber]
             )
@@ -149,7 +153,7 @@ final class MacSpeechTranscriber {
             if tapBuffers == 1 || tapBuffers % 500 == 0 {
                 Automation.mark("voice: tap buffers=\(tapBuffers) frames=\(buffer.frameLength)")
             }
-            if #available(macOS 27.0, *),
+            if #available(macOS 27.0, *), !self.aecEnabled,
                let converter = self.inputConverter as? AnalyzerInputConverter {
                 if let inputs = try? converter.convert(buffer, at: time) {
                     if tapBuffers <= 3 || tapBuffers % 200 == 0 {

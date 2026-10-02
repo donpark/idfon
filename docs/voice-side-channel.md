@@ -3,9 +3,9 @@
 > **Status: design, P0–P6 offline slices implemented** (2026-10-01). All
 > service-side phases have landed in `idfon-voice`/`crates/eve-idfon` and the
 > `eve-idfon` extension (see §P0–§P6 implementations); the P5 natives are
-> **iOS full barge-in (with AEC) and macOS gated barge-in, both verified on
-> device** — macOS AEC itself remains unimplemented, and the P6 on-device MLX
-> engines are optional; the P7 human listening test has not been run.
+> **iOS full barge-in (AEC) and macOS barge-in (gated, plus opt-in AEC verified
+> with AirPods Pro), all verified on device** — the P6 on-device MLX engines are
+> optional; the P7 human listening test has not been run.
 > P7's test gate and engine decision are recorded (§P7 implementation).
 > Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
@@ -326,9 +326,10 @@ to the cascade.
   a closed set (`acknowledgement`/`status`/`system-notice`) with per-kind
   length caps (F9).
 - **Text-layer echo suppression** (`idfon-voice/src/echo.rs`):
-  `EchoSuppressor` drops STT finals that fuzzy-match the text being spoken
-  (containment or token-overlap ratio), with **pending-approval keywords
-  exempt** so a real "yes" survives (N12).
+  `EchoSuppressor` drops STT finals that match the text being spoken by a
+  **contiguous token run** (not mere token overlap — that falsely dropped short
+  commands like "just stop" whose words all appear in a long spoken answer),
+  with **pending-approval keywords exempt** so a real "yes" survives (N12).
 - **Barge-in filters** (`idfon-voice/src/bargein.rs`): `is_cancellable` refuses
   during the tool window and for backchannels/sub-minimum utterances;
   `BargeInMode::{Full,Gated}` encodes the iOS (AEC) vs macOS (no AEC) policy
@@ -356,12 +357,12 @@ to the cascade.
 - **macOS AEC** is implemented behind `IDFON_MACOS_AEC=1`: enabling
   `AVAudioInputNode.setVoiceProcessingEnabled(true)` with the tap at
   `format: nil` hooks up the system VoiceProcessingIO (AEC + noise
-  suppression). It is **off by default** because the device matters: on this
-  Mac the default input is the **LG UltraFine Display Audio (USB)**, which
-  accepts the call but then delivers silence — the documented gotcha for
-  unsupported USB devices. On a machine with a supported (e.g. built-in) mic, set the env
-  var; otherwise the verified **gated + text-layer echo suppression** path is
-  used. Still the P5 work item before macOS can claim full-duplex barge-in.
+  suppression). **Verified with AirPods Pro** on this Mac: "Stop" over
+  playback engaged and stopped it. Two gotchas handled: (a) some devices (the
+  LG UltraFine Display Audio USB mic) accept voice processing then deliver
+  silence, so it is off by default; (b) enabling it changes the input to a
+  multi-channel VPIO format, which `AnalyzerInputConverter` did not feed to the
+  analyzer — the mac path takes channel 0 via the manual converter instead.
 
 ### P6 implementation
 
@@ -623,7 +624,7 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   one-speaker `Arbiter` with the F9 closed non-actor kinds, `EchoSuppressor`
   with the pending-approval exemption, barge-in filters/modes, iOS full
   barge-in (AEC via `setVoiceProcessingEnabled`) and macOS gated barge-in
-  (`SpeechAnalyzer` partials + Rust filters). macOS AEC remains.
+  (`SpeechAnalyzer` partials + Rust filters). macOS AEC is opt-in (`IDFON_MACOS_AEC=1`) and verified with AirPods Pro.
 - **P6 — on-device.** **Apple-native path implemented + verified** (2026-10-01):
   `AVSpeechSynthesizer`/`SFSpeechRecognizer` on-device round trip verified on an
   iPhone 16; native G2P landed and is covered by the pipeline check. MLX model
