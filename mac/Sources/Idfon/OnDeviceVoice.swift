@@ -133,6 +133,44 @@ final class OnDeviceVoice: NSObject {
         return (UInt32(format.sampleRate.rounded()), data)
     }
 
+    /// Transcribe a buffer of 16-bit mono PCM with on-device recognition.
+    func transcribePCM(_ data: Data, sampleRate: UInt32) -> String? {
+        guard let wav = Self.pcmWav(data, sampleRate: sampleRate) else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("idfon-listening-stt.wav")
+        guard (try? wav.write(to: url)) != nil else { return nil }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var transcript: String?
+        let start = {
+            SFSpeechRecognizer.requestAuthorization { status in
+                guard status == .authorized,
+                      let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+                else {
+                    semaphore.signal()
+                    return
+                }
+                let request = SFSpeechURLRecognitionRequest(url: url)
+                request.requiresOnDeviceRecognition = true
+                var finished = false
+                recognizer.recognitionTask(with: request) { result, error in
+                    guard !finished else { return }
+                    if let result, result.isFinal {
+                        finished = true
+                        transcript = result.bestTranscription.formattedString
+                        semaphore.signal()
+                    } else if error != nil {
+                        finished = true
+                        semaphore.signal()
+                    }
+                }
+            }
+        }
+        if Thread.isMainThread { start() } else { DispatchQueue.main.async(execute: start) }
+        guard semaphore.wait(timeout: .now() + 30) == .success else { return nil }
+        return transcript
+    }
+
     /// Minimal 16-bit mono RIFF/WAVE wrapper.
     static func pcmWav(_ pcm: Data, sampleRate: UInt32) -> Data? {
         guard pcm.count % 2 == 0 else { return nil }
@@ -251,6 +289,32 @@ final class OnDeviceVoice: NSObject {
         listenDone = nil
         stopListening()
         completion?(result)
+    }
+
+    /// `-voicelistening` (P7): synthesize a phrase set and transcribe it back
+    /// on device, emitting `ref=/hyp=` pairs the harness scores for WER.
+    func runListeningTest() {
+        // Plain-word phrases: digits and ambiguous compounds are format noise
+        // the recognizer normalizes, not intelligibility failures.
+        let phrases = [
+            "the quick brown fox jumps over the lazy dog",
+            "the cat sat quietly on the mat by the fire",
+            "please bring the blue folder to the meeting room",
+            "we should leave before the traffic gets bad",
+            "the river runs through the valley toward the sea",
+        ]
+        var done = 0
+        for phrase in phrases {
+            guard let pcm = synthesizePCM(phrase),
+                  let transcript = transcribePCM(pcm.data, sampleRate: pcm.rate)
+            else {
+                Automation.mark("voice: listening pair ref=\(phrase) hyp=FAILED")
+                continue
+            }
+            Automation.mark("voice: listening pair ref=\(phrase) hyp=\(transcript)")
+            done += 1
+        }
+        Automation.mark("voice: listening done count=\(done) of \(phrases.count)")
     }
 
     /// `-bargein`: play a synthesized answer while the mic listens with voice

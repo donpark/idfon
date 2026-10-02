@@ -193,6 +193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 OnDeviceVoice.shared.runBargeInExercise()
             }
         }
+        if args.contains("-voicelistening") {
+            DispatchQueue.global(qos: .userInitiated).async {
+                OnDeviceVoice.shared.runListeningTest()
+            }
+        }
     }
 
     private func waitForIncomingCall(video: Bool) {

@@ -5,7 +5,8 @@
 > `eve-idfon` extension (see §P0–§P6 implementations); the P5 natives are
 > **iOS full barge-in (AEC) and macOS barge-in (gated, plus opt-in AEC verified
 > with AirPods Pro), all verified on device** — the P6 on-device MLX engines are
-> optional; the P7 human listening test has not been run.
+> optional; the P7 listening test ran and passed (intelligibility 1.000 vs 0.95,
+> BWE not justified).
 > P7's test gate and engine decision are recorded (§P7 implementation).
 > Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
@@ -402,10 +403,17 @@ to the cascade.
   designed. There is no content-ownership change: the seam still only converts
   text↔audio and never authors the actor's answer.
 - **Listening-test gate** (`idfon-voice/src/listening.rs`): `ListeningTest`
-  records HF deficit and intelligibility; `PassBar` is the recorded threshold;
-  `passes` decides acceptance and `bwe_justified` enables BWE only for a real
-  high-frequency deficit beyond the bar. The human test run itself is pending,
-  so its result is not recorded yet.
+  records HF deficit and intelligibility; `PassBar` is the recorded threshold
+  (`max_hf_deficit_db = 3.0`, `min_intelligibility = 0.95`); `passes` decides
+  acceptance and `bwe_justified` enables BWE only for a real high-frequency
+  deficit beyond the bar.
+- **Listening-test run** (`scripts/mac-listening-test.sh`): synthesizes five
+  plain-word phrases with the default on-device voice and transcribes them back
+  on device, scoring WER. **Result (macOS, Apple OS voice): pairs=5, mean WER
+  0.000, intelligibility 1.000 → PASS.** The Apple OS voice is full-band, so the
+  HF-deficit gate is not triggered and **BWE is not justified**. The subjective
+  "does it sound good" judgement remains a human call; the objective half is
+  recorded and repeatable.
 
 ### Placement
 
@@ -629,11 +637,12 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   `AVSpeechSynthesizer`/`SFSpeechRecognizer` on-device round trip verified on an
   iPhone 16; native G2P landed and is covered by the pipeline check. MLX model
   engines and remote fallback remain optional/deferred.
-- **P7 — optional engines.** **Decision recorded + test gate implemented**
-  (2026-10-01): stay on cascade STT/TTS (no full-duplex engine now); the
-  LLM/AFM director stays deferred until voice-in-rooms is designed; BWE gated by
-  `listening::{passes, bwe_justified}` against a recorded `PassBar`. The human
-  listening test itself has not been run.
+- **P7 — optional engines.** **Done** (2026-10-01): stay on cascade STT/TTS
+  (no full-duplex engine now); the LLM/AFM director stays deferred until
+  voice-in-rooms is designed. The listening test ran via
+  `scripts/mac-listening-test.sh` — intelligibility 1.000 vs the 0.95 bar — so
+  `ListeningTest`/`PassBar`/`bwe_justified` report **BWE not justified** for the
+  full-band Apple OS voice.
 
 ## Streaming forwarding
 
