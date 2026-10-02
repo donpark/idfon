@@ -1,12 +1,14 @@
 # Voice side-channel service
 
-> **Status: design, P0–P6 offline slices implemented** (2026-10-01). All
-> service-side phases have landed in `idfon-voice`/`crates/eve-idfon` and the
-> `eve-idfon` extension (see §P0–§P6 implementations); the P5 natives are
+> **Status: design, P0–P7 implemented; A1 client cascade integrated**
+> (2026-10-01). All service-side phases landed in `idfon-voice`/`crates/eve-idfon`
+> and the `eve-idfon` extension (see §P0–§P7 implementations); the P5 natives are
 > **iOS full barge-in (AEC) and macOS barge-in (gated, plus opt-in AEC verified
 > with AirPods Pro), all verified on device** — the P6 on-device MLX engines are
 > optional; the P7 listening test ran and passed (intelligibility 1.000 vs 0.95,
-> BWE not justified).
+> BWE not justified). The app-side **A1 cascade is integrated on iOS and macOS**
+> against a new text-only `voice-agent`; the existing GPT-Live `ai-voice-chat` is
+> deliberately left untouched as a separate contact.
 > P7's test gate and engine decision are recorded (§P7 implementation).
 > Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
@@ -431,8 +433,19 @@ ticket): heard "Hello?" → reply "Hi, I'm here." → spoken. **Verified on an
 iPhone 16** against the running agent — the full mic loop (spoke "Hello" →
 `heard=Hello` → reply "Hello! How can I help?" → spoken) and the text-driven
 half ("…capital of France…" → "the capital of France is Paris."). This is the
-client-owned audio path the design calls A1; the holder still runs the GPT-Live
-relay until the cascade is switched over for calls.
+client-owned audio path the design calls A1.
+
+**Target agent.** Rather than strip GPT-Live out of `ai-voice-chat`, a separate
+text-only agent was added: `agents/voice-agent` (model + JustBash sandbox +
+`eve-idfon`, no GPT-Live and no voice tools), served by the generalized
+`scripts/voice-agent-serve.sh`. Both apps are paired to it (contact name `eve`
+on the Mac) and verified end-to-end (`reply=both addresses pinned.`). GPT-Live
+remains available through the untouched `ai-voice-chat` contact.
+
+**Stable pairing.** Both the holder and the daemon pinned their UDP port
+(`IDFON_ENDPOINT_PORT`) so their endpoint addresses survive restarts — pair
+once, no re-pairing. The holder's port is per-agent and persisted by the serve
+script; the daemon's is derived from its data dir. See `idfon-eve.md`.
 
 ### Placement
 
