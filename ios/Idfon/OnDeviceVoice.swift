@@ -128,10 +128,16 @@ final class OnDeviceVoice: NSObject {
     private var listenRequest: SFSpeechAudioBufferRecognitionRequest?
     private var listenDone: ((Result<String, Error>) -> Void)?
     private var latestPartial = ""
+    /// Retained during the barge-in exercise.
+    var bargeInPlayer: AVAudioPlayer?
 
     /// Start listening on the microphone and transcribe entirely on device.
     /// Partials are logged as they arrive; the first final result completes.
-    func startListening(completion: @escaping (Result<String, Error>) -> Void) {
+    func startListening(
+        configureSession: Bool = true,
+        onPartial: ((String) -> Void)? = nil,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
         AVAudioApplication.requestRecordPermission { granted in
             guard granted else {
                 completion(.failure(VoiceError.denied))
@@ -149,9 +155,11 @@ final class OnDeviceVoice: NSObject {
                     return
                 }
 
-                let session = AVAudioSession.sharedInstance()
-                try? session.setCategory(.record, mode: .measurement, options: [.duckOthers])
-                try? session.setActive(true, options: .notifyOthersOnDeactivation)
+                if configureSession {
+                    let session = AVAudioSession.sharedInstance()
+                    try? session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+                    try? session.setActive(true, options: .notifyOthersOnDeactivation)
+                }
 
                 let request = SFSpeechAudioBufferRecognitionRequest()
                 request.requiresOnDeviceRecognition = true
@@ -179,6 +187,7 @@ final class OnDeviceVoice: NSObject {
                         let text = result.bestTranscription.formattedString
                         self.latestPartial = text
                         Automation.mark("voice: partial \(text)")
+                        onPartial?(text)
                         if result.isFinal {
                             self.finishListening(.success(text))
                             return
@@ -204,7 +213,7 @@ final class OnDeviceVoice: NSObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    private func finishListening(_ result: Result<String, Error>) {
+    func finishListening(_ result: Result<String, Error>) {
         let completion = listenDone
         listenDone = nil
         stopListening()

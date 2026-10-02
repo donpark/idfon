@@ -6,7 +6,7 @@
 //! through the Rust seam and returns the transcript (or `error:...`). The
 //! caller frees the result with `rust_free_string`.
 
-use std::ffi::{c_char, CString};
+use std::ffi::{c_char, CStr, CString};
 
 use anyhow::{bail, Result};
 use idfon_voice::apple_ffi::{
@@ -29,6 +29,39 @@ pub extern "C" fn idfon_voice_set_bindings(
         free_text,
     });
     0
+}
+
+/// Barge-in filter (P5): whether `text` may cancel playback. The client owns
+/// the barge-in state; this reuses the Rust rule (backchannel/sub-minimum and
+/// the tool-action window never cancel).
+#[no_mangle]
+pub extern "C" fn idfon_voice_is_cancellable(
+    text: *const c_char,
+    playing: u8,
+    in_tool_window: u8,
+) -> u8 {
+    if text.is_null() {
+        return 0;
+    }
+    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy();
+    u8::from(idfon_voice::bargein::is_cancellable(
+        &text,
+        playing != 0,
+        in_tool_window != 0,
+    ))
+}
+
+/// Text-layer echo check (P5): nonzero when `heard` is our own `spoken` text.
+#[no_mangle]
+pub extern "C" fn idfon_voice_is_echo(spoken: *const c_char, heard: *const c_char) -> u8 {
+    if spoken.is_null() || heard.is_null() {
+        return 0;
+    }
+    let spoken = unsafe { CStr::from_ptr(spoken) }.to_string_lossy();
+    let heard = unsafe { CStr::from_ptr(heard) }.to_string_lossy();
+    let mut suppressor = idfon_voice::echo::EchoSuppressor::new();
+    suppressor.set_spoken(&spoken);
+    u8::from(suppressor.is_echo(&heard))
 }
 
 /// Runs the Rust seam against the Swift Apple engine; returns a Rust-owned

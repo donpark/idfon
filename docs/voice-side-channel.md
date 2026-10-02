@@ -332,11 +332,16 @@ to the cascade.
   during the tool window and for backchannels/sub-minimum utterances;
   `BargeInMode::{Full,Gated}` encodes the iOS (AEC) vs macOS (no AEC) policy
   with `GATED_BARGE_IN_THRESHOLD`.
-- **Native gap**: iOS full-barge-in engagement, macOS gated capture, and
-  **macOS AEC** are app-side (Swift/AVAudioEngine) and not implemented here;
-  the Rust policy above is what the apps will call. Per the design, macOS AEC
-  is the real work item and P4 streaming cannot be called the live-call gate on
-  macOS before it lands.
+- **iOS barge-in engagement** (`ios/Idfon/OnDeviceVoiceBridge.swift`): a
+  `.playAndRecord`/`.voiceChat` session (AEC) plays a synthesized answer while
+  the on-device mic recognizes; the first cancellable, non-echo partial stops
+  playback and engages. It reuses the Rust filters over the C ABI
+  (`idfon_voice_is_cancellable`, `idfon_voice_is_echo`). `-bargein` /
+  `scripts/ios-voice-provider-test.sh --bargein` runs it (device run needs an
+  unlocked phone and someone talking over the agent).
+- **Native gap**: macOS gated capture and **macOS AEC** remain app-side work;
+  per the design, macOS AEC is the real work item and P4 streaming cannot be
+  called the live-call gate on macOS before it lands.
 
 ### P6 implementation
 

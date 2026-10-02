@@ -5,7 +5,7 @@
 # speech instead (you speak after launch); --ffi drives the same engine through
 # the Rust idfon-voice seam over the C ABI.
 #
-#   scripts/ios-voice-provider-test.sh [--device <id>] [--no-build] [--listen|--ffi]
+#   scripts/ios-voice-provider-test.sh [--device <id>] [--no-build] [--listen|--ffi|--bargein]
 #
 # First run prompts for Speech Recognition (and Microphone with --listen)
 # permission; tap Allow once.
@@ -24,7 +24,8 @@ while [ $# -gt 0 ]; do
     --no-build) build=0; shift;;
     --listen) mode_args=(-voicelisten); mode_label="live mic -> on-device STT"; wait_s=75; shift;;
     --ffi) mode_args=(-voiceffi); mode_label="Rust seam -> Swift engine (TTS+STT)"; wait_s=45; shift;;
-    *) echo "usage: $0 [--device UDID] [--no-build] [--listen|--ffi]" >&2; exit 2;;
+    --bargein) mode_args=(-bargein); mode_label="barge-in over AEC playback"; wait_s=60; shift;;
+    *) echo "usage: $0 [--device UDID] [--no-build] [--listen|--ffi|--bargein]" >&2; exit 2;;
   esac
 done
 if [ -z "$device" ]; then
@@ -47,6 +48,8 @@ log=$(mktemp /tmp/idfon-ios-voice-provider.XXXXXX)
 xcrun devicectl device install app --device "$device" "$app" >/dev/null
 if [ "${mode_args[0]}" = "-voicelisten" ]; then
   echo "launching $mode_label on device; speak clearly after it starts. log=$log"
+elif [ "${mode_args[0]}" = "-bargein" ]; then
+  echo "launching $mode_label on device; talk over the agent's speech to interrupt. log=$log"
 else
   echo "launching $mode_label on device; log=$log"
 fi

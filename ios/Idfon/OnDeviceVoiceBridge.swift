@@ -123,6 +123,66 @@ extension OnDeviceVoice {
         return transcript
     }
 
+    /// `-bargein`: play a synthesized answer and, while it plays, listen on the
+    /// voice-processing (AEC) microphone. Speech over playback that passes the
+    /// Rust barge-in and echo filters stops playback and engages.
+    func runBargeInExercise(timeout: TimeInterval = 40) {
+        Automation.mark("voice: bargein start")
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(
+            .playAndRecord,
+            mode: .voiceChat,
+            options: [.defaultToSpeaker, .allowBluetooth]
+        )
+        try? session.setActive(true, options: .notifyOthersOnDeactivation)
+
+        let phrase = "Here is a longer answer that keeps talking for a while so "
+            + "you have time to interrupt me by speaking over the top of it."
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("idfon-bargein.wav")
+        synthesize(phrase, to: url) { [weak self] result in
+            guard let self, case .success = result,
+                  let player = try? AVAudioPlayer(contentsOf: url)
+            else {
+                Automation.mark("voice: FAIL bargein synth")
+                Automation.mark("voice: done")
+                return
+            }
+            self.bargeInPlayer = player
+            player.play()
+            Automation.mark("voice: bargein playing")
+            self.startListening(configureSession: false, onPartial: { text in
+                guard player.isPlaying else { return }
+                let cancellable = idfon_voice_is_cancellable(text, 1, 0) != 0
+                let echo = idfon_voice_is_echo(phrase, text) != 0
+                if cancellable && !echo {
+                    player.stop()
+                    self.bargeInPlayer = nil
+                    Automation.mark("voice: bargein engaged transcript=\(text)")
+                    Automation.mark("voice: PASS")
+                    Automation.mark("voice: done")
+                    self.finishListening(.success(text))
+                } else {
+                    Automation.mark("voice: bargein ignored echo=\(echo) text=\(text)")
+                }
+            }) { _ in }
+            // If playback finishes without an interruption, fail fast instead
+            // of waiting for the outer timeout.
+            DispatchQueue.main.asyncAfter(deadline: .now() + player.duration + 1) { [weak self] in
+                guard let self, let current = self.bargeInPlayer, !current.isPlaying else { return }
+                self.bargeInPlayer = nil
+                Automation.mark("voice: FAIL bargein no interruption")
+                Automation.mark("voice: done")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self, self.bargeInPlayer != nil else { return }
+            self.bargeInPlayer = nil
+            Automation.mark("voice: FAIL bargein no interruption")
+            Automation.mark("voice: done")
+        }
+    }
+
     /// Minimal 16-bit mono RIFF/WAVE wrapper (the same bytes the Rust seam
     /// writes), avoiding AVAudioFile format conversion.
     static func pcmWav(_ pcm: Data, sampleRate: UInt32) -> Data? {
