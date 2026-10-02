@@ -3,23 +3,32 @@ import { z } from "zod";
 import { OggOpusDecoder } from "ogg-opus-decoder";
 import WebSocket from "ws";
 
-// GPT-Live voice reply for one idfon voice memo.
+// Live voice reply for one idfon voice memo.
 //
 // Input: the staged recording path (IDFON-RECORDING/1 attachment, Ogg Opus
 // 48k mono) the model saw in the turn. Output: spoken reply audio (WAV blob
 // ticket via the idfon bridge) plus the spoken reply transcript.
 //
-// Env: AI_GATEWAY_API_KEY (required), EVE_IDFON_BRIDGE_URL and
-// EVE_IDFON_SECRET (defaults match agents/*/agent/extensions/idfon.ts).
-
-const LIVE_URL = "wss://ai-gateway.vercel.sh/v1/live/sessions";
-// Text model for delegated work (delegation.created): any gateway model works;
-// this one is chosen so the voice layer's deeper questions get a strong model.
+// Provider values come from the channel's `live` metadata (the agent's
+// extensions/idfon.ts), with env only as a manual override.
 const DELEGATION_MODEL = "openai/gpt-6-luna";
 // Bridge coordinates come from the channel extension's own config (the app
 // wires extensions/idfon.ts, and e2e scripts patch that file); env only as a
 // manual-override fallback.
 import idfonExtension from "eve-idfon";
+
+const live = () =>
+  (idfonExtension.config?.live ?? {}) as {
+    live_url?: string;
+    model?: string;
+    api_key_env?: string;
+  };
+const liveUrl = () => live().live_url || "wss://ai-gateway.vercel.sh/v1/live/sessions";
+const liveModel = () => live().model || "openai/gpt-live-1";
+const liveApiKey = () => {
+  const name = live().api_key_env || "AI_GATEWAY_API_KEY";
+  return process.env[name];
+};
 const RATE = 24_000; // gpt-live-1: s16le mono 24 kHz, both directions
 const MAX_INPUT_SECONDS = 30; // ponytail: single-shot memo cap from the gpt-live guide; longer memos need a real duplex session
 const CHUNK_BYTES = 960; // 20 ms of s16le mono
@@ -112,8 +121,8 @@ function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
   const maxIn = RATE * 2 * MAX_INPUT_SECONDS;
   const input = pcmIn.length > maxIn ? pcmIn.subarray(0, maxIn) : pcmIn;
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(LIVE_URL, {
-      headers: { Authorization: `Bearer ${process.env.AI_GATEWAY_API_KEY}` },
+    const ws = new WebSocket(liveUrl(), {
+      headers: { Authorization: `Bearer ${liveApiKey()}` },
       handshakeTimeout: 10_000,
     });
 
@@ -175,7 +184,7 @@ function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
       send({
         type: "session.start",
         session: {
-          model: "openai/gpt-live-1",
+          model: liveModel(),
           store: false,
           delegation: { type: "client" },
           audio: { format: { type: "audio/pcm", rate: RATE } },
@@ -250,7 +259,7 @@ export default defineTool({
     guidance: z.string().optional().describe("Optional steering for the spoken reply (tone, what to emphasize)"),
   }),
   async execute({ path, guidance }, ctx) {
-    if (!process.env.AI_GATEWAY_API_KEY) throw new Error("AI_GATEWAY_API_KEY is not set");
+    if (!liveApiKey()) throw new Error(`${live().api_key_env || "AI_GATEWAY_API_KEY"} is not set`);
 
     const sandbox = await ctx.getSandbox();
     // Models often can't relay the exact staged path (sha subdirectory), so

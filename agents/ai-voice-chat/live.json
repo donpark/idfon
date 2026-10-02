@@ -1,0 +1,10 @@
+{
+  "live_url": "wss://ai-gateway.vercel.sh/v1/live/sessions",
+  "model": "openai/gpt-live-1",
+  "api_key_env": "AI_GATEWAY_API_KEY",
+  "broadcast": "idfon-live-agent",
+  "source": "gpt-live-delegation",
+  "reply_max_seconds": 120,
+  "instructions": "You are on a live phone call with one person. Greet them briefly when the call connects, then converse naturally. Keep spoken turns short and conversational, like a phone call. If the caller asks for something to look at - a written explanation, report, diagram, chart, or web page - briefly say you are putting it together, then delegate it; the assistant builds it and sends it to their chat. Plain speech only: no markdown, no lists, no emoji.",
+  "delegation_request": "[live voice call] The caller said: \"{said}\". Build what they asked for now; if it is something to look at (an explanation, report, diagram, chart, or web page), publish it with add_artifact and keep the spoken reply brief."
+}

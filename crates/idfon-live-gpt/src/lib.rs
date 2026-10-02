@@ -1,5 +1,9 @@
-//! Live-call answering for the ai-voice-chat holder: a 1:1 idfon call whose
-//! other end is a GPT-Live (`gpt-live-1`) voice session.
+//! GPT-Live live-call handler for the idfon channel holder.
+//!
+//! This is an **agent-side** opt-in for the platform's live-call seam
+//! (`eve_idfon::live`). It answers a 1:1 idfon call with an OpenAI
+//! `gpt-live-1` session and is registered against `live.audio.publish`; the
+//! generic holder knows none of the vendor values below.
 //!
 //! Flow (the ticket flow the Apple apps already use — publish `idfon-live-*`,
 //! subscribe the peer's ticket — not the daemon harness's session-scoped
@@ -7,33 +11,32 @@
 //!
 //! 1. The caller publishes its mic and sends an `IDFON-LIVE/1 action=start
 //!    ticket=<caller ticket> return_addr=<base64 EndpointAddr>` message. The
-//!    holder intercepts it (before Eve sees it) and calls [`start_call`].
-//! 2. The holder opens one GPT-Live WS session, subscribes the caller's audio
+//!    holder dispatches it (before Eve sees it) to this handler.
+//! 2. The handler opens one GPT-Live WS session, subscribes the caller's audio
 //!    (decode to s16 24 kHz mono → `session.input_audio.append`), and publishes
 //!    its own side (`session.output_audio.delta` → push queue → Live broadcast)
 //!    using the codec/rate advertised in the caller's invite.
-//! 3. The holder sends the return-leg invite carrying its own ticket, so the
+//! 3. The handler sends the return-leg invite carrying its own ticket, so the
 //!    caller subscribes and the call goes two-way (`.calling` → `.inCall`).
 //! 4. `action=stop` text, a WS close, or a dead subscriber tears the call
 //!    down. One call at a time: a new invite replaces the old one.
 //!
-//! Without `AI_GATEWAY_API_KEY` in the holder environment calls are not
+//! Without the configured provider key in the holder environment calls are not
 //! intercepted at all — invite texts fall through to Eve, whose instructions
 //! decline them.
 
-use std::{
-    collections::VecDeque,
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
-    },
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, path::PathBuf, sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex, OnceLock,
+}, time::{Duration, Instant}};
 
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use ed25519_dalek::SigningKey;
+use eve_idfon::{
+    live::{LiveCallContext, LiveCallFuture, LiveCallHandler, AUDIO_PUBLISH},
+    records, IpcFrame, ReplyTarget,
+};
 use futures_util::{SinkExt, StreamExt};
 use idfon_core::transport::{IrohTransport, MessageTransport};
 use idfon_protocol::{CallSpeaker, CallTranscript, MessageContent};
@@ -45,21 +48,91 @@ use moq_audio::{
 };
 use moq_media::publish::{AudioSource, LocalBroadcast};
 use n0_future::{boxed::BoxStream, stream::unfold};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_websockets::{ClientBuilder, Message};
 
-use crate::{records, IpcFrame, ReplyTarget, Targets};
+/// Agent/channel configuration for the GPT-Live handler. Every value the
+/// platform must not know lives here; defaults keep the demo working with no
+/// config, and `serve --live-config FILE` (channel config) overrides them.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct GptLiveConfig {
+    /// Live-session WebSocket endpoint.
+    pub live_url: String,
+    /// Voice model id sent in `session.start`.
+    pub model: String,
+    /// Optional voice id; omitted from the request when unset.
+    pub voice: Option<String>,
+    /// Environment variable holding the provider credential.
+    pub api_key_env: String,
+    /// Persona/instructions for the live session.
+    pub instructions: String,
+    /// MoQ broadcast name for the holder side of the call.
+    pub broadcast: String,
+    /// Provenance tag for delegated turns injected into the agent.
+    pub source: String,
+    /// Template for a delegated request. `{said}` is the caller transcript.
+    pub delegation_request: String,
+    /// One spoken-turn cap in seconds.
+    pub reply_max_seconds: u64,
+    /// Env var to redirect audio diagnostics into; empty = temp dir.
+    pub diagnostics_dir_env: String,
+    /// Subdirectory name for audio diagnostics.
+    pub diagnostics_dir_name: String,
+}
 
-const LIVE_URL: &str = "wss://ai-gateway.vercel.sh/v1/live/sessions";
+impl Default for GptLiveConfig {
+    fn default() -> Self {
+        Self {
+            live_url: "wss://ai-gateway.vercel.sh/v1/live/sessions".into(),
+            model: "openai/gpt-live-1".into(),
+            voice: None,
+            api_key_env: "AI_GATEWAY_API_KEY".into(),
+            instructions: "You are on a live phone call with one person. \
+                 Greet them briefly when the call connects, then converse naturally. \
+                 Keep spoken turns short and conversational, like a phone call. \
+                 If the caller asks for something to look at - a written explanation, \
+                 report, diagram, chart, or web page - briefly say you are putting it \
+                 together, then delegate it; the assistant builds it and sends it to \
+                 their chat. Plain speech only: no markdown, no lists, no emoji."
+                .into(),
+            broadcast: "idfon-live-agent".into(),
+            source: "gpt-live-delegation".into(),
+            delegation_request: "[live voice call] The caller said: \"{said}\". Build what they asked for now; if it is something to look at (an explanation, report, diagram, chart, or web page), publish it with add_artifact and keep the spoken reply brief.".into(),
+            reply_max_seconds: 120,
+            diagnostics_dir_env: "IDFON_AUDIO_CAPTURE_DIR".into(),
+            diagnostics_dir_name: "idfon-audio-captures".into(),
+        }
+    }
+}
+
+impl GptLiveConfig {
+    /// Build from the opaque channel metadata handed to the handler.
+    pub fn from_params(params: &Value) -> Self {
+        serde_json::from_value(params.clone()).unwrap_or_default()
+    }
+}
+
+/// The live-call handler registered against `live.audio.publish`.
+#[derive(Default)]
+pub struct GptLiveHandler;
+
+impl LiveCallHandler for GptLiveHandler {
+    fn capabilities(&self) -> &'static [&'static str] {
+        &[AUDIO_PUBLISH]
+    }
+
+    fn handle(&self, ctx: LiveCallContext) -> LiveCallFuture {
+        Box::pin(async move { handle_live_text(ctx).await })
+    }
+}
+
 const CHUNK_SAMPLES: usize = 480; // 20 ms of 24 kHz mono
 const CHUNK_MS: u64 = 20;
 const MAX_INPUT_BUFFER: usize = 12_000; // 500 ms at 24 kHz
-const CALL_BROADCAST: &str = "idfon-live-agent";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(15);
-const REPLY_MAX_S: u64 = 120; // ponytail: one spoken turn cap; a real turn-taking policy is a bigger design
-const CAPTURE_MAX_BYTES: usize = 24_000 * 2 * REPLY_MAX_S as usize;
 // Transcript streaming: a new turn starts on a speaker switch or a pause this
 // long; snapshots are sent at most this often so a turn is a few messages, not
 // one per delta.
@@ -196,6 +269,7 @@ struct CallDiagnostics(Option<Arc<CallDiagnosticsInner>>);
 struct CallDiagnosticsInner {
     dir: PathBuf,
     started: Instant,
+    capture_max_bytes: usize,
     buffers: Mutex<CaptureBuffers>,
 }
 
@@ -209,10 +283,10 @@ struct CaptureBuffers {
 }
 
 impl CallDiagnostics {
-    fn new() -> Self {
-        let root = std::env::var_os("IDFON_AUDIO_CAPTURE_DIR")
+    fn new(config: &GptLiveConfig) -> Self {
+        let root = std::env::var_os(&config.diagnostics_dir_env)
             .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("idfon-audio-captures"));
+            .unwrap_or_else(|| std::env::temp_dir().join(&config.diagnostics_dir_name));
         let dir = root.join(format!("call-{}-{}", std::process::id(), rand_suffix()));
         match std::fs::create_dir_all(&dir) {
             Ok(()) => {
@@ -223,6 +297,9 @@ impl CallDiagnostics {
                 Self(Some(Arc::new(CallDiagnosticsInner {
                     dir,
                     started: Instant::now(),
+                    capture_max_bytes: 24_000
+                        * 2
+                        * config.reply_max_seconds.max(1) as usize,
                     buffers: Mutex::new(CaptureBuffers::default()),
                 })))
             }
@@ -247,7 +324,7 @@ impl CallDiagnostics {
         };
         let count = bytes
             .len()
-            .min(CAPTURE_MAX_BYTES.saturating_sub(target.len()));
+            .min(inner.capture_max_bytes.saturating_sub(target.len()));
         target.extend_from_slice(&bytes[..count]);
     }
 
@@ -276,7 +353,7 @@ impl CallDiagnostics {
         for (name, pcm) in [
             ("caller-wire.wav", &buffers.caller_wire),
             ("caller-to-gpt.wav", &buffers.caller_to_gpt),
-            ("gpt-output.wav", &buffers.gpt_output),
+            ("agent-output.wav", &buffers.gpt_output),
             ("published.wav", &buffers.published),
         ] {
             if let Err(error) = write_pcm_wav(&inner.dir.join(name), pcm) {
@@ -371,39 +448,31 @@ fn stop_active_call(reason: &str) {
 }
 
 /// Intercepts call-control texts. Returns `true` when the message was consumed
-/// (a call start/stop this holder owns) and must not reach Eve.
-pub async fn handle_live_text(
-    text: &str,
-    sender_peer_id: &str,
-    sender_endpoint_id: &str,
-    conversation: Option<&str>,
-    transport: &Arc<IrohTransport>,
-    key: &SigningKey,
-    holder_endpoint_id: &str,
-    targets: Targets,
-    out_tx: mpsc::Sender<IpcFrame>,
-) -> Result<bool> {
+/// (a call start/stop this handler owns) and must not reach Eve.
+pub async fn handle_live_text(ctx: LiveCallContext) -> Result<bool> {
     // Voice is 1:1 only. A room (>= 2 distinct senders) never opens a voice
     // session; the control falls through and is handled as text content.
-    if crate::rooms::registry().is_room(conversation) {
+    if ctx.is_room() {
         eprintln!(
-            "[eve-idfon] room-addressed live control rejected (voice is 1:1) peer={sender_peer_id} conversation={conversation:?}"
+            "[eve-idfon] room-addressed live control rejected (voice is 1:1) peer={} conversation={:?}",
+            ctx.sender_peer_id, ctx.conversation
         );
         return Ok(false);
     }
-    let Some(invite) = parse_invite(text) else {
+    let config = GptLiveConfig::from_params(&ctx.params);
+    let Some(invite) = parse_invite(&ctx.text) else {
         return Ok(false);
     };
     if invite.is_stop {
-        stop_active_call(&format!("peer {sender_peer_id} hung up"));
+        stop_active_call(&format!("peer {} hung up", ctx.sender_peer_id));
         return Ok(true);
     }
     if !invite.is_start {
         return Ok(true); // unknown action: consume rather than confuse the agent
     }
-    // Without a gateway key the agent (text/memo path) handles the turn; its
-    // instructions decline the call politely.
-    let api_key = match std::env::var("AI_GATEWAY_API_KEY") {
+    // Without the configured provider key the agent (text/memo path) handles
+    // the turn; its instructions decline the call politely.
+    let api_key = match std::env::var(&config.api_key_env) {
         Ok(key) if !key.is_empty() => key,
         _ => return Ok(false),
     };
@@ -411,11 +480,13 @@ pub async fn handle_live_text(
     let ticket = invite
         .ticket
         .ok_or_else(|| anyhow!("live call start is missing its media ticket"))?;
-    let endpoint_id = sender_endpoint_id
+    let endpoint_id = ctx
+        .sender_endpoint_id
         .parse::<EndpointId>()
         .map_err(|error| anyhow!("invalid caller endpoint id: {error}"))?;
     eprintln!(
-        "[eve-idfon] call invite peer={sender_peer_id} explicit_return_addr={} response_codec={} response_rate={}",
+        "[eve-idfon] call invite peer={} explicit_return_addr={} response_codec={} response_rate={}",
+        ctx.sender_peer_id,
         invite.return_addr.is_some(),
         profile.codec,
         profile.sample_rate
@@ -433,10 +504,11 @@ pub async fn handle_live_text(
     // the stripped text also reaches the live session's commentary.
     let (delegation_tx, mut delegation_rx) = mpsc::unbounded_channel::<Delegation>();
     {
-        let peer_id = sender_peer_id.to_string();
-        let endpoint_id = sender_endpoint_id.to_string();
-        let targets = Arc::clone(&targets);
-        let out_tx = out_tx.clone();
+        let peer_id = ctx.sender_peer_id.clone();
+        let endpoint_id = ctx.sender_endpoint_id.clone();
+        let targets = Arc::clone(&ctx.targets);
+        let out_tx = ctx.out_tx.clone();
+        let source = config.source.clone();
         tokio::spawn(async move {
             while let Some(delegation) = delegation_rx.recv().await {
                 let reply_key = format!("{peer_id}:live-delegation-{}", delegation.delegation_id);
@@ -461,7 +533,7 @@ pub async fn handle_live_text(
                     size_bytes: None,
                     a2a_depth: None,
                     capabilities: None,
-                    source: Some("gpt-live-delegation".into()),
+                    source: Some(source.clone()),
                 };
                 if out_tx.send(frame).await.is_err() {
                     break;
@@ -472,12 +544,13 @@ pub async fn handle_live_text(
     if let Err(error) = start_call(
         ticket,
         caller_addr,
-        sender_peer_id.to_string(),
-        holder_endpoint_id,
-        Arc::clone(transport),
-        key.clone(),
+        ctx.sender_peer_id.clone(),
+        &ctx.holder_endpoint_id,
+        Arc::clone(&ctx.transport),
+        ctx.key.clone(),
         api_key,
         profile,
+        config,
         delegation_tx,
     )
     .await
@@ -501,6 +574,7 @@ async fn start_call(
     key: SigningKey,
     api_key: String,
     profile: AudioProfile,
+    config: GptLiveConfig,
     delegation_tx: mpsc::UnboundedSender<Delegation>,
 ) -> Result<()> {
     stop_active_call("replaced by a newer call");
@@ -519,9 +593,9 @@ async fn start_call(
             .spawn(),
     );
     let broadcast = live
-        .publish(CALL_BROADCAST)
+        .publish(&config.broadcast)
         .context("publish call broadcast")?;
-    let diagnostics = CallDiagnostics::new();
+    let diagnostics = CallDiagnostics::new(&config);
     let out_bus = QueueSink::new(diagnostics.clone());
     let publisher = tokio::spawn(publish_gpt_audio(
         broadcast,
@@ -529,7 +603,7 @@ async fn start_call(
         Arc::clone(&stop),
         profile,
     ));
-    let own_ticket = LiveTicket::new(live.endpoint().id(), CALL_BROADCAST).serialize();
+    let own_ticket = LiveTicket::new(live.endpoint().id(), &config.broadcast).serialize();
 
     // Return-leg invite: the caller subscribes to our side; its UI leaves
     // `.calling` and audio flows both ways.
@@ -592,6 +666,7 @@ async fn start_call(
             holder_endpoint_id,
             caller_addr,
             caller_peer_id,
+            config,
             delegation_tx,
         )
         .await;
@@ -628,6 +703,37 @@ async fn start_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_defaults_and_channel_overrides() {
+        let defaults = GptLiveConfig::from_params(&serde_json::Value::Null);
+        assert_eq!(defaults.model, "openai/gpt-live-1");
+        assert_eq!(defaults.api_key_env, "AI_GATEWAY_API_KEY");
+        assert_eq!(defaults.broadcast, "idfon-live-agent");
+        let overridden = GptLiveConfig::from_params(&json!({
+            "model": "vendor/other",
+            "live_url": "wss://example.test/live",
+            "api_key_env": "OTHER_KEY",
+            "voice": "verse",
+            "reply_max_seconds": 30,
+        }));
+        assert_eq!(overridden.model, "vendor/other");
+        assert_eq!(overridden.live_url, "wss://example.test/live");
+        assert_eq!(overridden.api_key_env, "OTHER_KEY");
+        assert_eq!(overridden.voice.as_deref(), Some("verse"));
+        assert_eq!(overridden.reply_max_seconds, 30);
+    }
+
+    #[test]
+    fn checked_in_channel_config_parses() {
+        // Guards the channel-config projection the serve script forwards.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../agents/ai-voice-chat/live.json");
+        let raw = std::fs::read_to_string(path).expect("read live.json");
+        let config: GptLiveConfig = serde_json::from_str(&raw).expect("parse live.json");
+        assert_eq!(config.model, "openai/gpt-live-1");
+        assert_eq!(config.broadcast, "idfon-live-agent");
+        assert!(!config.instructions.is_empty());
+    }
 
     /// Simulates pump_caller_audio's steady loop: one 20 ms tick consumes, one
     /// 480-sample frame arrives. Returns total late-dropped samples.
@@ -1047,9 +1153,10 @@ async fn run_session(
     holder_endpoint_id: String,
     caller_addr: EndpointAddr,
     caller_peer_id: String,
+    config: GptLiveConfig,
     delegation_tx: mpsc::UnboundedSender<Delegation>,
 ) -> Result<()> {
-    let ws = connect_live(&api_key).await?;
+    let ws = connect_live(&api_key, &config).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
     eprintln!("[eve-idfon] GPT-Live session ready peer={caller_peer_id}");
 
@@ -1174,9 +1281,7 @@ async fn run_session(
                         .to_string();
                     if !delegation_id.is_empty() {
                         let said = stream.latest_caller_text();
-                        let request = format!(
-                            "[live voice call] The caller said: \"{said}\". Build what they asked for now; if it is something to look at (an explanation, report, diagram, chart, or web page), publish it with add_artifact and keep the spoken reply brief."
-                        );
+                        let request = config.delegation_request.replace("{said}", &said);
                         let _ = delegation_tx.send(Delegation {
                             delegation_id,
                             request,
@@ -1241,7 +1346,7 @@ async fn run_session(
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             } => Ok(()),
-            result = pump_caller_audio(caller_ticket, &mut ws_tx, pump_stop, pacer_diagnostics, profile, commentary_rx, Arc::clone(&delegated_spoken)) => result,
+            result = pump_caller_audio(caller_ticket, &mut ws_tx, pump_stop, pacer_diagnostics, profile, config.reply_max_seconds, commentary_rx, Arc::clone(&delegated_spoken)) => result,
         };
         if let Err(error) = result {
             eprintln!("[eve-idfon] caller audio ended: {error:#}");
@@ -1311,14 +1416,15 @@ async fn run_session(
     Ok(())
 }
 
-/// Opens the GPT-Live session for one call.
+/// Opens the live session for one call.
 async fn connect_live(
     api_key: &str,
+    config: &GptLiveConfig,
 ) -> Result<
     tokio_websockets::WebSocketStream<tokio_websockets::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
-    eprintln!("[eve-idfon] connecting to GPT-Live");
-    let builder = ClientBuilder::from_uri(LIVE_URL.parse().context("parse live url")?)
+    eprintln!("[eve-idfon] connecting to live session");
+    let builder = ClientBuilder::from_uri(config.live_url.parse().context("parse live url")?)
         .add_header(
             "authorization".parse().context("header name")?,
             format!("Bearer {api_key}")
@@ -1326,22 +1432,20 @@ async fn connect_live(
                 .context("header value")?,
         )
         .context("auth header")?;
-    let (mut ws, _response) = builder.connect().await.context("connect GPT-Live")?;
+    let (mut ws, _response) = builder.connect().await.context("connect live session")?;
+    let mut audio = json!({ "format": { "type": "audio/pcm", "rate": 24_000 } });
+    if let Some(voice) = &config.voice {
+        audio["voice"] = json!(voice);
+    }
     ws.send(Message::text(
         json!({
             "type": "session.start",
             "session": {
-                "model": "openai/gpt-live-1",
+                "model": config.model,
                 "store": false,
                 "delegation": { "type": "client" },
-                "audio": { "format": { "type": "audio/pcm", "rate": 24_000 } },
-                "instructions": "You are on a live phone call with one person. \
-                 Greet them briefly when the call connects, then converse naturally. \
-                 Keep spoken turns short and conversational, like a phone call. \
-                 If the caller asks for something to look at - a written explanation, \
-                 report, diagram, chart, or web page - briefly say you are putting it \
-                 together, then delegate it; the assistant builds it and sends it to \
-                 their chat. Plain speech only: no markdown, no lists, no emoji.",
+                "audio": audio,
+                "instructions": config.instructions,
             },
         })
         .to_string(),
@@ -1350,24 +1454,24 @@ async fn connect_live(
     .context("send session.start")?;
     tokio::time::timeout(Duration::from_secs(15), async {
         while let Some(message) = ws.next().await {
-            let message = message.context("read GPT-Live startup event")?;
+            let message = message.context("read live startup event")?;
             let Some(text) = message.as_text() else {
                 continue;
             };
             let event: serde_json::Value =
-                serde_json::from_str(text).context("parse GPT-Live startup event")?;
+                serde_json::from_str(text).context("parse live startup event")?;
             match event["type"].as_str().unwrap_or_default() {
                 "session.started" => return Ok::<(), anyhow::Error>(()),
-                "error" => anyhow::bail!("GPT-Live session.start rejected: {}", event["error"]),
-                "session.closed" => anyhow::bail!("GPT-Live closed during session.start"),
+                "error" => anyhow::bail!("live session.start rejected: {}", event["error"]),
+                "session.closed" => anyhow::bail!("live session closed during session.start"),
                 _ => {}
             }
         }
-        anyhow::bail!("GPT-Live websocket closed before session.started")
+        anyhow::bail!("live websocket closed before session.started")
     })
     .await
-    .context("GPT-Live session.start timed out")??;
-    eprintln!("[eve-idfon] GPT-Live session.started");
+    .context("live session.start timed out")??;
+    eprintln!("[eve-idfon] live session.started");
     Ok(ws)
 }
 
@@ -1379,6 +1483,7 @@ async fn pump_caller_audio<S>(
     stop: Arc<AtomicBool>,
     diagnostics: CallDiagnostics,
     expected_profile: AudioProfile,
+    reply_max_seconds: u64,
     mut commentary_rx: mpsc::UnboundedReceiver<(String, String)>,
     delegated_spoken: Arc<Mutex<VecDeque<String>>>,
 ) -> Result<()>
@@ -1508,7 +1613,7 @@ where
                 if chunks == 1 || chunks % 50 == 0 {
                     eprintln!("[eve-idfon] caller appends={chunks} source_frames={input_frames} silence_samples={underflow_samples} queue_samples={queue_samples}");
                 }
-                if pacer.sent_samples >= REPLY_MAX_S * 24_000 { break; }
+                if pacer.sent_samples >= reply_max_seconds.max(1) * 24_000 { break; }
             }
             Some((delegation_id, content)) = commentary_rx.recv() => {
                 note_delegated_spoken(&delegated_spoken, &content);

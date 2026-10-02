@@ -55,6 +55,16 @@ idfon peer ──IDFON-RECORDING/1──▶ daemon ──▶ holder ──bridge
   Opus input — the one decode on the way in is mandatory; the reply is stored
   as WAV, so no encode).
 
+**Platform/agent separation (#16).** The live-call relay is an agent-side
+handler (`crates/idfon-live-gpt`), registered against the holder's
+capability-keyed live-call seam (`crates/eve-idfon/src/live.rs`:
+`LiveCallHandler` + `LiveCallRegistry`). The generic holder names no model
+vendor; a build that wants live calls composes `eve_idfon::run()` with the
+handler (`eve-idfon-gpt`). Provider values — endpoint, model, credential env
+name, persona/instructions, broadcast id, delegation tag, turn cap — come from
+the channel's `live` metadata (`agents/ai-voice-chat/live.json`, forwarded by
+`serve --live-config`; the same block rides in the Eve extension config).
+
 ## Building
 
 The agent consumes the workspace extension, so build the extension before the
@@ -272,7 +282,7 @@ above (design option 1/3), not the split itself.
 **WebRTC verdict is contingent, not a clear no.** `omini-duplex-omni.md`
 records OpenAI's guidance: WebRTC for browsers/mobile clients, WebSocket for
 server-to-server. The holder is middle-tier server, so the current
-`wss://ai-gateway.vercel.sh/v1/live/sessions` connection (`crates/eve-idfon/src/call.rs`,
+`wss://ai-gateway.vercel.sh/v1/live/sessions` connection (`crates/idfon-live-gpt/src/lib.rs`,
 `agents/ai-voice-chat/agent/tools/voice-reply.ts`) is the recommended transport
 for this topology. WebRTC only becomes worthwhile if the client is routed
 directly to the voice session (proxy-minted ephemeral token, the thin-proxy
