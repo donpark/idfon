@@ -24,7 +24,9 @@ final class VoiceAgentSession: NSObject {
     private(set) var isActive = false
     var onState: ((State) -> Void)?
 
-    private var stopRequested = false
+    // Timer's @Sendable closure can't see MainActor isolation; this flag is only
+    // ever read/written on the main thread (stop() is MainActor, timers run on main).
+    nonisolated(unsafe) private var stopRequested = false
     private var turnLimit = Int.max
     private var turnsDone = 0
     private var client = DaemonClient()
