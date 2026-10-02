@@ -23,9 +23,11 @@ use std::path::Path;
 
 use anyhow::Result;
 
+pub mod arbiter;
 pub mod audit;
 pub mod bargein;
 pub mod director;
+pub mod echo;
 pub mod listen;
 pub mod registry;
 pub mod service;
@@ -34,9 +36,14 @@ pub mod stream;
 pub mod stub;
 pub mod wav;
 
+pub use arbiter::{Arbiter, ArbiterOutcome, NonSubstantiveKind, SpeakerRole};
 pub use audit::{AuditLog, Speaker, Utterance};
-pub use bargein::{BargeInAction, BargeInController, PlaybackTruncated};
+pub use bargein::{
+    is_backchannel, is_cancellable, BargeInAction, BargeInController, BargeInMode,
+    PlaybackTruncated,
+};
 pub use director::{DeterministicDirector, Directive, DirectorError};
+pub use echo::EchoSuppressor;
 pub use listen::{EndpointAuthority, ListenOutput, ListenSession};
 pub use registry::{ModelRegistry, ModelTier, VoiceModel};
 pub use service::{SpeakError, SpokenTurn, VoiceService};

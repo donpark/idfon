@@ -24,6 +24,51 @@ pub struct PlaybackTruncated {
     pub heard_until: String,
 }
 
+/// Platform barge-in policy: iOS has AEC (`Full`); macOS has none (`Gated`),
+/// so user audio must clear a threshold before it engages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BargeInMode {
+    Full,
+    Gated,
+}
+
+/// Peak |s16| a gated (no-AEC) client must exceed to engage barge-in.
+pub const GATED_BARGE_IN_THRESHOLD: i16 = 800;
+
+impl BargeInMode {
+    /// Whether observed user audio should engage barge-in.
+    pub fn engages(self, peak: i16) -> bool {
+        match self {
+            Self::Full => true,
+            Self::Gated => peak.unsigned_abs() > GATED_BARGE_IN_THRESHOLD as u16,
+        }
+    }
+}
+
+const BACKCHANNEL: &[&str] = &[
+    "uh-huh", "uh huh", "mm-hmm", "mm hmm", "mhm", "hm", "hmm", "yeah", "yep", "okay", "ok",
+    "right",
+];
+
+/// Minimum characters for an utterance to count as a cancellation, not noise.
+pub const MIN_UTTERANCE_CHARS: usize = 2;
+
+/// A backchannel/filler the caller said while the agent was speaking.
+pub fn is_backchannel(text: &str) -> bool {
+    let normalized = text.trim().to_lowercase();
+    BACKCHANNEL.contains(&normalized.as_str())
+}
+
+/// Whether a barge-in may cancel playback. Never cancels during the
+/// `actions.requested → action.result` window, and never for a backchannel or
+/// a sub-minimum utterance (F6).
+pub fn is_cancellable(text: &str, playing: bool, in_tool_window: bool) -> bool {
+    playing
+        && !in_tool_window
+        && text.chars().count() >= MIN_UTTERANCE_CHARS
+        && !is_backchannel(text)
+}
+
 /// Counter-based barge-in state.
 #[derive(Default)]
 pub struct BargeInController {
@@ -115,6 +160,25 @@ mod tests {
         // (same turnId, new counter) survives.
         assert!(controller.should_drop(0));
         assert!(!controller.should_drop(1));
+    }
+
+    #[test]
+    fn backchannel_and_tool_window_never_cancel() {
+        assert!(!is_cancellable("uh-huh", true, false));
+        assert!(!is_cancellable("hmm", true, false));
+        assert!(!is_cancellable("x", true, false));
+        // A real utterance cancels while playing outside the tool window.
+        assert!(is_cancellable("stop that", true, false));
+        // Never during tool work, and never when not playing.
+        assert!(!is_cancellable("stop that", true, true));
+        assert!(!is_cancellable("stop that", false, false));
+    }
+
+    #[test]
+    fn gated_mode_requires_a_threshold() {
+        assert!(!BargeInMode::Gated.engages(400));
+        assert!(BargeInMode::Gated.engages(1_000));
+        assert!(BargeInMode::Full.engages(1));
     }
 
     #[test]

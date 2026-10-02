@@ -1,14 +1,18 @@
 # Voice side-channel service
 
-> **Status: design, P0–P4 implemented** (2026-10-01). The record-only coupling in
-> "Writing to Eve history" (§P0 implementation) ships in `crates/eve-idfon`
-> and the `eve-idfon` extension; the provider seam (§P1 implementation) ships
-> as `crates/idfon-voice`, and the listen-side turn semantics + room gate
-> (§P2 implementation) ship in `idfon-voice` and the holder; turn-level speak,
-> the model registry, the `voice.speak` gate, and the deterministic director
-> (§P3 implementation) ship in `idfon-voice`; realtime streaming and barge-in
-> (§P4 implementation) ship in `idfon-voice` plus the bridge forwarding path.
-> P5+ remain design. Follow-on to the decision in
+> **Status: design, P0–P5 (service core) implemented** (2026-10-01). The
+> record-only coupling in "Writing to Eve history" (§P0 implementation) ships
+> in `crates/eve-idfon` and the `eve-idfon` extension; the provider seam (§P1
+> implementation) ships as `crates/idfon-voice`, and the listen-side turn
+> semantics + room gate (§P2 implementation) ship in `idfon-voice` and the
+> holder; turn-level speak, the model registry, the `voice.speak` gate, and the
+> deterministic director (§P3 implementation) ship in `idfon-voice`; realtime
+> streaming and barge-in (§P4 implementation) ship in `idfon-voice` plus the
+> bridge forwarding path; the arbiter, F9 non-actor gate, echo suppression, and
+> barge-in filters (§P5 implementation) ship in `idfon-voice`. The P5 *native*
+> halves — iOS full barge-in engagement and macOS AEC/gated capture — are not
+> implemented and need the Apple apps. P6+ remain design. Follow-on to the
+> decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
@@ -319,6 +323,27 @@ to the cascade.
   The holder accepts/accounts for the delta; the real engine consumer arrives
   with the cascade (P6).
 
+### P5 implementation
+
+- **Arbiter** (`idfon-voice/src/arbiter.rs`): one speaker at a time; the actor
+  **preempts** a non-actor, a non-actor **queues** behind the actor and never
+  overlaps it; kind-less non-actor speech is rejected. `NonSubstantiveKind` is
+  a closed set (`acknowledgement`/`status`/`system-notice`) with per-kind
+  length caps (F9).
+- **Text-layer echo suppression** (`idfon-voice/src/echo.rs`):
+  `EchoSuppressor` drops STT finals that fuzzy-match the text being spoken
+  (containment or token-overlap ratio), with **pending-approval keywords
+  exempt** so a real "yes" survives (N12).
+- **Barge-in filters** (`idfon-voice/src/bargein.rs`): `is_cancellable` refuses
+  during the tool window and for backchannels/sub-minimum utterances;
+  `BargeInMode::{Full,Gated}` encodes the iOS (AEC) vs macOS (no AEC) policy
+  with `GATED_BARGE_IN_THRESHOLD`.
+- **Native gap**: iOS full-barge-in engagement, macOS gated capture, and
+  **macOS AEC** are app-side (Swift/AVAudioEngine) and not implemented here;
+  the Rust policy above is what the apps will call. Per the design, macOS AEC
+  is the real work item and P4 streaming cannot be called the live-call gate on
+  macOS before it lands.
+
 ### Placement
 
 Under A2, the voice component runs **at the channel edge (the per-agent
@@ -528,8 +553,10 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   `BargeInController` in `idfon-voice`; the channel forwards
   `message.appended` deltas over the loopback bridge to the holder
   (§P4 implementation).
-- **P5 — turn-taking & echo.** One-speaker arbiter (enables non-actor speech),
-  full barge-in on iOS, gated/threshold barge-in on macOS, macOS AEC.
+- **P5 — turn-taking & echo.** **Service core implemented** (2026-10-01):
+  one-speaker `Arbiter` with the F9 closed non-actor kinds, `EchoSuppressor`
+  with the pending-approval exemption, and barge-in filters/modes. Native
+  iOS full barge-in + macOS AEC/gated capture remain (§P5 implementation).
 - **P6 — on-device.** MLX STT/TTS on Mac, then iOS where memory allows.
 - **P7 — optional engines.** A deterministic-hosted or full-duplex engine used
   only as STT/TTS, or a new decision; BWE only if the P3 listening test demands
