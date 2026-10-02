@@ -138,36 +138,46 @@ extension OnDeviceVoice {
 
         let phrase = "Here is a longer answer that keeps talking for a while so "
             + "you have time to interrupt me by speaking over the top of it."
+        guard let pcm = synthesizePCM(phrase),
+              let wav = Self.pcmWav(pcm.data, sampleRate: pcm.rate)
+        else {
+            Automation.mark("voice: FAIL bargein synth")
+            Automation.mark("voice: done")
+            return
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("idfon-bargein.wav")
-        synthesize(phrase, to: url) { [weak self] result in
-            guard let self, case .success = result,
-                  let player = try? AVAudioPlayer(contentsOf: url)
-            else {
-                Automation.mark("voice: FAIL bargein synth")
+        guard (try? wav.write(to: url)) != nil,
+              let player = try? AVAudioPlayer(contentsOf: url)
+        else {
+            Automation.mark("voice: FAIL bargein player")
+            Automation.mark("voice: done")
+            return
+        }
+        self.bargeInPlayer = player
+        Automation.mark("voice: bargein prepared seconds=\(player.duration)")
+
+        // Start the mic (AEC) first so the tap is running before playback.
+        self.startListening(configureSession: false, onPartial: { text in
+            guard player.isPlaying else { return }
+            let cancellable = idfon_voice_is_cancellable(text, 1, 0) != 0
+            let echo = idfon_voice_is_echo(phrase, text) != 0
+            if cancellable && !echo {
+                player.stop()
+                self.bargeInPlayer = nil
+                Automation.mark("voice: bargein engaged transcript=\(text)")
+                Automation.mark("voice: PASS")
                 Automation.mark("voice: done")
-                return
+                self.finishListening(.success(text))
+            } else {
+                Automation.mark("voice: bargein ignored echo=\(echo) text=\(text)")
             }
-            self.bargeInPlayer = player
+        }) { _ in }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             player.play()
             Automation.mark("voice: bargein playing")
-            self.startListening(configureSession: false, onPartial: { text in
-                guard player.isPlaying else { return }
-                let cancellable = idfon_voice_is_cancellable(text, 1, 0) != 0
-                let echo = idfon_voice_is_echo(phrase, text) != 0
-                if cancellable && !echo {
-                    player.stop()
-                    self.bargeInPlayer = nil
-                    Automation.mark("voice: bargein engaged transcript=\(text)")
-                    Automation.mark("voice: PASS")
-                    Automation.mark("voice: done")
-                    self.finishListening(.success(text))
-                } else {
-                    Automation.mark("voice: bargein ignored echo=\(echo) text=\(text)")
-                }
-            }) { _ in }
-            // If playback finishes without an interruption, fail fast instead
-            // of waiting for the outer timeout.
+            // Fail fast if playback finishes without an interruption.
             DispatchQueue.main.asyncAfter(deadline: .now() + player.duration + 1) { [weak self] in
                 guard let self, let current = self.bargeInPlayer, !current.isPlaying else { return }
                 self.bargeInPlayer = nil

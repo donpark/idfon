@@ -169,6 +169,12 @@ final class OnDeviceVoice: NSObject {
 
                 let engine = AVAudioEngine()
                 let input = engine.inputNode
+                // A caller-owned play-and-record session (barge-in) needs voice
+                // processing for echo cancellation; query the format after
+                // enabling it, since the input node reconfigures.
+                if !configureSession {
+                    try? input.setVoiceProcessingEnabled(true)
+                }
                 let format = input.outputFormat(forBus: 0)
                 input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                     request.append(buffer)

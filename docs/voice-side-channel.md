@@ -333,12 +333,15 @@ to the cascade.
   `BargeInMode::{Full,Gated}` encodes the iOS (AEC) vs macOS (no AEC) policy
   with `GATED_BARGE_IN_THRESHOLD`.
 - **iOS barge-in engagement** (`ios/Idfon/OnDeviceVoiceBridge.swift`): a
-  `.playAndRecord`/`.voiceChat` session (AEC) plays a synthesized answer while
-  the on-device mic recognizes; the first cancellable, non-echo partial stops
+  `.playAndRecord`/`.voiceChat` session plays a synthesized answer while the
+  on-device mic recognizes; the first cancellable, non-echo partial stops
   playback and engages. It reuses the Rust filters over the C ABI
   (`idfon_voice_is_cancellable`, `idfon_voice_is_echo`). `-bargein` /
-  `scripts/ios-voice-provider-test.sh --bargein` runs it (device run needs an
-  unlocked phone and someone talking over the agent).
+  `scripts/ios-voice-provider-test.sh --bargein` runs it. **Verified on an
+  iPhone 16 (iOS 27.0.1)**: the caller's "Hello" over playback engaged and
+  stopped it. **AEC requires `AVAudioInputNode.setVoiceProcessingEnabled(true)`**
+  — `.voiceChat` mode alone left the mic hearing the agent (all partials were
+  correctly dropped as echo, which is how the missing AEC surfaced).
 - **Native gap**: macOS gated capture and **macOS AEC** remain app-side work;
   per the design, macOS AEC is the real work item and P4 streaming cannot be
   called the live-call gate on macOS before it lands.
@@ -413,7 +416,10 @@ optional.
 
 - **iOS already has AEC** for calls: `LiveCall` uses `.playAndRecord` +
   `.voiceChat` (VoiceProcessingIO) (`ios/Idfon/LiveCall.swift`,
-  `ios/Idfon/AudioPusher.swift`; `troubleshooting.md`).
+  `ios/Idfon/AudioPusher.swift`; `troubleshooting.md`). **Confirmed on device
+  (P5)**: a `.voiceChat` session alone was *not* enough for the side-channel
+  listener — echo cancellation only engaged after
+  `AVAudioInputNode.setVoiceProcessingEnabled(true)` on the input node.
 - **macOS has none** — `troubleshooting.md:45` notes it is deliberately left
   without VPIO; `audio-media.md` states there is no echo cancellation.
 - **AEC is a P5 concern.** Full barge-in where AEC exists (iOS); **gated or
