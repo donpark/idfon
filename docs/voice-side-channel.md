@@ -1,19 +1,12 @@
 # Voice side-channel service
 
-> **Status: design, P0–P5 (service core) + P6 G2P implemented** (2026-10-01).
-> The record-only coupling in "Writing to Eve history" (§P0 implementation)
-> ships in `crates/eve-idfon` and the `eve-idfon` extension; the provider seam
-> (§P1 implementation) ships as `crates/idfon-voice`, and the listen-side turn
-> semantics + room gate (§P2 implementation) ship in `idfon-voice` and the
-> holder; turn-level speak, the model registry, the `voice.speak` gate, and the
-> deterministic director (§P3 implementation) ship in `idfon-voice`; realtime
-> streaming and barge-in (§P4 implementation) ship in `idfon-voice` plus the
-> bridge forwarding path; the arbiter, F9 non-actor gate, echo suppression, and
-> barge-in filters (§P5 implementation) ship in `idfon-voice`; the native
-> English G2P port (§P6 implementation) ships in `idfon-voice` and the
-> pipeline check. The P5 *native* halves (iOS full barge-in, macOS AEC/gated
-> capture) and the P6 *on-device MLX engines* are not implemented and need the
-> Apple apps/models. P7 remains design. Follow-on to the decision in
+> **Status: design, P0–P6 offline slices implemented** (2026-10-01). All
+> service-side phases have landed in `idfon-voice`/`crates/eve-idfon` and the
+> `eve-idfon` extension (see §P0–§P6 implementations); the P5 native halves
+> (iOS full barge-in, macOS AEC/gated capture) and the P6 on-device MLX engines
+> need the Apple apps/models, and the P7 human listening test has not been run.
+> P7's test gate and engine decision are recorded (§P7 implementation).
+> Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
@@ -358,6 +351,19 @@ to the cascade.
   models, and land with the native P6 work; the seam (`VoiceEngine`) and the
   registry tier are already in place to receive them.
 
+### P7 implementation
+
+- **Decision recorded**: no optional full-duplex engine is adopted now — the
+  cascade stays STT/TTS behind the seam (per the "Front-end resolved to cascade"
+  decision); the LLM/AFM director stays deferred until voice-in-rooms is
+  designed. There is no content-ownership change: the seam still only converts
+  text↔audio and never authors the actor's answer.
+- **Listening-test gate** (`idfon-voice/src/listening.rs`): `ListeningTest`
+  records HF deficit and intelligibility; `PassBar` is the recorded threshold;
+  `passes` decides acceptance and `bwe_justified` enables BWE only for a real
+  high-frequency deficit beyond the bar. The human test run itself is pending,
+  so its result is not recorded yet.
+
 ### Placement
 
 Under A2, the voice component runs **at the channel edge (the per-agent
@@ -575,9 +581,11 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   `normalize_for_speech` speaks written numbers as words so the bundled default
   voice drops the LGPL `num2words` dependency; covered by the pipeline check.
   MLX STT/TTS on Mac/iOS remains (needs the Apple apps/models).
-- **P7 — optional engines.** A deterministic-hosted or full-duplex engine used
-  only as STT/TTS, or a new decision; BWE only if the P3 listening test demands
-  it. LLM/AFM director deferred until voice-in-rooms is designed.
+- **P7 — optional engines.** **Decision recorded + test gate implemented**
+  (2026-10-01): stay on cascade STT/TTS (no full-duplex engine now); the
+  LLM/AFM director stays deferred until voice-in-rooms is designed; BWE gated by
+  `listening::{passes, bwe_justified}` against a recorded `PassBar`. The human
+  listening test itself has not been run.
 
 ## Streaming forwarding
 
