@@ -133,7 +133,7 @@ if [ -f "$root/agents/$agent/live.json" ]; then
 fi
 IDFON_ENDPOINT_PORT="$endpoint_port" "$root/target/release/eve-idfon-gpt" --key-file "$key" serve \
   --socket "$home/holder.sock" "${allow_args[@]}" --blob-dir "$home/blobs" \
-  "${live_args[@]}" \
+  ${live_args[@]+"${live_args[@]}"} \
   >"$home/holder.ticket" 2>"$home/holder.log" &
 echo $! > "$home/holder.pid"
 for _ in $(seq 1 150); do [ -s "$home/holder.ticket" ] && break; sleep 0.1; done
