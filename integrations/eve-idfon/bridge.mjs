@@ -51,7 +51,7 @@ function processFrames() {
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
       }).catch((error) => console.error(`[eve-idfon] ${value.type} delivery failed: ${error}`));
-    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "records.drain.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
+    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "records.drain.result" || value.type === "stream.append.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
       const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
       const waiter = pending.get(key);
       if (waiter) {
@@ -76,7 +76,7 @@ holder.on("error", (error) => { console.error(`[eve-idfon] holder IPC: ${error}`
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
-  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/input", "/send", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
+  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/stream/append", "/input", "/send", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -252,6 +252,31 @@ const server = createServer(async (request, response) => {
     const resultPromise = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
     try {
       await write({ type: "blob.put", request_id: requestId, bytes_base64: body.bytes_base64 });
+      const result = await resultPromise;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      pending.delete(requestId);
+      response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
+  if (request.url === "/stream/append") {
+    if (typeof body.turn_id !== "string" || typeof body.step_index !== "number" ||
+        typeof body.sequence !== "number" || typeof body.text !== "string") {
+      response.writeHead(400); response.end("invalid stream append\n"); return;
+    }
+    const requestId = `stream-append-${nextRequestId++}`;
+    const resultPromise = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+    try {
+      await write({
+        type: "stream.append",
+        request_id: requestId,
+        turn_id: body.turn_id,
+        step_index: body.step_index,
+        sequence: body.sequence,
+        text: body.text,
+      });
       const result = await resultPromise;
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(result));

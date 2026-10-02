@@ -228,6 +228,22 @@ export default defineChannel({
     };
   },
   events: {
+    async "message.appended"(event, _channel, ctx) {
+      // Realtime forwarding (P4): agent output deltas reach the holder over
+      // the loopback bridge so TTS can start before the turn completes.
+      // Reasoning is never forwarded. The holder dedupes on
+      // (turnId, stepIndex, sequence) and batches to clause boundaries at the
+      // TTS boundary, so the hop stays per-delta and retry-safe.
+      const target = sessionTargets.get(ctx.session.id);
+      const member = target?.members.get(target.lastPeerId);
+      if (!member || !event.messageDelta) return;
+      await bridge("/stream/append", {
+        turn_id: event.turnId,
+        step_index: event.stepIndex,
+        sequence: event.sequence,
+        text: event.messageDelta,
+      });
+    },
     async "message.completed"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
       if (!target || !event.message) return;

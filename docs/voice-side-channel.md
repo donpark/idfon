@@ -1,13 +1,14 @@
 # Voice side-channel service
 
-> **Status: design, P0–P3 implemented** (2026-10-01). The record-only coupling in
+> **Status: design, P0–P4 implemented** (2026-10-01). The record-only coupling in
 > "Writing to Eve history" (§P0 implementation) ships in `crates/eve-idfon`
 > and the `eve-idfon` extension; the provider seam (§P1 implementation) ships
 > as `crates/idfon-voice`, and the listen-side turn semantics + room gate
 > (§P2 implementation) ship in `idfon-voice` and the holder; turn-level speak,
 > the model registry, the `voice.speak` gate, and the deterministic director
-> (§P3 implementation) ship in `idfon-voice`. P4+ remain design. Follow-on to
-> the decision in
+> (§P3 implementation) ship in `idfon-voice`; realtime streaming and barge-in
+> (§P4 implementation) ship in `idfon-voice` plus the bridge forwarding path.
+> P5+ remain design. Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
@@ -293,6 +294,31 @@ to the cascade.
   `Agent`-labelled utterance; denied/unknown-voice turns record nothing and
   speak nothing. Streaming/clause batching is P4.
 
+### P4 implementation
+
+- **Streaming forwarder** (`idfon-voice/src/stream.rs`): `StreamingSpeaker`
+  consumes `MessageDelta`s and runs strip → dedupe → clause batch → incremental
+  TTS. `EnvelopeStripper` is a deterministic state machine that drops
+  `IDFON-*/1` spans even when a marker is split across deltas; `ClauseBatcher`
+  emits whole clauses; `reasoning.appended` is never accepted (only
+  `MessageDelta`). First audio is produced before `finish()`.
+- **Retry dedupe**: a `HashSet<DeltaKey>` keyed on
+  `(turnId, stepIndex, sequence)`; a provider retry repeats the triple and is
+  ignored, while a different sequence still speaks.
+- **Barge-in** (`idfon-voice/src/bargein.rs`): `BargeInController` returns
+  `Steer` before playback (drop nothing) and `CancelThenQueue` during playback,
+  bumping a **counter**; `should_drop(counter)` drops only pre-cancel deltas, so
+  a steered follow-up with the same `turnId` survives.
+- **Truncation** is recorded through the P0 buffer
+  (`VoiceRecord::playback_truncated { msg_id, heard_until }`); the client sender
+  lands with the barge-in wiring.
+- **Transport**: the channel subscribes to `message.appended` and POSTs each
+  delta `{turn_id, step_index, sequence, text}` to bridge `/stream/append`, which
+  forwards `stream.append` over holder IPC. The hop stays per-delta so the
+  coordinate dedupe is retry-safe; clause batching happens at the TTS boundary.
+  The holder accepts/accounts for the delta; the real engine consumer arrives
+  with the cascade (P6).
+
 ### Placement
 
 Under A2, the voice component runs **at the channel edge (the per-agent
@@ -497,9 +523,11 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   with rate/length caps, synthesizes, and records an `Agent`-labelled utterance
   in the holder audit log; `DeterministicDirector` owns focus/modality/timing
   (§P3 implementation).
-- **P4 — realtime streaming.** Agent reply deltas → incremental TTS (F11);
-  deterministic envelope/artifact stripping; bridge batching; barge-in
-  cancel/steer + drop-cancelled; `playback.truncated` recorded.
+- **P4 — realtime streaming.** **Implemented** (2026-10-01):
+  `StreamingSpeaker` (strip → dedupe → clause batch → incremental TTS) and
+  `BargeInController` in `idfon-voice`; the channel forwards
+  `message.appended` deltas over the loopback bridge to the holder
+  (§P4 implementation).
 - **P5 — turn-taking & echo.** One-speaker arbiter (enables non-actor speech),
   full barge-in on iOS, gated/threshold barge-in on macOS, macOS AEC.
 - **P6 — on-device.** MLX STT/TTS on Mac, then iOS where memory allows.

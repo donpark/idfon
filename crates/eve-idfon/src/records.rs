@@ -38,6 +38,9 @@ pub struct VoiceRecord {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
+    /// Set on a `playback_truncated` record: the message the user heard part of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg_id: Option<String>,
     /// Duration in seconds, set on a call summary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<u64>,
@@ -55,6 +58,7 @@ impl VoiceRecord {
             speaker: Some(speaker.into()),
             text: Some(text.into()),
             call_id: Some(call_id.into()),
+            msg_id: None,
             duration_seconds: None,
             turn_count: None,
             at_ms: now_ms(),
@@ -68,8 +72,27 @@ impl VoiceRecord {
             speaker: None,
             text: None,
             call_id: Some(call_id.into()),
+            msg_id: None,
             duration_seconds: Some(duration_seconds),
             turn_count: Some(turn_count),
+            at_ms: now_ms(),
+        }
+    }
+
+    /// What the user heard before a barge-in cancelled playback (F6/P4).
+    /// The client sends this as a `playback.truncated` event; the holder wires
+    /// it into the record buffer when the barge-in sender lands.
+    #[allow(dead_code)]
+    pub fn playback_truncated(call_id: &str, msg_id: &str, heard_until: &str) -> Self {
+        Self {
+            seq: 0,
+            kind: "playback_truncated".into(),
+            speaker: Some("agent".into()),
+            text: Some(heard_until.into()),
+            call_id: Some(call_id.into()),
+            msg_id: Some(msg_id.into()),
+            duration_seconds: None,
+            turn_count: None,
             at_ms: now_ms(),
         }
     }
@@ -244,6 +267,15 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].text.as_deref(), Some("again"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn playback_truncation_record_serializes_heard_text() {
+        let record = VoiceRecord::playback_truncated("call-1", "msg-1", "Two plus two");
+        assert_eq!(record.kind, "playback_truncated");
+        assert_eq!(record.msg_id.as_deref(), Some("msg-1"));
+        assert_eq!(record.text.as_deref(), Some("Two plus two"));
+        assert_eq!(record.speaker.as_deref(), Some("agent"));
     }
 
     #[test]
