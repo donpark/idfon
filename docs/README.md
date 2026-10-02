@@ -62,7 +62,7 @@ kept because it records decisions; **design** = not all implemented.
 | `idfon-artifacts-testing.md` | manual artifact/reference test runbook |
 | `idfon-eve.md` | idfon as an Eve ingress channel (implemented) |
 | `ai-voice-chat.md` | the voice agent built on the Eve channel; transport + front-end decision |
-| `voice-side-channel.md` | shared voice service: requirements, STT/TTS candidates, plan (P0–P4 implemented) |
+| `voice-side-channel.md` | shared voice service: requirements, STT/TTS candidates, plan (P0–P5 service core implemented) |
 
 ## Operations
 
