@@ -186,6 +186,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if args.contains("-answer") { waitForIncomingCall(video: false) }
         if args.contains("-videoanswer") { waitForIncomingCall(video: true) }
+        if args.contains("-bargein") {
+            // Off main: synthesizePCM blocks its caller while the synthesizer
+            // runs on main, so the caller must not be main.
+            DispatchQueue.global(qos: .userInitiated).async {
+                OnDeviceVoice.shared.runBargeInExercise()
+            }
+        }
     }
 
     private func waitForIncomingCall(video: Bool) {

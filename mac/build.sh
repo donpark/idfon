@@ -35,6 +35,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSCameraUsageDescription</key><string>Idfon uses the camera for video calls.</string>
     <key>NSMicrophoneUsageDescription</key><string>Idfon uses the microphone for calls and voice messages.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>Idfon uses on-device speech recognition to transcribe your voice.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
