@@ -85,6 +85,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if args.contains("-voicelisten") {
             OnDeviceVoice.shared.runListenSmokeTest()
         }
+        if let i = args.firstIndex(of: "-voiceagenttext"), args.count > i + 2 {
+            VoiceAgentSession.shared.runText(peerRef: args[i + 1], text: args[i + 2])
+        }
+        if let i = args.firstIndex(of: "-voiceagent"), args.count > i + 1 {
+            let ref = args[i + 1]
+            let turns = args.count > i + 2 ? (Int(args[i + 2]) ?? 1) : 1
+            VoiceAgentSession.shared.run(peerRef: ref, turns: turns)
+        }
         if args.contains("-bargein") {
             // Off main: synthesizePCM blocks its caller while the synthesizer
             // runs on main, so the caller must not be main.

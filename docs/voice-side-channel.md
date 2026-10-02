@@ -415,6 +415,18 @@ to the cascade.
   "does it sound good" judgement remains a human call; the objective half is
   recorded and repeatable.
 
+### Client integration (A1), first slice
+
+The app now runs a **client-side cascade** (`ios/Idfon/VoiceAgentSession.swift`):
+listen (on-device STT) → send the transcript as a text turn to the agent peer →
+await the reply → speak it (on-device TTS, envelopes stripped). Driven by
+`-voiceagent <peer> [turns]`; a text-driven `-voiceagenttext <peer> <text>`
+verifies the send/await/speak half without a live utterance. **Verified on an
+iPhone 16** against the running agent: "…capital of France…" → reply "the
+capital of France is Paris." → spoken. This is the client-owned audio path the
+design calls A1; the holder still runs the GPT-Live relay until the cascade is
+switched over for calls.
+
 ### Placement
 
 Under A2, the voice component runs **at the channel edge (the per-agent
