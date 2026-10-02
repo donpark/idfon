@@ -3,7 +3,7 @@
   "description": "Native-SDK version of Idfon.",
   "private": true,
   "scripts": {
-    "clean": "rm -rf .zig-cache zig-out",
+    "clean": "rm -rf .zig-cache zig-out .native Idfon.app Idfon.dmg vendor/iroh-c-ffi/target",
     "build": "bash build-mac.sh",
     "start": "open -n 'Idfon.app'",
     "test:cli": "bash ../scripts/test-cli.sh",
