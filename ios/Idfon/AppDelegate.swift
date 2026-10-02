@@ -85,6 +85,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if args.contains("-voicelisten") {
             OnDeviceVoice.shared.runListenSmokeTest()
         }
+        if args.contains("-bargein") {
+            OnDeviceVoice.shared.runBargeInExercise()
+        }
         if args.contains("-voiceffi") {
             DispatchQueue.global(qos: .userInitiated).async {
                 Automation.mark("voice: ffi start")

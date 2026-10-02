@@ -68,6 +68,10 @@ int32_t idfon_voice_set_bindings(idfon_voice_tts_fn tts, idfon_voice_stt_fn stt,
                                  idfon_voice_free_fn free_bytes,
                                  idfon_voice_free_text_fn free_text);
 char *idfon_voice_apple_selftest(void);
+// Barge-in filter (P5): nonzero when `text` may cancel playback.
+uint8_t idfon_voice_is_cancellable(const char *text, uint8_t playing, uint8_t in_tool_window);
+// Text-layer echo check (P5): nonzero when `heard` is our own `spoken` text.
+uint8_t idfon_voice_is_echo(const char *spoken, const char *heard);
 
 #define IDFON_OK 0
 #define IDFON_EARG -1
