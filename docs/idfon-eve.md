@@ -296,6 +296,13 @@ lifetime does. Three shapes, in order of preference:
      --blob-dir ~/.local/share/idfon/eve-blobs \
      --target http://127.0.0.1:52776 --secret "$IDFON_BRIDGE_SECRET" --port 18766
    ```
+   **Stable address.** The iroh endpoint id (key) is stable, but the UDP port
+   was ephemeral, so each restart changed the endpoint address and invalidated
+   pairing. `IDFON_ENDPOINT_PORT` pins it: the serve script derives and persists
+   a per-agent port for the holder, and `idfond` derives one from its data dir
+   (59000–59899); extra identities stay ephemeral. A taken port falls back to
+   ephemeral rather than blocking startup. Pair once; restarts keep the address.
+
    Eve 0.55.0 does not expose a custom-channel startup hook, so this is the
    explicit deployment entrypoint rather than an in-extension spawn.
 3. **External sidecar.** An operator runs the holder; the channel connects to
