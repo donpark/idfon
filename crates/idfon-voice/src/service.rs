@@ -103,7 +103,10 @@ impl VoiceService {
             .engine
             .tts(&model.voice, self.format)
             .map_err(SpeakError::Engine)?;
-        let mut chunks = tts.push_text(text).map_err(SpeakError::Engine)?;
+        // G2P front end: speak written numbers as words; audit keeps the
+        // original agent text.
+        let spoken = crate::g2p::normalize_for_speech(text);
+        let mut chunks = tts.push_text(&spoken).map_err(SpeakError::Engine)?;
         chunks.extend(tts.finish().map_err(SpeakError::Engine)?);
 
         let utterance = Utterance {

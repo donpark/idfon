@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use idfon_voice::{synthesize_to_wav, AudioFormat, StubVoiceEngine, VoiceEngine};
+use idfon_voice::{
+    normalize_for_speech, synthesize_to_wav, AudioFormat, StubVoiceEngine, VoiceEngine,
+};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -24,5 +26,6 @@ fn main() -> Result<()> {
         samples,
         path.display()
     );
+    println!("normalized={}", normalize_for_speech(&text));
     Ok(())
 }

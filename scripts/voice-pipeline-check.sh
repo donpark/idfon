@@ -12,8 +12,12 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/idfon-voice-pipeline.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 # --offline guarantees the check never reaches the network.
-cargo run --offline --quiet -p idfon-voice --example pipeline -- \
-  "$work/pipeline.wav" "Two plus two is four. Anything else?"
+out=$(cargo run --offline --quiet -p idfon-voice --example pipeline -- \
+  "$work/pipeline.wav" "There are 42 yen left.")
+echo "$out"
+# The native G2P front end (P6) speaks written numbers as words.
+printf '%s\n' "$out" | grep -q 'normalized=There are forty-two yen left.' \
+  || { echo "FAIL: G2P did not normalize the number" >&2; exit 1; }
 
 python3 - "$work/pipeline.wav" <<'PY'
 import sys
