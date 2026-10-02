@@ -32,9 +32,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// header until the legacy path is deleted.
     private func setVideoRotation() {}
 
-    /// Automation channel (simctl launch app.idfon -dial <ref> / -answer);
+    /// Automation channel (device.sh app.idfon -dial <ref> / -answer);
     /// launch arguments bypass the system "Open in app?" confirmation that
-    /// `simctl openurl` shows for URL schemes.
+    /// opening a URL scheme shows.
     private func handleLaunchArguments() {
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "-dial"), args.count > i + 1 {

@@ -1,9 +1,8 @@
 #!/bin/bash
 # Build the Rust c-ffi staticlib for the DEVICE (aarch64-apple-ios) and stage
-# into ios/Vendor/device/. Pass --sim to also build the simulator target
-# (rarely needed — the simulator has no real camera/mic/radio).
-# Flags mirror scripts/build-ios-sim.sh step 1 (LTO off: fat LTO breaks
-# block2 unwind-shim symbol resolution at link time).
+# into ios/Vendor/device/. Device only — the simulator has no real
+# camera/mic/radio and is not supported.
+# LTO off: fat LTO breaks block2 unwind-shim symbol resolution at link time.
 set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ios_dir="$root/ios"
@@ -19,13 +18,4 @@ RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-miphoneos-version-min=17.0" CARGO_PROFILE
   cargo build --release --target aarch64-apple-ios
 cp target/aarch64-apple-ios/release/libiroh_c_ffi.a "$ios_dir/Vendor/device/"
 
-if [ "${1:-}" = "--sim" ]; then
-  mkdir -p "$ios_dir/Vendor/sim"
-  echo "== aarch64-apple-ios-sim"
-  SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path) IPHONEOS_DEPLOYMENT_TARGET=17.0 \
-  RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-mios-simulator-version-min=17.0" CARGO_PROFILE_RELEASE_LTO=off \
-    cargo build --release --target aarch64-apple-ios-sim
-  cp target/aarch64-apple-ios-sim/release/libiroh_c_ffi.a "$ios_dir/Vendor/sim/"
-fi
-
-echo "staged $ios_dir/Vendor/device/libiroh_c_ffi.a (+ sim with --sim)"
+echo "staged $ios_dir/Vendor/device/libiroh_c_ffi.a"

@@ -3,9 +3,8 @@ import Foundation
 /// Paths for the in-process daemon.
 ///
 /// Unix domain sockets are limited to ~104 bytes. Device sandbox paths fit
-/// (~91 chars), but simulator container paths are ~180 chars, so the
-/// simulator uses a short /tmp path instead (simulator apps share the host
-/// /tmp; one booted sim at a time per socket name).
+/// (~91 chars); no separate simulator path exists because the app is
+/// device-only.
 enum DaemonPaths {
     static var dataDir: URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("idfond", isDirectory: true)
@@ -14,13 +13,9 @@ enum DaemonPaths {
     }
 
     static var socketPath: String {
-        #if targetEnvironment(simulator)
-        return "/tmp/idfon-ios.sock"
-        #else
         // No idfond subdir: the data-container path plus tmp/idfond/idfond.sock
         // exceeds SUN_LEN (104) on device — the flat tmp path fits.
         return FileManager.default.temporaryDirectory.appendingPathComponent("idfond.sock").path
-        #endif
     }
 }
 

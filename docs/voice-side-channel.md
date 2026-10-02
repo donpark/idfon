@@ -14,8 +14,7 @@
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
-> [`idfon-eve.md`](idfon-eve.md) (channel model), and the research in
-> `docs/archive/idfon-harness.md` / `docs/archive/omini-duplex-omni.md`.
+> [`idfon-eve.md`](idfon-eve.md) (channel model).
 >
 > Revised twice after independent design reviews (2026-10-01). The second review
 > blocked on Eve's history contract (B1), the signer rule under A1 (B2), and the

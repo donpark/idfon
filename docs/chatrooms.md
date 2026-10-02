@@ -1,9 +1,8 @@
 # Idfon Chatrooms
 
 > **Status:** room UI, direct fan-out, and hybrid gossip transport are implemented. Companion to
-> `docs/communication-model.md` (group/broadcast modes) and
-> `docs/archive/agent-conversation-plane.md` (C3: thread by peer + explicit
-> `conversation_id`). Written 2026-09-15.
+> `docs/communication-model.md` (group/broadcast modes; thread by peer +
+> explicit `conversation_id`). Written 2026-09-15.
 
 ## The answer in one line
 
@@ -234,8 +233,6 @@ also sets one. The holder gates it in the live-call handler
 ## References
 
 - `docs/communication-model.md` — group/broadcast modes, grants, policy.
-- `docs/archive/agent-conversation-plane.md` — C3: thread by peer + explicit
-  `conversation_id`.
 - `docs/protocol.md` — `message.send`, grants, events, tickets.
 - `docs/idfon-eve.md` — the channel address model.
 - `crates/idfon-protocol/src/lib.rs` — `MessageEnvelope.conversation`,

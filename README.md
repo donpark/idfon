@@ -139,8 +139,7 @@ DEVICE=<iphone-udid-or-name> pnpm ios device
 
 `pnpm ios build` produces a device Release build. `pnpm ios device` installs
 and launches it through `devicectl`; omit `DEVICE` to use the first available
-physical iPhone. For the simulator, build with `pnpm --filter @idfon/ios build -- --sim`
-and launch the result with `pnpm ios start`.
+physical iPhone. The iOS app is device-only — the simulator is not supported.
 
 Build and launch the macOS app:
 
@@ -183,8 +182,6 @@ See [ai-voice-chat agent](docs/ai-voice-chat.md) and
 ## Documentation
 
 Start at [docs/README.md](docs/README.md) — the index of current docs by topic.
-`docs/archive/` holds historical research and pre-implementation plans, kept
-for lineage only.
 
 ## Development
 
