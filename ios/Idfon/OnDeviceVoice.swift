@@ -130,6 +130,15 @@ final class OnDeviceVoice: NSObject {
     private var latestPartial = ""
     /// Retained during the barge-in exercise.
     var bargeInPlayer: AVAudioPlayer?
+    /// iOS 26+ SpeechAnalyzer transcriber, retained while barge-in listens.
+    var systemTranscriber: Any?
+
+    func stopSystemTranscriber() {
+        if #available(iOS 26.0, *), let transcriber = systemTranscriber as? SystemSpeechTranscriber {
+            transcriber.stop()
+        }
+        systemTranscriber = nil
+    }
 
     /// Start listening on the microphone and transcribe entirely on device.
     /// Partials are logged as they arrive; the first final result completes.

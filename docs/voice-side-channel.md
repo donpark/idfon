@@ -343,12 +343,16 @@ to the cascade.
   stopped it. **AEC requires `AVAudioInputNode.setVoiceProcessingEnabled(true)`**
   — `.voiceChat` mode alone left the mic hearing the agent (all partials were
   correctly dropped as echo, which is how the missing AEC surfaced).
-- **macOS gated barge-in** (`mac/Sources/Idfon/MacSpeechTranscriber.swift`):
-  uses the new `SpeechAnalyzer` + `SpeechTranscriber` (`.progressiveTranscription`
-  reporting options) with `AnalyzerInputConverter` for live volatile partials,
-  plus the same Rust filters over the CIdfon C ABI. **Verified**: the caller's
-  "Hello" over playback engaged and stopped it. macOS has no usable AEC here, so
-  it is **gated + text-layer echo suppression**, not full duplex.
+- **SpeechAnalyzer on 26+, SFSpeechRecognizer below (both platforms)**:
+  `SystemSpeechTranscriber` (iOS 26+, `ios/Idfon/SystemSpeechTranscriber.swift`)
+  and `MacSpeechTranscriber` (macOS 26+) use `SpeechAnalyzer` +
+  `SpeechTranscriber` with `.volatileResults`/`.fastResults` and
+  `AnalyzerInputConverter` for live partials; below 26 both apps fall back to
+  `SFSpeechRecognizer` (`OnDeviceVoice.startListening`). Both use the same Rust
+  barge-in/echo filters over the C ABI. **Verified**: iOS 26+ shared path
+  engaged on the caller's "Hello" (AEC active); macOS gated path likewise.
+- **macOS has no usable AEC on this hardware**, so it is **gated + text-layer
+  echo suppression** (full-duplex AEC opt-in via `IDFON_MACOS_AEC=1`).
 - **macOS AEC** is implemented behind `IDFON_MACOS_AEC=1`: enabling
   `AVAudioInputNode.setVoiceProcessingEnabled(true)` with the tap at
   `format: nil` hooks up the system VoiceProcessingIO (AEC + noise
