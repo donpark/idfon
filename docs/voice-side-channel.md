@@ -434,6 +434,19 @@ iPhone 16** against the running agent — the full mic loop (spoke "Hello" →
 half ("…capital of France…" → "the capital of France is Paris."). This is the
 client-owned audio path the design calls A1.
 
+**Continuous endpointing (2026-10-02).** The loop now keeps one `SpeechAnalyzer`
+alive for the whole session — `SystemSpeechTranscriber` on iOS 26+,
+`MacSpeechTranscriber` on macOS 26+ (SFSpeech remains the pre-26 fallback). The
+mic tap is paused while the agent thinks/speaks so its own TTS can't leak into
+the next prompt. `VoicePromptSegmenter` (`ios/Idfon/VoicePromptSegmenter.swift`,
+mirrored for macOS) picks utterance boundaries: a final transcriber result
+commits immediately, and a 1.2 s no-change gap commits the accumulated partial
+as a fallback; committed text is deduped so a late final for the same segment
+isn't sent twice. A failed analyzer is rebuilt once (the LiveSub lesson). Check:
+`swiftc -o /tmp/vpscheck ios/Idfon/VoicePromptSegmenter.swift
+ios/Checks/VoicePromptSegmenterCheck/main.swift && /tmp/vpscheck`. Device E2E of
+the continuous loop is still pending.
+
 **Target agent.** Rather than strip GPT-Live out of `ai-voice-chat`, a separate
 text-only agent was added: `agents/voice-agent` (model + JustBash sandbox +
 `eve-idfon`, no GPT-Live and no voice tools), served by the generalized

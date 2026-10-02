@@ -29,6 +29,7 @@ final class SystemSpeechTranscriber {
     /// Start listening on the mic; `onText` receives (text, isFinal) as results
     /// stream, `onError` a failure description.
     func start(
+        enableVoiceProcessing: Bool = true,
         onText: @escaping (String, Bool) -> Void,
         onError: @escaping (String) -> Void
     ) async throws {
@@ -107,11 +108,13 @@ final class SystemSpeechTranscriber {
         let input = engine.inputNode
         // iOS AEC: enable voice processing on the input node. Requires a
         // play-and-record/voiceChat audio session (the barge-in caller sets it).
-        do {
-            try input.setVoiceProcessingEnabled(true)
-            Automation.mark("voice: voice-processing enabled")
-        } catch {
-            Automation.mark("voice: voice-processing unsupported: \(error.localizedDescription)")
+        if enableVoiceProcessing {
+            do {
+                try input.setVoiceProcessingEnabled(true)
+                Automation.mark("voice: voice-processing enabled")
+            } catch {
+                Automation.mark("voice: voice-processing unsupported: \(error.localizedDescription)")
+            }
         }
         let hardware = input.outputFormat(forBus: 0)
         Automation.mark(
@@ -168,6 +171,18 @@ final class SystemSpeechTranscriber {
         let analyzer = self.analyzer
         self.analyzer = nil
         Task { await analyzer?.cancelAndFinishNow() }
+    }
+
+    /// Stop/start the mic tap without tearing down the analyzer. Used while the
+    /// agent thinks/speaks so its own TTS can't leak into the next utterance.
+    func pause() {
+        engine?.pause()
+    }
+
+    func resume() {
+        guard let engine, !engine.isRunning else { return }
+        engine.prepare()
+        try? engine.start()
     }
 
     /// Manual conversion (tap format → 16 kHz Int16 mono) for iOS 26 before

@@ -5,6 +5,12 @@ import Foundation
 /// peer -> await the reply -> on-device TTS. This is the cascade the holder
 /// side-channel replaces GPT-Live with; the app owns all audio.
 ///
+/// One long-lived analyzer stays prepared for the whole session; the mic tap is
+/// paused while the agent thinks/speaks so its own TTS can't leak into the next
+/// prompt. `VoicePromptSegmenter` picks utterance boundaries: a final result
+/// commits immediately, a 1.2 s no-change gap is the fallback. iOS 26+ uses the
+/// SpeechAnalyzer; older iOS falls back to a per-turn SFSpeechRecognizer.
+///
 /// UI drives `start`/`stop`; `run`/`runText` are launch-arg automations.
 @MainActor
 final class VoiceAgentSession: NSObject {
@@ -20,6 +26,8 @@ final class VoiceAgentSession: NSObject {
     private let voice = OnDeviceVoice.shared
     private let synthesizer = AVSpeechSynthesizer()
     private var speechDelegate: SpeechDelegate?
+    private let segmenter = VoicePromptSegmenter()
+    private var analyzer: Any?
 
     private(set) var isActive = false
     var onState: ((State) -> Void)?
@@ -28,6 +36,7 @@ final class VoiceAgentSession: NSObject {
     private var turnLimit = Int.max
     private var turnsDone = 0
     private var client = DaemonClient()
+    private var promptWaiter: CheckedContinuation<String?, Never>?
 
     /// Continuous conversation until `stop()`.
     func start(peerRef: String, turns: Int = Int.max) {
@@ -36,6 +45,11 @@ final class VoiceAgentSession: NSObject {
         stopRequested = false
         turnLimit = turns
         turnsDone = 0
+        configureSession()
+        segmenter.onPartial = { [weak self] text in self?.onState?(.listening(text)) }
+        segmenter.onCommit = { [weak self] text in self?.deliver(text) }
+        segmenter.start()
+        startAnalyzer()
         Task { @MainActor in
             let peers = (try? await client.peers()) ?? []
             guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
@@ -57,6 +71,7 @@ final class VoiceAgentSession: NSObject {
 
     func stop() {
         stopRequested = true
+        deliver(nil)
     }
 
     /// One-shot automation (`-voiceagent <ref> [turns]`).
@@ -66,6 +81,7 @@ final class VoiceAgentSession: NSObject {
 
     /// Text-driven verification (`-voiceagenttext <ref> <text>`).
     func runText(peerRef: String, text: String) {
+        configureSession()
         Task { @MainActor in
             let peers = (try? await client.peers()) ?? []
             guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
@@ -121,9 +137,83 @@ final class VoiceAgentSession: NSObject {
 
     private func finish() {
         isActive = false
+        stopRequested = true
+        segmenter.stop()
+        if #available(iOS 26.0, *), let transcriber = analyzer as? SystemSpeechTranscriber {
+            transcriber.stop()
+        }
+        analyzer = nil
+        deliver(nil)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         turnsDone = 0
         turnLimit = Int.max
         onState?(.idle)
+    }
+
+    // MARK: - analyzer lifecycle
+
+    /// One session for the whole voice mode: the analyzer records while TTS
+    /// plays back on the same play-and-record session, so `speak()` must not
+    /// reconfigure it mid-session.
+    private func configureSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(
+            .playAndRecord,
+            mode: .default,
+            options: [.defaultToSpeaker, .allowBluetooth]
+        )
+        try? session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    private func startAnalyzer() {
+        guard #available(iOS 26.0, *) else { return }
+        let transcriber = SystemSpeechTranscriber()
+        analyzer = transcriber
+        Task { [weak self] in
+            do {
+                try await transcriber.start(
+                    // No AEC: the mic is paused whenever the agent speaks.
+                    enableVoiceProcessing: false,
+                    onText: { [weak self] text, isFinal in
+                        DispatchQueue.main.async { self?.segmenter.handle(text, isFinal: isFinal) }
+                    },
+                    onError: { [weak self] message in
+                        Automation.mark("voice-agent: analyzer error \(message)")
+                        DispatchQueue.main.async { self?.restartAnalyzer() }
+                    }
+                )
+            } catch {
+                Automation.mark("voice-agent: analyzer start failed \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// LiveSub's lesson: a failed recognizer stays dead until reset. Rebuild it.
+    private func restartAnalyzer() {
+        guard isActive, #available(iOS 26.0, *) else { return }
+        (analyzer as? SystemSpeechTranscriber)?.stop()
+        analyzer = nil
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard self.isActive else { return }
+            self.startAnalyzer()
+        }
+    }
+
+    // MARK: - prompt handoff
+
+    private func deliver(_ text: String?) {
+        guard let waiter = promptWaiter else { return }
+        promptWaiter = nil
+        waiter.resume(returning: text)
+    }
+
+    private func awaitPrompt() async -> String? {
+        if stopRequested { return nil }
+        return await withCheckedContinuation { continuation in
+            if stopRequested { continuation.resume(returning: nil); return }
+            promptWaiter = continuation
+        }
     }
 
     // MARK: - speech
@@ -139,9 +229,33 @@ final class VoiceAgentSession: NSObject {
         }
     }
 
-    /// One user turn: prefer the recognizer's final, but accept the latest
-    /// partial once speech has settled (final only arrives at end-of-input).
+    /// One user turn. On iOS 26+ the analyzer is already running; the mic is
+    /// resumed for the turn and paused again while the agent responds.
     private func listenOnce(timeout: TimeInterval = 30) async -> String? {
+        if #available(iOS 26.0, *), let transcriber = analyzer as? SystemSpeechTranscriber {
+            segmenter.setEnabled(true)
+            segmenter.clear()
+            transcriber.resume()
+            let heard = await awaitPromptWithTimeout(timeout)
+            segmenter.setEnabled(false)
+            transcriber.pause()
+            return heard
+        }
+        return await listenWithSFSpeech(timeout: timeout)
+    }
+
+    private func awaitPromptWithTimeout(_ timeout: TimeInterval) async -> String? {
+        let deadline = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            self.deliver(nil)
+        }
+        let heard = await awaitPrompt()
+        deadline.cancel()
+        return heard
+    }
+
+    /// Older iOS: one SFSpeech listening phase per turn.
+    private func listenWithSFSpeech(timeout: TimeInterval) async -> String? {
         await withCheckedContinuation { continuation in
             var latest = ""
             var lastChange = Date()
@@ -165,7 +279,7 @@ final class VoiceAgentSession: NSObject {
                 }
             }
             self.voice.startListening(
-                configureSession: true,
+                configureSession: false,
                 enableVoiceProcessing: false,
                 onPartial: { text in
                     latest = text
@@ -198,13 +312,6 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func speak(_ text: String) async {
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(
-            .playAndRecord,
-            mode: .default,
-            options: [.defaultToSpeaker, .allowBluetooth]
-        )
-        try? session.setActive(true, options: .notifyOthersOnDeactivation)
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let utterance = AVSpeechUtterance(string: text)
             utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
