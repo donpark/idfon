@@ -55,6 +55,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Idfon uses the microphone for live calls.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Idfon uses on-device speech recognition to transcribe your voice.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Idfon uses the camera for video calls.</string>
 	<key>CFBundleURLTypes</key>

@@ -66,6 +66,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 15) { Self.dumpLog() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 30) { Self.dumpLog() }
         }
+        if args.contains("-voicetest") {
+            OnDeviceVoice.shared.runSmokeTest()
+        }
         if let i = args.firstIndex(of: "-memo"), args.count > i + 2, let seconds = TimeInterval(args[i + 1]) {
             let ref = args[i + 2]
             VoiceMemo.requestPermission { granted in

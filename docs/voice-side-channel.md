@@ -340,16 +340,25 @@ to the cascade.
 
 ### P6 implementation
 
+- **Apple-native on-device provider** (`ios/Idfon/OnDeviceVoice.swift`): the A1
+  client engine — `AVSpeechSynthesizer` for TTS and `SFSpeechRecognizer` with
+  `requiresOnDeviceRecognition` for STT, no network. `scripts/ios-voice-provider-test.sh`
+  runs a device round trip (synthesize a phrase to a file, then transcribe that
+  file on device) and asserts the transcript. **Verified on an iPhone 16
+  (iOS 27.0.1)**: TTS produced 58,890 frames and on-device STT returned "The
+  quick brown fox jumps over the lazy dog". This is the offline default voice
+  path the design anticipated for A1 ("the OS voices satisfy the offline
+  default").
 - **Native G2P** (`idfon-voice/src/g2p.rs`): `normalize_for_speech` turns
   written numbers into spoken English cardinals/decimals (`42` → `forty-two`,
   `3.14` → `three point one four`) before TTS, so the bundled default voice has
   no LGPL `num2words` dependency. It is applied in `synthesize_to_wav` and
   `VoiceService::speak_turn` (the audit keeps the original agent text), and
   `scripts/voice-pipeline-check.sh` asserts the normalization.
-- **Not done**: the MLX STT/TTS engines themselves (Mac then iOS within memory
-  limits) and the remote-fallback selection. Those need Apple silicon, MLX, and
-  models, and land with the native P6 work; the seam (`VoiceEngine`) and the
-  registry tier are already in place to receive them.
+- **Not done**: the MLX model engines on Mac/iOS (now optional given the
+  Apple-native path), the remote-engine fallback selection, and bridging this
+  Swift provider into the Rust `VoiceEngine` seam for the cascade consumer. The
+  seam and registry tier are in place to receive them.
 
 ### P7 implementation
 
@@ -577,10 +586,10 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   one-speaker `Arbiter` with the F9 closed non-actor kinds, `EchoSuppressor`
   with the pending-approval exemption, and barge-in filters/modes. Native
   iOS full barge-in + macOS AEC/gated capture remain (§P5 implementation).
-- **P6 — on-device.** **Native G2P implemented** (2026-10-01):
-  `normalize_for_speech` speaks written numbers as words so the bundled default
-  voice drops the LGPL `num2words` dependency; covered by the pipeline check.
-  MLX STT/TTS on Mac/iOS remains (needs the Apple apps/models).
+- **P6 — on-device.** **Apple-native path implemented + verified** (2026-10-01):
+  `AVSpeechSynthesizer`/`SFSpeechRecognizer` on-device round trip verified on an
+  iPhone 16; native G2P landed and is covered by the pipeline check. MLX model
+  engines and remote fallback remain optional/deferred.
 - **P7 — optional engines.** **Decision recorded + test gate implemented**
   (2026-10-01): stay on cascade STT/TTS (no full-duplex engine now); the
   LLM/AFM director stays deferred until voice-in-rooms is designed; BWE gated by
