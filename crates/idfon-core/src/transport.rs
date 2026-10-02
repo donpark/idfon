@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     future::Future,
     io,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     pin::Pin,
     sync::{Arc, Mutex},
 };
@@ -173,6 +174,20 @@ impl IrohTransport {
         let mut builder = Endpoint::builder(presets::N0).alpns(vec![MESSAGE_ALPN.to_vec()]);
         if let Some(key) = key {
             builder = builder.secret_key(SecretKey::from_bytes(&key));
+        }
+        // Pin the UDP port so the endpoint address is stable across restarts
+        // (the endpoint id already is). Off by default: only set
+        // `IDFON_ENDPOINT_PORT` when a stable address is wanted.
+        if let Some(port) = std::env::var("IDFON_ENDPOINT_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+        {
+            builder = builder
+                .clear_ip_transports()
+                .bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))
+                .map_err(|error| TransportError::Failed(error.to_string()))?
+                .bind_addr(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)))
+                .map_err(|error| TransportError::Failed(error.to_string()))?;
         }
         let endpoint = builder
             .bind()
