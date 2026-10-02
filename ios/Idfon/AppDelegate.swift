@@ -69,6 +69,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if args.contains("-voicetest") {
             OnDeviceVoice.shared.runSmokeTest()
         }
+        if args.contains("-voicelisten") {
+            OnDeviceVoice.shared.runListenSmokeTest()
+        }
         if let i = args.firstIndex(of: "-memo"), args.count > i + 2, let seconds = TimeInterval(args[i + 1]) {
             let ref = args[i + 2]
             VoiceMemo.requestPermission { granted in

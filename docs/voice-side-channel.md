@@ -344,11 +344,12 @@ to the cascade.
   client engine — `AVSpeechSynthesizer` for TTS and `SFSpeechRecognizer` with
   `requiresOnDeviceRecognition` for STT, no network. `scripts/ios-voice-provider-test.sh`
   runs a device round trip (synthesize a phrase to a file, then transcribe that
-  file on device) and asserts the transcript. **Verified on an iPhone 16
-  (iOS 27.0.1)**: TTS produced 58,890 frames and on-device STT returned "The
-  quick brown fox jumps over the lazy dog". This is the offline default voice
-  path the design anticipated for A1 ("the OS voices satisfy the offline
-  default").
+  file on device) and asserts the transcript; `--listen` instead transcribes
+  live microphone speech. **Verified on an iPhone 16 (iOS 27.0.1)**: TTS
+  produced 58,890 frames and on-device STT returned "The quick brown fox jumps
+  over the lazy dog", and the live mic→on-device STT path finalized the same
+  phrase. This is the offline default voice path the design anticipated for A1
+  ("the OS voices satisfy the offline default").
 - **Native G2P** (`idfon-voice/src/g2p.rs`): `normalize_for_speech` turns
   written numbers into spoken English cardinals/decimals (`42` → `forty-two`,
   `3.14` → `three point one four`) before TTS, so the bundled default voice has
