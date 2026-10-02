@@ -515,6 +515,9 @@ impl Capability {
         Capability(std::borrow::Cow::Borrowed("recording.retain"));
     /// May use the peer's `idfon/mcp/1` transport (grants gate each direction).
     pub const McpTransport: Capability = Capability(std::borrow::Cow::Borrowed("mcp.transport"));
+    /// May make the agent speak aloud through the voice service (N9). Issued by
+    /// the listening client to the speaker's target, enforced at the holder.
+    pub const VoiceSpeak: Capability = Capability(std::borrow::Cow::Borrowed("voice.speak"));
 
     pub fn new(value: impl Into<String>) -> Self {
         Capability(std::borrow::Cow::Owned(value.into()))

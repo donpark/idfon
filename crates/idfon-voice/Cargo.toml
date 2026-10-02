@@ -9,3 +9,4 @@ crate-type = ["rlib"]
 
 [dependencies]
 anyhow = "1"
+idfon-protocol = { path = "../idfon-protocol" }
