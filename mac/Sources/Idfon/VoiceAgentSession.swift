@@ -5,6 +5,12 @@ import Speech
 /// A1 client-side voice agent loop (macOS): on-device STT -> text turn to the
 /// agent peer -> await the reply -> on-device TTS. Mirror of the iOS
 /// `VoiceAgentSession`; the macOS app owns all audio.
+///
+/// One long-lived analyzer stays prepared for the whole session; the mic tap is
+/// paused while the agent thinks/speaks so its own TTS can't leak into the next
+/// prompt. `VoicePromptSegmenter` picks utterance boundaries: a final result
+/// commits immediately, a 1.2 s no-change gap is the fallback. macOS 26+ uses
+/// the SpeechAnalyzer; older macOS falls back to a per-turn SFSpeechRecognizer.
 @MainActor
 final class VoiceAgentSession: NSObject {
     static let shared = VoiceAgentSession()
@@ -19,7 +25,8 @@ final class VoiceAgentSession: NSObject {
     private let voice = OnDeviceVoice.shared
     private let synthesizer = AVSpeechSynthesizer()
     private var speechDelegate: SpeechDelegate?
-    private var macTranscriber: Any?
+    private let segmenter = VoicePromptSegmenter()
+    private var analyzer: Any?
 
     private(set) var isActive = false
     var onState: ((State) -> Void)?
@@ -30,6 +37,7 @@ final class VoiceAgentSession: NSObject {
     private var turnLimit = Int.max
     private var turnsDone = 0
     private var client = DaemonClient()
+    private var promptWaiter: CheckedContinuation<String?, Never>?
 
     func start(peerRef: String, turns: Int = Int.max) {
         guard !isActive else { return }
@@ -37,6 +45,10 @@ final class VoiceAgentSession: NSObject {
         stopRequested = false
         turnLimit = turns
         turnsDone = 0
+        segmenter.onPartial = { [weak self] text in self?.onState?(.listening(text)) }
+        segmenter.onCommit = { [weak self] text in self?.deliver(text) }
+        segmenter.start()
+        startAnalyzer()
         Task { @MainActor in
             let peers = (try? await client.peers()) ?? []
             guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
@@ -56,6 +68,7 @@ final class VoiceAgentSession: NSObject {
 
     func stop() {
         stopRequested = true
+        deliver(nil)
     }
 
     func run(peerRef: String, turns: Int) {
@@ -118,9 +131,67 @@ final class VoiceAgentSession: NSObject {
 
     private func finish() {
         isActive = false
+        stopRequested = true
+        segmenter.stop()
+        if #available(macOS 26.0, *), let transcriber = analyzer as? MacSpeechTranscriber {
+            transcriber.stop()
+        }
+        analyzer = nil
+        deliver(nil)
         turnsDone = 0
         turnLimit = Int.max
         onState?(.idle)
+    }
+
+    // MARK: - analyzer lifecycle
+
+    private func startAnalyzer() {
+        guard #available(macOS 26.0, *) else { return }
+        let transcriber = MacSpeechTranscriber()
+        analyzer = transcriber
+        Task { [weak self] in
+            do {
+                try await transcriber.start(
+                    onText: { [weak self] text, isFinal in
+                        DispatchQueue.main.async { self?.segmenter.handle(text, isFinal: isFinal) }
+                    },
+                    onError: { [weak self] message in
+                        Automation.mark("voice-agent: analyzer error \(message)")
+                        DispatchQueue.main.async { self?.restartAnalyzer() }
+                    }
+                )
+            } catch {
+                Automation.mark("voice-agent: analyzer start failed \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// LiveSub's lesson: a failed recognizer stays dead until reset. Rebuild it.
+    private func restartAnalyzer() {
+        guard isActive, #available(macOS 26.0, *) else { return }
+        (analyzer as? MacSpeechTranscriber)?.stop()
+        analyzer = nil
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard self.isActive else { return }
+            self.startAnalyzer()
+        }
+    }
+
+    // MARK: - prompt handoff
+
+    private func deliver(_ text: String?) {
+        guard let waiter = promptWaiter else { return }
+        promptWaiter = nil
+        waiter.resume(returning: text)
+    }
+
+    private func awaitPrompt() async -> String? {
+        if stopRequested { return nil }
+        return await withCheckedContinuation { continuation in
+            if stopRequested { continuation.resume(returning: nil); return }
+            promptWaiter = continuation
+        }
     }
 
     // MARK: - speech
@@ -136,58 +207,32 @@ final class VoiceAgentSession: NSObject {
         }
     }
 
+    /// One user turn. On macOS 26+ the analyzer is already running; the mic is
+    /// resumed for the turn and paused again while the agent responds.
     private func listenOnce(timeout: TimeInterval = 30) async -> String? {
-        if #available(macOS 26.0, *) {
-            return await listenWithAnalyzer(timeout: timeout)
+        if #available(macOS 26.0, *), let transcriber = analyzer as? MacSpeechTranscriber {
+            segmenter.setEnabled(true)
+            segmenter.clear()
+            transcriber.resume()
+            let heard = await awaitPromptWithTimeout(timeout)
+            segmenter.setEnabled(false)
+            transcriber.pause()
+            return heard
         }
         return await listenWithSFSpeech(timeout: timeout)
     }
 
-    @available(macOS 26.0, *)
-    private func listenWithAnalyzer(timeout: TimeInterval) async -> String? {
-        await withCheckedContinuation { continuation in
-            let transcriber = MacSpeechTranscriber()
-            macTranscriber = transcriber
-            var latest = ""
-            var lastChange = Date()
-            let started = Date()
-            var resumed = false
-            var timer: Timer?
-            let finish: (String?) -> Void = { text in
-                guard !resumed else { return }
-                resumed = true
-                timer?.invalidate()
-                transcriber.stop()
-                self.macTranscriber = nil
-                continuation.resume(returning: text)
-            }
-            timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
-                if self.stopRequested {
-                    finish(latest.isEmpty ? nil : latest)
-                } else if !latest.isEmpty, Date().timeIntervalSince(lastChange) > 1.2 {
-                    finish(latest)
-                } else if Date().timeIntervalSince(started) > timeout {
-                    finish(latest.isEmpty ? nil : latest)
-                }
-            }
-            Task {
-                do {
-                    try await transcriber.start(
-                        onText: { text, isFinal in
-                            latest = text
-                            lastChange = Date()
-                            self.onState?(.listening(text))
-                            if isFinal { finish(text) }
-                        },
-                        onError: { _ in finish(latest.isEmpty ? nil : latest) }
-                    )
-                } catch {
-                    finish(nil)
-                }
-            }
+    private func awaitPromptWithTimeout(_ timeout: TimeInterval) async -> String? {
+        let deadline = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            self.deliver(nil)
         }
+        let heard = await awaitPrompt()
+        deadline.cancel()
+        return heard
     }
 
+    /// Older macOS: one SFSpeech listening phase per turn.
     private func listenWithSFSpeech(timeout: TimeInterval) async -> String? {
         await withCheckedContinuation { continuation in
             var latest = ""

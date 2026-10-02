@@ -200,6 +200,18 @@ final class MacSpeechTranscriber {
         Task { await analyzer?.cancelAndFinishNow() }
     }
 
+    /// Stop/start the mic tap without tearing down the analyzer. Used while the
+    /// agent thinks/speaks so its own TTS can't leak into the next utterance.
+    func pause() {
+        engine?.pause()
+    }
+
+    func resume() {
+        guard let engine, !engine.isRunning else { return }
+        engine.prepare()
+        try? engine.start()
+    }
+
     /// Manual clocked conversion (48 kHz Float32 mono → 16 kHz Int16 mono),
     /// mirroring livesub's converter rather than trusting AVAudioConverter's
     /// buffer output for this pipeline.
