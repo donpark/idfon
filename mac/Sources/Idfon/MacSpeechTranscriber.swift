@@ -114,8 +114,22 @@ final class MacSpeechTranscriber {
         let engine = AVAudioEngine()
         self.engine = engine
         let input = engine.inputNode
-        // No voice processing here (matches livesub): on macOS the echo is
-        // handled at the text layer + energy gating, not by AEC.
+        // macOS AEC is opt-in: enabling voice processing on the input node
+        // hooks up the system VoiceProcessingIO (AEC + noise suppression).
+        // The tap below therefore uses `format: nil` so it follows whatever
+        // format the enabled node provides. It is off by default because some
+        // devices (e.g. the LG UltraFine Display Audio USB mic) accept the call
+        // but then deliver silence; set IDFON_MACOS_AEC=1 on a supported device.
+        if ProcessInfo.processInfo.environment["IDFON_MACOS_AEC"] == "1" {
+            do {
+                try input.setVoiceProcessingEnabled(true)
+                Automation.mark("voice: voice-processing enabled")
+            } catch {
+                Automation.mark("voice: voice-processing unsupported: \(error.localizedDescription)")
+            }
+        } else {
+            Automation.mark("voice: voice-processing off (gated; set IDFON_MACOS_AEC=1 to enable)")
+        }
         let hardware = input.outputFormat(forBus: 0)
         Automation.mark(
             "voice: analyzer rate=\(format.sampleRate) ch=\(format.channelCount) hw=\(hardware.sampleRate)/\(hardware.channelCount)"
@@ -129,7 +143,7 @@ final class MacSpeechTranscriber {
             Automation.mark("voice: analyzer input converter ready")
         }
         var tapBuffers = 0
-        input.installTap(onBus: 0, bufferSize: 512, format: hardware) { [weak self] buffer, time in
+        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, time in
             guard let self, let builder = self.inputBuilder else { return }
             tapBuffers += 1
             if tapBuffers == 1 || tapBuffers % 500 == 0 {
