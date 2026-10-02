@@ -86,7 +86,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             OnDeviceVoice.shared.runListenSmokeTest()
         }
         if args.contains("-bargein") {
-            OnDeviceVoice.shared.runBargeInExercise()
+            // Off main: synthesizePCM blocks its caller while the synthesizer
+            // runs on main, so the caller must not be main.
+            DispatchQueue.global(qos: .userInitiated).async {
+                OnDeviceVoice.shared.runBargeInExercise()
+            }
         }
         if args.contains("-voiceffi") {
             DispatchQueue.global(qos: .userInitiated).async {
