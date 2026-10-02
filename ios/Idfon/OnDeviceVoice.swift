@@ -144,6 +144,7 @@ final class OnDeviceVoice: NSObject {
     /// Partials are logged as they arrive; the first final result completes.
     func startListening(
         configureSession: Bool = true,
+        enableVoiceProcessing: Bool = true,
         onPartial: ((String) -> Void)? = nil,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
@@ -181,7 +182,10 @@ final class OnDeviceVoice: NSObject {
                 // A caller-owned play-and-record session (barge-in) needs voice
                 // processing for echo cancellation; query the format after
                 // enabling it, since the input node reconfigures.
-                if !configureSession {
+                // Voice processing needs an active output reference; in a
+                // listen-only phase (no playback yet) it silences the mic, so
+                // the caller can opt out.
+                if !configureSession && enableVoiceProcessing {
                     try? input.setVoiceProcessingEnabled(true)
                 }
                 let format = input.outputFormat(forBus: 0)
