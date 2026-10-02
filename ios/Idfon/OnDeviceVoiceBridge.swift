@@ -157,14 +157,14 @@ extension OnDeviceVoice {
         self.bargeInPlayer = player
         Automation.mark("voice: bargein prepared seconds=\(player.duration)")
 
-        // Start the mic (AEC) first so the tap is running before playback.
-        self.startListening(configureSession: false, onPartial: { text in
-            guard player.isPlaying else { return }
+        let handle: (String) -> Void = { [weak self] text in
+            guard let self, player.isPlaying else { return }
             let cancellable = idfon_voice_is_cancellable(text, 1, 0) != 0
             let echo = idfon_voice_is_echo(phrase, text) != 0
             if cancellable && !echo {
                 player.stop()
                 self.bargeInPlayer = nil
+                self.stopSystemTranscriber()
                 Automation.mark("voice: bargein engaged transcript=\(text)")
                 Automation.mark("voice: PASS")
                 Automation.mark("voice: done")
@@ -172,7 +172,30 @@ extension OnDeviceVoice {
             } else {
                 Automation.mark("voice: bargein ignored echo=\(echo) text=\(text)")
             }
-        }) { _ in }
+        }
+
+        // iOS 26+ shares the SpeechAnalyzer path with macOS; older iOS uses the
+        // legacy SFSpeechRecognizer fallback.
+        if #available(iOS 26.0, *) {
+            let transcriber = SystemSpeechTranscriber()
+            systemTranscriber = transcriber
+            Task {
+                do {
+                    try await transcriber.start(
+                        onText: { text, _ in handle(text) },
+                        onError: { message in
+                            Automation.mark("voice: FAIL bargein listen \(message)")
+                            Automation.mark("voice: done")
+                        }
+                    )
+                } catch {
+                    Automation.mark("voice: FAIL bargein listen \(error.localizedDescription)")
+                    Automation.mark("voice: done")
+                }
+            }
+        } else {
+            startListening(configureSession: false, onPartial: handle) { _ in }
+        }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             player.play()
@@ -181,6 +204,7 @@ extension OnDeviceVoice {
             DispatchQueue.main.asyncAfter(deadline: .now() + player.duration + 1) { [weak self] in
                 guard let self, let current = self.bargeInPlayer, !current.isPlaying else { return }
                 self.bargeInPlayer = nil
+                self.stopSystemTranscriber()
                 Automation.mark("voice: FAIL bargein no interruption")
                 Automation.mark("voice: done")
             }
@@ -188,6 +212,7 @@ extension OnDeviceVoice {
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
             guard let self, self.bargeInPlayer != nil else { return }
             self.bargeInPlayer = nil
+            self.stopSystemTranscriber()
             Automation.mark("voice: FAIL bargein no interruption")
             Automation.mark("voice: done")
         }
