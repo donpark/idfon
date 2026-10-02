@@ -171,17 +171,40 @@ impl IrohTransport {
     }
 
     pub async fn bind_with_key(key: Option<[u8; 32]>) -> Result<Self, TransportError> {
+        // Pin the UDP port so the endpoint address is stable across restarts
+        // (the endpoint id already is). Off by default: only set
+        // `IDFON_ENDPOINT_PORT` when a stable address is wanted.
+        let port = std::env::var("IDFON_ENDPOINT_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok());
+        Self::bind_with_key_port(key, port).await
+    }
+
+    /// Like [`bind_with_key`], but with an explicit port (or ephemeral). Used
+    /// for the default identity; additional identities bind ephemeral so a
+    /// pinned port cannot conflict.
+    pub async fn bind_with_key_port(
+        key: Option<[u8; 32]>,
+        port: Option<u16>,
+    ) -> Result<Self, TransportError> {
+        match Self::try_bind(key, port).await {
+            Ok(transport) => Ok(transport),
+            // A pinned port can be taken (another profile, a stale process);
+            // fall back to ephemeral rather than fail to start.
+            Err(error) if port.is_some() => {
+                eprintln!("[idfon-core] endpoint port {port:?} unavailable ({error}); binding ephemeral");
+                Self::try_bind(key, None).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn try_bind(key: Option<[u8; 32]>, port: Option<u16>) -> Result<Self, TransportError> {
         let mut builder = Endpoint::builder(presets::N0).alpns(vec![MESSAGE_ALPN.to_vec()]);
         if let Some(key) = key {
             builder = builder.secret_key(SecretKey::from_bytes(&key));
         }
-        // Pin the UDP port so the endpoint address is stable across restarts
-        // (the endpoint id already is). Off by default: only set
-        // `IDFON_ENDPOINT_PORT` when a stable address is wanted.
-        if let Some(port) = std::env::var("IDFON_ENDPOINT_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-        {
+        if let Some(port) = port {
             builder = builder
                 .clear_ip_transports()
                 .bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))
@@ -401,7 +424,9 @@ impl TransportManager {
         identity: &str,
         key: [u8; 32],
     ) -> Result<String, TransportError> {
-        let transport = Arc::new(IrohTransport::bind_with_key(Some(key)).await?);
+        // Extra identities stay ephemeral: the pinned port belongs to the
+        // default identity only.
+        let transport = Arc::new(IrohTransport::bind_with_key_port(Some(key), None).await?);
         let endpoint_id = transport.endpoint().id().to_string();
         self.current
             .write()
@@ -434,7 +459,7 @@ impl TransportManager {
         identity: &str,
         key: Option<[u8; 32]>,
     ) -> Result<String, TransportError> {
-        let replacement = Arc::new(IrohTransport::bind_with_key(key).await?);
+        let replacement = Arc::new(IrohTransport::bind_with_key_port(key, None).await?);
         let id = replacement.endpoint().id().to_string();
         let old = self
             .current

@@ -507,6 +507,16 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
     // Chunked-upload staging is transient by definition; a crash can leave an
     // accumulator behind, so sweep it on every boot.
     let _ = std::fs::remove_dir_all(data_dir.join("staging"));
+    // Keep the default identity's endpoint address stable across restarts so
+    // paired apps do not need re-pairing. Extra identities stay ephemeral
+    // (see TransportManager); a taken port falls back to ephemeral too.
+    if std::env::var_os("IDFON_ENDPOINT_PORT").is_none() {
+        let hash = data_dir.to_string_lossy().bytes().fold(
+            2_166_136_261u32,
+            |acc, byte| (acc ^ byte as u32).wrapping_mul(16_777_619),
+        );
+        std::env::set_var("IDFON_ENDPOINT_PORT", (59_000 + (hash % 900)).to_string());
+    }
     let store = Arc::new(Mutex::new(Store::load(&data_dir)?));
     let media_service = Arc::new(MediaService::default());
     let _ = MEDIA_SERVICE.set((*media_service).clone());
