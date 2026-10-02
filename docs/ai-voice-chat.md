@@ -267,8 +267,7 @@ than only into the chat UI.
 ## Decision: fix the coupling before swapping transport or front-end (2026-10-01)
 
 Status: **decision, #1 implemented** (2026-10-01). Reached while reviewing whether to move
-the GPT-Live connection off WebSocket to WebRTC; the research is collected in
-`docs/archive/idfon-harness.md` and `docs/archive/omini-duplex-omni.md`.
+the GPT-Live connection off WebSocket to WebRTC.
 
 **The fault line is context ownership, not transport.** GPT-Live currently owns
 a voice context while the Eve orchestrator owns the text context, and the two

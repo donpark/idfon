@@ -6,7 +6,7 @@
 > RPCs; and the folder provider (`idfon-mcp fs` / `idfon-mcp expose`). Written
 > 2026-09-29.
 
-Two pieces of the `docs/archive/idfon-http-routing.md` idea are real now: a single
+Two pieces of the original resource-routing idea are real now: a single
 `idfon://` namespace, and a reusable loopback HTTP surface for serving account
 resources to a consumer (a WebView, an MCP host, a local tool).
 

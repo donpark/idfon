@@ -1,9 +1,7 @@
 # Idfon docs index
 
 **Read this first, then open only the files you need.** Do not bulk-read `docs/`
-— most questions touch one or two entries below. `docs/archive/` is historical
-design lineage; skip it unless you are reconstructing *why* something is the way
-it is.
+— most questions touch one or two entries below.
 
 Status legend: **current** = describes the code as it is; **as-built** = a plan
 kept because it records decisions; **design** = not all implemented.
@@ -70,25 +68,3 @@ kept because it records decisions; **design** = not all implemented.
 | --- | --- |
 | `troubleshooting.md` | known issues, diagnoses, fixes |
 | `dylib-refactoring-plan.md` | shared-dylib build as-built + follow-up log |
-
-## Archive (`docs/archive/`)
-
-Historical research, pre-implementation plans, and designs that were
-superseded. Read only to reconstruct lineage; not maintained against the code.
-
-| Doc | Original purpose |
-| --- | --- |
-| `architecture-plan.md` | early whole-system implementation plan |
-| `idfon-http-routing.md` | `idfon://` resource-routing research Q&A |
-| `mcp-agent-report.md` | MCP/agent design findings |
-| `mcp-implementation-plan.md` | MCP M1–M5 plan |
-| `agent-conversation-plane.md` | generic agent bridge (superseded by Eve) |
-| `idfon-eve-implementation-plan.md` | Eve endpoint-holder plan |
-| `idfon-eve-celld.md` | idfon as a celld ingress adapter (design) |
-| `multi-device-implementation-plan.md` | multi-device rollout plan |
-| `native-shells-plan.md` | native shell rollout plan |
-| `quic-proxy.md` | WebTransport-to-iroh local proxy research |
-| `iorh-vs-ll-hls.md` | Iroh vs LL-HLS broadcast comparison |
-| `iroh-rendezvous-url.md` | URL-as-rendezvous patterns |
-| `call-machine.md` | planned CallMachine refactor (not started) |
-| `major-crate-upgrade-handoff.md` | one-off dependency-upgrade handoff |

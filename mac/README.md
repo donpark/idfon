@@ -22,7 +22,7 @@ Or from the repo root via the pnpm workspace:
 pnpm mac build      # = bash build.sh in mac/
 pnpm mac start      # open the built .app
 pnpm ios build      # same delegation for the iOS app
-pnpm ios start <args> # install + launch on the booted simulator
+pnpm ios device <args> # install + launch on a physical iPhone
 ```
 
 Requires the Rust release artifacts (built on first run) and a Swift 5.9+

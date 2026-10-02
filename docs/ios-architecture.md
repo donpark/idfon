@@ -32,7 +32,7 @@ ios/
 │   ├── DaemonClient+Methods.swift    # status/peers/sendText/waitMessages/events/call-mode
 │   ├── DaemonBootstrap.swift # spawns idfond on background thread, socket paths
 │   └── Idfon-Bridging.h      # C ABI surface (daemon_run, client_request, media_*)
-├── Checks/                   # host-run checks, no simulator (not in the Xcode target)
+├── Checks/                   # host-run checks (not in the Xcode target)
 └── Vendor/                   # libiroh_c_ffi.a static lib (Rust, gitignored)
 ```
 
@@ -76,7 +76,7 @@ Key facts:
 - **Daemon is in-process**: `AppDelegate` → `DaemonBootstrap.start()` runs
   `idfon_daemon_run` on a background `Thread` (16MB stack); it lives until process
   exit. No separate daemon binary. A Rust change therefore means rebuilding the
-  vendored `ios/Vendor/{device,sim}` libs.
+  vendored `ios/Vendor/device` lib.
 - **One IPC channel, two usages**: JSON requests/responses (`idfon_client_request`
   over Unix socket, each call its own connection) for chat/events/peers, and direct C
   media functions that bypass IPC entirely (zero-copy frame push).
@@ -96,8 +96,8 @@ Key facts:
   nav-bar `Call` button, publishes both tracks, and begins **mic-only** (camera off until
   the Bar's `Cam` toggle); in-call Mic/Cam buttons gate whether each published stream is
   *sent*.
-- **Sim vs device socket path**: sim uses `/tmp/idfon-ios.sock` (sandbox paths exceed
-  the 104-byte `SUN_LEN`), device uses flat tmp path.
+- **Socket path**: the app is device-only and uses a flat tmp path for the Unix
+  socket (sandbox paths would otherwise exceed the 104-byte `SUN_LEN`).
 - **On-device automation**: `ios/device.sh` builds/installs/launches on a physical
   iPhone via `devicectl`; launch arguments drive no-tap flows (`-dial`, `-answer`,
   `-videodial`, `-memo`, `-pair`, `-pair-ticket`). `-sendfile <peer> <fileName>`

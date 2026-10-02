@@ -7,8 +7,8 @@ desktop). Reference implementation: `crates/idfon-protocol` (types) and
 
 ## Transport
 
-Unix domain socket (path ≤ ~104 bytes: device sandbox paths fit, simulator
-apps use short `/tmp` paths). Framing: 4-byte little-endian length prefix +
+Unix domain socket (path ≤ ~104 bytes: device sandbox paths fit without the
+longer `/tmp` fallback). Framing: 4-byte little-endian length prefix +
 JSON body; one request frame expects one response frame (the daemon may send
 multiple response frames for `events` with `follow: true` and for `wait`
 while it holds the request until a match or timeout).

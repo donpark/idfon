@@ -203,27 +203,6 @@
 					"-framework",
 					CoreMedia,
 				);
-				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
-					"$(SRCROOT)/Vendor/sim/libiroh_c_ffi.a",
-					"-ObjC",
-					"-lc++",
-					"-framework",
-					AudioToolbox,
-					"-framework",
-					CoreAudio,
-					"-framework",
-					SystemConfiguration,
-					"-framework",
-					Network,
-					"-framework",
-					Security,
-					"-framework",
-					AVFoundation,
-					"-framework",
-					CoreVideo,
-					"-framework",
-					CoreMedia,
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.idfon;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -246,27 +225,6 @@
 				MARKETING_VERSION = 0.6.0;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(SRCROOT)/Vendor/device/libiroh_c_ffi.a",
-					"-ObjC",
-					"-lc++",
-					"-framework",
-					AudioToolbox,
-					"-framework",
-					CoreAudio,
-					"-framework",
-					SystemConfiguration,
-					"-framework",
-					Network,
-					"-framework",
-					Security,
-					"-framework",
-					AVFoundation,
-					"-framework",
-					CoreVideo,
-					"-framework",
-					CoreMedia,
-				);
-				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
-					"$(SRCROOT)/Vendor/sim/libiroh_c_ffi.a",
 					"-ObjC",
 					"-lc++",
 					"-framework",

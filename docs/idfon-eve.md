@@ -1,10 +1,7 @@
 # idfon as an Eve Ingress Channel
 
-> **Status:** implemented through M0–M5; the iOS text-demo follow-up is tracked in [#11](https://github.com/donpark/idfon/issues/11). Companion to `docs/archive/agent-conversation-plane.md`
-> (the framework-agnostic C1 bridge, superseded for Eve by this approach) and
-> `docs/mcp-transport.md` / `docs/archive/mcp-agent-report.md` (idfon's tool transport).
-> Implementation history and acceptance coverage are tracked in
-`docs/archive/idfon-eve-implementation-plan.md`.
+> **Status:** implemented through M0–M5; the iOS text-demo follow-up is tracked in [#11](https://github.com/donpark/idfon/issues/11). Companion to
+> `docs/mcp-transport.md` (idfon's tool transport).
 > Written 2026-09-14; revised 2026-09-14 (provider-owns-endpoint framing,
 > replies-over-iroh, Slack mapping, no-public-endpoint property).
 
@@ -74,7 +71,7 @@ response goes back over the idfon channel in both shapes.
 
 ## Why a channel, not a bridge to `/eve/v1/session`
 
-The earlier C1 design (`docs/archive/agent-conversation-plane.md`) proposed an
+An earlier C1 design proposed an
 agent-side bridge that owns an `idfon-core` endpoint and calls Eve's HTTP
 session API. That works, but it puts conversation semantics
 (address→session, delivery, auth) in a bespoke translator. A channel is the
@@ -481,11 +478,7 @@ scripts assert on. Turns thread to one Eve session per peer id automatically.
 ## References
 
 - `docs/ai-voice-chat.md` — the voice agent built on this channel.
-- `docs/archive/idfon-eve-implementation-plan.md` — the milestone plan.
-- `docs/archive/agent-conversation-plane.md` — the conversation plane; the C1 bridge
-  this supersedes for Eve.
-- `docs/archive/mcp-implementation-plan.md`, `docs/mcp-transport.md`,
-  `docs/archive/mcp-agent-report.md` — the tool axis and the bridge pattern reused here.
+- `docs/mcp-transport.md` — the tool axis and the bridge pattern reused here.
 - `docs/protocol.md`, `docs/communication-model.md` — message plane, grants,
   operations.
 - `docs/audio-media.md`, `docs/video-media.md` — live/blob media pipelines.

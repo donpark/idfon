@@ -3,10 +3,8 @@
 ## Documentation
 
 Start at **`docs/README.md`** (the index) and read only the entries relevant to
-the task. Do not bulk-read `docs/` — it is indexed so you don't have to.
-`docs/archive/` is historical design lineage; skip it unless you are
-reconstructing why something is the way it is. If you add or materially change a
-doc, update the index.
+the task. Do not bulk-read `docs/` — it is indexed so you don't have to. If you
+add or materially change a doc, update the index.
 
 ## Layout
 
@@ -20,6 +18,6 @@ doc, update the index.
 - Rust: `cargo test -p <crate>` and `cargo check --workspace --all-targets`.
 - macOS app: `swift build` in `mac/`.
 - iOS: source files can be syntax-checked with `swiftc -parse <file>`; a full
-  build needs the project/simulator.
+  build needs the Xcode project and a physical iPhone (device-only, no simulator).
 - Native shells use the `native-sdk` skill; iroh work uses the `iroh-protocols`
   skill (see `.pi/skills/`).
