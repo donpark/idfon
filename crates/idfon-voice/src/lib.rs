@@ -28,6 +28,7 @@ pub mod audit;
 pub mod bargein;
 pub mod director;
 pub mod echo;
+pub mod g2p;
 pub mod listen;
 pub mod registry;
 pub mod service;
@@ -44,6 +45,7 @@ pub use bargein::{
 };
 pub use director::{DeterministicDirector, Directive, DirectorError};
 pub use echo::EchoSuppressor;
+pub use g2p::{normalize_for_speech, number_token_to_words};
 pub use listen::{EndpointAuthority, ListenOutput, ListenSession};
 pub use registry::{ModelRegistry, ModelTier, VoiceModel};
 pub use service::{SpeakError, SpokenTurn, VoiceService};
@@ -169,8 +171,9 @@ pub fn synthesize_to_wav(
     path: &Path,
 ) -> Result<usize> {
     let mut tts = engine.tts(voice, format)?;
+    let spoken = g2p::normalize_for_speech(text);
     let mut samples = Vec::new();
-    for chunk in tts.push_text(text)? {
+    for chunk in tts.push_text(&spoken)? {
         samples.extend(chunk.samples);
     }
     for chunk in tts.finish()? {

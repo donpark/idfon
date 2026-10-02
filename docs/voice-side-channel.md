@@ -1,18 +1,19 @@
 # Voice side-channel service
 
-> **Status: design, P0–P5 (service core) implemented** (2026-10-01). The
-> record-only coupling in "Writing to Eve history" (§P0 implementation) ships
-> in `crates/eve-idfon` and the `eve-idfon` extension; the provider seam (§P1
-> implementation) ships as `crates/idfon-voice`, and the listen-side turn
+> **Status: design, P0–P5 (service core) + P6 G2P implemented** (2026-10-01).
+> The record-only coupling in "Writing to Eve history" (§P0 implementation)
+> ships in `crates/eve-idfon` and the `eve-idfon` extension; the provider seam
+> (§P1 implementation) ships as `crates/idfon-voice`, and the listen-side turn
 > semantics + room gate (§P2 implementation) ship in `idfon-voice` and the
 > holder; turn-level speak, the model registry, the `voice.speak` gate, and the
 > deterministic director (§P3 implementation) ship in `idfon-voice`; realtime
 > streaming and barge-in (§P4 implementation) ship in `idfon-voice` plus the
 > bridge forwarding path; the arbiter, F9 non-actor gate, echo suppression, and
-> barge-in filters (§P5 implementation) ship in `idfon-voice`. The P5 *native*
-> halves — iOS full barge-in engagement and macOS AEC/gated capture — are not
-> implemented and need the Apple apps. P6+ remain design. Follow-on to the
-> decision in
+> barge-in filters (§P5 implementation) ship in `idfon-voice`; the native
+> English G2P port (§P6 implementation) ships in `idfon-voice` and the
+> pipeline check. The P5 *native* halves (iOS full barge-in, macOS AEC/gated
+> capture) and the P6 *on-device MLX engines* are not implemented and need the
+> Apple apps/models. P7 remains design. Follow-on to the decision in
 > [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
@@ -344,6 +345,19 @@ to the cascade.
   is the real work item and P4 streaming cannot be called the live-call gate on
   macOS before it lands.
 
+### P6 implementation
+
+- **Native G2P** (`idfon-voice/src/g2p.rs`): `normalize_for_speech` turns
+  written numbers into spoken English cardinals/decimals (`42` → `forty-two`,
+  `3.14` → `three point one four`) before TTS, so the bundled default voice has
+  no LGPL `num2words` dependency. It is applied in `synthesize_to_wav` and
+  `VoiceService::speak_turn` (the audit keeps the original agent text), and
+  `scripts/voice-pipeline-check.sh` asserts the normalization.
+- **Not done**: the MLX STT/TTS engines themselves (Mac then iOS within memory
+  limits) and the remote-fallback selection. Those need Apple silicon, MLX, and
+  models, and land with the native P6 work; the seam (`VoiceEngine`) and the
+  registry tier are already in place to receive them.
+
 ### Placement
 
 Under A2, the voice component runs **at the channel edge (the per-agent
@@ -557,7 +571,10 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   one-speaker `Arbiter` with the F9 closed non-actor kinds, `EchoSuppressor`
   with the pending-approval exemption, and barge-in filters/modes. Native
   iOS full barge-in + macOS AEC/gated capture remain (§P5 implementation).
-- **P6 — on-device.** MLX STT/TTS on Mac, then iOS where memory allows.
+- **P6 — on-device.** **Native G2P implemented** (2026-10-01):
+  `normalize_for_speech` speaks written numbers as words so the bundled default
+  voice drops the LGPL `num2words` dependency; covered by the pipeline check.
+  MLX STT/TTS on Mac/iOS remains (needs the Apple apps/models).
 - **P7 — optional engines.** A deterministic-hosted or full-duplex engine used
   only as STT/TTS, or a new decision; BWE only if the P3 listening test demands
   it. LLM/AFM director deferred until voice-in-rooms is designed.
