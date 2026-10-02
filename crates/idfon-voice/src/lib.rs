@@ -24,20 +24,24 @@ use std::path::Path;
 use anyhow::Result;
 
 pub mod audit;
+pub mod bargein;
 pub mod director;
 pub mod listen;
 pub mod registry;
 pub mod service;
 pub mod speak;
+pub mod stream;
 pub mod stub;
 pub mod wav;
 
 pub use audit::{AuditLog, Speaker, Utterance};
+pub use bargein::{BargeInAction, BargeInController, PlaybackTruncated};
 pub use director::{DeterministicDirector, Directive, DirectorError};
 pub use listen::{EndpointAuthority, ListenOutput, ListenSession};
 pub use registry::{ModelRegistry, ModelTier, VoiceModel};
 pub use service::{SpeakError, SpokenTurn, VoiceService};
 pub use speak::{SpeakAuthorizer, SpeakDenied, SpeakPolicy};
+pub use stream::{ClauseBatcher, DeltaKey, EnvelopeStripper, MessageDelta, StreamingSpeaker};
 pub use stub::StubVoiceEngine;
 pub use wav::write_pcm_wav;
 

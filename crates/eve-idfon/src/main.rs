@@ -232,6 +232,19 @@ enum IpcFrame {
         request_id: String,
         records: Vec<serde_json::Value>,
     },
+    #[serde(rename = "stream.append")]
+    StreamAppend {
+        request_id: String,
+        turn_id: String,
+        step_index: u64,
+        sequence: u64,
+        text: String,
+    },
+    #[serde(rename = "stream.append.result")]
+    StreamAppendResult {
+        request_id: String,
+        accepted: bool,
+    },
     #[serde(rename = "live.publish")]
     LivePublish {
         request_id: String,
@@ -533,6 +546,34 @@ async fn serve(
                     .send(IpcFrame::RecordsDrainResult {
                         request_id,
                         records,
+                    })
+                    .await
+                    .map_err(|_| anyhow!("IPC client disconnected"))
+            }
+            IpcFrame::StreamAppend {
+                request_id,
+                turn_id,
+                step_index,
+                sequence,
+                text,
+            } => {
+                // P4 forwarding path: Eve `message.appended` deltas reach the
+                // holder over the loopback bridge. Clause batching, retry
+                // dedupe, and incremental TTS live in `idfon-voice`
+                // (`StreamingSpeaker`) and are wired to a real engine when the
+                // cascade lands; the holder accepts and accounts for the delta
+                // here so the transport is exercised.
+                let accepted = !text.is_empty();
+                if accepted {
+                    eprintln!(
+                        "[eve-idfon] stream delta turn={turn_id} step={step_index} seq={sequence} chars={}",
+                        text.chars().count()
+                    );
+                }
+                out_tx
+                    .send(IpcFrame::StreamAppendResult {
+                        request_id,
+                        accepted,
                     })
                     .await
                     .map_err(|_| anyhow!("IPC client disconnected"))
