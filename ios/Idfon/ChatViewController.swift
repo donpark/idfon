@@ -51,6 +51,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let composerBar = UIView()
     private let composerText = UITextView()
     private let micButton = UIButton(type: .system)
+    private var voiceButtonItem: UIBarButtonItem?
     private let sendButton = UIButton(type: .system)
     private let attachButton = UIButton(type: .system)
     private let callStatusLabel = UILabel()
@@ -129,9 +130,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if !conversation.isRoom {
             let profile = UIBarButtonItem(image: UIImage(systemName: "waveform"), style: .plain, target: self, action: #selector(audioProfileTapped))
             profile.accessibilityLabel = "Audio profile"
+            let voice = UIBarButtonItem(image: UIImage(systemName: "waveform.badge.mic"), style: .plain, target: self, action: #selector(voiceAgentTapped))
+            voice.accessibilityLabel = "Voice conversation"
+            voiceButtonItem = voice
             navigationItem.rightBarButtonItems = [
                 UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"), style: .plain, target: self, action: #selector(callTapped)),
                 profile,
+                voice,
             ]
         }
 
@@ -783,6 +788,33 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     @objc private func expandVideoTapped() {
         guard presentedViewController == nil else { return }
         present(CallViewController(), animated: true)
+    }
+
+    /// Toggle the client-side (A1) voice agent for this 1:1 peer.
+    @objc private func voiceAgentTapped() {
+        guard let peerId = conversation.peer?.id else { return }
+        let session = VoiceAgentSession.shared
+        if session.isActive {
+            session.stop()
+            applyVoiceState(.idle)
+            return
+        }
+        session.onState = { [weak self] state in self?.applyVoiceState(state) }
+        session.start(peerRef: peerId)
+    }
+
+    private func applyVoiceState(_ state: VoiceAgentSession.State) {
+        switch state {
+        case .idle:
+            navigationItem.prompt = nil
+            voiceButtonItem?.tintColor = nil
+        case .listening(let text), .speaking(let text):
+            navigationItem.prompt = text.isEmpty ? "Listening…" : text
+            voiceButtonItem?.tintColor = .systemRed
+        case .thinking:
+            navigationItem.prompt = "Thinking…"
+            voiceButtonItem?.tintColor = .systemOrange
+        }
     }
 
     @objc private func callTapped() {

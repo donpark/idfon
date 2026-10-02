@@ -420,8 +420,10 @@ to the cascade.
 The app now runs a **client-side cascade** (`ios/Idfon/VoiceAgentSession.swift`):
 listen (on-device STT) → send the transcript as a text turn to the agent peer →
 await the reply → speak it (on-device TTS, envelopes stripped). Driven by
-`-voiceagent <peer> [turns]`; a text-driven `-voiceagenttext <peer> <text>`
-verifies the send/await/speak half without a live utterance. **Verified on an
+A **voice button** in the 1:1 chat header toggles a continuous session (the nav
+prompt shows "Listening…" / "Thinking…" / the live partial); `-voiceagent <peer>
+[turns]` drives it headlessly and `-voiceagenttext <peer> <text>` verifies the
+send/await/speak half without a live utterance. **Verified on an
 iPhone 16** against the running agent — the full mic loop (spoke "Hello" →
 `heard=Hello` → reply "Hello! How can I help?" → spoken) and the text-driven
 half ("…capital of France…" → "the capital of France is Paris."). This is the

@@ -5,16 +5,129 @@ import Foundation
 /// peer -> await the reply -> on-device TTS. This is the cascade the holder
 /// side-channel replaces GPT-Live with; the app owns all audio.
 ///
-/// Driven by `-voiceagent <peer-ref> [turns]` for now (real UI later).
+/// UI drives `start`/`stop`; `run`/`runText` are launch-arg automations.
 @MainActor
 final class VoiceAgentSession: NSObject {
     static let shared = VoiceAgentSession()
+
+    enum State: Equatable {
+        case idle
+        case listening(String)
+        case thinking
+        case speaking(String)
+    }
 
     private let voice = OnDeviceVoice.shared
     private let synthesizer = AVSpeechSynthesizer()
     private var speechDelegate: SpeechDelegate?
 
-    /// One final utterance from the microphone.
+    private(set) var isActive = false
+    var onState: ((State) -> Void)?
+
+    private var stopRequested = false
+    private var turnLimit = Int.max
+    private var turnsDone = 0
+    private var client = DaemonClient()
+
+    /// Continuous conversation until `stop()`.
+    func start(peerRef: String, turns: Int = Int.max) {
+        guard !isActive else { return }
+        isActive = true
+        stopRequested = false
+        turnLimit = turns
+        turnsDone = 0
+        Task { @MainActor in
+            let peers = (try? await client.peers()) ?? []
+            guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
+                Automation.mark("voice-agent: FAIL no peer \(peerRef)")
+                finish()
+                return
+            }
+            Automation.mark("voice-agent: start peer=\(peer.id)")
+            // Let ChatStore finish hydrating so the reply snapshot excludes
+            // pre-existing history.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            while !stopRequested && turnsDone < turnLimit {
+                guard await performTurn(peerId: peer.id) else { break }
+            }
+            Automation.mark("voice-agent: done")
+            finish()
+        }
+    }
+
+    func stop() {
+        stopRequested = true
+    }
+
+    /// One-shot automation (`-voiceagent <ref> [turns]`).
+    func run(peerRef: String, turns: Int) {
+        start(peerRef: peerRef, turns: turns)
+    }
+
+    /// Text-driven verification (`-voiceagenttext <ref> <text>`).
+    func runText(peerRef: String, text: String) {
+        Task { @MainActor in
+            let peers = (try? await client.peers()) ?? []
+            guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
+                Automation.mark("voice-agent-text: FAIL no peer \(peerRef)")
+                return
+            }
+            Automation.mark("voice-agent-text: start peer=\(peer.id) text=\(text)")
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let reply = await sendAndAwait(peerId: peer.id, text: text, logPrefix: "voice-agent-text")
+            else { return }
+            Automation.mark("voice-agent-text: reply=\(reply)")
+            if !reply.isEmpty { await speak(reply) }
+            Automation.mark("voice-agent-text: done")
+        }
+    }
+
+    // MARK: - turn
+
+    private func performTurn(peerId: String) async -> Bool {
+        turnsDone += 1
+        onState?(.listening(""))
+        guard let heard = await listenOnce(), !heard.isEmpty else {
+            Automation.mark("voice-agent: FAIL turn=\(turnsDone) no transcript")
+            return false
+        }
+        Automation.mark("voice-agent: heard=\(heard)")
+        onState?(.thinking)
+        guard let reply = await sendAndAwait(peerId: peerId, text: heard, logPrefix: "voice-agent")
+        else { return false }
+        Automation.mark("voice-agent: reply=\(reply)")
+        if !reply.isEmpty {
+            onState?(.speaking(reply))
+            await speak(reply)
+        }
+        onState?(.idle)
+        return turnsDone < turnLimit
+    }
+
+    private func sendAndAwait(peerId: String, text: String, logPrefix: String) async -> String? {
+        let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
+        do {
+            try await client.sendText(to: peerId, text)
+        } catch {
+            Automation.mark("\(logPrefix): FAIL send \(error.localizedDescription)")
+            return nil
+        }
+        guard let reply = await waitForReply(peerId: peerId, excluding: before) else {
+            Automation.mark("\(logPrefix): FAIL no reply")
+            return nil
+        }
+        return Self.stripEnvelopes(reply)
+    }
+
+    private func finish() {
+        isActive = false
+        turnsDone = 0
+        turnLimit = Int.max
+        onState?(.idle)
+    }
+
+    // MARK: - speech
+
     private final class SpeechDelegate: NSObject, AVSpeechSynthesizerDelegate {
         let finish: () -> Void
         init(finish: @escaping () -> Void) { self.finish = finish }
@@ -26,82 +139,8 @@ final class VoiceAgentSession: NSObject {
         }
     }
 
-    func run(peerRef: String, turns: Int) {
-        Task { @MainActor in
-            let client = DaemonClient()
-            let peers = (try? await client.peers()) ?? []
-            guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
-                Automation.mark("voice-agent: FAIL no peer \(peerRef)")
-                return
-            }
-            Automation.mark("voice-agent: start peer=\(peer.id) turns=\(turns)")
-            // Let ChatStore finish hydrating so the reply snapshot excludes
-            // pre-existing history.
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-
-            for turn in 1...max(1, turns) {
-                guard let heard = await listenOnce(), !heard.isEmpty else {
-                    Automation.mark("voice-agent: FAIL turn=\(turn) no transcript")
-                    break
-                }
-                Automation.mark("voice-agent: heard=\(heard)")
-
-                let before = Set(ChatStore.shared.messages(for: peer.id).map(\.id))
-                do {
-                    try await client.sendText(to: peer.id, heard)
-                } catch {
-                    Automation.mark("voice-agent: FAIL turn=\(turn) send \(error.localizedDescription)")
-                    break
-                }
-                guard let reply = await waitForReply(peerId: peer.id, excluding: before) else {
-                    Automation.mark("voice-agent: FAIL turn=\(turn) no reply")
-                    break
-                }
-                let spoken = Self.stripEnvelopes(reply)
-                Automation.mark("voice-agent: reply=\(spoken)")
-                if !spoken.isEmpty {
-                    await speak(spoken)
-                }
-            }
-            Automation.mark("voice-agent: done")
-        }
-    }
-
     /// One user turn: prefer the recognizer's final, but accept the latest
     /// partial once speech has settled (final only arrives at end-of-input).
-    /// Text-driven variant for verifying send -> await reply -> speak without
-    /// depending on a live utterance.
-    func runText(peerRef: String, text: String) {
-        Task { @MainActor in
-            let client = DaemonClient()
-            let peers = (try? await client.peers()) ?? []
-            guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
-                Automation.mark("voice-agent-text: FAIL no peer \(peerRef)")
-                return
-            }
-            Automation.mark("voice-agent-text: start peer=\(peer.id) text=\(text)")
-            // Let ChatStore finish hydrating so the reply snapshot excludes
-            // pre-existing history.
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            let before = Set(ChatStore.shared.messages(for: peer.id).map(\.id))
-            Automation.mark("voice-agent-text: history=\(before.count)")
-            do {
-                try await client.sendText(to: peer.id, text)
-            } catch {
-                Automation.mark("voice-agent-text: FAIL send \(error.localizedDescription)")
-                return
-            }
-            guard let reply = await waitForReply(peerId: peer.id, excluding: before) else {
-                Automation.mark("voice-agent-text: FAIL no reply")
-                return
-            }
-            let spoken = Self.stripEnvelopes(reply)
-            Automation.mark("voice-agent-text: reply=\(spoken)")
-            if !spoken.isEmpty { await speak(spoken) }
-            Automation.mark("voice-agent-text: done")
-        }
-    }
-
     private func listenOnce(timeout: TimeInterval = 30) async -> String? {
         await withCheckedContinuation { continuation in
             var latest = ""
@@ -117,7 +156,9 @@ final class VoiceAgentSession: NSObject {
                 continuation.resume(returning: text)
             }
             timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
-                if !latest.isEmpty, Date().timeIntervalSince(lastChange) > 1.2 {
+                if self.stopRequested {
+                    finish(latest.isEmpty ? nil : latest)
+                } else if !latest.isEmpty, Date().timeIntervalSince(lastChange) > 1.2 {
                     finish(latest)
                 } else if Date().timeIntervalSince(started) > timeout {
                     finish(latest.isEmpty ? nil : latest)
@@ -127,9 +168,11 @@ final class VoiceAgentSession: NSObject {
                 configureSession: true,
                 enableVoiceProcessing: false,
                 onPartial: { text in
-                latest = text
-                lastChange = Date()
-            }) { result in
+                    latest = text
+                    lastChange = Date()
+                    self.onState?(.listening(text))
+                }
+            ) { result in
                 timer?.invalidate()
                 switch result {
                 case .success(let text): finish(text)
@@ -141,6 +184,7 @@ final class VoiceAgentSession: NSObject {
 
     private func waitForReply(peerId: String, excluding: Set<String>) async -> String? {
         for _ in 0..<60 {
+            if stopRequested { return nil }
             let messages = ChatStore.shared.messages(for: peerId)
             for message in messages.reversed()
             where !message.outgoing && !excluding.contains(message.id) {
