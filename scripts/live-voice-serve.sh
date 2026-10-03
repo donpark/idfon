@@ -134,12 +134,16 @@ for pidfile in "$home"/holder.pid "$home"/bridge.pid "$home"/eve.pid; do
   if [ -f "$pidfile" ]; then kill "$(cat "$pidfile")" 2>/dev/null || true; rm -f "$pidfile"; fi
 done
 sleep 0.5
+# Senders admitted after startup (e.g. a directory invite) are appended here by
+# the provisioner; the holder reloads the file while running.
+touch "$home/allowed-peers"
 live_args=()
 if [ -f "$root/agents/$agent/live.json" ]; then
   live_args=(--live-config "$root/agents/$agent/live.json")
 fi
 IDFON_ENDPOINT_PORT="$endpoint_port" "$root/target/release/eve-idfon-gpt" --key-file "$key" serve \
-  --socket "$home/holder.sock" "${allow_args[@]}" --blob-dir "$home/blobs" \
+  --socket "$home/holder.sock" "${allow_args[@]}" --allow-file "$home/allowed-peers" \
+  --blob-dir "$home/blobs" \
   ${live_args[@]+"${live_args[@]}"} \
   >"$home/holder.ticket" 2>"$home/holder.log" &
 echo $! > "$home/holder.pid"

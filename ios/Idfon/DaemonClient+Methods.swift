@@ -31,6 +31,38 @@ extension DaemonClient {
         return address
     }
 
+    /// Adds a peer from a directory invite's endpoint-addr JSON and grants the
+    /// chat capabilities (mirrors the mac `addChannel` and the `-pair`
+    /// automation). The capability ticket is stored separately via
+    /// `CapabilityTickets.store`.
+    func addChannel(name: String, ticketJSON: String, identity: String) async throws {
+        guard let ticket = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any] else {
+            throw DaemonError.request("invalid contact ticket JSON")
+        }
+        let transport = (ticket["endpoint_addr"] as? String)
+            .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ticket
+        guard let endpointId = (ticket["endpoint_id"] as? String) ?? (transport["id"] as? String),
+              !endpointId.isEmpty else {
+            throw DaemonError.request("ticket has no endpoint_id")
+        }
+        let accountId = (ticket["account_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? endpointId
+        let endpointAddr = (ticket["endpoint_addr"] as? String) ?? ticketJSON
+        _ = try await request(method: "peer.add", params: [
+            "id": AnyEncodable(accountId),
+            "name": AnyEncodable(name),
+            "endpoint_id": AnyEncodable(endpointId),
+            "endpoint_addr": AnyEncodable(endpointAddr),
+            "identity": AnyEncodable(identity),
+        ])
+        for capability in ["message.send", "message.receive", "live.audio.subscribe", "resource.read"] {
+            _ = try await request(method: "access.grant", params: [
+                "identity": AnyEncodable(identity),
+                "subject": AnyEncodable(accountId),
+                "capability": AnyEncodable(capability),
+            ])
+        }
+    }
+
     func useIdentity(_ name: String) async throws {
         _ = try await request(method: "identity.use", params: ["name": AnyEncodable(name)])
     }

@@ -5,6 +5,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         DaemonBootstrap.start()
         ChatStore.shared.start()
+        // Contact invites from a trusted directory enroll silently; everyone
+        // else prompts. The message is already sender-authenticated.
+        ChatStore.shared.onInvite = { [weak self] invite, sender in
+            self?.promptInvite(invite, sender: sender)
+        }
         Task { await DaemonClient().startSharedProvider() }
         LiveCall.shared.recoverStaleCall()
         VideoCall.shared.recoverStaleCall()
@@ -25,6 +30,37 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             idfon_apple_voice_free_text
         )
         NSLog("idfon voice: registered apple engine status=\(status)")
+    }
+
+    /// Confirmation for an `IDFON-INVITE/1` from a sender that is not marked
+    /// auto-enroll. "Add and Always Trust" grants the sender that permission.
+    private func promptInvite(_ invite: ContactInvite, sender: String) {
+        guard let root = Self.topViewController() else { return }
+        let alert = UIAlertController(
+            title: "Add \(invite.name)?",
+            message: (invite.model.isEmpty ? "" : "Model: \(invite.model)\n")
+                + "This invite came from a sender you have not marked as trusted.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Add", style: .default) { _ in
+            ChatStore.shared.acceptInvite(invite)
+        })
+        alert.addAction(UIAlertAction(title: "Add and Always Trust", style: .default) { _ in
+            AutoEnroll.trust(sender)
+            ChatStore.shared.acceptInvite(invite)
+        })
+        alert.addAction(UIAlertAction(title: "Ignore", style: .cancel))
+        root.present(alert, animated: true)
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first { $0.isKeyWindow }
+        var top = window?.rootViewController
+        while let presented = top?.presentedViewController { top = presented }
+        if let nav = top as? UINavigationController { return nav.visibleViewController }
+        return top
     }
 
     /// Legacy nokhwa rotation hook; the Swift CameraPusher path rotates
@@ -72,6 +108,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         if let i = args.firstIndex(of: "-pair-ticket"), args.count > i + 2 {
             storeCapabilityTicket(peer: args[i + 1], jsonOrPath: args[i + 2])
+        }
+        if let i = args.firstIndex(of: "-trust-enroll"), args.count > i + 1 {
+            AutoEnroll.trust(args[i + 1])
+            NSLog("idfon trust-enroll: \(args[i + 1])")
         }
         // Debug: NSLog the tail of the daemon tracing log (see iroh_enable_tracing).
         if args.contains("-dumplog") {

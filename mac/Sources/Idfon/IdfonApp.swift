@@ -31,6 +31,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         VideoCall.shared.onIncoming = { [weak self] peerID, watchOnly in
             self?.surfaceIncoming(peerID: peerID, label: watchOnly ? "Incoming video" : "Incoming video call")
         }
+        // Contact invites from a trusted directory enroll silently; everyone
+        // else prompts. The message is already sender-authenticated.
+        ChatStore.shared.onInvite = { invite, sender in
+            let alert = NSAlert()
+            alert.messageText = "Add \(invite.name)?"
+            alert.informativeText = (invite.model.isEmpty ? "" : "Model: \(invite.model)\n")
+                + "This invite came from a sender you have not marked as trusted."
+            alert.addButton(withTitle: "Add")
+            alert.addButton(withTitle: "Add and Always Trust")
+            alert.addButton(withTitle: "Ignore")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                ChatStore.shared.acceptInvite(invite)
+            case .alertSecondButtonReturn:
+                AutoEnroll.trust(sender)
+                ChatStore.shared.acceptInvite(invite)
+            default:
+                break
+            }
+        }
         Task { await app.refresh() }
         runAutomationIfRequested()
         runCallAutomationIfRequested()
@@ -236,6 +256,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // minted by the peer's holder so outbound sends pass its ingress gate
         // (mac port of the iOS AppDelegate `-pair-ticket` flow).
         let args = CommandLine.arguments
+        if let index = args.firstIndex(of: "-trust-enroll"), args.count > index + 1 {
+            AutoEnroll.trust(args[index + 1])
+            Automation.mark("trust-enroll \(args[index + 1])")
+        }
         if let index = args.firstIndex(of: "-pair-ticket"), args.count > index + 2 {
             let peer = args[index + 1]
             let jsonOrPath = args[index + 2]
