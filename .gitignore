@@ -40,3 +40,5 @@ mac/Vendor/*.dylib
 # eve agent build artifacts
 agents/*/.output/
 agents/*/.eve/
+# directory provisioner invite audit log
+agents/*/invites.ndjson

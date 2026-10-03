@@ -299,6 +299,11 @@ lifetime does. Three shapes, in order of preference:
    a per-agent port for the holder, and `idfond` derives one from its data dir
    (59000–59899); extra identities stay ephemeral. A taken port falls back to
    ephemeral rather than blocking startup. Pair once; restarts keep the address.
+   **Dynamic admission.** `serve --allow-file FILE` loads additional sender ids
+   from a file, unioned with the static `--allow` list and reloaded while the
+   holder runs. A provisioner appends a caller when it issues them a capability
+   ticket, so admitting a new contact needs no holder restart (see
+   `docs/agent-directory.md`).
 
    Eve 0.55.0 does not expose a custom-channel startup hook, so this is the
    explicit deployment entrypoint rather than an in-extension spawn.

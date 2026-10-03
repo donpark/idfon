@@ -243,6 +243,52 @@ enum MessageKind {
     }
 }
 
+/// A contact invite minted by a directory agent: the holder's endpoint address
+/// plus a capability ticket subject-bound to this device. Accepting it adds the
+/// peer and stores the ticket (see `ChatStore.acceptInvite`).
+struct ContactInvite {
+    let name: String
+    let model: String
+    let endpointId: String
+    let contactJSON: String
+    let ticketJSON: String
+    let expiresAt: String?
+
+    static let prefix = "IDFON-INVITE/1\n"
+
+    /// The capability ticket's expiry (epoch seconds or RFC3339). An invite past
+    /// it must not be auto-enrolled.
+    var isExpired: Bool {
+        guard let expiresAt, !expiresAt.isEmpty else { return false }
+        if let seconds = Double(expiresAt) { return seconds <= Date().timeIntervalSince1970 }
+        guard let date = ISO8601DateFormatter().date(from: expiresAt) else { return true }
+        return date <= Date()
+    }
+
+    static func decode(_ text: String) -> ContactInvite? {
+        guard text.hasPrefix(prefix) else { return nil }
+        var fields: [String: String] = [:]
+        for line in text.dropFirst(prefix.count).split(separator: "\n") {
+            let pair = line.split(separator: "=", maxSplits: 1)
+            if pair.count == 2 { fields[String(pair[0])] = String(pair[1]) }
+        }
+        guard let contact = fields["contact"],
+              let ticket = fields["ticket"],
+              let object = try? JSONSerialization.jsonObject(with: Data(contact.utf8)) as? [String: Any],
+              let endpointId = (object["id"] as? String) ?? (object["endpoint_id"] as? String),
+              !endpointId.isEmpty else { return nil }
+        // Prefer the invite-level expiry; fall back to the ticket's.
+        var expiresAt = fields["expires_at"]
+        if expiresAt == nil,
+           let ticketObject = try? JSONSerialization.jsonObject(with: Data(ticket.utf8)) as? [String: Any] {
+            expiresAt = ticketObject["expires_at"] as? String
+        }
+        return ContactInvite(name: fields["name"] ?? "Agent", model: fields["model"] ?? "",
+                             endpointId: endpointId, contactJSON: contact, ticketJSON: ticket,
+                             expiresAt: expiresAt)
+    }
+}
+
 /// Splits a message body into human text plus any embedded `IDFON-*/1`
 /// envelopes. Agents append envelopes after their reply text (a spoken
 /// transcript followed by an `IDFON-DATA/1` or `IDFON-ARTIFACT/1` envelope),
@@ -256,6 +302,7 @@ enum MessageBody {
         "IDFON-FILE/1\n",
         "IDFON-CALL/1\n",
         "IDFON-LIVE/1\n",
+        "IDFON-INVITE/1\n",
     ]
 
     static func parse(_ text: String) -> (text: String?, envelopes: [String]) {

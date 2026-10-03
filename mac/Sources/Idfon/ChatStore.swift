@@ -37,6 +37,10 @@ final class ChatStore {
     /// Fired with a transient notice for the chat banner.
     var onBanner: ((String) -> Void)?
 
+    /// Fired for an invite that needs a confirmation (sender not trusted, or
+    /// ticket expired). The UI prompts; on confirm it calls `acceptInvite`.
+    var onInvite: ((ContactInvite, String) -> Void)?
+
     func addObserver(_ observer: ChatStoreObserver) {
         observers.add(observer)
     }
@@ -127,7 +131,23 @@ final class ChatStore {
         let (preamble, envelopes) = MessageBody.parse(text)
         var parts: [(String, MessageKind)] = []
         if let preamble { parts.append((preamble, .text(preamble))) }
-        for envelope in envelopes { parts.append((envelope, MessageKind.parse(envelope))) }
+        for envelope in envelopes {
+            // A directory invite becomes a contact, not a raw bubble: enroll the
+            // peer and show a short confirmation in its place.
+            if let invite = ContactInvite.decode(envelope) {
+                // Auto-enroll only from a trusted sender and a live ticket; the
+                // message itself is already an Ed25519 sender-signed voucher.
+                if !invite.isExpired && AutoEnroll.isTrusted(peerId) {
+                    acceptInvite(invite)
+                    parts.append(("Added \(invite.name)", .text("Added \(invite.name)")))
+                } else {
+                    onInvite?(invite, peerId)
+                    parts.append(("Contact invite: \(invite.name)", .text("Contact invite: \(invite.name)")))
+                }
+            } else {
+                parts.append((envelope, MessageKind.parse(envelope)))
+            }
+        }
         if parts.isEmpty { parts.append((text, .text(text))) }
         for (index, part) in parts.enumerated() {
             let partID = index == 0 ? messageID : "\(messageID)#\(index)"
@@ -156,6 +176,23 @@ final class ChatStore {
             }
         }
         notifyObservers()
+    }
+
+    /// Accept a directory invite: add the holder as a peer (with the chat
+    /// grants) and store the subject-bound capability ticket so sends to it
+    /// pass the holder's ingress gate.
+    func acceptInvite(_ invite: ContactInvite) {
+        Task { [client] in
+            do {
+                let identity = (try? await client.identityId()) ?? identityId
+                try await client.addChannel(name: invite.name, ticketJSON: invite.contactJSON, identity: identity)
+                _ = CapabilityTickets.store(invite.ticketJSON, for: invite.endpointId)
+                onBanner?("Added \(invite.name)")
+            } catch {
+                NSLog("idfon invite: accept failed \(invite.name): \(error)")
+                onBanner?("Could not add \(invite.name)")
+            }
+        }
     }
 
     /// Replayed call controls older than 60s belong to past sessions.

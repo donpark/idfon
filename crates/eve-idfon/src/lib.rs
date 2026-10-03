@@ -33,7 +33,7 @@ pub mod rooms;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::UnixListener,
-    sync::{mpsc, Mutex},
+    sync::{mpsc, Mutex, RwLock},
 };
 
 const IPC_MAX_FRAME_BYTES: usize = MAX_FRAME_BYTES;
@@ -67,6 +67,10 @@ enum Mode {
         /// Permit only these verified sender peer IDs. Repeat for multiple peers.
         #[arg(long = "allow", value_name = "PEER_ID")]
         allow: Vec<String>,
+        /// File of additional allowed sender peer IDs, one per line, reloaded
+        /// while running. Lets a provisioner admit a caller after startup.
+        #[arg(long, value_name = "FILE")]
+        allow_file: Option<PathBuf>,
         /// Permit an ephemeral identity when no key file or environment key exists.
         #[arg(long)]
         ephemeral: bool,
@@ -328,6 +332,7 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
         Mode::Serve {
             socket,
             allow,
+            allow_file,
             ephemeral,
             blob_dir,
             reply_ticket_file,
@@ -349,6 +354,7 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
             serve(
                 socket,
                 allow,
+                allow_file,
                 key,
                 blob_dir,
                 reply_ticket,
@@ -414,6 +420,7 @@ fn load_key(path: Option<&Path>, ephemeral: bool) -> Result<SigningKey> {
 async fn serve(
     socket: PathBuf,
     allow: Vec<String>,
+    allow_file: Option<PathBuf>,
     key: SigningKey,
     blob_dir: PathBuf,
     reply_ticket: Option<CapabilityTicket>,
@@ -480,13 +487,38 @@ async fn serve(
         })
     };
     let holder_peer_id = peer_id(&key);
+    // Senders admitted dynamically while running (e.g. a directory provisioner
+    // inviting a caller) are unioned with the static --allow list from the
+    // allow-file, which the holder reloads while running.
+    let static_allow = allow;
+    let mut initial = static_allow.clone();
+    if let Some(path) = &allow_file {
+        initial.extend(load_allow_file(path));
+    }
+    initial.sort();
+    initial.dedup();
+    let allow: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(initial));
+    if let Some(path) = allow_file.clone() {
+        let allow = Arc::clone(&allow);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            loop {
+                interval.tick().await;
+                let next = merge_allow(&static_allow, &load_allow_file(&path));
+                let mut guard = allow.write().await;
+                if *guard != next {
+                    *guard = next;
+                }
+            }
+        });
+    }
     let transport_task = {
         let transport = Arc::clone(&transport);
         let targets = Arc::clone(&targets);
         let seen = Arc::clone(&seen);
         let rate_limits = Arc::clone(&rate_limits);
         let out_tx = out_tx.clone();
-        let allow = Arc::new(allow);
+        let allow = Arc::clone(&allow);
         let holder_peer_id = holder_peer_id.clone();
         let transport_for_calls = Arc::clone(&transport);
         let key_for_calls = key.clone();
@@ -699,6 +731,32 @@ async fn serve(
     Ok(())
 }
 
+/// Static allow entries unioned with the allow-file's, sorted and deduped.
+fn merge_allow(static_allow: &[String], file_allow: &[String]) -> Vec<String> {
+    let mut merged = static_allow.to_vec();
+    merged.extend_from_slice(file_allow);
+    merged.sort();
+    merged.dedup();
+    merged
+}
+
+/// Trimmed, non-empty, sorted, deduped sender ids from an allow-file. A
+/// missing file is empty (deny-all additions).
+fn load_allow_file(path: &Path) -> Vec<String> {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut peers: Vec<String> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    peers.sort();
+    peers.dedup();
+    peers
+}
+
 async fn handle_message(
     message: MessageEnvelope,
     remote_endpoint_id: String,
@@ -706,32 +764,35 @@ async fn handle_message(
     seen: Seen,
     rate_limits: RateLimits,
     out_tx: mpsc::Sender<IpcFrame>,
-    allow: Arc<Vec<String>>,
+    allow: Arc<RwLock<Vec<String>>>,
     holder_peer_id: String,
     transport_for_calls: Arc<IrohTransport>,
     key_for_calls: SigningKey,
     live_registry: Arc<live::LiveCallRegistry>,
     live_params: serde_json::Value,
 ) -> std::result::Result<MessageAck, TransportError> {
-    let ticket = match validate_message(&message, &remote_endpoint_id, &allow, &holder_peer_id) {
-        Ok(ticket) => ticket,
-        Err(error) => {
-            eprintln!(
-                "[eve-idfon] rejected message={} sender={} signed_endpoint={} remote_endpoint={} ticket_issuer={:?} ticket_subject={:?}: {error}",
-                message.message_id,
-                message.sender.peer_id,
-                message.sender.endpoint_id,
-                remote_endpoint_id,
-                message.capability_ticket.as_ref().map(|ticket| ticket.issuer.as_str()),
-                message.capability_ticket.as_ref().and_then(|ticket| ticket.subject.as_deref()),
-            );
-            let _ = out_tx
-                .send(IpcFrame::Error {
-                    code: error.code().into(),
-                    message: error.to_string(),
-                })
-                .await;
-            return Err(TransportError::Failed(error.to_string()));
+    let ticket = {
+        let allow = allow.read().await;
+        match validate_message(&message, &remote_endpoint_id, allow.as_slice(), &holder_peer_id) {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                eprintln!(
+                    "[eve-idfon] rejected message={} sender={} signed_endpoint={} remote_endpoint={} ticket_issuer={:?} ticket_subject={:?}: {error}",
+                    message.message_id,
+                    message.sender.peer_id,
+                    message.sender.endpoint_id,
+                    remote_endpoint_id,
+                    message.capability_ticket.as_ref().map(|ticket| ticket.issuer.as_str()),
+                    message.capability_ticket.as_ref().and_then(|ticket| ticket.subject.as_deref()),
+                );
+                let _ = out_tx
+                    .send(IpcFrame::Error {
+                        code: error.code().into(),
+                        message: error.to_string(),
+                    })
+                    .await;
+                return Err(TransportError::Failed(error.to_string()));
+            }
         }
     };
     let wire_text = match &message.content {
@@ -1831,6 +1892,21 @@ mod tests {
         drop(writer);
         assert!(
             matches!(read_frame(&mut reader).await.unwrap(), Some(IpcFrame::TurnIn { text, .. }) if text == "hello")
+        );
+    }
+
+    #[test]
+    fn allow_file_parses_dedupes_and_missing_is_empty() {
+        let dir = std::env::temp_dir().join(format!("eve-allow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("allow");
+        std::fs::write(&path, "peer-a\n\n peer-b \npeer-a\n").unwrap();
+        assert_eq!(load_allow_file(&path), vec!["peer-a", "peer-b"]);
+        assert!(load_allow_file(&dir.join("missing")).is_empty());
+        // Static --allow entries survive the file reload (union, not replace).
+        assert_eq!(
+            merge_allow(&["daemon".to_string()], &load_allow_file(&path)),
+            vec!["daemon", "peer-a", "peer-b"]
         );
     }
 
