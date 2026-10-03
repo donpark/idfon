@@ -818,7 +818,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func callTapped() {
-        if peer.name == "ai-voice-chat" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
+        if peer.name == "live-voice" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
             LiveCall.shared.dial(peer.id)
         } else {
             VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)

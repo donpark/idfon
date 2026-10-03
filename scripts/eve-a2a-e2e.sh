@@ -88,7 +88,7 @@ B_EVE_PORT=$(port)
 
 make_app() {
   app=$1
-  cp -R "$root/agents/message-echo/." "$app/"
+  cp -R "$root/agents/chat-echo/." "$app/"
   mkdir -p "$app/agent"
   cat >"$app/package.json" <<EOF
 {
@@ -96,7 +96,8 @@ make_app() {
   "private": true,
   "type": "module",
   "dependencies": {
-    "eve": "0.55.0",
+    "eve": "0.68.0",
+    "just-bash": "^3.4.2",
     "eve-idfon": "file:$integration"
   }
 }

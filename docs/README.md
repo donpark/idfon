@@ -59,8 +59,8 @@ kept because it records decisions; **design** = not all implemented.
 | `idfon-artifacts.md` | artifact model, references, remote view |
 | `idfon-artifacts-testing.md` | manual artifact/reference test runbook |
 | `idfon-eve.md` | idfon as an Eve ingress channel (implemented) |
-| `ai-voice-chat.md` | the voice agent built on the Eve channel; transport + front-end decision |
-| `voice-side-channel.md` | shared voice service: requirements, STT/TTS candidates, plan (P0–P7 implemented; A1 client cascade integrated) |
+| `live-voice.md` | the voice agent built on the Eve channel; transport + front-end decision |
+| `voice-side-channel.md` | shared voice service: requirements, STT/TTS candidates, plan (P0–P7 implemented; A1 client cascade integrated); the text-only `llm` agent and per-instance model selection for multiple contacts |
 
 ## Operations
 

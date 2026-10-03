@@ -1,10 +1,10 @@
 #!/bin/bash
-# Serve the ai-voice-chat agent (Eve app + idfon channel holder + bridge) as a
+# Serve the live-voice agent (Eve app + idfon channel holder + bridge) as a
 # long-lived local service against the real daemon, and print what the Apple
 # apps need to pair with it.
 #
-#   scripts/ai-voice-chat-serve.sh                  # foreground
-#   scripts/ai-voice-chat-serve.sh &                # background
+#   scripts/live-voice-serve.sh                  # foreground
+#   scripts/live-voice-serve.sh &                # background
 #
 # Requires the daemon on --socket (default /tmp/idfon/idfond.sock) and
 # AI_GATEWAY_API_KEY (GPT-Live voice sessions + gpt-6-luna delegation).
@@ -15,16 +15,23 @@
 #   ticket:   <capability-ticket JSON>      -> mac `-pair-ticket eve <json>`,
 #                                              iOS `-pair-ticket eve <json>`
 #
-# The holder key persists at ${EVE_VOICE_HOME:-$HOME/.idfon/ai-voice-chat} so
-# the agent keeps one identity across restarts — pair once.
+# The holder key persists per instance at
+# ${EVE_VOICE_HOME:-$HOME/.idfon/$EVE_INSTANCE} so each contact keeps one
+# identity across restarts — pair once. EVE_INSTANCE (default: the agent
+# name) keys the identity/home/port, so several contacts can run the same
+# agent with different EVE_IDFON_MODEL and separate identities. EVE_CONTACT_NAME
+# (default: the instance) is the display name printed in the pairing command;
+# the app may still rename the contact locally.
 
 set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cli="${IDFON_CLI:-$root/target/release/idfon}"
 socket="${IDFON_SOCKET:-/tmp/idfon/idfond.sock}"
-agent="${EVE_AGENT:-ai-voice-chat}"
-home="${EVE_VOICE_HOME:-$HOME/.idfon/$agent}"
+agent="${EVE_AGENT:-live-voice}"
+instance="${EVE_INSTANCE:-$agent}"
+contact_name="${EVE_CONTACT_NAME:-$instance}"
+home="${EVE_VOICE_HOME:-$HOME/.idfon/$instance}"
 mkdir -p "$home"
 # Pin the holder's UDP port so its endpoint address survives restarts and the
 # apps do not need re-pairing. Deterministic per agent, persisted, overridable.
@@ -34,7 +41,7 @@ if [ -n "${EVE_VOICE_PORT:-}" ]; then
 elif [ -s "$port_file" ]; then
   endpoint_port=$(cat "$port_file")
 else
-  endpoint_port=$((58000 + $(printf '%s' "$agent" | cksum | awk '{print $1}') % 1000))
+  endpoint_port=$((58000 + $(printf '%s' "$instance" | cksum | awk '{print $1}') % 1000))
 fi
 printf '%s' "$endpoint_port" > "$port_file" 2>/dev/null || true
 integration="$root/integrations/eve-idfon"
@@ -189,7 +196,7 @@ holder_pid=$(printf '%s' "$contact" | jq -r .id)
   echo "pairing:"
   echo "  # the peer id MUST be the holder's endpoint id (channel peers need id == endpoint id)"
   echo "  # each app installs the ticket subject-bound to ITS OWN endpoint id"
-  echo "  idfon --socket $socket peer add $holder_pid --name $agent --endpoint-id $holder_pid --endpoint-addr \"\$(head -1 $home/holder.ticket)\""
+  echo "  idfon --socket $socket peer add $holder_pid --name \"$contact_name\" --endpoint-id $holder_pid --endpoint-addr \"\$(head -1 $home/holder.ticket)\""}
   echo "  pnpm pair --eve-ticket \"\$(head -1 $home/holder.ticket)\""
   echo "  open Idfon.app with: -pair-ticket $holder_pid \"\$(cat $home/capability-ticket.json)\""
   echo "  (iOS: devicectl launch ... -- -pair-ticket $holder_pid \"\$(cat $home/capability-ticket-<ios-endpoint-id>.json)\")"

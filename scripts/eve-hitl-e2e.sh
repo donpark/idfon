@@ -58,7 +58,7 @@ HOLDER_PID=$(printf '%s' "$HOLDER_ADDR" | jq -r .id)
 
 app="$work/app"
 mkdir -p "$app"
-cp -R "$root/agents/message-echo/." "$app/"
+cp -R "$root/agents/chat-echo/." "$app/"
 mkdir -p "$app/agent/tools"
 cat > "$app/agent/agent.ts" <<'EOF'
 import { defineAgent } from "eve";
@@ -105,7 +105,8 @@ cat > "$app/package.json" <<EOF
   "private": true,
   "type": "module",
   "dependencies": {
-    "eve": "0.55.0",
+    "eve": "0.68.0",
+    "just-bash": "^3.4.2",
     "eve-idfon": "file:$integration"
   }
 }

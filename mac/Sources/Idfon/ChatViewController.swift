@@ -1025,7 +1025,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     // MARK: - Calls
 
     @objc private func callTapped() {
-        if peer.name == "ai-voice-chat" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
+        if peer.name == "live-voice" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
             live.dial(peer.id)
         } else {
             video.dial(peer.id, cameraOn: false)

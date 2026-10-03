@@ -14,7 +14,7 @@
 #                   it starts an interactive session)
 #   --model ID      AI Gateway model id (default $EVE_IDFON_MODEL, else
 #                   anthropic/claude-haiku-4.5)
-#   --agent-dir DIR Eve app to run (default agents/message-echo)
+#   --agent-dir DIR Eve app to run (default agents/chat-echo)
 #   --timeout SECS  wait per reply (default 120)
 #   --no-build      reuse already-built binaries
 set -eu
@@ -23,7 +23,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
 model="${EVE_IDFON_MODEL:-anthropic/claude-haiku-4.5}"
-agent_src="$root/agents/message-echo"
+agent_src="$root/agents/chat-echo"
 timeout_s=120
 build=1
 prompts=""
@@ -115,7 +115,8 @@ cat > "$app/package.json" <<EOF
   "private": true,
   "type": "module",
   "dependencies": {
-    "eve": "0.55.0",
+    "eve": "0.68.0",
+    "just-bash": "^3.4.2",
     "eve-idfon": "file:$integration"
   }
 }

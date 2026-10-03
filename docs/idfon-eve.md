@@ -477,7 +477,7 @@ scripts assert on. Turns thread to one Eve session per peer id automatically.
 
 ## References
 
-- `docs/ai-voice-chat.md` — the voice agent built on this channel.
+- `docs/live-voice.md` — the voice agent built on this channel.
 - `docs/mcp-transport.md` — the tool axis and the bridge pattern reused here.
 - `docs/protocol.md`, `docs/communication-model.md` — message plane, grants,
   operations.

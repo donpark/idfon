@@ -5,7 +5,7 @@ the fixes. Kept so the same class of bug is easy to recognize next time.
 
 ## iOS live-call audio too quiet; volume buttons barely change it (2026-09-25, FIXED)
 
-**Symptom.** On the iPhone, GPT-Live's voice during an `ai-voice-chat` live
+**Symptom.** On the iPhone, GPT-Live's voice during an `live-voice` live
 call was too quiet, and raising the hardware / Control Center volume barely
 changed it (the slider sometimes appeared to fall back between turns).
 
@@ -72,7 +72,7 @@ low-volume problem are both gone.
 
 ## iOS live call goes silent after the first reply (2026-09-24, FIXED)
 
-**Symptom.** Live voice calls to `ai-voice-chat` played the greeting, then
+**Symptom.** Live voice calls to `live-voice` played the greeting, then
 the phone heard dead air while the holder kept publishing the full call
 (`published.wav` complete). The user hung up after ~28s; GPT-Live had
 answered every turn — transcripts confirmed the model was replying.

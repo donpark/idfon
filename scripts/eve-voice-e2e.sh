@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# ai-voice-chat E2E: a real voice memo round-trip through the idfon channel.
+# live-voice E2E: a real voice memo round-trip through the idfon channel.
 #
 # Requires AI_GATEWAY_API_KEY (GPT-Live voice session + gpt-6-luna delegation)
 # and EVE_IDFON_MODEL (default openai/gpt-6-luna) for the eve agent.
@@ -66,13 +66,13 @@ done
 HOLDER_ADDR=$(head -n 1 "$work/holder.ticket")
 HOLDER_PID=$(printf '%s' "$HOLDER_ADDR" | jq -r .id)
 
-# Eve app: ai-voice-chat, real orchestrator model, per-run bridge port.
+# Eve app: live-voice, real orchestrator model, per-run bridge port.
 app="$work/app"
 mkdir -p "$app"
-cp -R "$root/agents/ai-voice-chat/agent" "$root/agents/ai-voice-chat/package.json" \
-  "$root/agents/ai-voice-chat/package-lock.json" "$app/"
+cp -R "$root/agents/live-voice/agent" "$root/agents/live-voice/package.json" \
+  "$root/agents/live-voice/package-lock.json" "$app/"
 # Reuse the agent's installed node_modules; a fresh npm install adds minutes.
-cp -R "$root/agents/ai-voice-chat/node_modules" "$app/node_modules"
+cp -R "$root/agents/live-voice/node_modules" "$app/node_modules"
 # eve-idfon is installed as a relative symlink into the repo; repoint
 # it so the app builds outside the repo tree.
 ln -sfn "$integration" "$app/node_modules/eve-idfon"

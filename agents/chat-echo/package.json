@@ -1,10 +1,8 @@
 {
-  "name": "idfon-eve-voice-agent",
+  "name": "eve-idfon-spike",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=24"
-  },
+  "engines": { "node": ">=24" },
   "scripts": {
     "clean": "rm -rf .output dist"
   },

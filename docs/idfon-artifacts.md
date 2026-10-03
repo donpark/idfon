@@ -105,7 +105,7 @@ rather than silently degraded.
 3. **Agent emit** — the `add_artifact` tool stores bytes through the idfon
    bridge (`/blob/put`) and returns an `IDFON-ARTIFACT/1` envelope the model
    appends to its reply text; no holder or bridge change was needed. *Landed
-   (ai-voice-chat).*
+   (live-voice).*
 4. **Reference capture** — *landed (iOS + mac):* the detail screen selects an
    image region (drag) or a text range, the composer shows a reference chip, and
    the sent turn is an `IDFON-REF/1` message — typed, or riding along with a
