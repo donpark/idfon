@@ -13,7 +13,7 @@ const authFor = (peerId: string) => ({
 export default defineChannel({
   turnPolicy: "queue",
   routes: [
-    POST("/idfon/turn", async (request, { from }) => {
+    POST("/spike/turn", async (request, { from }) => {
       const body = (await request.json()) as {
         peerId?: string;
         conversation?: string;

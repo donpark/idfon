@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command capture for the ai-voice-chat live-call volume reset.
+# One-command capture for the live-voice live-call volume reset.
 #
 # Tails the holder log, launches the iOS app with --console, and saves both
 # streams to a timestamped directory. Make one call with two GPT-Live turns,
@@ -8,10 +8,10 @@
 #   scripts/eve-volume-trace.sh [app arguments...]
 #
 # App arguments go to `devicectl ... app.idfon -- <args>` (e.g. pairing args).
-# Run the ai-voice-chat holder first (scripts/ai-voice-chat-serve.sh).
+# Run the live-voice holder first (scripts/live-voice-serve.sh).
 set -euo pipefail
 
-home=${EVE_VOICE_HOME:-"$HOME/.idfon/ai-voice-chat"}
+home=${EVE_VOICE_HOME:-"$HOME/.idfon/live-voice"}
 out=/tmp/idfon-volume-trace-$(date +%Y%m%d-%H%M%S)
 mkdir -p "$out"
 

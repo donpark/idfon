@@ -727,7 +727,7 @@ mod tests {
     #[test]
     fn checked_in_channel_config_parses() {
         // Guards the channel-config projection the serve script forwards.
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../agents/ai-voice-chat/live.json");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../agents/live-voice/live.json");
         let raw = std::fs::read_to_string(path).expect("read live.json");
         let config: GptLiveConfig = serde_json::from_str(&raw).expect("parse live.json");
         assert_eq!(config.model, "openai/gpt-live-1");

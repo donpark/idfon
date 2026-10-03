@@ -104,7 +104,7 @@ if case .artifact(let embedded) = MessageKind.parse(split.envelopes[0]) {
 let plainSplit = MessageBody.parse("just text")
 check(plainSplit.text == "just text" && plainSplit.envelopes.isEmpty, "plain text unsplit")
 
-// Live-call transcript envelopes (see docs/ai-voice-chat.md).
+// Live-call transcript envelopes (see docs/live-voice.md).
 let callEnvelope = "IDFON-CALL/1\n" + """
 {"call_id":"call-1","turn_id":"call-1-2","role":"agent","text":"Hello there.","final":false}
 """

@@ -15,11 +15,11 @@ ask (voice/text) -> agent add_artifact -> card in thread -> open detail
 
 ```sh
 pnpm eve build                                  # extension + agents
-AI_GATEWAY_API_KEY=... scripts/ai-voice-chat-serve.sh   # holder + agent (foreground)
+AI_GATEWAY_API_KEY=... scripts/live-voice-serve.sh   # holder + agent (foreground)
 ```
 
-Pair the app(s) as in `docs/ai-voice-chat.md` ("Pairing the Apple apps"):
-`pnpm pair --eve-ticket "$(head -1 ~/.idfon/ai-voice-chat/holder.ticket)"`, then
+Pair the app(s) as in `docs/live-voice.md` ("Pairing the Apple apps"):
+`pnpm pair --eve-ticket "$(head -1 ~/.idfon/live-voice/holder.ticket)"`, then
 launch the app with its `-pair-ticket <holder-endpoint-id> <capability-ticket>`.
 Build the app from this branch (`bash mac/build.sh`, or `bash ios/build.sh`).
 

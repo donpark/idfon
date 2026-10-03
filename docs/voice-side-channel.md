@@ -7,11 +7,11 @@
 > with AirPods Pro), all verified on device** — the P6 on-device MLX engines are
 > optional; the P7 listening test ran and passed (intelligibility 1.000 vs 0.95,
 > BWE not justified). The app-side **A1 cascade is integrated on iOS and macOS**
-> against a new text-only `voice-agent`; the existing GPT-Live `ai-voice-chat` is
+> against a new text-only `llm`; the existing GPT-Live `live-voice` is
 > deliberately left untouched as a separate contact.
 > P7's test gate and engine decision are recorded (§P7 implementation).
 > Follow-on to the decision in
-> [`ai-voice-chat.md`](ai-voice-chat.md) ("Decision: fix the coupling before
+> [`live-voice.md`](live-voice.md) ("Decision: fix the coupling before
 > swapping transport or front-end"). Companion to
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
 > [`idfon-eve.md`](idfon-eve.md) (channel model).
@@ -25,9 +25,9 @@
 This design is the **cascade voice side-channel**.
 
 - **Voice memos, spoken answers, and live calls** all use the cascade
-  (STT → agent → TTS). `ai-voice-chat`'s GPT-Live relay
+  (STT → agent → TTS). `live-voice`'s GPT-Live relay
   (`crates/idfon-live-gpt/src/lib.rs`,
-  `agents/ai-voice-chat/agent/tools/voice-reply.ts`) is **demo scaffolding to be
+  `agents/live-voice/agent/tools/voice-reply.ts`) is **demo scaffolding to be
   retired**; realtime live-call UX is delivered by streaming (F11), not by
   keeping GPT-Live. GPT-Live is **retired at P4 (iOS) / P5 (macOS)**; until then
   it is an **explicit F9 exception** (a speech-to-speech speaker would otherwise
@@ -208,7 +208,7 @@ to the cascade.
 
 - **Store** (`crates/eve-idfon/src/records.rs`): one JSON file per 1:1 peer
   address under `$IDFON_VOICE_RECORDS_DIR`, else `$EVE_VOICE_HOME/voice-records`
-  (the serve script sets `EVE_VOICE_HOME=~/.idfon/ai-voice-chat`), else
+  (the serve script sets `EVE_VOICE_HOME=~/.idfon/live-voice`), else
   `$HOME/.idfon/eve-voice-records`. Append-only records with a fixed
   `kind`/`speaker` schema (`transcript` for caller/agent finals, `call_summary`
   at hangup); `drain` advances a cursor, so the buffer survives a holder
@@ -447,12 +447,26 @@ isn't sent twice. A failed analyzer is rebuilt once (the LiveSub lesson). Check:
 ios/Checks/VoicePromptSegmenterCheck/main.swift && /tmp/vpscheck`. Device E2E of
 the continuous loop is still pending.
 
-**Target agent.** Rather than strip GPT-Live out of `ai-voice-chat`, a separate
-text-only agent was added: `agents/voice-agent` (model + JustBash sandbox +
+**Target agent.** Rather than strip GPT-Live out of `live-voice`, a separate
+text-only agent was added: `agents/llm` (model + JustBash sandbox +
 `eve-idfon`, no GPT-Live and no voice tools), served by the generalized
-`scripts/voice-agent-serve.sh`. Both apps are paired to it (contact name `eve`
+`scripts/llm-serve.sh`. Both apps are paired to it (contact name `eve`
 on the Mac) and verified end-to-end (`reply=both addresses pinned.`). GPT-Live
-remains available through the untouched `ai-voice-chat` contact.
+remains available through the untouched `live-voice` contact.
+
+**Multiple contacts, one agent.** The same agent can back several contacts,
+each a distinct identity serving a different model. `EVE_INSTANCE` keys the
+identity/home/port (so instances don't collide), `EVE_IDFON_MODEL` picks the
+model, and `EVE_CONTACT_NAME` is the display name printed in the pairing
+command — the app may rename the contact locally when it accepts the ticket:
+
+```sh
+EVE_INSTANCE=gpt61 EVE_CONTACT_NAME="GPT-6.1-Sol" \
+  EVE_IDFON_MODEL=openai/gpt-6.1-sol scripts/llm-serve.sh
+# prints contact: + ticket: -> accept as a new contact
+EVE_INSTANCE=fable51 EVE_CONTACT_NAME="Fable 5.1" \
+  EVE_IDFON_MODEL=<model> scripts/llm-serve.sh
+```
 
 **Stable pairing.** Both the holder and the daemon pinned their UDP port
 (`IDFON_ENDPOINT_PORT`) so their endpoint addresses survive restarts — pair
@@ -763,4 +777,4 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
 - Kokoro-82M — <https://github.com/hexgrad/kokoro> · <https://huggingface.co/hexgrad/Kokoro-82M>
 - Kokoro-7M-Distill — <https://huggingface.co/oddadmix/Kokoro-7M-Distill>
 - Whisper — <https://github.com/ggml-org/whisper.cpp>
-- Eve channel contract (history, streaming, turnPolicy) — `agents/ai-voice-chat/node_modules/eve/docs`
+- Eve channel contract (history, streaming, turnPolicy) — `agents/live-voice/node_modules/eve/docs`

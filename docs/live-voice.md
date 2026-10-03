@@ -1,6 +1,6 @@
-# ai-voice-chat: a voice agent on the idfon channel
+# live-voice: a voice agent on the idfon channel
 
-`agents/ai-voice-chat` is an Eve agent that answers idfon voice messages with
+`agents/live-voice` is an Eve agent that answers idfon voice messages with
 a spoken reply. Text turns go to a gateway text model; a voice memo is
 decoded to 24 kHz PCM and answered by OpenAI's `gpt-live-1` full-duplex voice
 model over its AI Gateway Live WebSocket, with deep work delegated to
@@ -62,7 +62,7 @@ capability-keyed live-call seam (`crates/eve-idfon/src/live.rs`:
 vendor; a build that wants live calls composes `eve_idfon::run()` with the
 handler (`eve-idfon-gpt`). Provider values — endpoint, model, credential env
 name, persona/instructions, broadcast id, delegation tag, turn cap — come from
-the channel's `live` metadata (`agents/ai-voice-chat/live.json`, forwarded by
+the channel's `live` metadata (`agents/live-voice/live.json`, forwarded by
 `serve --live-config`; the same block rides in the Eve extension config).
 
 ## Building
@@ -75,9 +75,9 @@ agent); `pnpm agent` manages one agent at a time:
 pnpm eve build                    # eve-idfon + all agents
 pnpm eve clean                    # remove dist/.output everywhere
 
-pnpm agent build ai-voice-chat    # eve build in agents/ai-voice-chat
-pnpm agent clean ai-voice-chat
-pnpm agent restart ai-voice-chat  # stop then start; needs AI_GATEWAY_API_KEY
+pnpm agent build live-voice    # eve build in agents/live-voice
+pnpm agent clean live-voice
+pnpm agent restart live-voice  # stop then start; needs AI_GATEWAY_API_KEY
 ```
 
 `pnpm agent build all` / `clean all` cover every `agents/*` directory and skip
@@ -88,13 +88,13 @@ agents with a `scripts/<name>-serve.sh`. The extension is also rebuilt by its
 
 ## Serving the agent
 
-`scripts/ai-voice-chat-serve.sh` runs the whole stack against the real daemon
+`scripts/live-voice-serve.sh` runs the whole stack against the real daemon
 as a long-lived local service. The holder key persists at
-`${EVE_VOICE_HOME:-$HOME/.idfon/ai-voice-chat}` so the agent keeps one
+`${EVE_VOICE_HOME:-$HOME/.idfon/live-voice}` so the agent keeps one
 identity across restarts — pair once.
 
 ```sh
-AI_GATEWAY_API_KEY=... scripts/ai-voice-chat-serve.sh   # foreground
+AI_GATEWAY_API_KEY=... scripts/live-voice-serve.sh   # foreground
 ```
 
 The script stays in the foreground — run it in a terminal tab, tmux pane, or
@@ -106,31 +106,31 @@ agent source changed, and restarts on the same identity.
 Check it is alive:
 
 ```sh
-ps -p "$(cat ~/.idfon/ai-voice-chat/holder.pid)" >/dev/null && echo up
+ps -p "$(cat ~/.idfon/live-voice/holder.pid)" >/dev/null && echo up
 # or end to end:
-idfon --socket /tmp/idfon/idfond.sock send ai-voice-chat \
-  --text "ping" --capability-ticket "$(cat ~/.idfon/ai-voice-chat/capability-ticket.json)"
+idfon --socket /tmp/idfon/idfond.sock send live-voice \
+  --text "ping" --capability-ticket "$(cat ~/.idfon/live-voice/capability-ticket.json)"
 ```
 
 It prints the two artifacts pairing needs (also written to
-`~/.idfon/ai-voice-chat/`): the **contact** (endpoint-addr JSON) and the
+`~/.idfon/live-voice/`): the **contact** (endpoint-addr JSON) and the
 **capability ticket** (holder-signed, subject-bound to the daemon).
 
 ## Pairing the Apple apps
 
 ```sh
 # 1. contacts: adds the agent peer to the mac and iOS daemons
-pnpm pair --eve-ticket "$(head -1 ~/.idfon/ai-voice-chat/holder.ticket)"
+pnpm pair --eve-ticket "$(head -1 ~/.idfon/live-voice/holder.ticket)"
 
 # 2. capability tickets (the holder gates ingress; each app needs the ticket
 #    subject-bound to ITS OWN endpoint id — one file per peer in the home dir):
 #    mac — launch with the automation arg:
 open -a Idfon --args \
-  -pair-ticket "$HOLDER_PID" "$(cat ~/.idfon/ai-voice-chat/capability-ticket.json)"
+  -pair-ticket "$HOLDER_PID" "$(cat ~/.idfon/live-voice/capability-ticket.json)"
 #    iOS (<IOS_PID> = the iPhone's endpoint id, e.g. from `idfon peer show iphone`):
 xcrun devicectl device process launch --device <udid> --terminate-existing \
   app.idfon -- -pair-ticket "$HOLDER_PID" \
-  "$(cat ~/.idfon/ai-voice-chat/capability-ticket-$IOS_PID.json)"
+  "$(cat ~/.idfon/live-voice/capability-ticket-$IOS_PID.json)"
 ```
 
 `$HOLDER_PID` is the holder's endpoint id (printed by the serve script; the
@@ -145,7 +145,7 @@ way:
   `message.send`/`message.receive` for the holder's endpoint id on the
   daemon side; the apps grant their own side via the pair flow.
 
-After pairing, chat with the `ai-voice-chat` peer from either app: text gets
+After pairing, chat with the `live-voice` peer from either app: text gets
 a text reply, a voice memo gets transcript text plus an `IDFON-DATA/1`
 envelope whose ticket fetches the playable WAV reply.
 
@@ -173,7 +173,7 @@ carries a transcript and an envelope whose blob is a valid 24 kHz mono WAV.
 
 ## Live calls
 
-For the `ai-voice-chat` peer, the iOS call button uses the audio-only
+For the `live-voice` peer, the iOS call button uses the audio-only
 `LiveCall` path (other peers retain video-capable calls). Its start invite
 carries `return_addr` (base64 serialized daemon `EndpointAddr`) so the holder
 can dial the phone's advertised addresses, and the holder marks its return leg
@@ -282,7 +282,7 @@ above (design option 1/3), not the split itself.
 records OpenAI's guidance: WebRTC for browsers/mobile clients, WebSocket for
 server-to-server. The holder is middle-tier server, so the current
 `wss://ai-gateway.vercel.sh/v1/live/sessions` connection (`crates/idfon-live-gpt/src/lib.rs`,
-`agents/ai-voice-chat/agent/tools/voice-reply.ts`) is the recommended transport
+`agents/live-voice/agent/tools/voice-reply.ts`) is the recommended transport
 for this topology. WebRTC only becomes worthwhile if the client is routed
 directly to the voice session (proxy-minted ephemeral token, the thin-proxy
 pattern in `idfon-harness.md`) — which removes the holder from the media path
@@ -309,7 +309,7 @@ Decision:
    user-role dynamic instruction at the next turn boundary — recording never
    triggers a turn. See `voice-side-channel.md` §P0 implementation.
 2. **Voice is a channel capability, not an agent feature.** `voice_reply` is a
-   per-agent tool today (`agents/ai-voice-chat/agent/tools/voice-reply.ts`);
+   per-agent tool today (`agents/live-voice/agent/tools/voice-reply.ts`);
    the holder already owns the duplex transport, transcripts, and delegation.
    Expose `speak(text)` / `present(artifact)` from the channel so agents stay
    audio-agnostic.

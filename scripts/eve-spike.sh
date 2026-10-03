@@ -5,7 +5,7 @@ set -eu
 # resume sessions by channel-local address, and auth must reach the session.
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-fixture="$root/agents/ai-chat"
+fixture="$root/agents/chat-echo"
 work=$(mktemp -d /tmp/eve-idfon.XXXXXX)
 pid=""
 cleanup() {
@@ -48,7 +48,7 @@ for _ in $(seq 1 150); do
 done
 
 post_turn() {
-  curl -fsS -X POST "http://127.0.0.1:$port/idfon/turn" \
+  curl -fsS -X POST "http://127.0.0.1:$port/spike/turn" \
     -H 'content-type: application/json' \
     --data "$1"
 }
@@ -97,9 +97,9 @@ else:
     raise AssertionError(f"expected 3 replies, got {len(rows)}")
 
 expected = [
-    (responses[0]["sessionId"], "reply 1: hello", "peer-a"),
-    (responses[1]["sessionId"], "reply 2: again", "peer-a"),
-    (responses[2]["sessionId"], "reply 1: other", "peer-b"),
+    (responses[0]["sessionId"], "reply from eve: hello", "peer-a"),
+    (responses[1]["sessionId"], "reply from eve: again", "peer-a"),
+    (responses[2]["sessionId"], "reply from eve: other", "peer-b"),
 ]
 actual = [(row["sessionId"], row["message"], row["principalId"]) for row in rows[:3]]
 assert actual == expected, (actual, expected)

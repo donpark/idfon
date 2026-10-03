@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Self-check for the ai-voice-chat audio plumbing (no network):
+// Self-check for the live-voice audio plumbing (no network):
 //   Ogg Opus bytes -> toPcm24k -> wavWrap
 // Generates a 2-second sine via ffmpeg, round-trips it through the pipeline,
 // asserts duration, sample rate, and WAV structure.
@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 // resolve deps from the agent app (ogg-opus-decoder lives in its node_modules)
-const agentRoot = fileURLToPath(new URL("../agents/ai-voice-chat/", import.meta.url));
+const agentRoot = fileURLToPath(new URL("../agents/live-voice/", import.meta.url));
 const require = createRequire(join(agentRoot, "package.json"));
 const { OggOpusDecoder } = require("ogg-opus-decoder");
 

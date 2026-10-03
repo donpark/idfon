@@ -176,8 +176,17 @@ pnpm agent restart <name>       # stop then start
 pnpm agent stop <name>
 ```
 
-See [ai-voice-chat agent](docs/ai-voice-chat.md) and
-[Eve ingress channel](docs/idfon-eve.md).
+The agents under `agents/` are:
+
+| Agent | Served | What it is |
+| --- | --- | --- |
+| `live-voice` | yes | GPT-Live full-duplex voice agent (audio/video calls, artifacts) |
+| `llm` | yes | text-only agent reached by voice; model is per-instance, so one agent can back several contacts |
+| `chat-echo` | no | deterministic echo mock used by the e2e scripts and `eve-spike` |
+
+See [live-voice agent](docs/live-voice.md),
+[voice side channel](docs/voice-side-channel.md) (the `llm` agent and
+multi-contact model selection), and [Eve ingress channel](docs/idfon-eve.md).
 
 ## Documentation
 
