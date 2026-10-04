@@ -95,6 +95,24 @@ export function admit(entry, peerId, options = {}) {
   return file;
 }
 
+// The reply leg needs a ticket the *agency* issued for the target (subject =
+// target holder, grant agent.receive) so the target's reply is accepted. The
+// agency's holder is the issuer, so this shells out to the holder binary with
+// the agency's OWN key (never another agent's). It also admits the target as a
+// sender on the agency holder's allow-file, which reloads while running.
+export function mintReplyTicket(peerId, options = {}) {
+  const idfonHome = options.idfonHome ?? expandHome(process.env.IDFON_HOME ?? "~/.idfon");
+  const bin = options.bin ?? process.env.EVE_IDFON_GPT ?? resolve(repoRoot, "target/release/eve-idfon-gpt");
+  const run = options.run ?? ((args) => execFileSync(bin, args, { encoding: "utf8" }));
+  const ticket = JSON.parse(
+    run(["--key-file", `${idfonHome}/agency/holder.key`, "ticket", "--subject", peerId, "--capability", "agent.receive"]),
+  );
+  const allowFile = `${idfonHome}/agency/allowed-peers`;
+  const admitted = existsSync(allowFile) ? readFileSync(allowFile, "utf8").split("\n").includes(peerId) : false;
+  if (!admitted) appendFileSync(allowFile, `${peerId}\n`);
+  return ticket;
+}
+
 function serve() {
   const rosterPath = resolve(repoRoot, process.env.AGENCY_ROSTER ?? "agents/agency/roster.json");
   const port = Number(process.env.AGENCY_PORT ?? 18777);
@@ -154,6 +172,21 @@ function serve() {
         );
         if (!entry) return send(res, 404, { error: `${query} is not registered` });
         send(res, 200, entry);
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/reply-ticket") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        let peerId;
+        try { peerId = JSON.parse(body || "{}").peer_id; } catch { return send(res, 400, { error: "invalid JSON" }); }
+        if (!peerId) return send(res, 400, { error: "peer_id is required" });
+        try {
+          send(res, 200, mintReplyTicket(String(peerId), { bin, idfonHome }));
+        } catch (error) {
+          send(res, 502, { error: String(error.message ?? error) });
+        }
       });
       return;
     }

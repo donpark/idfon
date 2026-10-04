@@ -88,9 +88,8 @@ if [ -d "$app/.output" ] && grep -q "bridgeUrl: \"http://127.0.0.1:[0-9]*\"" "$a
   fi
 fi
 if [ ! -d "$app/.output" ] || [ "${FORCE_BUILD:-}" = 1 ] || \
-   [ "$root/agents/$agent/agent/agent.ts" -nt "$app/.output" ] || \
    [ "$root/agents/$agent/package.json" -nt "$app/.output" ] || \
-   [ "$root/agents/$agent/agent/extensions/idfon.ts" -nt "$app/.output" ]; then
+   [ -n "$(find "$root/agents/$agent/agent" -newer "$app/.output" -print -quit 2>/dev/null)" ]; then
   rm -rf "$app"
   mkdir -p "$app"
   cp -R "$root/agents/$agent/agent" "$root/agents/$agent/package.json" \
@@ -141,10 +140,32 @@ live_args=()
 if [ -f "$root/agents/$agent/live.json" ]; then
   live_args=(--live-config "$root/agents/$agent/live.json")
 fi
+
+# Reply credential: to answer the agency's A2A intro the holder must present a
+# ticket the agency issued for US (subject = our holder endpoint id). Fetch it
+# before the holder starts so it can be loaded with --reply-ticket-file; the
+# agency also admits us as a sender when it mints. Our endpoint id is derived
+# from the key, so this does not need the holder running.
+reply_args=()
+if [ -n "${AGENCY_URL:-}" ]; then
+  self_id=$("$root/target/release/eve-idfon-gpt" --key-file "$key" ticket --subject self 2>/dev/null | jq -r .issuer)
+  if [ -n "$self_id" ] && [ "$self_id" != null ]; then
+    if reply_ticket=$(curl -fsS -X POST "$AGENCY_URL/reply-ticket" \
+        -H 'content-type: application/json' \
+        -H "x-idfon-provisioner-secret: ${AGENCY_PROVISIONER_SECRET:-m2-test-secret}" \
+        -d "{\"peer_id\":\"$self_id\"}"); then
+      printf '%s' "$reply_ticket" > "$home/reply-ticket.json"
+      reply_args=(--reply-ticket-file "$home/reply-ticket.json")
+    else
+      echo "reply ticket fetch failed; A2A replies to the agency will be denied" >&2
+    fi
+  fi
+fi
 IDFON_ENDPOINT_PORT="$endpoint_port" "$root/target/release/eve-idfon-gpt" --key-file "$key" serve \
   --socket "$home/holder.sock" "${allow_args[@]}" --allow-file "$home/allowed-peers" \
   --blob-dir "$home/blobs" \
   ${live_args[@]+"${live_args[@]}"} \
+  ${reply_args[@]+"${reply_args[@]}"} \
   >"$home/holder.ticket" 2>"$home/holder.log" &
 echo $! > "$home/holder.pid"
 for _ in $(seq 1 150); do [ -s "$home/holder.ticket" ] && break; sleep 0.1; done
@@ -174,7 +195,7 @@ if [ -n "${AGENCY_URL:-}" ]; then
     grep -qxF "$dir_peer" "$home/allowed-peers" 2>/dev/null || printf '%s\n' "$dir_peer" >> "$home/allowed-peers"
     card=$(curl -fsS -X POST "http://127.0.0.1:$bridge_port/card" \
       -H 'content-type: application/json' -H 'x-idfon-channel-secret: m2-test-secret' \
-      -d "{\"subject\":\"$dir_peer\"}") || card=''
+      -d "{\"subject\":\"$dir_peer\",\"capabilities\":[\"agent.receive\"]}") || card=''
     if [ -n "$card" ]; then
       body=$(jq -nc --arg name "$contact_name" --arg model "$model" \
         --argjson addr "$(printf '%s' "$card" | jq -c '.endpoint_addr')" \

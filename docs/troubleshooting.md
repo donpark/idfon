@@ -325,3 +325,53 @@ down. The driver thread holds only a `weak_tx`, so once the backend and all
 streams are dropped the thread exits and cpal closes the device. Next call
 re-creates the backend on demand. Safe to call while streams exist — the
 driver only exits when every strong sender is gone.
+
+## Agency can't create a contact invite (2026-10-03, FIXED)
+
+**Symptom.** The caller asks the `agency` agent for a contact; the agent
+replies that it can't generate the invite. `agents/agency/eve.log` shows
+`request-invite` failing with `SyntaxError: Unexpected token 'E', "Error: ipc"…
+is not valid JSON`, and `~/.idfon/agency/bridge.log` shows
+`holder error: ipc_request_failed: send peer message to <target>: transport
+failed: invalid acknowledgment: frame is truncated` (or `connection lost`).
+
+**Diagnosis path.** Three independent failures stacked in the A2A intro
+(agency → target request, target → agency reply), plus a bridge crash:
+
+1. The target's registration card was minted with only `message.receive`, so
+   the target's holder rejected the A2A request with `agent.receive
+   capability denied` (see `~/.idfon/<instance>/holder.log`).
+2. The target's reply needs a ticket the *agency* issued for it. No
+   `--reply-ticket-file` was wired in production, so the reply carried no
+   credential and the agency rejected it (`frame is truncated`); the agency's
+   allow-file also never learned the target's endpoint id.
+3. The target ran a stale compiled app: `live-voice-serve.sh` only rebuilt on
+   `agent.ts`/`package.json`/`extensions/idfon.ts` changes, so `instructions.md`
+   and `tools/*` updates never landed — the model had no `issue-card` tool and
+   refused the envelope with a short spoken reply.
+4. A failed `/send await_reply` left the still-armed reply timer's promise
+   rejected with no handler, so `bridge.mjs` exited; the agent then saw
+   `Error: ipc…` as the HTTP body instead of JSON.
+
+**Fixes.**
+
+- Registration card (`scripts/live-voice-serve.sh`) requests
+  `capabilities:["agent.receive"]`.
+- `POST /reply-ticket {peer_id}` in `scripts/agency-provisioner.mjs` mints an
+  agency-signed ticket (`--capability agent.receive`) with the agency's own
+  key and admits the target on the agency allow-file; the serve script fetches
+  it before the holder starts (its endpoint id is derived from the holder key
+  via `ticket --subject self | jq .issuer`) and passes `--reply-ticket-file`.
+- The rebuild check watches the whole `agents/<agent>/agent` tree with
+  `find -newer`.
+- `bridge.mjs` guards the abandoned reply promise: `replyPromise.catch(() => {})`.
+
+**Verified** (2026-10-03): agency `/send` with `IDFON-CARD-REQUEST/1` returns
+an `IDFON-CARD/1` whose ticket `issuer` = target holder and `subject` = caller;
+a target→agency send carrying the reply ticket is `accepted`.
+
+**Lesson.** `agent.receive` gates *both* directions of an A2A exchange, and
+the reply direction needs an agency-issued ticket on the target's holder. When
+a deployed Eve agent misbehaves, check the compiled `app/.output` freshness
+before blaming the model — a stale `instructions.md` looks like a model
+refusal. See `docs/agent-agency.md` for the current wiring.
