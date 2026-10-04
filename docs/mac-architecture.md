@@ -11,7 +11,8 @@ mac/
 │   ├── IdfonApp.swift         # @main; AppDelegate, AppModel (identity mgmt),
 │   │                          #   DetailContainerViewController, window + overlay wiring
 │   ├── SidebarViewController.swift  # identity/status, tabbed peer lists, actions
-│   ├── PeerTabsViewController.swift # Favorites/Recents/Contacts tabs, per-tab search
+│   ├── PeerTabsViewController.swift # Favorites/Recents/Contacts tabs, per-tab search,
+│   │                          #   right-click rename/delete on peer rows
 │   ├── ChatViewController.swift     # chat table + composer (text/file/memo),
 │   │                          #   fullscreen call stage
 │   ├── LiveActivityBar.swift  # the Bar surface + value-type model (expanded / pill)
@@ -73,6 +74,10 @@ Key facts:
   (see `crates/idfond`).
 - **Same layering as iOS**: `DaemonClient` JSON IPC for chat/events, direct C media
   calls for the call/camera path (video uses landscape 1280x720 vs iOS portrait).
+- **Contacts are editable**: right-clicking a contact row opens **Rename…** (a sheet
+  calling `peer.update`) and **Delete…** (`peer.remove`, plus capability-ticket
+  cleanup); after a mutation the sidebar re-reads peers via `AppModel.refresh()`.
+  Right-click never selects the row, so it doesn't open the chat.
 - **CLI interop**: the mac app and the `idfon` CLI share the same daemon/socket, so
   chats are visible from both.
 - **The Bar is a window-level overlay**, like iOS but with different mechanics: a

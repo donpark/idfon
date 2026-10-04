@@ -10,7 +10,8 @@ ios/
 │   ├── SceneDelegate.swift   # window, 3-tab root, Live Activity Bar overlay wiring
 │   ├── Automation.swift      # -sendfile launch-arg entry + idfon-auto: markers (device harness)
 │   ├── AppNavigationController.swift # per-tab nav clearance + content-shift for the Bar
-│   ├── PeerListViewController.swift  # Contacts tab: searchable peer list → chat
+│   ├── PeerListViewController.swift  # Contacts tab: searchable list → chat; swipe-delete; ⓘ → detail
+│   ├── ContactDetailViewController.swift # contact detail: rename (peer.update) + delete
 │   ├── PlaceholderViewController.swift # empty-state tab (Favorites, Recents)
 │   ├── ChatViewController.swift      # chat table + composer (text/record/review)
 │   │                         #   + inline live-video pane, incoming-call-mode menu
@@ -90,6 +91,10 @@ Key facts:
   `UITabBarControllerDelegate`: it reads clearance from the selected tab's
   `AppNavigationController`, fans the Bar's content inset out to **every** tab's nav, and
   re-anchors on tab switch (a call whose thread is behind another tab renders as a pill).
+- **Contacts are editable**: the Contacts tab swipes to delete (`peer.remove`)
+  and shows an ⓘ accessory that pushes `ContactDetailViewController` for rename
+  (`peer.update`) or delete; both drop the peer's stored capability ticket. Tapping
+  the row still opens the chat.
 - **Calls are two machines, one Bar model**: `LiveCall` (audio) and `VideoCall`
   (video/video-only) are disjoint — separated by the invite's `media` value — and
   `LiveActivityController` renders whichever is non-idle. A call starts from the thread's

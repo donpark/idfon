@@ -63,6 +63,25 @@ extension DaemonClient {
         }
     }
 
+    /// Renames a contact (`peer.update` with the pair's `ref` and a new name).
+    func renamePeer(ref: String, name: String) async throws {
+        let identity = (try? await identityId()) ?? "default"
+        _ = try await request(method: "peer.update", params: [
+            "ref": AnyEncodable(ref),
+            "identity": AnyEncodable(identity),
+            "name": AnyEncodable(name),
+        ])
+    }
+
+    /// Removes a contact (`peer.remove`).
+    func removePeer(ref: String) async throws {
+        let identity = (try? await identityId()) ?? "default"
+        _ = try await request(method: "peer.remove", params: [
+            "ref": AnyEncodable(ref),
+            "identity": AnyEncodable(identity),
+        ])
+    }
+
     func useIdentity(_ name: String) async throws {
         _ = try await request(method: "identity.use", params: ["name": AnyEncodable(name)])
     }

@@ -150,11 +150,39 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         config.text = peer.displayName
         config.secondaryText = peer.endpointId.map { String($0.prefix(16)) + "…" }
         cell.contentConfiguration = config
+        // ⓘ opens the detail screen; the row itself still opens the chat.
+        cell.accessoryType = .detailButton
         return cell
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         navigationController?.pushViewController(ChatViewController(peer: shownPeers[indexPath.row]), animated: true)
+    }
+
+    override func tableView(_ tableView: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath) {
+        let detail = ContactDetailViewController(peer: shownPeers[indexPath.row])
+        detail.onChanged = { [weak self] in self?.refresh() }
+        navigationController?.pushViewController(detail, animated: true)
+    }
+
+    /// Swipe to delete a contact (and drop its provisioned capability ticket).
+    override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath)
+        -> UISwipeActionsConfiguration? {
+        let peer = shownPeers[indexPath.row]
+        let delete = UIContextualAction(style: .destructive, title: "Delete") { [weak self] _, _, done in
+            guard let self else { return done(false) }
+            Task {
+                do {
+                    try await self.client.removePeer(ref: peer.id)
+                    CapabilityTickets.remove(for: peer.id)
+                    await MainActor.run { self.refresh() }
+                    done(true)
+                } catch {
+                    done(false)
+                }
+            }
+        }
+        return UISwipeActionsConfiguration(actions: [delete])
     }
 }
