@@ -24,8 +24,8 @@ final class VoiceAgentSession: NSObject {
     }
 
     private let voice = OnDeviceVoice.shared
-    private let synthesizer = AVSpeechSynthesizer()
-    private var speechDelegate: SpeechDelegate?
+    /// Reply speech backend (Apple default; Kokoro opt-in via `IDFON_TTS`).
+    private let tts = SpeechEngines.tts
     private let segmenter = VoicePromptSegmenter()
     private var analyzer: Any?
 
@@ -269,17 +269,6 @@ final class VoiceAgentSession: NSObject {
 
     // MARK: - speech
 
-    private final class SpeechDelegate: NSObject, AVSpeechSynthesizerDelegate {
-        let finish: () -> Void
-        init(finish: @escaping () -> Void) { self.finish = finish }
-        func speechSynthesizer(
-            _ synthesizer: AVSpeechSynthesizer,
-            didFinish utterance: AVSpeechUtterance
-        ) {
-            finish()
-        }
-    }
-
     /// One user turn. On iOS 26+ the analyzer is already running; the mic is
     /// resumed for the turn and paused again while the agent responds.
     private func listenOnce(timeout: TimeInterval = 8) async -> String? {
@@ -372,19 +361,7 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func speak(_ text: String) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = SpeechVoice.best(language: "en-US")
-            // VoiceOver's selected voice/rate must not override ours.
-            utterance.prefersAssistiveTechnologySettings = false
-            Automation.mark(
-                "voice: speak id=\(utterance.voice?.identifier ?? "nil") assistive=false"
-            )
-            let delegate = SpeechDelegate { continuation.resume() }
-            speechDelegate = delegate
-            synthesizer.delegate = delegate
-            synthesizer.speak(utterance)
-        }
+        await tts.speak(text)
         lastSpoken = text
         // The tap gate is still closed here; hold it closed briefly so the
         // speaker/acoustic tail decays before the next turn re-arms the mic.
