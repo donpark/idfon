@@ -129,27 +129,34 @@ scripts/voice-agent-serve.sh            # default live.json (AI Gateway env)
 `voice_route` + `engine`); add one per service. Keys come from the env vars the
 file names. `EVE_LIVE_CONFIG` overrides the agent's own `live.json`.
 
-## TypeScript voice tools
+## TypeScript voice tools: `eve-idfon-voice`
 
 Open-source models that bundle (WASM/ONNX/npm) run in the **agent's Node
 process**, not the Rust holder — so a voice agent's STT/TTS are ordinary TS
-calls. `agents/voice-agent` ships the seam:
+calls. The shared toolkit lives in **`integrations/eve-idfon-voice`** (npm
+`eve-idfon-voice`), the voice companion to `eve-idfon`:
 
-- `agent/voice/providers.ts` — `createVoiceProvider(config, "stt"|"tts")` with
-  `command` (CLI), `openai-compatible` (cloud or a local server), `module`
-  (dynamic import of a provider package), and `kokoro` (via `kokoro-js`).
-  Selected by the `IDFON_VOICE_ENGINE` env (JSON), same shape as the Rust
-  engine block.
-- `agent/voice/audio.ts` — Ogg Opus → s16le PCM, WAV wrap/parse.
-- `agent/voice/bridge.ts` — blob upload and an agent→agent `sendAwait`.
-- `agent/tools/voice-relay.ts` — the **wrapping** cascade in one shot: voice
-  memo → STT → text to the wrapped agent (A2A, awaits its reply) → TTS → audio
-  blob + `IDFON-DATA/1` envelope. The caller hears the wrapped agent; the
-  wrapped agent only sees text.
+- `providers` — `createVoiceProvider(config, "stt"|"tts")` with `command`
+  (CLI), `openai-compatible` (cloud or a local server), `module` (dynamic
+  import of a provider package), and `kokoro` (via `kokoro-js`). Selected by
+  the `IDFON_VOICE_ENGINE` env (JSON), same shape as the Rust engine block.
+- `audio` — Ogg Opus → s16le PCM, WAV wrap/parse.
+- `bridge` — blob upload and an agent→agent `sendAwait`.
+- `tools` — tool factories so an agent's files are one line:
+  - `voiceRelayTool()` — **wrapping** in one shot: voice memo → STT → text to
+    the wrapped agent (A2A, awaits its reply) → TTS → audio blob +
+    `IDFON-DATA/1` envelope. The caller hears the wrapped agent; the wrapped
+    agent only sees text.
+  - `voiceTranscribeTool()` + `voiceSpeakTool()` — **self-answering**: memo →
+    text for the agent to reason over, then speak its reply.
 
-Optional/bundlable packages are loaded through a runtime import the bundler
-can't see (`voice/optional.ts`), so the agent builds without every provider
-installed; a missing package fails only when that path is used.
+Optional/bundlable packages load through a runtime import the bundler can't
+see (`optional.ts`), so an agent builds without every provider installed; a
+missing package fails only when that path is used.
+
+So the diverse configurations are **config + persona**: an agent's tool file is
+`export default voiceRelayTool();`, and the provider comes from
+`IDFON_VOICE_ENGINE`.
 
 ## The kit (fast iteration)
 
