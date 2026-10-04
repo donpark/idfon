@@ -10,7 +10,7 @@ deployment of the same transport).
 A **voice agent** is an ordinary idfon **peer** — an endpoint id plus a
 capability ticket — whose job is voice *I/O* for another agent. Audio is
 carried as a **live MoQ session** (a real call), the same transport the
-`live-voice` demo uses. The voice agent turns caller speech into text, hands
+`gpt-live-1` demo uses. The voice agent turns caller speech into text, hands
 that text to an agent, takes the agent's reply, and turns it back into speech.
 
 It is reached **by its endpoint id (+ ticket)**; that reference is the

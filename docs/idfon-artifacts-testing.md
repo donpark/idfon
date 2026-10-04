@@ -19,7 +19,7 @@ AI_GATEWAY_API_KEY=... scripts/live-voice-serve.sh   # holder + agent (foregroun
 ```
 
 Pair the app(s) as in `docs/live-voice.md` ("Pairing the Apple apps"):
-`pnpm pair --eve-ticket "$(head -1 ~/.idfon/live-voice/holder.ticket)"`, then
+`pnpm pair --eve-ticket "$(head -1 ~/.idfon/gpt-live-1/holder.ticket)"`, then
 launch the app with its `-pair-ticket <holder-endpoint-id> <capability-ticket>`.
 Build the app from this branch (`bash mac/build.sh`, or `bash ios/build.sh`).
 

@@ -7,7 +7,7 @@
 > with AirPods Pro), all verified on device** — the P6 on-device MLX engines are
 > optional; the P7 listening test ran and passed (intelligibility 1.000 vs 0.95,
 > BWE not justified). The app-side **A1 cascade is integrated on iOS and macOS**
-> against a new text-only `llm`; the existing GPT-Live `live-voice` is
+> against a new text-only `llm-cascade`; the existing GPT-Live `gpt-live-1` is
 > deliberately left untouched as a separate contact.
 > P7's test gate and engine decision are recorded (§P7 implementation).
 > Follow-on to the decision in
@@ -270,7 +270,7 @@ to the cascade.
 
 - **Store** (`crates/eve-idfon/src/records.rs`): one JSON file per 1:1 peer
   address under `$IDFON_VOICE_RECORDS_DIR`, else `$EVE_VOICE_HOME/voice-records`
-  (the serve script sets `EVE_VOICE_HOME=~/.idfon/live-voice`), else
+  (the serve script sets `EVE_VOICE_HOME=~/.idfon/gpt-live-1`), else
   `$HOME/.idfon/eve-voice-records`. Append-only records with a fixed
   `kind`/`speaker` schema (`transcript` for caller/agent finals, `call_summary`
   at hangup); `drain` advances a cursor, so the buffer survives a holder
@@ -509,12 +509,12 @@ isn't sent twice. A failed analyzer is rebuilt once (the LiveSub lesson). Check:
 ios/Checks/VoicePromptSegmenterCheck/main.swift && /tmp/vpscheck`. Device E2E of
 the continuous loop is still pending.
 
-**Target agent.** Rather than strip GPT-Live out of `live-voice`, a separate
+**Target agent.** Rather than strip GPT-Live out of `gpt-live-1`, a separate
 text-only agent was added: `agents/llm-cascade` (model + JustBash sandbox +
 `eve-idfon`, no GPT-Live and no voice tools), served by the generalized
 `scripts/llm-cascade-serve.sh`. Both apps are paired to it (contact name `eve`
 on the Mac) and verified end-to-end (`reply=both addresses pinned.`). GPT-Live
-remains available through the untouched `live-voice` contact.
+remains available through the untouched `gpt-live-1` contact.
 
 **Multiple contacts, one agent.** The same agent can back several contacts,
 each a distinct identity serving a different model. `EVE_INSTANCE` keys the
@@ -529,6 +529,10 @@ EVE_INSTANCE=gpt61 EVE_CONTACT_NAME="GPT-6.1-Sol" \
 EVE_INSTANCE=fable51 EVE_CONTACT_NAME="Fable 5.1" \
   EVE_IDFON_MODEL=<model> scripts/llm-cascade-serve.sh
 ```
+
+These per-model runs belong to the **agency** (the roster), not to the
+`pnpm agent` CLI — the CLI manages *agents*, and *sessions* are runtime
+per-caller state it never stores. See `docs/live-voice.md`.
 
 **Stable pairing.** Both the holder and the daemon pinned their UDP port
 (`IDFON_ENDPOINT_PORT`) so their endpoint addresses survive restarts — pair
