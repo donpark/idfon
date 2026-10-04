@@ -26,7 +26,8 @@ This design is the **cascade voice side-channel**.
 
 - **Voice memos, spoken answers, and live calls** use the cascade
   (STT → agent → TTS) by default. A full-duplex model (GPT-Live-1,
-  `crates/idfon-live-gpt`) is one supported voice backend too — a
+  `crates/idfon-voice-agent/src/gpt_live.rs`) is one supported voice backend too
+  — a
   `native-duplex` route behind the same voice-agent seam
   (`docs/voice-agent.md`). Where a speech-to-speech speaker would otherwise
   bypass the text boundary it is an **explicit F9 exception**, not the default;
@@ -87,10 +88,11 @@ adds `voice` when set, so the signed bytes stay byte-identical.
 The concrete demos (see `docs/voice-agent.md` for the full current picture):
 
 - **`agents/live-voice` — native-duplex.** One full-duplex model
-  (`openai/gpt-live-1`) via `crates/idfon-live-gpt`; its `live.json` advertises
+  (`openai/gpt-live-1`) via the `gpt-live` backend in `crates/idfon-voice-agent`;
+  its `live.json` advertises
   `voice_route.mode = native-duplex`. Served by `scripts/live-voice-serve.sh`
-  (composition root `eve-idfon-gpt`). One backend among several, not a special
-  path.
+  (runner `eve-idfon-voice`, backend `gpt-live`). One backend among several, not
+  a special path.
 - **`agents/cascade-voice` — server-cascade.** The holder runs STT→agent→TTS
   (`crates/idfon-voice-agent`'s `cascade` backend, `idfon-voice` providers); its
   `live.json` advertises `server-cascade`. Served by
@@ -770,7 +772,8 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
 ## Retention
 
 - **Audio capture is opt-in and off by default.** The holder currently writes
-  caller/agent WAVs to the temp dir on every call (idfon-live-gpt CallDiagnostics),
+  caller/agent WAVs to the temp dir on every call (the GPT-Live handler's call
+  diagnostics),
   and the **client writes call audio too** (`audio-media.md`: `received.wav`,
   and the subscribed-call WAV keeps running). The opt-in default and the
   "no audio persisted" test must cover **both holder and client**.

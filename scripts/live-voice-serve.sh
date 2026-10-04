@@ -50,14 +50,14 @@ fi
 printf '%s' "$endpoint_port" > "$port_file" 2>/dev/null || true
 integration="$root/integrations/eve-idfon"
 
-# Holder composition root. Default is the full-duplex GPT-Live binary; the
-# cascade demo (scripts/cascade-voice-serve.sh) sets these to
-# `idfon-live-cascade` / `eve-idfon-cascade`.
-holder_pkg="${EVE_IDFON_PKG:-idfon-live-gpt}"
-holder_bin="${EVE_IDFON_BIN:-eve-idfon-gpt}"
-# Optional cargo features for the holder package (e.g. `gpt-live` on
-# idfon-voice-agent). Empty keeps the current GPT-Live composition root.
-holder_features="${EVE_IDFON_FEATURES:-}"
+# Holder runner. Default is the voice-agent runner carrying the full-duplex
+# GPT-Live backend; `live.json` selects the backend (`gpt-live`, `cascade`,
+# `relay`). The cascade demo uses the same binary with a different config.
+holder_pkg="${EVE_IDFON_PKG:-idfon-voice-agent}"
+holder_bin="${EVE_IDFON_BIN:-eve-idfon-voice}"
+# Cargo features for the holder package. `gpt-live` links the OpenAI Live-API
+# backend; set empty for a cascade/relay-only build.
+holder_features="${EVE_IDFON_FEATURES:-gpt-live}"
 
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
 model="${EVE_IDFON_MODEL:-openai/gpt-6-luna}"

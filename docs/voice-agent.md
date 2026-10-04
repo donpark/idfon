@@ -54,7 +54,17 @@ buffer (P0), exactly as the GPT-Live path does.
 
 ## Engine
 
-The STT/TTS engine is the voice agent's private choice, behind the existing
+`live.json`'s `backend` picks the call's audio shape, and the two shapes are
+fundamentally different:
+
+- **Full duplex** (`gpt-live`, `openai-realtime`) — audio in, audio out; the
+  model owns turn-taking. There is no STT/TTS to configure.
+- **Cascade** (`cascade`) — caller audio → STT → agent turn → TTS → return
+  audio. The STT and TTS are **separate, independently selectable providers**,
+  so trying a combination is config, not a new backend. On-device (Apple) is
+  one such provider, not a third shape; placement (app vs holder) is orthogonal.
+
+The STT/TTS side is the voice agent's private choice, behind the existing
 `idfon-voice::VoiceEngine` seam:
 
 - **On-device** (Apple, app process) — the default for a caller-side cascade;

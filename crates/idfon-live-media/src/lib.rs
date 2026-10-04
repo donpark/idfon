@@ -1,6 +1,6 @@
 //! Shared MoQ media plumbing for live-call handlers.
 //!
-//! Extracted from `idfon-live-gpt` so a second handler (the cascade voice
+//! Extracted from the GPT-Live handler so a second handler (the cascade voice
 //! agent) can reuse the transport without duplicating it: parse a
 //! `IDFON-LIVE/1` invite, subscribe the caller's broadcast as 20 ms PCM frames,
 //! publish the return leg, and sign the return-leg invite.

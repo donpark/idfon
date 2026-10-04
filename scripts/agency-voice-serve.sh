@@ -46,7 +46,7 @@ self_id="$("$root/target/release/$EVE_IDFON_BIN" --key-file "$key" ticket --subj
 
 # Agency-issued ticket authorizing this voice agent to message the Agency, and
 # admission on the Agency's allow-list (its holder reloads the file live).
-agency_ticket="$("$root/target/release/eve-idfon-gpt" --key-file "$agency_home/holder.key" ticket --subject "$self_id" 2>/dev/null)"
+agency_ticket="$("$root/target/release/$EVE_IDFON_BIN" --key-file "$agency_home/holder.key" ticket --subject "$self_id" 2>/dev/null)"
 [ -n "$agency_ticket" ] || { echo "cannot mint an Agency ticket for $self_id" >&2; exit 1; }
 grep -qxF "$self_id" "$agency_home/allowed-peers" 2>/dev/null || printf '%s\n' "$self_id" >> "$agency_home/allowed-peers"
 # Admit the Agency as a sender on this voice agent's holder so its replies land.

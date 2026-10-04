@@ -14,7 +14,7 @@
 //   AGENCY_PORT          listen port (default 18777)
 //   AGENCY_SECRET        shared secret (default m2-test-secret)
 //   AGENCY_ALLOW_CALLERS comma-separated caller endpoint ids (empty = any)
-//   EVE_IDFON_GPT           holder binary (default target/release/eve-idfon-gpt)
+//   EVE_IDFON_VOICE         holder binary (default target/release/eve-idfon-voice)
 //   IDFON_HOME              holder home root (default ~/.idfon)
 //   AGENCY_AUDIT         invite audit log (default agents/agency/invites.ndjson)
 
@@ -102,7 +102,7 @@ export function admit(entry, peerId, options = {}) {
 // sender on the agency holder's allow-file, which reloads while running.
 export function mintReplyTicket(peerId, options = {}) {
   const idfonHome = options.idfonHome ?? expandHome(process.env.IDFON_HOME ?? "~/.idfon");
-  const bin = options.bin ?? process.env.EVE_IDFON_GPT ?? resolve(repoRoot, "target/release/eve-idfon-gpt");
+  const bin = options.bin ?? process.env.EVE_IDFON_VOICE ?? resolve(repoRoot, "target/release/eve-idfon-voice");
   const run = options.run ?? ((args) => execFileSync(bin, args, { encoding: "utf8" }));
   const ticket = JSON.parse(
     run(["--key-file", `${idfonHome}/agency/holder.key`, "ticket", "--subject", peerId, "--capability", "agent.receive"]),
@@ -117,7 +117,7 @@ function serve() {
   const rosterPath = resolve(repoRoot, process.env.AGENCY_ROSTER ?? "agents/agency/roster.json");
   const port = Number(process.env.AGENCY_PORT ?? 18777);
   const secret = process.env.AGENCY_SECRET ?? "m2-test-secret";
-  const bin = process.env.EVE_IDFON_GPT ?? resolve(repoRoot, "target/release/eve-idfon-gpt");
+  const bin = process.env.EVE_IDFON_VOICE ?? resolve(repoRoot, "target/release/eve-idfon-voice");
   const auditPath = resolve(repoRoot, process.env.AGENCY_AUDIT ?? "agents/agency/invites.ndjson");
   const allowed = new Set(
     (process.env.AGENCY_ALLOW_CALLERS ?? "")
