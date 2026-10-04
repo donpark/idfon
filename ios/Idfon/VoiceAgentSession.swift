@@ -314,7 +314,7 @@ final class VoiceAgentSession: NSObject {
     private func speak(_ text: String) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+            utterance.voice = SpeechVoice.best(language: "en-US")
             let delegate = SpeechDelegate { continuation.resume() }
             speechDelegate = delegate
             synthesizer.delegate = delegate
