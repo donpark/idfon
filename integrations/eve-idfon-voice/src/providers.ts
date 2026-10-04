@@ -2,13 +2,13 @@
 //
 // A voice agent's STT/TTS run here, in the agent's Node process — so
 // open-source models that bundle (WASM/ONNX/npm: Kokoro, Whisper, Parakeet,
-// Whistle, …) are ordinary `import`s, with no Rust rebuild. Cloud and
+// …) are ordinary `import`s, with no Rust rebuild. Cloud and
 // OpenAI-compatible local servers use the same seam.
 //
 // Config is the same shape as the Rust engine block, passed via the
 // `IDFON_VOICE_ENGINE` env (JSON) or the channel's `voice` config:
 //
-//   { "stt": { "provider": "command", "stt_cmd": "whistle {input}" },
+//   { "stt": { "provider": "command", "stt_cmd": "whisper {input}" },
 //     "tts": { "provider": "kokoro", "voice": "af_bella" } }
 //
 // A single `{ "provider": ... }` applies to both directions.
@@ -75,7 +75,6 @@ export async function createVoiceProvider(
     // factory returns `{ transcribe }` (or point at a local server with
     // `openai-compatible`). Named here so the intent is discoverable.
     case "whisper":
-    case "whistle":
     case "parakeet":
       if (!cfg.module) {
         throw new Error(
