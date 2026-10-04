@@ -136,5 +136,5 @@ Target env: `AGENCY_URL` (enables registration + reply credential), `AGENCY_PEER
 - **Dynamic roster**: arbitrary requested models still need per-request holder
   provisioning (port/key lifecycle), which the fixed catalog avoids.
 
-See `docs/voice-side-channel.md` for the `llm` agent and per-instance model
+See `docs/voice-side-channel.md` for the `llm-cascade` agent and per-instance model
 selection, and `docs/idfon-eve.md` for the channel.
