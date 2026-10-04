@@ -61,7 +61,7 @@ kept because it records decisions; **design** = not all implemented.
 | `idfon-eve.md` | idfon as an Eve ingress channel (implemented) |
 | `live-voice.md` | the voice agent built on the Eve channel; transport + front-end decision |
 | `voice-side-channel.md` | shared voice service: requirements, STT/TTS candidates, plan (P0–P7 implemented; A1 client cascade integrated); the text-only `llm` agent and per-instance model selection for multiple contacts |
-| `agent-directory.md` | the `directory` catalog agent that issues contact invites; chokepoint + `IDFON-INVITE/1` envelope |
+| `agent-agency.md` | the `agency` go-between that introduces registered agents (A2A card relay, `IDFON-INVITE/1`; signs nothing) |
 
 ## Operations
 

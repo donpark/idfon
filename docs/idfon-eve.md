@@ -303,7 +303,7 @@ lifetime does. Three shapes, in order of preference:
    from a file, unioned with the static `--allow` list and reloaded while the
    holder runs. A provisioner appends a caller when it issues them a capability
    ticket, so admitting a new contact needs no holder restart (see
-   `docs/agent-directory.md`).
+   `docs/agent-agency.md`).
 
    Eve 0.55.0 does not expose a custom-channel startup hook, so this is the
    explicit deployment entrypoint rather than an in-extension spawn.

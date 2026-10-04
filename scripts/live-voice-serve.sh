@@ -134,7 +134,7 @@ for pidfile in "$home"/holder.pid "$home"/bridge.pid "$home"/eve.pid; do
   if [ -f "$pidfile" ]; then kill "$(cat "$pidfile")" 2>/dev/null || true; rm -f "$pidfile"; fi
 done
 sleep 0.5
-# Senders admitted after startup (e.g. a directory invite) are appended here by
+# Senders admitted after startup (e.g. an agency invite) are appended here by
 # the provisioner; the holder reloads the file while running.
 touch "$home/allowed-peers"
 live_args=()
@@ -158,6 +158,37 @@ for _ in $(seq 1 150); do
   sleep 0.1
 done
 
+# Agent tools reach their own bridge (for A2A card requests) via these.
+export IDFON_BRIDGE_URL="http://127.0.0.1:$bridge_port"
+export IDFON_BRIDGE_SECRET=m2-test-secret
+
+# Optional self-registration: when AGENCY_URL is set, this agent issues a
+# card bound to the agency (subject = agency peer id) with its OWN holder
+# and registers it. The agency signs nothing and never reads our key.
+if [ -n "${AGENCY_URL:-}" ]; then
+  dir_peer="${AGENCY_PEER:-}"
+  if [ -z "$dir_peer" ] && [ -s "$HOME/.idfon/agency/holder.ticket" ]; then
+    dir_peer=$(head -1 "$HOME/.idfon/agency/holder.ticket" | jq -r .id)
+  fi
+  if [ -n "$dir_peer" ]; then
+    grep -qxF "$dir_peer" "$home/allowed-peers" 2>/dev/null || printf '%s\n' "$dir_peer" >> "$home/allowed-peers"
+    card=$(curl -fsS -X POST "http://127.0.0.1:$bridge_port/card" \
+      -H 'content-type: application/json' -H 'x-idfon-channel-secret: m2-test-secret' \
+      -d "{\"subject\":\"$dir_peer\"}") || card=''
+    if [ -n "$card" ]; then
+      body=$(jq -nc --arg name "$contact_name" --arg model "$model" \
+        --argjson addr "$(printf '%s' "$card" | jq -c '.endpoint_addr')" \
+        --argjson ticket "$(printf '%s' "$card" | jq -c '.ticket')" \
+        '{name:$name, model:$model, endpoint_addr:$addr, capability_ticket:$ticket}')
+      curl -fsS -X POST "$AGENCY_URL/register" -H 'content-type: application/json' \
+        -H "x-idfon-provisioner-secret: ${AGENCY_PROVISIONER_SECRET:-m2-test-secret}" -d "$body" \
+        && echo "registered $model with agency ($AGENCY_URL)" \
+        || echo "agency registration failed" >&2
+    else
+      echo "agency registration failed: no card from holder" >&2
+    fi
+  fi
+fi
 (cd "$app" && exec "$app/node_modules/.bin/eve" start --host 127.0.0.1 --port "$eve_port") \
   >"$home/eve.log" 2>&1 &
 echo $! > "$home/eve.pid"

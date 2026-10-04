@@ -243,7 +243,7 @@ enum MessageKind {
     }
 }
 
-/// A contact invite minted by a directory agent: the holder's endpoint address
+/// A contact invite minted by a agency agent: the holder's endpoint address
 /// plus a capability ticket subject-bound to this device. Accepting it adds the
 /// peer and stores the ticket (see `ChatStore.acceptInvite`).
 struct ContactInvite {

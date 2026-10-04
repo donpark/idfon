@@ -182,12 +182,12 @@ The agents under `agents/` are:
 | --- | --- | --- |
 | `live-voice` | yes | GPT-Live full-duplex voice agent (audio/video calls, artifacts) |
 | `llm` | yes | text-only agent reached by voice; model is per-instance, so one agent can back several contacts |
-| `directory` | yes | catalog agent that issues contact invites for the other agents (bootstrap + chokepoint) |
+| `agency` | yes | go-between: introduces registered agents (A2A card relay; signs nothing) |
 | `chat-echo` | no | deterministic echo mock used by the e2e scripts and `eve-spike` |
 
 See [live-voice agent](docs/live-voice.md),
 [voice side channel](docs/voice-side-channel.md) (the `llm` agent and
-multi-contact model selection), [agent directory](docs/agent-directory.md),
+multi-contact model selection), [agent agency](docs/agent-agency.md),
 and [Eve ingress channel](docs/idfon-eve.md).
 
 ## Documentation
