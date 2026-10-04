@@ -4,6 +4,81 @@ import CIdfon
 import Foundation
 import Speech
 
+/// On-device TTS voice selection.
+///
+/// `AVSpeechSynthesisVoice(language:)` returns the *default* voice, which on a
+/// stock device is the compact/robotic tier even when an enhanced/premium
+/// neural voice for the same language is installed. Rank the installed voices
+/// by quality and take the best available, unless a voice is requested
+/// explicitly via `IDFON_TTS_VOICE` or `-ttsvoice <identifier|name-substring>`.
+///
+/// Enhanced/premium voices are user-downloaded (System Settings > Accessibility
+/// > Spoken Content > System Voice > Manage Voices), so ranking only helps once
+/// one is present; it never regresses to a lower tier than the default.
+enum SpeechVoice {
+    static func best(language: String = "en-US") -> AVSpeechSynthesisVoice? {
+        let all = AVSpeechSynthesisVoice.speechVoices()
+        let exact = all.filter {
+            $0.language == language || $0.language.hasPrefix(language + "-")
+        }
+        let base = String(language.split(separator: "-").first ?? "")
+        let pool = exact.isEmpty ? all.filter { $0.language.hasPrefix(base) } : exact
+        guard !pool.isEmpty else { return nil }
+        if let request = requested() {
+            if let hit = pool.first(where: { $0.identifier == request }) { return log(hit) }
+            if let hit = pool
+                .filter({ $0.name.localizedCaseInsensitiveContains(request) })
+                .max(by: { rank($0) < rank($1) })
+            { return log(hit) }
+        }
+        return pool
+            .max(by: { rank($0) != rank($1) ? rank($0) < rank($1) : $0.name > $1.name })
+            .map(log)
+    }
+
+    /// Higher is better: premium > enhanced > default; novelty/personal demoted.
+    static func rank(_ voice: AVSpeechSynthesisVoice) -> Int {
+        var score: Int
+        switch voice.quality {
+        case .premium: score = 3000
+        case .enhanced: score = 2000
+        default: score = 1000
+        }
+        if #available(iOS 17.0, macOS 14.0, *) {
+            if voice.voiceTraits.contains(.isNoveltyVoice) { score -= 800 }
+            if voice.voiceTraits.contains(.isPersonalVoice) { score -= 400 }
+        }
+        return score
+    }
+
+    static func requested() -> String? {
+        if let value = ProcessInfo.processInfo.environment["IDFON_TTS_VOICE"], !value.isEmpty {
+            return value
+        }
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "-ttsvoice"), args.count > index + 1 {
+            return args[index + 1]
+        }
+        return nil
+    }
+
+    @discardableResult
+    static func log(_ voice: AVSpeechSynthesisVoice) -> AVSpeechSynthesisVoice {
+        Automation.mark(
+            "voice: tts voice=\(voice.name) quality=\(qualityName(voice)) id=\(voice.identifier)"
+        )
+        return voice
+    }
+
+    static func qualityName(_ voice: AVSpeechSynthesisVoice) -> String {
+        switch voice.quality {
+        case .premium: return "premium"
+        case .enhanced: return "enhanced"
+        default: return "default"
+        }
+    }
+}
+
 /// Apple-native on-device voice provider for macOS (P6/A1): `AVSpeechSynthesizer`
 /// for TTS and `SFSpeechRecognizer` with `requiresOnDeviceRecognition` for STT.
 ///
@@ -67,7 +142,7 @@ final class OnDeviceVoice: NSObject {
         try? FileManager.default.removeItem(at: url)
 
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.voice = SpeechVoice.best(language: "en-US")
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
 
         synthesizer.write(utterance) { [weak self] buffer in
