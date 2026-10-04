@@ -33,8 +33,11 @@ final class ParakeetReduxAsr: AsrEngine {
     ) async throws {
         self.onText = onText
         Automation.mark("voice: parakeet initializing")
+        let throttle = ProgressThrottle()
         let models = try await AsrModels.downloadAndLoad(version: .redux) { progress in
-            Automation.mark("voice: parakeet download \(progress)")
+            if throttle.shouldLog(progress.fractionCompleted) {
+                Automation.mark("voice: parakeet download \(Int(progress.fractionCompleted * 100))%")
+            }
         }
         let manager = SlidingWindowAsrManager()
         try await manager.loadModels(models)
@@ -110,5 +113,20 @@ final class ParakeetReduxAsr: AsrEngine {
         gateLock.lock()
         gated = value
         gateLock.unlock()
+    }
+}
+
+/// Logs a download at most every 10% (the progress handler is hot).
+private final class ProgressThrottle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastPercent = -10
+
+    func shouldLog(_ fraction: Double) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let percent = Int(fraction * 100)
+        guard percent - lastPercent >= 10 || percent == 100 else { return false }
+        lastPercent = percent
+        return true
     }
 }
