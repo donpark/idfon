@@ -66,7 +66,36 @@ The STT/TTS engine is the voice agent's private choice, behind the existing
   not reachable from a separate holder process.
 - **Local model** (Kyutai STT + Kokoro TTS) — offline/private, the production
   target for a server-side voice agent.
-- **Cloud** (`GatewayVoiceEngine`, AI Gateway) — the zero-install demo engine.
+- **Cloud** — any OpenAI-compatible audio API via `OpenAiCompatEngine`
+  (`idfon-voice::gateway`), plus bespoke adapters for non-compatible vendors.
+
+### Providers: lean on common APIs
+
+Most vendors (and self-hosted servers) speak the OpenAI audio API
+(`/audio/transcriptions` + `/audio/speech`), so a **profile** — base URL, key
+env, model/voice ids — is all a new provider needs. The voice agent's `engine`
+block selects it; no block falls back to the AI Gateway env:
+
+```json
+{
+  "backend": "cascade",
+  "engine": {
+    "provider": "openai-compatible",
+    "base_url": "https://api.groq.com/openai/v1",
+    "api_key_env": "GROQ_API_KEY",
+    "stt_model": "whisper-large-v3",
+    "tts_model": "playai-tts",
+    "voice": "Aaliyah-PlayAI"
+  }
+}
+```
+
+So supporting a new cloud ASR/TTS service is usually **config, not code**.
+Providers that are only *almost* compatible are handled by a profile too;
+genuinely bespoke APIs (Deepgram/ElevenLabs streaming, Azure, Google, AWS) get
+a small adapter behind the same seam. idfon's value here is the **real-use
+harness**: add a contact per provider and actually converse, then compare
+latency/cost/quality — not a synthetic benchmark.
 
 ## The kit (fast iteration)
 

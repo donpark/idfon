@@ -1,23 +1,25 @@
-//! Cloud voice engine over an OpenAI-compatible AI Gateway.
+//! OpenAI-compatible voice engine: one adapter for many cloud/local providers.
 //!
-//! The holder process cannot reach the app's on-device Apple engine
-//! (`idfon_voice_set_bindings` lives in the app process), so the server-side
-//! cascade needs its own STT/TTS. This engine speaks to the same AI Gateway the
-//! live voice path already uses, which makes it the zero-install demo
-//! provider. It is a stopgap: the offline/local engines (Kyutai STT, Kokoro
-//! TTS — see `docs/voice-side-channel.md`) remain the production target.
+//! The vendor world mostly speaks the OpenAI audio API
+//! (`POST {base}/audio/transcriptions` multipart + `POST {base}/audio/speech`
+//! JSON→audio). Groq, Together, Fireworks, LocalAI, Speaches, Kokoro-FastAPI
+//! and self-hosted `faster-whisper` shims all implement it, so a
+//! [`Profile`] (base URL, key env, model/voice ids) covers them without new
+//! code. Vendors that are *almost* compatible are handled by a profile too;
+//! genuinely bespoke APIs (Deepgram/ElevenLabs streaming, etc.) get their own
+//! adapter behind the same [`VoiceEngine`] seam.
 //!
-//! Enable with the `gateway` feature. Config (env):
-//! - `AI_GATEWAY_API_KEY` (required)
-//! - `IDFON_VOICE_GATEWAY_URL` (default `https://ai-gateway.vercel.sh/v1`)
-//! - `IDFON_STT_MODEL` (default `openai/whisper-1`)
-//! - `IDFON_TTS_MODEL` (default `openai/tts-1`)
-//! - `IDFON_TTS_VOICE` (default `alloy`)
-//!
-//! STT is batch (whole utterance on `flush`/`finish`); TTS is clause-batched so
-//! an agent's streamed reply starts speaking before `finish`.
+//! Enable with the `gateway` feature. Config (env, or a [`Profile`] from the
+//! voice agent's `engine` block):
+//! - `AI_GATEWAY_API_KEY` / `api_key_env` (required)
+//! - `IDFON_VOICE_GATEWAY_URL` / `base_url` (default `https://ai-gateway.vercel.sh/v1`)
+//! - `IDFON_STT_MODEL` / `stt_model` (default `openai/whisper-1`)
+//! - `IDFON_TTS_MODEL` / `tts_model` (default `openai/tts-1`)
+//! - `IDFON_TTS_VOICE` / `voice` (default `alloy`)
 
 use anyhow::{anyhow, Context, Result};
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::stub::EnergyEndpointer;
 use crate::wav::pcm_wav_bytes;
@@ -25,34 +27,125 @@ use crate::{
     AudioFormat, Endpointer, PcmChunk, SttSession, TranscriptEvent, TtsSession, VoiceEngine,
 };
 
-/// A [`VoiceEngine`] backed by an OpenAI-compatible gateway.
+fn default_stt_model() -> String {
+    "openai/whisper-1".into()
+}
+fn default_tts_model() -> String {
+    "openai/tts-1".into()
+}
+fn default_voice() -> String {
+    "alloy".into()
+}
+fn default_api_key_env() -> String {
+    "AI_GATEWAY_API_KEY".into()
+}
+fn default_base_url() -> String {
+    "https://ai-gateway.vercel.sh/v1".into()
+}
+
+/// A declarative OpenAI-compatible provider profile. Add a provider by adding
+/// one of these (in config/env), not by writing code.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Profile {
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_api_key_env")]
+    pub api_key_env: String,
+    #[serde(default = "default_stt_model")]
+    pub stt_model: String,
+    #[serde(default = "default_tts_model")]
+    pub tts_model: String,
+    #[serde(default = "default_voice")]
+    pub voice: String,
+    /// Response format requested from `audio/speech`. `pcm` is s16le 24 kHz.
+    #[serde(default = "default_response_format")]
+    pub response_format: String,
+}
+
+fn default_response_format() -> String {
+    "pcm".into()
+}
+
+impl Profile {
+    /// Build from the voice agent's `engine` config block, if it names a
+    /// provider; otherwise fall back to the environment (AI Gateway defaults).
+    pub fn from_value(engine: Option<&Value>) -> Result<Self> {
+        let Some(engine) = engine.filter(|value| !value.is_null()) else {
+            return Self::from_env();
+        };
+        // A named `provider` other than an OpenAI-compatible one is handled by
+        // a different adapter; this engine only builds compatible profiles.
+        if let Some(provider) = engine.get("provider").and_then(|value| value.as_str()) {
+            if provider != "openai" && provider != "openai-compatible" {
+                return Err(anyhow!(
+                    "provider '{provider}' is not an OpenAI-compatible engine"
+                ));
+            }
+        }
+        serde_json::from_value(engine.clone()).context("parse OpenAI-compatible engine profile")
+    }
+
+    /// Environment-driven profile (the AI Gateway defaults).
+    pub fn from_env() -> Result<Self> {
+        let api_key_env = std::env::var("IDFON_VOICE_API_KEY_ENV")
+            .unwrap_or_else(|_| default_api_key_env());
+        if std::env::var(&api_key_env)
+            .ok()
+            .filter(|key| !key.is_empty())
+            .is_none()
+        {
+            return Err(anyhow!("{api_key_env} is required for the voice engine"));
+        }
+        Ok(Self {
+            base_url: std::env::var("IDFON_VOICE_GATEWAY_URL")
+                .unwrap_or_else(|_| default_base_url()),
+            api_key_env,
+            stt_model: std::env::var("IDFON_STT_MODEL").unwrap_or_else(|_| default_stt_model()),
+            tts_model: std::env::var("IDFON_TTS_MODEL").unwrap_or_else(|_| default_tts_model()),
+            voice: std::env::var("IDFON_TTS_VOICE").unwrap_or_else(|_| default_voice()),
+            response_format: std::env::var("IDFON_TTS_FORMAT")
+                .unwrap_or_else(|_| default_response_format()),
+        })
+    }
+
+    fn api_key(&self) -> Result<String> {
+        std::env::var(&self.api_key_env)
+            .ok()
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| anyhow!("{} is required for the voice engine", self.api_key_env))
+    }
+}
+
+/// A [`VoiceEngine`] over any OpenAI-compatible audio API.
 #[derive(Clone)]
-pub struct GatewayVoiceEngine {
-    base_url: String,
-    api_key: String,
-    stt_model: String,
-    tts_model: String,
-    tts_voice: String,
+pub struct OpenAiCompatEngine {
+    profile: Profile,
     client: reqwest::Client,
 }
 
-impl GatewayVoiceEngine {
-    pub fn from_env() -> Result<Self> {
-        let api_key = std::env::var("AI_GATEWAY_API_KEY")
-            .ok()
-            .filter(|key| !key.is_empty())
-            .ok_or_else(|| anyhow!("AI_GATEWAY_API_KEY is required for the gateway voice engine"))?;
-        Ok(Self {
-            base_url: std::env::var("IDFON_VOICE_GATEWAY_URL")
-                .unwrap_or_else(|_| "https://ai-gateway.vercel.sh/v1".into())
-                .trim_end_matches('/')
-                .to_string(),
-            api_key,
-            stt_model: std::env::var("IDFON_STT_MODEL").unwrap_or_else(|_| "openai/whisper-1".into()),
-            tts_model: std::env::var("IDFON_TTS_MODEL").unwrap_or_else(|_| "openai/tts-1".into()),
-            tts_voice: std::env::var("IDFON_TTS_VOICE").unwrap_or_else(|_| "alloy".into()),
+/// Back-compat alias for the engine introduced as the AI Gateway engine.
+pub type GatewayVoiceEngine = OpenAiCompatEngine;
+
+impl OpenAiCompatEngine {
+    pub fn new(profile: Profile) -> Self {
+        Self {
+            profile,
             client: reqwest::Client::new(),
-        })
+        }
+    }
+
+    /// Build from the environment (AI Gateway defaults).
+    pub fn from_env() -> Result<Self> {
+        Ok(Self::new(Profile::from_env()?))
+    }
+
+    /// Build for one call from the voice agent's config; falls back to env.
+    pub fn from_config(engine: Option<&Value>) -> Result<Self> {
+        Ok(Self::new(Profile::from_value(engine)?))
+    }
+
+    pub fn provider(&self) -> &str {
+        &self.profile.base_url
     }
 
     /// Bridge a sync trait method to the async HTTP client. The holder runs a
@@ -70,20 +163,22 @@ impl GatewayVoiceEngine {
     }
 
     fn transcribe(&self, format: AudioFormat, pcm: &[i16]) -> Result<String> {
-        let url = format!("{}/audio/transcriptions", self.base_url);
+        let base = self.profile.base_url.trim_end_matches('/').to_string();
+        let url = format!("{base}/audio/transcriptions");
+        let model = self.profile.stt_model.clone();
+        let api_key = self.profile.api_key()?;
         let wav = pcm_wav_bytes(format, pcm);
-        let engine = self.clone();
+        let client = self.client.clone();
         Self::block_on(async move {
             let part = reqwest::multipart::Part::bytes(wav)
                 .file_name("audio.wav")
                 .mime_str("audio/wav")?;
             let form = reqwest::multipart::Form::new()
                 .part("file", part)
-                .text("model", engine.stt_model.clone());
-            let response = engine
-                .client
+                .text("model", model);
+            let response = client
                 .post(&url)
-                .bearer_auth(&engine.api_key)
+                .bearer_auth(&api_key)
                 .multipart(form)
                 .send()
                 .await
@@ -104,24 +199,27 @@ impl GatewayVoiceEngine {
     }
 
     fn synthesize(&self, voice: &str, format: AudioFormat, text: &str) -> Result<PcmChunk> {
-        let url = format!("{}/audio/speech", self.base_url);
-        let engine = self.clone();
+        let base = self.profile.base_url.trim_end_matches('/').to_string();
+        let url = format!("{base}/audio/speech");
+        let model = self.profile.tts_model.clone();
+        let response_format = self.profile.response_format.clone();
+        let api_key = self.profile.api_key()?;
         let text = text.to_string();
         let voice = if voice.is_empty() || voice == "default" {
-            self.tts_voice.clone()
+            self.profile.voice.clone()
         } else {
             voice.to_string()
         };
+        let client = self.client.clone();
         Self::block_on(async move {
-            let response = engine
-                .client
+            let response = client
                 .post(&url)
-                .bearer_auth(&engine.api_key)
+                .bearer_auth(&api_key)
                 .json(&serde_json::json!({
-                    "model": engine.tts_model,
+                    "model": model,
                     "input": text,
                     "voice": voice,
-                    "response_format": "pcm",
+                    "response_format": response_format,
                 }))
                 .send()
                 .await
@@ -132,6 +230,8 @@ impl GatewayVoiceEngine {
                 let body = String::from_utf8_lossy(&bytes);
                 return Err(anyhow!("speech HTTP {status}: {}", truncate(&body)));
             }
+            // `pcm` is s16le at the requested format; other formats would need
+            // decoding (an adapter concern, added per provider as needed).
             let samples: Vec<i16> = bytes
                 .chunks_exact(2)
                 .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
@@ -141,9 +241,9 @@ impl GatewayVoiceEngine {
     }
 }
 
-impl VoiceEngine for GatewayVoiceEngine {
+impl VoiceEngine for OpenAiCompatEngine {
     fn name(&self) -> &str {
-        "gateway"
+        "openai-compatible"
     }
 
     fn stt(&self, format: AudioFormat) -> Result<Box<dyn SttSession>> {
@@ -170,7 +270,7 @@ impl VoiceEngine for GatewayVoiceEngine {
 
 /// Batch STT: buffers the utterance; the endpointer/`flush` closes the turn.
 struct GatewayStt {
-    engine: GatewayVoiceEngine,
+    engine: OpenAiCompatEngine,
     format: AudioFormat,
     pcm: Vec<i16>,
 }
@@ -201,7 +301,7 @@ impl SttSession for GatewayStt {
 
 /// Clause-batched TTS: each complete sentence is synthesized as it arrives.
 struct GatewayTts {
-    engine: GatewayVoiceEngine,
+    engine: OpenAiCompatEngine,
     format: AudioFormat,
     voice: String,
     pending: String,
@@ -253,10 +353,30 @@ mod tests {
     }
 
     #[test]
+    fn profile_from_config_names_provider() {
+        let profile = Profile::from_value(Some(&serde_json::json!({
+            "provider": "openai-compatible",
+            "base_url": "https://api.groq.com/openai/v1",
+            "api_key_env": "GROQ_API_KEY",
+            "stt_model": "whisper-large-v3",
+            "tts_model": "playai-tts",
+            "voice": "Aaliyah-PlayAI",
+        })))
+        .unwrap();
+        assert_eq!(profile.base_url, "https://api.groq.com/openai/v1");
+        assert_eq!(profile.stt_model, "whisper-large-v3");
+        assert_eq!(profile.response_format, "pcm");
+    }
+
+    #[test]
+    fn profile_rejects_non_compatible_provider() {
+        assert!(Profile::from_value(Some(&serde_json::json!({ "provider": "deepgram" }))).is_err());
+    }
+
+    #[test]
     fn from_env_requires_a_key() {
-        // Only assert the error shape when the key is genuinely absent.
         if std::env::var("AI_GATEWAY_API_KEY").is_err() {
-            assert!(GatewayVoiceEngine::from_env().is_err());
+            assert!(OpenAiCompatEngine::from_env().is_err());
         }
     }
 }
