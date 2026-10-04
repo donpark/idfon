@@ -6,25 +6,16 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4EDE359CCB42920BD36539D5 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		1A000001000000000000001A /* Idfon.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Idfon.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedRootGroup section */
-		1A000002000000000000002B /* Idfon */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				1A0000100000000000000019 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
-			);
-			explicitFileTypes = {};
-			explicitFolders = ();
-			path = Idfon;
-			sourceTree = "<group>";
-		};
-/* End PBXFileSystemSynchronizedRootGroup section */
-
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		1A0000100000000000000019 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+		1A0000100000000000000019 /* Exceptions for "Idfon" folder in "Idfon" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
@@ -32,6 +23,32 @@
 			target = 1A000005000000000000005E /* Idfon */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		1A000002000000000000002B /* Idfon */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				1A0000100000000000000019 /* Exceptions for "Idfon" folder in "Idfon" target */,
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = Idfon;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1A0000080000000000000081 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4EDE359CCB42920BD36539D5 /* FluidAudio in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		1A000003000000000000003C = {
@@ -55,7 +72,7 @@
 /* Begin PBXNativeTarget section */
 		1A000005000000000000005E /* Idfon */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 1A000006000000000000006F;
+			buildConfigurationList = 1A000006000000000000006F /* Build configuration list for PBXNativeTarget "Idfon" */;
 			buildPhases = (
 				1A0000070000000000000070 /* Sources */,
 				1A0000080000000000000081 /* Frameworks */,
@@ -69,6 +86,9 @@
 				1A000002000000000000002B /* Idfon */,
 			);
 			name = Idfon;
+			packageProductDependencies = (
+				FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */,
+			);
 			productName = Idfon;
 			productReference = 1A000001000000000000001A /* Idfon.app */;
 			productType = "com.apple.product-type.application";
@@ -87,7 +107,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 1A00000B00000000000000B4;
+			buildConfigurationList = 1A00000B00000000000000B4 /* Build configuration list for PBXProject "Idfon" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -96,6 +116,9 @@
 			);
 			mainGroup = 1A000003000000000000003C;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				54D511937386577BC39C5690 /* XCRemoteSwiftPackageReference "FluidAudio" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1A000004000000000000004D /* Products */;
 			projectDirPath = "";
@@ -106,26 +129,6 @@
 		};
 /* End PBXProject section */
 
-/* Begin PBXSourcesBuildPhase section */
-		1A0000070000000000000070 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXSourcesBuildPhase section */
-
-/* Begin PBXFrameworksBuildPhase section */
-		1A0000080000000000000081 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXFrameworksBuildPhase section */
-
 /* Begin PBXResourcesBuildPhase section */
 		1A0000090000000000000092 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
@@ -135,6 +138,16 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1A0000070000000000000070 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
 		1A00000C00000000000000C5 /* Debug */ = {
@@ -255,15 +268,6 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		1A00000B00000000000000B4 /* Build configuration list for PBXProject "Idfon" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				1A00000C00000000000000C5 /* Debug */,
-				1A00000D00000000000000D6 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		1A000006000000000000006F /* Build configuration list for PBXNativeTarget "Idfon" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -273,7 +277,35 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		1A00000B00000000000000B4 /* Build configuration list for PBXProject "Idfon" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A00000C00000000000000C5 /* Debug */,
+				1A00000D00000000000000D6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		54D511937386577BC39C5690 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.17.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 54D511937386577BC39C5690 /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 1A00000A00000000000000A3 /* Project object */;
 }
