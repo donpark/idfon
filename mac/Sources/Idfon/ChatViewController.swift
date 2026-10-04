@@ -1027,10 +1027,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc private func callTapped() {
         // Voice routing is a holder-signed fact on the capability ticket
         // (`voice.mode`); legacy tickets have no block and keep the old
-        // name/profile heuristic. GPT-Live-1 DEPRECATED (migration target):
-        // `native-duplex` still lands on the holder's GPT-Live handler until
-        // live calls migrate to the idfon-voice cascade; `client-cascade` drives
-        // the agent with the on-device cascade instead.
+        // name/profile heuristic. `native-duplex`/`server-cascade` dial a live
+        // session (the holder terminates audio, whatever backend it runs);
+        // `client-cascade` drives the agent with the on-device cascade instead.
         if let mode = CapabilityTickets.voiceRoute(for: peer.id)?.mode {
             switch mode {
             case .clientCascade, .delegated:

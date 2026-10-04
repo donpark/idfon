@@ -5,10 +5,9 @@ import WebSocket from "ws";
 
 // Live voice reply for one idfon voice memo.
 //
-// GPT-Live-1 DEPRECATED (migration target). This tool is part of the
-// retired audio-only path; the cascade replaces it with the shared
-// idfon-voice STT/TTS seam. Do not extend it or copy it into other agents.
-// See docs/voice-side-channel.md and docs/live-voice.md.
+// Responds to one idfon voice memo using the GPT-Live-1 model (one backend a
+// voice agent can run; see docs/voice-agent.md). The server-side cascade uses
+// the shared idfon-voice STT/TTS seam instead.
 //
 // Input: the staged recording path (IDFON-RECORDING/1 attachment, Ogg Opus
 // 48k mono) the model saw in the turn. Output: spoken reply audio (WAV blob
