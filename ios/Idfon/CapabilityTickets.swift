@@ -55,8 +55,8 @@ enum CapabilityTickets {
               let rawMode = voice["mode"] as? String,
               let mode = VoiceRoute.Mode(rawValue: rawMode) else { return nil }
         let delegate = voice["delegate"] as? [String: Any]
-        let contact = delegate?["contact"].flatMap { value -> String? in
-            guard let data = try? JSONSerialization.data(withJSONObject: value) else { return nil }
+        func jsonString(_ value: Any?) -> String? {
+            guard let value, let data = try? JSONSerialization.data(withJSONObject: value) else { return nil }
             return String(data: data, encoding: .utf8)
         }
         return VoiceRoute(
@@ -64,7 +64,8 @@ enum CapabilityTickets {
             audio: voice["audio"] as? String,
             model: voice["model"] as? String,
             delegatePeerId: delegate?["peer_id"] as? String,
-            delegateContact: contact)
+            delegateContact: jsonString(delegate?["contact"]),
+            delegateTicket: jsonString(delegate?["ticket"]))
     }
 }
 
@@ -88,4 +89,6 @@ struct VoiceRoute {
     let delegatePeerId: String?
     /// Delegate endpoint address JSON when `mode == .delegated`.
     let delegateContact: String?
+    /// Delegate capability ticket JSON when `mode == .delegated`.
+    let delegateTicket: String?
 }

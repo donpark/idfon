@@ -408,6 +408,10 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
             let key = load_key(key_file.as_deref(), false)?;
             let live_params = load_live_params(live_config.as_deref())?;
             let ticket_id = ticket_id.unwrap_or_else(|| format!("eve-ticket-{}", now_seconds()));
+            let voice = voice_route_from_live_params(&live_params);
+            if voice.mode == VoiceMode::Delegated {
+                admit_delegate_caller(&live_params, &subject);
+            }
             let mut grants = vec![Capability::MessageReceive];
             grants.extend(capabilities.into_iter().map(Capability::new));
             println!(
@@ -419,7 +423,7 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
                     grants,
                     expires_at,
                     ticket_id,
-                    Some(voice_route_from_live_params(&live_params)),
+                    Some(voice),
                 ))?
             );
             Ok(())
@@ -443,6 +447,41 @@ fn load_live_params(path: Option<&Path>) -> Result<serde_json::Value> {
 /// live config advertises `native-duplex` (it opted into a live-call handler);
 /// a holder with no live config advertises `client-cascade` (its agent speaks
 /// text and the caller supplies on-device STT/TTS).
+/// When a delegated voice route is configured with a local delegate allow-file,
+/// admit `subject` (a caller) there so a call can dial the delegate. The
+/// delegate's holder reloads its allow-file while running.
+fn admit_delegate_caller(params: &serde_json::Value, subject: &str) {
+    if let Some(path) = params
+        .get("voice_delegate_allow_file")
+        .and_then(|value| value.as_str())
+        .filter(|path| !path.is_empty())
+    {
+        admit_caller_to(path, subject);
+    }
+}
+
+/// Append `subject` to a holder allow-file (idempotent).
+fn admit_caller_to(path: &str, subject: &str) {
+    if subject.is_empty() {
+        return;
+    }
+    let already = std::fs::read_to_string(path)
+        .map(|text| text.lines().any(|line| line.trim() == subject))
+        .unwrap_or(false);
+    if already {
+        return;
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write as _;
+        let _ = writeln!(file, "{subject}");
+        eprintln!("[eve-idfon] admitted voice-delegate caller {subject} to {path}");
+    }
+}
+
 fn voice_route_from_live_params(params: &serde_json::Value) -> VoiceRoute {
     if let Some(voice) = params.get("voice_route") {
         if let Ok(route) = serde_json::from_value::<VoiceRoute>(voice.clone()) {
@@ -561,6 +600,10 @@ async fn serve(
     // Advertised on every ticket this holder mints and used to decide whether
     // inbound live controls should reach a registered live-call handler.
     let voice_route = voice_route_from_live_params(&live_params);
+    let delegate_allow_file = live_params
+        .get("voice_delegate_allow_file")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned);
     // Senders admitted dynamically while running (e.g. an agency provisioner
     // inviting a caller) are unioned with the static --allow list from the
     // allow-file, which the holder reloads while running.
@@ -762,6 +805,7 @@ async fn serve(
                     &key,
                     &transport,
                     &voice_route,
+                    delegate_allow_file.as_deref(),
                     out_tx.clone(),
                 )
                 .await
@@ -1641,8 +1685,14 @@ async fn handle_ticket_issue(
     key: &SigningKey,
     transport: &IrohTransport,
     voice: &VoiceRoute,
+    delegate_allow_file: Option<&str>,
     out_tx: mpsc::Sender<IpcFrame>,
 ) -> Result<()> {
+    if voice.mode == VoiceMode::Delegated {
+        if let Some(path) = delegate_allow_file {
+            admit_caller_to(path, &subject);
+        }
+    }
     let mut grants = vec![Capability::MessageReceive];
     grants.extend(capabilities.into_iter().map(Capability::new));
     let ticket = issue_capability_ticket_with_voice(

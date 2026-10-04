@@ -1037,11 +1037,23 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 return
             case .delegated:
                 // Calls go to the delegate voice agent; text stays on this peer.
-                if let delegate = route.delegatePeerId {
-                    live.dial(delegate)
+                guard let delegate = route.delegatePeerId else {
+                    voiceAgentTapped()
                     return
                 }
-                voiceAgentTapped()
+                if app.peers.contains(where: { $0.id == delegate }) || route.delegateContact == nil {
+                    live.dial(delegate)
+                } else if let contact = route.delegateContact {
+                    // Add the delegate from the signed contact (once), then dial.
+                    let client = self.client
+                    let ticket = route.delegateTicket
+                    Task { @MainActor in
+                        let identity = (try? await client.identityId()) ?? "default"
+                        try? await client.addChannel(name: delegate, ticketJSON: contact, identity: identity)
+                        if let ticket { _ = CapabilityTickets.store(ticket, for: delegate) }
+                        live.dial(delegate)
+                    }
+                }
                 return
             case .nativeDuplex, .serverCascade:
                 break
