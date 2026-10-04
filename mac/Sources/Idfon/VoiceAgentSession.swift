@@ -34,6 +34,10 @@ final class VoiceAgentSession: NSObject {
     /// Latest state, readable by the call UI (the `onState` callback is single-
     /// owner, so the LiveActivityController owns it).
     private(set) var state: State = .idle
+    /// One-line live readout for the call bar, e.g. "Apple 900 ms".
+    private(set) var stats: String?
+    /// Capture->final time of the last turn.
+    private var lastListenMs = 0
     /// Mic gate, driven by the call UI's mute button.
     private var micMuted = false
     var onState: ((State) -> Void)?
@@ -100,6 +104,7 @@ final class VoiceAgentSession: NSObject {
                 }
                 setState(.speaking(greeting))
                 await speak(greeting)
+                updateStats()
             }
             while !stopRequested && turnsDone < turnLimit {
                 guard await performTurn(peerId: peer.id) else { break }
@@ -117,6 +122,12 @@ final class VoiceAgentSession: NSObject {
     private func setState(_ next: State) {
         state = next
         onState?(next)
+    }
+
+    /// Builds the bar's live readout (mac runs the Apple engines only).
+    private func updateStats() {
+        stats = lastListenMs > 0 ? "Apple \(lastListenMs) ms" : "Apple"
+        Automation.mark("voice-agent: stats=\(stats ?? "nil")")
     }
 
     /// Call-UI mute: close/open the mic gate. The next `listenOnce` respects it.
@@ -158,7 +169,10 @@ final class VoiceAgentSession: NSObject {
         // tail; only a transcript that is not the last spoken reply is sent.
         for _ in 0..<3 {
             setState(.listening(""))
+            let listenStart = Date()
             guard let text = await listenOnce(), !text.isEmpty else { break }
+            lastListenMs = Int(Date().timeIntervalSince(listenStart) * 1000)
+            Automation.mark("voice-agent: asr listen_ms=\(lastListenMs)")
             if let spoken = lastSpoken, !spoken.isEmpty,
                voice.isEcho(spoken: spoken, heard: text) {
                 Automation.mark("voice-agent: dropped echo heard=\(text)")
@@ -200,6 +214,7 @@ final class VoiceAgentSession: NSObject {
             setState(.speaking(reply))
             await speak(reply)
         }
+        updateStats()
         setState(.idle)
         return turnsDone < turnLimit
     }

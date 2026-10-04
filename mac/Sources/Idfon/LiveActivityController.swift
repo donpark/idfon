@@ -124,6 +124,22 @@ final class LiveActivityController {
             }
         }
 
+        /// Live readout for the Bar (on-device voice calls only).
+        var stats: String? {
+            switch self {
+            case .audio, .video: return nil
+            case .voice(let session): return session.stats
+            }
+        }
+
+        /// The client-cascade voice call runs entirely on device.
+        var onDevice: Bool {
+            switch self {
+            case .audio, .video: return false
+            case .voice: return true
+            }
+        }
+
         var videoAvailable: Bool {
             switch self {
             case .audio: return false
@@ -236,6 +252,8 @@ final class LiveActivityController {
             model.audioAvailable = machine?.audioAvailable ?? true
             model.videoAvailable = machine?.videoAvailable ?? true
             model.elapsed = elapsed
+            model.stats = machine?.stats
+            model.onDevice = machine?.onDevice ?? false
             model.rows = transfers.rows(for: callPeer)
             model.density = visible == callPeer ? .expanded : .compact
             models.append(model)

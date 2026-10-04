@@ -599,7 +599,8 @@ Live Activity call bar on iOS):
   "Agent · spoken" — voice messages are distinguishable from typed ones. The
   client owns the transcript (there is no holder snapshot under A1), so a turn
   is annotated at commit rather than streamed word by word.
-- **Live readout & provenance.** The call bar shows a one-line stats string
+- **Live readout & provenance.** The call bar (iOS and mac) shows a one-line
+  stats string
   (`Whistle 83 ms · Kokoro 0.7 s`) under the in-call clock, and an on-device
   voice call carries a small tappable lock glyph: "Transcribed and spoken on
   this iPhone. Your audio is never uploaded." Metrics are dev-facing for now;

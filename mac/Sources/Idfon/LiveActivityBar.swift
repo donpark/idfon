@@ -33,6 +33,11 @@ struct LiveActivityBarModel: Equatable {
     var audioAvailable = true
     var videoAvailable = true
     var elapsed: TimeInterval = 0
+    /// Subtle live readout for the active call, e.g. "Apple 900 ms". Voice
+    /// (on-device) calls only; nil hides it.
+    var stats: String?
+    /// True for the on-device voice call: shows the provenance glyph.
+    var onDevice = false
     var rows: [Row] = []
     var density: Density = .expanded
 
@@ -74,6 +79,7 @@ final class LiveActivityBar: NSView {
     private let dot = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
+    private let onDeviceButton = NSButton()
     private let micButton = NSButton()
     private let camButton = NSButton()
     private let declineButton = NSButton()
@@ -132,12 +138,14 @@ final class LiveActivityBar: NSView {
         configure(declineButton, symbol: "phone.down.fill", id: "decline", label: "Decline", action: #selector(declineTapped))
         configure(answerButton, symbol: "phone.fill", id: "answer", label: "Answer", action: #selector(answerTapped))
         configure(verbButton, symbol: "bell", id: "verb", label: "Ping", action: #selector(verbTapped))
+        configure(onDeviceButton, symbol: "lock.fill", id: "onDevice", label: "On-device voice", action: #selector(onDeviceTapped))
+        onDeviceButton.contentTintColor = .tertiaryLabelColor
         verbButton.wantsLayer = true
         verbButton.layer?.cornerRadius = 6
         declineButton.contentTintColor = .systemRed
         answerButton.contentTintColor = .systemGreen
 
-        let header = NSStackView(views: [dot, titleStack, micButton, camButton, declineButton, answerButton, verbButton])
+        let header = NSStackView(views: [dot, titleStack, onDeviceButton, micButton, camButton, declineButton, answerButton, verbButton])
         header.orientation = .horizontal
         header.spacing = 8
         header.alignment = .centerY
@@ -206,11 +214,15 @@ final class LiveActivityBar: NSView {
             case .idle: statusLabel.stringValue = ""
             case .calling: statusLabel.stringValue = "Calling…"
             case .incoming: statusLabel.stringValue = "Incoming call"
-            case .inCall: statusLabel.stringValue = Self.clock(model.elapsed)
+            case .inCall:
+                statusLabel.stringValue = [Self.clock(model.elapsed), model.stats]
+                    .compactMap { $0 }
+                    .joined(separator: " · ")
             case .watching: statusLabel.stringValue = "Watching video"
             }
             statusLabel.isHidden = statusLabel.stringValue.isEmpty
         }
+        onDeviceButton.isHidden = compact || !model.onDevice
 
         // Stream toggles exist only once a call does: idle has nothing to stage
         // and the ringing Bar has nothing to answer with (§3 State 3).
@@ -274,6 +286,14 @@ final class LiveActivityBar: NSView {
     }
 
     // MARK: - Intents
+
+    @objc private func onDeviceTapped() {
+        let alert = NSAlert()
+        alert.messageText = "On-device voice"
+        alert.informativeText = "Transcribed and spoken on this Mac. Your audio is never uploaded — it stays between you and your peer."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
 
     @objc private func micTapped() { onIntent?(.toggleMic) }
     @objc private func camTapped() { onIntent?(.toggleCam) }
