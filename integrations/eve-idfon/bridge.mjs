@@ -65,7 +65,7 @@ function processFrames() {
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
       }).catch((error) => console.error(`[eve-idfon] ${value.type} delivery failed: ${error}`));
-    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "records.drain.result" || value.type === "stream.append.result" || value.type === "ticket.issue.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
+    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "records.drain.result" || value.type === "stream.append.result" || value.type === "audio.append.result" || value.type === "ticket.issue.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
       const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
       const waiter = pending.get(key);
       if (waiter) {
@@ -90,7 +90,7 @@ holder.on("error", (error) => { console.error(`[eve-idfon] holder IPC: ${error}`
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
-  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/stream/append", "/input", "/send", "/card", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
+  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/stream/append", "/live/audio", "/input", "/send", "/card", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -339,6 +339,28 @@ const server = createServer(async (request, response) => {
         step_index: body.step_index,
         sequence: body.sequence,
         text: body.text,
+      });
+      const result = await resultPromise;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      pending.delete(requestId);
+      response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
+  if (request.url === "/live/audio") {
+    if (typeof body.peer_id !== "string" || typeof body.pcm_base64 !== "string") {
+      response.writeHead(400); response.end("invalid audio append\n"); return;
+    }
+    const requestId = `audio-append-${nextRequestId++}`;
+    const resultPromise = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+    try {
+      await write({
+        type: "audio.append",
+        request_id: requestId,
+        peer_id: body.peer_id,
+        pcm_base64: body.pcm_base64,
       });
       const result = await resultPromise;
       response.writeHead(200, { "content-type": "application/json" });

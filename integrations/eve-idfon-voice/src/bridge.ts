@@ -20,6 +20,18 @@ export async function putAudio(wav: Buffer): Promise<{ ticket: string; size_byte
   return (await response.json()) as { ticket: string; size_bytes: number };
 }
 
+/** Push agent-produced PCM to the active call's return leg. */
+export async function playAudio(peerId: string, pcm: Buffer): Promise<boolean> {
+  const response = await fetch(`${bridgeUrl()}/live/audio`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-idfon-channel-secret": bridgeSecret() },
+    body: JSON.stringify({ peer_id: peerId, pcm_base64: pcm.toString("base64") }),
+  });
+  if (!response.ok) throw new Error(`idfon live audio returned HTTP ${response.status}`);
+  const result = (await response.json()) as { accepted?: boolean };
+  return result.accepted ?? false;
+}
+
 /** Send text to a wrapped agent and wait for its reply (A2A relay). */
 export async function sendAwait(
   peerId: string,

@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod deltas;
 pub mod live;
+pub mod live_audio;
 pub mod records;
 pub mod rooms;
 use tokio::{
@@ -275,6 +276,18 @@ pub enum IpcFrame {
     },
     #[serde(rename = "stream.append.result")]
     StreamAppendResult {
+        request_id: String,
+        accepted: bool,
+    },
+    /// Agent-produced PCM (s16le base64) for the active call's return leg.
+    #[serde(rename = "audio.append")]
+    AudioAppend {
+        request_id: String,
+        peer_id: String,
+        pcm_base64: String,
+    },
+    #[serde(rename = "audio.append.result")]
+    AudioAppendResult {
         request_id: String,
         accepted: bool,
     },
@@ -761,6 +774,30 @@ async fn serve(
                 }
                 out_tx
                     .send(IpcFrame::StreamAppendResult {
+                        request_id,
+                        accepted,
+                    })
+                    .await
+                    .map_err(|_| anyhow!("IPC client disconnected"))
+            }
+            IpcFrame::AudioAppend {
+                request_id,
+                peer_id,
+                pcm_base64,
+            } => {
+                let accepted = BASE64
+                    .decode(&pcm_base64)
+                    .ok()
+                    .map(|bytes| {
+                        let samples: Vec<i16> = bytes
+                            .chunks_exact(2)
+                            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                            .collect();
+                        live_audio::append(&peer_id, samples)
+                    })
+                    .unwrap_or(false);
+                out_tx
+                    .send(IpcFrame::AudioAppendResult {
                         request_id,
                         accepted,
                     })
