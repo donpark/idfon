@@ -75,6 +75,8 @@ final class VoiceAgentSession: NSObject {
             // block the turn loop until it is ready so the first listen does
             // not time out against a still-loading model.
             await startAnalyzer()
+            // The call is "connected" once the recognizer is listening.
+            CallTonePlayer.shared.start(.answered)
             // Let ChatStore finish hydrating so the reply snapshot excludes
             // pre-existing history.
             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -174,6 +176,7 @@ final class VoiceAgentSession: NSObject {
         isActive = false
         stopRequested = true
         segmenter.stop()
+        CallTonePlayer.shared.stop()
         asr?.stop()
         asr = nil
         deliver(nil)
