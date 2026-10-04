@@ -23,10 +23,8 @@ final class VoiceAgentSession: NSObject {
     }
 
     private let voice = OnDeviceVoice.shared
-    private let synthesizer = AVSpeechSynthesizer()
-    private var speechDelegate: SpeechDelegate?
     private let segmenter = VoicePromptSegmenter()
-    private var analyzer: Any?
+    private var asr: (any AsrEngine)?
 
     private(set) var isActive = false
     /// Peer this voice call is with, so the shared call UI can title it.
@@ -68,6 +66,7 @@ final class VoiceAgentSession: NSObject {
         micMuted = false
         segmenter.onPartial = { [weak self] text in self?.setState(.listening(text)) }
         segmenter.onCommit = { [weak self] text in self?.deliver(text) }
+        SpeechEngines.prewarm()
         segmenter.start()
         Task { @MainActor in
             let peers = (try? await client.peers()) ?? []
@@ -99,9 +98,7 @@ final class VoiceAgentSession: NSObject {
                 // Keep the agent's own greeting out of the recognizer (the loop
                 // resumes the mic for the first caller turn).
                 segmenter.setEnabled(false)
-                if #available(macOS 26.0, *), let transcriber = analyzer as? MacSpeechTranscriber {
-                    transcriber.pause()
-                }
+                asr?.pause()
                 setState(.speaking(greeting))
                 await speak(greeting)
                 updateStats()
@@ -124,9 +121,31 @@ final class VoiceAgentSession: NSObject {
         onState?(next)
     }
 
-    /// Builds the bar's live readout (mac runs the Apple engines only).
+    /// Builds the bar's live readout from the active engines' last latency.
     private func updateStats() {
-        stats = lastListenMs > 0 ? "Apple \(lastListenMs) ms" : "Apple"
+        let asrLabel: String
+        switch asr?.name {
+        case "whistle": asrLabel = "Whistle"
+        case "parakeet-redux": asrLabel = "Parakeet"
+        case "system": asrLabel = "Apple"
+        default: asrLabel = asr?.name ?? "speech"
+        }
+        var parts: [String] = []
+        if let ms = asr?.lastLatencyMs {
+            parts.append("\(asrLabel) \(ms) ms")
+        } else if lastListenMs > 0 {
+            parts.append("\(asrLabel) \(lastListenMs) ms")
+        } else {
+            parts.append(asrLabel)
+        }
+        let tts = SpeechEngines.tts
+        let ttsLabel = tts.name == "kokoro" ? "Kokoro" : tts.name.capitalized
+        if let ms = tts.lastLatencyMs {
+            parts.append("\(ttsLabel) \(String(format: "%.1f", Double(ms) / 1000)) s")
+        } else {
+            parts.append(ttsLabel)
+        }
+        stats = parts.joined(separator: " · ")
         Automation.mark("voice-agent: stats=\(stats ?? "nil")")
     }
 
@@ -135,8 +154,8 @@ final class VoiceAgentSession: NSObject {
 
     func setAudioEnabled(_ enabled: Bool) {
         micMuted = !enabled
-        guard #available(macOS 26.0, *), let transcriber = analyzer as? MacSpeechTranscriber else { return }
-        if enabled { transcriber.resume() } else { transcriber.pause() }
+        guard let asr else { return }
+        if enabled { asr.resume() } else { asr.pause() }
     }
 
     func run(peerRef: String, turns: Int) {
@@ -254,10 +273,8 @@ final class VoiceAgentSession: NSObject {
         isActive = false
         stopRequested = true
         segmenter.stop()
-        if #available(macOS 26.0, *), let transcriber = analyzer as? MacSpeechTranscriber {
-            transcriber.stop()
-        }
-        analyzer = nil
+        asr?.stop()
+        asr = nil
         deliver(nil)
         activePeerId = nil
         micMuted = false
@@ -277,11 +294,12 @@ final class VoiceAgentSession: NSObject {
     // MARK: - analyzer lifecycle
 
     private func startAnalyzer() async {
-        guard #available(macOS 26.0, *) else { return }
-        let transcriber = MacSpeechTranscriber()
-        analyzer = transcriber
+        let engine = SpeechEngines.makeAsr()
+        asr = engine
+        guard let engine else { return }
         do {
-            try await transcriber.start(
+            try await engine.start(
+                enableVoiceProcessing: false,
                 onText: { [weak self] text, isFinal in
                     DispatchQueue.main.async { self?.segmenter.handle(text, isFinal: isFinal) }
                 },
@@ -297,9 +315,9 @@ final class VoiceAgentSession: NSObject {
 
     /// LiveSub's lesson: a failed recognizer stays dead until reset. Rebuild it.
     private func restartAnalyzer() {
-        guard isActive, #available(macOS 26.0, *) else { return }
-        (analyzer as? MacSpeechTranscriber)?.stop()
-        analyzer = nil
+        guard isActive else { return }
+        asr?.stop()
+        asr = nil
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard self.isActive else { return }
@@ -325,25 +343,14 @@ final class VoiceAgentSession: NSObject {
 
     // MARK: - speech
 
-    private final class SpeechDelegate: NSObject, AVSpeechSynthesizerDelegate {
-        let finish: () -> Void
-        init(finish: @escaping () -> Void) { self.finish = finish }
-        func speechSynthesizer(
-            _ synthesizer: AVSpeechSynthesizer,
-            didFinish utterance: AVSpeechUtterance
-        ) {
-            finish()
-        }
-    }
-
-    /// One user turn. On macOS 26+ the analyzer is already running; the mic is
-    /// resumed for the turn and paused again while the agent responds.
+    /// One user turn. The analyzer is already running; the mic is resumed for
+    /// the turn and paused again while the agent responds.
     private func listenOnce(timeout: TimeInterval = 20) async -> String? {
-        if #available(macOS 26.0, *), let transcriber = analyzer as? MacSpeechTranscriber {
+        if let asr {
             // Muting must not end the call: wait for unmute, then listen.
             if micMuted {
                 segmenter.setEnabled(false)
-                transcriber.pause()
+                asr.pause()
                 while micMuted && !stopRequested {
                     try? await Task.sleep(nanoseconds: 200_000_000)
                 }
@@ -351,10 +358,10 @@ final class VoiceAgentSession: NSObject {
             }
             segmenter.setEnabled(true)
             segmenter.clear()
-            transcriber.resume()
+            asr.resume()
             let heard = await awaitPromptWithTimeout(timeout)
             segmenter.setEnabled(false)
-            transcriber.pause()
+            asr.pause()
             return heard
         }
         return await listenWithSFSpeech(timeout: timeout)
@@ -427,16 +434,7 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func speak(_ text: String) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = SpeechVoice.best(language: "en-US")
-            // VoiceOver's selected voice/rate must not override ours.
-            utterance.prefersAssistiveTechnologySettings = false
-            let delegate = SpeechDelegate { continuation.resume() }
-            speechDelegate = delegate
-            synthesizer.delegate = delegate
-            synthesizer.speak(utterance)
-        }
+        await SpeechEngines.tts.speak(text)
         lastSpoken = text
         // The tap gate is still closed here; hold it closed briefly so the
         // speaker/acoustic tail decays before the next turn re-arms the mic.

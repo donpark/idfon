@@ -335,7 +335,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionsItem.submenu = sessionsMenu
         main.addItem(sessionsItem)
 
+        // Voice engine pickers (on-device speech + recognition).
+        let voiceMenu = NSMenu(title: "Voice")
+        let replyItem = NSMenuItem(title: "Reply Voice", action: nil, keyEquivalent: "")
+        replyItem.submenu = voiceSubmenu(
+            titles: TtsBackend.allCases.map { ($0.rawValue, $0.title) },
+            selected: SpeechEngines.ttsBackend.rawValue,
+            action: #selector(selectTtsBackend(_:))
+        )
+        voiceMenu.addItem(replyItem)
+        let recognitionItem = NSMenuItem(title: "Recognition", action: nil, keyEquivalent: "")
+        recognitionItem.submenu = voiceSubmenu(
+            titles: AsrBackend.allCases.map { ($0.rawValue, $0.title) },
+            selected: SpeechEngines.asrBackend.rawValue,
+            action: #selector(selectAsrBackend(_:))
+        )
+        voiceMenu.addItem(recognitionItem)
+        let voiceItem = NSMenuItem()
+        voiceItem.title = "Voice"
+        voiceItem.submenu = voiceMenu
+        main.addItem(voiceItem)
+
         NSApp.mainMenu = main
+    }
+
+    private func voiceSubmenu(
+        titles: [(raw: String, title: String)],
+        selected: String,
+        action: Selector
+    ) -> NSMenu {
+        let menu = NSMenu()
+        for entry in titles {
+            let item = NSMenuItem(title: entry.title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.raw
+            item.state = entry.raw == selected ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func selectTtsBackend(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let backend = TtsBackend(rawValue: raw) else { return }
+        SpeechEngines.setBackend(backend)
+        updateCheckmarks(sender)
+        ChatStore.shared.onBanner?("Reply voice: \(backend.title)")
+    }
+
+    @objc private func selectAsrBackend(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let backend = AsrBackend(rawValue: raw) else { return }
+        SpeechEngines.setAsrBackend(backend)
+        updateCheckmarks(sender)
+        ChatStore.shared.onBanner?("Recognition: \(backend.title)")
+    }
+
+    private func updateCheckmarks(_ sender: NSMenuItem) {
+        for item in sender.menu?.items ?? [] {
+            item.state = item == sender ? .on : .off
+        }
     }
 
     /// Session logs are ephemeral cache by default; this opt-in moves them to

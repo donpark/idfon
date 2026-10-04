@@ -1,4 +1,5 @@
 import AVFAudio
+import CNeedle
 import Foundation
 
 /// Whistle (Cactus Compute) speech recognition via the Needle C engine.
@@ -13,7 +14,7 @@ import Foundation
 ///
 /// Model: `whistle.cact` (16.9 MB), provisioned via `SpeechProvisioning`
 /// (`IDFON_WHISTLE_PACK_URL` / `-whistlepackurl`). Apache-2.0.
-@available(iOS 18.0, *)
+@available(macOS 26.0, *)
 final class WhistleAsr: AsrEngine {
     let name = "whistle"
 
