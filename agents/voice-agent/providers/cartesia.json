@@ -1,0 +1,9 @@
+{
+  "_comment": "Split: OpenAI-compatible STT (AI Gateway) + Cartesia TTS (env CARTESIA_API_KEY). Set `voice` to a Cartesia voice id.",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
+  "engine": {
+    "stt": { "provider": "openai-compatible", "api_key_env": "AI_GATEWAY_API_KEY", "stt_model": "openai/whisper-1" },
+    "tts": { "provider": "cartesia", "voice": "<cartesia-voice-id>", "model": "sonic-2" }
+  }
+}

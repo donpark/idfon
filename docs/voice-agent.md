@@ -93,8 +93,9 @@ block selects it; no block falls back to the AI Gateway env:
 So supporting a new cloud ASR/TTS service is usually **config, not code**.
 Providers that are only *almost* compatible are handled by a profile too;
 genuinely bespoke APIs get a small adapter behind the same seam. Today:
-`openai-compatible` (covers the long tail), `deepgram` (STT), and
-`elevenlabs` (TTS); they can be mixed with a split `stt`/`tts` engine block.
+`openai-compatible` (the long tail), `deepgram` (STT + TTS), `elevenlabs`
+(TTS), and `cartesia` (TTS); mix any STT with any TTS via a split `stt`/`tts`
+engine block.
 
 idfon's value here is the **real-use harness**: add a contact per provider and
 actually converse, then compare latency/cost/quality — not a synthetic
