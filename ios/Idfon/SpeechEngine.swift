@@ -4,9 +4,10 @@ import FluidAudio
 
 /// Reply-speech backend for the on-device voice loop.
 ///
-/// Apple's `AVSpeechSynthesizer` stays the offline default; Kokoro (FluidAudio,
-/// ANE) is the opt-in neural voice. Selection: `IDFON_TTS=apple|kokoro`
-/// (env) or `-ttsbackend <name>` (launch arg).
+/// Kokoro (FluidAudio, ANE) is the default; Apple's `AVSpeechSynthesizer` is
+/// both the offline fallback and the explicit alternative. Selection:
+/// `IDFON_TTS=kokoro|apple` (env) or `-ttsbackend <name>` (launch arg).
+@MainActor
 protocol TtsEngine: AnyObject {
     var name: String { get }
     /// Download/load models if needed (no-op for Apple).
@@ -16,29 +17,38 @@ protocol TtsEngine: AnyObject {
     func stop()
 }
 
+@MainActor
 enum SpeechEngines {
     static let tts: TtsEngine = {
         let requested = (ProcessInfo.processInfo.environment["IDFON_TTS"] ?? launchArg()).lowercased()
         switch requested {
-        case "kokoro":
+        case "apple":
+            Automation.mark("voice: tts backend=apple")
+            return AppleTtsEngine()
+        default:
             Automation.mark("voice: tts backend=kokoro")
             return KokoroTtsEngine()
-        default:
-            return AppleTtsEngine()
         }
     }()
+
+    /// Warm the selected engine in the background so the first call's reply is
+    /// not blocked by a cold model download/compile.
+    static func prewarm() {
+        Task { await tts.prepare() }
+    }
 
     private static func launchArg() -> String {
         let args = ProcessInfo.processInfo.arguments
         if let index = args.firstIndex(of: "-ttsbackend"), args.count > index + 1 {
             return args[index + 1]
         }
-        return "apple"
+        return "kokoro"
     }
 }
 
 /// Apple system voice. Honors `SpeechVoice.best` and ignores VoiceOver's
 /// assistive-technology voice override.
+@MainActor
 final class AppleTtsEngine: NSObject, TtsEngine {
     let name = "apple"
     private let synthesizer = AVSpeechSynthesizer()
@@ -76,26 +86,35 @@ final class AppleTtsEngine: NSObject, TtsEngine {
 /// if the model cannot load or synthesize.
 ///
 /// Risk: FluidAudio documents an uncatchable iOS 27 Core ML crash
-/// (libBNNS/MPSGraph, issues #843/#889); short calls may survive but the app
-/// can die. Opt-in only.
+/// (libBNNS/MPSGraph, issues #843/#889); short calls survive, long sessions
+/// (~1 h cumulative synthesis) can die. There is no non-ANE Kokoro backend to
+/// fall back to, so the escape hatch is Chatterbox Nano or Kokoro ONNX.
+@MainActor
 final class KokoroTtsEngine: NSObject, TtsEngine {
     let name = "kokoro"
     private let manager = KokoroAneManager(variant: .english)
     private let fallback = AppleTtsEngine()
     private var prepared = false
+    private var prepareTask: Task<Void, Never>?
     private var player: AVAudioPlayer?
     private var finish: (() -> Void)?
 
     func prepare() async {
-        guard !prepared else { return }
-        do {
-            Automation.mark("voice: kokoro initializing")
-            try await manager.initialize()
-            prepared = true
-            Automation.mark("voice: kokoro ready")
-        } catch {
-            Automation.mark("voice: kokoro init failed \(error.localizedDescription)")
+        if prepared { return }
+        if prepareTask == nil {
+            prepareTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    Automation.mark("voice: kokoro initializing")
+                    try await self.manager.initialize()
+                    self.prepared = true
+                    Automation.mark("voice: kokoro ready")
+                } catch {
+                    Automation.mark("voice: kokoro init failed \(error.localizedDescription)")
+                }
+            }
         }
+        await prepareTask?.value
     }
 
     func speak(_ text: String) async {
