@@ -539,11 +539,10 @@ script; the daemon's is derived from its data dir. See `idfon-eve.md`.
 
 The A1 cascade's on-device neural engines sit behind seams in
 `ios/Idfon/SpeechEngine.swift` and `mac/Sources/Idfon/SpeechEngine.swift`.
-Both apps offer the same choices: **Apple** (fallback), **Whistle** (17 MB CPU
-model), and **Parakeet** (FluidAudio, ANE) for recognition, and **Kokoro**
-(FluidAudio ANE) vs **Apple** for reply speech. iOS picks them in the Recents
-"Voice engine" sheet; mac in the **Voice** menu. mac needs macOS 14 (FluidAudio)
-and the Needle engine's mac slice is built for macOS 26.
+Both apps offer the same choices: **Apple** (default, on-device) and
+**Parakeet** (FluidAudio, ANE) for recognition, and **Kokoro** (FluidAudio ANE)
+vs **Apple** for reply speech. iOS picks them in the Recents "Voice engine"
+sheet; mac in the **Voice** menu. mac needs macOS 14 (FluidAudio).
 
 - **TTS** — `KokoroTtsEngine` (FluidAudio's Kokoro-82M ANE pipeline, 24 kHz
   WAV) is the default; `AppleTtsEngine` (`AVSpeechSynthesizer`, honoring
@@ -560,15 +559,9 @@ and the Needle engine's mac slice is built for macOS 26.
   `parakeet ready`), so the loop waits for `parakeet ready`. Verified on an
   iPhone 16 (2026-10-04): the caller's turn transcribed cleanly
   (`heard=Hello. Um about parakeet. I'm testing it`) with no TTS bleed.
-  `WhistleAsr` (Cactus Compute Whistle, CPU-only) is a third, opt-in backend:
-  one 16.9 MB `.cact` file, 16 kHz mono ≤30 s whole-clip, seven languages with
-  auto-detect. It is **batch, not streaming**, so the adapter runs its own
-  energy endpointer and calls `needle_transcribe` at utterance end (no
-  word-by-word partials). The Needle engine is vendored
-  (`scripts/fetch-needle.sh` → `ios/Vendor/device/libneedle.a`, linked with
-  `-lc++`) and the model packs via `IDFON_WHISTLE_PACK_URL` /
-  `-whistlepackurl` (`scripts/build-whistle-pack.sh`). Verified on an iPhone 16
-  (2026-10-04): `whistle ready bytes=16919407` → clean transcript → reply.
+  Cactus Compute's Whistle (16.9 MB CPU whole-clip model) was integrated and
+  evaluated (2026-10-04) but **removed**: in real use the quality ranked
+  **Parakeet > Apple ≫ Whistle**, and its batch (no-partials) shape felt worse.
 - **Selection** — persisted per device; the iOS Recents "Voice engine" sheet
   and the mac **Voice** menu toggle them. `IDFON_TTS`/`-ttsbackend`
   and `IDFON_ASR`/`-asrbackend` override for testing.
@@ -604,7 +597,7 @@ Live Activity call bar on iOS):
   is annotated at commit rather than streamed word by word.
 - **Live readout & provenance.** The call bar (iOS and mac) shows a one-line
   stats string
-  (`Whistle 83 ms · Kokoro 0.7 s`) under the in-call clock, and an on-device
+  (`Parakeet 200 ms · Kokoro 0.7 s`) under the in-call clock, and an on-device
   voice call carries a small tappable lock glyph: "Transcribed and spoken on
   this iPhone. Your audio is never uploaded." Metrics are dev-facing for now;
   the user-facing framing is privacy / offline / instant, and TTS needs no

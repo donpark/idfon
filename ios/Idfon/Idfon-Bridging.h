@@ -4,8 +4,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Cactus Needle/Whistle speech C ABI (ios/Vendor/device/libneedle.a).
-#include "needle.h"
 
 // C ABI from native/vendor/iroh-c-ffi. Keep in sync with src/client.rs and
 // src/daemon.rs; the library is the single source of truth.

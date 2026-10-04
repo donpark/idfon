@@ -3,52 +3,24 @@ import Foundation
 /// A model the client can provision on device.
 enum SpeechModel: String {
     case kokoroAne = "kokoro-ane"
-    case whistle = "whistle"
 
     /// Path inside the pack that must exist; locating it gives us the
     /// directory the engine loads from.
-    var markerPath: String {
-        switch self {
-        case .kokoroAne: return "kokoro-82m-coreml/ANE/vocab.json"
-        case .whistle: return "whistle.cact"
-        }
-    }
+    var markerPath: String { "kokoro-82m-coreml/ANE/vocab.json" }
 
     /// Direct-download base URL for a locally hosted pack
     /// (`scripts/serve-speech-pack.sh`). Set the env var or launch flag; e.g.
     /// `http://192.168.1.20:8788/kokoro-ane/`.
     var directBaseURL: URL? {
-        let raw = ProcessInfo.processInfo.environment[directEnv]
-            ?? Self.launchArg(directFlag) ?? ""
+        let raw = ProcessInfo.processInfo.environment[Self.directEnv]
+            ?? Self.launchArg(Self.directFlag) ?? ""
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return URL(string: trimmed.hasSuffix("/") ? trimmed : trimmed + "/")
     }
 
-    private var directEnv: String {
-        switch self {
-        case .kokoroAne: return "IDFON_KOKORO_PACK_URL"
-        case .whistle: return "IDFON_WHISTLE_PACK_URL"
-        }
-    }
-
-    private var directFlag: String {
-        switch self {
-        case .kokoroAne: return "-speechpackurl"
-        case .whistle: return "-whistlepackurl"
-        }
-    }
-
-    /// Single-file default source, used when no pack URL is configured so
-    /// selecting the engine just works. Only Whistle (one file).
-    var defaultFileURL: URL? {
-        switch self {
-        case .whistle:
-            return URL(string: "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact")
-        case .kokoroAne:
-            return nil // FluidAudio's own downloader handles the chain
-        }
-    }
+    private static let directEnv = "IDFON_KOKORO_PACK_URL"
+    private static let directFlag = "-speechpackurl"
 
     private static func launchArg(_ flag: String) -> String? {
         let args = ProcessInfo.processInfo.arguments
@@ -69,33 +41,7 @@ enum SpeechProvisioning {
         if let base = model.directBaseURL {
             return await directPackDirectory(base: base, model: model)
         }
-        if let fileURL = model.defaultFileURL {
-            return await downloadedFile(fileURL: fileURL, model: model)
-        }
         return nil
-    }
-
-    /// Fetches a single-file model (Whistle) into the app cache.
-    private static func downloadedFile(fileURL: URL, model: SpeechModel) async -> URL? {
-        let fm = FileManager.default
-        guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
-        let root = caches.appendingPathComponent("idfon/speech-packs/\(model.rawValue)", isDirectory: true)
-        let dest = root.appendingPathComponent(model.markerPath)
-        if fm.fileExists(atPath: dest.path) {
-            Automation.mark("voice: speech pack \(model.rawValue) cached")
-            return root
-        }
-        Automation.mark("voice: speech pack \(model.rawValue) downloading \(fileURL.lastPathComponent)")
-        guard let (data, response) = try? await URLSession.shared.data(from: fileURL),
-              (response as? HTTPURLResponse)?.statusCode == 200 else {
-            Automation.mark("voice: speech pack download failed")
-            return nil
-        }
-        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
-        try? data.write(to: dest, options: .atomic)
-        guard fm.fileExists(atPath: dest.path) else { return nil }
-        Automation.mark("voice: speech pack \(model.rawValue) ready")
-        return root
     }
 
     private struct PackManifest: Decodable {
