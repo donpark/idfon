@@ -223,6 +223,8 @@ final class OnDeviceVoice: NSObject {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = SpeechVoice.best(language: "en-US")
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        // VoiceOver's selected voice/rate must not override ours.
+        utterance.prefersAssistiveTechnologySettings = false
 
         synthesizer.write(utterance) { [weak self] buffer in
             guard let pcm = buffer as? AVAudioPCMBuffer else { return }
