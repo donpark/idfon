@@ -2,8 +2,9 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { opusToPcm24k, RATE, wavWrap } from "../audio";
-import { putAudio, sendAwait } from "../bridge";
+import { putAudio } from "../bridge";
 import { createVoiceProvider, engineConfig } from "../providers";
+import { forwardToWrapped, wrapTarget } from "../wrap";
 
 // Wrapping relay: the voice agent is the liaison between the caller and a
 // wrapped agent.
@@ -24,11 +25,9 @@ export function voiceRelayTool() {
         .min(1)
         .optional()
         .describe("Sandbox path of the staged voice recording; omit to auto-detect the newest"),
-      wrappedPeerId: z.string().min(1).describe("Wrapped agent peer id"),
-      wrappedEndpointId: z.string().min(1).describe("Wrapped agent endpoint id"),
-      wrappedTicket: z
-        .record(z.string(), z.unknown())
-        .describe("Capability ticket authorizing this voice agent to message the wrapped agent"),
+      wrappedPeerId: z.string().optional().describe("Wrapped agent peer id (defaults to IDFON_VOICE_ENGINE.wrap)"),
+      wrappedEndpointId: z.string().optional(),
+      wrappedTicket: z.record(z.string(), z.unknown()).optional(),
       timeoutMs: z.number().int().positive().optional().describe("Reply timeout in ms (default 60000)"),
     }),
     async execute({ path, wrappedPeerId, wrappedEndpointId, wrappedTicket, timeoutMs }, ctx) {
@@ -51,17 +50,12 @@ export function voiceRelayTool() {
       const transcript = (await stt.transcribe(pcm, RATE)).trim();
       if (!transcript) throw new Error("no speech transcribed from the recording");
 
-      const replyTo = `voice-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const reply = (
-        await sendAwait(
-          wrappedPeerId,
-          wrappedEndpointId,
-          wrappedTicket,
-          transcript,
-          replyTo,
-          timeoutMs,
-        )
-      ).trim();
+      const target = wrapTarget({
+        peerId: wrappedPeerId,
+        endpointId: wrappedEndpointId,
+        ticket: wrappedTicket,
+      });
+      const reply = await forwardToWrapped(transcript, target, timeoutMs);
       if (!reply) throw new Error("wrapped agent returned no reply");
 
       const tts = await createVoiceProvider(engine.tts, "tts");

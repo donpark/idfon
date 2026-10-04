@@ -32,8 +32,12 @@ export interface VoiceProvider {
   synthesize?(text: string): Promise<Buffer>;
 }
 
-/** STT/TTS config from `IDFON_VOICE_ENGINE` (JSON). */
-export function engineConfig(): { stt?: ProviderConfig; tts?: ProviderConfig } {
+/** STT/TTS/wrap config from `IDFON_VOICE_ENGINE` (JSON). */
+export function engineConfig(): {
+  stt?: ProviderConfig;
+  tts?: ProviderConfig;
+  wrap?: ProviderConfig;
+} {
   const raw = process.env.IDFON_VOICE_ENGINE;
   if (!raw) return {};
   let parsed: ProviderConfig;
@@ -42,10 +46,11 @@ export function engineConfig(): { stt?: ProviderConfig; tts?: ProviderConfig } {
   } catch (error) {
     throw new Error(`IDFON_VOICE_ENGINE is not valid JSON: ${error}`);
   }
+  const wrap = parsed.wrap as ProviderConfig | undefined;
   if (parsed.stt || parsed.tts) {
-    return { stt: parsed.stt as ProviderConfig, tts: parsed.tts as ProviderConfig };
+    return { stt: parsed.stt as ProviderConfig, tts: parsed.tts as ProviderConfig, wrap };
   }
-  return { stt: parsed, tts: parsed };
+  return { stt: parsed, tts: parsed, wrap };
 }
 
 export async function createVoiceProvider(
