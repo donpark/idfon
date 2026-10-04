@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use idfon_voice::{
-    gateway::GatewayVoiceEngine, normalize_for_speech, AudioFormat, EndpointEvent, VoiceEngine,
+    gateway::OpenAiCompatEngine, normalize_for_speech, AudioFormat, EndpointEvent, VoiceEngine,
 };
 use serde_json::Value;
 use tokio::time::MissedTickBehavior;
@@ -17,7 +17,7 @@ use crate::{strip_envelopes, BackendFuture, VoiceBackend, VoiceBackendFactory, V
 
 /// Cascade: STT the caller, run a normal agent turn, TTS the reply.
 pub struct CascadeBackend {
-    engine: GatewayVoiceEngine,
+    engine: OpenAiCompatEngine,
     format: AudioFormat,
 }
 
@@ -83,9 +83,11 @@ impl VoiceBackendFactory for CascadeFactory {
         "cascade"
     }
 
-    fn create(&self, _params: &Value) -> Result<Box<dyn VoiceBackend>> {
+    fn create(&self, params: &Value) -> Result<Box<dyn VoiceBackend>> {
         Ok(Box::new(CascadeBackend {
-            engine: GatewayVoiceEngine::from_env()?,
+            // The voice agent's `engine` block selects the provider (any
+            // OpenAI-compatible base URL + models); no block = AI Gateway env.
+            engine: OpenAiCompatEngine::from_config(params.get("engine"))?,
             format: AudioFormat::PCM_24K_MONO,
         }))
     }
