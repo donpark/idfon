@@ -22,39 +22,66 @@ enum SpeechVoice {
         let base = String(language.split(separator: "-").first ?? "")
         let pool = exact.isEmpty ? all.filter { $0.language.hasPrefix(base) } : exact
         guard !pool.isEmpty else { return nil }
+        // Never auto-pick a low-resource "compact" build while a full one
+        // exists — `siri_*_compact` is far more robotic than its full sibling.
+        let full = pool.filter { !isCompact($0) }
+        let candidates = full.isEmpty ? pool : full
         if let request = requested() {
+            // An explicit identifier must win even if it names a compact voice.
             if let hit = pool.first(where: { $0.identifier == request }) { return log(hit) }
-            if let hit = pool
+            if let hit = candidates
                 .filter({ $0.name.localizedCaseInsensitiveContains(request) })
                 .max(by: { rank($0) < rank($1) })
             { return log(hit) }
         }
-        return pool
+        return candidates
             .max(by: { rank($0) != rank($1) ? rank($0) < rank($1) : $0.name > $1.name })
             .map(log)
     }
 
-    /// Higher is better: Siri ≈ Premium > Enhanced > default. `quality` is the
-    /// base, but the identifier/name is checked too because some top tiers
-    /// (notably Siri) do not reliably report as `premium`/`enhanced`.
+    static func isCompact(_ voice: AVSpeechSynthesisVoice) -> Bool {
+        (voice.identifier + " " + voice.name).lowercased().contains("compact")
+    }
+
+    /// Higher is better: Premium ≈ Siri (full) > Enhanced > Siri (compact) >
+    /// default. `quality` is the base; the identifier/name is checked too
+    /// because some tiers (notably Siri) do not report as `premium`/`enhanced`.
     static func rank(_ voice: AVSpeechSynthesisVoice) -> Int {
-        var score: Int
-        switch voice.quality {
-        case .premium: score = 4000
-        case .enhanced: score = 3000
-        default: score = 1000
-        }
         let label = (voice.identifier + " " + voice.name).lowercased()
-        if label.contains("siri") || label.contains("premium") {
-            score = max(score, 4000)
-        } else if label.contains("enhanced") {
-            score = max(score, 3000)
+        var score: Int
+        if voice.quality == .premium || label.contains("premium") {
+            score = 5000
+        } else if label.contains("siri") {
+            score = 4800
+        } else if voice.quality == .enhanced || label.contains("enhanced") {
+            score = 4000
+        } else {
+            score = 2000
         }
+        if label.contains("compact") { score -= 1500 }
         if #available(iOS 17.0, macOS 14.0, *) {
             if voice.voiceTraits.contains(.isNoveltyVoice) { score -= 800 }
             if voice.voiceTraits.contains(.isPersonalVoice) { score -= 400 }
         }
         return score
+    }
+
+    /// Log every installed voice for `language`, best-ranked first. Driven by
+    /// the `-voices` launch arg so an operator can see what to pass to
+    /// `-ttsvoice` / `IDFON_TTS_VOICE`.
+    static func dump(language: String = "en-US") {
+        let base = String(language.split(separator: "-").first ?? "")
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix(base) }
+            .sorted { rank($0) > rank($1) }
+        Automation.mark("voice: voices language=\(language) count=\(voices.count) best-first")
+        for voice in voices {
+            Automation.mark(
+                "voice:   rank=\(rank(voice)) quality=\(qualityName(voice))"
+                    + "\(isCompact(voice) ? " compact" : "") \(voice.name) id=\(voice.identifier)"
+            )
+        }
+        Automation.mark("voice: done")
     }
 
     static func requested() -> String? {

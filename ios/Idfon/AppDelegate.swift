@@ -133,6 +133,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             let turns = args.count > i + 2 ? (Int(args[i + 2]) ?? 1) : 1
             VoiceAgentSession.shared.run(peerRef: ref, turns: turns)
         }
+        if args.contains("-voices") {
+            SpeechVoice.dump()
+        }
         if args.contains("-bargein") {
             // Off main: synthesizePCM blocks its caller while the synthesizer
             // runs on main, so the caller must not be main.
