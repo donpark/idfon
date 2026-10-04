@@ -41,11 +41,17 @@ enum SpeechVoice {
         let candidates = eligible.isEmpty ? pool : eligible
         let topScore = candidates.map(rank).max() ?? 0
         let top = candidates.filter { rank($0) == topScore }
-        if let systemDefault = AVSpeechSynthesisVoice(language: language),
-           top.contains(where: { $0.identifier == systemDefault.identifier }) {
-            return log(systemDefault)
+        // Prefer the user's OS-default voice, then the same-named higher tier
+        // (e.g. compact "Samantha" default → "Samantha (Enhanced)").
+        if let systemDefault = AVSpeechSynthesisVoice(language: language) {
+            if let exact = top.first(where: { $0.identifier == systemDefault.identifier }) {
+                return log(exact)
+            }
+            if let sameName = top.first(where: { $0.name.hasPrefix(systemDefault.name) }) {
+                return log(sameName)
+            }
         }
-        return top.max(by: { $0.name > $1.name }).map(log)
+        return top.min(by: { $0.name < $1.name }).map(log)
     }
 
     static func isCompact(_ voice: AVSpeechSynthesisVoice) -> Bool {
