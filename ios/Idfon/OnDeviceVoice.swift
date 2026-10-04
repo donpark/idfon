@@ -95,11 +95,20 @@ enum SpeechVoice {
         }
         // Probe the modern voice-store tiers directly: `speechVoices()` only
         // lists downloaded voices, but an identifier may still resolve.
+        Automation.mark(
+            "voice: system-default \(AVSpeechSynthesisVoice(language: language)?.identifier ?? "nil")"
+        )
         for id in [
             "com.apple.voice.enhanced.en-US.Ava",
             "com.apple.voice.premium.en-US.Ava",
             "com.apple.voice.enhanced.en-US.Samantha",
             "com.apple.voice.premium.en-US.Samantha",
+            "com.apple.ttsbundle.siri_female_en-US_premium",
+            "com.apple.ttsbundle.siri_male_en-US_premium",
+            "com.apple.ttsbundle.siri_female_en-US_enhanced",
+            "com.apple.ttsbundle.siri_male_en-US_enhanced",
+            "com.apple.ttsbundle.siri_Aaron_en-US_premium",
+            "com.apple.ttsbundle.siri_Nicky_en-US_premium",
         ] {
             let resolves = AVSpeechSynthesisVoice(identifier: id) != nil
             Automation.mark("voice: probe \(id) resolves=\(resolves)")
