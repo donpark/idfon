@@ -275,6 +275,22 @@ pub enum IpcFrame {
     LiveStop { request_id: String, id: String },
     #[serde(rename = "live.stop.result")]
     LiveStopResult { request_id: String, id: String },
+    /// Mint a fresh, subject-bound capability ticket for `subject` using the
+    /// holder's own key, and return it with the holder's endpoint address
+    /// (the "business card" the agent hands out, per intro).
+    #[serde(rename = "ticket.issue")]
+    TicketIssue {
+        request_id: String,
+        subject: String,
+        #[serde(default)]
+        capabilities: Vec<String>,
+    },
+    #[serde(rename = "ticket.issue.result")]
+    TicketIssueResult {
+        request_id: String,
+        ticket: serde_json::Value,
+        endpoint_addr: serde_json::Value,
+    },
     #[serde(rename = "error")]
     Error { code: String, message: String },
 }
@@ -487,7 +503,7 @@ async fn serve(
         })
     };
     let holder_peer_id = peer_id(&key);
-    // Senders admitted dynamically while running (e.g. a directory provisioner
+    // Senders admitted dynamically while running (e.g. an agency provisioner
     // inviting a caller) are unioned with the static --allow list from the
     // allow-file, which the holder reloads while running.
     let static_allow = allow;
@@ -665,6 +681,21 @@ async fn serve(
             }
             IpcFrame::LiveStop { request_id, id } => {
                 handle_live_stop(request_id, id, &live_publishers, out_tx.clone()).await
+            }
+            IpcFrame::TicketIssue {
+                request_id,
+                subject,
+                capabilities,
+            } => {
+                handle_ticket_issue(
+                    request_id,
+                    subject,
+                    capabilities,
+                    &key,
+                    &transport,
+                    out_tx.clone(),
+                )
+                .await
             }
             IpcFrame::InputOut {
                 request_id,
@@ -1527,6 +1558,37 @@ async fn handle_live_stop(
     Ok(())
 }
 
+/// Mint a subject-bound capability ticket for `subject` with the holder's key
+/// and return it plus the holder's endpoint address. The agent (not a central
+/// agency) signs its own card, freshly per request.
+async fn handle_ticket_issue(
+    request_id: String,
+    subject: String,
+    capabilities: Vec<String>,
+    key: &SigningKey,
+    transport: &IrohTransport,
+    out_tx: mpsc::Sender<IpcFrame>,
+) -> Result<()> {
+    let mut grants = vec![Capability::MessageReceive];
+    grants.extend(capabilities.into_iter().map(Capability::new));
+    let ticket = idfon_core::issue_capability_ticket(
+        key,
+        Some(subject),
+        grants,
+        None,
+        format!("eve-ticket-{}", now_seconds()),
+    );
+    out_tx
+        .send(IpcFrame::TicketIssueResult {
+            request_id,
+            ticket: serde_json::to_value(&ticket)?,
+            endpoint_addr: serde_json::to_value(&transport.endpoint().addr())?,
+        })
+        .await
+        .map_err(|_| anyhow!("IPC client disconnected"))?;
+    Ok(())
+}
+
 async fn handle_blob_put(
     request_id: String,
     bytes_base64: String,
@@ -1893,6 +1955,30 @@ mod tests {
         assert!(
             matches!(read_frame(&mut reader).await.unwrap(), Some(IpcFrame::TurnIn { text, .. }) if text == "hello")
         );
+    }
+
+    #[tokio::test]
+    async fn ticket_issue_frame_round_trips() {
+        let frame = IpcFrame::TicketIssue {
+            request_id: "r1".into(),
+            subject: "peer-a".into(),
+            capabilities: vec!["agent.receive".into()],
+        };
+        let (mut writer, mut reader) = duplex(4096);
+        write_frame(&mut writer, &frame).await.unwrap();
+        drop(writer);
+        match read_frame(&mut reader).await.unwrap() {
+            Some(IpcFrame::TicketIssue {
+                request_id,
+                subject,
+                capabilities,
+            }) => {
+                assert_eq!(request_id, "r1");
+                assert_eq!(subject, "peer-a");
+                assert_eq!(capabilities, vec!["agent.receive".to_string()]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

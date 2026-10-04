@@ -17,6 +17,10 @@ if (!socketPath || !targetUrl || !secret || !Number.isInteger(port)) {
 const holder = createConnection(socketPath);
 let input = Buffer.alloc(0);
 const pending = new Map();
+// Outbound sends awaiting a reply turn (the intro flow: ask the target agent
+// for a card and hold the caller's turn open until it arrives). Keyed by the
+// `reply_to` id the two agents carry in the request/reply text.
+const pendingReplies = new Map();
 const roomMembers = new Map();
 let writeTail = Promise.resolve();
 let nextRequestId = 1;
@@ -45,13 +49,23 @@ function processFrames() {
     const value = JSON.parse(input.subarray(4, size + 4));
     input = input.subarray(size + 4);
     if (value.type === "turn.in" || value.type === "input.in" || value.type === "status.in") {
+      // A reply to an in-flight intro is consumed here, not forwarded as a turn.
+      if (value.type === "turn.in") {
+        const match = /(?:^|\n)reply_to=([A-Za-z0-9._-]+)/.exec(value.text ?? "");
+        const waiter = match && pendingReplies.get(match[1]);
+        if (waiter) {
+          pendingReplies.delete(match[1]);
+          waiter.resolve(value);
+          continue;
+        }
+      }
       const path = value.type === "turn.in" ? "/idfon/turn" : value.type === "input.in" ? "/idfon/input" : "/idfon/status";
       fetch(`${targetUrl}${path}`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
       }).catch((error) => console.error(`[eve-idfon] ${value.type} delivery failed: ${error}`));
-    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "records.drain.result" || value.type === "stream.append.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
+    } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "records.drain.result" || value.type === "stream.append.result" || value.type === "ticket.issue.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
       const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
       const waiter = pending.get(key);
       if (waiter) {
@@ -76,7 +90,7 @@ holder.on("error", (error) => { console.error(`[eve-idfon] holder IPC: ${error}`
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
-  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/stream/append", "/input", "/send", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
+  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/stream/append", "/input", "/send", "/card", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -132,7 +146,26 @@ const server = createServer(async (request, response) => {
       response.writeHead(400); response.end("invalid peer send\n"); return;
     }
     const requestId = `peer-${nextRequestId++}`;
+    const awaitReply = body.await_reply === true;
+    const replyTo = typeof body.reply_to === "string" && body.reply_to ? body.reply_to : null;
+    if (awaitReply && !replyTo) {
+      response.writeHead(400); response.end("reply_to is required with await_reply\n"); return;
+    }
     const resultPromise = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+    let replyPromise = null;
+    if (awaitReply) {
+      const timeoutMs = Number(body.reply_timeout_ms) || 60_000;
+      replyPromise = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingReplies.delete(replyTo);
+          reject(new Error("timed out waiting for reply"));
+        }, timeoutMs);
+        pendingReplies.set(replyTo, {
+          resolve: (value) => { clearTimeout(timer); resolve(value); },
+          reject: (error) => { clearTimeout(timer); reject(error); },
+        });
+      });
+    }
     try {
       await write({
         type: "peer.send",
@@ -143,6 +176,32 @@ const server = createServer(async (request, response) => {
         text: body.text,
         capability_ticket: body.capability_ticket,
         a2a_depth: body.a2a_depth ?? 0,
+      });
+      const result = await resultPromise;
+      const reply = awaitReply ? await replyPromise : undefined;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(reply ? { ...result, reply } : result));
+    } catch (error) {
+      pending.delete(requestId);
+      if (replyTo) pendingReplies.delete(replyTo);
+      response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
+  // The agent's own holder signs a fresh, subject-bound "business card"
+  // (endpoint address + capability ticket) for `subject`.
+  if (request.url === "/card") {
+    if (typeof body.subject !== "string" || !body.subject) {
+      response.writeHead(400); response.end("invalid card request\n"); return;
+    }
+    const requestId = `card-${nextRequestId++}`;
+    const resultPromise = new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+    try {
+      await write({
+        type: "ticket.issue",
+        request_id: requestId,
+        subject: body.subject,
+        capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
       });
       const result = await resultPromise;
       response.writeHead(200, { "content-type": "application/json" });

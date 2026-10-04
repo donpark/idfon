@@ -1,22 +1,22 @@
 #!/usr/bin/env node
-// Catalog provisioner for the `directory` agent.
+// Catalog provisioner for the `agency` agent.
 //
-// The directory agent is the only thing that talks to this process, and this
+// The agency agent is the only thing that talks to this process, and this
 // process is the only thing that mints contact invites. That is the chokepoint:
 // caller policy, the model roster, and an audit log all live here rather than
 // in the agent prompt.
 //
-//   node scripts/directory-provisioner.mjs            # serve on 127.0.0.1:18777
-//   node scripts/directory-provisioner.mjs --self-check
+//   node scripts/agency-provisioner.mjs            # serve on 127.0.0.1:18777
+//   node scripts/agency-provisioner.mjs --self-check
 //
 // Env:
-//   DIRECTORY_ROSTER        roster JSON (default agents/directory/roster.json)
-//   DIRECTORY_PORT          listen port (default 18777)
-//   DIRECTORY_SECRET        shared secret (default m2-test-secret)
-//   DIRECTORY_ALLOW_CALLERS comma-separated caller endpoint ids (empty = any)
+//   AGENCY_ROSTER        roster JSON (default agents/agency/roster.json)
+//   AGENCY_PORT          listen port (default 18777)
+//   AGENCY_SECRET        shared secret (default m2-test-secret)
+//   AGENCY_ALLOW_CALLERS comma-separated caller endpoint ids (empty = any)
 //   EVE_IDFON_GPT           holder binary (default target/release/eve-idfon-gpt)
 //   IDFON_HOME              holder home root (default ~/.idfon)
-//   DIRECTORY_AUDIT         invite audit log (default agents/directory/invites.ndjson)
+//   AGENCY_AUDIT         invite audit log (default agents/agency/invites.ndjson)
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -62,7 +62,7 @@ export function mintInvite(entry, peerId, options = {}) {
 
   // Invite lifetime, independent of the long-lived capability ticket: bounds
   // replay of the envelope without expiring the contact's send credential.
-  const ttlSecs = options.ttlSecs ?? Number(process.env.DIRECTORY_INVITE_TTL_SECS ?? 3600);
+  const ttlSecs = options.ttlSecs ?? Number(process.env.AGENCY_INVITE_TTL_SECS ?? 3600);
   const expiresAt = Math.floor(Date.now() / 1000) + ttlSecs;
   const envelope = [
     "IDFON-INVITE/1",
@@ -73,6 +73,16 @@ export function mintInvite(entry, peerId, options = {}) {
     `ticket=${JSON.stringify(capabilityTicket)}`,
   ].join("\n");
   return { name: entry.name, model: entry.model, endpoint_id: endpointId, endpoint_addr: endpointAddr, capability_ticket: capabilityTicket, expires_at: expiresAt, envelope };
+}
+
+// Registration is the target's own act: the target issues a card bound to the
+// agency (subject = agency peer id) and POSTs it here. The agency
+// signs nothing and never reads another agent's key.
+export function registerCard(registry, body) {
+  const { name, model, endpoint_addr: endpointAddr, capability_ticket: ticket } = body;
+  if (!model || !endpointAddr || !ticket) throw new Error("name/model/endpoint_addr/capability_ticket required");
+  registry.set(model, { name: name ?? model, model, endpoint_addr: endpointAddr, capability_ticket: ticket });
+  return registry.get(model);
 }
 
 // Admit `peerId` to the holder's live allow-file so the invite it just got is
@@ -86,21 +96,23 @@ export function admit(entry, peerId, options = {}) {
 }
 
 function serve() {
-  const rosterPath = resolve(repoRoot, process.env.DIRECTORY_ROSTER ?? "agents/directory/roster.json");
-  const port = Number(process.env.DIRECTORY_PORT ?? 18777);
-  const secret = process.env.DIRECTORY_SECRET ?? "m2-test-secret";
+  const rosterPath = resolve(repoRoot, process.env.AGENCY_ROSTER ?? "agents/agency/roster.json");
+  const port = Number(process.env.AGENCY_PORT ?? 18777);
+  const secret = process.env.AGENCY_SECRET ?? "m2-test-secret";
   const bin = process.env.EVE_IDFON_GPT ?? resolve(repoRoot, "target/release/eve-idfon-gpt");
-  const auditPath = resolve(repoRoot, process.env.DIRECTORY_AUDIT ?? "agents/directory/invites.ndjson");
+  const auditPath = resolve(repoRoot, process.env.AGENCY_AUDIT ?? "agents/agency/invites.ndjson");
   const allowed = new Set(
-    (process.env.DIRECTORY_ALLOW_CALLERS ?? "")
+    (process.env.AGENCY_ALLOW_CALLERS ?? "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
   );
   const roster = loadRoster(rosterPath);
   const idfonHome = expandHome(process.env.IDFON_HOME ?? "~/.idfon");
+  /// model -> target-issued registration card (endpoint_addr + agency-subject ticket).
+  const registered = new Map();
 
-  const available = (e) => existsSync(expandHome(e.home ?? `${idfonHome}/${e.instance}`) + "/holder.ticket");
+  const available = (e) => registered.has(e.model);
 
   const send = (res, code, body) => {
     res.writeHead(code, { "content-type": "application/json" });
@@ -115,6 +127,35 @@ function serve() {
       return send(res, 200, {
         contacts: roster.map((e) => ({ name: e.name, model: e.model, available: available(e) })),
       });
+    }
+    if (req.method === "POST" && req.url === "/register") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        try {
+          const record = registerCard(registered, JSON.parse(body || "{}"));
+          console.error(`[agency-provisioner] registered ${record.model} (${record.name})`);
+          send(res, 200, { ok: true, model: record.model });
+        } catch (error) {
+          send(res, 400, { error: String(error.message ?? error) });
+        }
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/target") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        let query;
+        try { query = JSON.parse(body || "{}").model; } catch { return send(res, 400, { error: "invalid JSON" }); }
+        const q = String(query ?? "").trim().toLowerCase();
+        const entry = [...registered.values()].find(
+          (e) => e.model.toLowerCase() === q || e.name.toLowerCase() === q,
+        );
+        if (!entry) return send(res, 404, { error: `${query} is not registered` });
+        send(res, 200, entry);
+      });
+      return;
     }
     if (req.method !== "POST" || req.url !== "/invite") {
       return send(res, 404, { error: "not found" });
@@ -149,7 +190,7 @@ function serve() {
     });
   });
   server.listen(port, "127.0.0.1", () => {
-    console.error(`[directory-provisioner] catalog on http://127.0.0.1:${port} (${roster.length} contacts)`);
+    console.error(`[agency-provisioner] catalog on http://127.0.0.1:${port} (${roster.length} contacts)`);
   });
 }
 
