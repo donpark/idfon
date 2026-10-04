@@ -30,7 +30,14 @@ final class VoiceAgentSession: NSObject {
     private var analyzer: Any?
 
     private(set) var isActive = false
+    /// Peer this voice call is with, so the shared call UI can title it.
+    private(set) var activePeerId: String?
+    /// Latest state, readable by the call UI (the `onState` callback is single-
+    /// owner, so the LiveActivityController owns it).
+    private(set) var state: State = .idle
     var onState: ((State) -> Void)?
+    /// Mic gate, driven by the call UI's mute button.
+    private var micMuted = false
 
     private var stopRequested = false
     private var turnLimit = Int.max
@@ -48,11 +55,14 @@ final class VoiceAgentSession: NSObject {
         stopRequested = false
         turnLimit = turns
         turnsDone = 0
+        activePeerId = peerRef
+        micMuted = false
         configureSession()
-        segmenter.onPartial = { [weak self] text in self?.onState?(.listening(text)) }
+        segmenter.onPartial = { [weak self] text in self?.setState(.listening(text)) }
         segmenter.onCommit = { [weak self] text in self?.deliver(text) }
         segmenter.start()
         startAnalyzer()
+        setState(.listening(""))
         Task { @MainActor in
             let peers = (try? await client.peers()) ?? []
             guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
@@ -109,7 +119,7 @@ final class VoiceAgentSession: NSObject {
         // Retry within the turn when the recognizer catches the agent's own TTS
         // tail; only a transcript that is not the last spoken reply is sent.
         for _ in 0..<3 {
-            onState?(.listening(""))
+            setState(.listening(""))
             guard let text = await listenOnce(), !text.isEmpty else { break }
             if let spoken = lastSpoken, !spoken.isEmpty,
                voice.isEcho(spoken: spoken, heard: text) {
@@ -124,15 +134,15 @@ final class VoiceAgentSession: NSObject {
             return false
         }
         Automation.mark("voice-agent: heard=\(heard)")
-        onState?(.thinking)
+        setState(.thinking)
         guard let reply = await sendAndAwait(peerId: peerId, text: heard, logPrefix: "voice-agent")
         else { return false }
         Automation.mark("voice-agent: reply=\(reply)")
         if !reply.isEmpty {
-            onState?(.speaking(reply))
+            setState(.speaking(reply))
             await speak(reply)
         }
-        onState?(.idle)
+        setState(.idle)
         return turnsDone < turnLimit
     }
 
@@ -161,9 +171,25 @@ final class VoiceAgentSession: NSObject {
         analyzer = nil
         deliver(nil)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        activePeerId = nil
+        micMuted = false
         turnsDone = 0
         turnLimit = Int.max
-        onState?(.idle)
+        setState(.idle)
+    }
+
+    private func setState(_ next: State) {
+        state = next
+        onState?(next)
+    }
+
+    /// Call-UI mute: close/open the mic gate. The next `listenOnce` respects it.
+    var audioEnabled: Bool { !micMuted }
+
+    func setAudioEnabled(_ enabled: Bool) {
+        micMuted = !enabled
+        guard #available(iOS 26.0, *), let transcriber = analyzer as? SystemSpeechTranscriber else { return }
+        if enabled { transcriber.resume() } else { transcriber.pause() }
     }
 
     // MARK: - analyzer lifecycle
@@ -247,8 +273,17 @@ final class VoiceAgentSession: NSObject {
 
     /// One user turn. On iOS 26+ the analyzer is already running; the mic is
     /// resumed for the turn and paused again while the agent responds.
-    private func listenOnce(timeout: TimeInterval = 30) async -> String? {
+    private func listenOnce(timeout: TimeInterval = 8) async -> String? {
         if #available(iOS 26.0, *), let transcriber = analyzer as? SystemSpeechTranscriber {
+            // Muting must not end the call: wait for unmute, then listen.
+            if micMuted {
+                segmenter.setEnabled(false)
+                transcriber.pause()
+                while micMuted && !stopRequested {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                if stopRequested { return nil }
+            }
             segmenter.setEnabled(true)
             segmenter.clear()
             transcriber.resume()
@@ -300,7 +335,7 @@ final class VoiceAgentSession: NSObject {
                 onPartial: { text in
                     latest = text
                     lastChange = Date()
-                    self.onState?(.listening(text))
+                    self.setState(.listening(text))
                 }
             ) { result in
                 timer?.invalidate()

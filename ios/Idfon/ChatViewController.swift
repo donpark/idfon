@@ -51,7 +51,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let composerBar = UIView()
     private let composerText = UITextView()
     private let micButton = UIButton(type: .system)
-    private var voiceButtonItem: UIBarButtonItem?
     private let sendButton = UIButton(type: .system)
     private let attachButton = UIButton(type: .system)
     private let callStatusLabel = UILabel()
@@ -130,13 +129,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if !conversation.isRoom {
             let profile = UIBarButtonItem(image: UIImage(systemName: "waveform"), style: .plain, target: self, action: #selector(audioProfileTapped))
             profile.accessibilityLabel = "Audio profile"
-            let voice = UIBarButtonItem(image: UIImage(systemName: "waveform.badge.mic"), style: .plain, target: self, action: #selector(voiceAgentTapped))
-            voice.accessibilityLabel = "Voice conversation"
-            voiceButtonItem = voice
+            // One call entry. `callTapped` routes by the ticket's voice mode:
+            // client-cascade starts the on-device voice call, which uses the
+            // same call Bar/End UI as a live call. No separate voice button.
             navigationItem.rightBarButtonItems = [
                 UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"), style: .plain, target: self, action: #selector(callTapped)),
                 profile,
-                voice,
             ]
         }
 
@@ -790,31 +788,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         present(CallViewController(), animated: true)
     }
 
-    /// Toggle the client-side (A1) voice agent for this 1:1 peer.
+    /// Start/stop the on-device (client-cascade) voice call. The shared call
+    /// Bar shows the state and owns End/mute, so there is no nav-bar control.
     @objc private func voiceAgentTapped() {
         guard let peerId = conversation.peer?.id else { return }
         let session = VoiceAgentSession.shared
-        if session.isActive {
-            session.stop()
-            applyVoiceState(.idle)
-            return
-        }
-        session.onState = { [weak self] state in self?.applyVoiceState(state) }
-        session.start(peerRef: peerId)
-    }
-
-    private func applyVoiceState(_ state: VoiceAgentSession.State) {
-        switch state {
-        case .idle:
-            navigationItem.prompt = nil
-            voiceButtonItem?.tintColor = nil
-        case .listening(let text), .speaking(let text):
-            navigationItem.prompt = text.isEmpty ? "Listening…" : text
-            voiceButtonItem?.tintColor = .systemRed
-        case .thinking:
-            navigationItem.prompt = "Thinking…"
-            voiceButtonItem?.tintColor = .systemOrange
-        }
+        if session.isActive { session.stop() } else { session.start(peerRef: peerId) }
     }
 
     @objc private func callTapped() {
