@@ -26,6 +26,43 @@ final class ParakeetReduxAsr: AsrEngine {
     private var onText: ((String, Bool) -> Void)?
     private var started = false
 
+    // Single-flight warm task: download + CoreML-compile ahead of the first
+    // turn so `start` doesn't pay for it. The loaded instance is dropped;
+    // FluidAudio reuses the compiled artifacts on disk.
+    private static let warmLock = NSLock()
+    private static var warmTask: Task<Void, Never>?
+
+    func prepare() async { await Self.warmCache() }
+
+    static func warmCache() async {
+        warmLock.lock()
+        if let task = warmTask {
+            warmLock.unlock()
+            await task.value
+            return
+        }
+        let task = Task {
+            let throttle = ProgressThrottle()
+            Automation.mark("voice: parakeet prewarming")
+            do {
+                _ = try await AsrModels.downloadAndLoad(version: .redux) { progress in
+                    if throttle.shouldLog(progress.fractionCompleted) {
+                        Automation.mark("voice: parakeet download \(Int(progress.fractionCompleted * 100))%")
+                    }
+                }
+                Automation.mark("voice: parakeet prewarmed")
+            } catch {
+                Automation.mark("voice: parakeet prewarm failed \(error.localizedDescription)")
+            }
+        }
+        warmTask = task
+        warmLock.unlock()
+        await task.value
+        warmLock.lock()
+        warmTask = nil  // allow a retry after a transient failure
+        warmLock.unlock()
+    }
+
     func start(
         enableVoiceProcessing: Bool,
         onText: @escaping (String, Bool) -> Void,

@@ -43,6 +43,9 @@ protocol AsrEngine: AnyObject {
     /// Pure transcription time for the last final, in ms (nil when the engine
     /// streams without a discrete compute step).
     var lastLatencyMs: Int? { get }
+    /// Download/compile models ahead of the first turn (no-op for streaming
+    /// system recognizers). Called by `SpeechEngines.prewarm()`.
+    func prepare() async
     func start(
         enableVoiceProcessing: Bool,
         onText: @escaping (String, Bool) -> Void,
@@ -55,6 +58,7 @@ protocol AsrEngine: AnyObject {
 
 extension AsrEngine {
     var lastLatencyMs: Int? { nil }
+    func prepare() async {}
 }
 
 enum AsrBackend: String, CaseIterable {
@@ -97,6 +101,11 @@ enum SpeechEngines {
     /// cold model download/compile.
     static func prewarm() {
         Task { await tts.prepare() }
+        if asrBackend == .parakeet {
+            Task {
+                if #available(macOS 15.0, *) { await ParakeetReduxAsr.warmCache() }
+            }
+        }
     }
 
     /// Persisted recognizer choice; `IDFON_ASR`/`-asrbackend` override.
@@ -114,6 +123,7 @@ enum SpeechEngines {
 
     static func setAsrBackend(_ backend: AsrBackend) {
         UserDefaults.standard.set(backend.rawValue, forKey: asrKey)
+        prewarm()
     }
 
     /// The configured recognizer, or nil to use the SFSpeech fallback (system
