@@ -27,7 +27,7 @@ final class VoiceAgentSession: NSObject {
     /// Reply speech backend (Apple default; Kokoro opt-in via `IDFON_TTS`).
     private let tts = SpeechEngines.tts
     private let segmenter = VoicePromptSegmenter()
-    private var analyzer: Any?
+    private var asr: (any AsrEngine)?
 
     private(set) var isActive = false
     /// Peer this voice call is with, so the shared call UI can title it.
@@ -171,10 +171,8 @@ final class VoiceAgentSession: NSObject {
         isActive = false
         stopRequested = true
         segmenter.stop()
-        if #available(iOS 26.0, *), let transcriber = analyzer as? SystemSpeechTranscriber {
-            transcriber.stop()
-        }
-        analyzer = nil
+        asr?.stop()
+        asr = nil
         deliver(nil)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         activePeerId = nil
@@ -194,8 +192,8 @@ final class VoiceAgentSession: NSObject {
 
     func setAudioEnabled(_ enabled: Bool) {
         micMuted = !enabled
-        guard #available(iOS 26.0, *), let transcriber = analyzer as? SystemSpeechTranscriber else { return }
-        if enabled { transcriber.resume() } else { transcriber.pause() }
+        guard let asr else { return }
+        if enabled { asr.resume() } else { asr.pause() }
     }
 
     // MARK: - analyzer lifecycle
@@ -218,12 +216,12 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func startAnalyzer() {
-        guard #available(iOS 26.0, *) else { return }
-        let transcriber = SystemSpeechTranscriber()
-        analyzer = transcriber
+        let engine = SpeechEngines.makeAsr()
+        asr = engine
+        guard let engine else { return }
         Task { [weak self] in
             do {
-                try await transcriber.start(
+                try await engine.start(
                     // No AEC: the mic is paused whenever the agent speaks.
                     enableVoiceProcessing: false,
                     onText: { [weak self] text, isFinal in
@@ -242,9 +240,9 @@ final class VoiceAgentSession: NSObject {
 
     /// LiveSub's lesson: a failed recognizer stays dead until reset. Rebuild it.
     private func restartAnalyzer() {
-        guard isActive, #available(iOS 26.0, *) else { return }
-        (analyzer as? SystemSpeechTranscriber)?.stop()
-        analyzer = nil
+        guard isActive else { return }
+        asr?.stop()
+        asr = nil
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard self.isActive else { return }
@@ -273,11 +271,11 @@ final class VoiceAgentSession: NSObject {
     /// One user turn. On iOS 26+ the analyzer is already running; the mic is
     /// resumed for the turn and paused again while the agent responds.
     private func listenOnce(timeout: TimeInterval = 8) async -> String? {
-        if #available(iOS 26.0, *), let transcriber = analyzer as? SystemSpeechTranscriber {
+        if let asr {
             // Muting must not end the call: wait for unmute, then listen.
             if micMuted {
                 segmenter.setEnabled(false)
-                transcriber.pause()
+                asr.pause()
                 while micMuted && !stopRequested {
                     try? await Task.sleep(nanoseconds: 200_000_000)
                 }
@@ -285,10 +283,10 @@ final class VoiceAgentSession: NSObject {
             }
             segmenter.setEnabled(true)
             segmenter.clear()
-            transcriber.resume()
+            asr.resume()
             let heard = await awaitPromptWithTimeout(timeout)
             segmenter.setEnabled(false)
-            transcriber.pause()
+            asr.pause()
             return heard
         }
         return await listenWithSFSpeech(timeout: timeout)

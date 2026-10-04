@@ -206,3 +206,82 @@ extension KokoroTtsEngine: AVAudioPlayerDelegate {
         self.player = nil
     }
 }
+
+// MARK: - Speech recognition
+
+/// On-device recognizer behind the voice loop. Mirrors
+/// `SystemSpeechTranscriber`'s surface so the loop is engine-agnostic.
+protocol AsrEngine: AnyObject {
+    var name: String { get }
+    func start(
+        enableVoiceProcessing: Bool,
+        onText: @escaping (String, Bool) -> Void,
+        onError: @escaping (String) -> Void
+    ) async throws
+    func pause()
+    func resume()
+    func stop()
+}
+
+enum AsrBackend: String, CaseIterable {
+    case system
+    case parakeet
+
+    var title: String {
+        switch self {
+        case .system: return "Apple (SpeechAnalyzer)"
+        case .parakeet: return "Parakeet Redux (on-device)"
+        }
+    }
+}
+
+extension SpeechEngines {
+    private static let asrDefaultsKey = "idfon.asr-backend"
+
+    /// Persisted recognizer choice; `IDFON_ASR`/`-asrbackend` override.
+    static var asrBackend: AsrBackend {
+        let override = ProcessInfo.processInfo.environment["IDFON_ASR"] ?? asrLaunchArg()
+        if let override, !override.isEmpty {
+            return override.lowercased() == "parakeet" ? .parakeet : .system
+        }
+        if let raw = UserDefaults.standard.string(forKey: asrDefaultsKey),
+           let value = AsrBackend(rawValue: raw) {
+            return value
+        }
+        return .system
+    }
+
+    static func setAsrBackend(_ backend: AsrBackend) {
+        UserDefaults.standard.set(backend.rawValue, forKey: asrDefaultsKey)
+    }
+
+    /// The configured recognizer, or nil to use the SFSpeech fallback (system
+    /// backend on iOS < 26).
+    static func makeAsr() -> (any AsrEngine)? {
+        switch asrBackend {
+        case .parakeet:
+            guard #available(iOS 18.0, *) else { return nil }
+            Automation.mark("voice: asr backend=parakeet")
+            return ParakeetReduxAsr()
+        case .system:
+            if #available(iOS 26.0, *) {
+                Automation.mark("voice: asr backend=system")
+                return SystemSpeechTranscriber()
+            }
+            return nil
+        }
+    }
+
+    private static func asrLaunchArg() -> String? {
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "-asrbackend"), args.count > index + 1 {
+            return args[index + 1]
+        }
+        return nil
+    }
+}
+
+@available(iOS 26.0, *)
+extension SystemSpeechTranscriber: AsrEngine {
+    var name: String { "system" }
+}
