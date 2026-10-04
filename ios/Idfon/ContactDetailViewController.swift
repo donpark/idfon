@@ -35,7 +35,7 @@ final class ContactDetailViewController: UIViewController {
         let idLabel = UILabel()
         idLabel.text = peer.endpointId ?? peer.id
         idLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        idLabel.textColor = .secondaryLabelColor
+        idLabel.textColor = .secondaryLabel
         idLabel.numberOfLines = 0
 
         let delete = UIButton(type: .system)
@@ -61,7 +61,7 @@ final class ContactDetailViewController: UIViewController {
         let label = UILabel()
         label.text = text
         label.font = .preferredFont(forTextStyle: .footnote)
-        label.textColor = .secondaryLabelColor
+        label.textColor = .secondaryLabel
         return label
     }
 
