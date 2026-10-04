@@ -46,6 +46,9 @@ final class VoiceAgentSession: NSObject {
     private var noSpeechTurns = 0
     /// Identifier for this call, scoping the spoken-turn transcripts.
     private var callId = UUID().uuidString
+    /// Optional reference sentence (`IDFON_ASR_REF` / `-asrref`) for an A/B
+    /// WER readout of the active recognizer.
+    private var asrReference: String?
     private var client = DaemonClient()
     private var promptWaiter: CheckedContinuation<String?, Never>?
     /// Last text spoken by TTS, so the agent's own tail can be dropped instead
@@ -62,6 +65,7 @@ final class VoiceAgentSession: NSObject {
         turnsDone = 0
         activePeerId = peerRef
         micMuted = false
+        asrReference = ProcessInfo.processInfo.environment["IDFON_ASR_REF"] ?? Self.launchString("-asrref")
         configureSession()
         SpeechEngines.prewarm()
         segmenter.onPartial = { [weak self] text in self?.setState(.listening(text)) }
@@ -153,7 +157,9 @@ final class VoiceAgentSession: NSObject {
         // tail; only a transcript that is not the last spoken reply is sent.
         for _ in 0..<3 {
             setState(.listening(""))
+            let listenStart = Date()
             guard let text = await listenOnce(), !text.isEmpty else { break }
+            Automation.mark("voice-agent: asr backend=\(asr?.name ?? "sfspeech") listen_ms=\(Int(Date().timeIntervalSince(listenStart) * 1000))")
             if let spoken = lastSpoken, !spoken.isEmpty,
                voice.isEcho(spoken: spoken, heard: text) {
                 Automation.mark("voice-agent: dropped echo heard=\(text)")
@@ -175,6 +181,10 @@ final class VoiceAgentSession: NSObject {
         }
         noSpeechTurns = 0
         Automation.mark("voice-agent: heard=\(heard)")
+        if let asrReference, !asrReference.isEmpty {
+            let wer = AsrScore.wer(reference: asrReference, hypothesis: heard)
+            Automation.mark("voice-agent: wer=\(String(format: "%.3f", wer)) backend=\(asr?.name ?? "sfspeech") ref=\"\(asrReference)\" heard=\"\(heard)\"")
+        }
         // Show the caller's spoken turn in the chat, not just the agent's reply.
         ChatStore.shared.recordSpokenTurn(
             peerId: peerId, callId: callId,
@@ -437,6 +447,14 @@ final class VoiceAgentSession: NSObject {
     }
 
     /// Drop `IDFON-*/1` envelope blocks so only the spoken text is read aloud.
+    private static func launchString(_ flag: String) -> String? {
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: flag), args.count > index + 1 {
+            return args[index + 1]
+        }
+        return nil
+    }
+
     static func stripEnvelopes(_ text: String) -> String {
         var lines: [String] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {

@@ -175,7 +175,9 @@ final class WhistleAsr: AsrEngine {
         let keywords = self.keywords
         work.async { [weak self] in
             guard let self else { return }
+            let start = Date()
             let text = Self.run(clip, keywords: keywords)
+            Automation.mark("voice: whistle transcribe ms=\(Int(Date().timeIntervalSince(start) * 1000)) samples=\(clip.count)")
             guard !text.isEmpty else { return }
             self.onText?(text, true)
         }
