@@ -42,6 +42,8 @@ final class VoiceAgentSession: NSObject {
     private var stopRequested = false
     private var turnLimit = Int.max
     private var turnsDone = 0
+    /// Consecutive silent turns; a call is only dropped after several.
+    private var noSpeechTurns = 0
     private var client = DaemonClient()
     private var promptWaiter: CheckedContinuation<String?, Never>?
     /// Last text spoken by TTS, so the agent's own tail can be dropped instead
@@ -75,20 +77,25 @@ final class VoiceAgentSession: NSObject {
             // block the turn loop until it is ready so the first listen does
             // not time out against a still-loading model.
             await startAnalyzer()
-            // The call is "connected" once the recognizer is listening.
-            CallTonePlayer.shared.start(.answered)
+            // Load the reply voice and fetch the greeting while ringback still
+            // plays, so "answered" is followed immediately by speech instead
+            // of dead air waiting on the model or the agent.
+            await tts.prepare()
             // Let ChatStore finish hydrating so the reply snapshot excludes
             // pre-existing history.
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            // Greet like a live call: the caller should hear a voice on connect
-            // without having to speak first.
-            if !stopRequested,
-               let greeting = await sendAndAwait(
-                   peerId: peer.id,
-                   text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
-                   logPrefix: "voice-agent-greet"
-               ),
-               !greeting.isEmpty {
+            var greeting: String?
+            if !stopRequested {
+                greeting = await sendAndAwait(
+                    peerId: peer.id,
+                    text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
+                    logPrefix: "voice-agent-greet"
+                )
+            }
+            // The line is answered only once the agent is about to speak, so the
+            // cue has no gap after it.
+            CallTonePlayer.shared.start(.answered)
+            if let greeting, !greeting.isEmpty, !stopRequested {
                 setState(.speaking(greeting))
                 await speak(greeting)
             }
@@ -153,13 +160,20 @@ final class VoiceAgentSession: NSObject {
             break
         }
         guard let heard, !heard.isEmpty else {
-            Automation.mark("voice-agent: FAIL turn=\(turnsDone) no transcript")
-            return false
+            noSpeechTurns += 1
+            Automation.mark("voice-agent: no transcript turn=\(turnsDone) streak=\(noSpeechTurns)")
+            // One silent turn is not a hangup; only give up after a few.
+            return noSpeechTurns < 3
         }
+        noSpeechTurns = 0
         Automation.mark("voice-agent: heard=\(heard)")
         setState(.thinking)
         guard let reply = await sendAndAwait(peerId: peerId, text: heard, logPrefix: "voice-agent")
-        else { return false }
+        else {
+            // A missing reply must not kill the call; try the next turn.
+            Automation.mark("voice-agent: no reply, continuing")
+            return true
+        }
         Automation.mark("voice-agent: reply=\(reply)")
         if !reply.isEmpty {
             setState(.speaking(reply))
@@ -185,19 +199,27 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func finish() {
+        guard isActive else { return }
         isActive = false
         stopRequested = true
         segmenter.stop()
-        CallTonePlayer.shared.stop()
         asr?.stop()
         asr = nil
         deliver(nil)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         activePeerId = nil
         micMuted = false
         turnsDone = 0
         turnLimit = Int.max
+        noSpeechTurns = 0
         setState(.idle)
+        // Play the end cue, then release the session once it has played out.
+        CallTonePlayer.shared.start(.ended)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard let self, !self.isActive else { return }
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            CallTonePlayer.shared.stop()
+        }
     }
 
     private func setState(_ next: State) {
@@ -286,7 +308,7 @@ final class VoiceAgentSession: NSObject {
 
     /// One user turn. On iOS 26+ the analyzer is already running; the mic is
     /// resumed for the turn and paused again while the agent responds.
-    private func listenOnce(timeout: TimeInterval = 8) async -> String? {
+    private func listenOnce(timeout: TimeInterval = 20) async -> String? {
         if let asr {
             // Muting must not end the call: wait for unmute, then listen.
             if micMuted {

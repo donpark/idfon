@@ -14,7 +14,7 @@ import Foundation
 final class CallTonePlayer {
     static let shared = CallTonePlayer()
 
-    enum Tone { case ringback, ringtone, answered }
+    enum Tone { case ringback, ringtone, answered, ended }
 
     private let queue = DispatchQueue(label: "idfon.call-tones")
     private let sampleRate = 48_000.0
@@ -42,7 +42,7 @@ final class CallTonePlayer {
         switch tone {
         case .ringback, .ringtone:
             player.scheduleBuffer(buffer, at: nil, options: [.loops], completionHandler: nil)
-        case .answered:
+        case .answered, .ended:
             player.scheduleBuffer(buffer, at: nil, options: []) { [weak self] in
                 guard let self else { return }
                 self.queue.async { if self.current == tone { self.stopLocked() } }
@@ -88,21 +88,64 @@ final class CallTonePlayer {
 
     /// One buffer per pattern; looping tones repeat it, cues play it once.
     private func toneBuffer(_ tone: Tone) -> AVAudioPCMBuffer? {
-        // (frequencies, on-ms, off-ms, looping, amplitude)
-        let frequencies: [Double]
-        let onMs: Int
-        let offMs: Int
-        let looping: Bool
-        let amplitude: Double
         switch tone {
         case .ringback:
-            (frequencies, onMs, offMs, looping, amplitude) = ([440], 1_000, 2_000, true, 0.18)
+            return loopBuffer([440], onMs: 1_000, offMs: 2_000, amplitude: 0.18)
         case .ringtone:
-            (frequencies, onMs, offMs, looping, amplitude) = ([480, 620], 1_000, 2_000, true, 0.20)
+            return loopBuffer([480, 620], onMs: 1_000, offMs: 2_000, amplitude: 0.20)
         case .answered:
-            (frequencies, onMs, offMs, looping, amplitude) = ([660], 150, 0, false, 0.15)
+            return cueBuffer([(660, 150)], amplitude: 0.15)
+        case .ended:
+            // Two descending beeps, like the tail of a toll call.
+            return cueBuffer([(480, 150), (0, 70), (370, 220)], amplitude: 0.16)
         }
-        let totalMs = looping ? onMs + offMs : onMs
+    }
+
+    /// A one-shot cue from (frequency-Hz, duration-ms) segments; 0 Hz is silence.
+    private func cueBuffer(
+        _ segments: [(freq: Double, ms: Int)],
+        amplitude: Double
+    ) -> AVAudioPCMBuffer? {
+        let totalMs = segments.reduce(0) { $0 + $1.ms }
+        let frames = AVAudioFrameCount(Double(totalMs) / 1_000.0 * sampleRate)
+        guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format(), frameCapacity: frames) else {
+            return nil
+        }
+        buffer.frameLength = frames
+        guard let channel = buffer.floatChannelData?[0] else { return nil }
+        let fadeFrames = max(1, Int(0.005 * sampleRate)) // 5 ms click guard
+        var index = 0
+        for (freq, ms) in segments {
+            let segmentFrames = Int(Double(ms) / 1_000.0 * sampleRate)
+            for offset in 0..<segmentFrames {
+                guard index < Int(frames) else { break }
+                defer { index += 1 }
+                guard freq > 0 else {
+                    channel[index] = 0
+                    continue
+                }
+                let t = Double(offset) / sampleRate
+                var sample = sin(2 * .pi * freq * t)
+                if offset < fadeFrames {
+                    sample *= Double(offset) / Double(fadeFrames)
+                } else if offset > segmentFrames - fadeFrames {
+                    sample *= Double(segmentFrames - offset) / Double(fadeFrames)
+                }
+                channel[index] = Float(sample * amplitude)
+            }
+        }
+        while index < Int(frames) { channel[index] = 0; index += 1 }
+        return buffer
+    }
+
+    /// A looping ring pattern: `onMs` of tone then `offMs` of silence.
+    private func loopBuffer(
+        _ frequencies: [Double],
+        onMs: Int,
+        offMs: Int,
+        amplitude: Double
+    ) -> AVAudioPCMBuffer? {
+        let totalMs = onMs + offMs
         let frames = AVAudioFrameCount(Double(totalMs) / 1_000.0 * sampleRate)
         guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format(), frameCapacity: frames) else {
             return nil
