@@ -1,0 +1,27 @@
+{
+  "name": "eve-idfon-voice",
+  "version": "0.7.0",
+  "description": "Shared TypeScript toolkit for idfon voice agents: STT/TTS provider seam, audio helpers, channel glue, turn heuristics, and voice tool factories.",
+  "license": "(MIT OR Apache-2.0)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/donpark/idfon.git",
+    "directory": "integrations/eve-idfon-voice"
+  },
+  "author": "Don Park",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./tools": "./src/tools/index.ts"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "peerDependencies": {
+    "eve": "0.68.0",
+    "eve-idfon": "*"
+  }
+}
