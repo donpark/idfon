@@ -32,6 +32,7 @@ final class WhistleAsr: AsrEngine {
     private var converter: AVAudioConverter?
     private var captureFormat: AVAudioFormat?
     private var started = false
+    private(set) var lastLatencyMs: Int?
     /// Newline-separated phrases Whistle biases its beam search toward, so
     /// app-specific proper nouns survive ("idfon", contact names).
     private var keywords = "idfon"
@@ -177,7 +178,8 @@ final class WhistleAsr: AsrEngine {
             guard let self else { return }
             let start = Date()
             let text = Self.run(clip, keywords: keywords)
-            Automation.mark("voice: whistle transcribe ms=\(Int(Date().timeIntervalSince(start) * 1000)) samples=\(clip.count)")
+            self.lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
+            Automation.mark("voice: whistle transcribe ms=\(self.lastLatencyMs ?? 0) samples=\(clip.count)")
             guard !text.isEmpty else { return }
             self.onText?(text, true)
         }

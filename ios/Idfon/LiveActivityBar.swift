@@ -36,6 +36,12 @@ struct LiveActivityBarModel: Equatable {
     var audioAvailable = true
     var videoAvailable = true
     var elapsed: TimeInterval = 0 // in-call timer; host advances and re-renders
+    /// Subtle live readout for the active call, e.g. "Whistle 100 ms ·
+    /// Kokoro 0.7 s". Voice (client-cascade) calls only; nil hides it.
+    var stats: String?
+    /// True for the client-cascade voice call: shows a subtle on-device
+    /// provenance glyph that explains where the audio is processed.
+    var onDevice = false
     var rows: [Row] = []
     var density: Density = .expanded
 
@@ -89,6 +95,7 @@ final class LiveActivityBar: UIView {
     private let declineButton = UIButton(configuration: .filled())
     private let answerButton = UIButton(configuration: .filled())
     private let verbButton = UIButton(configuration: .filled())
+    private let onDeviceButton = UIButton(configuration: .plain())
     private let textStack = UIStackView()
     private let identityStack = UIStackView()
     private let controlsStack = UIStackView()
@@ -132,6 +139,16 @@ final class LiveActivityBar: UIView {
         statusLabel.adjustsFontForContentSizeCategory = true
         statusLabel.textColor = .secondaryLabel
 
+        // Subtitle provenance: a small, ignorable lock that explains where the
+        // voice is processed. Shown only on the on-device voice call.
+        onDeviceButton.configuration?.image = UIImage(systemName: "lock.fill")
+        onDeviceButton.configuration?.baseForegroundColor = .tertiaryLabel
+        onDeviceButton.accessibilityLabel = "On-device voice"
+        onDeviceButton.accessibilityHint = "Where your voice is processed"
+        onDeviceButton.addTarget(self, action: #selector(onDeviceTapped), for: .touchUpInside)
+        onDeviceButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        onDeviceButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
+
         // Handle over status: the two never compete for width, and
         // headline + subheadline (≈42pt) fits inside the 44pt controls row.
         textStack.axis = .vertical
@@ -141,7 +158,7 @@ final class LiveActivityBar: UIView {
         identityStack.axis = .horizontal
         identityStack.spacing = 8
         identityStack.alignment = .center
-        [dot, textStack].forEach(identityStack.addArrangedSubview)
+        [dot, textStack, onDeviceButton].forEach(identityStack.addArrangedSubview)
         openTap.addTarget(self, action: #selector(openTapped))
         identityStack.addGestureRecognizer(openTap)
 
@@ -220,10 +237,14 @@ final class LiveActivityBar: UIView {
             case .idle: statusLabel.text = nil
             case .calling: statusLabel.text = "Calling…"
             case .incoming: statusLabel.text = "Incoming call"
-            case .inCall: statusLabel.text = Self.clock(model.elapsed)
+            case .inCall:
+                statusLabel.text = [Self.clock(model.elapsed), model.stats]
+                    .compactMap { $0 }
+                    .joined(separator: " · ")
             }
             statusLabel.isHidden = statusLabel.text == nil
         }
+        onDeviceButton.isHidden = compact || !model.onDevice
         headerStack.directionalLayoutMargins = compact
             ? NSDirectionalEdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 4)
             : NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 8)
@@ -304,6 +325,21 @@ final class LiveActivityBar: UIView {
     @objc private func declineTapped() { onIntent?(.decline) }
     @objc private func answerTapped() { onIntent?(.answer) }
     @objc private func openTapped() { onIntent?(.open) }
+
+    /// One-line provenance explainer, presented from the bar's own window so
+    /// the caller needs no extra plumbing.
+    @objc private func onDeviceTapped() {
+        let host = window ?? (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.keyWindow
+        guard let host, var top = host.rootViewController else { return }
+        while let presented = top.presentedViewController { top = presented }
+        let alert = UIAlertController(
+            title: "On-device voice",
+            message: "Transcribed and spoken on this iPhone. Your audio is never uploaded — it stays between you and your peer.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        top.present(alert, animated: true)
+    }
     @objc private func verbTapped() {
         switch model.phase {
         case .idle: break

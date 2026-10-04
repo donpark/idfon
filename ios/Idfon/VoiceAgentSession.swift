@@ -35,6 +35,12 @@ final class VoiceAgentSession: NSObject {
     /// Latest state, readable by the call UI (the `onState` callback is single-
     /// owner, so the LiveActivityController owns it).
     private(set) var state: State = .idle
+    /// One-line live model/latency readout for the call bar, e.g.
+    /// "Whistle 100 ms · Kokoro 0.7 s".
+    private(set) var stats: String?
+    /// Capture->final time of the last turn, used when the engine streams
+    /// without a discrete transcribe step.
+    private var lastListenMs = 0
     var onState: ((State) -> Void)?
     /// Mic gate, driven by the call UI's mute button.
     private var micMuted = false
@@ -110,6 +116,7 @@ final class VoiceAgentSession: NSObject {
                 segmenter.setEnabled(false)
                 setState(.speaking(greeting))
                 await speak(greeting)
+                updateStats()
             }
             while !stopRequested && turnsDone < turnLimit {
                 guard await performTurn(peerId: peer.id) else { break }
@@ -159,7 +166,8 @@ final class VoiceAgentSession: NSObject {
             setState(.listening(""))
             let listenStart = Date()
             guard let text = await listenOnce(), !text.isEmpty else { break }
-            Automation.mark("voice-agent: asr backend=\(asr?.name ?? "sfspeech") listen_ms=\(Int(Date().timeIntervalSince(listenStart) * 1000))")
+            lastListenMs = Int(Date().timeIntervalSince(listenStart) * 1000)
+            Automation.mark("voice-agent: asr backend=\(asr?.name ?? "sfspeech") listen_ms=\(lastListenMs)")
             if let spoken = lastSpoken, !spoken.isEmpty,
                voice.isEcho(spoken: spoken, heard: text) {
                 Automation.mark("voice-agent: dropped echo heard=\(text)")
@@ -205,6 +213,7 @@ final class VoiceAgentSession: NSObject {
             setState(.speaking(reply))
             await speak(reply)
         }
+        updateStats()
         setState(.idle)
         return turnsDone < turnLimit
     }
@@ -266,6 +275,33 @@ final class VoiceAgentSession: NSObject {
     private func setState(_ next: State) {
         state = next
         onState?(next)
+    }
+
+    /// Builds the bar's live readout from the active engines' last latency.
+    private func updateStats() {
+        let asrLabel: String
+        switch asr?.name {
+        case "whistle": asrLabel = "Whistle"
+        case "parakeet-redux": asrLabel = "Parakeet"
+        case "system": asrLabel = "Apple"
+        default: asrLabel = asr?.name ?? "speech"
+        }
+        var parts: [String] = []
+        if let ms = asr?.lastLatencyMs {
+            parts.append("\(asrLabel) \(ms) ms")
+        } else if lastListenMs > 0 {
+            parts.append("\(asrLabel) \(lastListenMs) ms")
+        } else {
+            parts.append(asrLabel)
+        }
+        let ttsLabel = tts.name == "kokoro" ? "Kokoro" : tts.name.capitalized
+        if let ms = tts.lastLatencyMs {
+            parts.append("\(ttsLabel) \(String(format: "%.1f", Double(ms) / 1000)) s")
+        } else {
+            parts.append(ttsLabel)
+        }
+        stats = parts.joined(separator: " · ")
+        Automation.mark("voice-agent: stats=\(stats ?? "nil")")
     }
 
     /// Call-UI mute: close/open the mic gate. The next `listenOnce` respects it.
