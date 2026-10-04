@@ -326,6 +326,42 @@ streams are dropped the thread exits and cpal closes the device. Next call
 re-creates the backend on demand. Safe to call while streams exist — the
 driver only exits when every strong sender is gone.
 
+## Live-call agent voice cuts in and out / goes silent mid-call (2026-10-03, FIXED)
+
+**Symptom.** On an iOS live call to an agent, the agent's voice is
+intermittent ("on and off") or stops partway through the call, while the chat
+still shows the agent's `· spoken` transcript. The holder is publishing the
+whole time.
+
+**Root cause.** The return-leg subscriber (`media_live_subscribe` →
+`subscribe_decode_once`) can see the remote audio track end early while the
+holder keeps publishing (observed on iOS: the mux consumer returns `Ok(None)`
+or stalls, suspected relay/route boundary). The retry loop treated it as
+transient but **gave up after 5 attempts**, so once it exhausted them the rest
+of the call was silent. Each attempt also reconnects a fresh `Live` endpoint,
+so recovery is audible as a gap.
+
+**Fix** (`native/vendor/iroh-c-ffi/src/media.rs`): re-subscribe for as long as
+the call is active (stop on `thread_stop`) with a capped backoff, instead of a
+5-attempt cap; lower the frame-stall detection from 4s to 2s so recovery is
+faster; log each retry (`[media] subscribe ended early attempt=… decoded=…`)
+so it is visible in the app console.
+
+**Diagnosing next time.** The holder's tracing log
+(`/tmp/idfon-holder-<pid>.log`) shows each subscriber connect and
+`subscribe started … track=`; repeated `connected id=` lines for one call mean
+the subscriber is reconnecting. The per-call captures
+(`$TMPDIR/idfon-audio-captures/call-<pid>-<id>/agent-output.wav` vs
+`published.wav`) show what the agent produced versus what the holder sent.
+Pull the phone's decode capture with `xcrun devicectl device copy from
+--domain-type appDataContainer --domain-identifier app.idfon --source
+tmp/idfon/received.wav`.
+
+**Related, still open:** a video call (`media=video-call`) ignores the holder's
+return leg because it is audio-only (`IDFON-LIVE/1 … return=1 audio_codec=…`,
+no `media=`), while `VideoCall.handleEnvelope` requires `media == "video-call"`
+(iOS and macOS). Audio-only LiveCall contacts are unaffected.
+
 ## Agency can't create a contact invite (2026-10-03, FIXED)
 
 **Symptom.** The caller asks the `agency` agent for a contact; the agent
