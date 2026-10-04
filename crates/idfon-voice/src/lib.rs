@@ -163,6 +163,11 @@ pub trait Endpointer: Send {
     fn reset(&mut self);
 }
 
+/// A callback for audio produced asynchronously by a streaming TTS provider.
+/// The backend forwards each chunk straight to the return leg, so speech can
+/// start before the reply finishes synthesizing.
+pub type AudioSink = std::sync::Arc<dyn Fn(PcmChunk) + Send + Sync>;
+
 /// The provider seam: a stateless, shareable factory for the three sessions.
 ///
 /// One engine per host (N3); sessions are cheap per-call values. Implementors
@@ -175,6 +180,18 @@ pub trait VoiceEngine: Send + Sync {
     /// `voice` resolves against the voice registry (F8); the stub ignores it.
     fn tts(&self, voice: &str, format: AudioFormat) -> Result<Box<dyn TtsSession>>;
     fn endpointer(&self, format: AudioFormat) -> Result<Box<dyn Endpointer>>;
+
+    /// Like [`tts`](Self::tts), but the returned session may push audio to
+    /// `sink` as a provider streams it, returning nothing from `push_text`.
+    /// Default: ignore the sink (batch providers return chunks as before).
+    fn tts_with_sink(
+        &self,
+        voice: &str,
+        format: AudioFormat,
+        _sink: AudioSink,
+    ) -> Result<Box<dyn TtsSession>> {
+        self.tts(voice, format)
+    }
 }
 
 /// Deterministic offline pipeline used by the no-network check: text → PCM →
