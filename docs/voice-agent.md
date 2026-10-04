@@ -129,6 +129,28 @@ scripts/voice-agent-serve.sh            # default live.json (AI Gateway env)
 `voice_route` + `engine`); add one per service. Keys come from the env vars the
 file names. `EVE_LIVE_CONFIG` overrides the agent's own `live.json`.
 
+## TypeScript voice tools
+
+Open-source models that bundle (WASM/ONNX/npm) run in the **agent's Node
+process**, not the Rust holder — so a voice agent's STT/TTS are ordinary TS
+calls. `agents/voice-agent` ships the seam:
+
+- `agent/voice/providers.ts` — `createVoiceProvider(config, "stt"|"tts")` with
+  `command` (CLI), `openai-compatible` (cloud or a local server), `module`
+  (dynamic import of a provider package), and `kokoro` (via `kokoro-js`).
+  Selected by the `IDFON_VOICE_ENGINE` env (JSON), same shape as the Rust
+  engine block.
+- `agent/voice/audio.ts` — Ogg Opus → s16le PCM, WAV wrap/parse.
+- `agent/voice/bridge.ts` — blob upload and an agent→agent `sendAwait`.
+- `agent/tools/voice-relay.ts` — the **wrapping** cascade in one shot: voice
+  memo → STT → text to the wrapped agent (A2A, awaits its reply) → TTS → audio
+  blob + `IDFON-DATA/1` envelope. The caller hears the wrapped agent; the
+  wrapped agent only sees text.
+
+Optional/bundlable packages are loaded through a runtime import the bundler
+can't see (`voice/optional.ts`), so the agent builds without every provider
+installed; a missing package fails only when that path is used.
+
 ## The kit (fast iteration)
 
 Adding a voice agent should not mean new Rust. The shared pieces live in two

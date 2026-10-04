@@ -11,6 +11,7 @@
   "dependencies": {
     "eve": "0.68.0",
     "eve-idfon": "file:../../integrations/eve-idfon",
-    "just-bash": "^3.4.2"
+    "just-bash": "^3.4.2",
+    "ogg-opus-decoder": "^1.7.5"
   }
 }
