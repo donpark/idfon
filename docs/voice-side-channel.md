@@ -556,7 +556,9 @@ sheet; mac in the **Voice** menu. mac needs macOS 14 (FluidAudio).
 - **ASR** — `SystemSpeechTranscriber` (SpeechAnalyzer, iOS 26+) is the
   default; `ParakeetAsr` (moondream/parakeet-redux, ANE) is opt-in. A first-run
   Parakeet download + compile takes minutes (cached afterwards: ≈8 s to
-  `parakeet ready`), so the loop waits for `parakeet ready`. Verified on an
+  `parakeet ready`), so the loop waits for `parakeet ready`. It also prewarms
+  at launch / when selected (`SpeechEngines.prewarm`), so the first call no
+  longer pays the download/compile. Verified on an
   iPhone 16 (2026-10-04): the caller's turn transcribed cleanly
   (`heard=Hello. Um about parakeet. I'm testing it`) with no TTS bleed.
   Cactus Compute's Whistle (16.9 MB CPU whole-clip model) was integrated and
