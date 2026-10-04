@@ -10,16 +10,20 @@ someone. The **agency** is the one contact you start with. It resolves a
 request — "I want to talk to GPT-6-Luna" — into a card for an agent that serves
 that model.
 
-## The agency signs nothing
+## The agency signs no cards
 
 The agency is a **go-between**, not an issuer. Every card is signed by the
 **target agent's own holder**; the agency only relays. Two cards, same
 mechanism, different subject:
 
 - **Registration card** — subject = the *agency*, so the agency can send
-  the intro request. Issued when the target registers.
+  the intro request. Issued when the target registers, with the
+  `agent.receive` grant the A2A request needs.
 - **Intro card** — subject = the *caller*, the card the user receives. Issued
   per request (never reused).
+
+The only thing the agency signs is its **reply credential** — a ticket the
+agency issues for the target so the target's reply is accepted (below).
 
 ## Intro flow
 
@@ -68,12 +72,17 @@ because it is the contact's ongoing send credential.
 A target registers itself so the agency can introduce it. Starting it with
 `AGENCY_URL` set makes the serve script:
 
-1. add the agency to the target's own `allowed-peers` (so it accepts the
+1. ask the agency for a **reply credential** (`POST /reply-ticket`): an
+   agency-signed ticket for the target's holder (`agent.receive`), which the
+   target loads with `--reply-ticket-file` so the A2A reply is accepted; the
+   agency also admits the target on its allow-file at the same time, and
+2. add the agency to the target's own `allowed-peers` (so it accepts the
    agency's A2A request), and
-2. ask its own bridge for a card bound to the agency (`POST /card`), then
+3. ask its own bridge for a card bound to the agency (`POST /card`), then
    `POST` it to the provisioner's `/register`.
 
-The provisioner never reads another agent's key.
+The provisioner never reads another agent's key; the reply credential is
+signed with the agency's own key.
 
 ```sh
 AI_GATEWAY_API_KEY=... scripts/agency-serve.sh          # agency + provisioner
@@ -89,7 +98,7 @@ agents/agency/
   roster.json                 # catalog names/models (availability = registered)
   agent/tools/request-invite.ts   # /target -> A2A card request -> IDFON-INVITE
   ...
-scripts/agency-provisioner.mjs   # registry + policy; signs nothing
+scripts/agency-provisioner.mjs   # registry + policy; mints agency reply credentials
 scripts/agency-serve.sh          # starts the provisioner + agency agent
 integrations/eve-idfon/
   bridge.mjs                  # POST /card, POST /send (await_reply)
@@ -98,13 +107,14 @@ crates/eve-idfon              # ticket.issue IPC frame -> holder mints a card
 ```
 
 Provisioner endpoints: `GET /catalog`, `POST /register {name,model,endpoint_addr,capability_ticket}`,
-`POST /target {model}`. Env: `AGENCY_ROSTER`, `AGENCY_PORT` (18777,
+`POST /target {model}`, `POST /reply-ticket {peer_id}`. Env: `AGENCY_ROSTER`, `AGENCY_PORT` (18777,
 loopback), `AGENCY_SECRET`, `AGENCY_ALLOW_CALLERS`, `IDFON_HOME`,
 `AGENCY_AUDIT`. Self-check: `node scripts/agency-provisioner.mjs --self-check`.
 
-Target env: `AGENCY_URL` (enables registration), `AGENCY_PEER` (defaults
-to the agency's holder id). The holder exposes `ticket.issue`; the bridge
-exposes `/card`; the registry is in-memory (re-registration on restart).
+Target env: `AGENCY_URL` (enables registration + reply credential), `AGENCY_PEER`
+(defaults to the agency's holder id). The holder exposes `ticket.issue` and
+`--reply-ticket-file`; the bridge exposes `/card`; the registry is in-memory
+(re-registration on restart).
 
 ## Enrollment (caller side)
 

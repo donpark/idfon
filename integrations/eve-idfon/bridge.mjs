@@ -184,6 +184,9 @@ const server = createServer(async (request, response) => {
     } catch (error) {
       pending.delete(requestId);
       if (replyTo) pendingReplies.delete(replyTo);
+      // The send already failed; don't let the still-armed reply timer reject
+      // an unobserved promise and take the whole bridge down.
+      if (replyPromise) replyPromise.catch(() => {});
       response.writeHead(502); response.end(`${error}\n`);
     }
     return;
