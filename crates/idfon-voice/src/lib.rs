@@ -39,6 +39,8 @@ pub mod speak;
 pub mod stream;
 pub mod stub;
 pub mod wav;
+#[cfg(feature = "gateway")]
+pub mod gateway;
 
 pub use arbiter::{Arbiter, ArbiterOutcome, NonSubstantiveKind, SpeakerRole};
 pub use audit::{AuditLog, Speaker, Utterance};

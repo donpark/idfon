@@ -11,7 +11,13 @@ crate-type = ["rlib"]
 default = []
 # Swift-implemented Apple engine behind a C ABI (iOS only; see src/apple_ffi.rs).
 apple-ffi = []
+# Cloud voice engine over an OpenAI-compatible AI Gateway (see src/gateway.rs).
+# Demo/pragmatic server-side engine; offline/local engines remain the target.
+gateway = ["dep:reqwest"]
 
 [dependencies]
 anyhow = "1"
 idfon-protocol = { path = "../idfon-protocol" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+reqwest = { version = "0.13", optional = true, default-features = false, features = ["json", "multipart", "rustls"] }
