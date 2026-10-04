@@ -37,7 +37,8 @@ use tokio::sync::mpsc;
 pub const CHUNK_SAMPLES: usize = 480;
 /// Frame duration in milliseconds.
 pub const CHUNK_MS: u64 = 20;
-const MAX_INPUT_BUFFER: usize = 12_000; // 500 ms at 24 kHz
+/// 500 ms at 24 kHz — the caller-input queue bound.
+pub const MAX_INPUT_BUFFER: usize = 12_000;
 const MAX_QUEUE_SAMPLES: usize = 240_000; // ~10 s; drop oldest past this
 
 /// Caller audio codec/rate advertised on the invite.
@@ -179,7 +180,7 @@ impl AudioQueue {
 }
 
 /// Fill `output` from the queue, zero-padding the shortfall. Returns missing.
-fn fill_audio_frame(queue: &mut VecDeque<i16>, output: &mut [i16]) -> usize {
+pub fn fill_audio_frame(queue: &mut VecDeque<i16>, output: &mut [i16]) -> usize {
     let available = queue.len().min(output.len());
     for sample in &mut output[..available] {
         *sample = queue.pop_front().unwrap_or(0);
@@ -375,7 +376,7 @@ pub async fn subscribe_caller(
                 _ = tick.tick() => {
                     if stop.load(Ordering::Relaxed) { break; }
                     let mut pcm = vec![0i16; CHUNK_SAMPLES];
-                    pacer.tick(&mut pcm);
+                    let _ = pacer.tick(&mut pcm);
                     if frame_tx.send(pcm).await.is_err() { break; }
                 }
                 item = raw.recv() => {
@@ -399,15 +400,15 @@ pub async fn subscribe_caller(
 
 /// Caller-audio pacing: consume one 20 ms frame per tick, account arriving
 /// frames against their pts timeline (gap-fill, late-drop, overflow trim).
-struct CallerPacer {
-    input: VecDeque<i16>,
-    sent_samples: u64,
-    dropped_samples: u64,
+pub struct CallerPacer {
+    pub input: VecDeque<i16>,
+    pub sent_samples: u64,
+    pub dropped_samples: u64,
     origin_pts_us: Option<i128>,
 }
 
 impl CallerPacer {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             input: VecDeque::with_capacity(MAX_INPUT_BUFFER),
             sent_samples: 0,
@@ -416,12 +417,14 @@ impl CallerPacer {
         }
     }
 
-    fn tick(&mut self, pcm: &mut [i16]) {
-        fill_audio_frame(&mut self.input, pcm);
+    /// Consume one 20 ms frame; returns (queue_samples, missing_samples).
+    pub fn tick(&mut self, pcm: &mut [i16]) -> (usize, usize) {
+        let missing = fill_audio_frame(&mut self.input, pcm);
         self.sent_samples += CHUNK_SAMPLES as u64;
+        (self.input.len(), missing)
     }
 
-    fn accept_frame(&mut self, pts_us: i128, data: &[i16]) -> u64 {
+    pub fn accept_frame(&mut self, pts_us: i128, data: &[i16]) -> u64 {
         let cursor = self.sent_samples + self.dropped_samples + self.input.len() as u64;
         let origin = *self
             .origin_pts_us
