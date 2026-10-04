@@ -44,6 +44,9 @@ final class LiveActivityController {
         // register for the same updates without clobbering this one.
         LiveCall.shared.addStateObserver(self)
         VideoCall.shared.addStateObserver(self)
+        // The on-device (client-cascade) voice call shares the Bar; it owns no
+        // second surface, so the controller is the single `onState` owner.
+        VoiceAgentSession.shared.onState = { [weak self] _ in self?.sync() }
         TransferCenter.shared.onChange = { [weak self] in self?.render() }
         sync()
         Task { await refreshPeerNames() }
@@ -71,8 +74,11 @@ final class LiveActivityController {
     private enum Machine {
         case audio(LiveCall)
         case video(VideoCall)
+        /// The on-device (client-cascade) voice call: same Bar, audio-only.
+        case voice(VoiceAgentSession)
 
         static var current: Machine? {
+            if VoiceAgentSession.shared.isActive { return .voice(VoiceAgentSession.shared) }
             if case .idle = LiveCall.shared.state {} else { return .audio(LiveCall.shared) }
             if case .idle = VideoCall.shared.state {} else { return .video(VideoCall.shared) }
             return nil
@@ -84,6 +90,7 @@ final class LiveActivityController {
             switch self {
             case .audio(let call): return call.activePeer
             case .video(let call): return call.activePeer ?? call.pendingPeer
+            case .voice(let session): return session.activePeerId
             }
         }
 
@@ -104,6 +111,8 @@ final class LiveActivityController {
                 case .watching: return .watching
                 case .inCall: return .inCall
                 }
+            case .voice(let session):
+                return session.state == .idle ? .idle : .inCall
             }
         }
 
@@ -111,6 +120,7 @@ final class LiveActivityController {
             switch self {
             case .audio(let call): return call.audioAvailable
             case .video(let call): return call.audioAvailable
+            case .voice: return true
             }
         }
 
@@ -118,6 +128,7 @@ final class LiveActivityController {
             switch self {
             case .audio: return false
             case .video(let call): return call.videoAvailable
+            case .voice: return false
             }
         }
 
@@ -125,6 +136,7 @@ final class LiveActivityController {
             switch self {
             case .audio(let call): return call.audioEnabled
             case .video(let call): return call.audioEnabled
+            case .voice(let session): return session.audioEnabled
             }
         }
 
@@ -132,6 +144,7 @@ final class LiveActivityController {
             switch self {
             case .audio: return false
             case .video(let call): return call.videoEnabled
+            case .voice: return false
             }
         }
 
@@ -139,6 +152,7 @@ final class LiveActivityController {
             switch self {
             case .audio(let call): call.setAudioEnabled(enabled)
             case .video(let call): call.setAudioEnabled(enabled)
+            case .voice(let session): session.setAudioEnabled(enabled)
             }
         }
 
@@ -146,6 +160,7 @@ final class LiveActivityController {
             switch self {
             case .audio: break
             case .video(let call): call.setVideoEnabled(enabled)
+            case .voice: break
             }
         }
 
@@ -153,6 +168,7 @@ final class LiveActivityController {
             switch self {
             case .audio(let call): call.answer()
             case .video(let call): call.answer()
+            case .voice: break
             }
         }
 
@@ -160,6 +176,7 @@ final class LiveActivityController {
             switch self {
             case .audio(let call): call.decline()
             case .video(let call): call.decline()
+            case .voice: break
             }
         }
 
@@ -167,6 +184,7 @@ final class LiveActivityController {
             switch self {
             case .audio(let call): call.hangUp()
             case .video(let call): call.hangUp()
+            case .voice(let session): session.stop()
             }
         }
     }
