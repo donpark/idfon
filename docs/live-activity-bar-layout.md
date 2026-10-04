@@ -86,11 +86,10 @@ peer-id → name map has one, else a shortened id — never the raw public key.
 | calling, expanded | orange | `@janedoe` / `Calling…` | shown | **End** (red) | rows if any |
 | incoming, expanded | orange | `@janedoe` / `Incoming call` | hidden | **Decline** (red) **Answer** (green); verb hidden | rows if any |
 | inCall, expanded | red | `@janedoe` / `03:42` | shown, live toggles | **End** (red) | rows if any |
-| any, compact | phase color | `● 03:42 @janedoe — 1 transfer` (one label; tap → `.open`) | hidden | End (icon only, **menu confirm**) or Decline/Answer; hidden when idle | hidden (summarised in label) |
+| any, compact | phase color | `● 03:42 @janedoe — 1 transfer` (one label; tap → `.open`) | hidden | End (icon only) or Decline/Answer; hidden when idle | hidden (summarised in label) |
 
-Verb tap: idle → `.ping`; calling/inCall → `.end`. Compact End
-uses `showsMenuAsPrimaryAction` with a single destructive "End Call" `UIAction` — the §6
-confirmation with zero alert plumbing. Tray rows: transfer → `Cancel` → `.cancelRow(id)`;
+Verb tap: idle → `.ping`; calling/inCall → `.end` (one tap, compact and expanded
+alike). Tray rows: transfer → `Cancel` → `.cancelRow(id)`;
 stream → play/pause → `.togglePauseRow(id)`, `Stop` → `.cancelRow(id)`.
 
 Row text: `Transferring "Archive.zip" (42%) - 12 MB/s` (ByteCountFormatter),

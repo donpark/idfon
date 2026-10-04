@@ -161,14 +161,6 @@ final class LiveActivityBar: UIView {
         control(verbButton, "phone.down.fill", "End", #selector(verbTapped))
         declineButton.configuration?.baseBackgroundColor = .systemRed
         answerButton.configuration?.baseBackgroundColor = .systemGreen
-        // §6: End from the compact pill needs confirmation — a one-item
-        // destructive menu as primary action; expanded mode taps directly.
-        verbButton.menu = UIMenu(children: [
-            UIAction(title: "End Call", image: UIImage(systemName: "phone.down.fill"), attributes: .destructive) { [weak self] _ in
-                self?.onIntent?(.end)
-            },
-        ])
-
         controlsStack.axis = .horizontal
         controlsStack.spacing = 8
         controlsStack.alignment = .center
@@ -268,7 +260,6 @@ final class LiveActivityBar: UIView {
             // Icon only: the "End" label wrapped and broke the control row (#2).
             setVerb("phone.down.fill", "End", .systemRed, showsTitle: false)
         }
-        verbButton.showsMenuAsPrimaryAction = compact && model.phase != .idle
         // Idle pill (rows only, no call) has no verb: its rows are the activity.
         if compact && model.phase == .idle { verbButton.isHidden = true }
 
