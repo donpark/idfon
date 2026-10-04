@@ -16,12 +16,12 @@ use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
 use idfon_core::transport::{IrohTransport, MessageTransport, TransportError};
 use idfon_core::{
-    peer_id, sign_message, sign_message_with_ticket, verify_capability_ticket, verify_message,
-    AuthError,
+    peer_id, sign_message, sign_message_with_ticket, issue_capability_ticket_with_voice,
+    verify_capability_ticket, verify_message, AuthError,
 };
 use idfon_protocol::{
     AckStatus, Capability, CapabilityTicket, MessageAck, MessageContent, MessageEnvelope,
-    MAX_FRAME_BYTES,
+    VoiceMode, VoiceRoute, MAX_FRAME_BYTES,
 };
 use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, EndpointId};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
@@ -74,6 +74,11 @@ struct Cli {
     /// Hex Ed25519 key file. `EVE_IDFON_KEY` is used if unset.
     #[arg(long, global = true, value_name = "FILE")]
     key_file: Option<PathBuf>,
+    /// Opaque agent/channel metadata (JSON): the live-call handler config and
+    /// the voice routing advertised on minted tickets. Absent = a text-only
+    /// holder (`voice.mode = client-cascade`).
+    #[arg(long, global = true, value_name = "FILE")]
+    live_config: Option<PathBuf>,
     #[command(subcommand)]
     mode: Mode,
 }
@@ -103,10 +108,6 @@ enum Mode {
         /// Stop abandoned live publishers after this many seconds.
         #[arg(long, default_value_t = DEFAULT_LIVE_TTL_SECS)]
         live_ttl_secs: u64,
-        /// Opaque agent/channel metadata (JSON) forwarded to a registered
-        /// live-call handler (see `live.rs`). Absent = no agent config.
-        #[arg(long, value_name = "FILE")]
-        live_config: Option<PathBuf>,
     },
     /// Issue a holder-signed message.receive ticket for initial provisioning.
     Ticket {
@@ -364,6 +365,7 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
     iroh_c_ffi::util::init_tracing(PathBuf::from(format!("/tmp/idfon-holder-{}.log", std::process::id())));
     let cli = Cli::parse();
     let key_file = cli.key_file;
+    let live_config = cli.live_config;
     match cli.mode {
         Mode::Serve {
             socket,
@@ -373,20 +375,12 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
             blob_dir,
             reply_ticket_file,
             live_ttl_secs,
-            live_config,
         } => {
             let key = load_key(key_file.as_deref(), ephemeral)?;
             let reply_ticket = reply_ticket_file
                 .map(|path| load_ticket(&path))
                 .transpose()?;
-            let live_params = match live_config {
-                Some(path) => serde_json::from_slice(
-                    &std::fs::read(&path)
-                        .with_context(|| format!("read live config {}", path.display()))?,
-                )
-                .with_context(|| format!("parse live config {}", path.display()))?,
-                None => serde_json::Value::Null,
-            };
+            let live_params = load_live_params(live_config.as_deref())?;
             serve(
                 socket,
                 allow,
@@ -407,21 +401,57 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
             ticket_id,
         } => {
             let key = load_key(key_file.as_deref(), false)?;
+            let live_params = load_live_params(live_config.as_deref())?;
             let ticket_id = ticket_id.unwrap_or_else(|| format!("eve-ticket-{}", now_seconds()));
             let mut grants = vec![Capability::MessageReceive];
             grants.extend(capabilities.into_iter().map(Capability::new));
             println!(
                 "{}",
-                serde_json::to_string(&idfon_core::issue_capability_ticket(
+                serde_json::to_string(&issue_capability_ticket_with_voice(
                     &key,
                     Some(subject),
+                    None,
                     grants,
                     expires_at,
                     ticket_id,
+                    Some(voice_route_from_live_params(&live_params)),
                 ))?
             );
             Ok(())
         }
+    }
+}
+
+fn load_live_params(path: Option<&Path>) -> Result<serde_json::Value> {
+    match path {
+        Some(path) => Ok(serde_json::from_slice(
+            &std::fs::read(path).with_context(|| format!("read live config {}", path.display()))?,
+        )
+        .with_context(|| format!("parse live config {}", path.display()))?),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// The voice routing this holder advertises on every ticket it mints. An
+/// explicit `voice_route` block in the live config wins (named `voice_route`
+/// because `voice` is the live session's voice id). Otherwise a holder with a
+/// live config advertises `native-duplex` (it opted into a live-call handler);
+/// a holder with no live config advertises `client-cascade` (its agent speaks
+/// text and the caller supplies on-device STT/TTS).
+fn voice_route_from_live_params(params: &serde_json::Value) -> VoiceRoute {
+    if let Some(voice) = params.get("voice_route") {
+        if let Ok(route) = serde_json::from_value::<VoiceRoute>(voice.clone()) {
+            return route;
+        }
+    }
+    if params.is_null() {
+        return VoiceRoute::default();
+    }
+    VoiceRoute {
+        mode: VoiceMode::NativeDuplex,
+        audio: params.get("audio").and_then(|value| value.as_str()).map(str::to_owned),
+        model: params.get("model").and_then(|value| value.as_str()).map(str::to_owned),
+        delegate: None,
     }
 }
 
@@ -523,6 +553,9 @@ async fn serve(
         })
     };
     let holder_peer_id = peer_id(&key);
+    // Advertised on every ticket this holder mints and used to decide whether
+    // inbound live controls should reach a registered live-call handler.
+    let voice_route = voice_route_from_live_params(&live_params);
     // Senders admitted dynamically while running (e.g. an agency provisioner
     // inviting a caller) are unioned with the static --allow list from the
     // allow-file, which the holder reloads while running.
@@ -713,6 +746,7 @@ async fn serve(
                     capabilities,
                     &key,
                     &transport,
+                    &voice_route,
                     out_tx.clone(),
                 )
                 .await
@@ -930,7 +964,16 @@ async fn handle_message(
     // room check lives in the registered live-call handler, which falls through
     // to a text turn for a room.
     if let Some(capability) = live::capability_for_control(&text) {
-        if let Some(handler) = live_registry.get(capability).cloned() {
+        // Only a holder that advertises native full-duplex voice may intercept
+        // a call; a text-only holder (voice.mode = client-cascade) falls through
+        // to an ordinary text turn so the caller's on-device STT/TTS drives it.
+        let voice_mode = voice_route_from_live_params(&live_params).mode;
+        if voice_mode != VoiceMode::NativeDuplex {
+            eprintln!(
+                "[eve-idfon] live control ignored: voice.mode={voice_mode:?} (text turn) message={}",
+                message.message_id
+            );
+        } else if let Some(handler) = live_registry.get(capability).cloned() {
             eprintln!(
                 "[eve-idfon] dispatch live control capability={capability} message={} idempotency_key={}",
                 message.message_id, message.idempotency_key
@@ -1578,16 +1621,19 @@ async fn handle_ticket_issue(
     capabilities: Vec<String>,
     key: &SigningKey,
     transport: &IrohTransport,
+    voice: &VoiceRoute,
     out_tx: mpsc::Sender<IpcFrame>,
 ) -> Result<()> {
     let mut grants = vec![Capability::MessageReceive];
     grants.extend(capabilities.into_iter().map(Capability::new));
-    let ticket = idfon_core::issue_capability_ticket(
+    let ticket = issue_capability_ticket_with_voice(
         key,
         Some(subject),
+        None,
         grants,
         None,
         format!("eve-ticket-{}", now_seconds()),
+        Some(voice.clone()),
     );
     out_tx
         .send(IpcFrame::TicketIssueResult {
@@ -1806,6 +1852,32 @@ mod tests {
         // The per-process token keeps ids distinct from a bare counter, so a
         // restarted holder cannot reissue an id a receiver already saw.
         assert_ne!(a, "eve_reply_1");
+    }
+
+    #[test]
+    fn voice_route_is_derived_from_live_params() {
+        // No live config: a text-only holder, and callers drive on-device STT/TTS.
+        let cascade = voice_route_from_live_params(&serde_json::Value::Null);
+        assert_eq!(cascade.mode, VoiceMode::ClientCascade);
+
+        // A live config but no explicit `voice`: a native full-duplex holder.
+        let native = voice_route_from_live_params(&serde_json::json!({
+            "model": "openai/gpt-live-1",
+            "audio": "pcm24k"
+        }));
+        assert_eq!(native.mode, VoiceMode::NativeDuplex);
+        assert_eq!(native.audio.as_deref(), Some("pcm24k"));
+        assert_eq!(native.model.as_deref(), Some("openai/gpt-live-1"));
+
+        // An explicit `voice_route` block wins (e.g. a delegated translator).
+        let delegated = voice_route_from_live_params(&serde_json::json!({
+            "voice_route": { "mode": "delegated", "delegate": { "peer_id": "voice-agent" } }
+        }));
+        assert_eq!(delegated.mode, VoiceMode::Delegated);
+        assert_eq!(
+            delegated.delegate.as_ref().map(|delegate| delegate.peer_id.as_str()),
+            Some("voice-agent")
+        );
     }
 
     #[test]

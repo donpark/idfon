@@ -45,6 +45,43 @@ This design is the **cascade voice side-channel**.
 - **A single-agent focus** is therefore the callee. The "Alice, …" override and
   a cross-agent arbiter are deferred until voice-in-rooms is designed.
 
+## Voice routing metadata (ticket `voice`)
+
+Status: **S1–S4 implemented** (2026-10-03). A holder advertises how it wants
+voice carried in a signed `voice` block on every capability ticket it mints
+(`CapabilityTicket.voice`, `idfon-protocol`); the block is covered by the ticket
+signature, so a caller routes voice from a holder-attested fact instead of a
+display name or a local profile guess:
+
+```json
+"voice": { "mode": "native-duplex" | "client-cascade" | "delegated",
+           "audio": "pcm24k", "model": "openai/gpt-live-1",
+           "delegate": { "peer_id": "…", "ticket": { } } }
+```
+
+- **`native-duplex`** — the holder terminates audio itself (a full-duplex
+  session). The caller dials a media call; no on-device STT/TTS.
+- **`client-cascade`** — the agent speaks text; the caller supplies on-device
+  STT/TTS (the A1 cascade). The holder does **not** intercept live controls.
+- **`delegated`** — a separate voice agent speaks/renders for the peer; the
+  block points at that delegate. (Routing to the delegate is future work.)
+
+**Emit.** `eve-idfon` derives the block from the holder's `--live-config`
+(`voice_route_from_live_params`): an explicit `voice_route` block wins (named
+`voice_route` because `voice` is the live session's voice id); a live config
+with no block is `native-duplex`; no live config is `client-cascade`. Both mint
+paths carry it — the `ticket` CLI (paired tickets; the serve script forwards
+`--live-config`) and the IPC `ticket.issue` (the agency card, so the
+registration and intro cards a peer discovers also carry it).
+
+**Consume.** The Apple apps read the stored ticket's `voice.mode`
+(`CapabilityTickets.voiceRoute(for:)`) to pick the call path, and `eve-idfon`
+gates live-control interception on `native-duplex`. Legacy tickets have no
+block and keep the old name/profile heuristic.
+
+**Absent block on an older ticket** verifies unchanged: `ticket_unsigned` only
+adds `voice` when set, so the signed bytes stay byte-identical.
+
 ## Goal
 
 One **voice side-channel service** that gives any idfon agent a voice without

@@ -226,10 +226,10 @@ done
 # Capability tickets: holder-signed, subject-bound to each sender (the holder
 # rejects a ticket whose subject != the message's sender id), covering the
 # message ingress the apps' sends need. One file per peer.
-"$root/target/release/eve-idfon-gpt" --key-file "$key" ticket \
+"$root/target/release/eve-idfon-gpt" --key-file "$key" "${live_args[@]}" ticket \
   --subject "$daemon_id" > "$home/capability-ticket.json"
 while IFS= read -r endpoint; do
-  "$root/target/release/eve-idfon-gpt" --key-file "$key" ticket \
+  "$root/target/release/eve-idfon-gpt" --key-file "$key" "${live_args[@]}" ticket \
     --subject "$endpoint" > "$home/capability-ticket-$endpoint.json"
 done < <(extra_senders | awk '!seen[$0]++')
 

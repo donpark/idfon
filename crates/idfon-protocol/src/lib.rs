@@ -385,6 +385,51 @@ impl Peer {
     }
 }
 
+/// How a peer wants voice carried on a connection. Signed inside the
+/// capability ticket when present, so a caller routes voice from a
+/// holder-attested fact instead of guessing from a display name. Absent on
+/// legacy tickets — consumers fall back to their previous heuristic.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct VoiceRoute {
+    pub mode: VoiceMode,
+    /// Preferred audio profile/codec for `mode = native-duplex` (e.g.
+    /// `pcm24k`). Informational: names a profile, not a credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<String>,
+    /// Informational model id for `mode = native-duplex`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Voice provider for `mode = delegated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegate: Option<VoiceDelegate>,
+}
+
+/// Structurally what a peer is, for voice purposes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum VoiceMode {
+    /// The peer's holder terminates audio itself (a full-duplex session).
+    NativeDuplex,
+    /// The peer speaks text; the caller supplies on-device STT/TTS.
+    #[default]
+    ClientCascade,
+    /// A separate voice agent speaks/renders for the peer.
+    Delegated,
+}
+
+/// The voice agent that speaks for a `delegated` peer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceDelegate {
+    /// The delegate's peer id.
+    pub peer_id: String,
+    /// Optional delegate card (endpoint + ticket) to dial it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<serde_json::Value>,
+    /// Preferred audio profile for the delegate leg.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CapabilityTicket {
     pub issuer: String,
@@ -394,6 +439,10 @@ pub struct CapabilityTicket {
     pub capabilities: Vec<Capability>,
     pub expires_at: Option<String>,
     pub ticket_id: String,
+    /// Voice routing the issuer advertises for this connection (see
+    /// [`VoiceRoute`]). Signed when present; absent on legacy tickets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceRoute>,
     pub signature: String,
 }
 
