@@ -154,6 +154,7 @@ final class VoiceAgentSession: NSObject {
         isActive = false
         stopRequested = true
         segmenter.stop()
+        CallTonePlayer.shared.stop()
         if #available(macOS 26.0, *), let transcriber = analyzer as? MacSpeechTranscriber {
             transcriber.stop()
         }
@@ -181,6 +182,8 @@ final class VoiceAgentSession: NSObject {
                         DispatchQueue.main.async { self?.restartAnalyzer() }
                     }
                 )
+                // The call is "connected" once the recognizer is listening.
+                CallTonePlayer.shared.start(.answered)
             } catch {
                 Automation.mark("voice-agent: analyzer start failed \(error.localizedDescription)")
             }

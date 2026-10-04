@@ -244,6 +244,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             session.stop()
             return
         }
+        // Same call cues as a live call: ringback while the recognizer loads,
+        // answered once it is listening, stop on hangup.
+        CallTonePlayer.shared.start(.ringback)
         session.onState = { [weak self] state in self?.applyVoiceState(state) }
         session.start(peerRef: peer.id)
     }
