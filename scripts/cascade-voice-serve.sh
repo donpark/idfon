@@ -8,6 +8,6 @@
 # the agent and the holder binary. Sourced (not exec'd) so the process keeps
 # this script's name for `pnpm agent` process checks.
 export EVE_AGENT="${EVE_AGENT:-cascade-voice}"
-export EVE_IDFON_PKG="${EVE_IDFON_PKG:-idfon-live-cascade}"
-export EVE_IDFON_BIN="${EVE_IDFON_BIN:-eve-idfon-cascade}"
+export EVE_IDFON_PKG="${EVE_IDFON_PKG:-idfon-voice-agent}"
+export EVE_IDFON_BIN="${EVE_IDFON_BIN:-eve-idfon-voice}"
 . "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/live-voice-serve.sh" "$@"

@@ -408,8 +408,11 @@ pub struct VoiceRoute {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum VoiceMode {
-    /// The peer's holder terminates audio itself (a full-duplex session).
+    /// The peer's holder terminates audio with a full-duplex model session.
     NativeDuplex,
+    /// The peer's holder terminates audio with the cascade (STT → agent → TTS).
+    /// A voice agent that speaks/listens for another agent over a live session.
+    ServerCascade,
     /// The peer speaks text; the caller supplies on-device STT/TTS.
     #[default]
     ClientCascade,

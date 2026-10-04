@@ -65,8 +65,10 @@ enum CapabilityTickets {
 /// Holder-signed voice routing (`capability_ticket.voice`).
 struct VoiceRoute {
     enum Mode: String {
-        /// The target's holder terminates audio itself (a full-duplex session).
+        /// The target's holder terminates audio with a full-duplex model session.
         case nativeDuplex = "native-duplex"
+        /// The target's holder terminates audio with the server-side cascade.
+        case serverCascade = "server-cascade"
         /// The target speaks text; this client supplies on-device STT/TTS.
         case clientCascade = "client-cascade"
         /// A separate voice agent speaks/renders for the target.

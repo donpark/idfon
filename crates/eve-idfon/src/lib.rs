@@ -964,11 +964,15 @@ async fn handle_message(
     // room check lives in the registered live-call handler, which falls through
     // to a text turn for a room.
     if let Some(capability) = live::capability_for_control(&text) {
-        // Only a holder that advertises native full-duplex voice may intercept
-        // a call; a text-only holder (voice.mode = client-cascade) falls through
-        // to an ordinary text turn so the caller's on-device STT/TTS drives it.
+        // Only a holder that terminates audio itself (native full-duplex or the
+        // server-side cascade) may intercept a call; a text-only holder
+        // (voice.mode = client-cascade) falls through to an ordinary text turn
+        // so the caller's on-device STT/TTS drives it.
         let voice_mode = voice_route_from_live_params(&live_params).mode;
-        if voice_mode != VoiceMode::NativeDuplex {
+        if !matches!(
+            voice_mode,
+            VoiceMode::NativeDuplex | VoiceMode::ServerCascade
+        ) {
             eprintln!(
                 "[eve-idfon] live control ignored: voice.mode={voice_mode:?} (text turn) message={}",
                 message.message_id

@@ -1,0 +1,375 @@
+//! Voice-agent kit: one config-driven runner, pluggable voice backends.
+//!
+//! A **voice agent** is an idfon peer that gives a text-first agent a voice
+//! (see `docs/voice-agent.md`). This crate owns the parts every voice agent
+//! shares — the holder handler, the live-media session, and the turn bridge —
+//! and delegates the audio↔text work to a [`VoiceBackend`]. Adding a voice
+//! agent is a config (+ an Eve agent dir); adding an engine is one backend.
+//!
+//! Backends: [`cascade`] (STT → agent → TTS). GPT-Live (full-duplex) and local
+//! engines plug in the same way.
+
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+};
+
+use anyhow::{anyhow, Context, Result};
+use eve_idfon::{
+    live::{LiveCallContext, LiveCallFuture, LiveCallHandler, AUDIO_PUBLISH},
+    records, IpcFrame, ReplyTarget, Targets,
+};
+use idfon_live_media::{
+    parse_audio_profile, parse_invite, rand_suffix, subscribe_caller, AudioProfile, AudioQueue,
+    CallSession,
+};
+use iroh::{EndpointAddr, EndpointId};
+use serde_json::Value;
+use tokio::sync::mpsc;
+
+pub mod cascade;
+pub use cascade::CascadeFactory;
+
+/// The async result of running one backend for one call.
+pub type BackendFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+
+/// One voice engine behind the voice-agent seam.
+///
+/// A backend owns one call's audio loop; it may be duplex (a model session) or
+/// cascade (STT + agent turn + TTS). The shared media session and turn bridge
+/// are handed to it in [`VoiceMedia`].
+pub trait VoiceBackend: Send {
+    fn name(&self) -> &str;
+    fn run(&mut self, media: VoiceMedia) -> BackendFuture<'_>;
+}
+
+/// Creates a backend for one call from the voice agent's config.
+pub trait VoiceBackendFactory: Send + Sync {
+    /// Config key that selects this backend (`engine.kind` / `backend`).
+    fn kind(&self) -> &str;
+    fn create(&self, params: &Value) -> Result<Box<dyn VoiceBackend>>;
+}
+
+/// Everything a backend needs for one call.
+pub struct VoiceMedia {
+    /// Caller audio as paced 20 ms, 24 kHz mono frames.
+    pub caller: mpsc::Receiver<Vec<i16>>,
+    /// Return-leg audio the backend renders for the caller.
+    pub audio: AudioQueue,
+    pub stop: Arc<AtomicBool>,
+    pub profile: AudioProfile,
+    pub bridge: TurnBridge,
+}
+
+/// The shared text hop: inject a caller transcript as a normal agent turn and
+/// receive the agent's reply text for the backend to speak.
+pub struct TurnBridge {
+    peer_id: String,
+    endpoint_id: String,
+    source: String,
+    targets: Targets,
+    out_tx: mpsc::Sender<IpcFrame>,
+    reply_tx: mpsc::UnboundedSender<(String, String)>,
+    replies: mpsc::UnboundedReceiver<(String, String)>,
+    call_id: String,
+}
+
+impl TurnBridge {
+    pub fn new(
+        peer_id: String,
+        endpoint_id: String,
+        source: String,
+        targets: Targets,
+        out_tx: mpsc::Sender<IpcFrame>,
+    ) -> Self {
+        let (reply_tx, replies) = mpsc::unbounded_channel();
+        Self {
+            peer_id,
+            endpoint_id,
+            source,
+            targets,
+            out_tx,
+            reply_tx,
+            replies,
+            call_id: rand_suffix(),
+        }
+    }
+
+    /// Inject one caller transcript as an agent turn; returns the turn id.
+    pub async fn inject(&self, text: &str) -> String {
+        let turn_id = format!("voice_{}", rand_suffix());
+        self.targets.lock().await.insert(
+            turn_id.clone(),
+            ReplyTarget {
+                peer_id: self.peer_id.clone(),
+                endpoint_id: self.endpoint_id.clone(),
+                conversation: None,
+                a2a_depth: None,
+                live_commentary: Some((turn_id.clone(), self.reply_tx.clone())),
+            },
+        );
+        let _ = self
+            .out_tx
+            .send(IpcFrame::TurnIn {
+                message_id: turn_id.clone(),
+                peer_id: self.peer_id.clone(),
+                endpoint_id: self.endpoint_id.clone(),
+                idempotency_key: turn_id.clone(),
+                conversation: None,
+                text: text.to_string(),
+                blob_ticket: None,
+                size_bytes: None,
+                a2a_depth: None,
+                capabilities: None,
+                source: Some(self.source.clone()),
+            })
+            .await;
+        turn_id
+    }
+
+    /// Next agent reply (turn id, text) routed back to this call.
+    pub async fn next_reply(&mut self) -> Option<(String, String)> {
+        self.replies.recv().await
+    }
+
+    /// Append a durable transcript record for the caller or the agent.
+    pub fn record(&self, speaker: &str, text: &str) {
+        records::store().append(
+            &self.peer_id,
+            records::VoiceRecord::transcript(&self.call_id, speaker, text),
+        );
+    }
+
+    pub fn call_id(&self) -> &str {
+        &self.call_id
+    }
+}
+
+/// Voice-agent config, read from the live config (`--live-config`).
+#[derive(Debug, Clone)]
+pub struct VoiceAgentConfig {
+    /// Backend kind to run (`cascade`, later `gpt-live`, …).
+    pub backend: String,
+    /// MoQ broadcast name for the return leg.
+    pub broadcast: String,
+    /// Provenance tag on injected turns.
+    pub source: String,
+}
+
+impl VoiceAgentConfig {
+    pub fn from_params(params: &Value) -> Self {
+        Self {
+            backend: params
+                .get("backend")
+                .or_else(|| params.get("engine").and_then(|engine| engine.get("kind")))
+                .and_then(|value| value.as_str())
+                .unwrap_or("cascade")
+                .to_string(),
+            broadcast: params
+                .get("broadcast")
+                .and_then(|value| value.as_str())
+                .unwrap_or("idfon-voice-agent")
+                .to_string(),
+            source: params
+                .get("source")
+                .and_then(|value| value.as_str())
+                .unwrap_or("voice-agent")
+                .to_string(),
+        }
+    }
+}
+
+/// The one live-call handler every voice agent uses; `--live-config` selects
+/// the backend.
+pub struct VoiceAgentHandler {
+    factories: HashMap<String, Arc<dyn VoiceBackendFactory>>,
+}
+
+impl Default for VoiceAgentHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VoiceAgentHandler {
+    pub fn new() -> Self {
+        Self {
+            factories: HashMap::new(),
+        }
+    }
+
+    /// Register a backend. The runner calls this once per engine it links.
+    pub fn with(mut self, factory: Arc<dyn VoiceBackendFactory>) -> Self {
+        self.factories.insert(factory.kind().to_string(), factory);
+        self
+    }
+}
+
+impl LiveCallHandler for VoiceAgentHandler {
+    fn capabilities(&self) -> &'static [&'static str] {
+        &[AUDIO_PUBLISH]
+    }
+
+    fn handle(&self, ctx: LiveCallContext) -> LiveCallFuture {
+        let config = VoiceAgentConfig::from_params(&ctx.params);
+        let factory = self.factories.get(&config.backend).cloned();
+        Box::pin(async move { handle_call(ctx, config, factory).await })
+    }
+}
+
+async fn handle_call(
+    ctx: LiveCallContext,
+    config: VoiceAgentConfig,
+    factory: Option<Arc<dyn VoiceBackendFactory>>,
+) -> Result<bool> {
+    // Voice is 1:1 only.
+    if ctx.is_room() {
+        return Ok(false);
+    }
+    let Some(invite) = parse_invite(&ctx.text) else {
+        return Ok(false);
+    };
+    if invite.is_stop {
+        stop_active_call(&format!("peer {} hung up", ctx.sender_peer_id));
+        return Ok(true);
+    }
+    if !invite.is_start {
+        return Ok(true);
+    }
+    let Some(factory) = factory else {
+        eprintln!("[voice-agent] unknown backend '{}'; falling through to text", config.backend);
+        return Ok(false);
+    };
+    // A backend that cannot start (e.g. no provider key) declines the call, and
+    // the control becomes a text turn.
+    let mut backend = match factory.create(&ctx.params) {
+        Ok(backend) => backend,
+        Err(error) => {
+            eprintln!("[voice-agent] backend '{}' unavailable: {error}", config.backend);
+            return Ok(false);
+        }
+    };
+    let profile = parse_audio_profile(invite.audio_codec.as_deref(), invite.audio_sample_rate)?;
+    let ticket = invite
+        .ticket
+        .ok_or_else(|| anyhow!("live call start is missing its media ticket"))?;
+    let endpoint_id = ctx
+        .sender_endpoint_id
+        .parse::<EndpointId>()
+        .map_err(|error| anyhow!("invalid caller endpoint id: {error}"))?;
+    let caller_addr = match invite.return_addr {
+        Some(address) if address.id == endpoint_id => address,
+        Some(_) => anyhow::bail!("caller return address does not match sender endpoint"),
+        None => EndpointAddr::new(endpoint_id),
+    };
+
+    stop_active_call("replaced by a newer call");
+    let session = CallSession::start(
+        &caller_addr,
+        &ctx.sender_peer_id,
+        &ctx.holder_endpoint_id,
+        &ctx.transport,
+        &ctx.key,
+        profile,
+        &config.broadcast,
+    )
+    .await
+    .context("start voice-agent call")?;
+    let stop = Arc::clone(&session.stop);
+    *active_call().lock().expect("call mutex poisoned") = Some(CallHandle {
+        stop: Arc::clone(&stop),
+    });
+    let caller = subscribe_caller(ticket, profile, Arc::clone(&stop)).await?;
+    let audio = session.audio.clone();
+    let bridge = TurnBridge::new(
+        ctx.sender_peer_id.clone(),
+        ctx.sender_endpoint_id.clone(),
+        config.source.clone(),
+        Arc::clone(&ctx.targets),
+        ctx.out_tx.clone(),
+    );
+    let media = VoiceMedia {
+        caller,
+        audio,
+        stop,
+        profile,
+        bridge,
+    };
+    eprintln!(
+        "[voice-agent] call started backend={} peer={}",
+        backend.name(),
+        ctx.sender_peer_id
+    );
+    tokio::spawn(async move {
+        if let Err(error) = backend.run(media).await {
+            eprintln!("[voice-agent] backend '{}' failed: {error:#}", backend.name());
+        }
+        session.shutdown().await;
+        eprintln!("[voice-agent] call ended");
+    });
+    Ok(true)
+}
+
+struct CallHandle {
+    stop: Arc<AtomicBool>,
+}
+
+static ACTIVE_CALL: OnceLock<Mutex<Option<CallHandle>>> = OnceLock::new();
+
+fn active_call() -> &'static Mutex<Option<CallHandle>> {
+    ACTIVE_CALL.get_or_init(|| Mutex::new(None))
+}
+
+fn stop_active_call(reason: &str) {
+    if let Some(handle) = active_call().lock().expect("call mutex poisoned").take() {
+        handle.stop.store(true, Ordering::Relaxed);
+        eprintln!("[voice-agent] call stopped: {reason}");
+    }
+}
+
+/// Drop trailing `IDFON-*/1` envelope blocks before speaking.
+pub fn strip_envelopes(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.starts_with("IDFON-") && trimmed.ends_with("/1") {
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_defaults_and_overrides() {
+        let default = VoiceAgentConfig::from_params(&serde_json::Value::Null);
+        assert_eq!(default.backend, "cascade");
+        let overridden = VoiceAgentConfig::from_params(&serde_json::json!({
+            "engine": { "kind": "gpt-live" },
+            "broadcast": "b",
+            "source": "s",
+        }));
+        assert_eq!(overridden.backend, "gpt-live");
+        assert_eq!(overridden.broadcast, "b");
+        assert_eq!(overridden.source, "s");
+    }
+
+    #[test]
+    fn strips_trailing_envelope() {
+        assert_eq!(
+            strip_envelopes("Sure, here you go.\nIDFON-INVITE/1\nname=x"),
+            "Sure, here you go."
+        );
+        assert_eq!(strip_envelopes("plain reply"), "plain reply");
+    }
+}

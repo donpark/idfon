@@ -829,7 +829,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             case .clientCascade, .delegated:
                 voiceAgentTapped()
                 return
-            case .nativeDuplex:
+            case .nativeDuplex, .serverCascade:
                 break
             }
         }

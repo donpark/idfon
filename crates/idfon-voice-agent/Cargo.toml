@@ -1,11 +1,11 @@
 [package]
-name = "idfon-live-cascade"
+name = "idfon-voice-agent"
 version.workspace = true
 edition = "2021"
 license.workspace = true
 
 [[bin]]
-name = "eve-idfon-cascade"
+name = "eve-idfon-voice"
 path = "src/main.rs"
 
 [dependencies]
