@@ -100,7 +100,10 @@ list_instances() {
       if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
         status=running
       else
-        status=stopped; pid=""
+        # No live manager: a holder/bridge bound to this home still means the
+        # contact is serving, just started outside `pnpm agent`.
+        pid=$(pgrep -f "$dir" 2>/dev/null | head -1 || true)
+        if [[ -n "$pid" ]]; then status="running*"; else status=stopped; pid=""; fi
       fi
       detail="${contact:+$contact }${model:-}"
       printf '%s|%s|%s|%s|%s|%s|%s\n' \
@@ -111,6 +114,7 @@ list_instances() {
         printf '%-14s %-18s %-7s %-8s %-6s %-28s %s\n' \
           "$found_agent" "$inst" "$pid" "$status" "$port" "$detail" "$home"
       done
+  printf '\n  running* = serving, but started outside pnpm agent (not managed)\n'
   return 0
 }
 
