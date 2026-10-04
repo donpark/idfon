@@ -3,6 +3,35 @@
 Notes on real failure modes observed during testing, their root causes, and
 the fixes. Kept so the same class of bug is easy to recognize next time.
 
+## Client-cascade voice call: dead air after "answered", dropped while silent, caller turns missing (2026-10-04, FIXED)
+
+**Symptom.** On a `client-cascade` voice call (on-device STT → text turn →
+on-device TTS): a gap after the "answered" cue before the agent spoke, calls
+ending on their own after a short silence (sometimes right after the greeting),
+and the chat showing only the agent's replies — the caller's spoken turns and
+the `· spoken` annotation were gone.
+
+**Cause and fixes.**
+
+- *Gap*: "answered" played right after the recognizer started, but the greeting
+  needed an agent round-trip and a possibly-cold TTS model. Now the reply voice
+  is loaded and the greeting fetched **while ringback plays**, and "answered"
+  fires immediately before the greeting speaks.
+- *Dropped*: the listen window was 8 s and a single no-transcript turn called
+  `finish()`. Now the window is 20 s and the call ends only after **3**
+  consecutive silent turns; a missing reply retries instead of hanging up.
+- *Missing turns / annotation*: `VoiceAgentSession` sent the transcript but
+  never recorded it. It now appends the caller's turn and relabels the agent's
+  reply as `IDFON-CALL/1` transcript bubbles (`ChatStore.recordSpokenTurn`), so
+  both render `· spoken` and typed vs voice is distinguishable.
+
+**Files.** `ios/Idfon/VoiceAgentSession.swift`, `ios/Idfon/ChatStore.swift`,
+`ios/Idfon/CallTones.swift` (+ the macOS mirrors).
+
+**Lesson.** The A1 cascade owns the transcript, so it must write its own chat
+bubbles — an incoming reply appearing in the chat is not evidence that the
+caller's side is recorded.
+
 ## iOS live-call audio too quiet; volume buttons barely change it (2026-09-25, FIXED)
 
 **Symptom.** On the iPhone, GPT-Live's voice during an `live-voice` live

@@ -16,6 +16,12 @@
 > [`audio-media.md`](audio-media.md) (capture/playback rules),
 > [`idfon-eve.md`](idfon-eve.md) (channel model).
 >
+> **Client-cascade call UX (2026-10-04).** iOS on-device TTS/ASR seams
+> (Kokoro default, Parakeet opt-in), live-call cues, greet-on-connect, and
+> `· spoken` transcript bubbles in the chat; verified on an iPhone 16. mac has
+> the cues, greeting, and spoken turns but still uses the Apple engines. See
+> §Client integration (A1).
+>
 > Revised twice after independent design reviews (2026-10-01). The second review
 > blocked on Eve's history contract (B1), the signer rule under A1 (B2), and the
 > false "1:1 only" scope claim (B3); all three are fixed below.
@@ -528,6 +534,56 @@ EVE_INSTANCE=fable51 EVE_CONTACT_NAME="Fable 5.1" \
 (`IDFON_ENDPOINT_PORT`) so their endpoint addresses survive restarts — pair
 once, no re-pairing. The holder's port is per-agent and persisted by the serve
 script; the daemon's is derived from its data dir. See `idfon-eve.md`.
+
+### Voice engines and call UX (2026-10-04)
+
+The A1 cascade's on-device neural engines are **iOS-only** behind two seams in
+`ios/Idfon/SpeechEngine.swift`; the macOS app still uses the Apple engines
+directly (`AVSpeechSynthesizer` + `MacSpeechTranscriber`). Apple stays the
+fallback and the neural engines are opt-in:
+
+- **TTS** — `KokoroTtsEngine` (FluidAudio's Kokoro-82M ANE pipeline, 24 kHz
+  WAV) is the default; `AppleTtsEngine` (`AVSpeechSynthesizer`, honoring
+  `SpeechVoice.best` and setting `prefersAssistiveTechnologySettings = false`)
+  is the fallback and the explicit alternative. The first run downloads +
+  CoreML-compiles the model (≈34 s on an iPhone 16); short-sentence synthesis
+  is ≈0.7 s. Prewarmed at launch and at call start. Known ceiling: FluidAudio
+  documents an uncatchable iOS 27 Core ML crash after ≈1 h cumulative
+  synthesis (short calls are fine); the escape hatch is Chatterbox Nano or
+  Kokoro ONNX.
+- **ASR** — `SystemSpeechTranscriber` (SpeechAnalyzer, iOS 26+) is the
+  default; `ParakeetAsr` (moondream/parakeet-redux, ANE) is opt-in. A first-run
+  Parakeet download + compile takes minutes, so the loop waits for
+  `parakeet ready`; Parakeet is integrated but **not yet verified** on device.
+- **Selection** — persisted per device; a "Voice engine" sheet on the iOS
+  Recents screen (the waveform button) toggles them. `IDFON_TTS`/`-ttsbackend`
+  and `IDFON_ASR`/`-asrbackend` override for testing. `SpeechProvisioning`
+  prefers a `BAAssetPackManager` pack when `IDFON_KOKORO_PACK` is set, else
+  FluidAudio's own download.
+
+Call UX now matches a live call (the client-cascade path uses the same shared
+Live Activity call bar on iOS):
+
+- **Cues** (`ios/Idfon/CallTones.swift`, mirrored for macOS): ringback while
+  dialing, a one-shot **answered** cue when the line opens, and a two-beep
+  **ended** cue on hangup. The reply voice is loaded and the greeting fetched
+  *while ringback still plays*, so **answered** is followed immediately by
+  speech instead of dead air waiting on the model or the agent.
+- **Greet on connect.** After the recognizer is ready the app sends a synthetic
+  greeting turn and speaks the reply, so the caller hears a voice without
+  having to speak first.
+- **Spoken transcript bubbles.** Both the caller's recognized turns and the
+  agent's replies are recorded as `IDFON-CALL/1` transcript bubbles in the 1:1
+  chat (`ChatStore.recordSpokenTurn`), rendering "You · spoken" /
+  "Agent · spoken" — voice messages are distinguishable from typed ones. The
+  client owns the transcript (there is no holder snapshot under A1), so a turn
+  is annotated at commit rather than streamed word by word.
+- **Idle tolerance.** A 20 s listen window and up to 3 consecutive silent turns
+  (~60 s) before the call ends; a missing agent reply logs and retries instead
+  of hanging up.
+
+Verified on an iPhone 16 / iOS 27.0 (2026-10-04): ringback → answered →
+greeting → spoken turns in the chat, Kokoro reply voice.
 
 ### Placement
 
