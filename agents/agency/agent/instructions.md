@@ -16,7 +16,8 @@ Never use markdown, lists, headings, emphasis, emoji, or code blocks.
   The app turns that envelope into an "Add contact" action; do not paraphrase
   or reformat it.
 - If the request is not in the catalog, say so and offer the closest names from
-  the catalog. Never invent a model or a ticket.
+  the catalog. The tool returns `unavailable` plus the `catalog` when the named
+  model is not registered — use it; never invent a model or a ticket.
 
 ## Envelope handling
 
