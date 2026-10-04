@@ -818,11 +818,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func callTapped() {
-        // GPT-Live-1 DEPRECATED (migration target). Dialing here lands on the
-        // holder's GPT-Live live handler, so the contact's EVE_IDFON_MODEL is
-        // ignored for calls and no text/artifact channel is available. Live
-        // calls must move to the idfon-voice cascade (VoiceAgentSession, STT ->
-        // agent -> TTS); see docs/voice-side-channel.md / docs/live-voice.md.
+        // Voice routing is a holder-signed fact on the capability ticket
+        // (`voice.mode`); legacy tickets have no block and keep the old
+        // name/profile heuristic. GPT-Live-1 DEPRECATED (migration target):
+        // `native-duplex` still lands on the holder's GPT-Live handler until
+        // live calls migrate to the idfon-voice cascade; `client-cascade` drives
+        // the agent with the on-device cascade instead.
+        if let mode = CapabilityTickets.voiceRoute(for: peer.id)?.mode {
+            switch mode {
+            case .clientCascade, .delegated:
+                voiceAgentTapped()
+                return
+            case .nativeDuplex:
+                break
+            }
+        }
         if peer.name == "live-voice" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
             LiveCall.shared.dial(peer.id)
         } else {

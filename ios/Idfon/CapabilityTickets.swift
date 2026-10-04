@@ -44,4 +44,38 @@ enum CapabilityTickets {
     private static func table() -> [String: String] {
         UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
     }
+
+    /// Voice routing the target's holder signed into its capability ticket, or
+    /// nil for a legacy ticket with no `voice` block (callers fall back to the
+    /// old name/profile heuristic).
+    static func voiceRoute(for peer: String) -> VoiceRoute? {
+        guard let json = table()[peer], let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let voice = object["voice"] as? [String: Any],
+              let rawMode = voice["mode"] as? String,
+              let mode = VoiceRoute.Mode(rawValue: rawMode) else { return nil }
+        return VoiceRoute(
+            mode: mode,
+            audio: voice["audio"] as? String,
+            model: voice["model"] as? String,
+            delegatePeerId: (voice["delegate"] as? [String: Any])?["peer_id"] as? String)
+    }
+}
+
+/// Holder-signed voice routing (`capability_ticket.voice`).
+struct VoiceRoute {
+    enum Mode: String {
+        /// The target's holder terminates audio itself (a full-duplex session).
+        case nativeDuplex = "native-duplex"
+        /// The target speaks text; this client supplies on-device STT/TTS.
+        case clientCascade = "client-cascade"
+        /// A separate voice agent speaks/renders for the target.
+        case delegated
+    }
+
+    let mode: Mode
+    let audio: String?
+    let model: String?
+    /// Delegate peer id when `mode == .delegated`.
+    let delegatePeerId: String?
 }

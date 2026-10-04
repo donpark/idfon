@@ -1,7 +1,7 @@
 //! Domain security helpers kept independent from transport details.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use idfon_protocol::{Capability, CapabilityTicket, MessageContent, MessageEnvelope, PeerAuth};
+use idfon_protocol::{Capability, CapabilityTicket, MessageContent, MessageEnvelope, PeerAuth, VoiceRoute};
 use getrandom::{rand_core::UnwrapErr, SysRng};
 use serde::Serialize;
 use thiserror::Error;
@@ -132,6 +132,29 @@ pub fn issue_capability_ticket_for_conversation(
     expires_at: Option<String>,
     ticket_id: impl Into<String>,
 ) -> CapabilityTicket {
+    issue_capability_ticket_with_voice(
+        key,
+        subject,
+        conversation,
+        capabilities,
+        expires_at,
+        ticket_id,
+        None,
+    )
+}
+
+/// Like [`issue_capability_ticket_for_conversation`], but also signs a
+/// [`VoiceRoute`] describing how the issuer wants voice carried.
+#[allow(clippy::too_many_arguments)]
+pub fn issue_capability_ticket_with_voice(
+    key: &SigningKey,
+    subject: Option<String>,
+    conversation: Option<String>,
+    capabilities: Vec<Capability>,
+    expires_at: Option<String>,
+    ticket_id: impl Into<String>,
+    voice: Option<VoiceRoute>,
+) -> CapabilityTicket {
     let mut ticket = CapabilityTicket {
         issuer: peer_id(key),
         subject,
@@ -139,6 +162,7 @@ pub fn issue_capability_ticket_for_conversation(
         capabilities,
         expires_at,
         ticket_id: ticket_id.into(),
+        voice,
         signature: String::new(),
     };
     ticket.signature = encode_hex(
@@ -160,7 +184,18 @@ pub fn verify_capability_ticket(ticket: &CapabilityTicket) -> Result<(), AuthErr
 }
 
 fn ticket_unsigned(ticket: &CapabilityTicket) -> serde_json::Value {
-    serde_json::json!({"issuer":ticket.issuer,"subject":ticket.subject,"conversation":ticket.conversation,"capabilities":ticket.capabilities,"expires_at":ticket.expires_at,"ticket_id":ticket.ticket_id})
+    let mut value = serde_json::json!({"issuer":ticket.issuer,"subject":ticket.subject,"conversation":ticket.conversation,"capabilities":ticket.capabilities,"expires_at":ticket.expires_at,"ticket_id":ticket.ticket_id});
+    // Only present when set, so legacy tickets (voice = None) keep verifying:
+    // the signed bytes must stay byte-identical to what the old code signed.
+    if let Some(voice) = &ticket.voice {
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "voice".into(),
+                serde_json::to_value(voice).expect("voice route serializes"),
+            );
+        }
+    }
+    value
 }
 
 pub fn sign_state_sync(
@@ -274,6 +309,7 @@ fn hex_digit(value: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idfon_protocol::VoiceMode;
 
     #[test]
     fn signed_message_verifies_and_tampering_fails() {
@@ -335,6 +371,51 @@ mod tests {
     }
 
     #[test]
+    fn voice_route_is_signed_and_legacy_tickets_still_verify() {
+        let key = generate_identity();
+        let voice = VoiceRoute {
+            mode: VoiceMode::NativeDuplex,
+            audio: Some("pcm24k".into()),
+            model: Some("openai/gpt-live-1".into()),
+            delegate: None,
+        };
+        let ticket = issue_capability_ticket_with_voice(
+            &key,
+            Some("subject".into()),
+            None,
+            vec![Capability::MessageReceive],
+            None,
+            "t-voice",
+            Some(voice.clone()),
+        );
+        assert!(verify_capability_ticket(&ticket).is_ok());
+        assert_eq!(
+            serde_json::to_value(&ticket).unwrap()["voice"]["mode"],
+            "native-duplex"
+        );
+
+        // Routing metadata is signed; tampering fails verification.
+        let mut tampered = ticket.clone();
+        tampered.voice.as_mut().unwrap().mode = VoiceMode::ClientCascade;
+        assert_eq!(
+            verify_capability_ticket(&tampered),
+            Err(AuthError::VerificationFailed)
+        );
+
+        // A legacy ticket (no voice) still verifies: its unsigned payload is
+        // byte-identical to what the old issuer signed.
+        let legacy = issue_capability_ticket(
+            &key,
+            Some("subject".into()),
+            vec![Capability::MessageReceive],
+            None,
+            "t-legacy",
+        );
+        assert!(verify_capability_ticket(&legacy).is_ok());
+        assert!(serde_json::to_value(&legacy).unwrap().get("voice").is_none());
+    }
+
+    #[test]
     fn malformed_capability_ticket_is_rejected() {
         let mut ticket = CapabilityTicket {
             issuer: "not-a-peer-id".into(),
@@ -343,6 +424,7 @@ mod tests {
             capabilities: vec![Capability::MessageReceive],
             expires_at: None,
             ticket_id: "ticket-1".into(),
+            voice: None,
             signature: "bad".into(),
         };
         assert_eq!(
