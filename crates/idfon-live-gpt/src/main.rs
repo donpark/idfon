@@ -2,13 +2,11 @@
 //! GPT-Live live-call handler. The platform crate itself knows no vendor; this
 //! composition root is what opts the agent in.
 //!
-//! **GPT-Live-1 DEPRECATED (migration target).** Registering `GptLiveHandler`
-//! here is why a call to *any* `eve-idfon-gpt` holder — including text-only
-//! agents like `llm`/`agency` that have no `live.json` — is answered by
-//! `openai/gpt-live-1` instead of the configured `EVE_IDFON_MODEL`. Live calls
-//! must move to the `idfon-voice` cascade (STT → agent → TTS); see
-//! `docs/voice-side-channel.md` ("Front-end resolved to cascade STT + TTS") and
-//! `docs/live-voice.md` ("Decision"). Do not add new registrations.
+//! This registers the GPT-Live full-duplex backend. It is one supported model,
+//! not a special path — a holder only routes live controls to it when it
+//! advertises `native-duplex` (the holder gate in `eve-idfon`). New voice
+//! agents should use the config-driven voice-agent runner (`eve-idfon-voice`,
+//! `crates/idfon-voice-agent`); see `docs/voice-agent.md`.
 
 use anyhow::Result;
 use eve_idfon::live::LiveCallRegistry;

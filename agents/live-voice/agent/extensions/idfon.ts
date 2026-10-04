@@ -7,9 +7,9 @@ export default idfon({
   // which the serve script forwards to the holder's live-call handler
   // (`serve --live-config`); the platform never reads these values.
   //
-  // GPT-Live-1 DEPRECATED (migration target). Do not copy this `live` block
-  // into other agents: it opts the holder into the deprecated audio-only
-  // handler. Live calls move to the idfon-voice cascade (STT -> agent -> TTS).
+  // This `live` block opts the holder into the GPT-Live-1 full-duplex backend
+  // (one engine a voice agent can run; see docs/voice-agent.md). Copy it to
+  // another agent only when that agent really should run GPT-Live.
   live: {
     live_url: "wss://ai-gateway.vercel.sh/v1/live/sessions",
     model: "openai/gpt-live-1",

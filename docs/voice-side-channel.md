@@ -24,14 +24,14 @@
 
 This design is the **cascade voice side-channel**.
 
-- **Voice memos, spoken answers, and live calls** all use the cascade
-  (STT → agent → TTS). `live-voice`'s GPT-Live relay
-  (`crates/idfon-live-gpt/src/lib.rs`,
-  `agents/live-voice/agent/tools/voice-reply.ts`) is **demo scaffolding to be
-  retired**; realtime live-call UX is delivered by streaming (F11), not by
-  keeping GPT-Live. GPT-Live is **retired at P4 (iOS) / P5 (macOS)**; until then
-  it is an **explicit F9 exception** (a speech-to-speech speaker would otherwise
-  break the text boundary). It is a migration target, not a permanent fallback.
+- **Voice memos, spoken answers, and live calls** use the cascade
+  (STT → agent → TTS) by default. A full-duplex model (GPT-Live-1,
+  `crates/idfon-live-gpt`) is one supported voice backend too — a
+  `native-duplex` route behind the same voice-agent seam
+  (`docs/voice-agent.md`). Where a speech-to-speech speaker would otherwise
+  bypass the text boundary it is an **explicit F9 exception**, not the default;
+  the cascade is chosen as the default because the side-channel serves *other
+  agents'* content (verbatim rendering, multi-voice, deterministic transcripts).
 - **Voice is 1:1 only.** Rooms already exist (`chatrooms.md` R1-complete), so a
   room **by membership** (not merely a set `conversation` — threaded 1:1 also
   sets one) must not open a voice session. This is an **explicit exception** to

@@ -9,12 +9,11 @@ import { defineAgent } from "eve";
 // separate contacts — e.g. one serving openai/gpt-6.1-sol, another a
 // different model.
 //
-// GPT-Live-1 DEPRECATED, and a known trap here: this text-only agent has no
-// `live.json`, yet a *call* to it is still answered by openai/gpt-live-1
-// because `eve-idfon-gpt` registers GptLiveHandler unconditionally — so the
-// configured EVE_IDFON_MODEL only answers text, not calls. Live calls must move
-// to the idfon-voice cascade (STT -> agent -> TTS); see
-// docs/voice-side-channel.md and docs/live-voice.md.
+// Text-only by default. A holder routes a live call to a voice backend only
+// when its ticket advertises native-duplex/server-cascade, so a text agent with
+// no live.json is driven by the caller's on-device cascade rather than any
+// full-duplex model. To give it a voice, point it at a voice agent
+// (docs/voice-agent.md).
 const model = process.env.EVE_IDFON_MODEL || "openai/gpt-6-luna";
 
 export default defineAgent({ model });

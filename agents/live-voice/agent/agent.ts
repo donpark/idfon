@@ -4,10 +4,9 @@ import { defineAgent } from "eve";
 // gpt-live-1 is not addressed here directly — the voice_reply tool owns the
 // Live session; this model orchestrates turns and handles text.
 //
-// GPT-Live-1 DEPRECATED (migration target). This demo agent is the only
-// sanctioned GPT-Live user; do not clone it for other models. Live calls move
-// to the idfon-voice cascade (STT -> agent -> TTS) — see
-// docs/voice-side-channel.md and docs/live-voice.md.
+// Demo voice agent for the GPT-Live-1 full-duplex model — one backend among
+// several a voice agent can run (docs/voice-agent.md). The server-side cascade
+// is the other demo (agents/cascade-voice).
 const model = process.env.EVE_IDFON_MODEL || "openai/gpt-6-luna";
 
 export default defineAgent({ model });
