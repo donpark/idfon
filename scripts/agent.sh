@@ -20,6 +20,7 @@ available_agents() {
     candidate=${directory##*/}
     [[ -f "$root/scripts/$candidate-serve.sh" ]] && printf '%s ' "$candidate"
   done
+  return 0
 }
 
 all_agents() {
@@ -29,6 +30,7 @@ all_agents() {
     candidate=${directory##*/}
     printf '%s ' "$candidate"
   done
+  return 0
 }
 
 # Directories under ~/.idfon that look like an instance home.
@@ -41,6 +43,7 @@ instance_dirs() {
       printf '%s\n' "$dir"
     fi
   done
+  return 0
 }
 
 # Best-effort agent name for an instance home: persisted env, then the
@@ -73,6 +76,7 @@ discover_instances() {
     [[ -f "$root/scripts/$found_agent-serve.sh" ]] || continue
     printf '%s:%s\n' "$found_agent" "$inst"
   done < <(instance_dirs)
+  return 0
 }
 
 list_instances() {
@@ -88,7 +92,7 @@ list_instances() {
       contact=$(sed -n "s/^export EVE_CONTACT_NAME=//p" "$dir/instance.env" | tail -1 | tr -d "\"'")
     fi
     pid=""
-    [[ -r "$dir/serve.pid" ]] && pid=$(cat "$dir/serve.pid")
+    if [[ -r "$dir/serve.pid" ]]; then pid=$(cat "$dir/serve.pid"); fi
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
       status=running
     else
@@ -97,6 +101,7 @@ list_instances() {
     detail="${contact:+$contact }${model:-}"
     printf '%-18s %-12s %-7s %-8s %s\n' "$inst" "$found_agent" "${pid:--}" "$status" "$detail"
   done < <(instance_dirs)
+  return 0
 }
 
 usage() {
@@ -180,8 +185,9 @@ replay_instance_env() {
   # shellcheck disable=SC1090
   source "$env_file"
   while IFS= read -r line; do
-    [[ -n "$line" ]] && export "$line"
+    if [[ -n "$line" ]]; then export "$line"; fi
   done <<< "$caller"
+  return 0
 }
 
 persist_instance_env() {
@@ -191,8 +197,9 @@ persist_instance_env() {
              EVE_LIVE_CONFIG EVE_VOICE_PORT EVE_VOICE_HOME EVE_IDFON_PKG \
              EVE_IDFON_BIN EVE_IDFON_FEATURES IDFON_BRIDGE_SECRET IDFON_SOCKET IDFON_CLI; do
     val="${!var-}"
-    [[ -n "$val" ]] && printf 'export %s=%q\n' "$var" "$val" >> "$env_file"
+    if [[ -n "$val" ]]; then printf 'export %s=%q\n' "$var" "$val" >> "$env_file"; fi
   done
+  return 0
 }
 
 is_serve_process() {
@@ -266,8 +273,8 @@ if [[ "$action" == start ]]; then
   echo "started $resolved_instance (pid $pid); log: $logfile"
 else
   if [[ ! -r "$pidfile" ]]; then
-    echo "$resolved_instance is not managed by 'pnpm agent'" >&2
-    exit 1
+    echo "$resolved_instance is not running (not managed by 'pnpm agent')"
+    exit 0
   fi
   read -r pid < "$pidfile"
   if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
