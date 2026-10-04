@@ -80,7 +80,7 @@ discover_instances() {
 }
 
 list_instances() {
-  printf '%-18s %-12s %-7s %-8s %-6s %-28s %s\n' INSTANCE AGENT PID STATUS PORT DETAIL HOME
+  printf '%-14s %-18s %-7s %-8s %-6s %-28s %s\n' AGENT INSTANCE PID STATUS PORT DETAIL HOME
   local dir inst found_agent pid status detail model contact port
   # Emit tab-separated rows, sort by agent then instance, then format.
   {
@@ -108,8 +108,8 @@ list_instances() {
     done < <(instance_dirs)
   } | sort -t'|' -k1,1 -k2,2 \
     | while IFS='|' read -r found_agent inst pid status port detail home; do
-        printf '%-18s %-12s %-7s %-8s %-6s %-28s %s\n' \
-          "$inst" "$found_agent" "$pid" "$status" "$port" "$detail" "$home"
+        printf '%-14s %-18s %-7s %-8s %-6s %-28s %s\n' \
+          "$found_agent" "$inst" "$pid" "$status" "$port" "$detail" "$home"
       done
   return 0
 }
