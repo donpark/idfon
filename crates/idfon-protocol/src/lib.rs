@@ -425,7 +425,11 @@ pub enum VoiceMode {
 pub struct VoiceDelegate {
     /// The delegate's peer id.
     pub peer_id: String,
-    /// Optional delegate card (endpoint + ticket) to dial it.
+    /// The delegate's endpoint address (iroh `EndpointAddr` JSON), so a caller
+    /// can add/dial it without a prior pairing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<serde_json::Value>,
+    /// Optional delegate capability ticket (subject-bound to the caller).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket: Option<serde_json::Value>,
     /// Preferred audio profile for the delegate leg.
