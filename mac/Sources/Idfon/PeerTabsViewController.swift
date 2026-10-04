@@ -49,7 +49,7 @@ final class PeerTabsViewController: NSTabViewController {
 
 /// One tab: a searchable peer list. Row rendering and selection only; the peer
 /// source comes from `peersProvider` so the section can't drift from AppModel.
-final class PeerSectionViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+final class PeerSectionViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     enum Section { case favorites, recents, contacts }
 
     private let section: Section
@@ -60,6 +60,13 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
     var recentRoomsProvider: (() -> [Room])?
     var unreadCountProvider: ((Conversation) -> Int)?
     var onSelect: ((Conversation) -> Void)?
+    /// Fired after a rename/remove so the owner can refresh the peer source.
+    var onMutate: (() -> Void)?
+
+    private let client = DaemonClient()
+    private let contextMenu = NSMenu()
+    /// The peer the context menu was opened on (`menuNeedsUpdate`).
+    private var menuPeer: Peer?
 
     private let table = NSTableView()
     private let searchField = NSSearchField()
@@ -118,6 +125,15 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         table.target = self
         table.action = #selector(rowClicked)
         table.translatesAutoresizingMaskIntoConstraints = false
+
+        // Right-click rename/delete. The clicked row is resolved in
+        // `menuNeedsUpdate`, so a right-click never selects or opens the chat.
+        contextMenu.delegate = self
+        let renameItem = contextMenu.addItem(withTitle: "Rename…", action: #selector(renameContact), keyEquivalent: "")
+        renameItem.target = self
+        let deleteItem = contextMenu.addItem(withTitle: "Delete…", action: #selector(deleteContact), keyEquivalent: "")
+        deleteItem.target = self
+        table.menu = contextMenu
 
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -189,6 +205,73 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         let row = table.clickedRow >= 0 ? table.clickedRow : table.selectedRow
         guard row >= 0, row < shown.count else { return }
         onSelect?(shown[row])
+    }
+
+    // MARK: - Context menu (rename/delete)
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let row = table.clickedRow
+        menuPeer = (row >= 0 && row < shown.count) ? shown[row].peer : nil
+        for item in menu.items { item.isEnabled = menuPeer != nil }
+    }
+
+    @objc private func renameContact() {
+        guard let peer = menuPeer, let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename Contact"
+        alert.informativeText = "Enter a new name for \(peer.displayName)."
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = peer.name ?? ""
+        field.placeholderString = "Name"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return }
+            Task { @MainActor in
+                do {
+                    try await self?.client.renamePeer(ref: peer.id, name: name)
+                    self?.onMutate?()
+                    self?.reload()
+                } catch {
+                    self?.presentError(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    @objc private func deleteContact() {
+        guard let peer = menuPeer, let window = view.window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete \(peer.displayName)?"
+        alert.informativeText = "This removes the contact on this device."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            Task { @MainActor in
+                do {
+                    try await self?.client.removePeer(ref: peer.id)
+                    CapabilityTickets.remove(for: peer.id)
+                    self?.onMutate?()
+                    self?.reload()
+                } catch {
+                    self?.presentError(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func presentError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn’t update contact"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        if let window = view.window { alert.beginSheetModal(for: window) } else { alert.runModal() }
     }
 
     // MARK: - NSTableView

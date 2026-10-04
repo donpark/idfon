@@ -28,6 +28,10 @@ final class SidebarViewController: NSViewController {
             unreadCountProvider: { ChatStore.shared.unreadCount(for: $0) })
         super.init(nibName: nil, bundle: nil)
         app.onUpdate = { [weak self] in self?.sync() }
+        // After a context-menu rename/delete, re-read peers so the list updates.
+        for section in tabs.sections {
+            section.onMutate = { [weak app] in Task { await app?.refresh() } }
+        }
         ChatStore.shared.addObserver(self)
     }
 

@@ -47,6 +47,25 @@ extension DaemonClient {
         return try JSONDecoder().decode([Room].self, from: JSONEncoder().encode(list))
     }
 
+    /// Renames a contact (`peer.update` with the pair's `ref` and a new name).
+    func renamePeer(ref: String, name: String) async throws {
+        let identity = (try? await identityId()) ?? "default"
+        _ = try await requestWithLaunch(method: "peer.update", params: [
+            "ref": AnyEncodable(ref),
+            "identity": AnyEncodable(identity),
+            "name": AnyEncodable(name),
+        ])
+    }
+
+    /// Removes a contact (`peer.remove`).
+    func removePeer(ref: String) async throws {
+        let identity = (try? await identityId()) ?? "default"
+        _ = try await requestWithLaunch(method: "peer.remove", params: [
+            "ref": AnyEncodable(ref),
+            "identity": AnyEncodable(identity),
+        ])
+    }
+
     func joinRoom(_ room: String, name: String? = nil, members: [String] = []) async throws -> Room {
         var params: [String: AnyEncodable] = ["room": AnyEncodable(room)]
         if let name { params["name"] = AnyEncodable(name) }
