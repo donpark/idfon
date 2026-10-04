@@ -3,9 +3,11 @@ import AppKit
 import CIdfon
 
 /// Mac daemon runtime: the daemon is a sibling subprocess (unlike iOS, which
-/// runs it in-process). Socket/data-dir come from the Rust single source of
-/// truth (idfon_client_socket_path), so the CLI, native GUI, and this app
-/// share one default profile at /tmp/idfon.
+/// runs it in-process). The socket comes from the Rust single source of truth
+/// (`idfon_client_socket_path`, `/tmp/idfon/idfond.sock`) so the CLI, native
+/// GUI, and this app all share one profile; the *data dir* is durable
+/// (Application Support), because `/tmp` is cleared on reboot and would take
+/// the daemon's identity — and every subject-bound ticket — with it.
 enum DaemonRuntime {
     static let socketPath: String = {
         var buffer = [UInt8](repeating: 0, count: 256)
@@ -14,10 +16,36 @@ enum DaemonRuntime {
         return path
     }()
 
+    /// Durable profile directory for the daemon (identity, peers, state).
     static var dataDir: String {
-        let url = URL(fileURLWithPath: socketPath).deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url.path
+        let support = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Idfon/daemon", isDirectory: true)
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        migrateLegacyProfile(to: support)
+        return support.path
+    }
+
+    /// One-time move of a legacy `/tmp/idfon` profile into the durable
+    /// location, so the daemon keeps its identity and peers instead of
+    /// starting from scratch on first run of this build.
+    private static func migrateLegacyProfile(to destination: URL) {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: destination.appendingPathComponent("state.db").path) else { return }
+        let legacy = URL(fileURLWithPath: socketPath).deletingLastPathComponent()
+        guard legacy.path != destination.path,
+              let entries = try? fm.contentsOfDirectory(at: legacy,
+                                                        includingPropertiesForKeys: nil) else { return }
+        var moved = 0
+        for entry in entries where !["idfond.sock", "state.lock"].contains(entry.lastPathComponent) {
+            if (try? fm.copyItem(at: entry,
+                                 to: destination.appendingPathComponent(entry.lastPathComponent))) != nil {
+                moved += 1
+            }
+        }
+        if moved > 0 {
+            NSLog("idfon: migrated daemon profile \(legacy.path) -> \(destination.path) (\(moved) items)")
+        }
     }
 
     private static var launched = false

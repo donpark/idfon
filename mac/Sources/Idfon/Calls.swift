@@ -173,12 +173,14 @@ final class LiveCall {
                 }
                 published = true
                 applySendState()
+                Automation.mark("live: sending invite peer=\(peerId) ticket_len=\(ticket.count)")
                 try await client.sendText(
                     to: peerId,
                     "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
                 )
             } catch {
-                fail("Dial failed: \(error.localizedDescription)")
+                let ns = error as NSError
+                fail("Dial failed: \(error.localizedDescription) [\(ns.domain) code=\(ns.code)]")
             }
         }
     }
