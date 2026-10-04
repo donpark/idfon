@@ -1,0 +1,16 @@
+[package]
+name = "idfon-live-cascade"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[[bin]]
+name = "eve-idfon-cascade"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+eve-idfon = { path = "../eve-idfon" }
+idfon-voice = { path = "../idfon-voice" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

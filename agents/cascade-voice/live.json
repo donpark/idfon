@@ -1,0 +1,4 @@
+{
+  "_comment": "Demo agent for the cascade voice front-end (STT -> agent -> TTS). The caller's app supplies on-device STT/TTS, so the holder advertises client-cascade and never intercepts live media. Its counterpart is agents/live-voice (native-duplex, GPT-Live).",
+  "voice_route": { "mode": "client-cascade" }
+}
