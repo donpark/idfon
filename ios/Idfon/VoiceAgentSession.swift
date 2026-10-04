@@ -44,6 +44,8 @@ final class VoiceAgentSession: NSObject {
     private var turnsDone = 0
     /// Consecutive silent turns; a call is only dropped after several.
     private var noSpeechTurns = 0
+    /// Identifier for this call, scoping the spoken-turn transcripts.
+    private var callId = UUID().uuidString
     private var client = DaemonClient()
     private var promptWaiter: CheckedContinuation<String?, Never>?
     /// Last text spoken by TTS, so the agent's own tail can be dropped instead
@@ -55,6 +57,7 @@ final class VoiceAgentSession: NSObject {
         guard !isActive else { return }
         isActive = true
         stopRequested = false
+        callId = UUID().uuidString
         turnLimit = turns
         turnsDone = 0
         activePeerId = peerRef
@@ -89,7 +92,8 @@ final class VoiceAgentSession: NSObject {
                 greeting = await sendAndAwait(
                     peerId: peer.id,
                     text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
-                    logPrefix: "voice-agent-greet"
+                    logPrefix: "voice-agent-greet",
+                    spokenTurnId: "\(callId)-greet"
                 )
             }
             // The line is answered only once the agent is about to speak, so the
@@ -167,8 +171,16 @@ final class VoiceAgentSession: NSObject {
         }
         noSpeechTurns = 0
         Automation.mark("voice-agent: heard=\(heard)")
+        // Show the caller's spoken turn in the chat, not just the agent's reply.
+        ChatStore.shared.recordSpokenTurn(
+            peerId: peerId, callId: callId,
+            turnId: "\(callId)-\(turnsDone)-user", role: "caller", text: heard
+        )
         setState(.thinking)
-        guard let reply = await sendAndAwait(peerId: peerId, text: heard, logPrefix: "voice-agent")
+        guard let reply = await sendAndAwait(
+            peerId: peerId, text: heard, logPrefix: "voice-agent",
+            spokenTurnId: "\(callId)-\(turnsDone)-agent"
+        )
         else {
             // A missing reply must not kill the call; try the next turn.
             Automation.mark("voice-agent: no reply, continuing")
@@ -183,7 +195,12 @@ final class VoiceAgentSession: NSObject {
         return turnsDone < turnLimit
     }
 
-    private func sendAndAwait(peerId: String, text: String, logPrefix: String) async -> String? {
+    private func sendAndAwait(
+        peerId: String,
+        text: String,
+        logPrefix: String,
+        spokenTurnId: String? = nil
+    ) async -> String? {
         let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
         do {
             try await client.sendText(to: peerId, text)
@@ -191,11 +208,21 @@ final class VoiceAgentSession: NSObject {
             Automation.mark("\(logPrefix): FAIL send \(error.localizedDescription)")
             return nil
         }
-        guard let reply = await waitForReply(peerId: peerId, excluding: before) else {
+        guard let message = await waitForReply(peerId: peerId, excluding: before),
+              case .text(let raw) = message.kind else {
             Automation.mark("\(logPrefix): FAIL no reply")
             return nil
         }
-        return Self.stripEnvelopes(reply)
+        let reply = Self.stripEnvelopes(raw)
+        // Relabel the agent's reply as a spoken bubble (voice-call turns are
+        // distinguished from typed ones by the "spoken" annotation).
+        if let spokenTurnId {
+            ChatStore.shared.recordSpokenTurn(
+                peerId: peerId, callId: callId, turnId: spokenTurnId,
+                role: "agent", text: reply, replacing: message.id
+            )
+        }
+        return reply
     }
 
     private func finish() {
@@ -382,14 +409,14 @@ final class VoiceAgentSession: NSObject {
         }
     }
 
-    private func waitForReply(peerId: String, excluding: Set<String>) async -> String? {
+    private func waitForReply(peerId: String, excluding: Set<String>) async -> ChatMessage? {
         for _ in 0..<60 {
             if stopRequested { return nil }
             let messages = ChatStore.shared.messages(for: peerId)
             for message in messages.reversed()
             where !message.outgoing && !excluding.contains(message.id) {
-                if case .text(let text) = message.kind {
-                    return text
+                if case .text = message.kind {
+                    return message
                 }
             }
             try? await Task.sleep(nanoseconds: 500_000_000)

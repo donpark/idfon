@@ -194,6 +194,38 @@ final class ChatStore {
         notifyObservers()
     }
 
+    /// Record a voice-call turn as a "spoken" bubble. The client-side cascade
+    /// owns the transcript (there is no holder snapshot to ingest); pass
+    /// `replacing` to relabel the agent's already-received reply message.
+    func recordSpokenTurn(
+        peerId: String,
+        callId: String,
+        turnId: String,
+        role: String,
+        text: String,
+        replacing messageID: String? = nil
+    ) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.recordSpokenTurn(peerId: peerId, callId: callId, turnId: turnId,
+                                       role: role, text: text, replacing: messageID)
+            }
+            return
+        }
+        let transcript = CallTranscript(callId: callId, turnId: turnId, role: role, text: text, final: true)
+        let kind = MessageKind.callTranscript(transcript)
+        if let messageID, let index = messages.firstIndex(where: { $0.peerId == peerId && $0.id == messageID }) {
+            messages[index].kind = kind
+        } else {
+            let id = "spoken-\(turnId)"
+            guard !messages.contains(where: { $0.peerId == peerId && $0.id == id }) else { return }
+            messages.append(ChatMessage(id: id, peerId: peerId, kind: kind,
+                                        outgoing: role != "agent", timestamp: Date()))
+        }
+        persistMessages()
+        notifyObservers()
+    }
+
     private struct StoredMessage: Codable {
         let id: String
         let peerId: String
