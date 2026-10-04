@@ -60,13 +60,11 @@ extension AsrEngine {
 enum AsrBackend: String, CaseIterable {
     case system
     case parakeet
-    case whistle
 
     var title: String {
         switch self {
         case .system: return "Apple (SpeechAnalyzer)"
         case .parakeet: return "Parakeet Redux (on-device)"
-        case .whistle: return "Whistle (on-device, 17 MB)"
         }
     }
 }
@@ -126,10 +124,6 @@ enum SpeechEngines {
             guard #available(macOS 15.0, *) else { return nil }
             Automation.mark("voice: asr backend=parakeet")
             return ParakeetReduxAsr()
-        case .whistle:
-            guard #available(macOS 26.0, *) else { return nil }
-            Automation.mark("voice: asr backend=whistle")
-            return WhistleAsr()
         case .system:
             if #available(macOS 26.0, *) {
                 Automation.mark("voice: asr backend=system")

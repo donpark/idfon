@@ -125,7 +125,6 @@ final class VoiceAgentSession: NSObject {
     private func updateStats() {
         let asrLabel: String
         switch asr?.name {
-        case "whistle": asrLabel = "Whistle"
         case "parakeet-redux": asrLabel = "Parakeet"
         case "system": asrLabel = "Apple"
         default: asrLabel = asr?.name ?? "speech"
