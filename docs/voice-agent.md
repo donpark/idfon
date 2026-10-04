@@ -158,6 +158,23 @@ So the diverse configurations are **config + persona**: an agent's tool file is
 `export default voiceRelayTool();`, and the provider comes from
 `IDFON_VOICE_ENGINE`.
 
+### Wrapping the Agency (worked example)
+
+`scripts/agency-voice-serve.sh` runs a voice agent that wraps the Agency:
+
+- mints an Agency-issued ticket for the voice agent's own endpoint and admits
+  the voice agent on the Agency allow-list (and the Agency on the voice agent's
+  list, so replies land);
+- sets `IDFON_VOICE_ENGINE.wrap = {peer_id, endpoint_id, ticket}`, so
+  `voice_forward`/`voice_relay` need no arguments;
+- serves the agent as `server-cascade` (`eve-idfon-voice` holder). A live call
+  is transcribed by the cascade, injected as text, forwarded to the Agency, and
+  the Agency's reply is spoken; a voice memo uses `voice_relay`.
+
+The caller pairs with this **voice agent**, not the Agency; the Agency stays
+text-only and unchanged. Because wrapping is config, the same script (with a
+`wrap` pointing elsewhere) voices any other agent.
+
 ## The kit (fast iteration)
 
 Adding a voice agent should not mean new Rust. The shared pieces live in two

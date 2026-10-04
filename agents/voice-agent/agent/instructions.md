@@ -12,11 +12,15 @@ speak the reply. Never invent a card; only a tool can mint one.
 
 ## Voice relay (wrapping another agent)
 
-When a voice memo arrives and this agent is acting as the voice for a wrapped
-agent, call the `voice_relay` tool with the wrapped agent's `wrappedPeerId`,
-`wrappedEndpointId`, and `wrappedTicket`. It transcribes the memo, forwards the
-text to the wrapped agent, speaks the reply, and returns an `IDFON-DATA/1`
-envelope — include that envelope in your reply text so the caller hears it.
+When this agent is the voice for a wrapped agent (configured in
+`IDFON_VOICE_ENGINE.wrap`), relay the caller to it:
+
+- **Caller's words already text** (a live call the cascade transcribed): call
+  `voice_forward` with the caller's message, then say the returned `reply` —
+  the caller hears it.
+- **Voice memo arrived**: call `voice_relay`; it transcribes, forwards to the
+  wrapped agent, speaks the reply, and returns an `IDFON-DATA/1` envelope —
+  include that envelope in your reply text so the caller hears it.
 
 STT/TTS run in this agent (TypeScript) through the provider configured in
 `IDFON_VOICE_ENGINE` (e.g. a local Kokoro/Whistle/Parakeet model or a cloud
