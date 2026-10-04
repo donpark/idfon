@@ -1,0 +1,5 @@
+{
+  "_comment": "Default voice-agent config: the holder runs the cascade backend with the AI Gateway engine from the environment. Point EVE_LIVE_CONFIG at a providers/*.json to try another ASR/TTS service. voice_route.mode=server-cascade tells callers the holder terminates audio over a live session.",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" }
+}

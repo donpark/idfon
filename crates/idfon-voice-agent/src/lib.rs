@@ -33,6 +33,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 pub mod cascade;
+pub mod metrics;
 pub use cascade::CascadeFactory;
 
 /// The async result of running one backend for one call.

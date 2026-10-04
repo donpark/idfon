@@ -1,0 +1,13 @@
+{
+  "_comment": "Groq (OpenAI-compatible) using env GROQ_API_KEY. Illustrates that a new compatible provider is config, not code.",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
+  "engine": {
+    "provider": "openai-compatible",
+    "base_url": "https://api.groq.com/openai/v1",
+    "api_key_env": "GROQ_API_KEY",
+    "stt_model": "whisper-large-v3",
+    "tts_model": "playai-tts",
+    "voice": "Aaliyah-PlayAI"
+  }
+}
