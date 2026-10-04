@@ -203,4 +203,4 @@ ringing screen on the Bar path). Outgoing-pending presentation remains open (cur
 * **Expanded (owning thread):** contact header, in-call toggles, tray rows — as specified in §2–§4.
 * **Compact pill (any other screen):** e.g. `● 03:42 @janedoe — 1 transfer` — tap jumps to the owning thread.
 * Activities from other contacts render as compact pills while the current thread's own Bar state renders inline (e.g., in a call with Jane, Bob's thread shows its Idle chrome plus Jane's pill).
-* **End from the compact pill requires confirmation** — a tap that spans screens must not silently end a call. (Draggable-bubble physics à la WhatsApp/FaceTime is optional polish; a docked pill ships fine.)
+* **End from the compact pill is one tap** — the red End button ends the call immediately, matching the expanded bar and full-screen call button. (Draggable-bubble physics à la WhatsApp/FaceTime is optional polish; a docked pill ships fine.)
