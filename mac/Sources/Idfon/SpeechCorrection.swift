@@ -11,8 +11,8 @@ import FoundationModels
 /// is no extra download or memory. Fail-open: any unavailability, error,
 /// timeout, or implausible output yields the raw transcript unchanged.
 ///
-/// Default is on when the model is available; override with
-/// `IDFON_ASR_CORRECTION=0|1` or the `-asrcorrect 0|1` launch arg.
+/// Off by default (it adds model latency before each prompt); enable with
+/// `IDFON_ASR_CORRECTION=1` or the `-asrcorrect 1` launch arg.
 enum SpeechCorrection {
     private static let instructions = """
     You clean up a speech-recognition transcript. Fix only spelling, grammar, \
@@ -23,10 +23,10 @@ enum SpeechCorrection {
     with no quotation marks, labels, or commentary.
     """
 
-    /// Whether cleanup runs: explicit setting wins, else auto (model present).
+    /// Whether cleanup runs. Off unless explicitly enabled, so the default
+    /// voice loop stays as responsive as it was before this step existed.
     static var isEnabled: Bool {
-        if let explicitSetting { return explicitSetting }
-        return isAvailable
+        explicitSetting ?? false
     }
 
     static var isAvailable: Bool {
