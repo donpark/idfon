@@ -197,6 +197,7 @@
 				MARKETING_VERSION = 0.6.0;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(SRCROOT)/Vendor/device/libiroh_c_ffi.a",
+					"$(SRCROOT)/Vendor/device/libneedle.a",
 					"-ObjC",
 					"-lc++",
 					"-framework",
@@ -238,6 +239,7 @@
 				MARKETING_VERSION = 0.6.0;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(SRCROOT)/Vendor/device/libiroh_c_ffi.a",
+					"$(SRCROOT)/Vendor/device/libneedle.a",
 					"-ObjC",
 					"-lc++",
 					"-framework",

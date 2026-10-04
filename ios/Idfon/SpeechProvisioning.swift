@@ -6,15 +6,20 @@ import BackgroundAssets
 /// A model the client can provision on device.
 enum SpeechModel: String {
     case kokoroAne = "kokoro-ane"
+    case whistle = "whistle"
 
     /// BackgroundAssets asset-pack identifier, configured by the host app
     /// (env for now). Unset keeps the engine's own download/cache path, so
     /// nothing changes until the packs are actually hosted.
     var assetPackID: String? {
+        let value = ProcessInfo.processInfo.environment[assetPackEnv]
+        return (value?.isEmpty == false) ? value : nil
+    }
+
+    private var assetPackEnv: String {
         switch self {
-        case .kokoroAne:
-            let value = ProcessInfo.processInfo.environment["IDFON_KOKORO_PACK"] ?? ""
-            return value.isEmpty ? nil : value
+        case .kokoroAne: return "IDFON_KOKORO_PACK"
+        case .whistle: return "IDFON_WHISTLE_PACK"
         }
     }
 
@@ -26,6 +31,7 @@ enum SpeechModel: String {
     var markerPath: String {
         switch self {
         case .kokoroAne: return "kokoro-82m-coreml/ANE/vocab.json"
+        case .whistle: return "whistle.cact"
         }
     }
 
@@ -34,13 +40,24 @@ enum SpeechModel: String {
     /// `-speechpackurl <url>`; e.g. `http://192.168.1.20:8788/kokoro-ane/`.
     /// The app pulls `manifest.json` and the listed files into its caches.
     var directBaseURL: URL? {
+        let raw = ProcessInfo.processInfo.environment[directEnv]
+            ?? Self.launchArg(directFlag) ?? ""
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(string: trimmed.hasSuffix("/") ? trimmed : trimmed + "/")
+    }
+
+    private var directEnv: String {
         switch self {
-        case .kokoroAne:
-            let raw = ProcessInfo.processInfo.environment["IDFON_KOKORO_PACK_URL"]
-                ?? Self.launchArg("-speechpackurl") ?? ""
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
-            return URL(string: trimmed.hasSuffix("/") ? trimmed : trimmed + "/")
+        case .kokoroAne: return "IDFON_KOKORO_PACK_URL"
+        case .whistle: return "IDFON_WHISTLE_PACK_URL"
+        }
+    }
+
+    private var directFlag: String {
+        switch self {
+        case .kokoroAne: return "-speechpackurl"
+        case .whistle: return "-whistlepackurl"
         }
     }
 
