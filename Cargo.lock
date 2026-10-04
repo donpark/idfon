@@ -3146,6 +3146,7 @@ dependencies = [
  "eve-idfon",
  "futures-util",
  "idfon-core",
+ "idfon-live-media",
  "idfon-protocol",
  "iroh",
  "iroh-live",

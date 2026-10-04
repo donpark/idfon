@@ -45,13 +45,14 @@ use eve_idfon::{
 };
 use futures_util::{SinkExt, StreamExt};
 use idfon_core::transport::{IrohTransport, MessageTransport};
+use idfon_live_media::{
+    fill_audio_frame, parse_audio_profile, parse_invite, rand_suffix, AudioProfile, CallerPacer,
+    CHUNK_MS, CHUNK_SAMPLES,
+};
 use idfon_protocol::{CallSpeaker, CallTranscript, MessageContent};
 use iroh::{EndpointAddr, EndpointId};
 use iroh_live::{ticket::LiveTicket, Live};
-use moq_audio::{
-    encode::{Codec as AudioCodec, Options as AudioOptions},
-    Format, Frame as AudioFrame,
-};
+use moq_audio::{encode::Options as AudioOptions, Format, Frame as AudioFrame};
 use moq_media::publish::{AudioSource, LocalBroadcast};
 use n0_future::{boxed::BoxStream, stream::unfold};
 use serde_json::{json, Value};
@@ -134,9 +135,6 @@ impl LiveCallHandler for GptLiveHandler {
     }
 }
 
-const CHUNK_SAMPLES: usize = 480; // 20 ms of 24 kHz mono
-const CHUNK_MS: u64 = 20;
-const MAX_INPUT_BUFFER: usize = 12_000; // 500 ms at 24 kHz
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(15);
 // Transcript streaming: a new turn starts on a speaker switch or a pause this
@@ -233,38 +231,6 @@ impl TranscriptStream {
         self.last_snapshot = Some(Instant::now());
         if r#final {
             self.text.clear();
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct AudioProfile {
-    codec: AudioCodec,
-    sample_rate: u32,
-}
-
-impl Default for AudioProfile {
-    fn default() -> Self {
-        Self {
-            codec: AudioCodec::Opus,
-            sample_rate: 48_000,
-        }
-    }
-}
-
-fn parse_audio_profile(codec: Option<&str>, sample_rate: Option<u32>) -> Result<AudioProfile> {
-    match (codec, sample_rate) {
-        (None, None) => Ok(AudioProfile::default()),
-        (Some("opus"), Some(48_000)) => Ok(AudioProfile {
-            codec: AudioCodec::Opus,
-            sample_rate: 48_000,
-        }),
-        (Some("pcm"), Some(24_000)) => Ok(AudioProfile {
-            codec: AudioCodec::Pcm,
-            sample_rate: 24_000,
-        }),
-        _ => {
-            anyhow::bail!("unsupported caller audio profile: codec={codec:?} rate={sample_rate:?}")
         }
     }
 }
@@ -393,46 +359,6 @@ fn write_pcm_wav(path: &std::path::Path, pcm: &[u8]) -> std::io::Result<()> {
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.extend_from_slice(pcm);
     std::fs::write(path, wav)
-}
-
-struct LiveInvite {
-    is_start: bool,
-    is_stop: bool,
-    ticket: Option<LiveTicket>,
-    return_addr: Option<EndpointAddr>,
-    audio_codec: Option<String>,
-    audio_sample_rate: Option<u32>,
-}
-
-fn parse_invite(text: &str) -> Option<LiveInvite> {
-    let body = text.strip_prefix("IDFON-LIVE/1\naction=")?;
-    let (action, rest) = body.split_once('\n').unwrap_or((body, ""));
-    let ticket = rest
-        .lines()
-        .find_map(|line| line.strip_prefix("ticket="))
-        .filter(|value| !value.is_empty())
-        .and_then(|value| value.parse().ok());
-    let return_addr = rest
-        .lines()
-        .find_map(|line| line.strip_prefix("return_addr="))
-        .and_then(|value| BASE64.decode(value).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let audio_codec = rest
-        .lines()
-        .find_map(|line| line.strip_prefix("audio_codec="))
-        .map(str::to_owned);
-    let audio_sample_rate = rest
-        .lines()
-        .find_map(|line| line.strip_prefix("audio_sample_rate="))
-        .and_then(|value| value.parse().ok());
-    Some(LiveInvite {
-        is_start: action == "start",
-        is_stop: action == "stop",
-        ticket,
-        return_addr,
-        audio_codec,
-        audio_sample_rate,
-    })
 }
 
 struct CallHandle {
@@ -709,6 +635,8 @@ async fn start_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idfon_live_media::MAX_INPUT_BUFFER;
+    use moq_audio::encode::Codec as AudioCodec;
 
     #[test]
     fn config_defaults_and_channel_overrides() {
@@ -951,99 +879,6 @@ mod tests {
         assert_eq!(&wav[44..], &[0x34, 0x12]);
         std::fs::remove_file(path).unwrap();
     }
-}
-
-fn fill_audio_frame(queue: &mut VecDeque<i16>, output: &mut [i16]) -> usize {
-    let available = queue.len().min(output.len());
-    for sample in &mut output[..available] {
-        *sample = queue.pop_front().unwrap_or(0);
-    }
-    output[available..].fill(0);
-    output.len() - available
-}
-
-/// Caller-audio pacing for `pump_caller_audio`: consumes on a fixed 20 ms
-/// wall-clock tick and accounts arriving frames against their pts timeline.
-/// Pure state machine so the late-drop/realign logic is unit-testable (the
-/// late-lock bug shipped because this lived inline in an async loop).
-struct CallerPacer {
-    input: VecDeque<i16>,
-    sent_samples: u64,
-    dropped_samples: u64,
-    origin_pts_us: Option<i128>,
-}
-
-impl CallerPacer {
-    fn new() -> Self {
-        Self {
-            input: VecDeque::with_capacity(MAX_INPUT_BUFFER),
-            sent_samples: 0,
-            dropped_samples: 0,
-            origin_pts_us: None,
-        }
-    }
-
-    /// Consumes one 20 ms frame for GPT-Live; missing samples play as silence.
-    /// Returns (queue_samples, missing_samples).
-    fn tick(&mut self, pcm: &mut [i16]) -> (usize, usize) {
-        let missing = fill_audio_frame(&mut self.input, pcm);
-        self.sent_samples += CHUNK_SAMPLES as u64;
-        (self.input.len(), missing)
-    }
-
-    /// Accounts one arriving frame: pts gap-fill, late-drop, overflow trim.
-    /// Returns the number of arriving samples late-dropped.
-    fn accept_frame(&mut self, pts_us: i128, data: &[i16]) -> u64 {
-        let cursor = self.sent_samples + self.dropped_samples + self.input.len() as u64;
-        let origin = *self
-            .origin_pts_us
-            .get_or_insert_with(|| pts_us - (cursor * 1_000_000 / 24_000) as i128);
-        let mut target = ((pts_us - origin).max(0) as u64 * 24_000) / 1_000_000;
-        // Late-lock recovery: cursor (wall-clock consumption) and pts advance at
-        // the same rate, so the deficit D = cursor - target settles into a
-        // self-sustaining balance: a starved tick adds 480 to D while each
-        // late-dropped frame's pts removes 480. Once frames arrive a few ms
-        // behind their ticks (zero queue headroom, seen live from ~19.6s in a
-        // 28s call), that balance locks every frame out — full silence to
-        // GPT-Live for the rest of the call, which only ever answered the first
-        // exchange. With an empty queue the deficit is stale bookkeeping from
-        // silence already sent; realign the media timeline instead of dropping.
-        if self.input.is_empty() && cursor > target {
-            self.origin_pts_us = Some(pts_us - (cursor * 1_000_000 / 24_000) as i128);
-            target = cursor;
-        }
-        let media_silence = target.saturating_sub(cursor);
-        if media_silence > 0 {
-            // Cap the fill: a large forward pts jump (e.g. a timestamp reset)
-            // must not allocate unbounded silence ahead of the MAX_INPUT_BUFFER
-            // trim; treat the excess as dropped.
-            if media_silence > MAX_INPUT_BUFFER as u64 {
-                self.dropped_samples += media_silence - MAX_INPUT_BUFFER as u64;
-            }
-            self.input.extend(
-                std::iter::repeat(0i16)
-                    .take(media_silence.min(MAX_INPUT_BUFFER as u64) as usize),
-            );
-        }
-        let cursor_after_gap = self.sent_samples + self.dropped_samples + self.input.len() as u64;
-        let late_samples = cursor_after_gap
-            .saturating_sub(target)
-            .min(data.len() as u64);
-        self.input.extend(data.iter().skip(late_samples as usize).copied());
-        while self.input.len() > MAX_INPUT_BUFFER {
-            self.input.pop_front();
-            self.dropped_samples += 1;
-        }
-        late_samples
-    }
-}
-
-fn rand_suffix() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    format!("{nanos:08x}")
 }
 
 /// Whitespace-normalized text for comparing a delegated reply with GPT-Live's

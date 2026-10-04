@@ -14,6 +14,7 @@ base64 = "0.23"
 ed25519-dalek = "3"
 eve-idfon = { path = "../eve-idfon" }
 idfon-core = { path = "../idfon-core" }
+idfon-live-media = { path = "../idfon-live-media" }
 idfon-protocol = { path = "../idfon-protocol" }
 iroh = "1"
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
