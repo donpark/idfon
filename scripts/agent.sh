@@ -80,8 +80,8 @@ discover_instances() {
 }
 
 list_instances() {
-  printf '%-18s %-12s %-7s %-8s %s\n' INSTANCE AGENT PID STATUS DETAIL
-  local dir inst found_agent pid status detail model contact
+  printf '%-18s %-12s %-7s %-8s %-6s %-28s %s\n' INSTANCE AGENT PID STATUS PORT DETAIL HOME
+  local dir inst found_agent pid status detail model contact port
   while IFS= read -r dir; do
     inst=${dir%/}; inst=${inst##*/}
     found_agent=$(instance_agent "$dir" "$inst")
@@ -91,6 +91,8 @@ list_instances() {
       model=$(sed -n "s/^export EVE_IDFON_MODEL=//p" "$dir/instance.env" | tail -1 | tr -d "\"'")
       contact=$(sed -n "s/^export EVE_CONTACT_NAME=//p" "$dir/instance.env" | tail -1 | tr -d "\"'")
     fi
+    port="-"
+    if [[ -s "$dir/endpoint-port" ]]; then port=$(cat "$dir/endpoint-port"); fi
     pid=""
     if [[ -r "$dir/serve.pid" ]]; then pid=$(cat "$dir/serve.pid"); fi
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
@@ -99,7 +101,8 @@ list_instances() {
       status=stopped; pid=""
     fi
     detail="${contact:+$contact }${model:-}"
-    printf '%-18s %-12s %-7s %-8s %s\n' "$inst" "$found_agent" "${pid:--}" "$status" "$detail"
+    printf '%-18s %-12s %-7s %-8s %-6s %-28s %s\n' \
+      "$inst" "$found_agent" "${pid:--}" "$status" "$port" "$detail" "${dir%/}"
   done < <(instance_dirs)
   return 0
 }
