@@ -50,6 +50,8 @@ pub mod elevenlabs;
 #[cfg(feature = "gateway")]
 pub mod cartesia;
 #[cfg(feature = "gateway")]
+pub mod process;
+#[cfg(feature = "gateway")]
 pub mod providers;
 
 pub use arbiter::{Arbiter, ArbiterOutcome, NonSubstantiveKind, SpeakerRole};

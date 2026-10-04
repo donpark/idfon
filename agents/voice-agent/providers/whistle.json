@@ -1,0 +1,9 @@
+{
+  "_comment": "Cactus Compute Whistle ASR via a local CLI (adjust `stt_cmd` to your install: read the WAV at {input}, print the transcript or write it to {output}). TTS uses Kokoro. See https://cactuscompute.com/blog/whistle",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
+  "engine": {
+    "stt": { "provider": "command", "stt_cmd": "whistle {input}" },
+    "tts": { "provider": "kokoro", "voice": "af_bella" }
+  }
+}

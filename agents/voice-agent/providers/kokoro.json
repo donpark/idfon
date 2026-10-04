@@ -1,0 +1,6 @@
+{
+  "_comment": "Kokoro TTS + ASR via its OpenAI-compatible server (kokoro-fastapi) on localhost:8880 — no API key. Start: docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu (or -gpu). Adjust `voice` to a Kokoro voice id.",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
+  "engine": { "provider": "kokoro", "voice": "af_bella" }
+}

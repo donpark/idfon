@@ -1,0 +1,9 @@
+{
+  "_comment": "NVIDIA Parakeet TDT V3 ASR via a local CLI (adjust `stt_cmd` to your install: read the WAV at {input}, print the transcript or write it to {output}). TTS uses Kokoro. Examples: parakeet-mlx (MLX, Apple), sherpa-onnx, or a NeMo server.",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
+  "engine": {
+    "stt": { "provider": "command", "stt_cmd": "parakeet-mlx {input} --model mlx-community/parakeet-tdt-0.6b-v3" },
+    "tts": { "provider": "kokoro", "voice": "af_bella" }
+  }
+}

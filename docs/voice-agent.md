@@ -100,6 +100,15 @@ engine block. Streaming where it matters: ElevenLabs TTS streams by default
 via `"stream": true` (WebSocket partials, lower first-final latency) while
 batch REST stays the default.
 
+Open-source / local providers:
+- `kokoro` — Kokoro TTS (and ASR) via `kokoro-fastapi`, an OpenAI-compatible
+  server on localhost, no key. `providers/kokoro.json`.
+- `command` — shell out to any model CLI: `stt_cmd` reads the WAV at `{input}`
+  and prints the transcript (or writes `{output}`); `tts_cmd` reads the text at
+  `{text}` and writes a WAV to `{output}`. That covers Whisper, Whistle,
+  Parakeet TDT, Piper, Kokoro CLI, … — `providers/whistle.json` and
+  `providers/parakeet.json` are templates (adjust the command to your install).
+
 idfon's value here is the **real-use harness**: add a contact per provider and
 actually converse, then compare latency/cost/quality — not a synthetic
 benchmark. Each turn logs one `[voice-metrics]` JSON line (STT ms, TTS
