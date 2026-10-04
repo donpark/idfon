@@ -588,6 +588,10 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
             let mut attempt = 0u32;
             let result;
             loop {
+                if thread_stop.load(Ordering::Relaxed) {
+                    result = Ok(());
+                    break;
+                }
                 attempt += 1;
                 let res = subscribe_decode_once(
                     ticket.clone(),
@@ -605,17 +609,19 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                         break;
                     }
                     Err(e) if e.downcast_ref::<SubscribeEndError>().is_some() => {
-                        if attempt >= 5 {
-                            tracing::warn!(attempt, "subscribe ended early after 5 attempts; giving up");
-                            result = anyhow::Ok(());
-                            break;
-                        }
-                        tracing::warn!(
-                            attempt,
-                            frames = decoded_total,
-                            "subscribe ended early; resubscribing"
+                        // The publisher sends continuous frames for the whole
+                        // call, so an early track end is transient. Keep
+                        // re-subscribing while the call is active: giving up
+                        // after a fixed number of attempts left the rest of
+                        // the call silent (heard as "on and off").
+                        let backoff = std::time::Duration::from_millis(
+                            (100u64 << attempt.min(4)).min(1_000),
                         );
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        eprintln!(
+                            "[media] subscribe ended early attempt={attempt} decoded={decoded_total} frames; resubscribing in {}ms",
+                            backoff.as_millis()
+                        );
+                        tokio::time::sleep(backoff).await;
                     }
                     Err(err) => {
                         result = Err(err);
@@ -784,7 +790,7 @@ async fn subscribe_decode_once(
         // subscription stalled (observed on iOS: the publisher's serve stream
         // died without SUBSCRIBE_END, and consumer.read() then never returns
         // — neither frames nor a track end). Treat it like an early end.
-        const FRAME_STALL: std::time::Duration = std::time::Duration::from_secs(4);
+        const FRAME_STALL: std::time::Duration = std::time::Duration::from_secs(2);
         let mut last_frame = std::time::Instant::now();
         loop {
             if stop.load(Ordering::Relaxed) {
@@ -799,7 +805,7 @@ async fn subscribe_decode_once(
                     decoded = *decoded_total,
                     media_secs = samples.len() as f64 / 48_000.0,
                     stall_secs = last_frame.elapsed().as_secs_f64(),
-                    "subscribe stalled: no frames for 4s; treating as early track end"
+                    "subscribe stalled: no frames for 2s; treating as early track end"
                 );
                 return Err(anyhow::anyhow!(SubscribeEndError::Transient));
             }
