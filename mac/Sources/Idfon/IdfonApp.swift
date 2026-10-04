@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DaemonRuntime.configure()
         ChatStore.shared.start()
         Task { await DaemonClient().startSharedProvider() }
+        // Warm the selected reply voice early, so the first call's greeting is
+        // not blocked by a cold Kokoro download/compile.
+        Task { @MainActor in SpeechEngines.prewarm() }
         LiveCall.shared.recoverStaleCall()
         VideoCall.shared.recoverStaleCall()
         buildMenu()
