@@ -126,7 +126,12 @@ final class VoiceAgentSession: NSObject {
                 Automation.mark("voice-agent: dropped echo heard=\(text)")
                 continue
             }
-            heard = text
+            // Optional on-device LM cleanup (fail-open to the raw transcript).
+            let corrected = await SpeechCorrection.correct(text)
+            if corrected != text {
+                Automation.mark("voice-agent: corrected=\(corrected)")
+            }
+            heard = corrected
             break
         }
         guard let heard, !heard.isEmpty else {
