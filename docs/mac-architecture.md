@@ -89,6 +89,10 @@ Key facts:
   and the chat header owns idle actions (`Call`, share video, peer details), so the
   Bar renders only while a call or a transfer is in flight. `.watching` is a
   mac-only phase (one-way video share) whose stream toggles stay hidden.
+- **The compact pill has no End verb**: mac hides the verb button in `.compact`
+  density (`verbButton.isHidden = incoming || compact`), so ending a call goes through
+  the expanded bar in one tap. iOS keeps the End button in its compact pill (also one
+  tap; the old two-tap `UIMenu` confirmation was removed 2026-10-03).
 - **Calls are two machines, one Bar model**: `LiveCall` (audio) and `VideoCall`
   are disjoint — separated by the invite's `media` value — and
   `LiveActivityController` renders whichever is non-idle. A call starts from the
