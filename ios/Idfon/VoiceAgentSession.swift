@@ -100,6 +100,10 @@ final class VoiceAgentSession: NSObject {
             // cue has no gap after it.
             CallTonePlayer.shared.start(.answered)
             if let greeting, !greeting.isEmpty, !stopRequested {
+                // Keep the agent's own greeting out of the recognizer (the loop
+                // resumes the mic for the first caller turn).
+                asr?.pause()
+                segmenter.setEnabled(false)
                 setState(.speaking(greeting))
                 await speak(greeting)
             }
