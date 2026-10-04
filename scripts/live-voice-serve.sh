@@ -8,6 +8,11 @@
 #
 # Requires the daemon on --socket (default /tmp/idfon/idfond.sock) and
 # AI_GATEWAY_API_KEY (GPT-Live voice sessions + gpt-6-luna delegation).
+#
+# GPT-Live-1 DEPRECATED (migration target). This script wires the deprecated
+# live handler; a call to any holder it starts is answered by openai/gpt-live-1
+# regardless of EVE_IDFON_MODEL. Live calls move to the idfon-voice cascade
+# (STT -> agent -> TTS); see docs/voice-side-channel.md and docs/live-voice.md.
 # Optional: EVE_IDFON_MODEL (orchestrator; default openai/gpt-6-luna).
 #
 # Prints, then stays in the foreground:

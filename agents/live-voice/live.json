@@ -1,4 +1,5 @@
 {
+  "_deprecated": "GPT-Live-1 DEPRECATED (migration target, not a front-end). Full-duplex, audio-only cannot carry the text/artifact channels; a single-voice model cannot serve speak(text, voice). Live calls must move to the idfon-voice cascade (STT -> agent -> TTS). See docs/voice-side-channel.md and docs/live-voice.md. Do not copy this file into new agents.",
   "live_url": "wss://ai-gateway.vercel.sh/v1/live/sessions",
   "model": "openai/gpt-live-1",
   "api_key_env": "AI_GATEWAY_API_KEY",

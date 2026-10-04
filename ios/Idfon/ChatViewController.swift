@@ -818,6 +818,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func callTapped() {
+        // GPT-Live-1 DEPRECATED (migration target). Dialing here lands on the
+        // holder's GPT-Live live handler, so the contact's EVE_IDFON_MODEL is
+        // ignored for calls and no text/artifact channel is available. Live
+        // calls must move to the idfon-voice cascade (VoiceAgentSession, STT ->
+        // agent -> TTS); see docs/voice-side-channel.md / docs/live-voice.md.
         if peer.name == "live-voice" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
             LiveCall.shared.dial(peer.id)
         } else {

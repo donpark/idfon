@@ -1,3 +1,15 @@
+//! ══ GPT-Live-1 DEPRECATED — migration target, NOT a front-end ══
+//!
+//! This handler still answers live calls because `idfon-live-gpt`'s
+//! composition root registers it unconditionally, but it is demo scaffolding
+//! slated for retirement. The recorded decision is the cascade
+//! (STT → agent → TTS) behind the text boundary — see
+//! `docs/voice-side-channel.md` ("Front-end resolved to cascade STT + TTS")
+//! and `docs/live-voice.md` ("Decision"). A full-duplex, **audio-only** model
+//! cannot carry the text/artifact channels, and a single-voice realtime model
+//! cannot serve `speak(text, voice)`. Do not extend this handler, copy it to a
+//! new agent, or route a new call path through it.
+//!
 //! GPT-Live live-call handler for the idfon channel holder.
 //!
 //! This is an **agent-side** opt-in for the platform's live-call seam
