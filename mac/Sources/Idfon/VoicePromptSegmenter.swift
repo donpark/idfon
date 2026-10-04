@@ -58,6 +58,12 @@ final class VoicePromptSegmenter {
 
     private func commit(_ text: String) {
         guard text != lastCommitted else { return }
+        // Recognizers occasionally emit punctuation-only fragments (""); never
+        // pass those through as a user turn.
+        guard text.rangeOfCharacter(from: .alphanumerics) != nil else {
+            latest = ""
+            return
+        }
         lastCommitted = text
         latest = ""
         onCommit?(text)

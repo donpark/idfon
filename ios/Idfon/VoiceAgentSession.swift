@@ -37,6 +37,9 @@ final class VoiceAgentSession: NSObject {
     private var turnsDone = 0
     private var client = DaemonClient()
     private var promptWaiter: CheckedContinuation<String?, Never>?
+    /// Last text spoken by TTS, so the agent's own tail can be dropped instead
+    /// of re-sent as a user turn (self-bleed).
+    private var lastSpoken: String?
 
     /// Continuous conversation until `stop()`.
     func start(peerRef: String, turns: Int = Int.max) {
@@ -102,8 +105,21 @@ final class VoiceAgentSession: NSObject {
 
     private func performTurn(peerId: String) async -> Bool {
         turnsDone += 1
-        onState?(.listening(""))
-        guard let heard = await listenOnce(), !heard.isEmpty else {
+        var heard: String?
+        // Retry within the turn when the recognizer catches the agent's own TTS
+        // tail; only a transcript that is not the last spoken reply is sent.
+        for _ in 0..<3 {
+            onState?(.listening(""))
+            guard let text = await listenOnce(), !text.isEmpty else { break }
+            if let spoken = lastSpoken, !spoken.isEmpty,
+               voice.isEcho(spoken: spoken, heard: text) {
+                Automation.mark("voice-agent: dropped echo heard=\(text)")
+                continue
+            }
+            heard = text
+            break
+        }
+        guard let heard, !heard.isEmpty else {
             Automation.mark("voice-agent: FAIL turn=\(turnsDone) no transcript")
             return false
         }
@@ -320,6 +336,10 @@ final class VoiceAgentSession: NSObject {
             synthesizer.delegate = delegate
             synthesizer.speak(utterance)
         }
+        lastSpoken = text
+        // The tap gate is still closed here; hold it closed briefly so the
+        // speaker/acoustic tail decays before the next turn re-arms the mic.
+        try? await Task.sleep(nanoseconds: 350_000_000)
     }
 
     /// Drop `IDFON-*/1` envelope blocks so only the spoken text is read aloud.

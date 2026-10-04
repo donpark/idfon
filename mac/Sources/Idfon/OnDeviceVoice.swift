@@ -367,6 +367,12 @@ final class OnDeviceVoice: NSObject {
         listenTask = nil
     }
 
+    /// P5 text-layer echo rule over the C ABI: true when `heard` is the agent's
+    /// own speech read back. Used to drop self-bleed in the voice-agent loop.
+    func isEcho(spoken: String, heard: String) -> Bool {
+        idfon_voice_is_echo(spoken, heard) != 0
+    }
+
     func finishListening(_ result: Result<String, Error>) {
         let completion = listenDone
         listenDone = nil
