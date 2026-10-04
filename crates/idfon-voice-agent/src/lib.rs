@@ -20,10 +20,12 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use ed25519_dalek::SigningKey;
 use eve_idfon::{
     live::{LiveCallContext, LiveCallFuture, LiveCallHandler, AUDIO_PUBLISH},
     records, IpcFrame, ReplyTarget, Targets,
 };
+use idfon_core::transport::IrohTransport;
 use idfon_live_media::{
     parse_audio_profile, parse_invite, rand_suffix, subscribe_caller, AudioProfile, AudioQueue,
     CallSession,
@@ -33,9 +35,13 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 pub mod cascade;
+#[cfg(feature = "gpt-live")]
+pub mod gpt_live;
 pub mod metrics;
 pub mod relay;
 pub use cascade::CascadeFactory;
+#[cfg(feature = "gpt-live")]
+pub use gpt_live::GptLiveFactory;
 pub use relay::RelayFactory;
 
 /// The async result of running one backend for one call.
@@ -69,6 +75,22 @@ pub struct VoiceMedia {
     pub stop: Arc<AtomicBool>,
     pub profile: AudioProfile,
     pub bridge: TurnBridge,
+    /// Platform primitives a duplex backend needs to sign/send its own call
+    /// envelopes (transcripts) and to inject delegated turns directly.
+    pub platform: CallPlatform,
+}
+
+/// Platform services shared with the holder, for backends that don't route
+/// everything through [`TurnBridge`] (e.g. a full-duplex model that emits its
+/// own `IDFON-CALL/1` transcript snapshots and delegation turns).
+pub struct CallPlatform {
+    pub transport: Arc<IrohTransport>,
+    pub key: SigningKey,
+    pub holder_endpoint_id: String,
+    pub caller_addr: EndpointAddr,
+    pub caller_peer_id: String,
+    pub targets: Targets,
+    pub out_tx: mpsc::Sender<IpcFrame>,
 }
 
 /// The shared text hop: inject a caller transcript as a normal agent turn and
@@ -328,6 +350,15 @@ async fn handle_call(
         stop,
         profile,
         bridge,
+        platform: CallPlatform {
+            transport: Arc::clone(&ctx.transport),
+            key: ctx.key.clone(),
+            holder_endpoint_id: ctx.holder_endpoint_id.clone(),
+            caller_addr: caller_addr.clone(),
+            caller_peer_id: ctx.sender_peer_id.clone(),
+            targets: Arc::clone(&ctx.targets),
+            out_tx: ctx.out_tx.clone(),
+        },
     };
     eprintln!(
         "[voice-agent] call started backend={} peer={}",
