@@ -210,6 +210,10 @@ final class VoiceAgentSession: NSObject {
             options: [.defaultToSpeaker, .allowBluetooth]
         )
         try? session.setActive(true, options: .notifyOthersOnDeactivation)
+        let outputs = session.currentRoute.outputs.map(\.portType.rawValue).joined(separator: ",")
+        Automation.mark(
+            "voice: route outputs=\(outputs) category=\(session.category.rawValue) mode=\(session.mode.rawValue)"
+        )
     }
 
     private func startAnalyzer() {
