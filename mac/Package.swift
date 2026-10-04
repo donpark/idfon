@@ -6,16 +6,28 @@ let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().pat
 
 let package = Package(
     name: "Idfon",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
+    dependencies: [
+        // On-device speech models: Parakeet (ASR) + Kokoro (TTS).
+        .package(url: "https://github.com/FluidInference/FluidAudio", .upToNextMinor(from: "0.17.5")),
+    ],
     targets: [
         // Hand-declared C ABI from native/vendor/iroh-c-ffi (same approach as
         // the iOS bridging header: the library is the single source of truth).
         .target(name: "CIdfon"),
+        // Cactus Needle speech C ABI (mac/Vendor/libneedle.a) — Whistle ASR.
+        .target(name: "CNeedle"),
         .executableTarget(
             name: "Idfon",
-            dependencies: ["CIdfon"],
+            dependencies: [
+                "CIdfon",
+                "CNeedle",
+                .product(name: "FluidAudio", package: "FluidAudio"),
+            ],
             linkerSettings: [
                 .linkedLibrary("iroh_c_ffi"),
+                .linkedLibrary("needle"),
+                .linkedLibrary("c++"),
                 .unsafeFlags(["-L\(packageDir)/Vendor"]),
             ]
         ),

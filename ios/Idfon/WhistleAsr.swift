@@ -6,8 +6,10 @@ import Foundation
 /// Whistle is a whole-clip recognizer — 16 kHz mono PCM, up to 30 s in one
 /// pass, CPU-only — not a streaming one. This adapter taps the mic, runs a
 /// small energy endpointer (speech ≥0.3 s, then 0.8 s of quiet), and calls
-/// `needle_transcribe` on the utterance, emitting the text as a final. The
-/// loop's `VoicePromptSegmenter` commits it like any other final.
+/// `needle_transcribe` at utterance end. To keep the live feel of a streaming
+/// engine it also re-transcribes the growing utterance on a cadence and emits
+/// the result as a **partial**, then the full clip as the final. The loop's
+/// `VoicePromptSegmenter` commits it like any other final.
 ///
 /// Model: `whistle.cact` (16.9 MB), provisioned via `SpeechProvisioning`
 /// (`IDFON_WHISTLE_PACK_URL` / `-whistlepackurl`). Apache-2.0.
@@ -27,6 +29,8 @@ final class WhistleAsr: AsrEngine {
     private static let speechRMS: Float = 0.006
     private static let minSpeech = 0.3
     private static let silence = 0.8
+    /// How often the growing utterance is re-transcribed for a partial.
+    private static let partialInterval = 0.6
 
     private var onText: ((String, Bool) -> Void)?
     private var converter: AVAudioConverter?
@@ -43,6 +47,10 @@ final class WhistleAsr: AsrEngine {
     private var speaking = false
     private var quietCount = 0
     private var speechCount = 0
+    /// Bumped per utterance so a late partial cannot leak into the next one.
+    private var utterance = 0
+    private var lastPartialCount = 0
+    private var partialPending = false
 
     private enum WhistleError: LocalizedError {
         case notProvisioned
@@ -155,12 +163,22 @@ final class WhistleAsr: AsrEngine {
             && quietCount >= Int(Self.silence * sampleRate)
         let tooLong = samples.count >= Int(maxClip)
         var clip: [Float]?
+        var partial: (clip: [Float], utterance: Int)?
         if ended || (tooLong && speaking) {
             clip = samples
             resetLocked()
+        } else if speaking, !partialPending,
+                  samples.count - lastPartialCount >= Int(Self.partialInterval * sampleRate) {
+            lastPartialCount = samples.count
+            partialPending = true
+            partial = (samples, utterance)
         }
         lock.unlock()
-        if let clip, !clip.isEmpty { transcribe(clip) }
+        if let clip, !clip.isEmpty {
+            transcribe(clip)
+        } else if let partial, !partial.clip.isEmpty {
+            transcribePartial(partial.clip, utterance: partial.utterance)
+        }
     }
 
     private func resetLocked() {
@@ -168,6 +186,8 @@ final class WhistleAsr: AsrEngine {
         speaking = false
         quietCount = 0
         speechCount = 0
+        lastPartialCount = 0
+        utterance &+= 1
     }
 
     // MARK: - model
@@ -182,6 +202,23 @@ final class WhistleAsr: AsrEngine {
             Automation.mark("voice: whistle transcribe ms=\(self.lastLatencyMs ?? 0) samples=\(clip.count)")
             guard !text.isEmpty else { return }
             self.onText?(text, true)
+        }
+    }
+
+    /// Non-final preview of the utterance in progress; dropped if the
+    /// utterance already finalized (a newer `utterance` value).
+    private func transcribePartial(_ clip: [Float], utterance generation: Int) {
+        let keywords = self.keywords
+        work.async { [weak self] in
+            guard let self else { return }
+            let text = Self.run(clip, keywords: keywords)
+            self.lock.lock()
+            self.partialPending = false
+            let stale = self.utterance != generation
+            self.lock.unlock()
+            guard !stale, !text.isEmpty else { return }
+            Automation.mark("voice: whistle partial samples=\(clip.count) chars=\(text.count)")
+            self.onText?(text, false)
         }
     }
 
