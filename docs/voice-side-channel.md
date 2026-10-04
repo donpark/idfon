@@ -537,10 +537,13 @@ script; the daemon's is derived from its data dir. See `idfon-eve.md`.
 
 ### Voice engines and call UX (2026-10-04)
 
-The A1 cascade's on-device neural engines are **iOS-only** behind two seams in
-`ios/Idfon/SpeechEngine.swift`; the macOS app still uses the Apple engines
-directly (`AVSpeechSynthesizer` + `MacSpeechTranscriber`). Apple stays the
-fallback and the neural engines are opt-in:
+The A1 cascade's on-device neural engines sit behind seams in
+`ios/Idfon/SpeechEngine.swift` and `mac/Sources/Idfon/SpeechEngine.swift`.
+Both apps offer the same choices: **Apple** (fallback), **Whistle** (17 MB CPU
+model), and **Parakeet** (FluidAudio, ANE) for recognition, and **Kokoro**
+(FluidAudio ANE) vs **Apple** for reply speech. iOS picks them in the Recents
+"Voice engine" sheet; mac in the **Voice** menu. mac needs macOS 14 (FluidAudio)
+and the Needle engine's mac slice is built for macOS 26.
 
 - **TTS** — `KokoroTtsEngine` (FluidAudio's Kokoro-82M ANE pipeline, 24 kHz
   WAV) is the default; `AppleTtsEngine` (`AVSpeechSynthesizer`, honoring
@@ -566,8 +569,8 @@ fallback and the neural engines are opt-in:
   `-lc++`) and the model packs via `IDFON_WHISTLE_PACK_URL` /
   `-whistlepackurl` (`scripts/build-whistle-pack.sh`). Verified on an iPhone 16
   (2026-10-04): `whistle ready bytes=16919407` → clean transcript → reply.
-- **Selection** — persisted per device; a "Voice engine" sheet on the iOS
-  Recents screen (the waveform button) toggles them. `IDFON_TTS`/`-ttsbackend`
+- **Selection** — persisted per device; the iOS Recents "Voice engine" sheet
+  and the mac **Voice** menu toggle them. `IDFON_TTS`/`-ttsbackend`
   and `IDFON_ASR`/`-asrbackend` override for testing.
 - **Provisioning** — `SpeechProvisioning.directory(for:)` resolves the Kokoro
   model directory in priority order: an Apple-managed `BAAssetPackManager` pack
