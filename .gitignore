@@ -42,3 +42,6 @@ agents/*/.output/
 agents/*/.eve/
 # directory provisioner invite audit log
 agents/*/invites.ndjson
+
+# Built speech-model packs (scripts/build-speech-pack.sh)
+/dist/speech-packs/

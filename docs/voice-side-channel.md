@@ -559,9 +559,19 @@ fallback and the neural engines are opt-in:
   (`heard=Hello. Um about parakeet. I'm testing it`) with no TTS bleed.
 - **Selection** — persisted per device; a "Voice engine" sheet on the iOS
   Recents screen (the waveform button) toggles them. `IDFON_TTS`/`-ttsbackend`
-  and `IDFON_ASR`/`-asrbackend` override for testing. `SpeechProvisioning`
-  prefers a `BAAssetPackManager` pack when `IDFON_KOKORO_PACK` is set, else
-  FluidAudio's own download.
+  and `IDFON_ASR`/`-asrbackend` override for testing.
+- **Provisioning** — `SpeechProvisioning.directory(for:)` resolves the Kokoro
+  model directory in priority order: an Apple-managed `BAAssetPackManager` pack
+  (`IDFON_KOKORO_PACK`, iOS 26+; that path needs a managed downloader extension
+  + app group and is **not wired up**), then a **directly downloaded pack**
+  (`IDFON_KOKORO_PACK_URL` / `-speechpackurl`), then `nil` (FluidAudio's own
+  HuggingFace download). The direct path is the one that works today:
+  `scripts/build-speech-pack.sh` fetches only the 7-stage chain + `vocab.json`
+  + `af_heart.bin` (≈83 MB) into the engine's cache layout
+  (`kokoro-82m-coreml/ANE/…`) with a `manifest.json`, and
+  `scripts/serve-speech-pack.sh` hosts it on the LAN. Verified on an iPhone 16
+  (2026-10-04): 36 files pulled, `speech pack ready` → `kokoro ready` →
+  synthesis. G2P still downloads — it is pinned to FluidAudio's own cache path.
 
 Call UX now matches a live call (the client-cascade path uses the same shared
 Live Activity call bar on iOS):
