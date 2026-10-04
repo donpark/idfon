@@ -12,4 +12,5 @@
 export * from "./audio";
 export * from "./bridge";
 export * from "./providers";
+export * from "./turn";
 export * from "./tools";

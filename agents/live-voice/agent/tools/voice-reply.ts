@@ -1,7 +1,14 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { OggOpusDecoder } from "ogg-opus-decoder";
 import WebSocket from "ws";
+
+import {
+  opusToPcm24k as toPcm24k,
+  putAudio,
+  RATE,
+  trimTrailingSilence,
+  wavWrap,
+} from "eve-idfon-voice";
 
 // Live voice reply for one idfon voice memo.
 //
@@ -33,70 +40,12 @@ const liveApiKey = () => {
   const name = live().api_key_env || "AI_GATEWAY_API_KEY";
   return process.env[name];
 };
-const RATE = 24_000; // gpt-live-1: s16le mono 24 kHz, both directions
 const MAX_INPUT_SECONDS = 30; // ponytail: single-shot memo cap from the gpt-live guide; longer memos need a real duplex session
 const CHUNK_BYTES = 960; // 20 ms of s16le mono
 const CHUNK_MS = 20;
 const REPLY_QUIET_MS = 2000; // no output audio this long after audio began = reply finished
 const REPLY_MAX_MS = 20_000; // hard reply window
 const SESSION_TIMEOUT_MS = 60_000;
-
-const bridgeUrl = () =>
-  process.env.EVE_IDFON_BRIDGE_URL || idfonExtension.config?.bridgeUrl || "http://127.0.0.1:18766";
-const bridgeSecret = () =>
-  process.env.EVE_IDFON_SECRET || idfonExtension.config?.secret || "m2-test-secret";
-
-/** Ogg Opus file (48 kHz float mono) -> s16le mono at 24 kHz. */
-async function toPcm24k(opusBytes: Uint8Array): Promise<Buffer> {
-  const decoder = new OggOpusDecoder(); // fixed 48 kHz output
-  await decoder.ready;
-  const decoded = await decoder.decodeFile(Buffer.from(opusBytes));
-  await decoder.free();
-  if (decoded.samplesDecoded === 0) throw new Error("no audio decoded from recording");
-  // idfon recordings are mono; average channels if stereo ever appears.
-  const channels = decoded.channelData;
-  const samples = channels[0];
-  const out = Buffer.alloc(Math.ceil(samples.length / 2) * 2); // 2 input samples -> 1 output sample (2 bytes)
-  for (let i = 0, j = 0; i + 1 < samples.length; i += 2, j += 1) {
-    // ponytail: pick-every-other decimation, no anti-alias filter — 12-24 kHz
-    // sibilance aliases; swap in a real resampler if the model mishears them.
-    let v = (samples[i] + samples[i + 1]) / 2;
-    if (channels.length > 1) {
-      for (let c = 1; c < channels.length; c += 1) v = (v + (channels[c][i] + channels[c][i + 1]) / 2) / 2;
-    }
-    const s = Math.max(-1, Math.min(1, v));
-    out.writeInt16LE(Math.round(s * 32767), j * 2);
-  }
-  return out;
-}
-
-/** Drop trailing near-silence so the reply blob is just the spoken answer. */
-function trimTrailingSilence(pcm: Buffer): Buffer {
-  const threshold = 300;
-  let end = pcm.length;
-  while (end >= 2 && Math.abs(pcm.readInt16LE(end - 2)) <= threshold) end -= 2;
-  // keep a short fade-out tail so playback doesn't click
-  return pcm.subarray(0, Math.min(pcm.length, end + RATE * 2 * 0.25));
-}
-
-/** s16le mono 24 kHz PCM -> WAV container (holder accepts WAV blobs). */
-function wavWrap(pcm: Buffer): Buffer {
-  const header = Buffer.alloc(44);
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + pcm.length, 4);
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20); // PCM
-  header.writeUInt16LE(1, 22); // mono
-  header.writeUInt32LE(RATE, 24);
-  header.writeUInt32LE(RATE * 2, 28);
-  header.writeUInt16LE(2, 32);
-  header.writeUInt16LE(16, 34);
-  header.write("data", 36);
-  header.writeUInt32LE(pcm.length, 40);
-  return Buffer.concat([header, pcm]);
-}
 
 type LiveReply = { pcm: Buffer; transcript: string };
 
@@ -290,16 +239,7 @@ export default defineTool({
     const reply = await runLiveSession(pcmIn, guidance);
     const wav = wavWrap(reply.pcm);
 
-    const response = await fetch(`${bridgeUrl()}/blob/put`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-idfon-channel-secret": bridgeSecret(),
-      },
-      body: JSON.stringify({ bytes_base64: wav.toString("base64") }),
-    });
-    if (!response.ok) throw new Error(`idfon blob put returned HTTP ${response.status}`);
-    const blob = (await response.json()) as { ticket: string; size_bytes: number };
+    const blob = await putAudio(wav);
 
     return {
       transcript: reply.transcript,

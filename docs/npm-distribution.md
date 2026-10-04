@@ -100,3 +100,21 @@ The Eve extension is plain JS built by `eve extension build` in `prepare`
 root, which then builds or cleans the agents under `agents/`), and the package
 version tracks the Cargo workspace until 1.0. No Windows package —
 the holder IPC is a Unix socket. CI build/publish is not wired yet.
+
+## Eve integration packages
+
+Alongside the CLI, two integration packages publish to npm (unscoped, same
+workspace version):
+
+- `eve-idfon` — the Eve channel extension. Built to `dist/` by
+  `pnpm --filter eve-idfon build` (`eve extension build`); `prepare` builds on
+  install; `files` ships `dist/`.
+- `eve-idfon-voice` — the shared TypeScript voice toolkit (provider seam,
+  audio, bridge, turn heuristics, tool factories). Ships **source**
+  (`files: ["src"]`, exports point at `.ts`) and needs no build; consumers
+  bundle it (the Eve agent bundler compiles dependency TS). Optional provider
+  packages load through a runtime import, so it installs without them.
+
+Publish order: `eve-idfon` before `eve-idfon-voice` (the voice package lists it
+as a peer), then the agents. A normal `main` push only builds; publishing is a
+manual step (same as the CLI release).

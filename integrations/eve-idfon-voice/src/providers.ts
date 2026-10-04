@@ -221,4 +221,3 @@ async function kokoroProvider(cfg: ProviderConfig): Promise<VoiceProvider> {
   };
 }
 
-export { RATE };
