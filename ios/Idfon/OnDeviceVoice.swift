@@ -102,9 +102,16 @@ enum SpeechVoice {
         }
         // Probe the modern voice-store tiers directly: `speechVoices()` only
         // lists downloaded voices, but an identifier may still resolve.
-        Automation.mark(
-            "voice: system-default \(AVSpeechSynthesisVoice(language: language)?.identifier ?? "nil")"
-        )
+        Automation.mark("voice: current-language \(AVSpeechSynthesisVoice.currentLanguageCode())")
+        for code in ["en", "en-US", "en-GB", "en-AU", "en-IE", "en-IN", "en-ZA", "en-NZ", "en-CA"] {
+            let voice = AVSpeechSynthesisVoice(language: code)
+            Automation.mark(
+                "voice: default[\(code)] \(voice?.name ?? "nil")"
+                    + " q=\(voice.map(qualityName) ?? "-")"
+                    + " \(voice.map { isCompact($0) ? "compact" : "full" } ?? "-")"
+                    + " id=\(voice?.identifier ?? "nil")"
+            )
+        }
         // No-reboot attempt: a downloaded-but-unenumerated voice may still
         // resolve by identifier, so probe a name×tier matrix and log hits.
         let names = [
