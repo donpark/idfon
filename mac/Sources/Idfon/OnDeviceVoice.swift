@@ -25,6 +25,11 @@ enum SpeechVoice {
         let pool = exact.isEmpty ? all.filter { $0.language.hasPrefix(base) } : exact
         guard !pool.isEmpty else { return nil }
         if let request = requested() {
+            // A full identifier resolves directly, even when `speechVoices()`
+            // does not list it (a downloaded-but-unenumerated voice).
+            if request.contains("."), let voice = AVSpeechSynthesisVoice(identifier: request) {
+                return log(voice)
+            }
             // An explicit identifier must win even if it names a compact voice.
             if let hit = pool.first(where: { $0.identifier == request }) { return log(hit) }
             if let hit = pool
@@ -80,6 +85,17 @@ enum SpeechVoice {
                 "voice:   rank=\(rank(voice)) quality=\(qualityName(voice))"
                     + "\(isCompact(voice) ? " compact" : "") \(voice.name) id=\(voice.identifier)"
             )
+        }
+        // Probe the modern voice-store tiers directly: `speechVoices()` only
+        // lists downloaded voices, but an identifier may still resolve.
+        for id in [
+            "com.apple.voice.enhanced.en-US.Ava",
+            "com.apple.voice.premium.en-US.Ava",
+            "com.apple.voice.enhanced.en-US.Samantha",
+            "com.apple.voice.premium.en-US.Samantha",
+        ] {
+            let resolves = AVSpeechSynthesisVoice(identifier: id) != nil
+            Automation.mark("voice: probe \(id) resolves=\(resolves)")
         }
         Automation.mark("voice: done")
     }
