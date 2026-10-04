@@ -291,6 +291,10 @@ pub enum IpcFrame {
         request_id: String,
         accepted: bool,
     },
+    /// Holder → bridge: one caller PCM frame for the live audio stream
+    /// (s16le base64). The bridge fans it out to SSE subscribers.
+    #[serde(rename = "audio.frame")]
+    AudioFrameOut { peer_id: String, pcm_base64: String },
     #[serde(rename = "live.publish")]
     LivePublish {
         request_id: String,

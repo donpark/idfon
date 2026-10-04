@@ -22,6 +22,8 @@ const pending = new Map();
 // `reply_to` id the two agents carry in the request/reply text.
 const pendingReplies = new Map();
 const roomMembers = new Map();
+// Live-call caller-audio SSE subscribers (standalone TS voice agents).
+const sseClients = new Set();
 let writeTail = Promise.resolve();
 let nextRequestId = 1;
 
@@ -65,6 +67,11 @@ function processFrames() {
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
       }).catch((error) => console.error(`[eve-idfon] ${value.type} delivery failed: ${error}`));
+    } else if (value.type === "audio.frame") {
+      const line = `data: ${JSON.stringify(value)}\n\n`;
+      for (const client of sseClients) {
+        try { client.write(line); } catch { sseClients.delete(client); }
+      }
     } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "records.drain.result" || value.type === "stream.append.result" || value.type === "audio.append.result" || value.type === "ticket.issue.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
       const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
       const waiter = pending.get(key);
@@ -90,6 +97,18 @@ holder.on("error", (error) => { console.error(`[eve-idfon] holder IPC: ${error}`
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
+  // Live-call caller audio: an SSE stream a standalone TS voice agent reads.
+  if (request.method === "GET" && request.url === "/live/stream") {
+    response.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    response.write(": connected\n\n");
+    sseClients.add(response);
+    request.on("close", () => sseClients.delete(response));
+    return;
+  }
   if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/stream/append", "/live/audio", "/input", "/send", "/card", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
