@@ -6,8 +6,13 @@
 //! TTS batch REST: `POST {base}/speak?model=..&encoding=linear16&container=none`
 //! with JSON `{text}`; the body is raw s16le PCM.
 
+use std::time::Duration;
+
 use anyhow::{anyhow, Context, Result};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use tokio::sync::mpsc;
+use tokio_websockets::{ClientBuilder, Message};
 
 use crate::http::{block_on, truncate};
 use crate::stub::EnergyEndpointer;
@@ -34,6 +39,9 @@ pub struct DeepgramEngine {
     stt_model: String,
     voice: String,
     language: Option<String>,
+    /// Use the streaming WebSocket (partials, lower first-final latency)
+    /// instead of batch REST. Opt-in via `"stream": true`.
+    stream: bool,
     client: reqwest::Client,
 }
 
@@ -72,6 +80,11 @@ impl DeepgramEngine {
                 .get("language")
                 .and_then(|v| v.as_str())
                 .map(str::to_owned),
+            stream: value
+                .get("stream")
+                .or_else(|| value.get("stt_stream"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             client: reqwest::Client::new(),
         })
     }
@@ -144,6 +157,167 @@ impl DeepgramEngine {
             Ok(PcmChunk { format, samples })
         })
     }
+
+    /// Open a streaming WebSocket session (opt-in via `"stream": true`).
+    fn streaming_session(&self, format: AudioFormat) -> Result<StreamingDeepgramStt> {
+        let mut url = format!(
+            "wss://api.deepgram.com/v1/listen?model={}&encoding=linear16&sample_rate={}&channels={}&interim_results=true&smart_format=true",
+            self.stt_model, format.sample_rate, format.channels
+        );
+        if let Some(language) = &self.language {
+            url.push_str(&format!("&language={language}"));
+        }
+        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(run_deepgram_stream(url, self.api_key.clone(), control_rx, event_tx));
+        Ok(StreamingDeepgramStt {
+            control: control_tx,
+            events: event_rx,
+            task,
+        })
+    }
+}
+
+enum StreamControl {
+    Audio(Vec<i16>),
+    Finalize,
+    Close,
+}
+
+/// Streaming Deepgram STT: a background WS task forwards caller PCM and feeds
+/// partial/final transcripts back. `flush` finalizes the current utterance and
+/// waits for its final; the connection stays open across turns.
+pub struct StreamingDeepgramStt {
+    control: mpsc::UnboundedSender<StreamControl>,
+    events: mpsc::UnboundedReceiver<TranscriptEvent>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl SttSession for StreamingDeepgramStt {
+    fn push(&mut self, pcm: &[i16]) -> Result<Vec<TranscriptEvent>> {
+        let _ = self.control.send(StreamControl::Audio(pcm.to_vec()));
+        let mut out = Vec::new();
+        while let Ok(event) = self.events.try_recv() {
+            out.push(event);
+        }
+        Ok(out)
+    }
+
+    fn flush(&mut self) -> Result<Option<String>> {
+        let _ = self.control.send(StreamControl::Finalize);
+        let events = &mut self.events;
+        let text = block_on(async move {
+            let deadline = tokio::time::sleep(Duration::from_secs(5));
+            tokio::pin!(deadline);
+            loop {
+                tokio::select! {
+                    _ = &mut deadline => return None,
+                    event = events.recv() => match event {
+                        Some(TranscriptEvent::Final(text)) => return Some(text),
+                        Some(TranscriptEvent::Partial(_)) => continue,
+                        None => return None,
+                    }
+                }
+            }
+        });
+        Ok(text.filter(|text| !text.trim().is_empty()))
+    }
+
+    fn finish(&mut self) -> Result<Option<String>> {
+        let _ = self.control.send(StreamControl::Close);
+        let task = &mut self.task;
+        block_on(async move {
+            let _ = task.await;
+        });
+        Ok(None)
+    }
+}
+
+async fn run_deepgram_stream(
+    url: String,
+    api_key: String,
+    mut control: mpsc::UnboundedReceiver<StreamControl>,
+    events: mpsc::UnboundedSender<TranscriptEvent>,
+) {
+    let uri = match url.parse() {
+        Ok(uri) => uri,
+        Err(error) => {
+            eprintln!("[idfon-voice] deepgram stream url: {error}");
+            return;
+        }
+    };
+    let builder = match ClientBuilder::from_uri(uri)
+        .add_header("authorization".parse().expect("header name"),
+            format!("Token {api_key}").parse().expect("header value"))
+    {
+        Ok(builder) => builder,
+        Err(error) => {
+            eprintln!("[idfon-voice] deepgram stream header: {error}");
+            return;
+        }
+    };
+    let (mut ws, _) = match builder.connect().await {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!("[idfon-voice] deepgram stream connect: {error}");
+            return;
+        }
+    };
+    let mut open = true;
+    while open {
+        tokio::select! {
+            control = control.recv() => match control {
+                Some(StreamControl::Audio(pcm)) => {
+                    let bytes: Vec<u8> = pcm.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+                    if ws.send(Message::binary(bytes)).await.is_err() {
+                        break;
+                    }
+                }
+                Some(StreamControl::Finalize) => {
+                    let _ = ws.send(Message::text("{\"type\":\"Finalize\"}")).await;
+                }
+                Some(StreamControl::Close) | None => {
+                    let _ = ws.send(Message::text("{\"type\":\"CloseStream\"}")).await;
+                    open = false;
+                }
+            },
+            message = ws.next() => match message {
+                Some(Ok(message)) => {
+                    if let Some(text) = message.as_text() {
+                        handle_deepgram_event(text, &events);
+                    }
+                }
+                Some(Err(error)) => {
+                    eprintln!("[idfon-voice] deepgram stream read: {error}");
+                    break;
+                }
+                None => break,
+            }
+        }
+    }
+}
+
+fn handle_deepgram_event(text: &str, events: &mpsc::UnboundedSender<TranscriptEvent>) {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return;
+    };
+    if value["type"].as_str() != Some("Results") {
+        return;
+    }
+    let transcript = value["channel"]["alternatives"][0]["transcript"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    if transcript.trim().is_empty() {
+        return;
+    }
+    let is_final = value["is_final"].as_bool().unwrap_or(false)
+        || value["speech_final"].as_bool().unwrap_or(false);
+    let _ = events.send(if is_final {
+        TranscriptEvent::Final(transcript)
+    } else {
+        TranscriptEvent::Partial(transcript)
+    });
 }
 
 impl VoiceEngine for DeepgramEngine {
@@ -152,6 +326,9 @@ impl VoiceEngine for DeepgramEngine {
     }
 
     fn stt(&self, format: AudioFormat) -> Result<Box<dyn SttSession>> {
+        if self.stream {
+            return Ok(Box::new(self.streaming_session(format)?));
+        }
         Ok(Box::new(DeepgramStt {
             engine: self.clone(),
             format,

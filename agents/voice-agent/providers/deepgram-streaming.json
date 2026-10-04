@@ -1,0 +1,9 @@
+{
+  "_comment": "Deepgram streaming STT (WebSocket, partials + lower first-final latency) + Deepgram TTS (env DEEPGRAM_API_KEY). `stream: true` opts the STT side into the WebSocket; batch REST is the default.",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
+  "engine": {
+    "stt": { "provider": "deepgram", "model": "nova-3", "stream": true },
+    "tts": { "provider": "deepgram", "voice": "aura-asteria-en" }
+  }
+}

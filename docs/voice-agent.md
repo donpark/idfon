@@ -95,7 +95,10 @@ Providers that are only *almost* compatible are handled by a profile too;
 genuinely bespoke APIs get a small adapter behind the same seam. Today:
 `openai-compatible` (the long tail), `deepgram` (STT + TTS), `elevenlabs`
 (TTS), and `cartesia` (TTS); mix any STT with any TTS via a split `stt`/`tts`
-engine block.
+engine block. Streaming where it matters: ElevenLabs TTS streams by default
+(chunked `/stream`, audio pushed as it synthesizes); Deepgram STT can stream
+via `"stream": true` (WebSocket partials, lower first-final latency) while
+batch REST stays the default.
 
 idfon's value here is the **real-use harness**: add a contact per provider and
 actually converse, then compare latency/cost/quality — not a synthetic
