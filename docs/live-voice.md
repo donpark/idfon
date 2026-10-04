@@ -88,7 +88,21 @@ agents without an installed `eve`; `start`/`stop`/`restart`/`kill` apply to the
 agents with a `scripts/<name>-serve.sh` (under `all`, the rest are reported as
 skipped rather than silently ignored). `stop` is graceful — the serve script's
 trap tears down its holder/bridge/eve children; `kill` is a forced SIGKILL that
-also reaps them. The extension is also rebuilt by its
+also reaps them.
+
+**Instances.** One agent can back several contacts, each with its own identity
+(`~/.idfon/<instance>/holder.key`) and ports. Address one as
+`<agent>:<instance>` — e.g. `pnpm agent restart llm:gemini38`. The chosen
+config is persisted to `~/.idfon/<instance>/instance.env` on start, so a
+restart needs no env re-typed (caller exports still win). `pnpm agent list`
+shows each instance's agent, model/contact, and whether its serve manager is
+running. Set `EVE_INSTANCE=auto` to derive the name from
+`EVE_CONTACT_NAME`/`EVE_IDFON_MODEL` (e.g. "Gemini 3.8 Flash" ->
+`gemini-3-8-flash`) instead of naming it by hand. Instances started outside
+`pnpm agent` show agent `?` until restarted through it (which writes
+`instance.env`).
+
+The extension is also rebuilt by its
 `prepare` script on `pnpm install`, and lazily by an agent's `eve build` when
 `dist/extension/_manifest.json` is stale.
 
