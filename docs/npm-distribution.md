@@ -103,8 +103,9 @@ the holder IPC is a Unix socket. CI build/publish is not wired yet.
 
 ## Eve integration packages
 
-Alongside the CLI, two integration packages publish to npm (unscoped, same
-workspace version):
+Two integration packages are **publish-ready but not yet published** — the CLI
+is the only npm release so far. When they do publish (unscoped, same workspace
+version):
 
 - `eve-idfon` — the Eve channel extension. Built to `dist/` by
   `pnpm --filter eve-idfon build` (`eve extension build`); `prepare` builds on
