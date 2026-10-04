@@ -15,6 +15,11 @@
       "name": "Fable 5.1",
       "model": "anthropic/claude-haiku-4.5",
       "instance": "fable51"
+    },
+    {
+      "name": "Gemini 3.8 Flash",
+      "model": "google/gemini-3.8-flash",
+      "instance": "gemini38"
     }
   ]
 }
