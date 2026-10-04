@@ -375,6 +375,11 @@ final class VoiceAgentSession: NSObject {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let utterance = AVSpeechUtterance(string: text)
             utterance.voice = SpeechVoice.best(language: "en-US")
+            // VoiceOver's selected voice/rate must not override ours.
+            utterance.prefersAssistiveTechnologySettings = false
+            Automation.mark(
+                "voice: speak id=\(utterance.voice?.identifier ?? "nil") assistive=false"
+            )
             let delegate = SpeechDelegate { continuation.resume() }
             speechDelegate = delegate
             synthesizer.delegate = delegate
