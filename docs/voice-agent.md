@@ -92,10 +92,29 @@ block selects it; no block falls back to the AI Gateway env:
 
 So supporting a new cloud ASR/TTS service is usually **config, not code**.
 Providers that are only *almost* compatible are handled by a profile too;
-genuinely bespoke APIs (Deepgram/ElevenLabs streaming, Azure, Google, AWS) get
-a small adapter behind the same seam. idfon's value here is the **real-use
-harness**: add a contact per provider and actually converse, then compare
-latency/cost/quality — not a synthetic benchmark.
+genuinely bespoke APIs get a small adapter behind the same seam. Today:
+`openai-compatible` (covers the long tail), `deepgram` (STT), and
+`elevenlabs` (TTS); they can be mixed with a split `stt`/`tts` engine block.
+
+idfon's value here is the **real-use harness**: add a contact per provider and
+actually converse, then compare latency/cost/quality — not a synthetic
+benchmark. Each turn logs one `[voice-metrics]` JSON line (STT ms, TTS
+first/total ms, audio ms, estimated cost); `None` when a provider has no price
+table rather than a made-up number.
+
+### Try a provider (one command)
+
+The generic voice agent plus a provider file is the whole flow:
+
+```sh
+scripts/voice-agent-serve.sh agents/voice-agent/providers/groq.json
+scripts/voice-agent-serve.sh agents/voice-agent/providers/deepgram-elevenlabs.json
+scripts/voice-agent-serve.sh            # default live.json (AI Gateway env)
+```
+
+`agents/voice-agent/providers/*.json` are full live configs (backend +
+`voice_route` + `engine`); add one per service. Keys come from the env vars the
+file names. `EVE_LIVE_CONFIG` overrides the agent's own `live.json`.
 
 ## The kit (fast iteration)
 

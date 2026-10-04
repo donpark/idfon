@@ -41,6 +41,14 @@ pub mod stub;
 pub mod wav;
 #[cfg(feature = "gateway")]
 pub mod gateway;
+#[cfg(feature = "gateway")]
+mod http;
+#[cfg(feature = "gateway")]
+pub mod deepgram;
+#[cfg(feature = "gateway")]
+pub mod elevenlabs;
+#[cfg(feature = "gateway")]
+pub mod providers;
 
 pub use arbiter::{Arbiter, ArbiterOutcome, NonSubstantiveKind, SpeakerRole};
 pub use audit::{AuditLog, Speaker, Utterance};

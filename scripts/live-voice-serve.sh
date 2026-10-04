@@ -147,8 +147,11 @@ sleep 0.5
 # the provisioner; the holder reloads the file while running.
 touch "$home/allowed-peers"
 live_args=()
-if [ -f "$root/agents/$agent/live.json" ]; then
-  live_args=(--live-config "$root/agents/$agent/live.json")
+# Live config: the agent's own, or an override for a provider tryout
+# (scripts/voice-agent-serve.sh passes EVE_LIVE_CONFIG).
+live_config_path="${EVE_LIVE_CONFIG:-$root/agents/$agent/live.json}"
+if [ -f "$live_config_path" ]; then
+  live_args=(--live-config "$live_config_path")
 fi
 
 # Reply credential: to answer the agency's A2A intro the holder must present a

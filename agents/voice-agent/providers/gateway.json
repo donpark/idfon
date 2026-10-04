@@ -1,0 +1,12 @@
+{
+  "_comment": "AI Gateway (OpenAI-compatible) using env AI_GATEWAY_API_KEY.",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
+  "engine": {
+    "provider": "openai-compatible",
+    "api_key_env": "AI_GATEWAY_API_KEY",
+    "stt_model": "openai/whisper-1",
+    "tts_model": "openai/tts-1",
+    "voice": "alloy"
+  }
+}
