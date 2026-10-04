@@ -7,7 +7,7 @@
 #
 # Roster holders are separate `llm` instances, started once each:
 #   EVE_INSTANCE=gpt61 EVE_CONTACT_NAME="GPT-6.1-Sol" \
-#     EVE_IDFON_MODEL=openai/gpt-6.1-sol scripts/llm-serve.sh
+#     EVE_IDFON_MODEL=openai/gpt-6.1-sol scripts/llm-cascade-serve.sh
 #
 # Policy env (see scripts/agency-provisioner.mjs):
 #   AGENCY_ROSTER, AGENCY_PORT, AGENCY_SECRET, AGENCY_ALLOW_CALLERS

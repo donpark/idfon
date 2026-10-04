@@ -1,5 +1,5 @@
 {
-  "_comment": "Demo voice agent for the server-side cascade (STT -> agent -> TTS over a live session). The holder terminates audio via the `cascade` backend; voice_route.mode=server-cascade tells callers to dial a live session (not the on-device cascade). Its counterpart is agents/live-voice (native-duplex, GPT-Live).",
+  "_comment": "Demo voice agent for the server-side cascade (STT -> agent -> TTS over a live session). The holder terminates audio via the `cascade` backend; voice_route.mode=server-cascade tells callers to dial a live session (not the on-device cascade). Its counterpart is agents/gpt-live-1 (native-duplex, GPT-Live).",
   "backend": "cascade",
   "voice_route": { "mode": "server-cascade", "audio": "pcm24k" }
 }

@@ -1,6 +1,6 @@
 # live-voice: a voice agent on the idfon channel
 
-`agents/live-voice` is an Eve agent that answers idfon voice messages with
+`agents/gpt-live-1` is an Eve agent that answers idfon voice messages with
 a spoken reply. Text turns go to a gateway text model; a voice memo is
 decoded to 24 kHz PCM and answered by OpenAI's `gpt-live-1` full-duplex voice
 model over its AI Gateway Live WebSocket, with deep work delegated to
@@ -64,7 +64,7 @@ vendor; a build that wants live calls links the backend into the voice-agent
 runner (`eve-idfon-voice --features gpt-live`). Provider values — endpoint,
 model, credential env
 name, persona/instructions, broadcast id, delegation tag, turn cap — come from
-the channel's `live` metadata (`agents/live-voice/live.json`, forwarded by
+the channel's `live` metadata (`agents/gpt-live-1/live.json`, forwarded by
 `serve --live-config`; the same block rides in the Eve extension config).
 
 ## Building
@@ -77,10 +77,11 @@ agent); `pnpm agent` manages one agent at a time:
 pnpm eve build                    # eve-idfon + all agents
 pnpm eve clean                    # remove dist/.output everywhere
 
-pnpm agent build live-voice    # eve build in agents/live-voice
-pnpm agent clean live-voice
-pnpm agent restart live-voice  # stop then start; needs AI_GATEWAY_API_KEY
-pnpm agent kill live-voice     # force-stop the manager + holder/bridge/eve
+pnpm agent build llm-cascade      # eve build in agents/llm-cascade
+pnpm agent clean llm-cascade
+pnpm agent restart gpt-live-1     # stop then start; needs AI_GATEWAY_API_KEY
+pnpm agent kill gpt-live-1        # force-stop the manager + holder/bridge/eve
+pnpm agent list                   # agents, mode, pid/status, port, home
 ```
 
 `pnpm agent build all` / `clean all` cover every `agents/*` directory and skip
@@ -90,17 +91,18 @@ skipped rather than silently ignored). `stop` is graceful — the serve script's
 trap tears down its holder/bridge/eve children; `kill` is a forced SIGKILL that
 also reaps them.
 
-**Instances.** One agent can back several contacts, each with its own identity
-(`~/.idfon/<instance>/holder.key`) and ports. Address one as
-`<agent>:<instance>` — e.g. `pnpm agent restart llm:gemini38`. The chosen
-config is persisted to `~/.idfon/<instance>/instance.env` on start, so a
-restart needs no env re-typed (caller exports still win). `pnpm agent list`
-shows each instance's agent, model/contact, and whether its serve manager is
-running. Set `EVE_INSTANCE=auto` to derive the name from
-`EVE_CONTACT_NAME`/`EVE_IDFON_MODEL` (e.g. "Gemini 3.8 Flash" ->
-`gemini-3-8-flash`) instead of naming it by hand. Instances started outside
-`pnpm agent` show agent `?` until restarted through it (which writes
-`instance.env`).
+**Agents and sessions.** An *agent* is an identity + config + process: one
+home (`~/.idfon/<agent>`), one keypair, one pinned port. `pnpm agent` is
+agent-scoped (`start|stop|restart|kill|list <agent>`) — there is no
+`<agent>:<instance>` target. Callers are *sessions*: runtime-only per-sender
+state the holder creates on a caller's first turn and drops when the agent
+stops. Sessions are never managed or stored by the CLI; an agent that wants
+persistence implements it itself.
+
+Config is an agent-level initial parameter (a preference the agent may honor
+or ignore). The multi-model contacts the agency introduces (`agents/agency/roster.json`)
+are separately-configured runs of an agent — they have their own identity and
+home (`EVE_INSTANCE`), but they belong to the agency, not to `pnpm agent`.
 
 The extension is also rebuilt by its
 `prepare` script on `pnpm install`, and lazily by an agent's `eve build` when
@@ -302,7 +304,7 @@ above (design option 1/3), not the split itself.
 records OpenAI's guidance: WebRTC for browsers/mobile clients, WebSocket for
 server-to-server. The holder is middle-tier server, so the current
 `wss://ai-gateway.vercel.sh/v1/live/sessions` connection (`crates/idfon-voice-agent/src/gpt_live.rs`,
-`agents/live-voice/agent/tools/voice-reply.ts`) is the recommended transport
+`agents/gpt-live-1/agent/tools/voice-reply.ts`) is the recommended transport
 for this topology. WebRTC only becomes worthwhile if the client is routed
 directly to the voice session (proxy-minted ephemeral token, the thin-proxy
 pattern in `idfon-harness.md`) — which removes the holder from the media path
@@ -329,7 +331,7 @@ Decision:
    user-role dynamic instruction at the next turn boundary — recording never
    triggers a turn. See `voice-side-channel.md` §P0 implementation.
 2. **Voice is a channel capability, not an agent feature.** `voice_reply` is a
-   per-agent tool today (`agents/live-voice/agent/tools/voice-reply.ts`);
+   per-agent tool today (`agents/gpt-live-1/agent/tools/voice-reply.ts`);
    the holder already owns the duplex transport, transcripts, and delegation.
    Expose `speak(text)` / `present(artifact)` from the channel so agents stay
    audio-agnostic.
