@@ -793,7 +793,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     @objc private func voiceAgentTapped() {
         guard let peerId = conversation.peer?.id else { return }
         let session = VoiceAgentSession.shared
-        if session.isActive { session.stop() } else { session.start(peerRef: peerId) }
+        if session.isActive {
+            session.stop()
+        } else {
+            // Same call cues as a live call: ringback while the recognizer
+            // loads, answered once it is listening, stop on hangup.
+            CallTonePlayer.shared.start(.ringback)
+            session.start(peerRef: peerId)
+        }
     }
 
     @objc private func callTapped() {
