@@ -34,13 +34,21 @@ enum SpeechVoice {
             .map(log)
     }
 
-    /// Higher is better: premium > enhanced > default; novelty/personal demoted.
+    /// Higher is better: Siri ≈ Premium > Enhanced > default. `quality` is the
+    /// base, but the identifier/name is checked too because some top tiers
+    /// (notably Siri) do not reliably report as `premium`/`enhanced`.
     static func rank(_ voice: AVSpeechSynthesisVoice) -> Int {
         var score: Int
         switch voice.quality {
-        case .premium: score = 3000
-        case .enhanced: score = 2000
+        case .premium: score = 4000
+        case .enhanced: score = 3000
         default: score = 1000
+        }
+        let label = (voice.identifier + " " + voice.name).lowercased()
+        if label.contains("siri") || label.contains("premium") {
+            score = max(score, 4000)
+        } else if label.contains("enhanced") {
+            score = max(score, 3000)
         }
         if #available(iOS 17.0, macOS 14.0, *) {
             if voice.voiceTraits.contains(.isNoveltyVoice) { score -= 800 }
