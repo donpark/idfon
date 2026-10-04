@@ -60,6 +60,8 @@ pub trait VoiceBackendFactory: Send + Sync {
 pub struct VoiceMedia {
     /// Caller audio as paced 20 ms, 24 kHz mono frames.
     pub caller: mpsc::Receiver<Vec<i16>>,
+    /// Agent-output deltas (F11) routed from the holder, for incremental TTS.
+    pub deltas: mpsc::UnboundedReceiver<eve_idfon::deltas::Delta>,
     /// Return-leg audio the backend renders for the caller.
     pub audio: AudioQueue,
     pub stop: Arc<AtomicBool>,
@@ -294,8 +296,14 @@ async fn handle_call(
         Arc::clone(&ctx.targets),
         ctx.out_tx.clone(),
     );
+    // Register this call as the delta sink for the caller so agent-output
+    // deltas reach its TTS (F11). Replaced if a newer call for the peer starts.
+    let (delta_tx, deltas) = mpsc::unbounded_channel();
+    eve_idfon::deltas::register(&ctx.sender_peer_id, delta_tx);
+    let call_peer = ctx.sender_peer_id.clone();
     let media = VoiceMedia {
         caller,
+        deltas,
         audio,
         stop,
         profile,
@@ -311,6 +319,7 @@ async fn handle_call(
             eprintln!("[voice-agent] backend '{}' failed: {error:#}", backend.name());
         }
         session.shutdown().await;
+        eve_idfon::deltas::unregister(&call_peer);
         eprintln!("[voice-agent] call ended");
     });
     Ok(true)

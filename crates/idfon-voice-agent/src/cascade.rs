@@ -4,13 +4,18 @@
 //! [`idfon_voice::providers::build_engine`] (any OpenAI-compatible provider, or
 //! a split such as Deepgram STT + ElevenLabs TTS). It sits behind the
 //! [`VoiceBackend`] seam, so swapping providers changes nothing above.
+//!
+//! TTS streams: agent-output deltas arrive on `media.deltas` and are fed to
+//! `StreamingSpeaker` (envelope strip, clause batching, retry dedupe) so the
+//! first clause is spoken before the reply completes. If no deltas arrive
+//! (older bridge), the final reply is spoken whole as a fallback.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use idfon_voice::{
-    normalize_for_speech, AudioFormat, EndpointEvent, VoiceEngine,
+    normalize_for_speech, AudioFormat, EndpointEvent, MessageDelta, StreamingSpeaker, VoiceEngine,
 };
 use serde_json::Value;
 use tokio::time::MissedTickBehavior;
@@ -42,9 +47,16 @@ impl CascadeBackend {
         let mut endpointer = self.engine.endpointer(format)?;
         let mut tick = tokio::time::interval(Duration::from_millis(200));
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         // Timing carried from the caller utterance to its reply.
         let mut pending: Option<(u64, u64)> = None; // (stt_ms, caller_audio_ms)
         let mut caller_frames = 0u64;
+        // Incremental TTS state for the current reply.
+        let mut speaker: Option<StreamingSpeaker> = None;
+        let mut deltas_seen = false;
+        let mut reply_started = Instant::now();
+        let mut first_ms = 0u64;
+        let mut audio_ms = 0u64;
 
         loop {
             tokio::select! {
@@ -53,13 +65,24 @@ impl CascadeBackend {
                     caller_frames += 1;
                     let _ = stt.push(&pcm);
                     if let Some(EndpointEvent::SpeechEnded) = endpointer.push(&pcm)? {
+                        // Close out any in-flight reply before the next turn.
+                        if let Some(mut active) = speaker.take() {
+                            for chunk in active.finish().unwrap_or_default() {
+                                media.audio.push_samples(&chunk.samples);
+                            }
+                        }
+                        deltas_seen = false;
+                        first_ms = 0;
+                        audio_ms = 0;
+                        reply_started = Instant::now();
                         let started = Instant::now();
                         if let Some(text) = stt.flush()? {
                             let text = text.trim().to_string();
                             if !text.is_empty() {
-                                let stt_ms = started.elapsed().as_millis() as u64;
-                                let caller_audio_ms = caller_frames * idfon_live_media::CHUNK_MS;
-                                pending = Some((stt_ms, caller_audio_ms));
+                                pending = Some((
+                                    started.elapsed().as_millis() as u64,
+                                    caller_frames * idfon_live_media::CHUNK_MS,
+                                ));
                                 media.bridge.record("caller", &text);
                                 media.bridge.inject(&text).await;
                             }
@@ -67,43 +90,72 @@ impl CascadeBackend {
                         caller_frames = 0;
                     }
                 }
+                Some((turn_id, step, seq, text)) = media.deltas.recv() => {
+                    if speaker.is_none() {
+                        speaker = Some(StreamingSpeaker::new(self.engine.tts("default", format)?));
+                        reply_started = Instant::now();
+                    }
+                    deltas_seen = true;
+                    let chunks = speaker
+                        .as_mut()
+                        .expect("speaker just set")
+                        .push(MessageDelta::new(turn_id, step, seq, &text))
+                        .unwrap_or_default();
+                    for chunk in chunks {
+                        if first_ms == 0 {
+                            first_ms = reply_started.elapsed().as_millis() as u64;
+                        }
+                        audio_ms += samples_ms(&chunk, format);
+                        media.audio.push_samples(&chunk.samples);
+                    }
+                }
                 Some((_turn_id, reply)) = media.bridge.next_reply() => {
                     let spoken = strip_envelopes(&reply);
-                    if spoken.is_empty() { continue; }
-                    let normalized = normalize_for_speech(&spoken);
-                    let started = Instant::now();
-                    let mut first_ms = 0u64;
-                    let mut audio_ms = 0u64;
-                    let mut chars = 0usize;
-                    let mut tts = self.engine.tts("default", format)?;
-                    let emit = |chunks: Vec<idfon_voice::PcmChunk>, first_ms: &mut u64, audio_ms: &mut u64| {
-                        for chunk in chunks {
-                            if *first_ms == 0 {
-                                *first_ms = started.elapsed().as_millis() as u64;
+                    if deltas_seen {
+                        if let Some(mut active) = speaker.take() {
+                            for chunk in active.finish().unwrap_or_default() {
+                                if first_ms == 0 {
+                                    first_ms = reply_started.elapsed().as_millis() as u64;
+                                }
+                                audio_ms += samples_ms(&chunk, format);
+                                media.audio.push_samples(&chunk.samples);
                             }
-                            *audio_ms += (chunk.samples.len() as u64 * 1000)
-                                / (format.sample_rate as u64 * format.channels.max(1) as u64);
+                        }
+                    } else if !spoken.is_empty() {
+                        // Fallback: no deltas (older bridge) — speak the whole reply.
+                        if first_ms == 0 { reply_started = Instant::now(); }
+                        let mut whole = StreamingSpeaker::new(self.engine.tts("default", format)?);
+                        let normalized = normalize_for_speech(&spoken);
+                        let mut chunks = whole
+                            .push(MessageDelta::new("reply", 0, 0, &normalized))
+                            .unwrap_or_default();
+                        chunks.extend(whole.finish().unwrap_or_default());
+                        for chunk in chunks {
+                            if first_ms == 0 {
+                                first_ms = reply_started.elapsed().as_millis() as u64;
+                            }
+                            audio_ms += samples_ms(&chunk, format);
                             media.audio.push_samples(&chunk.samples);
                         }
-                    };
-                    chars += normalized.chars().count();
-                    emit(tts.push_text(&normalized).unwrap_or_default(), &mut first_ms, &mut audio_ms);
-                    emit(tts.finish().unwrap_or_default(), &mut first_ms, &mut audio_ms);
-                    let tts_total_ms = started.elapsed().as_millis() as u64;
+                    }
                     let (stt_ms, caller_audio_ms) = pending.take().unwrap_or((0, 0));
                     let mut metrics = TurnMetrics {
                         provider: self.provider.clone(),
                         stt_ms,
                         tts_first_ms: first_ms,
-                        tts_total_ms,
+                        tts_total_ms: reply_started.elapsed().as_millis() as u64,
                         caller_audio_ms,
                         tts_audio_ms: audio_ms,
-                        tts_chars: chars,
+                        tts_chars: spoken.chars().count(),
                         est_cost_usd: None,
                     };
                     metrics.est_cost_usd = metrics.cost_estimate();
                     metrics.log();
                     media.bridge.record("agent", &spoken);
+                    speaker = None;
+                    deltas_seen = false;
+                    first_ms = 0;
+                    audio_ms = 0;
                 }
                 _ = tick.tick() => {
                     if media.stop.load(std::sync::atomic::Ordering::Relaxed) { break; }
@@ -112,6 +164,10 @@ impl CascadeBackend {
         }
         Ok(())
     }
+}
+
+fn samples_ms(chunk: &idfon_voice::PcmChunk, format: AudioFormat) -> u64 {
+    (chunk.samples.len() as u64 * 1000) / (format.sample_rate as u64 * format.channels.max(1) as u64)
 }
 
 /// Builds a [`CascadeBackend`] from the live config.

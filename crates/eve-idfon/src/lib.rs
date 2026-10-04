@@ -27,6 +27,7 @@ use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, Endpoint
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 use serde::{Deserialize, Serialize};
 
+pub mod deltas;
 pub mod live;
 pub mod records;
 pub mod rooms;
@@ -263,6 +264,10 @@ pub enum IpcFrame {
     #[serde(rename = "stream.append")]
     StreamAppend {
         request_id: String,
+        /// Peer the delta belongs to, so a live voice backend can route it to
+        /// the call's TTS (absent on older bridges).
+        #[serde(default)]
+        peer_id: Option<String>,
         turn_id: String,
         step_index: u64,
         sequence: u64,
@@ -683,23 +688,33 @@ async fn serve(
             }
             IpcFrame::StreamAppend {
                 request_id,
+                peer_id,
                 turn_id,
                 step_index,
                 sequence,
                 text,
             } => {
-                // P4 forwarding path: Eve `message.appended` deltas reach the
-                // holder over the loopback bridge. Clause batching, retry
-                // dedupe, and incremental TTS live in `idfon-voice`
-                // (`StreamingSpeaker`) and are wired to a real engine when the
-                // cascade lands; the holder accepts and accounts for the delta
-                // here so the transport is exercised.
+                // F11: deliver agent-output deltas to the active voice call's
+                // TTS (clause batching + retry dedupe live in `idfon-voice`
+                // `StreamingSpeaker`). No subscriber => accept and log, as
+                // before, so the transport stays exercised for text turns.
                 let accepted = !text.is_empty();
                 if accepted {
-                    eprintln!(
-                        "[eve-idfon] stream delta turn={turn_id} step={step_index} seq={sequence} chars={}",
-                        text.chars().count()
-                    );
+                    let routed = peer_id
+                        .as_deref()
+                        .map(|peer| {
+                            deltas::route(
+                                peer,
+                                (turn_id.clone(), step_index, sequence, text.clone()),
+                            )
+                        })
+                        .unwrap_or(false);
+                    if !routed {
+                        eprintln!(
+                            "[eve-idfon] stream delta turn={turn_id} step={step_index} seq={sequence} chars={}",
+                            text.chars().count()
+                        );
+                    }
                 }
                 out_tx
                     .send(IpcFrame::StreamAppendResult {

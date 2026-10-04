@@ -334,6 +334,7 @@ const server = createServer(async (request, response) => {
       await write({
         type: "stream.append",
         request_id: requestId,
+        peer_id: typeof body.peer_id === "string" ? body.peer_id : undefined,
         turn_id: body.turn_id,
         step_index: body.step_index,
         sequence: body.sequence,

@@ -238,6 +238,7 @@ export default defineChannel({
       const member = target?.members.get(target.lastPeerId);
       if (!member || !event.messageDelta) return;
       await bridge("/stream/append", {
+        peer_id: member.peerId,
         turn_id: event.turnId,
         step_index: event.stepIndex,
         sequence: event.sequence,
