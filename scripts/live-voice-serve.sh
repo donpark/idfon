@@ -64,8 +64,22 @@ mkdir -p "$home"
 key="$home/holder.key"
 if [ ! -s "$key" ]; then printf '%064d' "$((RANDOM * RANDOM))" > "$key"; fi
 
-# Build once; skip when binaries and the compiled app are current.
-if [ ! -x "$root/target/release/$holder_bin" ] || [ "${FORCE_BUILD:-}" = 1 ]; then
+# Build when the holder is missing or any Rust source it is built from is
+# newer. Existence alone is not enough: a stale binary silently outlives a
+# source change (e.g. the voice-route gate), so check mtimes too.
+holder_bin_path="$root/target/release/$holder_bin"
+stale=0
+if [ ! -x "$holder_bin_path" ]; then
+  stale=1
+elif [ -n "$(
+  find "$root/crates" "$root/native/vendor/iroh-c-ffi/src" \
+    "$root/Cargo.toml" "$root/Cargo.lock" \
+    "$root/native/vendor/iroh-c-ffi/Cargo.toml" \
+    -newer "$holder_bin_path" -print -quit 2>/dev/null
+)" ]; then
+  stale=1
+fi
+if [ "$stale" = 1 ] || [ "${FORCE_BUILD:-}" = 1 ]; then
   RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
     cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
   cargo build --release -p idfond -p idfon-cli -p "$holder_pkg"
@@ -237,10 +251,10 @@ done
 # Capability tickets: holder-signed, subject-bound to each sender (the holder
 # rejects a ticket whose subject != the message's sender id), covering the
 # message ingress the apps' sends need. One file per peer.
-"$root/target/release/$holder_bin" --key-file "$key" "${live_args[@]}" ticket \
+"$root/target/release/$holder_bin" --key-file "$key" ${live_args[@]+"${live_args[@]}"} ticket \
   --subject "$daemon_id" > "$home/capability-ticket.json"
 while IFS= read -r endpoint; do
-  "$root/target/release/$holder_bin" --key-file "$key" "${live_args[@]}" ticket \
+  "$root/target/release/$holder_bin" --key-file "$key" ${live_args[@]+"${live_args[@]}"} ticket \
     --subject "$endpoint" > "$home/capability-ticket-$endpoint.json"
 done < <(extra_senders | awk '!seen[$0]++')
 
