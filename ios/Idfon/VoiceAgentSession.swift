@@ -80,6 +80,18 @@ final class VoiceAgentSession: NSObject {
             // Let ChatStore finish hydrating so the reply snapshot excludes
             // pre-existing history.
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            // Greet like a live call: the caller should hear a voice on connect
+            // without having to speak first.
+            if !stopRequested,
+               let greeting = await sendAndAwait(
+                   peerId: peer.id,
+                   text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
+                   logPrefix: "voice-agent-greet"
+               ),
+               !greeting.isEmpty {
+                setState(.speaking(greeting))
+                await speak(greeting)
+            }
             while !stopRequested && turnsDone < turnLimit {
                 guard await performTurn(peerId: peer.id) else { break }
             }
