@@ -74,9 +74,12 @@ final class LiveActivityController: NSObject {
     private enum ActiveMachine {
         case audio(LiveCall)
         case video(VideoCall)
+        /// The on-device (client-cascade) voice call: same Bar, audio-only.
+        case voice(VoiceAgentSession)
 
-        /// Non-nil while a call is in flight on either machine.
+        /// Non-nil while a call is in flight on any machine.
         static var current: ActiveMachine? {
+            if VoiceAgentSession.shared.isActive { return .voice(VoiceAgentSession.shared) }
             if LiveCall.shared.state != .idle { return .audio(LiveCall.shared) }
             if VideoCall.shared.state != .idle { return .video(VideoCall.shared) }
             return nil
@@ -86,6 +89,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): return call.activePeer
             case .video(let call): return call.activePeer
+            case .voice(let session): return session.activePeerId
             }
         }
 
@@ -95,6 +99,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): return call.audioAvailable
             case .video(let call): return call.audioAvailable
+            case .voice: return true
             }
         }
 
@@ -102,6 +107,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): return call.videoAvailable
             case .video(let call): return call.videoAvailable
+            case .voice: return false
             }
         }
 
@@ -111,6 +117,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): return call.audioEnabled
             case .video(let call): return call.audioEnabled
+            case .voice(let session): return session.audioEnabled
             }
         }
 
@@ -118,6 +125,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): return call.videoEnabled
             case .video(let call): return call.videoEnabled
+            case .voice: return false
             }
         }
 
@@ -125,6 +133,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): call.setAudioEnabled(enabled)
             case .video(let call): call.setAudioEnabled(enabled)
+            case .voice(let session): session.setAudioEnabled(enabled)
             }
         }
 
@@ -132,6 +141,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): call.setVideoEnabled(enabled)
             case .video(let call): call.setVideoEnabled(enabled)
+            case .voice: break
             }
         }
 
@@ -139,6 +149,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): return Self.phase(for: call.state)
             case .video(let call): return Self.phase(for: call.state)
+            case .voice(let session): return session.state == .idle ? .idle : .inCall
             }
         }
 
@@ -146,6 +157,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): call.answer()
             case .video(let call): call.answer()
+            case .voice: break
             }
         }
 
@@ -153,6 +165,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): call.decline()
             case .video(let call): call.decline()
+            case .voice: break
             }
         }
 
@@ -160,6 +173,7 @@ final class LiveActivityController: NSObject {
             switch self {
             case .audio(let call): call.hangUp()
             case .video(let call): call.hangUp()
+            case .voice(let session): session.stop()
             }
         }
 
@@ -194,6 +208,8 @@ final class LiveActivityController: NSObject {
         // longer sets them); the Bar renders whichever one is non-idle.
         LiveCall.shared.onState = { [weak self] in self?.sync() }
         VideoCall.shared.onState = { [weak self] in self?.sync() }
+        // The on-device voice call shares the Bar; it owns no second surface.
+        VoiceAgentSession.shared.onState = { [weak self] _ in self?.sync() }
         // Render the state as it is now: a call can already be in flight before
         // this controller exists (launch-argument dial, scene reconnection).
         sync()
