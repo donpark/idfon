@@ -17,19 +17,41 @@ protocol TtsEngine: AnyObject {
     func stop()
 }
 
+/// Reply-speech backend choice, persisted across launches.
+enum TtsBackend: String, CaseIterable {
+    case kokoro
+    case apple
+
+    var title: String {
+        switch self {
+        case .kokoro: return "Kokoro (on-device neural)"
+        case .apple: return "Apple (system voice)"
+        }
+    }
+}
+
 @MainActor
 enum SpeechEngines {
-    static let tts: TtsEngine = {
-        let requested = (ProcessInfo.processInfo.environment["IDFON_TTS"] ?? launchArg()).lowercased()
-        switch requested {
-        case "apple":
-            Automation.mark("voice: tts backend=apple")
-            return AppleTtsEngine()
-        default:
-            Automation.mark("voice: tts backend=kokoro")
-            return KokoroTtsEngine()
+    private static let defaultsKey = "idfon.tts-backend"
+
+    /// Persisted choice; `IDFON_TTS`/`-ttsbackend` override for testing.
+    static var backend: TtsBackend {
+        if let override = overrideBackend() { return override }
+        if let raw = UserDefaults.standard.string(forKey: defaultsKey),
+           let value = TtsBackend(rawValue: raw) {
+            return value
         }
-    }()
+        return .kokoro
+    }
+
+    /// The active engine; read by `VoiceAgentSession` at call time.
+    static var tts: TtsEngine = make(backend)
+
+    static func setBackend(_ backend: TtsBackend) {
+        UserDefaults.standard.set(backend.rawValue, forKey: defaultsKey)
+        tts = make(backend)
+        prewarm()
+    }
 
     /// Warm the selected engine in the background so the first call's reply is
     /// not blocked by a cold model download/compile.
@@ -37,12 +59,26 @@ enum SpeechEngines {
         Task { await tts.prepare() }
     }
 
-    private static func launchArg() -> String {
+    private static func make(_ backend: TtsBackend) -> TtsEngine {
+        Automation.mark("voice: tts backend=\(backend.rawValue)")
+        switch backend {
+        case .apple: return AppleTtsEngine()
+        case .kokoro: return KokoroTtsEngine()
+        }
+    }
+
+    private static func overrideBackend() -> TtsBackend? {
+        let value = ProcessInfo.processInfo.environment["IDFON_TTS"] ?? launchArg()
+        guard let value, !value.isEmpty else { return nil }
+        return value.lowercased() == "apple" ? .apple : .kokoro
+    }
+
+    private static func launchArg() -> String? {
         let args = ProcessInfo.processInfo.arguments
         if let index = args.firstIndex(of: "-ttsbackend"), args.count > index + 1 {
             return args[index + 1]
         }
-        return "kokoro"
+        return nil
     }
 }
 
@@ -92,7 +128,7 @@ final class AppleTtsEngine: NSObject, TtsEngine {
 @MainActor
 final class KokoroTtsEngine: NSObject, TtsEngine {
     let name = "kokoro"
-    private let manager = KokoroAneManager(variant: .english)
+    private var manager: KokoroAneManager?
     private let fallback = AppleTtsEngine()
     private var prepared = false
     private var prepareTask: Task<Void, Never>?
@@ -106,7 +142,12 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
                 guard let self else { return }
                 do {
                     Automation.mark("voice: kokoro initializing")
-                    try await self.manager.initialize()
+                    // Apple-managed asset pack when configured; else FluidAudio's
+                    // own HuggingFace download (directory == nil).
+                    let directory = await SpeechProvisioning.directory(for: .kokoroAne)
+                    let manager = KokoroAneManager(variant: .english, directory: directory)
+                    try await manager.initialize()
+                    self.manager = manager
                     self.prepared = true
                     Automation.mark("voice: kokoro ready")
                 } catch {
@@ -119,7 +160,7 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
 
     func speak(_ text: String) async {
         await prepare()
-        guard prepared else {
+        guard prepared, let manager else {
             Automation.mark("voice: kokoro unavailable, using apple")
             await fallback.speak(text)
             return
