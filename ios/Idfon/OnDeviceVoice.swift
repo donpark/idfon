@@ -223,6 +223,12 @@ final class OnDeviceVoice: NSObject {
         systemTranscriber = nil
     }
 
+    /// P5 text-layer echo rule over the C ABI: true when `heard` is the agent's
+    /// own speech read back. Used to drop self-bleed in the voice-agent loop.
+    func isEcho(spoken: String, heard: String) -> Bool {
+        idfon_voice_is_echo(spoken, heard) != 0
+    }
+
     /// Start listening on the microphone and transcribe entirely on device.
     /// Partials are logged as they arrive; the first final result completes.
     func startListening(

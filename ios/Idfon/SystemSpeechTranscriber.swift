@@ -21,6 +21,12 @@ final class SystemSpeechTranscriber {
     private var lastPartial = ""
     private var fedFrames: AVAudioFramePosition = 0
     private var inputConverter: Any?
+    /// Tap gate. Pausing/restarting `AVAudioEngine` renegotiates the shared
+    /// play-and-record IO while TTS plays and made `SpeechAnalyzer` reject the
+    /// session (`RecogRejected`); keeping the engine running and dropping tap
+    /// buffers while the agent thinks/speaks leaves the IO stable.
+    private let gateLock = NSLock()
+    private var listening = true
 
     init(locale: Locale = Locale.current) {
         self.locale = locale
@@ -129,6 +135,7 @@ final class SystemSpeechTranscriber {
         var tapBuffers = 0
         input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, time in
             guard let self, let builder = self.inputBuilder else { return }
+            guard self.isListening else { return }
             tapBuffers += 1
             if tapBuffers == 1 || tapBuffers % 500 == 0 {
                 Automation.mark("voice: tap buffers=\(tapBuffers) frames=\(buffer.frameLength)")
@@ -173,16 +180,31 @@ final class SystemSpeechTranscriber {
         Task { await analyzer?.cancelAndFinishNow() }
     }
 
-    /// Stop/start the mic tap without tearing down the analyzer. Used while the
-    /// agent thinks/speaks so its own TTS can't leak into the next utterance.
+    /// Close/open the tap gate without touching the engine or the analyzer, so
+    /// the agent's own TTS cannot feed the next utterance.
     func pause() {
-        engine?.pause()
+        setListening(false)
     }
 
     func resume() {
+        setListening(true)
+        // Recover if the engine was stopped (interruption/route change) while
+        // gated; a normal resume does not restart it.
         guard let engine, !engine.isRunning else { return }
         engine.prepare()
         try? engine.start()
+    }
+
+    private func setListening(_ value: Bool) {
+        gateLock.lock()
+        listening = value
+        gateLock.unlock()
+    }
+
+    private var isListening: Bool {
+        gateLock.lock()
+        defer { gateLock.unlock() }
+        return listening
     }
 
     /// Manual conversion (tap format → 16 kHz Int16 mono) for iOS 26 before

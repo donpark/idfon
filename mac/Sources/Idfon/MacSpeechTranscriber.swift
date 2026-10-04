@@ -26,6 +26,11 @@ final class MacSpeechTranscriber {
     /// True when VoiceProcessingIO is active; its multi-channel input format is
     /// fed via the manual converter rather than AnalyzerInputConverter.
     private var aecEnabled = false
+    /// Tap gate. Pausing/restarting `AVAudioEngine` renegotiated IO while TTS
+    /// played and could make `SpeechAnalyzer` reject the session; keeping the
+    /// engine running and dropping tap buffers keeps the IO stable.
+    private let gateLock = NSLock()
+    private var listening = true
 
     init(locale: Locale = Locale.current) {
         self.locale = locale
@@ -149,6 +154,7 @@ final class MacSpeechTranscriber {
         var tapBuffers = 0
         input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, time in
             guard let self, let builder = self.inputBuilder else { return }
+            guard self.isListening else { return }
             tapBuffers += 1
             if tapBuffers == 1 || tapBuffers % 500 == 0 {
                 Automation.mark("voice: tap buffers=\(tapBuffers) frames=\(buffer.frameLength)")
@@ -200,16 +206,31 @@ final class MacSpeechTranscriber {
         Task { await analyzer?.cancelAndFinishNow() }
     }
 
-    /// Stop/start the mic tap without tearing down the analyzer. Used while the
-    /// agent thinks/speaks so its own TTS can't leak into the next utterance.
+    /// Close/open the tap gate without touching the engine or the analyzer, so
+    /// the agent's own TTS cannot feed the next utterance.
     func pause() {
-        engine?.pause()
+        setListening(false)
     }
 
     func resume() {
+        setListening(true)
+        // Recover if the engine was stopped (interruption/route change) while
+        // gated; a normal resume does not restart it.
         guard let engine, !engine.isRunning else { return }
         engine.prepare()
         try? engine.start()
+    }
+
+    private func setListening(_ value: Bool) {
+        gateLock.lock()
+        listening = value
+        gateLock.unlock()
+    }
+
+    private var isListening: Bool {
+        gateLock.lock()
+        defer { gateLock.unlock() }
+        return listening
     }
 
     /// Manual clocked conversion (48 kHz Float32 mono → 16 kHz Int16 mono),
