@@ -98,7 +98,10 @@ final class ChatStore {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
         NSLog("idfon event: type=\(event.type) peer=\(peerId) text=\(text.prefix(48))")
         let messageID = event.messageId ?? event.eventId
-        guard seenMessageIDs.insert(messageID).inserted else { return }
+        // Daemon message ids are sender-local (an eve holder restarts its
+        // counter), so qualify by sender: deduping on the bare id silently
+        // dropped a new message that reused an id seen from another sender.
+        guard seenMessageIDs.insert("\(peerId)|\(messageID)").inserted else { return }
         // Call-control traffic (live invites, call_started/stopped) routes
         // to the call state machines; never shown as chat history. Invites
         // replayed after a relaunch are stale (app was closed when they
@@ -327,7 +330,7 @@ final class ChatStore {
     /// Rebuilds chat items from one cached session-log line. Mirrors the split
     /// in `ingest` (preamble text plus trailing envelopes).
     private func restore(_ stored: SessionStore.StoredMessage) {
-        guard seenMessageIDs.insert(stored.id).inserted else { return }
+        guard seenMessageIDs.insert("\(stored.peerId)|\(stored.id)").inserted else { return }
         let (preamble, envelopes) = MessageBody.parse(stored.text)
         var parts: [(String, MessageKind)] = []
         if let preamble { parts.append((preamble, .text(preamble))) }

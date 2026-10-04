@@ -80,7 +80,10 @@ final class ChatStore {
     private func ingestOnMain(_ event: Event) {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
         let messageID = event.messageId ?? event.eventId
-        guard seenMessageIDs.insert(messageID).inserted else { return }
+        // Daemon message ids are sender-local (an eve holder restarts its
+        // counter), so qualify by sender: deduping on the bare id silently
+        // dropped a new message that reused an id seen from another sender.
+        guard seenMessageIDs.insert("\(peerId)|\(messageID)").inserted else { return }
         // Call-control traffic (live invites, call_started/stopped) routes
         // to the call state machines (each ignores the other's envelopes);
         // never shown as chat history. Invites go through the per-channel
@@ -268,7 +271,7 @@ final class ChatStore {
             loaded.append(message)
         }
         messages = loaded
-        seenMessageIDs = Set(messages.map(\.id))
+        seenMessageIDs = Set(messages.map { "\($0.peerId)|\($0.id)" })
     }
 
     private func persistMessages() {

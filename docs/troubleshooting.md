@@ -411,3 +411,33 @@ the reply direction needs an agency-issued ticket on the target's holder. When
 a deployed Eve agent misbehaves, check the compiled `app/.output` freshness
 before blaming the model — a stale `instructions.md` looks like a model
 refusal. See `docs/agent-agency.md` for the current wiring.
+
+## Contact invite arrives but no Add-contact prompt (2026-10-03, FIXED)
+
+**Symptom.** Ask the `agency` agent (in a live call) for a new contact. It says
+it sent the invite, but the Add / Add and Always Trust prompt never appears —
+repeated attempts fail the same way. The invite *is* in the caller's daemon
+store (`tmp/idfond/state.json` on iOS) and in the event stream
+(`message.received`), but not in the app's rendered chat
+(`Library/Caches/idfon/sessions/<identity>/messages.json`).
+
+**Root cause.** Eve-holder message ids were a bare per-process counter
+(`eve_reply_1`, `eve_reply_2`, …; `crates/eve-idfon` `NEXT_REPLY_ID`). Holding
+the process restarting reset the counter, so a *new* message could reuse an id a
+previous one used. Both Apple `ChatStore`s deduped incoming events on the bare
+`message_id`, so the new message was silently dropped as a duplicate — even
+when it came from a different sender (`eve_reply_2` from one agent blocked
+`eve_reply_2` from the agency).
+
+**Fix.** `crates/eve-idfon/src/lib.rs` now mints ids with a per-process random
+token (`next_message_id`), so ids are globally unique; the Apple stores also
+qualify the dedupe key with the sender peer id. Existing already-delivered
+invites surface on the next app relaunch, because `hydrateHistory` replays the
+daemon's retained events.
+
+**Note.** The same live-call attempt leaves `bridge.log` warnings about
+`idempotency key was reused with different content`; that is a separate
+retry-path artifact (the invite itself is stored) and did not cause the missing
+prompt. See the `idempotency_key_conflict` entry above for the general pattern:
+message ids and idempotency keys must not be derived from state that resets on
+restart.
