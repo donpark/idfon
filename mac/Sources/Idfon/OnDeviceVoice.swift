@@ -37,38 +37,47 @@ enum SpeechVoice {
                 .max(by: { rank($0) < rank($1) })
             { return log(hit) }
         }
-        // The score ramp already sinks `compact`/`super-compact` below full
-        // Premium/Enhanced/Siri; a separate non-compact filter is not needed.
-        return pool
-            .max(by: { rank($0) != rank($1) ? rank($0) < rank($1) : $0.name > $1.name })
-            .map(log)
+        // Auto-select: rank by quality tier, ignore novelty/personal voices,
+        // and prefer the OS default when it is in the top tier.
+        let eligible = pool.filter { !isNovelty($0) }
+        let candidates = eligible.isEmpty ? pool : eligible
+        let topScore = candidates.map(rank).max() ?? 0
+        let top = candidates.filter { rank($0) == topScore }
+        if let systemDefault = AVSpeechSynthesisVoice(language: language),
+           top.contains(where: { $0.identifier == systemDefault.identifier }) {
+            return log(systemDefault)
+        }
+        return top.max(by: { $0.name > $1.name }).map(log)
     }
 
     static func isCompact(_ voice: AVSpeechSynthesisVoice) -> Bool {
         (voice.identifier + " " + voice.name).lowercased().contains("compact")
     }
 
-    /// Higher is better: Premium ≈ Siri (full) > Enhanced > Siri (compact) >
-    /// default. `quality` is the base; the identifier/name is checked too
-    /// because some tiers (notably Siri) do not report as `premium`/`enhanced`.
+    /// Auto-selection score. `.quality` is authoritative (Apple: `.premium` >
+    /// `.enhanced` > `.default`); the identifier only breaks ties toward the
+    /// modern voice store. Do **not** key on names or a `siri` id: the
+    /// "(Enhanced)" label is Settings UI, the Siri-section voices are not
+    /// selectable by third-party apps, and `ttsbundle.siri_*_compact` is a
+    /// legacy low-quality voice, not the Siri tier.
     static func rank(_ voice: AVSpeechSynthesisVoice) -> Int {
-        let label = (voice.identifier + " " + voice.name).lowercased()
         var score: Int
-        if voice.quality == .premium || label.contains("premium") {
-            score = 5000
-        } else if label.contains("siri") {
-            score = 4800
-        } else if voice.quality == .enhanced || label.contains("enhanced") {
-            score = 4000
-        } else {
-            score = 2000
+        switch voice.quality {
+        case .premium: score = 3000
+        case .enhanced: score = 2000
+        default: score = 1000
         }
-        if label.contains("compact") { score -= 1500 }
-        if #available(iOS 17.0, macOS 14.0, *) {
-            if voice.voiceTraits.contains(.isNoveltyVoice) { score -= 800 }
-            if voice.voiceTraits.contains(.isPersonalVoice) { score -= 400 }
-        }
+        if voice.identifier.hasPrefix("com.apple.voice.") { score += 100 }
+        if isNovelty(voice) { score -= 5000 }
         return score
+    }
+
+    /// Novelty/effect voices and the user's personal (cloned) voice are never
+    /// chosen automatically; they are still available via an explicit override.
+    static func isNovelty(_ voice: AVSpeechSynthesisVoice) -> Bool {
+        guard #available(iOS 17.0, macOS 14.0, *) else { return false }
+        return voice.voiceTraits.contains(.isNoveltyVoice)
+            || voice.voiceTraits.contains(.isPersonalVoice)
     }
 
     /// Log every installed voice for `language`, best-ranked first. Driven by
