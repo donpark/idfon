@@ -47,6 +47,17 @@ enum SpeechModel: String {
         return URL(string: trimmed.hasSuffix("/") ? trimmed : trimmed + "/")
     }
 
+    /// Single-file default source, used when no pack URL is configured so
+    /// selecting the engine just works. Only Whistle (one file).
+    var defaultFileURL: URL? {
+        switch self {
+        case .whistle:
+            return URL(string: "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact")
+        case .kokoroAne:
+            return nil // FluidAudio's own downloader handles the chain
+        }
+    }
+
     private var directEnv: String {
         switch self {
         case .kokoroAne: return "IDFON_KOKORO_PACK_URL"
@@ -88,7 +99,33 @@ enum SpeechProvisioning {
         if let base = model.directBaseURL {
             return await directPackDirectory(base: base, model: model)
         }
+        if let fileURL = model.defaultFileURL {
+            return await downloadedFile(fileURL: fileURL, model: model)
+        }
         return nil
+    }
+
+    /// Fetches a single-file model (Whistle) into the app cache.
+    private static func downloadedFile(fileURL: URL, model: SpeechModel) async -> URL? {
+        let fm = FileManager.default
+        guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let root = caches.appendingPathComponent("speech-packs/\(model.rawValue)", isDirectory: true)
+        let dest = root.appendingPathComponent(model.markerPath)
+        if fm.fileExists(atPath: dest.path) {
+            Automation.mark("voice: speech pack \(model.rawValue) cached")
+            return root
+        }
+        Automation.mark("voice: speech pack \(model.rawValue) downloading \(fileURL.lastPathComponent)")
+        guard let (data, response) = try? await URLSession.shared.data(from: fileURL),
+              (response as? HTTPURLResponse)?.statusCode == 200 else {
+            Automation.mark("voice: speech pack download failed")
+            return nil
+        }
+        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try? data.write(to: dest, options: .atomic)
+        guard fm.fileExists(atPath: dest.path) else { return nil }
+        Automation.mark("voice: speech pack \(model.rawValue) ready")
+        return root
     }
 
     #if canImport(BackgroundAssets)
