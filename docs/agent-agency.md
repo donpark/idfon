@@ -88,7 +88,7 @@ signed with the agency's own key.
 AI_GATEWAY_API_KEY=... scripts/agency-serve.sh          # agency + provisioner
 AGENCY_URL=http://127.0.0.1:18777 \
   EVE_INSTANCE=gpt6luna EVE_CONTACT_NAME="GPT-6-Luna" \
-  EVE_IDFON_MODEL=openai/gpt-6-luna scripts/llm-cascade-serve.sh   # target self-registers
+  EVE_IDFON_MODEL=openai/gpt-6-luna scripts/llm-serve.sh   # target self-registers
 ```
 
 ## Pieces
@@ -136,5 +136,5 @@ Target env: `AGENCY_URL` (enables registration + reply credential), `AGENCY_PEER
 - **Dynamic roster**: arbitrary requested models still need per-request holder
   provisioning (port/key lifecycle), which the fixed catalog avoids.
 
-See `docs/voice-side-channel.md` for the `llm-cascade` agent and per-instance model
+See `docs/voice-side-channel.md` for the `llm` agent and per-instance model
 selection, and `docs/idfon-eve.md` for the channel.

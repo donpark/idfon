@@ -32,7 +32,7 @@ set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cli="${IDFON_CLI:-$root/target/release/idfon}"
 socket="${IDFON_SOCKET:-/tmp/idfon/idfond.sock}"
-agent="${EVE_AGENT:-llm-cascade}"
+agent="${EVE_AGENT:-llm}"
 # EVE_INSTANCE keys the contact's identity/home/ports. `auto` derives a slug
 # from the contact/model so contacts get stable, readable instance names
 # instead of ad-hoc ones; unset keeps the agent name.

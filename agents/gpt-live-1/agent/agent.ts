@@ -5,8 +5,8 @@ import { defineAgent } from "eve";
 // Live session; this model orchestrates turns and handles text.
 //
 // Demo voice agent for the GPT-Live-1 full-duplex model — one backend among
-// several a voice agent can run (docs/voice-agent.md). The server-side cascade
-// is the other demo (agents/cascade-voice).
+// several a voice agent can run (docs/voice-agent.md). The generic
+// server-cascade capability is `agents/voice-agent`.
 const model = process.env.EVE_IDFON_MODEL || "openai/gpt-6-luna";
 
 export default defineAgent({ model });

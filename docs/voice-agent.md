@@ -308,9 +308,8 @@ crates and a backend is the only code an engine needs:
   and `relay` (`RelayFactory`, frames to a standalone TS agent). GPT-Live is a
   separate `LiveCallHandler` on the same shared transport (`idfon-live-media`),
   not a `VoiceBackend`.
-- `agents/voice-agent` — the generic template (providers/relay/wrapping) and
-  `agents/cascade-voice` — the Rust-cascade demo; each `live.json` sets
-  `backend` and `voice_route.mode = server-cascade`.
+- `agents/voice-agent` — the generic template (providers/relay/wrapping); its
+  `live.json` sets `backend` and `voice_route.mode = server-cascade`.
 
 So: **add an engine** = one `VoiceBackend` impl + one registration; **add a
 voice agent** = a config file (+ an Eve agent dir). No new handler, no new

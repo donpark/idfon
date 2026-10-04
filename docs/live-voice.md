@@ -77,8 +77,8 @@ agent); `pnpm agent` manages one agent at a time:
 pnpm eve build                    # eve-idfon + all agents
 pnpm eve clean                    # remove dist/.output everywhere
 
-pnpm agent build llm-cascade      # eve build in agents/llm-cascade
-pnpm agent clean llm-cascade
+pnpm agent build llm      # eve build in agents/llm
+pnpm agent clean llm
 pnpm agent restart gpt-live-1     # stop then start; needs AI_GATEWAY_API_KEY
 pnpm agent kill gpt-live-1        # force-stop the manager + holder/bridge/eve
 pnpm agent list                   # agents, mode, pid/status, port, home
