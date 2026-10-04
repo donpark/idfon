@@ -35,9 +35,13 @@ export AGENCY_PROVISIONER_SECRET="$secret"
 if [ -n "${AGENCY_VOICE_DELEGATE:-}" ]; then
   delegate_config="${AGENCY_VOICE_DELEGATE_CONFIG:-$HOME/.idfon/agency/voice-delegate.json}"
   mkdir -p "$(dirname "$delegate_config")"
+  # AGENCY_VOICE_DELEGATE_ALLOW_FILE (optional): the delegate holder's
+  # allow-file; each caller minted here is admitted there so its call dials.
   jq -nc --arg peer "$AGENCY_VOICE_DELEGATE" \
     --argjson contact "${AGENCY_VOICE_DELEGATE_CONTACT:-null}" \
-    '{voice_route:{mode:"delegated",delegate:{peer_id:$peer,contact:$contact,audio:"pcm24k"}}}' \
+    --arg allow "${AGENCY_VOICE_DELEGATE_ALLOW_FILE:-}" \
+    '({voice_route:{mode:"delegated",delegate:{peer_id:$peer,contact:$contact,audio:"pcm24k"}}})
+     + (if $allow == "" then {} else {voice_delegate_allow_file:$allow} end)' \
     > "$delegate_config"
   export EVE_LIVE_CONFIG="$delegate_config"
 fi

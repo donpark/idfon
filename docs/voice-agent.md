@@ -193,14 +193,17 @@ tickets carry the route:
 ```sh
 AGENCY_VOICE_DELEGATE=<voice-agent-peer> \
 AGENCY_VOICE_DELEGATE_CONTACT='<endpoint-addr JSON>' \
+AGENCY_VOICE_DELEGATE_ALLOW_FILE="$HOME/.idfon/voice-agent/allowed-peers" \
   scripts/agency-serve.sh
 ```
 
-Then re-pair callers (the stored ticket must carry the new route) and pair the
-caller with the voice agent so the app can dial it. `VoiceDelegate` gained a
-`contact` field for exactly this; the caller must be admitted by the voice
-agent's holder (the wrapping setup already admits the Agency, and the Agency
-admits the voice agent — the caller admission is the remaining wiring).
+Then re-mint the caller's Agency ticket. The apps auto-add the delegate from
+the signed `contact` on first call, and, because `AGENCY_VOICE_DELEGATE_ALLOW_FILE`
+is set, each caller the Agency mints a ticket for is **admitted on the voice
+agent's allow-file** at the same time — so the call dials without a separate
+pairing. `VoiceDelegate` gained `contact` for the address; the allow-file
+admission keeps the credential simple (the delegate holder accepts the caller
+by allow-list, not a per-caller ticket).
 
 ## The kit (fast iteration)
 
