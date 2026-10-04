@@ -557,6 +557,15 @@ fallback and the neural engines are opt-in:
   `parakeet ready`), so the loop waits for `parakeet ready`. Verified on an
   iPhone 16 (2026-10-04): the caller's turn transcribed cleanly
   (`heard=Hello. Um about parakeet. I'm testing it`) with no TTS bleed.
+  `WhistleAsr` (Cactus Compute Whistle, CPU-only) is a third, opt-in backend:
+  one 16.9 MB `.cact` file, 16 kHz mono ≤30 s whole-clip, seven languages with
+  auto-detect. It is **batch, not streaming**, so the adapter runs its own
+  energy endpointer and calls `needle_transcribe` at utterance end (no
+  word-by-word partials). The Needle engine is vendored
+  (`scripts/fetch-needle.sh` → `ios/Vendor/device/libneedle.a`, linked with
+  `-lc++`) and the model packs via `IDFON_WHISTLE_PACK_URL` /
+  `-whistlepackurl` (`scripts/build-whistle-pack.sh`). Verified on an iPhone 16
+  (2026-10-04): `whistle ready bytes=16919407` → clean transcript → reply.
 - **Selection** — persisted per device; a "Voice engine" sheet on the iOS
   Recents screen (the waveform button) toggles them. `IDFON_TTS`/`-ttsbackend`
   and `IDFON_ASR`/`-asrbackend` override for testing.
