@@ -60,6 +60,10 @@ pub struct Profile {
     /// Response format requested from `audio/speech`. `pcm` is s16le 24 kHz.
     #[serde(default = "default_response_format")]
     pub response_format: String,
+    /// Local servers (Kokoro, whisper shims) often need no auth: skip the
+    /// bearer header and its key requirement when set.
+    #[serde(default)]
+    pub allow_missing_key: bool,
 }
 
 fn default_response_format() -> String {
@@ -105,14 +109,19 @@ impl Profile {
             voice: std::env::var("IDFON_TTS_VOICE").unwrap_or_else(|_| default_voice()),
             response_format: std::env::var("IDFON_TTS_FORMAT")
                 .unwrap_or_else(|_| default_response_format()),
+            allow_missing_key: false,
         })
     }
 
     fn api_key(&self) -> Result<String> {
-        std::env::var(&self.api_key_env)
+        match std::env::var(&self.api_key_env)
             .ok()
             .filter(|key| !key.is_empty())
-            .ok_or_else(|| anyhow!("{} is required for the voice engine", self.api_key_env))
+        {
+            Some(key) => Ok(key),
+            None if self.allow_missing_key => Ok(String::new()),
+            None => Err(anyhow!("{} is required for the voice engine", self.api_key_env)),
+        }
     }
 }
 
@@ -176,10 +185,11 @@ impl OpenAiCompatEngine {
             let form = reqwest::multipart::Form::new()
                 .part("file", part)
                 .text("model", model);
-            let response = client
-                .post(&url)
-                .bearer_auth(&api_key)
-                .multipart(form)
+            let mut request = client.post(&url).multipart(form);
+            if !api_key.is_empty() {
+                request = request.bearer_auth(&api_key);
+            }
+            let response = request
                 .send()
                 .await
                 .context("transcription request")?;
@@ -212,15 +222,16 @@ impl OpenAiCompatEngine {
         };
         let client = self.client.clone();
         Self::block_on(async move {
-            let response = client
-                .post(&url)
-                .bearer_auth(&api_key)
-                .json(&serde_json::json!({
-                    "model": model,
-                    "input": text,
-                    "voice": voice,
-                    "response_format": response_format,
-                }))
+            let mut request = client.post(&url).json(&serde_json::json!({
+                "model": model,
+                "input": text,
+                "voice": voice,
+                "response_format": response_format,
+            }));
+            if !api_key.is_empty() {
+                request = request.bearer_auth(&api_key);
+            }
+            let response = request
                 .send()
                 .await
                 .context("speech request")?;
