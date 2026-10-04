@@ -13,6 +13,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         Task { await DaemonClient().startSharedProvider() }
         LiveCall.shared.recoverStaleCall()
         VideoCall.shared.recoverStaleCall()
+        // Warm the TTS model (Kokoro) so the first call reply is not blocked by
+        // a cold model download/compile.
+        Task { @MainActor in SpeechEngines.prewarm() }
         setVideoRotation()
         smokeCheckStatus()
         registerVoiceEngine()

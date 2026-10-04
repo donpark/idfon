@@ -58,6 +58,7 @@ final class VoiceAgentSession: NSObject {
         activePeerId = peerRef
         micMuted = false
         configureSession()
+        SpeechEngines.prewarm()
         segmenter.onPartial = { [weak self] text in self?.setState(.listening(text)) }
         segmenter.onCommit = { [weak self] text in self?.deliver(text) }
         segmenter.start()
