@@ -1,13 +1,13 @@
 //! Local command engine: shell out to a model's CLI for STT/TTS.
 //!
-//! Open-source models (Kokoro TTS, Whistle/Parakeet ASR, whisper.cpp, …) ship
+//! Open-source models (Kokoro TTS, Parakeet ASR, whisper.cpp, …) ship
 //! with all sorts of interfaces, so the honest common denominator is "run this
 //! command". A command reads a WAV and prints (or writes) a transcript (STT),
 //! or reads text and writes a WAV (TTS):
 //!
 //! ```json
 //! { "provider": "command",
-//!   "stt_cmd": "whistle transcribe {input}",
+//!   "stt_cmd": "whisper {input}",
 //!   "tts_cmd": "kokoro-tts {text} {output}" }
 //! ```
 //!
