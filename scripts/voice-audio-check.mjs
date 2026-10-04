@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 // resolve deps from the agent app (ogg-opus-decoder lives in its node_modules)
-const agentRoot = fileURLToPath(new URL("../agents/live-voice/", import.meta.url));
+const agentRoot = fileURLToPath(new URL("../agents/gpt-live-1/", import.meta.url));
 const require = createRequire(join(agentRoot, "package.json"));
 const { OggOpusDecoder } = require("ogg-opus-decoder");
 

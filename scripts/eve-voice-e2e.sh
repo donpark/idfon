@@ -69,10 +69,10 @@ HOLDER_PID=$(printf '%s' "$HOLDER_ADDR" | jq -r .id)
 # Eve app: live-voice, real orchestrator model, per-run bridge port.
 app="$work/app"
 mkdir -p "$app"
-cp -R "$root/agents/live-voice/agent" "$root/agents/live-voice/package.json" \
-  "$root/agents/live-voice/package-lock.json" "$app/"
+cp -R "$root/agents/gpt-live-1/agent" "$root/agents/gpt-live-1/package.json" \
+  "$root/agents/gpt-live-1/package-lock.json" "$app/"
 # Reuse the agent's installed node_modules; a fresh npm install adds minutes.
-cp -R "$root/agents/live-voice/node_modules" "$app/node_modules"
+cp -R "$root/agents/gpt-live-1/node_modules" "$app/node_modules"
 # eve-idfon is installed as a relative symlink into the repo; repoint
 # it so the app builds outside the repo tree.
 ln -sfn "$integration" "$app/node_modules/eve-idfon"

@@ -93,7 +93,7 @@ adds `voice` when set, so the signed bytes stay byte-identical.
 
 The concrete demos (see `docs/voice-agent.md` for the full current picture):
 
-- **`agents/live-voice` — native-duplex.** One full-duplex model
+- **`agents/gpt-live-1` — native-duplex.** One full-duplex model
   (`openai/gpt-live-1`) via the `gpt-live` backend in `crates/idfon-voice-agent`;
   its `live.json` advertises
   `voice_route.mode = native-duplex`. Served by `scripts/live-voice-serve.sh`
@@ -510,9 +510,9 @@ ios/Checks/VoicePromptSegmenterCheck/main.swift && /tmp/vpscheck`. Device E2E of
 the continuous loop is still pending.
 
 **Target agent.** Rather than strip GPT-Live out of `live-voice`, a separate
-text-only agent was added: `agents/llm` (model + JustBash sandbox +
+text-only agent was added: `agents/llm-cascade` (model + JustBash sandbox +
 `eve-idfon`, no GPT-Live and no voice tools), served by the generalized
-`scripts/llm-serve.sh`. Both apps are paired to it (contact name `eve`
+`scripts/llm-cascade-serve.sh`. Both apps are paired to it (contact name `eve`
 on the Mac) and verified end-to-end (`reply=both addresses pinned.`). GPT-Live
 remains available through the untouched `live-voice` contact.
 
@@ -524,10 +524,10 @@ command — the app may rename the contact locally when it accepts the ticket:
 
 ```sh
 EVE_INSTANCE=gpt61 EVE_CONTACT_NAME="GPT-6.1-Sol" \
-  EVE_IDFON_MODEL=openai/gpt-6.1-sol scripts/llm-serve.sh
+  EVE_IDFON_MODEL=openai/gpt-6.1-sol scripts/llm-cascade-serve.sh
 # prints contact: + ticket: -> accept as a new contact
 EVE_INSTANCE=fable51 EVE_CONTACT_NAME="Fable 5.1" \
-  EVE_IDFON_MODEL=<model> scripts/llm-serve.sh
+  EVE_IDFON_MODEL=<model> scripts/llm-cascade-serve.sh
 ```
 
 **Stable pairing.** Both the holder and the daemon pinned their UDP port
@@ -916,4 +916,4 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
 - Kokoro-82M — <https://github.com/hexgrad/kokoro> · <https://huggingface.co/hexgrad/Kokoro-82M>
 - Kokoro-7M-Distill — <https://huggingface.co/oddadmix/Kokoro-7M-Distill>
 - Whisper — <https://github.com/ggml-org/whisper.cpp>
-- Eve channel contract (history, streaming, turnPolicy) — `agents/live-voice/node_modules/eve/docs`
+- Eve channel contract (history, streaming, turnPolicy) — `agents/gpt-live-1/node_modules/eve/docs`

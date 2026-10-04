@@ -1,5 +1,5 @@
 {
-  "_comment": "Fixed catalog served by the agency agent. Each entry is an already-running `llm` instance (start it with EVE_INSTANCE=<instance> EVE_IDFON_MODEL=<model> scripts/llm-serve.sh). `instance` maps to the holder home ~/.idfon/<instance>; set `home` to override. The caller is issued a subject-bound capability ticket for the holder, so they can add it as a contact named `name`.",
+  "_comment": "Fixed catalog served by the agency agent. Each entry is an already-running `llm-cascade` configured run (start it with EVE_INSTANCE=<instance> EVE_IDFON_MODEL=<model> scripts/llm-cascade-serve.sh) — a distinct identity/model the agency introduces. `instance` maps to the holder home ~/.idfon/<instance>; set `home` to override. The caller is issued a subject-bound capability ticket for the holder, so they can add it as a contact named `name`.",
   "contacts": [
     {
       "name": "GPT-6-Luna",
