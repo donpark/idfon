@@ -3140,8 +3140,13 @@ name = "idfon-live-cascade"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "ed25519-dalek",
  "eve-idfon",
+ "idfon-core",
+ "idfon-live-media",
+ "idfon-protocol",
  "idfon-voice",
+ "iroh",
  "serde_json",
  "tokio",
 ]
