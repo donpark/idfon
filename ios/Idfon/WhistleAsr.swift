@@ -32,6 +32,9 @@ final class WhistleAsr: AsrEngine {
     private var converter: AVAudioConverter?
     private var captureFormat: AVAudioFormat?
     private var started = false
+    /// Newline-separated phrases Whistle biases its beam search toward, so
+    /// app-specific proper nouns survive ("idfon", contact names).
+    private var keywords = "idfon"
 
     // Endpointer state, guarded by `lock`.
     private var gated = true
@@ -62,6 +65,8 @@ final class WhistleAsr: AsrEngine {
         self.onText = onText
         let bytes = try await Self.loadModel()
         Automation.mark("voice: whistle ready bytes=\(bytes)")
+        keywords = await Self.keywordList()
+        Automation.mark("voice: whistle keywords=\(keywords.replacingOccurrences(of: "\n", with: ","))")
         _ = onError  // batch engine: failures return an empty transcript
 
         let input = engine.inputNode
@@ -167,27 +172,30 @@ final class WhistleAsr: AsrEngine {
     // MARK: - model
 
     private func transcribe(_ clip: [Float]) {
+        let keywords = self.keywords
         work.async { [weak self] in
             guard let self else { return }
-            let text = Self.run(clip)
+            let text = Self.run(clip, keywords: keywords)
             guard !text.isEmpty else { return }
             self.onText?(text, true)
         }
     }
 
-    private static func run(_ clip: [Float]) -> String {
+    private static func run(_ clip: [Float], keywords: String) -> String {
         var buffer = [CChar](repeating: 0, count: 16_384)
-        let rc = clip.withUnsafeBufferPointer { pcm in
-            buffer.withUnsafeMutableBufferPointer { out in
-                needle_transcribe(
-                    pcm.baseAddress,
-                    Int32(pcm.count),
-                    nil,
-                    nil,
-                    0,
-                    out.baseAddress,
-                    Int32(out.count)
-                )
+        let rc = keywords.withCString { keywordPointer in
+            clip.withUnsafeBufferPointer { pcm in
+                buffer.withUnsafeMutableBufferPointer { out in
+                    needle_transcribe(
+                        pcm.baseAddress,
+                        Int32(pcm.count),
+                        nil,
+                        keywordPointer,
+                        0,
+                        out.baseAddress,
+                        Int32(out.count)
+                    )
+                }
             }
         }
         guard rc >= 0 else {
@@ -195,6 +203,20 @@ final class WhistleAsr: AsrEngine {
             return ""
         }
         return parseText(String(cString: buffer))
+    }
+
+    /// Seed phrases plus the names of known contacts, so names the acoustic
+    /// model has never seen come through. Best-effort: peers() may fail.
+    private static func keywordList() async -> String {
+        var words = ["idfon"]
+        if let peers = try? await DaemonClient().peers() {
+            for peer in peers {
+                if let name = peer.name, !name.isEmpty, !words.contains(name) {
+                    words.append(name)
+                }
+            }
+        }
+        return words.joined(separator: "\n")
     }
 
     private static func parseText(_ json: String) -> String {
