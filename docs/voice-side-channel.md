@@ -117,6 +117,21 @@ agent.
 
 The load-bearing constraint: **the service boundary is text.**
 
+### Baseline, remote, and agent-initiated calls
+
+Voice I/O is **app-side first**: a client can talk to any 1:1 contact with no
+service in the loop (STT/TTS in the app, text over idfon) — the free baseline.
+A remote voice capability (this service, `native-duplex`, or a provider-backed
+holder) is **opt-in**, referenced by the ticket's `voice` block, and never
+required by the baseline.
+
+The reference is addressable, so the direction is not fixed: an agent or
+subagent handed the reference can open a session to ask the user (or the
+originating agent) for clarification. Authorization is the reference itself —
+the listening client issues the scoped grant (N9) — and an agent-initiated
+call arrives as an incoming request the user can decline. See
+`docs/voice-agent.md` ("Baseline vs remote", "Agent-initiated calls").
+
 ## Non-goals
 
 - Not the conversational brain, not a context owner. The **canonical transcript
