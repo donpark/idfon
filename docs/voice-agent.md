@@ -223,11 +223,15 @@ posts the audio back. Config is `IDFON_VOICE_ENGINE` (`stt`/`tts` blocks as in
 the provider seam, plus `wrap` for the wrapped agent).
 
 ```sh
+# 1. voice agent with the relay backend (writes $home/bridge-url)
 EVE_LIVE_CONFIG=agents/voice-agent/relay.json scripts/voice-agent-serve.sh
-IDFON_BRIDGE_URL=http://127.0.0.1:<voice-agent-bridge> \
-  IDFON_VOICE_ENGINE='{"stt":{"provider":"openai-compatible"},"tts":{"provider":"openai-compatible"},"wrap":{"peer_id":"…","endpoint_id":"…","ticket":{…}}}' \
-  node integrations/eve-idfon-voice/live-relay.mjs
+# 2. the relay, pointed at that bridge
+IDFON_VOICE_ENGINE='{"stt":{"provider":"openai-compatible"},"tts":{"provider":"openai-compatible"},"wrap":{"peer_id":"…","endpoint_id":"…","ticket":{…}}}' \
+  scripts/voice-live-relay.sh
 ```
+
+`scripts/voice-live-relay.sh` reads the bridge URL from
+`$home/bridge-url` (or `IDFON_BRIDGE_URL`).
 
 This is the *channel-level live audio* path (B); the per-utterance attachment
 path (A) is the simpler alternative that reuses the Eve tools.
