@@ -194,6 +194,9 @@ done
 
 # Agent tools reach their own bridge (for A2A card requests) via these.
 export IDFON_BRIDGE_URL="http://127.0.0.1:$bridge_port"
+# Persist the bridge URL so a companion process (e.g. the standalone live
+# relay) can find it without re-deriving the port.
+printf '%s' "$IDFON_BRIDGE_URL" > "$home/bridge-url" 2>/dev/null || true
 export IDFON_BRIDGE_SECRET=m2-test-secret
 
 # Optional self-registration: when AGENCY_URL is set, this agent issues a

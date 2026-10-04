@@ -87,6 +87,39 @@ async function play(peerId, pcm) {
   if (!response.ok) throw new Error(`live audio HTTP ${response.status}`);
 }
 
+/** ElevenLabs chunked TTS: post each PCM chunk as it arrives. */
+async function speakElevenLabs(cfg, text, peerId) {
+  const base = (cfg.base_url || "https://api.elevenlabs.io/v1").replace(/\/$/, "");
+  const url = `${base}/text-to-speech/${cfg.voice}?output_format=pcm_${RATE}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "xi-api-key": apiKey(cfg), "content-type": "application/json" },
+    body: JSON.stringify({ text, model_id: cfg.model || "eleven_turbo_v2_5" }),
+  });
+  if (!response.ok || !response.body) throw new Error(`tts HTTP ${response.status}: ${await response.text()}`);
+  const reader = response.body.getReader();
+  let carry = Buffer.alloc(0);
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    carry = Buffer.concat([carry, Buffer.from(value)]);
+    const usable = carry.length - (carry.length % 2);
+    if (usable > 0) {
+      await play(peerId, carry.subarray(0, usable));
+      carry = carry.subarray(usable);
+    }
+  }
+}
+
+/** Speak text on the call, streaming when the TTS provider supports it. */
+async function speak(text, peerId) {
+  const cfg = engine.tts || {};
+  if ((cfg.provider || "openai-compatible") === "elevenlabs") {
+    return speakElevenLabs(cfg, text, peerId);
+  }
+  await play(peerId, await synthesize(text));
+}
+
 // Energy endpointer (|s16| > 300, 800 ms quiet tail), mirroring idfon-voice.
 const THRESHOLD = 300;
 const QUIET_FRAMES = (RATE * 0.8);
@@ -125,7 +158,7 @@ async function onFrame(frame) {
     const reply = (await forward(transcript)).trim();
     if (!reply) return;
     console.error(`[live-relay] reply: ${reply}`);
-    await play(frame.peer_id, await synthesize(reply));
+    await speak(reply, frame.peer_id);
   } catch (error) {
     console.error(`[live-relay] turn failed: ${error}`);
   }
