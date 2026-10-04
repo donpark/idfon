@@ -80,11 +80,15 @@ pnpm eve clean                    # remove dist/.output everywhere
 pnpm agent build live-voice    # eve build in agents/live-voice
 pnpm agent clean live-voice
 pnpm agent restart live-voice  # stop then start; needs AI_GATEWAY_API_KEY
+pnpm agent kill live-voice     # force-stop the manager + holder/bridge/eve
 ```
 
 `pnpm agent build all` / `clean all` cover every `agents/*` directory and skip
-agents without an installed `eve`; `start`/`stop`/`restart` apply only to
-agents with a `scripts/<name>-serve.sh`. The extension is also rebuilt by its
+agents without an installed `eve`; `start`/`stop`/`restart`/`kill` apply to the
+agents with a `scripts/<name>-serve.sh` (under `all`, the rest are reported as
+skipped rather than silently ignored). `stop` is graceful — the serve script's
+trap tears down its holder/bridge/eve children; `kill` is a forced SIGKILL that
+also reaps them. The extension is also rebuilt by its
 `prepare` script on `pnpm install`, and lazily by an agent's `eve build` when
 `dist/extension/_manifest.json` is stale.
 

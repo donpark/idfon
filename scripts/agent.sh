@@ -24,22 +24,25 @@ all_agents() {
 }
 
 usage() {
-  printf 'Usage: pnpm agent {start|stop|restart|build|clean} <name|all>\nServed agents: %s\n' "$(available_agents)" >&2
+  printf 'Usage: pnpm agent {start|stop|restart|kill|build|clean} <name|all>\n' >&2
+  printf 'Served agents: %s\n' "$(available_agents)" >&2
+  printf 'All agents (build/clean): %s\n' "$(all_agents)" >&2
   exit 2
 }
 
-[[ "$action" == start || "$action" == stop || "$action" == restart || "$action" == build || "$action" == clean ]] || usage
+[[ "$action" == start || "$action" == stop || "$action" == restart || "$action" == kill || "$action" == build || "$action" == clean ]] || usage
 [[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || usage
 
-# 'all' fans out to every agent: build/clean cover every agents/<name> dir,
-# start/stop/restart cover the served subset (those with a *-serve.sh).
+# 'all' fans out to every agent directory. build/clean touch all of them;
+# start/stop/restart/kill cover the ones with a serve script (others are
+# reported as skipped, not silently ignored).
 if [[ "$name" == all ]]; then
-  case "$action" in
-    build|clean) targets=$(all_agents) ;;
-    *) targets=$(available_agents) ;;
-  esac
   status=0
-  for target in $targets; do
+  for target in $(all_agents); do
+    if [[ "$action" != build && "$action" != clean && ! -f "$root/scripts/$target-serve.sh" ]]; then
+      echo "skipped $target: no serve script" >&2
+      continue
+    fi
     bash "$0" "$action" "$target" || status=1
   done
   exit "$status"
@@ -91,6 +94,35 @@ is_serve_process() {
   command=$(ps -p "$1" -o command= 2>/dev/null || true)
   [[ "$command" == *"$serve"* || "$command" == *"${name}-serve.sh"* ]]
 }
+
+if [[ "$action" == kill ]]; then
+  # Force-stop the manager *and* its children (holder/bridge/eve), which a
+  # SIGKILL on the manager would otherwise orphan — the serve scripts kill
+  # them via a TERM trap, which -9 skips.
+  pids=()
+  if [[ -r "$pidfile" ]]; then
+    read -r pid < "$pidfile"
+    [[ "$pid" =~ ^[0-9]+$ ]] && pids+=("$pid")
+  fi
+  while IFS= read -r child; do
+    pids+=("$child")
+  done < <(pgrep -f "$home/" 2>/dev/null || true)
+  if [[ ${#pids[@]} -eq 0 ]]; then
+    rm -f "$pidfile"
+    echo "$name is not running"
+    exit 0
+  fi
+  kill -9 ${pids[@]+"${pids[@]}"} 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    alive=0
+    for pid in ${pids[@]+"${pids[@]}"}; do kill -0 "$pid" 2>/dev/null && alive=1; done
+    [[ "$alive" -eq 0 ]] && break
+    sleep 0.1
+  done
+  rm -f "$pidfile"
+  echo "killed $name (${#pids[@]} process(es))"
+  exit 0
+fi
 
 if [[ "$action" == start ]]; then
   if [[ -r "$pidfile" ]]; then
