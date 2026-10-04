@@ -44,6 +44,26 @@ const MAX_LIVE_PUBLISHERS: usize = 8;
 const MAX_BLOB_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_LIVE_TTL_SECS: u64 = 3600;
 static NEXT_REPLY_ID: AtomicU64 = AtomicU64::new(1);
+/// A random token unique to this process. Holder-generated message ids used to
+/// be a bare in-process counter (`eve_reply_1`, `eve_reply_2`, …), so restarting
+/// the holder reused ids. Receivers that dedupe on message id — the Apple apps
+/// do exactly that — then silently dropped a new message that happened to reuse
+/// a seen id, which is how a fresh contact invite went missing. The per-process
+/// token makes the ids globally unique across restarts.
+static PROCESS_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn next_message_id(prefix: &str) -> String {
+    use getrandom::rand_core::Rng as _;
+    let token = PROCESS_TOKEN.get_or_init(|| {
+        let mut bytes = [0u8; 8];
+        getrandom::rand_core::UnwrapErr(getrandom::SysRng).fill_bytes(&mut bytes);
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    });
+    format!(
+        "{prefix}{token}_{:x}",
+        NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 #[derive(Parser)]
 #[command(
@@ -1097,10 +1117,7 @@ async fn handle_reply(
     // fed back to the live session; capture it before `text` moves.
     let commentary = target.live_commentary.clone();
     let commentary_text = commentary.as_ref().map(|_| strip_envelopes(&text));
-    let message_id = format!(
-        "eve_reply_{}",
-        NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed)
-    );
+    let message_id = next_message_id("eve_reply_");
     let text = target
         .a2a_depth
         .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text))
@@ -1175,10 +1192,7 @@ async fn handle_status(
         .endpoint_id
         .parse()
         .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
-    let message_id = format!(
-        "eve_status_{}",
-        NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed)
-    );
+    let message_id = next_message_id("eve_status_");
     let reply_ticket = reply_ticket
         .filter(|ticket| ticket.issuer == target.peer_id)
         .cloned();
@@ -1226,10 +1240,7 @@ async fn handle_input(
         .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
     let payload = serde_json::to_vec(&requests).context("encode input requests")?;
     let text = format!("IDFON-HITL/1\npayload={}\n", BASE64.encode(payload));
-    let message_id = format!(
-        "eve_input_{}",
-        NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed)
-    );
+    let message_id = next_message_id("eve_input_");
     let envelope = sign_message(
         key,
         peer_id(key),
@@ -1331,7 +1342,7 @@ async fn handle_peer_send(
                 .context("decode outbound capability ticket")?,
         )
     };
-    let message_id = format!("eve_peer_{}", NEXT_REPLY_ID.fetch_add(1, Ordering::Relaxed));
+    let message_id = next_message_id("eve_peer_");
     let text = encode_a2a_envelope(a2a_depth, &text);
     let envelope = sign_message_with_ticket(
         key,
@@ -1785,6 +1796,17 @@ mod tests {
     use super::*;
     use idfon_core::{generate_identity, issue_capability_ticket, sign_message_with_ticket};
     use tokio::io::duplex;
+
+    #[test]
+    fn generated_message_ids_are_unique_and_prefixed() {
+        let a = next_message_id("eve_reply_");
+        let b = next_message_id("eve_reply_");
+        assert!(a.starts_with("eve_reply_"));
+        assert_ne!(a, b);
+        // The per-process token keeps ids distinct from a bare counter, so a
+        // restarted holder cannot reissue an id a receiver already saw.
+        assert_ne!(a, "eve_reply_1");
+    }
 
     #[test]
     fn validation_requires_a_holder_ticket_and_real_remote_endpoint() {
