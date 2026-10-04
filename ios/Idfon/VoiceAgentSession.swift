@@ -62,8 +62,6 @@ final class VoiceAgentSession: NSObject {
         segmenter.onPartial = { [weak self] text in self?.setState(.listening(text)) }
         segmenter.onCommit = { [weak self] text in self?.deliver(text) }
         segmenter.start()
-        startAnalyzer()
-        setState(.listening(""))
         Task { @MainActor in
             let peers = (try? await client.peers()) ?? []
             guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
@@ -72,6 +70,11 @@ final class VoiceAgentSession: NSObject {
                 return
             }
             Automation.mark("voice-agent: start peer=\(peer.id)")
+            setState(.listening(""))
+            // A recognizer may need a first-run download/CoreML compile;
+            // block the turn loop until it is ready so the first listen does
+            // not time out against a still-loading model.
+            await startAnalyzer()
             // Let ChatStore finish hydrating so the reply snapshot excludes
             // pre-existing history.
             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -215,26 +218,24 @@ final class VoiceAgentSession: NSObject {
         )
     }
 
-    private func startAnalyzer() {
+    private func startAnalyzer() async {
         let engine = SpeechEngines.makeAsr()
         asr = engine
         guard let engine else { return }
-        Task { [weak self] in
-            do {
-                try await engine.start(
-                    // No AEC: the mic is paused whenever the agent speaks.
-                    enableVoiceProcessing: false,
-                    onText: { [weak self] text, isFinal in
-                        DispatchQueue.main.async { self?.segmenter.handle(text, isFinal: isFinal) }
-                    },
-                    onError: { [weak self] message in
-                        Automation.mark("voice-agent: analyzer error \(message)")
-                        DispatchQueue.main.async { self?.restartAnalyzer() }
-                    }
-                )
-            } catch {
-                Automation.mark("voice-agent: analyzer start failed \(error.localizedDescription)")
-            }
+        do {
+            try await engine.start(
+                // No AEC: the mic is paused whenever the agent speaks.
+                enableVoiceProcessing: false,
+                onText: { [weak self] text, isFinal in
+                    DispatchQueue.main.async { self?.segmenter.handle(text, isFinal: isFinal) }
+                },
+                onError: { [weak self] message in
+                    Automation.mark("voice-agent: analyzer error \(message)")
+                    DispatchQueue.main.async { self?.restartAnalyzer() }
+                }
+            )
+        } catch {
+            Automation.mark("voice-agent: analyzer start failed \(error.localizedDescription)")
         }
     }
 
@@ -246,7 +247,7 @@ final class VoiceAgentSession: NSObject {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard self.isActive else { return }
-            self.startAnalyzer()
+            await self.startAnalyzer()
         }
     }
 
