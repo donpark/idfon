@@ -55,7 +55,17 @@ export default defineTool({
       endpoint_addr?: { id?: string; endpoint_id?: string };
       capability_ticket?: unknown;
     };
-    if (!targetResponse.ok) throw new Error(target.error ?? `agency target returned HTTP ${targetResponse.status}`);
+    if (!targetResponse.ok) {
+      // Unknown or not-currently-running model: hand the model the catalog so
+      // it can offer alternatives. Throwing here (the previous behavior) left
+      // the turn with a tool error and no spoken reply.
+      if (targetResponse.status === 404) {
+        const catalogResponse = await fetch(`${provisionerUrl}/catalog`, { headers: provisionerHeaders });
+        const catalog = catalogResponse.ok ? await catalogResponse.json() : { contacts: [] };
+        return { unavailable: input.model, catalog: catalog.contacts ?? [] };
+      }
+      throw new Error(target.error ?? `agency target returned HTTP ${targetResponse.status}`);
+    }
     const endpointId = target.endpoint_addr?.id ?? target.endpoint_addr?.endpoint_id;
     if (!endpointId) throw new Error("registered target has no endpoint id");
 
