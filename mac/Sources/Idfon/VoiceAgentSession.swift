@@ -92,6 +92,12 @@ final class VoiceAgentSession: NSObject {
             }
             CallTonePlayer.shared.start(.answered)
             if let greeting, !greeting.isEmpty, !stopRequested {
+                // Keep the agent's own greeting out of the recognizer (the loop
+                // resumes the mic for the first caller turn).
+                segmenter.setEnabled(false)
+                if #available(macOS 26.0, *), let transcriber = analyzer as? MacSpeechTranscriber {
+                    transcriber.pause()
+                }
                 setState(.speaking(greeting))
                 await speak(greeting)
             }
