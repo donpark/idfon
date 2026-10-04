@@ -7,7 +7,7 @@
 > with AirPods Pro), all verified on device** — the P6 on-device MLX engines are
 > optional; the P7 listening test ran and passed (intelligibility 1.000 vs 0.95,
 > BWE not justified). The app-side **A1 cascade is integrated on iOS and macOS**
-> against a new text-only `llm-cascade`; the existing GPT-Live `gpt-live-1` is
+> against a new text-only `llm`; the existing GPT-Live `gpt-live-1` is
 > deliberately left untouched as a separate contact.
 > P7's test gate and engine decision are recorded (§P7 implementation).
 > Follow-on to the decision in
@@ -96,16 +96,14 @@ The concrete demos (see `docs/voice-agent.md` for the full current picture):
 - **`agents/gpt-live-1` — native-duplex.** One full-duplex model
   (`openai/gpt-live-1`) via the `gpt-live` backend in `crates/idfon-voice-agent`;
   its `live.json` advertises
-  `voice_route.mode = native-duplex`. Served by `scripts/live-voice-serve.sh`
+  `voice_route.mode = native-duplex`. Served by `scripts/gpt-live-1-serve.sh`
   (runner `eve-idfon-voice`, backend `gpt-live`). One backend among several, not
   a special path.
-- **`agents/cascade-voice` — server-cascade.** The holder runs STT→agent→TTS
-  (`crates/idfon-voice-agent`'s `cascade` backend, `idfon-voice` providers); its
-  `live.json` advertises `server-cascade`. Served by
-  `scripts/cascade-voice-serve.sh` over the runner binary `eve-idfon-voice`.
-- **`agents/voice-agent` — the generic TypeScript voice agent** (provider seam,
-  wrapping, self-answer, and the standalone `relay` backend for TS-terminated
-  live calls). Provider tryouts: `scripts/voice-agent-serve.sh <provider.json>`.
+- **`agents/voice-agent` — the generic server-cascade voice agent** (Rust
+  STT→agent→TTS via `idfon-voice` providers; provider seam, wrapping,
+  self-answer, and the standalone `relay` backend for TS-terminated live
+  calls). Its `live.json` advertises `server-cascade`. Provider tryouts:
+  `scripts/voice-agent-serve.sh <provider.json>`.
 
 ## Goal
 
@@ -525,9 +523,9 @@ ios/Checks/VoicePromptSegmenterCheck/main.swift && /tmp/vpscheck`. Device E2E of
 the continuous loop is still pending.
 
 **Target agent.** Rather than strip GPT-Live out of `gpt-live-1`, a separate
-text-only agent was added: `agents/llm-cascade` (model + JustBash sandbox +
+text-only agent was added: `agents/llm` (model + JustBash sandbox +
 `eve-idfon`, no GPT-Live and no voice tools), served by the generalized
-`scripts/llm-cascade-serve.sh`. Both apps are paired to it (contact name `eve`
+`scripts/llm-serve.sh`. Both apps are paired to it (contact name `eve`
 on the Mac) and verified end-to-end (`reply=both addresses pinned.`). GPT-Live
 remains available through the untouched `gpt-live-1` contact.
 
@@ -539,10 +537,10 @@ command — the app may rename the contact locally when it accepts the ticket:
 
 ```sh
 EVE_INSTANCE=gpt61 EVE_CONTACT_NAME="GPT-6.1-Sol" \
-  EVE_IDFON_MODEL=openai/gpt-6.1-sol scripts/llm-cascade-serve.sh
+  EVE_IDFON_MODEL=openai/gpt-6.1-sol scripts/llm-serve.sh
 # prints contact: + ticket: -> accept as a new contact
 EVE_INSTANCE=fable51 EVE_CONTACT_NAME="Fable 5.1" \
-  EVE_IDFON_MODEL=<model> scripts/llm-cascade-serve.sh
+  EVE_IDFON_MODEL=<model> scripts/llm-serve.sh
 ```
 
 These per-model runs belong to the **agency** (the roster), not to the
