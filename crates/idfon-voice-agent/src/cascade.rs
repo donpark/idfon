@@ -5,17 +5,20 @@
 //! a split such as Deepgram STT + ElevenLabs TTS). It sits behind the
 //! [`VoiceBackend`] seam, so swapping providers changes nothing above.
 //!
-//! TTS streams: agent-output deltas arrive on `media.deltas` and are fed to
-//! `StreamingSpeaker` (envelope strip, clause batching, retry dedupe) so the
-//! first clause is spoken before the reply completes. If no deltas arrive
-//! (older bridge), the final reply is spoken whole as a fallback.
+//! TTS streams two ways: agent-output deltas arrive on `media.deltas` and are
+//! fed to `StreamingSpeaker` (envelope strip, clause batching, retry dedupe);
+//! and providers that support it push synthesized audio straight to an
+//! [`AudioSink`] as they produce it (`tts_with_sink`). Batch providers return
+//! chunks, which are routed through the same sink.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use idfon_voice::{
-    normalize_for_speech, AudioFormat, EndpointEvent, MessageDelta, StreamingSpeaker, VoiceEngine,
+    normalize_for_speech, AudioFormat, AudioSink, EndpointEvent, MessageDelta, PcmChunk,
+    StreamingSpeaker, VoiceEngine,
 };
 use serde_json::Value;
 use tokio::time::MissedTickBehavior;
@@ -48,15 +51,31 @@ impl CascadeBackend {
         let mut tick = tokio::time::interval(Duration::from_millis(200));
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        // Timing carried from the caller utterance to its reply.
         let mut pending: Option<(u64, u64)> = None; // (stt_ms, caller_audio_ms)
         let mut caller_frames = 0u64;
-        // Incremental TTS state for the current reply.
+
+        // Every synthesized chunk goes through one sink: batch adapters return
+        // chunks we forward, streaming adapters call the sink as audio arrives.
+        let first_ms = Arc::new(AtomicU64::new(0));
+        let audio_ms = Arc::new(AtomicU64::new(0));
+        let reply_started = Arc::new(Mutex::new(Instant::now()));
+        let sink: AudioSink = {
+            let queue = media.audio.clone();
+            let first = Arc::clone(&first_ms);
+            let audio = Arc::clone(&audio_ms);
+            let started = Arc::clone(&reply_started);
+            Arc::new(move |chunk: PcmChunk| {
+                let elapsed = started
+                    .lock()
+                    .map(|started| started.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+                let _ = first.compare_exchange(0, elapsed.max(1), Ordering::Relaxed, Ordering::Relaxed);
+                audio.fetch_add(samples_ms(&chunk, format), Ordering::Relaxed);
+                queue.push_samples(&chunk.samples);
+            })
+        };
         let mut speaker: Option<StreamingSpeaker> = None;
         let mut deltas_seen = false;
-        let mut reply_started = Instant::now();
-        let mut first_ms = 0u64;
-        let mut audio_ms = 0u64;
 
         loop {
             tokio::select! {
@@ -67,14 +86,12 @@ impl CascadeBackend {
                     if let Some(EndpointEvent::SpeechEnded) = endpointer.push(&pcm)? {
                         // Close out any in-flight reply before the next turn.
                         if let Some(mut active) = speaker.take() {
-                            for chunk in active.finish().unwrap_or_default() {
-                                media.audio.push_samples(&chunk.samples);
-                            }
+                            emit(active.finish()?, &sink);
                         }
                         deltas_seen = false;
-                        first_ms = 0;
-                        audio_ms = 0;
-                        reply_started = Instant::now();
+                        first_ms.store(0, Ordering::Relaxed);
+                        audio_ms.store(0, Ordering::Relaxed);
+                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
                         let started = Instant::now();
                         if let Some(text) = stt.flush()? {
                             let text = text.trim().to_string();
@@ -92,60 +109,47 @@ impl CascadeBackend {
                 }
                 Some((turn_id, step, seq, text)) = media.deltas.recv() => {
                     if speaker.is_none() {
-                        speaker = Some(StreamingSpeaker::new(self.engine.tts("default", format)?));
-                        reply_started = Instant::now();
+                        speaker = Some(StreamingSpeaker::new(
+                            self.engine.tts_with_sink("default", format, sink.clone())?,
+                        ));
+                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
                     }
                     deltas_seen = true;
                     let chunks = speaker
                         .as_mut()
                         .expect("speaker just set")
-                        .push(MessageDelta::new(turn_id, step, seq, &text))
-                        .unwrap_or_default();
-                    for chunk in chunks {
-                        if first_ms == 0 {
-                            first_ms = reply_started.elapsed().as_millis() as u64;
-                        }
-                        audio_ms += samples_ms(&chunk, format);
-                        media.audio.push_samples(&chunk.samples);
-                    }
+                        .push(MessageDelta::new(turn_id, step, seq, &text))?;
+                    emit(chunks, &sink);
                 }
                 Some((_turn_id, reply)) = media.bridge.next_reply() => {
                     let spoken = strip_envelopes(&reply);
                     if deltas_seen {
                         if let Some(mut active) = speaker.take() {
-                            for chunk in active.finish().unwrap_or_default() {
-                                if first_ms == 0 {
-                                    first_ms = reply_started.elapsed().as_millis() as u64;
-                                }
-                                audio_ms += samples_ms(&chunk, format);
-                                media.audio.push_samples(&chunk.samples);
-                            }
+                            emit(active.finish()?, &sink);
                         }
                     } else if !spoken.is_empty() {
                         // Fallback: no deltas (older bridge) — speak the whole reply.
-                        if first_ms == 0 { reply_started = Instant::now(); }
-                        let mut whole = StreamingSpeaker::new(self.engine.tts("default", format)?);
+                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                        let mut whole = StreamingSpeaker::new(
+                            self.engine.tts_with_sink("default", format, sink.clone())?,
+                        );
                         let normalized = normalize_for_speech(&spoken);
-                        let mut chunks = whole
-                            .push(MessageDelta::new("reply", 0, 0, &normalized))
-                            .unwrap_or_default();
-                        chunks.extend(whole.finish().unwrap_or_default());
-                        for chunk in chunks {
-                            if first_ms == 0 {
-                                first_ms = reply_started.elapsed().as_millis() as u64;
-                            }
-                            audio_ms += samples_ms(&chunk, format);
-                            media.audio.push_samples(&chunk.samples);
-                        }
+                        let chunks = whole.push(MessageDelta::new("reply", 0, 0, &normalized))?;
+                        emit(chunks, &sink);
+                        let tail = whole.finish()?;
+                        emit(tail, &sink);
                     }
                     let (stt_ms, caller_audio_ms) = pending.take().unwrap_or((0, 0));
                     let mut metrics = TurnMetrics {
                         provider: self.provider.clone(),
                         stt_ms,
-                        tts_first_ms: first_ms,
-                        tts_total_ms: reply_started.elapsed().as_millis() as u64,
+                        tts_first_ms: first_ms.load(Ordering::Relaxed).max(1),
+                        tts_total_ms: reply_started
+                            .lock()
+                            .map(|started| started.elapsed().as_millis() as u64)
+                            .unwrap_or(0),
                         caller_audio_ms,
-                        tts_audio_ms: audio_ms,
+                        tts_audio_ms: audio_ms.load(Ordering::Relaxed),
                         tts_chars: spoken.chars().count(),
                         est_cost_usd: None,
                     };
@@ -154,11 +158,11 @@ impl CascadeBackend {
                     media.bridge.record("agent", &spoken);
                     speaker = None;
                     deltas_seen = false;
-                    first_ms = 0;
-                    audio_ms = 0;
+                    first_ms.store(0, Ordering::Relaxed);
+                    audio_ms.store(0, Ordering::Relaxed);
                 }
                 _ = tick.tick() => {
-                    if media.stop.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                    if media.stop.load(Ordering::Relaxed) { break; }
                 }
             }
         }
@@ -166,7 +170,13 @@ impl CascadeBackend {
     }
 }
 
-fn samples_ms(chunk: &idfon_voice::PcmChunk, format: AudioFormat) -> u64 {
+fn emit(chunks: Vec<PcmChunk>, sink: &AudioSink) {
+    for chunk in chunks {
+        sink(chunk);
+    }
+}
+
+fn samples_ms(chunk: &PcmChunk, format: AudioFormat) -> u64 {
     (chunk.samples.len() as u64 * 1000) / (format.sample_rate as u64 * format.channels.max(1) as u64)
 }
 

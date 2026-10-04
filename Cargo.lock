@@ -3247,6 +3247,7 @@ name = "idfon-voice"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "idfon-protocol",
  "reqwest",
  "serde",
