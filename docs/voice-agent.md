@@ -1,8 +1,9 @@
 # Voice agent: a peer that speaks and listens for other agents
 
-Status: **design agreed 2026-10-03; implementation in progress.** Companion to
-`docs/voice-side-channel.md` (the engine seam + cascade decisions) and
-`docs/live-voice.md` (the GPT-Live deployment of the same transport).
+Status: **implemented 2026-10-03** (unit/build-verified; live end-to-end and
+the test suites are deferred). Companion to `docs/voice-side-channel.md` (the
+engine seam + cascade decisions) and `docs/live-voice.md` (the GPT-Live
+deployment of the same transport).
 
 ## What a voice agent is
 
@@ -13,9 +14,9 @@ carried as a **live MoQ session** (a real call), the same transport the
 that text to an agent, takes the agent's reply, and turns it back into speech.
 
 It is reached **by its endpoint id (+ ticket)**; that reference is the
-`voice_route.delegate = { peer_id, ticket, audio }` field already carried on the
-capability ticket, so a caller or an agent can discover and route to it without
-a display-name heuristic.
+`voice_route.delegate = { peer_id, contact, ticket, audio }` field already
+carried on the capability ticket, so a caller or an agent can discover and
+route to it without a display-name heuristic.
 
 The agent whose words are spoken never knows it was spoken to — it only sees
 text.
@@ -32,27 +33,21 @@ text.
 
 Both are the same voice-agent peer. Only the text target differs.
 
-## Where the transcript goes (the handler seam)
+## Where the transcript goes
 
-The voice agent's holder runs a cascade live-call handler:
+Two handler styles terminate a live call, selected by `backend`:
 
-```
-caller app ── IDFON-LIVE/1 start (ticket) ──▶ voice agent holder
-   handler: subscribe caller MoQ → STT → transcript
-            │
-            ├─ default: inject a turn into the voice agent's OWN Eve agent
-            │           (that agent answers, or forwards to a wrapped agent)
-            └─ target override: inject straight into a configured target
-                                agent (endpoint + ticket) — pure relay
-            │
-            agent reply text (ReplyTarget.live_commentary)
-            │
-            TTS → publish return leg ──▶ caller app plays it
-```
+- **`cascade` (Rust)** — the holder subscribes caller audio, runs STT, injects
+each transcript as a turn into the voice agent's own Eve agent, and TTSes the
+reply (`ReplyTarget.live_commentary`). The agent's tools decide what to do —
+answer, or forward to a wrapped agent (`voice_forward`).
+- **`relay` (TypeScript)** — the holder forwards caller frames to a standalone
+Node relay (`live-relay.mjs`); that process owns STT/TTS and the wrapped-agent
+hop, and posts audio back. See "Live calls in TypeScript".
 
-The handler stays generic; **wrapping is agent/tool logic**, not handler logic.
-The optional target override covers the pure-relay case where the voice agent's
-own agent adds nothing.
+Either way the handler stays generic; **wrapping is agent/relay logic**, not
+handler logic. (A Rust-side "target override" that injects straight into
+another agent is *not* implemented — wrapping happens above the holder.)
 
 Transcripts ride out as `IDFON-CALL/1` snapshots and into the durable record
 buffer (P0), exactly as the GPT-Live path does.
@@ -141,7 +136,11 @@ calls. The shared toolkit lives in **`integrations/eve-idfon-voice`** (npm
   import of a provider package), and `kokoro` (via `kokoro-js`). Selected by
   the `IDFON_VOICE_ENGINE` env (JSON), same shape as the Rust engine block.
 - `audio` — Ogg Opus → s16le PCM, WAV wrap/parse.
-- `bridge` — blob upload and an agent→agent `sendAwait`.
+- `turn` — `EnergyEndpointer`, `trimTrailingSilence`, `ClauseBatcher`,
+  `stripEnvelopes`, `EchoSuppressor`, backchannel/barge-in helpers.
+- `wrap` — the wrapped-agent target from config; `forwardToWrapped`.
+- `bridge` — blob upload, an agent→agent `sendAwait`, and `playAudio` (push
+  PCM to a live call's return leg).
 - `tools` — tool factories so an agent's files are one line:
   - `voiceRelayTool()` — **wrapping** in one shot: voice memo → STT → text to
     the wrapped agent (A2A, awaits its reply) → TTS → audio blob +
@@ -149,6 +148,9 @@ calls. The shared toolkit lives in **`integrations/eve-idfon-voice`** (npm
     agent only sees text.
   - `voiceTranscribeTool()` + `voiceSpeakTool()` — **self-answering**: memo →
     text for the agent to reason over, then speak its reply.
+  - `voiceForwardTool()` — forward the caller's text to the wrapped agent
+    (for a live turn the cascade already transcribed).
+  - `voicePlayTool()` — speak text on the active live call's return leg.
 
 Optional/bundlable packages load through a runtime import the bundler can't
 see (`optional.ts`), so an agent builds without every provider installed; a
@@ -244,13 +246,15 @@ crates and a backend is the only code an engine needs:
 - `crates/idfon-live-media` — transport: caller subscribe, return-leg publish,
   invite parse/sign, pacing.
 - `crates/idfon-voice-agent` — the kit: `VoiceBackend` trait, shared live loop,
-  `TurnBridge` (inject turn + receive reply + record), config, and the single
-  `eve-idfon-voice` runner. `--live-config` selects the backend
+  `TurnBridge` (inject turn + receive reply + record), config, and the runner
+  binary `eve-idfon-voice`. `--live-config` selects the backend
   (`backend` or `engine.kind`).
-- Backends today: `cascade` (`CascadeFactory`, via `GatewayVoiceEngine`).
-  GPT-Live and local engines implement the same trait; the runner registers
-  each with one `with(..)` line.
-- `agents/cascade-voice` — the demo voice agent; its `live.json` sets
+- Backends today: `cascade` (`CascadeFactory`, Rust STT/TTS via `idfon-voice`)
+  and `relay` (`RelayFactory`, frames to a standalone TS agent). GPT-Live is a
+  separate `LiveCallHandler` on the same shared transport (`idfon-live-media`),
+  not a `VoiceBackend`.
+- `agents/voice-agent` — the generic template (providers/relay/wrapping) and
+  `agents/cascade-voice` — the Rust-cascade demo; each `live.json` sets
   `backend` and `voice_route.mode = server-cascade`.
 
 So: **add an engine** = one `VoiceBackend` impl + one registration; **add a

@@ -3046,6 +3046,9 @@ version = "0.7.0"
 dependencies = [
  "anyhow",
  "idfon-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

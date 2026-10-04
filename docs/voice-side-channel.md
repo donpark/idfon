@@ -84,18 +84,20 @@ adds `voice` when set, so the signed bytes stay byte-identical.
 
 ## Demo agents
 
-Two parallel demos make the routing concrete; keep them separate:
+The concrete demos (see `docs/voice-agent.md` for the full current picture):
 
 - **`agents/live-voice` — native-duplex.** One full-duplex model
   (`openai/gpt-live-1`) via `crates/idfon-live-gpt`; its `live.json` advertises
   `voice_route.mode = native-duplex`. Served by `scripts/live-voice-serve.sh`
-  (composition root `eve-idfon-gpt`). Demo-only and marked deprecated.
-- **`agents/cascade-voice` — client-cascade.** A text agent driven by the
-  app's on-device STT/TTS; its `live.json` advertises `client-cascade`, so the
-  holder never intercepts live media. Served by
-  `scripts/cascade-voice-serve.sh` over the cascade holder `eve-idfon-cascade`
-  (`crates/idfon-live-cascade`), currently a scaffold whose handler declines so
-  a live control falls through to an ordinary text turn.
+  (composition root `eve-idfon-gpt`). One backend among several, not a special
+  path.
+- **`agents/cascade-voice` — server-cascade.** The holder runs STT→agent→TTS
+  (`crates/idfon-voice-agent`'s `cascade` backend, `idfon-voice` providers); its
+  `live.json` advertises `server-cascade`. Served by
+  `scripts/cascade-voice-serve.sh` over the runner binary `eve-idfon-voice`.
+- **`agents/voice-agent` — the generic TypeScript voice agent** (provider seam,
+  wrapping, self-answer, and the standalone `relay` backend for TS-terminated
+  live calls). Provider tryouts: `scripts/voice-agent-serve.sh <provider.json>`.
 
 ## Goal
 
