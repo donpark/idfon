@@ -3265,14 +3265,17 @@ dependencies = [
  "base64 0.23.1",
  "ed25519-dalek",
  "eve-idfon",
+ "futures-util",
  "idfon-core",
  "idfon-live-media",
  "idfon-protocol",
  "idfon-voice",
  "iroh",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-websockets",
 ]
 
 [[package]]

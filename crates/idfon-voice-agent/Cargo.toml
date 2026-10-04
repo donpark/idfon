@@ -8,16 +8,25 @@ license.workspace = true
 name = "eve-idfon-voice"
 path = "src/main.rs"
 
+[features]
+default = []
+# Full-duplex OpenAI Live-API (`gpt-live-1`) backend. Off by default so a
+# cascade/relay deployment does not link the vendored realtime stack.
+gpt-live = ["dep:tokio-websockets", "dep:rustls", "dep:futures-util"]
+
 [dependencies]
 anyhow = "1"
 base64 = "0.23"
 ed25519-dalek = "3"
 eve-idfon = { path = "../eve-idfon" }
+futures-util = { version = "0.3", optional = true }
 idfon-core = { path = "../idfon-core" }
 idfon-live-media = { path = "../idfon-live-media" }
 idfon-protocol = { path = "../idfon-protocol" }
 idfon-voice = { path = "../idfon-voice", features = ["gateway"] }
 iroh = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "ring", "rustls-webpki-roots"], optional = true }

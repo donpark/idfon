@@ -55,6 +55,9 @@ integration="$root/integrations/eve-idfon"
 # `idfon-live-cascade` / `eve-idfon-cascade`.
 holder_pkg="${EVE_IDFON_PKG:-idfon-live-gpt}"
 holder_bin="${EVE_IDFON_BIN:-eve-idfon-gpt}"
+# Optional cargo features for the holder package (e.g. `gpt-live` on
+# idfon-voice-agent). Empty keeps the current GPT-Live composition root.
+holder_features="${EVE_IDFON_FEATURES:-}"
 
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
 model="${EVE_IDFON_MODEL:-openai/gpt-6-luna}"
@@ -82,7 +85,8 @@ fi
 if [ "$stale" = 1 ] || [ "${FORCE_BUILD:-}" = 1 ]; then
   RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
     cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-  cargo build --release -p idfond -p idfon-cli -p "$holder_pkg"
+  cargo build --release -p idfond -p idfon-cli
+  cargo build --release -p "$holder_pkg" ${holder_features:+--features "$holder_features"}
   codesign --force -s - "$root/target/release/libiroh_c_ffi.dylib" \
     "$root/target/release/$holder_bin" "$root/target/release/idfond"
 fi
