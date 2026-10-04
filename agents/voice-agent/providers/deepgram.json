@@ -1,0 +1,6 @@
+{
+  "_comment": "Deepgram STT + TTS in one provider (env DEEPGRAM_API_KEY).",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
+  "engine": { "provider": "deepgram", "model": "nova-3", "voice": "aura-asteria-en" }
+}

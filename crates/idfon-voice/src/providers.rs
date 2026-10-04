@@ -19,7 +19,8 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
-use crate::deepgram::DeepgramSttEngine;
+use crate::cartesia::CartesiaTtsEngine;
+use crate::deepgram::DeepgramEngine;
 use crate::elevenlabs::ElevenLabsTtsEngine;
 use crate::gateway::OpenAiCompatEngine;
 use crate::{AudioFormat, Endpointer, SttSession, TtsSession, VoiceEngine};
@@ -51,8 +52,9 @@ fn build_provider(value: &Value) -> Result<Arc<dyn VoiceEngine>> {
         "openai" | "openai-compatible" => Ok(Arc::new(OpenAiCompatEngine::new(
             crate::gateway::Profile::from_value(Some(value))?,
         ))),
-        "deepgram" => Ok(Arc::new(DeepgramSttEngine::from_config(value)?)),
+        "deepgram" => Ok(Arc::new(DeepgramEngine::from_config(value)?)),
         "elevenlabs" => Ok(Arc::new(ElevenLabsTtsEngine::from_config(value)?)),
+        "cartesia" => Ok(Arc::new(CartesiaTtsEngine::from_config(value)?)),
         other => Err(anyhow!("unknown voice provider '{other}'")),
     }
 }
