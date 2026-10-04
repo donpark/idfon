@@ -33,7 +33,16 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cli="${IDFON_CLI:-$root/target/release/idfon}"
 socket="${IDFON_SOCKET:-/tmp/idfon/idfond.sock}"
 agent="${EVE_AGENT:-live-voice}"
+# EVE_INSTANCE keys the contact's identity/home/ports. `auto` derives a slug
+# from the contact/model so contacts get stable, readable instance names
+# instead of ad-hoc ones; unset keeps the agent name.
 instance="${EVE_INSTANCE:-$agent}"
+if [ "$instance" = auto ]; then
+  slug_source="${EVE_CONTACT_NAME:-${EVE_IDFON_MODEL:-$agent}}"
+  instance=$(printf '%s' "$slug_source" | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+  [ -n "$instance" ] || instance="$agent"
+fi
 contact_name="${EVE_CONTACT_NAME:-$instance}"
 home="${EVE_VOICE_HOME:-$HOME/.idfon/$instance}"
 mkdir -p "$home"
