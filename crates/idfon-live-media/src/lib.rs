@@ -23,13 +23,14 @@ use ed25519_dalek::SigningKey;
 use idfon_core::transport::{IrohTransport, MessageTransport};
 use idfon_protocol::MessageContent;
 use iroh::EndpointAddr;
-use iroh_live::{ticket::LiveTicket, Live};
+use iroh_live::Live;
 use moq_audio::{
     encode::{Codec as AudioCodec, Options as AudioOptions},
     Format, Frame as AudioFrame,
 };
 use moq_media::publish::{AudioSource, LocalBroadcast};
 use n0_future::{boxed::BoxStream, stream::unfold};
+pub use iroh_live::ticket::LiveTicket;
 use tokio::sync::mpsc;
 
 /// 20 ms of 24 kHz mono PCM — the call plane's frame.
