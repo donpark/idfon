@@ -228,6 +228,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let turns = args.count > i + 2 ? (Int(args[i + 2]) ?? 1) : 1
             Task { @MainActor in VoiceAgentSession.shared.run(peerRef: ref, turns: turns) }
         }
+        if args.contains("-voices") {
+            SpeechVoice.dump()
+        }
     }
 
     private func waitForIncomingCall(video: Bool) {
