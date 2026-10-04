@@ -103,6 +103,22 @@ final class LiveActivityController: NSObject {
             }
         }
 
+        /// Live model/latency readout for the Bar (voice calls only).
+        var stats: String? {
+            switch self {
+            case .audio, .video: return nil
+            case .voice(let session): return session.stats
+            }
+        }
+
+        /// The client-cascade voice call runs entirely on device.
+        var onDevice: Bool {
+            switch self {
+            case .audio, .video: return false
+            case .voice: return true
+            }
+        }
+
         var videoAvailable: Bool {
             switch self {
             case .audio(let call): return call.videoAvailable
@@ -292,6 +308,8 @@ final class LiveActivityController: NSObject {
             model.audioAvailable = machine?.audioAvailable ?? true
             model.videoAvailable = machine?.videoAvailable ?? true
             model.elapsed = elapsed
+            model.stats = machine?.stats
+            model.onDevice = machine?.onDevice ?? false
             model.rows = transfers.rows(for: callPeer)
             // Expanded only while the visible thread is the call peer's —
             // that thread owns the call; every other screen shows the pill.

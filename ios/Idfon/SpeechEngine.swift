@@ -10,11 +10,17 @@ import FluidAudio
 @MainActor
 protocol TtsEngine: AnyObject {
     var name: String { get }
+    /// Wall time of the last `speak`, in ms (nil when not measured).
+    var lastLatencyMs: Int? { get }
     /// Download/load models if needed (no-op for Apple).
     func prepare() async
     /// Speak `text`, returning when playback finishes.
     func speak(_ text: String) async
     func stop()
+}
+
+extension TtsEngine {
+    var lastLatencyMs: Int? { nil }
 }
 
 /// Reply-speech backend choice, persisted across launches.
@@ -134,6 +140,7 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
     private var prepareTask: Task<Void, Never>?
     private var player: AVAudioPlayer?
     private var finish: (() -> Void)?
+    private(set) var lastLatencyMs: Int?
 
     func prepare() async {
         if prepared { return }
@@ -168,7 +175,8 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
         do {
             let start = Date()
             let wav = try await manager.synthesize(text: text)
-            Automation.mark("voice: kokoro wav bytes=\(wav.count) in \(Int(Date().timeIntervalSince(start) * 1000))ms")
+            lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
+            Automation.mark("voice: kokoro wav bytes=\(wav.count) in \(lastLatencyMs ?? 0)ms")
             await play(wav)
         } catch {
             Automation.mark("voice: kokoro synth failed \(error.localizedDescription); using apple")
@@ -213,6 +221,9 @@ extension KokoroTtsEngine: AVAudioPlayerDelegate {
 /// `SystemSpeechTranscriber`'s surface so the loop is engine-agnostic.
 protocol AsrEngine: AnyObject {
     var name: String { get }
+    /// Pure transcription time for the last final, in ms (nil when the engine
+    /// streams without a discrete compute step).
+    var lastLatencyMs: Int? { get }
     func start(
         enableVoiceProcessing: Bool,
         onText: @escaping (String, Bool) -> Void,
@@ -221,6 +232,10 @@ protocol AsrEngine: AnyObject {
     func pause()
     func resume()
     func stop()
+}
+
+extension AsrEngine {
+    var lastLatencyMs: Int? { nil }
 }
 
 enum AsrBackend: String, CaseIterable {
