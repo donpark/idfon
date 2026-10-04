@@ -39,6 +39,13 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
                 SpeechEngines.setBackend(backend)
             })
         }
+        let asr = SpeechEngines.asrBackend
+        for backend in AsrBackend.allCases {
+            let title = backend == asr ? "✓ Recognition: \(backend.title)" : "Recognition: \(backend.title)"
+            alert.addAction(UIAlertAction(title: title, style: .default) { _ in
+                SpeechEngines.setAsrBackend(backend)
+            })
+        }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
         present(alert, animated: true)
