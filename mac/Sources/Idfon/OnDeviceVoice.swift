@@ -61,11 +61,18 @@ enum SpeechVoice {
     /// selectable by third-party apps, and `ttsbundle.siri_*_compact` is a
     /// legacy low-quality voice, not the Siri tier.
     static func rank(_ voice: AVSpeechSynthesisVoice) -> Int {
+        // `.quality` is the primary signal, but some neural voices reportedly
+        // report `.default`; also accept an enhanced/premium identifier flag.
+        // `siri` is deliberately not a tier: that section is not selectable by
+        // third-party apps, and `ttsbundle.siri_*_compact` is legacy/low.
+        let label = voice.identifier.lowercased()
         var score: Int
-        switch voice.quality {
-        case .premium: score = 3000
-        case .enhanced: score = 2000
-        default: score = 1000
+        if voice.quality == .premium || label.contains("premium") {
+            score = 3000
+        } else if voice.quality == .enhanced || label.contains("enhanced") {
+            score = 2000
+        } else {
+            score = 1000
         }
         if voice.identifier.hasPrefix("com.apple.voice.") { score += 100 }
         if isNovelty(voice) { score -= 5000 }
