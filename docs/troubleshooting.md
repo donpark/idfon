@@ -24,6 +24,12 @@ the `· spoken` annotation were gone.
   never recorded it. It now appends the caller's turn and relabels the agent's
   reply as `IDFON-CALL/1` transcript bubbles (`ChatStore.recordSpokenTurn`), so
   both render `· spoken` and typed vs voice is distinguishable.
+- *Greeting self-bleed*: the analyzer starts before the greeting so "answered"
+  means ready to listen, but the first `listenOnce` was what paused the mic — so
+  the recognizer's window captured the greeting and prepended it to the
+  caller's first turn (seen with Parakeet Redux: `heard=Hello! I am here and
+  ready to help… Oh, about what you can do?`). Gate the mic before speaking the
+  greeting; the loop resumes it for the first turn.
 
 **Files.** `ios/Idfon/VoiceAgentSession.swift`, `ios/Idfon/ChatStore.swift`,
 `ios/Idfon/CallTones.swift` (+ the macOS mirrors).

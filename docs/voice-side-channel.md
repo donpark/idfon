@@ -553,8 +553,10 @@ fallback and the neural engines are opt-in:
   Kokoro ONNX.
 - **ASR** — `SystemSpeechTranscriber` (SpeechAnalyzer, iOS 26+) is the
   default; `ParakeetAsr` (moondream/parakeet-redux, ANE) is opt-in. A first-run
-  Parakeet download + compile takes minutes, so the loop waits for
-  `parakeet ready`; Parakeet is integrated but **not yet verified** on device.
+  Parakeet download + compile takes minutes (cached afterwards: ≈8 s to
+  `parakeet ready`), so the loop waits for `parakeet ready`. Verified on an
+  iPhone 16 (2026-10-04): the caller's turn transcribed cleanly
+  (`heard=Hello. Um about parakeet. I'm testing it`) with no TTS bleed.
 - **Selection** — persisted per device; a "Voice engine" sheet on the iOS
   Recents screen (the waveform button) toggles them. `IDFON_TTS`/`-ttsbackend`
   and `IDFON_ASR`/`-asrbackend` override for testing. `SpeechProvisioning`
