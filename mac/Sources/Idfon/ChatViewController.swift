@@ -1047,9 +1047,20 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 }
                 return
             case .nativeDuplex, .serverCascade:
-                break
+                // The holder declares the codec; dial the live media session
+                // only for the PCM profile, else the default audio call. Falls
+                // back to the local profile only when the ticket omits it.
+                let pcm = route.audio == "pcm24k"
+                    || (route.audio == nil && ContactAudioProfiles.profile(for: peer.id) == .pcm24k)
+                if pcm {
+                    live.dial(peer.id)
+                } else {
+                    video.dial(peer.id, cameraOn: false)
+                }
+                return
             }
         }
+        // Legacy ticket (no voice block): name/profile heuristic.
         if peer.name == "live-voice" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
             live.dial(peer.id)
         } else {

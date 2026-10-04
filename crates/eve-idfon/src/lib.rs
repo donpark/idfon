@@ -510,7 +510,13 @@ fn voice_route_from_live_params(params: &serde_json::Value) -> VoiceRoute {
     }
     VoiceRoute {
         mode: VoiceMode::NativeDuplex,
-        audio: params.get("audio").and_then(|value| value.as_str()).map(str::to_owned),
+        // Holder-declared codec; default to the live PCM profile when the
+        // config doesn't name one, so the caller never has to guess.
+        audio: params
+            .get("audio")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+            .or_else(|| Some("pcm24k".to_owned())),
         model: params.get("model").and_then(|value| value.as_str()).map(str::to_owned),
         delegate: None,
     }
