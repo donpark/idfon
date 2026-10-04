@@ -24,19 +24,17 @@ enum SpeechVoice {
         let base = String(language.split(separator: "-").first ?? "")
         let pool = exact.isEmpty ? all.filter { $0.language.hasPrefix(base) } : exact
         guard !pool.isEmpty else { return nil }
-        // Never auto-pick a low-resource "compact" build while a full one
-        // exists — `siri_*_compact` is far more robotic than its full sibling.
-        let full = pool.filter { !isCompact($0) }
-        let candidates = full.isEmpty ? pool : full
         if let request = requested() {
             // An explicit identifier must win even if it names a compact voice.
             if let hit = pool.first(where: { $0.identifier == request }) { return log(hit) }
-            if let hit = candidates
+            if let hit = pool
                 .filter({ $0.name.localizedCaseInsensitiveContains(request) })
                 .max(by: { rank($0) < rank($1) })
             { return log(hit) }
         }
-        return candidates
+        // The score ramp already sinks `compact`/`super-compact` below full
+        // Premium/Enhanced/Siri; a separate non-compact filter is not needed.
+        return pool
             .max(by: { rank($0) != rank($1) ? rank($0) < rank($1) : $0.name > $1.name })
             .map(log)
     }
