@@ -157,8 +157,10 @@ true, so every call publishes them. The host fills them from the active machine'
    to `additionalSafeAreaInsets.top` of the visible content controller. Chosen over
    `contentInset` on scroll views (per-screen, misses non-scrolling screens) and over
    `additionalSafeAreaInsets` on the *nav controller* (would push the nav bar itself down).
-5. **Pill End confirmation = one-item destructive `UIMenu`.** Native, no alert controller
-   or presenter plumbing in the view.
+5. **Pill End = one tap, no confirmation (2026-10-03).** The compact pill's End verb
+   sends `.end` directly, matching the expanded bar and the full-screen call button. The
+   earlier one-item destructive `UIMenu` confirmation was removed (owner decision). On
+   macOS the compact pill hides the verb entirely, so End is only in the expanded bar.
 6. **Multiple bars = vertical stack, host order.** Owning thread's expanded Bar first,
    other contacts' pills beneath (§6 Bob/Jane case). Daemon supports one call, so ≤2 in
    practice.
