@@ -34,7 +34,9 @@ use tokio::sync::mpsc;
 
 pub mod cascade;
 pub mod metrics;
+pub mod relay;
 pub use cascade::CascadeFactory;
+pub use relay::RelayFactory;
 
 /// The async result of running one backend for one call.
 pub type BackendFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
@@ -138,6 +140,24 @@ impl TurnBridge {
     /// Next agent reply (turn id, text) routed back to this call.
     pub async fn next_reply(&mut self) -> Option<(String, String)> {
         self.replies.recv().await
+    }
+
+    pub fn peer_id(&self) -> &str {
+        &self.peer_id
+    }
+
+    /// Forward one caller PCM frame to the bridge (SSE subscribers), for a
+    /// standalone TypeScript voice agent to transcribe.
+    pub async fn send_frame(&self, pcm: &[i16]) {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        let bytes: Vec<u8> = pcm.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+        let _ = self
+            .out_tx
+            .send(IpcFrame::AudioFrameOut {
+                peer_id: self.peer_id.clone(),
+                pcm_base64: BASE64.encode(&bytes),
+            })
+            .await;
     }
 
     /// Append a durable transcript record for the caller or the agent.

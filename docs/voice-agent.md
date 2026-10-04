@@ -205,6 +205,33 @@ pairing. `VoiceDelegate` gained `contact` for the address; the allow-file
 admission keeps the credential simple (the delegate holder accepts the caller
 by allow-list, not a per-caller ticket).
 
+### Live calls in TypeScript (standalone relay)
+
+A live call can be terminated in TypeScript without the agent being an Eve
+agent. The holder runs `backend = "relay"` (`agents/voice-agent/relay.json`),
+which:
+
+- forwards each caller PCM frame to the bridge as `audio.frame`;
+- the bridge fans those out over SSE at `GET /live/stream`;
+- plays whatever the relay posts back to `POST /live/audio` (the
+  `audio.append` IPC path) on the call's return leg.
+
+`integrations/eve-idfon-voice/live-relay.mjs` is that relay: a plain Node
+process that reads the SSE stream, end-points utterances, runs STT, forwards
+the transcript to a wrapped agent (`/send await_reply`), TTSes the reply, and
+posts the audio back. Config is `IDFON_VOICE_ENGINE` (`stt`/`tts` blocks as in
+the provider seam, plus `wrap` for the wrapped agent).
+
+```sh
+EVE_LIVE_CONFIG=agents/voice-agent/relay.json scripts/voice-agent-serve.sh
+IDFON_BRIDGE_URL=http://127.0.0.1:<voice-agent-bridge> \
+  IDFON_VOICE_ENGINE='{"stt":{"provider":"openai-compatible"},"tts":{"provider":"openai-compatible"},"wrap":{"peer_id":"…","endpoint_id":"…","ticket":{…}}}' \
+  node integrations/eve-idfon-voice/live-relay.mjs
+```
+
+This is the *channel-level live audio* path (B); the per-utterance attachment
+path (A) is the simpler alternative that reuses the Eve tools.
+
 ## The kit (fast iteration)
 
 Adding a voice agent should not mean new Rust. The shared pieces live in two
