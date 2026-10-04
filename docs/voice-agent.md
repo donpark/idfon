@@ -21,6 +21,51 @@ route to it without a display-name heuristic.
 The agent whose words are spoken never knows it was spoken to — it only sees
 text.
 
+## Baseline vs remote: who owns the audio
+
+Voice I/O is an **app-side capability first**. Every 1:1 contact can be talked
+to with no service in the loop:
+
+- **app-side (baseline, free)** — the client app runs STT/TTS and exchanges
+  text with the peer: a person over iroh, an agent via plain text turns
+  (`client-cascade`), or on-device generation when there is no remote agent.
+- **remote (opt-in, provider-pays)** — a voice agent as described here, or a
+  `native-duplex` / `server-cascade` holder, terminates the audio.
+
+Both are the same reference: the ticket's `voice` block (`mode`, `audio`,
+`model`, `delegate`). The app reads `mode` and picks on-device I/O vs dialing
+the capability. A remote capability is *chosen*, never required, so the free
+tier never depends on one. An idfon-aware agent can also be handed the
+reference (endpoint + ticket) and route its own voice I/O through it — the
+injected case above.
+
+## Agent-initiated calls (clarification)
+
+The reference is an addressable capability, so the direction is not fixed: a
+remote (sub)agent can **open** a session, not just answer one.
+
+```
+task delegated to a subagent
+        | needs clarity
+        v
+subagent holds an injected voice reference
+        |  <- voice capability
+        v
+opens a voice session with the user (or the originating agent)
+        |  asks one focused question
+        v
+answer -> subagent continues
+```
+
+The user's app presents an agent-initiated call as an **incoming voice
+request** (CallKit-style) they can accept or decline. Authorization is the
+reference itself: the listening client issues the scoped voice grant
+(`docs/voice-side-channel.md`, N9), so an agent cannot call a user it was not
+handed a capability for. Two guards matter before shipping: a **rate cap**
+(an agent must not spam a user with calls) and a **correlation id** on the
+call — sessions are runtime, so a clarification call must name the task or
+thread it belongs to rather than assume stored context.
+
 ## Two ways to use it
 
 - **Wrapped** — the voice agent is a liaison *in front*. The caller talks to the
