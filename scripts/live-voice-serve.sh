@@ -51,6 +51,12 @@ fi
 printf '%s' "$endpoint_port" > "$port_file" 2>/dev/null || true
 integration="$root/integrations/eve-idfon"
 
+# Holder composition root. Default is the full-duplex GPT-Live binary; the
+# cascade demo (scripts/cascade-voice-serve.sh) sets these to
+# `idfon-live-cascade` / `eve-idfon-cascade`.
+holder_pkg="${EVE_IDFON_PKG:-idfon-live-gpt}"
+holder_bin="${EVE_IDFON_BIN:-eve-idfon-gpt}"
+
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
 model="${EVE_IDFON_MODEL:-openai/gpt-6-luna}"
 export EVE_IDFON_MODEL="$model"
@@ -60,12 +66,12 @@ key="$home/holder.key"
 if [ ! -s "$key" ]; then printf '%064d' "$((RANDOM * RANDOM))" > "$key"; fi
 
 # Build once; skip when binaries and the compiled app are current.
-if [ ! -x "$root/target/release/eve-idfon-gpt" ] || [ "${FORCE_BUILD:-}" = 1 ]; then
+if [ ! -x "$root/target/release/$holder_bin" ] || [ "${FORCE_BUILD:-}" = 1 ]; then
   RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
     cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
-  cargo build --release -p idfond -p idfon-cli -p idfon-live-gpt
+  cargo build --release -p idfond -p idfon-cli -p "$holder_pkg"
   codesign --force -s - "$root/target/release/libiroh_c_ffi.dylib" \
-    "$root/target/release/eve-idfon-gpt" "$root/target/release/idfond"
+    "$root/target/release/$holder_bin" "$root/target/release/idfond"
 fi
 
 app="$home/app"
@@ -153,7 +159,7 @@ fi
 # from the key, so this does not need the holder running.
 reply_args=()
 if [ -n "${AGENCY_URL:-}" ]; then
-  self_id=$("$root/target/release/eve-idfon-gpt" --key-file "$key" ticket --subject self 2>/dev/null | jq -r .issuer)
+  self_id=$("$root/target/release/$holder_bin" --key-file "$key" ticket --subject self 2>/dev/null | jq -r .issuer)
   if [ -n "$self_id" ] && [ "$self_id" != null ]; then
     if reply_ticket=$(curl -fsS -X POST "$AGENCY_URL/reply-ticket" \
         -H 'content-type: application/json' \
@@ -166,7 +172,7 @@ if [ -n "${AGENCY_URL:-}" ]; then
     fi
   fi
 fi
-IDFON_ENDPOINT_PORT="$endpoint_port" "$root/target/release/eve-idfon-gpt" --key-file "$key" serve \
+IDFON_ENDPOINT_PORT="$endpoint_port" "$root/target/release/$holder_bin" --key-file "$key" serve \
   --socket "$home/holder.sock" "${allow_args[@]}" --allow-file "$home/allowed-peers" \
   --blob-dir "$home/blobs" \
   ${live_args[@]+"${live_args[@]}"} \
@@ -226,10 +232,10 @@ done
 # Capability tickets: holder-signed, subject-bound to each sender (the holder
 # rejects a ticket whose subject != the message's sender id), covering the
 # message ingress the apps' sends need. One file per peer.
-"$root/target/release/eve-idfon-gpt" --key-file "$key" "${live_args[@]}" ticket \
+"$root/target/release/$holder_bin" --key-file "$key" "${live_args[@]}" ticket \
   --subject "$daemon_id" > "$home/capability-ticket.json"
 while IFS= read -r endpoint; do
-  "$root/target/release/eve-idfon-gpt" --key-file "$key" "${live_args[@]}" ticket \
+  "$root/target/release/$holder_bin" --key-file "$key" "${live_args[@]}" ticket \
     --subject "$endpoint" > "$home/capability-ticket-$endpoint.json"
 done < <(extra_senders | awk '!seen[$0]++')
 

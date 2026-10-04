@@ -82,6 +82,21 @@ block and keep the old name/profile heuristic.
 **Absent block on an older ticket** verifies unchanged: `ticket_unsigned` only
 adds `voice` when set, so the signed bytes stay byte-identical.
 
+## Demo agents
+
+Two parallel demos make the routing concrete; keep them separate:
+
+- **`agents/live-voice` — native-duplex.** One full-duplex model
+  (`openai/gpt-live-1`) via `crates/idfon-live-gpt`; its `live.json` advertises
+  `voice_route.mode = native-duplex`. Served by `scripts/live-voice-serve.sh`
+  (composition root `eve-idfon-gpt`). Demo-only and marked deprecated.
+- **`agents/cascade-voice` — client-cascade.** A text agent driven by the
+  app's on-device STT/TTS; its `live.json` advertises `client-cascade`, so the
+  holder never intercepts live media. Served by
+  `scripts/cascade-voice-serve.sh` over the cascade holder `eve-idfon-cascade`
+  (`crates/idfon-live-cascade`), currently a scaffold whose handler declines so
+  a live control falls through to an ordinary text turn.
+
 ## Goal
 
 One **voice side-channel service** that gives any idfon agent a voice without

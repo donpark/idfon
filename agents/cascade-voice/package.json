@@ -1,0 +1,16 @@
+{
+  "name": "idfon-eve-cascade-voice",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "clean": "rm -rf .output dist"
+  },
+  "dependencies": {
+    "eve": "0.68.0",
+    "eve-idfon": "file:../../integrations/eve-idfon",
+    "just-bash": "^3.4.2"
+  }
+}
