@@ -105,21 +105,29 @@ enum SpeechVoice {
         Automation.mark(
             "voice: system-default \(AVSpeechSynthesisVoice(language: language)?.identifier ?? "nil")"
         )
-        for id in [
-            "com.apple.voice.enhanced.en-US.Ava",
-            "com.apple.voice.premium.en-US.Ava",
-            "com.apple.voice.enhanced.en-US.Samantha",
-            "com.apple.voice.premium.en-US.Samantha",
-            "com.apple.ttsbundle.siri_female_en-US_premium",
-            "com.apple.ttsbundle.siri_male_en-US_premium",
-            "com.apple.ttsbundle.siri_female_en-US_enhanced",
-            "com.apple.ttsbundle.siri_male_en-US_enhanced",
-            "com.apple.ttsbundle.siri_Aaron_en-US_premium",
-            "com.apple.ttsbundle.siri_Nicky_en-US_premium",
-        ] {
-            let resolves = AVSpeechSynthesisVoice(identifier: id) != nil
-            Automation.mark("voice: probe \(id) resolves=\(resolves)")
+        // No-reboot attempt: a downloaded-but-unenumerated voice may still
+        // resolve by identifier, so probe a name×tier matrix and log hits.
+        let names = [
+            "Ava", "Zoe", "Evan", "Nathan", "Noelle", "Tom",
+            "Samantha", "Nicky", "Aaron", "Allison", "Serena",
+        ]
+        let patterns = [
+            "com.apple.voice.premium.en-US.%@",
+            "com.apple.voice.enhanced.en-US.%@",
+            "com.apple.ttsbundle.siri_%@_en-US_premium",
+            "com.apple.ttsbundle.siri_%@_en-US_enhanced",
+        ]
+        var hits = 0
+        for name in names {
+            for pattern in patterns {
+                let id = pattern.replacingOccurrences(of: "%@", with: name)
+                if AVSpeechSynthesisVoice(identifier: id) != nil {
+                    hits += 1
+                    Automation.mark("voice: PROBE-HIT \(id)")
+                }
+            }
         }
+        Automation.mark("voice: probe matrix hits=\(hits)")
         Automation.mark("voice: done")
     }
 
