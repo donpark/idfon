@@ -175,6 +175,33 @@ The caller pairs with this **voice agent**, not the Agency; the Agency stays
 text-only and unchanged. Because wrapping is config, the same script (with a
 `wrap` pointing elsewhere) voices any other agent.
 
+#### Delegated call routing (text to the Agency, calls to the wrapper)
+
+Pairing the caller with the voice agent makes *everything* go through the
+wrapper. To keep text on the Agency and route only **calls** to the voice
+agent, advertise a delegate on the Agency's ticket instead:
+
+```json
+"voice_route": { "mode": "delegated",
+  "delegate": { "peer_id": "<voice-agent>", "contact": {…endpoint addr…}, "audio": "pcm24k" } }
+```
+
+The apps read this: a **call** dials `delegate.peer_id` (the voice agent);
+**text** goes to the Agency. Start the Agency with the delegate so its minted
+tickets carry the route:
+
+```sh
+AGENCY_VOICE_DELEGATE=<voice-agent-peer> \
+AGENCY_VOICE_DELEGATE_CONTACT='<endpoint-addr JSON>' \
+  scripts/agency-serve.sh
+```
+
+Then re-pair callers (the stored ticket must carry the new route) and pair the
+caller with the voice agent so the app can dial it. `VoiceDelegate` gained a
+`contact` field for exactly this; the caller must be admitted by the voice
+agent's holder (the wrapping setup already admits the Agency, and the Agency
+admits the voice agent — the caller admission is the remaining wiring).
+
 ## The kit (fast iteration)
 
 Adding a voice agent should not mean new Rust. The shared pieces live in two

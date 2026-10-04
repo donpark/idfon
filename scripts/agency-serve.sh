@@ -26,4 +26,20 @@ fi
 export EVE_AGENT="${EVE_AGENT:-agency}"
 export AGENCY_PROVISIONER_URL="${AGENCY_PROVISIONER_URL:-http://127.0.0.1:$port}"
 export AGENCY_PROVISIONER_SECRET="$secret"
+
+# Optional voice delegate: advertise that a *call* to the Agency routes to a
+# voice agent (`voice_route.mode = delegated`) while text stays on the Agency.
+# The delegate's peer id + endpoint address come from the operator (the voice
+# agent prints them at startup). Tickets minted while this is set carry the
+# route, so re-pair callers to pick it up.
+if [ -n "${AGENCY_VOICE_DELEGATE:-}" ]; then
+  delegate_config="${AGENCY_VOICE_DELEGATE_CONFIG:-$HOME/.idfon/agency/voice-delegate.json}"
+  mkdir -p "$(dirname "$delegate_config")"
+  jq -nc --arg peer "$AGENCY_VOICE_DELEGATE" \
+    --argjson contact "${AGENCY_VOICE_DELEGATE_CONTACT:-null}" \
+    '{voice_route:{mode:"delegated",delegate:{peer_id:$peer,contact:$contact,audio:"pcm24k"}}}' \
+    > "$delegate_config"
+  export EVE_LIVE_CONFIG="$delegate_config"
+fi
+
 . "$root/scripts/live-voice-serve.sh" "$@"

@@ -823,9 +823,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // name/profile heuristic. `native-duplex`/`server-cascade` dial a live
         // session (the holder terminates audio, whatever backend it runs);
         // `client-cascade` drives the agent with the on-device cascade instead.
-        if let mode = CapabilityTickets.voiceRoute(for: peer.id)?.mode {
-            switch mode {
-            case .clientCascade, .delegated:
+        if let route = CapabilityTickets.voiceRoute(for: peer.id) {
+            switch route.mode {
+            case .clientCascade:
+                voiceAgentTapped()
+                return
+            case .delegated:
+                // Calls go to the delegate voice agent; text stays on this peer.
+                if let delegate = route.delegatePeerId {
+                    LiveCall.shared.dial(delegate)
+                    return
+                }
                 voiceAgentTapped()
                 return
             case .nativeDuplex, .serverCascade:
