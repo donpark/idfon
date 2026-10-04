@@ -48,23 +48,23 @@ if [ "$target" != "$host" ]; then
   esac
 fi
 
-$build --release -p eve-idfon -p idfon-live-gpt $cross_flag
+$build --release -p eve-idfon -p idfon-voice-agent --features idfon-voice-agent/gpt-live $cross_flag
 
 if [ -n "$cross_flag" ]; then out="target/$target/release"; else out="target/release"; fi
 case "$target" in
   *apple-darwin)
     # A relink can leave an ad-hoc signature that no longer matches the pages;
     # the kernel then SIGKILLs the process at exec ("Code Signature Invalid").
-    codesign --force -s - "$out/eve-idfon" "$out/eve-idfon-gpt"
+    codesign --force -s - "$out/eve-idfon" "$out/eve-idfon-voice"
     ;;
 esac
 
 pkgdir="$root/integrations/$pkg"
 mkdir -p "$pkgdir/bin"
 cp "$out/eve-idfon" "$pkgdir/bin/"
-# Optional composition that opts into live calls; the generic holder names no
-# vendor, so the agent-specific binary ships alongside it and is selected with
-# --holder-command / EVE_IDFON_HOLDER.
-cp "$out/eve-idfon-gpt" "$pkgdir/bin/"
+# Composed voice runner (cascade + relay + gpt-live full duplex). Live-call
+# deployments select it with --holder-command / EVE_IDFON_HOLDER; the generic
+# holder names no vendor and ignores live controls.
+cp "$out/eve-idfon-voice" "$pkgdir/bin/"
 cp "$root/LICENSE-APACHE" "$root/LICENSE-MIT" "$pkgdir/"
 echo "build-eve.sh: populated $pkgdir/bin ($target)"

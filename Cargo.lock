@@ -3136,32 +3136,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "idfon-live-gpt"
-version = "0.7.0"
-dependencies = [
- "anyhow",
- "base64 0.23.1",
- "bytes",
- "ed25519-dalek",
- "eve-idfon",
- "futures-util",
- "idfon-core",
- "idfon-live-media",
- "idfon-protocol",
- "iroh",
- "iroh-live",
- "moq-audio",
- "moq-media",
- "moq-net",
- "n0-future",
- "rustls",
- "serde",
- "serde_json",
- "tokio",
- "tokio-websockets",
-]
-
-[[package]]
 name = "idfon-live-media"
 version = "0.7.0"
 dependencies = [

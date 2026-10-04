@@ -328,8 +328,9 @@ Live-call behavior is **not** part of the platform. The generic holder parses
 the capability the control needs (`live.audio.publish` / `live.video.publish`)
 via the seam in `crates/eve-idfon/src/live.rs` (`LiveCallHandler` +
 `LiveCallRegistry`). A concrete relay lives with its agent
-(`crates/idfon-live-gpt` is the `gpt-live-1` handler), and the composition root
-that wants live calls builds the registry (`eve-idfon-gpt`); the generic
+(`crates/idfon-voice-agent` holds the `gpt-live` backend), and the voice-agent
+runner that wants live calls links that backend (`eve-idfon-voice`, feature
+`gpt-live`); the generic
 `eve-idfon` build registers none and lets invites fall through as text.
 
 Agent-specific values — provider endpoint, model, credential env name, voice,

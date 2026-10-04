@@ -106,7 +106,8 @@ answered every turn — transcripts confirmed the model was replying.
 
 **Fixes.**
 
-- Caller side (`crates/idfon-live-gpt/src/lib.rs`): a separate, earlier
+- Caller side (`CallerPacer` in `crates/idfon-live-media/src/lib.rs`, fed by
+  `crates/idfon-voice-agent/src/gpt_live.rs`): a separate, earlier
   bug let the caller-leg pacing deficit (`cursor − target`) settle into a
   self-sustaining balance where every frame late-dropped forever — GPT-Live
   heard pure silence after the first exchange. `pump_caller_audio` now
