@@ -6,11 +6,12 @@ import Speech
 /// agent peer -> await the reply -> on-device TTS. Mirror of the iOS
 /// `VoiceAgentSession`; the macOS app owns all audio.
 ///
-/// One long-lived analyzer stays prepared for the whole session; the mic tap is
-/// paused while the agent thinks/speaks so its own TTS can't leak into the next
-/// prompt. `VoicePromptSegmenter` picks utterance boundaries: a final result
-/// commits immediately, a 1.2 s no-change gap is the fallback. macOS 26+ uses
-/// the SpeechAnalyzer; older macOS falls back to a per-turn SFSpeechRecognizer.
+/// One long-lived analyzer stays prepared for the whole session; the mic tap
+/// stays live while the agent speaks so the caller can barge in (echo + gated
+/// peak filters cancel the agent's own TTS). `VoicePromptSegmenter` picks
+/// utterance boundaries: a final result commits immediately, a 1.2 s no-change
+/// gap is the fallback. macOS 26+ uses the SpeechAnalyzer; older macOS falls
+/// back to a per-turn SFSpeechRecognizer.
 @MainActor
 final class VoiceAgentSession: NSObject {
     static let shared = VoiceAgentSession()
@@ -54,6 +55,13 @@ final class VoiceAgentSession: NSObject {
     /// Last text spoken by TTS, so the agent's own tail can be dropped instead
     /// of re-sent as a user turn (self-bleed).
     private var lastSpoken: String?
+    /// True while the agent speaks and the recognizer is armed for barge-in;
+    /// a committed utterance then cancels playback instead of ending a turn.
+    private var bargeInArmed = false
+    /// Text that cancelled playback, consumed by `speak`.
+    private var bargeInHeard: String?
+    /// Barge-in text handed to the next turn instead of listening again.
+    private var pendingHeard: String?
 
     func start(peerRef: String, turns: Int = Int.max) {
         guard !isActive else { return }
@@ -64,8 +72,11 @@ final class VoiceAgentSession: NSObject {
         turnsDone = 0
         activePeerId = peerRef
         micMuted = false
-        segmenter.onPartial = { [weak self] text in self?.setState(.listening(text)) }
-        segmenter.onCommit = { [weak self] text in self?.deliver(text) }
+        segmenter.onPartial = { [weak self] text in
+            guard let self, !self.bargeInArmed else { return }
+            self.setState(.listening(text))
+        }
+        segmenter.onCommit = { [weak self] text in self?.handleCommit(text) }
         SpeechEngines.prewarm()
         segmenter.start()
         Task { @MainActor in
@@ -95,12 +106,8 @@ final class VoiceAgentSession: NSObject {
             }
             CallTonePlayer.shared.start(.answered)
             if let greeting, !greeting.isEmpty, !stopRequested {
-                // Keep the agent's own greeting out of the recognizer (the loop
-                // resumes the mic for the first caller turn).
-                segmenter.setEnabled(false)
-                asr?.pause()
                 setState(.speaking(greeting))
-                await speak(greeting)
+                _ = await speak(greeting)
                 updateStats()
             }
             while !stopRequested && turnsDone < turnLimit {
@@ -113,6 +120,9 @@ final class VoiceAgentSession: NSObject {
 
     func stop() {
         stopRequested = true
+        // Cancel in-flight speech now; otherwise hang-up waits out the whole
+        // utterance while the loop is parked in `speak()`.
+        SpeechEngines.tts.stop()
         deliver(nil)
     }
 
@@ -173,7 +183,7 @@ final class VoiceAgentSession: NSObject {
             guard let reply = await sendAndAwait(peerId: peer.id, text: text, logPrefix: "voice-agent-text")
             else { return }
             Automation.mark("voice-agent-text: reply=\(reply)")
-            if !reply.isEmpty { await speak(reply) }
+            if !reply.isEmpty { _ = await speak(reply) }
             Automation.mark("voice-agent-text: done")
         }
     }
@@ -182,27 +192,30 @@ final class VoiceAgentSession: NSObject {
 
     private func performTurn(peerId: String) async -> Bool {
         turnsDone += 1
-        var heard: String?
+        var heard: String? = pendingHeard
+        pendingHeard = nil
         // Retry within the turn when the recognizer catches the agent's own TTS
         // tail; only a transcript that is not the last spoken reply is sent.
-        for _ in 0..<3 {
-            setState(.listening(""))
-            let listenStart = Date()
-            guard let text = await listenOnce(), !text.isEmpty else { break }
-            lastListenMs = Int(Date().timeIntervalSince(listenStart) * 1000)
-            Automation.mark("voice-agent: asr listen_ms=\(lastListenMs)")
-            if let spoken = lastSpoken, !spoken.isEmpty,
-               voice.isEcho(spoken: spoken, heard: text) {
-                Automation.mark("voice-agent: dropped echo heard=\(text)")
-                continue
+        if heard == nil {
+            for _ in 0..<3 {
+                setState(.listening(""))
+                let listenStart = Date()
+                guard let text = await listenOnce(), !text.isEmpty else { break }
+                lastListenMs = Int(Date().timeIntervalSince(listenStart) * 1000)
+                Automation.mark("voice-agent: asr listen_ms=\(lastListenMs)")
+                if let spoken = lastSpoken, !spoken.isEmpty,
+                   voice.isEcho(spoken: spoken, heard: text) {
+                    Automation.mark("voice-agent: dropped echo heard=\(text)")
+                    continue
+                }
+                // Optional on-device LM cleanup (fail-open to the raw transcript).
+                let corrected = await SpeechCorrection.correct(text)
+                if corrected != text {
+                    Automation.mark("voice-agent: corrected=\(corrected)")
+                }
+                heard = corrected
+                break
             }
-            // Optional on-device LM cleanup (fail-open to the raw transcript).
-            let corrected = await SpeechCorrection.correct(text)
-            if corrected != text {
-                Automation.mark("voice-agent: corrected=\(corrected)")
-            }
-            heard = corrected
-            break
         }
         guard let heard, !heard.isEmpty else {
             noSpeechTurns += 1
@@ -230,7 +243,7 @@ final class VoiceAgentSession: NSObject {
         Automation.mark("voice-agent: reply=\(reply)")
         if !reply.isEmpty {
             setState(.speaking(reply))
-            await speak(reply)
+            pendingHeard = await speak(reply)
         }
         updateStats()
         setState(.idle)
@@ -432,12 +445,55 @@ final class VoiceAgentSession: NSObject {
         return nil
     }
 
-    private func speak(_ text: String) async {
-        await SpeechEngines.tts.speak(text)
+    private func speak(_ text: String) async -> String? {
         lastSpoken = text
-        // The tap gate is still closed here; hold it closed briefly so the
-        // speaker/acoustic tail decays before the next turn re-arms the mic.
-        try? await Task.sleep(nanoseconds: 350_000_000)
+        // Arm barge-in: keep the recognizer live while TTS plays. The echo and
+        // gated-peak filters keep the agent's own voice out, so a cancellable
+        // non-echo utterance is the caller interrupting.
+        let armed = !micMuted && asr != nil
+        if armed {
+            bargeInArmed = true
+            bargeInHeard = nil
+            segmenter.clear()
+            segmenter.setEnabled(true)
+            asr?.resume()
+        }
+        await SpeechEngines.tts.speak(text)
+        var interrupted: String?
+        if armed {
+            bargeInArmed = false
+            interrupted = bargeInHeard
+            bargeInHeard = nil
+            segmenter.setEnabled(false)
+            asr?.pause()
+        }
+        // Hold the tap gate closed briefly so the speaker/acoustic tail decays
+        // before the next turn re-arms the mic; skip when stopping or already
+        // interrupted (the barge-in text is the next turn).
+        if !stopRequested, interrupted == nil {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+        }
+        return interrupted
+    }
+
+    /// A committed utterance: normally it ends the listen turn; while the agent
+    /// speaks it may cancel playback (barge-in).
+    private func handleCommit(_ text: String) {
+        guard bargeInArmed else {
+            deliver(text)
+            return
+        }
+        guard !micMuted,
+              asr?.bargeInEngages ?? true,
+              voice.isCancellable(text),
+              !voice.isEcho(spoken: lastSpoken ?? "", heard: text)
+        else {
+            Automation.mark("voice-agent: barge-in ignored text=\(text)")
+            return
+        }
+        Automation.mark("voice-agent: barge-in engaged text=\(text)")
+        bargeInHeard = text
+        SpeechEngines.tts.stop()
     }
 
     static func stripEnvelopes(_ text: String) -> String {

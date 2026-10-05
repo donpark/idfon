@@ -99,7 +99,7 @@ enum SpeechEngines {
 final class AppleTtsEngine: NSObject, TtsEngine {
     let name = "apple"
     private let synthesizer = AVSpeechSynthesizer()
-    private var delegate: SpeechDelegate?
+    private let completion = SpeechCompletion()
 
     func prepare() async {}
 
@@ -109,23 +109,46 @@ final class AppleTtsEngine: NSObject, TtsEngine {
             utterance.voice = SpeechVoice.best(language: "en-US")
             utterance.prefersAssistiveTechnologySettings = false
             Automation.mark("voice: speak id=\(utterance.voice?.identifier ?? "nil") assistive=false")
-            let delegate = SpeechDelegate { continuation.resume() }
-            self.delegate = delegate
-            synthesizer.delegate = delegate
+            completion.reset { continuation.resume() }
+            synthesizer.delegate = completion
             synthesizer.speak(utterance)
         }
     }
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+        // stopSpeaking cancels via `didCancel`, but resume here too so a hangup
+        // can never leave `speak()` awaiting.
+        completion.complete()
+    }
+}
+
+/// Thread-safe single-shot completion shared by the synthesizer delegate and a
+/// direct `stop()`, so `speak()` resumes exactly once on either path.
+final class SpeechCompletion: NSObject, AVSpeechSynthesizerDelegate {
+    private let lock = NSLock()
+    private var finish: (() -> Void)?
+
+    func reset(_ finish: @escaping () -> Void) {
+        lock.lock()
+        self.finish = finish
+        lock.unlock()
     }
 
-    private final class SpeechDelegate: NSObject, AVSpeechSynthesizerDelegate {
-        let finish: () -> Void
-        init(finish: @escaping () -> Void) { self.finish = finish }
-        func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-            finish()
-        }
+    func complete() {
+        lock.lock()
+        let finish = self.finish
+        self.finish = nil
+        lock.unlock()
+        finish?()
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        complete()
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        complete()
     }
 }
 
@@ -145,6 +168,8 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
     private var prepareTask: Task<Void, Never>?
     private var player: AVAudioPlayer?
     private var finish: (() -> Void)?
+    /// Set by `stop()` so a cancel during ANE synthesis does not start playback.
+    private var stopRequested = false
     private(set) var lastLatencyMs: Int?
 
     func prepare() async {
@@ -171,6 +196,7 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
     }
 
     func speak(_ text: String) async {
+        stopRequested = false
         await prepare()
         guard prepared, let manager else {
             Automation.mark("voice: kokoro unavailable, using apple")
@@ -180,6 +206,7 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
         do {
             let start = Date()
             let wav = try await manager.synthesize(text: text)
+            if stopRequested { return }  // cancelled while synthesizing
             lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
             Automation.mark("voice: kokoro wav bytes=\(wav.count) in \(lastLatencyMs ?? 0)ms")
             await play(wav)
@@ -190,10 +217,12 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
     }
 
     func stop() {
+        stopRequested = true
         player?.stop()
         finish?()
         finish = nil
         player = nil
+        fallback.stop()
     }
 
     private func play(_ wav: Data) async {
