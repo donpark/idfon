@@ -150,6 +150,25 @@ engine block. Streaming where it matters: ElevenLabs TTS streams by default
 via `"stream": true` (WebSocket partials, lower first-final latency) while
 batch REST stays the default.
 
+**Default (`agents/voice/live.json`)** is the streaming split — Deepgram
+WebSocket STT (`nova-3`, `stream: true`) + ElevenLabs `/stream` TTS. Four
+cascade behaviours are worth knowing:
+
+- **One reply, one synthesis.** TTS is synthesized for the **whole**
+  (envelope-stripped) reply when the turn completes, not per-delta: incremental
+  synthesis raced the completed reply and truncated multi-clause answers after
+  the first sentence. The provider still streams, so first-audio latency stays
+  low.
+- **Clauses in order.** A streaming provider's clauses go through one ordered
+  worker; a task per clause interleaved their PCM and played the reply on top of
+  itself.
+- **Audio-only replies.** A voice-injected turn's reply is spoken to the live
+  session only (`ReplyTarget.live_only`), never posted as a second chat bubble —
+  the `IDFON-CALL/1` transcript is the single record.
+- **Every reply is acked.** The holder must send a `reply.ack` for *every*
+  reply, chat copy or not: the bridge's `/reply` blocks on it and returns 502
+  otherwise, dropping the agent's reply before it reaches the live session.
+
 Open-source / local providers:
 - `kokoro` — Kokoro TTS (and ASR) via `kokoro-fastapi`, an OpenAI-compatible
   server on localhost, no key. `providers/kokoro.json`.

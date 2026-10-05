@@ -240,9 +240,6 @@ impl SttSession for StreamingDeepgramStt {
             }
         }
         let text = std::mem::take(&mut self.pending).trim().to_string();
-        if text.is_empty() {
-            eprintln!("[idfon-voice] deepgram flush returned empty");
-        }
         Ok((!text.is_empty()).then_some(text))
     }
 
