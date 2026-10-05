@@ -1889,6 +1889,7 @@ name = "eve-idfon"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64 0.23.1",
  "blake3",
  "chrono",
@@ -1897,6 +1898,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "idfon-core",
+ "idfon-h3",
  "idfon-media",
  "idfon-protocol",
  "idfon-telemetry",

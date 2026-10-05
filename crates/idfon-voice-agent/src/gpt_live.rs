@@ -65,6 +65,11 @@ pub struct GptLiveConfig {
     pub delegation_request: String,
     /// One spoken-turn cap in seconds.
     pub reply_max_seconds: u64,
+    /// Resolved pipeline description (`eve_idfon::voice_info`), appended to the
+    /// session instructions so the voice model can answer which model/STT/TTS
+    /// it is. Not part of the channel config: filled from the raw params.
+    #[serde(skip)]
+    pub pipeline: Value,
 }
 
 impl Default for GptLiveConfig {
@@ -86,6 +91,7 @@ impl Default for GptLiveConfig {
             source: "gpt-live-delegation".into(),
             delegation_request: "[live voice call] The caller said: \"{said}\". Build what they asked for now; if it is something to look at (an explanation, report, diagram, chart, or web page), publish it with add_artifact and keep the spoken reply brief.".into(),
             reply_max_seconds: 120,
+            pipeline: Value::Null,
         }
     }
 }
@@ -93,7 +99,9 @@ impl Default for GptLiveConfig {
 impl GptLiveConfig {
     /// Build from the opaque channel metadata handed to the backend.
     pub fn from_params(params: &Value) -> Self {
-        serde_json::from_value(params.clone()).unwrap_or_default()
+        let mut config: Self = serde_json::from_value(params.clone()).unwrap_or_default();
+        config.pipeline = eve_idfon::voice_info(params);
+        config
     }
 }
 
@@ -178,6 +186,9 @@ impl GptLiveBackend {
                             live_commentary: Some((delegation.delegation_id.clone(), delegation.reply)),
                             // Delegated turn keeps its chat reply too.
                             live_only: false,
+                            // A live-session delegation has no inbound message
+                            // trace to continue.
+                            trace: None,
                         },
                     );
                     let frame = IpcFrame::TurnIn {
@@ -192,6 +203,7 @@ impl GptLiveBackend {
                         a2a_depth: None,
                         capabilities: None,
                         source: Some(source.clone()),
+                        trace: None,
                     };
                     if out_tx.send(frame).await.is_err() {
                         break;
@@ -561,6 +573,20 @@ impl TranscriptStream {
     }
 }
 
+/// The system instructions sent to the live session: the configured persona
+/// plus the pipeline manifest, so the voice model can answer questions about
+/// which model/STT/TTS it is (the info is static for the session).
+fn session_instructions(config: &GptLiveConfig) -> String {
+    if config.pipeline.is_null() {
+        config.instructions.clone()
+    } else {
+        format!(
+            "{}\n\nVoice pipeline (answer questions about which model, STT, or TTS you use from this; JSON): {}",
+            config.instructions, config.pipeline
+        )
+    }
+}
+
 /// Opens the live session for one call.
 async fn connect_live(
     api_key: &str,
@@ -582,6 +608,7 @@ async fn connect_live(
     if let Some(voice) = &config.voice {
         audio["voice"] = json!(voice);
     }
+    let instructions = session_instructions(config);
     ws.send(Message::text(
         json!({
             "type": "session.start",
@@ -590,7 +617,7 @@ async fn connect_live(
                 "store": false,
                 "delegation": { "type": "client" },
                 "audio": audio,
-                "instructions": config.instructions,
+                "instructions": instructions,
             },
         })
         .to_string(),
@@ -741,6 +768,22 @@ mod tests {
         assert_eq!(overridden.api_key_env, "OTHER_KEY");
         assert_eq!(overridden.voice.as_deref(), Some("verse"));
         assert_eq!(overridden.reply_max_seconds, 30);
+    }
+
+    #[test]
+    fn session_instructions_carry_the_pipeline() {
+        // No pipeline (e.g. no live config): the persona is sent verbatim.
+        let mut config = GptLiveConfig::default();
+        config.instructions = "Be brief.".into();
+        assert_eq!(session_instructions(&config), "Be brief.");
+
+        // With a manifest: the persona plus the JSON, so the voice model can
+        // answer which model/STT/TTS is running.
+        config.pipeline = serde_json::json!({ "mode": "native-duplex", "voice_model": "openai/gpt-live-1" });
+        let instructions = session_instructions(&config);
+        assert!(instructions.starts_with("Be brief."));
+        assert!(instructions.contains("openai/gpt-live-1"));
+        assert!(instructions.contains("native-duplex"));
     }
 
     #[test]

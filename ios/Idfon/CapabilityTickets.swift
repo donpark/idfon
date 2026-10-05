@@ -78,7 +78,7 @@ enum VoiceHalf: String {
 }
 
 /// Holder-signed voice routing (`capability_ticket.voice`).
-struct VoiceRoute {
+struct VoiceRoute: Equatable {
     enum Mode: String {
         /// The target's holder terminates audio with a full-duplex model session.
         case nativeDuplex = "native-duplex"

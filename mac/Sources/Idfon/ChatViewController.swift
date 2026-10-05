@@ -89,6 +89,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     // popovers
     private var peerPopover: NSPopover?
+    private weak var voiceCaptionLabel: NSTextField?
+    private var voiceEnginePopups: [VoiceOption.Kind: NSPopUpButton] = [:]
+    private var voiceCatalog: [VoiceOption] = []
 
     init(peer: Peer, app: AppModel) {
         self.peer = peer
@@ -1016,59 +1019,71 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     // MARK: - Calls
 
     @objc private func callTapped() {
-        // Voice routing is a holder-signed fact on the capability ticket
-        // (`voice.mode`); legacy tickets have no block and keep the old
-        // name/profile heuristic. `native-duplex`/`server-cascade` dial a live
-        // session (the holder terminates audio, whatever backend it runs);
-        // `client-cascade` drives the agent with the on-device cascade instead.
-        if let route = CapabilityTickets.voiceRoute(for: peer.id) {
-            switch route.mode {
-            case .clientCascade:
-                voiceAgentTapped()
-                return
-            case .delegated:
-                // Calls go to the delegate voice agent; text stays on this peer.
-                guard let delegate = route.delegatePeerId else {
-                    voiceAgentTapped()
-                    return
-                }
-                if app.peers.contains(where: { $0.id == delegate }) || route.delegateContact == nil {
-                    live.dial(delegate)
-                } else if let contact = route.delegateContact {
-                    // Add the delegate from the signed contact (once), then dial.
-                    let client = self.client
-                    let ticket = route.delegateTicket
-                    Task { @MainActor in
-                        let identity = (try? await client.identityId()) ?? "default"
-                        try? await client.addChannel(name: delegate, ticketJSON: contact, identity: identity)
-                        if let ticket { _ = CapabilityTickets.store(ticket, for: delegate) }
-                        live.dial(delegate)
-                    }
-                }
-                return
-            case .nativeDuplex, .serverCascade:
-                // The holder declares the codec; dial the live media session
-                // only for the PCM profile, else the default audio call. Falls
-                // back to the local profile only when the ticket omits it.
-                let pcm = route.audio == "pcm24k"
-                    || (route.audio == nil && ContactAudioProfiles.profile(for: peer.id) == .pcm24k)
-                if pcm {
-                    if route.isHybrid {
-                        HybridVoice.shared.start(peerRef: peer.id, route: route)
-                    } else {
-                        live.dial(peer.id)
-                    }
-                } else {
-                    video.dial(peer.id, cameraOn: false)
-                }
-                return
+        // The per-contact STT/TTS selection (option ids from the agent's
+        // `idfon.json` catalog) rides the invite; the holder resolves it. The
+        // catalog is a fetched resource, cached after the contact screen.
+        let peerID = peer.id
+        let client = self.client
+        let legacyRemote = peer.name == "live-voice"
+            || ContactAudioProfiles.profile(for: peerID) == .pcm24k
+        let signed = CapabilityTickets.voiceRoute(for: peerID)
+        let selection = ContactVoiceSelection.selection(for: peerID)
+        Task { @MainActor in
+            let catalog = await VoiceCatalog.options(for: peerID, client: client)
+            let decision = VoiceCallRouting.decide(
+                selection: selection, catalog: catalog, signed: signed, legacyRemote: legacyRemote)
+            self.perform(decision)
+        }
+    }
+
+    private func perform(_ decision: VoiceCallDecision) {
+        switch decision {
+        case .onDevice:
+            voiceAgentTapped()
+        case .delegated(let route):
+            dialDelegate(route)
+        case .live(let route):
+            dialLive(route)
+        case .classic:
+            video.dial(peer.id, cameraOn: false)
+        }
+    }
+
+    /// Calls go to the delegate voice agent; text stays on this peer.
+    private func dialDelegate(_ route: VoiceRoute) {
+        guard let delegate = route.delegatePeerId else {
+            voiceAgentTapped()
+            return
+        }
+        if app.peers.contains(where: { $0.id == delegate }) || route.delegateContact == nil {
+            live.dial(delegate)
+        } else if let contact = route.delegateContact {
+            // Add the delegate from the signed contact (once), then dial.
+            let client = self.client
+            let ticket = route.delegateTicket
+            Task { @MainActor in
+                let identity = (try? await client.identityId()) ?? "default"
+                try? await client.addChannel(name: delegate, ticketJSON: contact, identity: identity)
+                if let ticket { _ = CapabilityTickets.store(ticket, for: delegate) }
+                live.dial(delegate)
             }
         }
-        // Legacy ticket (no voice block): name/profile heuristic.
-        if peer.name == "live-voice" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
-            live.dial(peer.id)
-        } else {
+    }
+
+    /// The holder terminates audio. Its `voice.audio` codec decides between the
+    /// live PCM media session (optionally hybrid) and the ordinary audio call.
+    /// `route` is nil for a legacy ticket dialed on the name/profile heuristic.
+    private func dialLive(_ route: VoiceRoute?) {
+        let pcm = route?.audio == "pcm24k"
+            || (route?.audio == nil && ContactAudioProfiles.profile(for: peer.id) == .pcm24k)
+        guard pcm else {
             video.dial(peer.id, cameraOn: false)
+            return
+        }
+        if let route, route.isHybrid {
+            HybridVoice.shared.start(peerRef: peer.id, route: route)
+        } else {
+            live.dial(peer.id)
         }
     }
 
@@ -1312,12 +1327,36 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         endpoint.isSelectable = true
         let copy = NSButton(title: "Copy endpoint ID", target: self, action: #selector(copyEndpointTapped))
         copy.bezelStyle = .rounded
+
+        // Per-contact STT/TTS from the agent's `idfon.json` catalog; the
+        // catalog is fetched, so the menus fill in once it lands.
+        func enginePopup(_ kind: VoiceOption.Kind) -> NSPopUpButton {
+            let popup = NSPopUpButton()
+            popup.target = self
+            popup.action = #selector(voiceEngineChanged(_:))
+            popup.identifier = NSUserInterfaceItemIdentifier(kind.rawValue)
+            voiceEnginePopups[kind] = popup
+            return popup
+        }
+        let sttPopup = enginePopup(.stt)
+        let ttsPopup = enginePopup(.tts)
+        let voiceCaption = NSTextField(wrappingLabelWithString: "Loading voice catalog…")
+        voiceCaption.font = NSFont.systemFont(ofSize: 10)
+        voiceCaption.textColor = .secondaryLabelColor
+        voiceCaptionLabel = voiceCaption
+        voiceCatalog = []
+        rebuildVoiceEngines()
+
         let stack = NSStackView(views: [
             NSTextField(labelWithString: peer.displayName),
             endpoint,
             copy,
+            NSTextField(labelWithString: "Speech to text"), sttPopup,
+            NSTextField(labelWithString: "Text to speech"), ttsPopup,
+            voiceCaption,
         ])
         stack.orientation = .vertical
+        stack.alignment = .leading
         stack.spacing = 6
         stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
         content.view = stack
@@ -1325,6 +1364,53 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         popover.behavior = .transient
         popover.show(relativeTo: callLabel.bounds, of: callLabel, preferredEdge: .minY)
         peerPopover = popover
+
+        let peerID = peer.id
+        let client = self.client
+        Task { @MainActor in
+            self.voiceCatalog = await VoiceCatalog.options(for: peerID, client: client)
+            self.rebuildVoiceEngines()
+        }
+    }
+
+    /// Fill both popups from the fetched catalog plus the current selection.
+    private func rebuildVoiceEngines() {
+        let (stt, tts) = ContactVoiceSelection.selection(for: peer.id)
+        for (kind, popup) in voiceEnginePopups {
+            let selected = kind == .stt ? stt : tts
+            popup.removeAllItems()
+            popup.addItem(withTitle: "Automatic")
+            for option in voiceCatalog where option.kind == kind || option.fillsBothSlots {
+                popup.addItem(withTitle: option.label)
+                popup.lastItem?.representedObject = option.id
+            }
+            if let selected,
+               let index = popup.itemArray.firstIndex(where: { ($0.representedObject as? String) == selected }) {
+                popup.selectItem(at: index)
+            } else {
+                popup.selectItem(at: 0)
+            }
+        }
+        voiceCaptionLabel?.stringValue = voiceCatalog.isEmpty
+            ? "No voice catalog advertised by this agent."
+            : "Engines the agent advertises. A full-duplex model fills both."
+    }
+
+    @objc private func voiceEngineChanged(_ sender: NSPopUpButton) {
+        guard let kind = voiceEnginePopups.first(where: { $0.value === sender })?.key else { return }
+        let id = sender.selectedItem?.representedObject as? String
+        var (stt, tts) = ContactVoiceSelection.selection(for: peer.id)
+        if let id, let option = voiceCatalog.first(where: { $0.id == id }), option.fillsBothSlots {
+            // Full-duplex fills both slots.
+            stt = id
+            tts = id
+        } else if kind == .stt {
+            stt = id
+        } else {
+            tts = id
+        }
+        ContactVoiceSelection.set(stt: stt, tts: tts, for: peer.id)
+        rebuildVoiceEngines()
     }
 
     @objc private func copyEndpointTapped() {

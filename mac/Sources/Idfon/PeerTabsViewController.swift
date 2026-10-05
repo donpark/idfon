@@ -257,6 +257,7 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
                 do {
                     try await self?.client.removePeer(ref: peer.id)
                     CapabilityTickets.remove(for: peer.id)
+                    ContactVoiceSelection.remove(for: peer.id)
                     self?.onMutate?()
                     self?.reload()
                 } catch {

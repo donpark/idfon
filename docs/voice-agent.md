@@ -39,6 +39,60 @@ tier never depends on one. An idfon-aware agent can also be handed the
 reference (endpoint + ticket) and route its own voice I/O through it — the
 injected case above.
 
+### The caller chooses, per contact
+
+The `voice` block is the holder's *advertisement*; the caller still chooses
+which STT/TTS engines to run, per contact. The catalog is **not** in the signed
+ticket — it is a resource the agent serves at path `idfon.json`
+(`idfon://<holder>/idfon.json`), fetched on demand through the loopback
+gateway and cached by the app. So it stays fresh without re-pairing and the
+ticket stays small.
+
+- **`idfon.json`** — the agent's manifest. `voice.options` lists what it can
+  run: `stt` / `tts` / `full-duplex` options, each with an `id`, a `label`, and
+  a `side` (`server` = the holder runs it, `client` = the caller does).
+- **Derivation + merge** — `eve_idfon::voice_options` derives defaults from the
+  live config (one option per configured `engine` half, or a `full-duplex`
+  option for a lone `model`) and merges the agent's manifest over them **by
+  `id`**: the agent integrates (keeps a default) or overrides per option.
+  `scripts/live-voice-serve.sh` folds `agents/<name>/idfon.json` into the live
+  config as `idfon_manifest`.
+- **Selection** — both apps store the chosen `stt`/`tts` option ids per contact
+  (`ContactVoiceSelection`, UserDefaults keyed by peer id). The ids ride the
+  `IDFON-LIVE/1` invite (`stt=<id>` / `tts=<id>`); `apply_voice_selection`
+  resolves them on the holder into the cascade engine halves (or switches the
+  backend for a `full-duplex` choice).
+- **Full-duplex coupling** — a `full-duplex` option (e.g. GPT-Live-1) fills
+  both slots: choosing it for either STT or TTS sets both, and pins
+  `mode = native-duplex`.
+
+The routing decision is pure (`VoiceCallRouting.decide`): a server/full-duplex
+selection dials the holder's live session, an all-client selection is a client
+cascade, and with no selection the signed route is followed (legacy tickets
+keep the name/PCM heuristic). Checked by `mac/Checks/VoiceCallRoutingCheck` +
+`ios/Checks/VoiceCallRoutingCheck`.
+
+`scripts/live-voice-serve.sh` refuses to start when `EVE_LIVE_CONFIG` names a
+missing file, so a holder cannot silently advertise no route.
+
+### Introspection: ask the agent what it is
+
+A caller can ask which model, STT, and TTS are running. The holder is the
+authority: at startup it sends a vendor-neutral manifest
+(`eve_idfon::voice_info`) over the bridge (`voice.info` → `/voice/info`),
+derived from the live config plus `EVE_IDFON_MODEL` — `mode`, `backend`,
+`voice_model`, `agent_model`, `voice`, `audio`, and the raw `engine` block
+(unknown keys pass through, so a backend's own fields stay visible). Two
+consumers use it:
+
+- the Eve extension's `voice-pipeline` dynamic instruction injects it at turn
+  start, so a cascade or text agent can answer;
+- the GPT-Live backend appends it to the session `instructions`, so the
+  full-duplex voice model can answer directly, without a delegation.
+
+No vendor is baked into the platform: the manifest is generic metadata, and a
+missing bridge/manifest simply means no introspection.
+
 ## Agent-initiated calls (clarification)
 
 The reference is an addressable capability, so the direction is not fixed: a

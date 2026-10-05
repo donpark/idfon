@@ -83,6 +83,10 @@ pub struct LiveInvite {
     pub return_addr: Option<EndpointAddr>,
     pub audio_codec: Option<String>,
     pub audio_sample_rate: Option<u32>,
+    /// Chosen STT option id from the holder's `idfon.json` catalog.
+    pub stt: Option<String>,
+    /// Chosen TTS option id from the holder's `idfon.json` catalog.
+    pub tts: Option<String>,
 }
 
 /// Parse a live control, or `None` for non-live text.
@@ -107,6 +111,16 @@ pub fn parse_invite(text: &str) -> Option<LiveInvite> {
         .lines()
         .find_map(|line| line.strip_prefix("audio_sample_rate="))
         .and_then(|value| value.parse().ok());
+    let stt = rest
+        .lines()
+        .find_map(|line| line.strip_prefix("stt="))
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let tts = rest
+        .lines()
+        .find_map(|line| line.strip_prefix("tts="))
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
     Some(LiveInvite {
         is_start: action == "start",
         is_stop: action == "stop",
@@ -114,6 +128,8 @@ pub fn parse_invite(text: &str) -> Option<LiveInvite> {
         return_addr,
         audio_codec,
         audio_sample_rate,
+        stt,
+        tts,
     })
 }
 
@@ -561,7 +577,20 @@ mod tests {
         assert!(invite.is_start);
         assert_eq!(invite.audio_codec.as_deref(), Some("pcm"));
         assert_eq!(invite.audio_sample_rate, Some(24_000));
+        assert_eq!(invite.stt, None);
         assert!(parse_invite("hello").is_none());
+    }
+
+    #[test]
+    fn invite_parses_voice_selection() {
+        let text = "IDFON-LIVE/1\naction=start\nticket=abc\nstt=deepgram:nova-3\ntts=elevenlabs:turbo";
+        let invite = parse_invite(text).unwrap();
+        assert_eq!(invite.stt.as_deref(), Some("deepgram:nova-3"));
+        assert_eq!(invite.tts.as_deref(), Some("elevenlabs:turbo"));
+        // Empty values are treated as "not selected".
+        let none = parse_invite("IDFON-LIVE/1\naction=start\nticket=abc\nstt=\ntts=").unwrap();
+        assert_eq!(none.stt, None);
+        assert_eq!(none.tts, None);
     }
 
     #[test]
