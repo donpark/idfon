@@ -462,6 +462,12 @@ final class OnDeviceVoice: NSObject {
         idfon_voice_is_echo(spoken, heard) != 0
     }
 
+    /// P5 barge-in rule over the C ABI: whether a committed utterance may
+    /// cancel the agent's playback (backchannels/sub-minimum never do).
+    func isCancellable(_ text: String, inToolWindow: Bool = false) -> Bool {
+        idfon_voice_is_cancellable(text, 1, inToolWindow ? 1 : 0) != 0
+    }
+
     func finishListening(_ result: Result<String, Error>) {
         let completion = listenDone
         listenDone = nil

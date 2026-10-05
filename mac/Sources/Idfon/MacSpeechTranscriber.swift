@@ -31,6 +31,11 @@ final class MacSpeechTranscriber {
     /// engine running and dropping tap buffers keeps the IO stable.
     private let gateLock = NSLock()
     private var listening = true
+    /// Peak level of the most recent tap buffer and when it was seen, for the
+    /// no-AEC gated barge-in decision.
+    private let levelLock = NSLock()
+    private var recentPeak: Int16 = 0
+    private var peakStamp = Date.distantPast
 
     init(locale: Locale = Locale.current) {
         self.locale = locale
@@ -155,6 +160,7 @@ final class MacSpeechTranscriber {
         input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, time in
             guard let self, let builder = self.inputBuilder else { return }
             guard self.isListening else { return }
+            self.recordPeak(buffer)
             tapBuffers += 1
             if tapBuffers == 1 || tapBuffers % 500 == 0 {
                 Automation.mark("voice: tap buffers=\(tapBuffers) frames=\(buffer.frameLength)")
@@ -219,6 +225,51 @@ final class MacSpeechTranscriber {
         guard let engine, !engine.isRunning else { return }
         engine.prepare()
         try? engine.start()
+    }
+
+    /// Gated-mode barge-in: pass with AEC active, else require caller-level
+    /// audio (matches Rust `GATED_BARGE_IN_THRESHOLD`) in the last second.
+    var bargeInEngages: Bool {
+        if aecEnabled { return true }
+        levelLock.lock()
+        defer { levelLock.unlock() }
+        return Date().timeIntervalSince(peakStamp) < 1.0
+            && recentPeak > 800  // Rust bargein::GATED_BARGE_IN_THRESHOLD
+    }
+
+    private func recordPeak(_ buffer: AVAudioPCMBuffer) {
+        let peak = peak(of: buffer)
+        levelLock.lock()
+        recentPeak = peak
+        peakStamp = Date()
+        levelLock.unlock()
+    }
+
+    private func peak(of buffer: AVAudioPCMBuffer) -> Int16 {
+        let frames = Int(buffer.frameLength)
+        if let channels = buffer.int16ChannelData {
+            var maximum: Int16 = 0
+            for channel in 0..<Int(buffer.format.channelCount) {
+                let samples = channels[channel]
+                for index in 0..<frames {
+                    let magnitude = samples[index] == Int16.min ? Int16.max : abs(samples[index])
+                    if magnitude > maximum { maximum = magnitude }
+                }
+            }
+            return maximum
+        }
+        if let channels = buffer.floatChannelData {
+            var maximum: Int16 = 0
+            for channel in 0..<Int(buffer.format.channelCount) {
+                let samples = channels[channel]
+                for index in 0..<frames {
+                    let magnitude = Int16(min(abs(samples[index]) * 32767, 32767))
+                    if magnitude > maximum { maximum = magnitude }
+                }
+            }
+            return maximum
+        }
+        return 0
     }
 
     private func setListening(_ value: Bool) {

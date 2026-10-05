@@ -318,6 +318,12 @@ final class OnDeviceVoice: NSObject {
         idfon_voice_is_echo(spoken, heard) != 0
     }
 
+    /// P5 barge-in rule over the C ABI: whether a committed utterance may
+    /// cancel the agent's playback (backchannels/sub-minimum never do).
+    func isCancellable(_ text: String, inToolWindow: Bool = false) -> Bool {
+        idfon_voice_is_cancellable(text, 1, inToolWindow ? 1 : 0) != 0
+    }
+
     /// Start listening on the microphone and transcribe entirely on device.
     /// Partials are logged as they arrive; the first final result completes.
     func startListening(
