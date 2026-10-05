@@ -169,7 +169,7 @@ final class AudioMeter {
     static let shared = AudioMeter()
     private static let logQueue = DispatchQueue(label: "idfon.audio-meter-log")
     private static func log(_ message: String) {
-        NSLog("\(message)")
+        idfonLog("\(message)")
         logQueue.async {
             let url = URL(fileURLWithPath: "/tmp/idfon-audio-\(ProcessInfo.processInfo.processIdentifier).log")
             let line = "\(Date()) \(message)\n"
@@ -332,7 +332,7 @@ final class AudioMeter {
                     if self.converter == nil {
                         // Non-standard hardware format: keep metering but drop the
                         // push rather than publish wrong-speed audio.
-                        NSLog("idfon push: no converter for \(format); call stays on mic capture")
+                        idfonLog("idfon push: no converter for \(format); call stays on mic capture")
                         self.pushToEncoder = false
                     }
                 }
@@ -467,7 +467,7 @@ final class AudioMeter {
         // policy exists.
         pushedBuffers += 1
         if pushedBuffers <= 5 || pushedBuffers % 100 == 0 {
-            NSLog("idfon audio levels buffer=\(pushedBuffers) raw_rms=\(rawRMS) raw_peak=\(rawPeak)")
+            idfonLog("idfon audio levels buffer=\(pushedBuffers) raw_rms=\(rawRMS) raw_peak=\(rawPeak)")
         }
         if pushedBuffers <= 5 || pushedBuffers % 100 == 0 {
             Self.log("idfon audio meter push buffer=\(pushedBuffers) samples=\(count) rms=\(rawRMS) peak=\(rawPeak)")

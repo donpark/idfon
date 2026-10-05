@@ -112,12 +112,12 @@ final class AudioPusher {
             do {
                 try input.setVoiceProcessingEnabled(true)
             } catch {
-                NSLog("idfon audio push: voice processing unsupported: \(error.localizedDescription)")
+                idfonLog("idfon audio push: voice processing unsupported: \(error.localizedDescription)")
             }
             let format = input.outputFormat(forBus: 0)
             let pipelineFormat = pipelineFormat()
             guard let converter = AVAudioConverter(from: format, to: pipelineFormat) else {
-                NSLog("idfon audio push: no converter for \(format)")
+                idfonLog("idfon audio push: no converter for \(format)")
                 startInFlight = false
                 return
             }
@@ -131,9 +131,9 @@ final class AudioPusher {
             installObservers(session)
             running = true
             startInFlight = false
-            NSLog("idfon audio push: started (\(format))")
+            idfonLog("idfon audio push: started (\(format))")
         } catch {
-            NSLog("idfon audio push failed: \(error.localizedDescription)")
+            idfonError("idfon audio push failed: \(error.localizedDescription)")
             captureTeardown()
         }
     }
@@ -147,7 +147,7 @@ final class AudioPusher {
         if deactivate {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
-        NSLog("idfon audio push: stopped")
+        idfonLog("idfon audio push: stopped")
     }
 
     /// Engine-side teardown (also the interruption path): clears the tap and

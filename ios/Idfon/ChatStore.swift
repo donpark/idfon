@@ -94,7 +94,7 @@ final class ChatStore {
         // hangup resurrects a ghost call.
         if LiveInvite.parse(text) != nil {
             let stale = isStaleInvite(event)
-            NSLog("idfon live control received peer=\(peerId) message=\(messageID) stale=\(stale)")
+            idfonLog("idfon live control received peer=\(peerId) message=\(messageID) stale=\(stale)")
             if stale { return }
             DispatchQueue.main.async { Task { @MainActor in
                 IncomingCallRouter.shared.route(peerId: peerId, envelope: text)
@@ -166,12 +166,12 @@ final class ChatStore {
                 continue
             }
             if case .file(_, let name, let sizeBytes, _) = part.1 {
-                NSLog("idfon file: received name=\(name) size=\(sizeBytes)")
+                idfonLog("idfon file: received name=\(name) size=\(sizeBytes)")
             }
             messages.append(ChatMessage(id: partID, peerId: peerId, kind: part.1, outgoing: false, timestamp: timestamp, conversation: event.conversationId))
         }
         persistMessages()
-        NSLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")
+        idfonLog("idfon ingested: \(text) from \(peerId), cursor \(event.cursor)")
         notifyObservers()
     }
 
@@ -184,9 +184,9 @@ final class ChatStore {
                 let identity = (try? await client.identityId()) ?? "default"
                 try await client.addChannel(name: invite.name, ticketJSON: invite.contactJSON, identity: identity)
                 _ = CapabilityTickets.store(invite.ticketJSON, for: invite.endpointId)
-                NSLog("idfon invite: added \(invite.name)")
+                idfonLog("idfon invite: added \(invite.name)")
             } catch {
-                NSLog("idfon invite: accept failed \(invite.name): \(error)")
+                idfonError("idfon invite: accept failed \(invite.name): \(error)")
             }
         }
     }
@@ -393,14 +393,14 @@ final class ChatStore {
                 }
             } catch let error as DaemonClient.DaemonError {
                 if let message = error.errorDescription, message.contains("cursor") {
-                    NSLog("idfon events: cursor older than retention, restarting from history")
+                    idfonLog("idfon events: cursor older than retention, restarting from history")
                     cursor = nil // older than retention: restart from retained history
                 } else {
-                    NSLog("idfon events: wait failed, backing off: \(error.localizedDescription)")
+                    idfonError("idfon events: wait failed, backing off: \(error.localizedDescription)")
                     try? await Task.sleep(nanoseconds: 2_000_000_000) // daemon down: back off
                 }
             } catch {
-                NSLog("idfon events: unexpected error: \(error)")
+                idfonLog("idfon events: unexpected error: \(error)")
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }

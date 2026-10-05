@@ -29,7 +29,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         super.init()
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: .AVCaptureSessionRuntimeError, object: nil, queue: .main) { [weak self] note in
-            NSLog("idfon camera push: runtime error \(note)")
+            idfonLog("idfon camera push: runtime error \(note)")
             self?.stop()
         })
         observers.append(center.addObserver(forName: .AVCaptureSessionWasInterrupted, object: nil, queue: .main) { [weak self] _ in
@@ -69,13 +69,13 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             // TCC prompt; the dylib's own request (ensure_camera_access)
             // coalesces into the same dialog.
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-                NSLog("idfon camera push: access granted=\(granted)")
+                idfonLog("idfon camera push: access granted=\(granted)")
                 if granted { self?.queue.async { self?.beginSession() } }
             }
             return
         }
         guard status == .authorized else {
-            NSLog("idfon camera push: camera access denied (status=\(status.rawValue))")
+            idfonLog("idfon camera push: camera access denied (status=\(status.rawValue))")
             return
         }
         beginSession()
@@ -85,7 +85,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         if !configured { configure() }
         guard configured, !session.isRunning else { return }
         session.startRunning()
-        NSLog("idfon camera push: session running")
+        idfonLog("idfon camera push: session running")
     }
 
     private func configure() {
@@ -99,7 +99,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             ?? AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input) else {
-            NSLog("idfon camera push: no camera / input unavailable (auth=\(AVCaptureDevice.authorizationStatus(for: .video).rawValue))")
+            idfonLog("idfon camera push: no camera / input unavailable (auth=\(AVCaptureDevice.authorizationStatus(for: .video).rawValue))")
             return
         }
         session.addInput(input)
@@ -120,22 +120,22 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: captureQueue)
         guard session.canAddOutput(output) else {
-            NSLog("idfon camera push: canAddOutput=false")
+            idfonLog("idfon camera push: canAddOutput=false")
             return
         }
         session.addOutput(output)
         configured = true
-        NSLog("idfon camera push: configured ok, device=\(device.localizedName)")
+        idfonLog("idfon camera push: configured ok, device=\(device.localizedName)")
     }
 
     // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         framesPushed += 1
-        if framesPushed <= 3 || framesPushed % 150 == 0 { NSLog("idfon camera push: frame #\(framesPushed)") }
+        if framesPushed <= 3 || framesPushed % 150 == 0 { idfonLog("idfon camera push: frame #\(framesPushed)") }
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         guard CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_32BGRA else {
-            NSLog("idfon camera push: ignoring non-BGRA frame format=\(CVPixelBufferGetPixelFormatType(pb))")
+            idfonLog("idfon camera push: ignoring non-BGRA frame format=\(CVPixelBufferGetPixelFormatType(pb))")
             return
         }
         let width = CVPixelBufferGetWidth(pb)
@@ -169,7 +169,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             // that it would drop.
             guard let scaled = VideoScaling.canonicalBGRA(
                 base: base, width: width, height: height, bytesPerRow: bytesPerRow) else {
-                NSLog("idfon camera push: scale \(width)x\(height) -> \(VideoScaling.width)x\(VideoScaling.height) failed")
+                idfonError("idfon camera push: scale \(width)x\(height) -> \(VideoScaling.width)x\(VideoScaling.height) failed")
                 return
             }
             scaled.withUnsafeBytes { raw in

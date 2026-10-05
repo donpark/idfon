@@ -40,7 +40,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         ) { [weak self] note in
             let err = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
             self?.lastSessionError = "runtime: \(err?.description ?? "?")"
-            NSLog("idfon camera push: RUNTIME ERROR \(err?.description ?? "?")")
+            idfonLog("idfon camera push: RUNTIME ERROR \(err?.description ?? "?")")
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .AVCaptureSessionWasInterrupted, object: nil, queue: nil
@@ -52,14 +52,14 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             self.queue.async {
                 if self.session.isRunning { self.session.stopRunning() }
             }
-            NSLog("idfon camera push: INTERRUPTED reason=\(reason)")
+            idfonLog("idfon camera push: INTERRUPTED reason=\(reason)")
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .AVCaptureSessionInterruptionEnded, object: nil, queue: .main
         ) { [weak self] _ in
             guard let self, self.restartAfterInterruption else { return }
             self.restartAfterInterruption = false
-            NSLog("idfon camera push: interruption ended; restarting")
+            idfonLog("idfon camera push: interruption ended; restarting")
             self.queue.async { self.startLocked() }
         })
     }
@@ -74,7 +74,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         videoEnabledAt = Date()
         restartAfterInterruption = false
         let state = UIApplication.shared.applicationState
-        NSLog("idfon camera push: start requested appState=\(state.rawValue) (0=active)")
+        idfonLog("idfon camera push: start requested appState=\(state.rawValue) (0=active)")
         guard state == .active else {
             // Session started while inactive is born ineligible for frame
             // delivery (cameracaptured arbitration) and never recovers —
@@ -90,7 +90,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                     self.queue.async { self.startLocked() }
                 }
             }
-            NSLog("idfon camera push: app not active, deferring start until didBecomeActive")
+            idfonLog("idfon camera push: app not active, deferring start until didBecomeActive")
             return
         }
         queue.async { self.startLocked() }
@@ -111,7 +111,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         if !configured { configure() }
         guard configured, !session.isRunning else { return }
         session.startRunning()
-        NSLog("idfon camera push: session running (isRunning=\(session.isRunning)) appState=\(UIApplication.shared.applicationState.rawValue) scenes=\(UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.activationState.rawValue })")
+        idfonLog("idfon camera push: session running (isRunning=\(session.isRunning)) appState=\(UIApplication.shared.applicationState.rawValue) scenes=\(UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.activationState.rawValue })")
         // No frames within 2s => isolation ladder: attempt 2 = BACK camera
         // vanilla, attempt 3 = nokhwa's exact recipe (InputPriority preset +
         // back camera), the one configuration that delivered frames in this
@@ -119,11 +119,11 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         captureQueue.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self, self.framesPushed == 0 else { return }
             guard self.session.isRunning else { return }
-            NSLog("idfon camera push: NO FRAMES attempt 1 (front/hd720/BGRA) -> attempt 2: back camera vanilla")
+            idfonLog("idfon camera push: NO FRAMES attempt 1 (front/hd720/BGRA) -> attempt 2: back camera vanilla")
             self.rebuild(cameraPosition: .back, preset: nil)
             self.captureQueue.asyncAfter(deadline: .now() + 2) { [weak self] in
                 guard let self, self.framesPushed == 0, self.session.isRunning else { return }
-                NSLog("idfon camera push: NO FRAMES attempt 2 -> attempt 3: nokhwa recipe (InputPriority + back)")
+                idfonLog("idfon camera push: NO FRAMES attempt 2 -> attempt 3: nokhwa recipe (InputPriority + back)")
                 self.rebuild(cameraPosition: .back, preset: "AVCaptureSessionPresetInputPriority")
             }
         }
@@ -140,7 +140,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             if let preset { fresh.sessionPreset = .init(rawValue: preset) }
             guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: cameraPosition),
                   let input = try? AVCaptureDeviceInput(device: device) else {
-                NSLog("idfon camera push: rebuild device unavailable pos=\(cameraPosition.rawValue)")
+                idfonLog("idfon camera push: rebuild device unavailable pos=\(cameraPosition.rawValue)")
                 return
             }
             fresh.addInput(input)
@@ -154,7 +154,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             }
             self.session = fresh
             fresh.startRunning()
-            NSLog("idfon camera push: rebuilt running pos=\(cameraPosition.rawValue) preset=\(preset ?? "none") appState=\(UIApplication.shared.applicationState.rawValue)")
+            idfonLog("idfon camera push: rebuilt running pos=\(cameraPosition.rawValue) preset=\(preset ?? "none") appState=\(UIApplication.shared.applicationState.rawValue)")
         }
     }
 
@@ -165,7 +165,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
               let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input) else {
-            NSLog("idfon camera push: no front camera / input unavailable (auth=\(AVCaptureDevice.authorizationStatus(for: .video).rawValue))")
+            idfonLog("idfon camera push: no front camera / input unavailable (auth=\(AVCaptureDevice.authorizationStatus(for: .video).rawValue))")
             return
         }
         session.addInput(input)
@@ -174,7 +174,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: captureQueue)
         guard session.canAddOutput(output) else {
-            NSLog("idfon camera push: canAddOutput=false")
+            idfonLog("idfon camera push: canAddOutput=false")
             return
         }
         session.addOutput(output)
@@ -184,23 +184,23 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             connection.videoRotationAngle = 90
         }
         configured = true
-        NSLog("idfon camera push: configured ok, device=\(device.localizedName) auth=\(AVCaptureDevice.authorizationStatus(for: .video).rawValue)")
+        idfonLog("idfon camera push: configured ok, device=\(device.localizedName) auth=\(AVCaptureDevice.authorizationStatus(for: .video).rawValue)")
     }
 
     // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
 
     func captureOutput(_ output: AVCaptureOutput, didDrop sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        NSLog("idfon camera push: frame dropped")
+        idfonLog("idfon camera push: frame dropped")
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         framesPushed += 1
         if framesPushed == 1 || framesPushed % 150 == 0 {
-            NSLog("idfon camera push: frame #\(framesPushed) conn.active=\(connection.isActive) enabled=\(connection.isEnabled)")
+            idfonLog("idfon camera push: frame #\(framesPushed) conn.active=\(connection.isActive) enabled=\(connection.isEnabled)")
         }
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         guard CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_32BGRA else {
-            NSLog("idfon camera push: ignoring non-BGRA frame format=\(CVPixelBufferGetPixelFormatType(pb))")
+            idfonLog("idfon camera push: ignoring non-BGRA frame format=\(CVPixelBufferGetPixelFormatType(pb))")
             return
         }
         let width = CVPixelBufferGetWidth(pb)
@@ -212,7 +212,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
 
         let ptsMs = UInt64(max(0, CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)) * 1000))
-        if framesPushed <= 3 { NSLog("idfon camera push: pushing frame #\(framesPushed) enabledSince=\(videoEnabledAt?.description ?? "n/a")") }
+        if framesPushed <= 3 { idfonLog("idfon camera push: pushing frame #\(framesPushed) enabledSince=\(videoEnabledAt?.description ?? "n/a")") }
         let canonical = width == VideoScaling.width && height == VideoScaling.height
         if canonical && bytesPerRow == expected {
             media_video_push_frame(base.assumingMemoryBound(to: UInt8.self), UInt(expected * height), UInt32(width), UInt32(height), ptsMs)
@@ -234,7 +234,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             // than push frames the encoder would drop.
             guard let scaled = VideoScaling.canonicalBGRA(
                 base: base, width: width, height: height, bytesPerRow: bytesPerRow) else {
-                NSLog("idfon camera push: normalise \(width)x\(height) -> \(VideoScaling.width)x\(VideoScaling.height) failed")
+                idfonError("idfon camera push: normalise \(width)x\(height) -> \(VideoScaling.width)x\(VideoScaling.height) failed")
                 return
             }
             scaled.withUnsafeBytes { raw in

@@ -191,7 +191,7 @@ final class LiveCall {
                     return
                 }
                 published = true
-                NSLog("idfon live call: caller audio published profile=\(profile.rawValue)")
+                idfonLog("idfon live call: caller audio published profile=\(profile.rawValue)")
                 applySendState() // a toggle during `.calling` may predate the publish
                 UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
                 // Carry the daemon's current dial address: endpoint-id-only
@@ -254,7 +254,7 @@ final class LiveCall {
                     return
                 }
                 published = true
-                NSLog("idfon live call: callee audio published profile=\(profile.rawValue)")
+                idfonLog("idfon live call: callee audio published profile=\(profile.rawValue)")
                 applySendState() // the mic toggle drives a real published session now
                 // Audio invite: no media line (audio is the default).
                 try await client.sendText(
@@ -308,17 +308,17 @@ final class LiveCall {
     /// ends our call too since the GUI sends one envelope for both.
     func handleEnvelope(peer peerID: String, _ text: String) {
         guard let invite = LiveInvite.parse(text) else {
-            NSLog("idfon live call: unparsed envelope from \(peerID)")
+            idfonLog("idfon live call: unparsed envelope from \(peerID)")
             return
         }
-        NSLog("idfon live call: envelope peer=\(peerID) state=\(String(describing: state)) start=\(invite.isStart) stop=\(invite.isStop) return=\(invite.isReturn) audio=\(invite.media == nil) ticket=\(!invite.ticket.isEmpty)")
+        idfonLog("idfon live call: envelope peer=\(peerID) state=\(String(describing: state)) start=\(invite.isStart) stop=\(invite.isStop) return=\(invite.isReturn) audio=\(invite.media == nil) ticket=\(!invite.ticket.isEmpty)")
         if invite.isStop {
             if case .idle = state { return }
             if activePeer == peerID { terminate(local: false) }
             return
         }
         guard invite.isStart, invite.media == nil, !invite.ticket.isEmpty else {
-            NSLog("idfon live call: ignored non-audio or incomplete start from \(peerID)")
+            idfonLog("idfon live call: ignored non-audio or incomplete start from \(peerID)")
             return
         }
         // Return leg: the peer we called answered and is publishing its mic.
@@ -328,21 +328,21 @@ final class LiveCall {
         switch state {
         case .calling, .inCall:
             guard activePeer == peerID else {
-                NSLog("idfon live call: return leg peer mismatch active=\(activePeer ?? "nil") from=\(peerID)")
+                idfonLog("idfon live call: return leg peer mismatch active=\(activePeer ?? "nil") from=\(peerID)")
                 return
             }
-            NSLog("idfon live call: return leg received from \(peerID)")
+            idfonLog("idfon live call: return leg received from \(peerID)")
             CallTonePlayer.shared.start(.answered)
             Task {
                 if await !subscribe(ticket: invite.ticket) {
-                    NSLog("idfon live call: return-leg subscribe failed")
+                    idfonError("idfon live call: return-leg subscribe failed")
                 }
                 if case .calling = state { state = .inCall(peer: peerID); notify() }
             }
             return
         case .incoming, .idle:
             if invite.isReturn {
-                NSLog("idfon live call: ignored return leg without an active outgoing call from \(peerID)")
+                idfonLog("idfon live call: ignored return leg without an active outgoing call from \(peerID)")
                 return
             }
         }
@@ -351,7 +351,7 @@ final class LiveCall {
         if case .incoming(let pendingPeer) = state {
             guard pendingPeer == peerID else { return }
             pendingInvite = (peerID, invite.ticket)
-            NSLog("idfon live: replaced pending invite from \(peerID)")
+            idfonLog("idfon live: replaced pending invite from \(peerID)")
             notify()
             return
         }
@@ -378,7 +378,7 @@ final class LiveCall {
         let result = await Task.detached(priority: .userInitiated) {
             media_live_subscribe(ticket)
         }.value
-        NSLog("idfon live call: subscription start result=\(result)")
+        idfonLog("idfon live call: subscription start result=\(result)")
         return result == 0
     }
 
@@ -414,7 +414,7 @@ final class LiveCall {
     }
 
     private func fail(_ message: String) {
-        NSLog("idfon live call failed: \(message)")
+        idfonError("idfon live call failed: \(message)")
         lastError = message
         terminate(local: false)
     }

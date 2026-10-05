@@ -25,3 +25,7 @@ opentelemetry_sdk = { version = "0.33", optional = true }
 opentelemetry-otlp = { version = "0.33", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 tracing-opentelemetry = { version = "0.34", optional = true }
+
+[[example]]
+name = "emit_span"
+required-features = ["otlp"]

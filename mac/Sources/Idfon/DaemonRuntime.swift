@@ -44,7 +44,7 @@ enum DaemonRuntime {
             }
         }
         if moved > 0 {
-            NSLog("idfon: migrated daemon profile \(legacy.path) -> \(destination.path) (\(moved) items)")
+            idfonLog("idfon: migrated daemon profile \(legacy.path) -> \(destination.path) (\(moved) items)")
         }
     }
 
@@ -70,7 +70,7 @@ enum DaemonRuntime {
         let socket = socketPath
         let data = dataDir
         guard let idfond = locateDaemon() else {
-            NSLog("idfon: no idfond binary found (looked in bundle dir, ../target/release, /usr/local/bin)")
+            idfonLog("idfon: no idfond binary found (looked in bundle dir, ../target/release, /usr/local/bin)")
             return
         }
         let log = FileHandle(forWritingAtPath: "/tmp/idfond-auto.log") ?? {
@@ -84,9 +84,9 @@ enum DaemonRuntime {
         process.standardError = log
         do {
             try process.run()
-            NSLog("idfon: launched idfond pid=\(process.processIdentifier) socket=\(socket)")
+            idfonLog("idfon: launched idfond pid=\(process.processIdentifier) socket=\(socket)")
         } catch {
-            NSLog("idfon: idfond spawn failed: \(error.localizedDescription)")
+            idfonError("idfon: idfond spawn failed: \(error.localizedDescription)")
         }
         // Deliberately keep the child running when the app quits: idfond is a
         // shared service (the GUI shell does the same) and idles out on its own.

@@ -372,7 +372,7 @@ final class LiveActivityController: NSObject {
             try AVAudioSession.sharedInstance().overrideOutputAudioPort(enabled ? .speaker : .none)
             speakerOn = enabled
         } catch {
-            NSLog("idfon audio route change failed: \(error.localizedDescription)")
+            idfonError("idfon audio route change failed: \(error.localizedDescription)")
         }
         render()
     }

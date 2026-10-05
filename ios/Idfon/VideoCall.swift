@@ -160,10 +160,10 @@ final class VideoCall: NSObject {
         applySendState()
         if enabled {
             CameraPusher.shared.start()
-            NSLog("idfon video: enabling camera capture; published=\(published) video=\(videoEnabled)")
+            idfonLog("idfon video: enabling camera capture; published=\(published) video=\(videoEnabled)")
         } else {
             CameraPusher.shared.stop()
-            NSLog("idfon video: disabling camera capture; published=\(published)")
+            idfonLog("idfon video: disabling camera capture; published=\(published)")
         }
         notify()
     }
@@ -180,7 +180,7 @@ final class VideoCall: NSObject {
             if hasAudio { _ = media_live_set_audio_enabled(audio) }
             if hasVideo {
                 _ = media_live_set_video_enabled(video)
-                NSLog("idfon video: native gate=\(video)")
+                idfonLog("idfon video: native gate=\(video)")
             }
         }
     }
@@ -316,7 +316,7 @@ final class VideoCall: NSObject {
                 }
                 published = true
                 applySendState()
-                NSLog("idfon video answer media started audio=1 video=\(cameraOn ? 1 : 0)")
+                idfonLog("idfon video answer media started audio=1 video=\(cameraOn ? 1 : 0)")
                 try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true))
             } catch {
                 fail("Answer failed: \(error.localizedDescription)")
@@ -367,11 +367,11 @@ final class VideoCall: NSObject {
         }
         guard invite.isStart, invite.isCall, !invite.ticket.isEmpty else { return } // file-share/audio invites: unsupported here
         if invite.isReturn && state != .calling && state != .inCall {
-            NSLog("idfon video: ignored return leg without an active outgoing call from \(peerID)")
+            idfonLog("idfon video: ignored return leg without an active outgoing call from \(peerID)")
             return
         }
         if state == .calling || state == .inCall {
-            NSLog("idfon video return invite from \(peerID), state=\(state)")
+            idfonLog("idfon video return invite from \(peerID), state=\(state)")
             peer = peerID
             // Return leg: the peer answered and is now publishing their
             // camera+mic — join without re-prompting (core.ts return-leg).
@@ -380,7 +380,7 @@ final class VideoCall: NSObject {
             // A newer invite from the same peer supersedes the stale pending call.
             guard activePeer == peerID else { return }
             pendingInvite = (peerID, invite.ticket)
-            NSLog("idfon video: replaced pending invite from \(peerID)")
+            idfonLog("idfon video: replaced pending invite from \(peerID)")
             notify()
         } else if state == .idle {
             pendingInvite = (peerID, invite.ticket)
@@ -424,7 +424,7 @@ final class VideoCall: NSObject {
             return
         }
         if state == .idle { return } // hung up while subscribing
-        NSLog("idfon video watch started path=\(path)")
+        idfonLog("idfon video watch started path=\(path)")
         startFramePolling()
         if state == .calling { state = .inCall }
         notify()
@@ -464,7 +464,7 @@ final class VideoCall: NSObject {
     }
 
     private func fail(_ message: String) {
-        NSLog("idfon video call failed: \(message)")
+        idfonError("idfon video call failed: \(message)")
         lastError = message
         // Tell the peer: they were invited (or answered) and would otherwise
         // sit in a one-sided call until they hang up themselves.

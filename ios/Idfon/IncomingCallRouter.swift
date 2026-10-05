@@ -21,7 +21,7 @@ final class IncomingCallRouter {
 
         /// Never called while `isAvailable == false`.
         static func present(peerId: String, text: String) {
-            NSLog("idfon callkit presenter: present(\(peerId)) — unavailable stub reached")
+            idfonLog("idfon callkit presenter: present(\(peerId)) — unavailable stub reached")
         }
     }
 
@@ -46,14 +46,14 @@ final class IncomingCallRouter {
     /// stay direct to both machines, since the mode governs presentation, not
     /// teardown.
     func route(peerId: String, envelope text: String) {
-        NSLog("idfon incoming-call route peer=\(peerId) mode=\(mode(for: peerId).rawValue)")
+        idfonLog("idfon incoming-call route peer=\(peerId) mode=\(mode(for: peerId).rawValue)")
         if mode(for: peerId) == .callKit {
             if CallKitIncomingPresenter.isAvailable {
                 CallKitIncomingPresenter.present(peerId: peerId, text: text)
                 return
             }
             if deferralLogged.insert(peerId).inserted {
-                NSLog("idfon incoming-call mode: \(peerId) is set to call_kit but CallKit is unavailable; presenting in the Bar")
+                idfonLog("idfon incoming-call mode: \(peerId) is set to call_kit but CallKit is unavailable; presenting in the Bar")
             }
         }
         LiveCall.shared.handleEnvelope(peer: peerId, text)

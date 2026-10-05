@@ -96,7 +96,7 @@ final class ChatStore {
     /// Delivers an event (new or replayed) into the store.
     private func ingest(_ event: Event) {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
-        NSLog("idfon event: type=\(event.type) peer=\(peerId) text=\(text.prefix(48))")
+        idfonLog("idfon event: type=\(event.type) peer=\(peerId) text=\(text.prefix(48))")
         let messageID = event.messageId ?? event.eventId
         // Daemon message ids are sender-local (an eve holder restarts its
         // counter), so qualify by sender: deduping on the bare id silently
@@ -107,7 +107,7 @@ final class ChatStore {
         // replayed after a relaunch are stale (app was closed when they
         // arrived) — ring only fresh ones, matching the GUI's drain logic.
         if LiveInvite.parse(text) != nil {
-            NSLog("idfon event: live invite stale=\(isStaleInvite(event))")
+            idfonLog("idfon event: live invite stale=\(isStaleInvite(event))")
             if isStaleInvite(event) { return }
             LiveCall.shared.handleEnvelope(peer: peerId, text)
             VideoCall.shared.handleEnvelope(peer: peerId, text)
@@ -211,7 +211,7 @@ final class ChatStore {
                 _ = CapabilityTickets.store(invite.ticketJSON, for: invite.endpointId)
                 onBanner?("Added \(invite.name)")
             } catch {
-                NSLog("idfon invite: accept failed \(invite.name): \(error)")
+                idfonError("idfon invite: accept failed \(invite.name): \(error)")
                 onBanner?("Could not add \(invite.name)")
             }
         }
@@ -233,7 +233,7 @@ final class ChatStore {
     private func fetchRecording(ticket: String) {
         Task.detached(priority: .userInitiated) { [client] in
             guard let data = try? await client.fetchBlob(ticket), !data.isEmpty else {
-                NSLog("idfon: recording fetch failed \(ticket.prefix(16))...")
+                idfonError("idfon: recording fetch failed \(ticket.prefix(16))...")
                 await MainActor.run { ChatStore.shared.onBanner?("Could not receive recording") }
                 return
             }
@@ -315,7 +315,7 @@ final class ChatStore {
                 ChatStore.shared.fileURLs[ticket] = saved
                 ChatStore.shared.notifyObservers()
             }
-            NSLog("idfon file: received name=\(safe) size=\(sizeBytes)")
+            idfonLog("idfon file: received name=\(safe) size=\(sizeBytes)")
         }
     }
 
@@ -432,11 +432,11 @@ final class ChatStore {
                 if let message = error.errorDescription, message.contains("cursor") {
                     cursor = nil
                 } else {
-                    NSLog("idfon events: poll failed, backing off: \(error.localizedDescription)")
+                    idfonError("idfon events: poll failed, backing off: \(error.localizedDescription)")
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                 }
             } catch {
-                NSLog("idfon events: unexpected error: \(error)")
+                idfonLog("idfon events: unexpected error: \(error)")
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }

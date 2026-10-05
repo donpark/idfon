@@ -36,7 +36,7 @@ enum DaemonBootstrap {
         let thread = Thread {
             let result = idfon_daemon_run(socket, dataDir, nil)
             if result != IDFON_DAEMON_OK {
-                NSLog("idfond exited with \(result)")
+                idfonLog("idfond exited with \(result)")
             }
         }
         thread.name = "idfond"
