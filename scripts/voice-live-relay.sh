@@ -2,7 +2,7 @@
 # Run the standalone TS voice relay against a served voice agent's bridge.
 #
 # The voice agent must be serving with the relay backend
-# (`EVE_LIVE_CONFIG=agents/voice-agent/relay.json scripts/voice-agent-serve.sh`);
+# (`EVE_LIVE_CONFIG=agents/voice/relay.json scripts/voice-serve.sh`);
 # that script writes the bridge URL to $home/bridge-url, which we read here.
 #
 #   scripts/voice-live-relay.sh
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-instance="${EVE_INSTANCE:-voice-agent}"
+instance="${EVE_INSTANCE:-voice}"
 home="${EVE_VOICE_HOME:-$HOME/.idfon/$instance}"
 
 if [ -z "${IDFON_BRIDGE_URL:-}" ]; then
