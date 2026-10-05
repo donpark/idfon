@@ -25,7 +25,11 @@ use serde_json::Value;
 use tokio::time::MissedTickBehavior;
 
 use crate::metrics::TurnMetrics;
-use crate::{strip_envelopes, BackendFuture, VoiceBackend, VoiceBackendFactory, VoiceMedia};
+use crate::{
+    send_call_transcript, strip_envelopes, BackendFuture, VoiceBackend, VoiceBackendFactory,
+    VoiceMedia,
+};
+use idfon_protocol::CallSpeaker;
 
 /// Cascade: STT the caller, run a normal agent turn, TTS the reply.
 pub struct CascadeBackend {
@@ -118,7 +122,16 @@ impl CascadeBackend {
                                             caller_frames * idfon_live_media::CHUNK_MS,
                                         ));
                                         media.bridge.record("caller", &text);
-                                        media.bridge.inject(&text).await;
+                                        let turn_id = media.bridge.inject(&text).await;
+                                        send_call_transcript(
+                                            &media.platform,
+                                            media.bridge.call_id(),
+                                            CallSpeaker::Caller,
+                                            &turn_id,
+                                            &text,
+                                            true,
+                                        )
+                                        .await;
                                     }
                                     CallerDecision::Queue => {
                                         // During playback a cancellable utterance
@@ -144,7 +157,16 @@ impl CascadeBackend {
                                             caller_frames * idfon_live_media::CHUNK_MS,
                                         ));
                                         media.bridge.record("caller", &text);
-                                        media.bridge.inject(&text).await;
+                                        let turn_id = media.bridge.inject(&text).await;
+                                        send_call_transcript(
+                                            &media.platform,
+                                            media.bridge.call_id(),
+                                            CallSpeaker::Caller,
+                                            &turn_id,
+                                            &text,
+                                            true,
+                                        )
+                                        .await;
                                     }
                                 }
                             }
@@ -222,6 +244,17 @@ impl CascadeBackend {
                     metrics.est_cost_usd = metrics.cost_estimate();
                     metrics.log();
                     media.bridge.record("agent", &spoken);
+                    if !cancelled_turn && !spoken.is_empty() {
+                        send_call_transcript(
+                            &media.platform,
+                            media.bridge.call_id(),
+                            CallSpeaker::Agent,
+                            &turn_id,
+                            &spoken,
+                            true,
+                        )
+                        .await;
+                    }
                     speaker = None;
                     deltas_seen = false;
                     first_ms.store(0, Ordering::Relaxed);

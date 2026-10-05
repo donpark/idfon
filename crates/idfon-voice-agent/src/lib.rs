@@ -25,7 +25,8 @@ use eve_idfon::{
     live::{LiveCallContext, LiveCallFuture, LiveCallHandler, AUDIO_PUBLISH},
     records, IpcFrame, ReplyTarget, Targets,
 };
-use idfon_core::transport::IrohTransport;
+use idfon_core::transport::{IrohTransport, MessageTransport};
+use idfon_protocol::{CallSpeaker, CallTranscript, MessageContent};
 use idfon_live_media::{
     parse_audio_profile, parse_invite, rand_suffix, subscribe_caller, AudioProfile, AudioQueue,
     CallSession,
@@ -91,6 +92,47 @@ pub struct CallPlatform {
     pub caller_peer_id: String,
     pub targets: Targets,
     pub out_tx: mpsc::Sender<IpcFrame>,
+}
+
+/// Sign and send one `IDFON-CALL/1` transcript envelope to the caller so the
+/// chat view renders the spoken bubble (parity with `gpt_live`). Best-effort:
+/// a send failure must not disturb audio.
+pub async fn send_call_transcript(
+    platform: &CallPlatform,
+    call_id: &str,
+    role: CallSpeaker,
+    turn_id: &str,
+    text: &str,
+    r#final: bool,
+) {
+    let transcript = CallTranscript {
+        call_id: call_id.to_string(),
+        turn_id: turn_id.to_string(),
+        role,
+        text: text.to_string(),
+        r#final,
+    };
+    let Ok(text) = idfon_protocol::encode_call_transcript(&transcript) else {
+        return;
+    };
+    let message_id = format!("eve_call_transcript_{}_{}", turn_id, rand_suffix());
+    let envelope = match idfon_core::sign_message(
+        &platform.key,
+        platform.holder_endpoint_id.clone(),
+        message_id.clone(),
+        MessageContent::Text { text },
+        format!("{message_id}-{}", u8::from(r#final)),
+        None,
+    ) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            eprintln!("[voice-agent] call transcript sign failed: {error}");
+            return;
+        }
+    };
+    if let Err(error) = platform.transport.send(&platform.caller_addr, &envelope).await {
+        eprintln!("[voice-agent] call transcript send failed: {error}");
+    }
 }
 
 /// The shared text hop: inject a caller transcript as a normal agent turn and
