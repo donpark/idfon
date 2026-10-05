@@ -1,9 +1,7 @@
-use std::fs::OpenOptions;
 use std::path::PathBuf;
 
 use once_cell::sync::Lazy;
 use safer_ffi::{prelude::*, vec};
-use tracing_subscriber::{prelude::*, EnvFilter};
 
 pub(crate) static TOKIO_EXECUTOR: Lazy<tokio::runtime::Runtime> =
     Lazy::new(|| tokio::runtime::Runtime::new().unwrap());
@@ -38,26 +36,11 @@ pub fn rust_buffer_free(buf: vec::Vec<u8>) {
 
 /// Installs the tracing subscriber used for iroh/moq diagnostics.
 ///
-/// Log level can be controlled using the env variable `IROH_C_LOG`.
-/// Safe to call from any crate; a no-op when a subscriber is already set.
+/// Filter: `IDFON_LOG` / `RUST_LOG` / `IROH_C_LOG` (default info). Delegates
+/// to the shared `idfon-telemetry` subscriber; a no-op when one is already set.
 pub fn init_tracing(path: PathBuf) {
     eprintln!("[idfond] tracing init -> {:?}", path);
-    let writer = move || {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .unwrap_or_else(|_| std::fs::File::create("/dev/null").expect("/dev/null unavailable"))
-    };
-    let _ = tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(false)
-                .with_writer(writer)
-                .event_format(tracing_subscriber::fmt::format().with_line_number(true)),
-        )
-        .with(EnvFilter::try_from_env("IROH_C_LOG").unwrap_or_else(|_| EnvFilter::new("info")))
-        .try_init();
+    idfon_telemetry::init_file("iroh-c-ffi", &path, "info");
 }
 
 /// Enables tracing for iroh (FFI entry, used by the apps).

@@ -192,7 +192,7 @@ impl IrohTransport {
             // A pinned port can be taken (another profile, a stale process);
             // fall back to ephemeral rather than fail to start.
             Err(error) if port.is_some() => {
-                eprintln!("[idfon-core] endpoint port {port:?} unavailable ({error}); binding ephemeral");
+                tracing::warn!(target: "idfon.core", port = ?port, error = %error, "endpoint port unavailable; binding ephemeral");
                 Self::try_bind(key, None).await
             }
             Err(error) => Err(error),
@@ -315,7 +315,7 @@ impl IrohTransport {
                     // Expected noise, per iroh's Incoming::accept docs: the QUIC
                     // socket receives unsolicited datagrams that abort handshakes.
                     // Sends retry, so delivery is unaffected.
-                    eprintln!("[idfon-core] message connection handshake aborted (background UDP noise): {error}");
+                    tracing::warn!(target: "idfon.core", error = %error, "message connection handshake aborted (background UDP noise)");
                     continue;
                 }
             };
@@ -368,7 +368,7 @@ impl IrohTransport {
                 }
                 .await;
                 if let Err(error) = result {
-                    eprintln!("message protocol failed: {error}");
+                    tracing::warn!(target: "idfon.core", error = %error, "message protocol failed");
                     tracing::warn!("message protocol failed: {error}");
                     connection.close(1u8.into(), b"message rejected");
                 }
@@ -581,6 +581,7 @@ mod tests {
                 idempotency_key: "key-iroh".into(),
                 capability_ticket: None,
                 conversation: None,
+                trace: None,
             };
             let ack = sender
                 .send(&receiver.endpoint().addr(), &message)
@@ -617,6 +618,7 @@ mod tests {
             idempotency_key: "key-1".into(),
             capability_ticket: None,
             conversation: None,
+            trace: None,
         };
         let target = EndpointAddr::from_parts(
             "0000000000000000000000000000000000000000000000000000000000000000"

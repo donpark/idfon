@@ -531,6 +531,9 @@ struct GetArgs {
 }
 
 fn main() {
+    // Shared subscriber on stderr; stdout stays reserved for the CLI's output
+    // contracts. Conservative default so borrowed iroh/daemon noise stays quiet.
+    idfon_telemetry::init("idfon", "warn");
     if let Err(error) = run() {
         eprintln!("idfon: {error}");
         std::process::exit(1);
@@ -1434,10 +1437,17 @@ fn connect_or_start_daemon(socket: &str) -> io::Result<Client> {
                         .parent()
                         .map(|dir| dir.to_path_buf())
                         .unwrap_or_default();
+                    // Capture the daemon's stderr (its eprintln diagnostics and
+                    // the shared subscriber's stderr sink) so a CLI-spawned
+                    // daemon is not a logging black hole.
+                    let daemon_log = data_dir.join("idfond.log");
                     // Two attempts: a just-killed daemon may still be dying
                     // (lock/socket still held), so the first spawn can lose.
                     let mut last_error = None;
                     for _ in 0..2 {
+                        let stderr = std::fs::File::create(&daemon_log)
+                            .map(Stdio::from)
+                            .unwrap_or_else(|_| Stdio::null());
                         let spawned = StdCommand::new(&daemon)
                             .args([
                                 "--socket",
@@ -1456,7 +1466,7 @@ fn connect_or_start_daemon(socket: &str) -> io::Result<Client> {
                             )
                             .stdin(Stdio::null())
                             .stdout(Stdio::null())
-                            .stderr(Stdio::null())
+                            .stderr(stderr)
                             .spawn();
                         match spawned {
                             Err(error) => {

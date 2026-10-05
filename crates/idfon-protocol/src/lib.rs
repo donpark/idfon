@@ -53,6 +53,12 @@ pub struct MessageEnvelope {
     pub capability_ticket: Option<CapabilityTicket>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// Optional W3C-traceparent-shaped correlation id for the logical flow this
+    /// message belongs to. Deliberately **unsigned** (not part of `auth_bytes`),
+    /// so a peer can attach or echo a trace without invalidating the sender's
+    /// signature; trust continues to come from `sender.peer_id`, never the trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -853,6 +859,7 @@ mod tests {
             idempotency_key: "hello-1".into(),
             capability_ticket: None,
             conversation: Some("conversation-1".into()),
+            trace: Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
         };
         let frame = encode_frame(&message).unwrap();
         assert_eq!(decode_frame::<MessageEnvelope>(&frame).unwrap(), message);

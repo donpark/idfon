@@ -262,7 +262,7 @@ async fn run_deepgram_stream(
     let uri = match url.parse() {
         Ok(uri) => uri,
         Err(error) => {
-            eprintln!("[idfon-voice] deepgram stream url: {error}");
+            tracing::warn!(target: "idfon.voice", error = %error, "deepgram stream url");
             return;
         }
     };
@@ -272,18 +272,18 @@ async fn run_deepgram_stream(
     {
         Ok(builder) => builder,
         Err(error) => {
-            eprintln!("[idfon-voice] deepgram stream header: {error}");
+            tracing::warn!(target: "idfon.voice", error = %error, "deepgram stream header");
             return;
         }
     };
     let (mut ws, _) = match builder.connect().await {
         Ok(pair) => pair,
         Err(error) => {
-            eprintln!("[idfon-voice] deepgram stream connect: {error}");
+            tracing::warn!(target: "idfon.voice", error = %error, "deepgram stream connect");
             return;
         }
     };
-    eprintln!("[idfon-voice] deepgram stream connected");
+    tracing::info!(target: "idfon.voice", "deepgram stream connected");
     let mut open = true;
     while open {
         tokio::select! {
@@ -309,14 +309,14 @@ async fn run_deepgram_stream(
                     }
                 }
                 Some(Err(error)) => {
-                    eprintln!("[idfon-voice] deepgram stream read: {error}");
+                    tracing::warn!(target: "idfon.voice", error = %error, "deepgram stream read");
                     break;
                 }
                 None => break,
             }
         }
     }
-    eprintln!("[idfon-voice] deepgram stream ended");
+    tracing::info!(target: "idfon.voice", "deepgram stream ended");
 }
 
 fn handle_deepgram_event(text: &str, events: &mpsc::UnboundedSender<TranscriptEvent>) {
@@ -470,7 +470,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let text = stt.flush().expect("flush");
-        eprintln!("deepgram stream transcript = {text:?}");
+        tracing::debug!(target: "idfon.voice", transcript = ?text, "deepgram stream transcript");
         stt.finish().expect("finish");
         assert!(text.is_some(), "streaming STT returned no transcript");
     }

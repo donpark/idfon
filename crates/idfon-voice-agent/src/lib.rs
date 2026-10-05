@@ -129,12 +129,12 @@ pub async fn send_call_transcript(
     ) {
         Ok(envelope) => envelope,
         Err(error) => {
-            eprintln!("[voice-agent] call transcript sign failed: {error}");
+            tracing::warn!(target: "idfon.voice", error = %error, "call transcript sign failed");
             return;
         }
     };
     if let Err(error) = platform.transport.send(&platform.caller_addr, &envelope).await {
-        eprintln!("[voice-agent] call transcript send failed: {error}");
+        tracing::warn!(target: "idfon.voice", error = %error, "call transcript send failed");
     }
 }
 
@@ -185,6 +185,7 @@ impl TurnBridge {
                 live_commentary: Some((turn_id.clone(), self.reply_tx.clone())),
                 // Voice turn: speak it, don't post a text copy to the caller.
                 live_only: true,
+                trace: None,
             },
         );
         let _ = self
@@ -396,7 +397,7 @@ async fn handle_call(
         return Ok(true);
     }
     let Some(factory) = factory else {
-        eprintln!("[voice-agent] unknown backend '{}'; falling through to text", config.backend);
+        tracing::warn!(target: "idfon.voice", backend = %config.backend, "unknown backend; falling through to text");
         return Ok(false);
     };
     // A backend that cannot start (e.g. no provider key) declines the call, and
@@ -404,7 +405,7 @@ async fn handle_call(
     let mut backend = match factory.create(&ctx.params) {
         Ok(backend) => backend,
         Err(error) => {
-            eprintln!("[voice-agent] backend '{}' unavailable: {error}", config.backend);
+            tracing::warn!(target: "idfon.voice", backend = %config.backend, error = %error, "backend unavailable");
             return Ok(false);
         }
     };
@@ -481,18 +482,19 @@ async fn handle_call(
             out_tx: ctx.out_tx.clone(),
         },
     };
-    eprintln!(
-        "[voice-agent] call started backend={} peer={}",
-        backend.name(),
-        ctx.sender_peer_id
+    tracing::info!(
+        target: "idfon.voice",
+        backend = %backend.name(),
+        peer_id = %ctx.sender_peer_id,
+        "call started"
     );
     tokio::spawn(async move {
         if let Err(error) = backend.run(media).await {
-            eprintln!("[voice-agent] backend '{}' failed: {error:#}", backend.name());
+            tracing::error!(target: "idfon.voice", backend = %backend.name(), error = %error, "backend failed");
         }
         session.shutdown().await;
         eve_idfon::deltas::unregister(&call_peer);
-        eprintln!("[voice-agent] call ended");
+        tracing::info!(target: "idfon.voice", "call ended");
     });
     Ok(true)
 }
@@ -514,7 +516,7 @@ fn active_call() -> &'static Mutex<Option<CallHandle>> {
 fn stop_active_call(reason: &str) {
     if let Some(handle) = active_call().lock().expect("call mutex poisoned").take() {
         handle.stop.store(true, Ordering::Relaxed);
-        eprintln!("[voice-agent] call stopped: {reason}");
+        tracing::info!(target: "idfon.voice", reason = %reason, "call stopped");
     }
 }
 

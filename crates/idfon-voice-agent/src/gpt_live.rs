@@ -202,7 +202,7 @@ impl GptLiveBackend {
 
         let ws = connect_live(&api_key, &config).await?;
         let (mut ws_tx, mut ws_rx) = ws.split();
-        eprintln!("[voice-agent] GPT-Live session ready peer={caller_peer_id}");
+        tracing::info!(target: "idfon.voice", peer_id = %caller_peer_id, "GPT-Live session ready");
 
         let call_started = Instant::now();
         let turn_count = Arc::new(AtomicU64::new(0));
@@ -265,12 +265,12 @@ impl GptLiveBackend {
                     ) {
                         Ok(envelope) => envelope,
                         Err(error) => {
-                            eprintln!("[voice-agent] call transcript sign failed: {error}");
+                            tracing::warn!(target: "idfon.voice", error = %error, "call transcript sign failed");
                             continue;
                         }
                     };
                     if let Err(error) = transport.send(&caller_addr, &envelope).await {
-                        eprintln!("[voice-agent] call transcript send failed: {error}");
+                        tracing::warn!(target: "idfon.voice", error = %error, "call transcript send failed");
                     }
                 }
             })
@@ -295,7 +295,7 @@ impl GptLiveBackend {
                 let message = match event {
                     Ok(message) => message,
                     Err(error) => {
-                        eprintln!("[voice-agent] GPT-Live websocket read failed: {error}");
+                        tracing::warn!(target: "idfon.voice", error = %error, "GPT-Live websocket read failed");
                         break;
                     }
                 };
@@ -303,7 +303,7 @@ impl GptLiveBackend {
                     continue;
                 };
                 let Ok(event) = serde_json::from_str::<serde_json::Value>(text) else {
-                    eprintln!("[voice-agent] ignored non-JSON GPT-Live event");
+                    tracing::warn!(target: "idfon.voice", "ignored non-JSON GPT-Live event");
                     continue;
                 };
                 match event["type"].as_str().unwrap_or_default() {
@@ -311,13 +311,13 @@ impl GptLiveBackend {
                         let delta = event["delta"].as_str().unwrap_or_default();
                         input_text_chars += delta.len();
                         stream.push(CallSpeaker::Caller, delta, &transcript_tx);
-                        eprintln!("[voice-agent] GPT-Live input transcript chars={input_text_chars}");
+                        tracing::debug!(target: "idfon.voice", input_text_chars, "GPT-Live input transcript delta");
                     }
                     "session.output_transcript.delta" => {
                         let delta = event["delta"].as_str().unwrap_or_default();
                         output_text_chars += delta.len();
                         stream.push(CallSpeaker::Agent, delta, &transcript_tx);
-                        eprintln!("[voice-agent] GPT-Live output transcript chars={output_text_chars}");
+                        tracing::debug!(target: "idfon.voice", output_text_chars, "GPT-Live output transcript delta");
                     }
                     "session.delegation.created" => {
                         let delegation_id = event["delegation"]["id"]
@@ -332,7 +332,7 @@ impl GptLiveBackend {
                                 request,
                                 reply: reader_commentary.clone(),
                             });
-                            eprintln!("[voice-agent] live delegation dispatched");
+                            tracing::info!(target: "idfon.voice", "live delegation dispatched");
                         }
                     }
                     "session.output_audio.delta" => {
@@ -343,22 +343,23 @@ impl GptLiveBackend {
                             output_bytes += delta.len();
                             reader_audio.push_bytes(&delta);
                             if output_chunks == 1 || output_chunks % 50 == 0 {
-                                eprintln!("[voice-agent] GPT-Live audio out chunks={output_chunks} bytes={output_bytes}");
+                                tracing::debug!(target: "idfon.voice", output_chunks, output_bytes, "GPT-Live audio out");
                             }
                         }
                     }
                     "session.closed" => {
                         finalized = true;
                         reader_finalized.store(true, Ordering::Relaxed);
-                        eprintln!(
-                            "[voice-agent] GPT-Live session closed usage={} reason={}",
-                            event["usage"],
-                            event["reason"].as_str().unwrap_or("(none)"),
+                        tracing::info!(
+                            target: "idfon.voice",
+                            usage = %event["usage"],
+                            reason = %event["reason"].as_str().unwrap_or("(none)"),
+                            "GPT-Live session closed"
                         );
                         break;
                     }
                     "error" => {
-                        eprintln!("[voice-agent] GPT-Live error: {}", event["error"]);
+                        tracing::error!(target: "idfon.voice", error = %event["error"], "GPT-Live error");
                         break;
                     }
                     _ => {}
@@ -366,8 +367,14 @@ impl GptLiveBackend {
             }
             stream.flush(true, &transcript_tx);
             reader_stop.store(true, Ordering::Relaxed);
-            eprintln!(
-                "[voice-agent] GPT-Live reader done finalized={finalized} audio_chunks={output_chunks} audio_bytes={output_bytes} input_text_chars={input_text_chars} output_text_chars={output_text_chars}"
+            tracing::info!(
+                target: "idfon.voice",
+                finalized,
+                audio_chunks = output_chunks,
+                audio_bytes = output_bytes,
+                input_text_chars,
+                output_text_chars,
+                "GPT-Live reader done"
             );
             finalized
         });
@@ -387,16 +394,16 @@ impl GptLiveBackend {
                 result = pump_caller_audio(caller, &mut ws_tx, pump_stop, profile, reply_max_seconds, commentary_rx, Arc::clone(&delegated_spoken)) => result,
             };
             if let Err(error) = result {
-                eprintln!("[voice-agent] caller audio ended: {error:#}");
+                tracing::warn!(target: "idfon.voice", error = %error, "caller audio ended");
             }
             if !pacer_finalized.load(Ordering::Relaxed) {
                 let close = Message::text(json!({"type": "session.close"}).to_string());
                 match tokio::time::timeout(Duration::from_secs(2), ws_tx.send(close)).await {
-                    Ok(Ok(())) => eprintln!("[voice-agent] GPT-Live session.close sent"),
+                    Ok(Ok(())) => tracing::info!(target: "idfon.voice", "GPT-Live session.close sent"),
                     Ok(Err(error)) => {
-                        eprintln!("[voice-agent] GPT-Live session.close failed: {error}")
+                        tracing::warn!(target: "idfon.voice", error = %error, "GPT-Live session.close failed")
                     }
-                    Err(_) => eprintln!("[voice-agent] GPT-Live session.close timed out"),
+                    Err(_) => tracing::warn!(target: "idfon.voice", "GPT-Live session.close timed out"),
                 }
             }
             pacer_stop.store(true, Ordering::Relaxed);
@@ -406,29 +413,29 @@ impl GptLiveBackend {
             result = &mut reader => {
                 stop.store(true, Ordering::Relaxed);
                 if let Err(error) = tokio::time::timeout(Duration::from_secs(2), &mut pacer).await {
-                    eprintln!("[voice-agent] audio pump cleanup timed out: {error}");
+                    tracing::warn!(target: "idfon.voice", error = %error, "audio pump cleanup timed out");
                     pacer.abort();
                 }
                 match result {
                     Ok(finalized) => finalized,
                     Err(error) => {
-                        eprintln!("[voice-agent] GPT-Live reader task failed: {error}");
+                        tracing::error!(target: "idfon.voice", error = %error, "GPT-Live reader task failed");
                         false
                     }
                 }
             }
             result = &mut pacer => {
                 if let Err(error) = result {
-                    eprintln!("[voice-agent] caller audio task failed: {error}");
+                    tracing::error!(target: "idfon.voice", error = %error, "caller audio task failed");
                 }
                 match tokio::time::timeout(SESSION_CLOSE_TIMEOUT, &mut reader).await {
                     Ok(Ok(finalized)) => finalized,
                     Ok(Err(error)) => {
-                        eprintln!("[voice-agent] GPT-Live reader task failed: {error}");
+                        tracing::error!(target: "idfon.voice", error = %error, "GPT-Live reader task failed");
                         false
                     }
                     Err(_) => {
-                        eprintln!("[voice-agent] GPT-Live close timed out; dropping websocket reader");
+                        tracing::warn!(target: "idfon.voice", "GPT-Live close timed out; dropping websocket reader");
                         reader.abort();
                         let _ = reader.await;
                         false
@@ -448,7 +455,7 @@ impl GptLiveBackend {
             ),
         );
         if !finalized {
-            eprintln!("[voice-agent] GPT-Live finalization unconfirmed");
+            tracing::warn!(target: "idfon.voice", "GPT-Live finalization unconfirmed");
         }
         Ok(())
     }
@@ -561,7 +568,7 @@ async fn connect_live(
 ) -> Result<
     tokio_websockets::WebSocketStream<tokio_websockets::MaybeTlsStream<tokio::net::TcpStream>>,
 > {
-    eprintln!("[voice-agent] connecting to live session");
+    tracing::info!(target: "idfon.voice", "connecting to live session");
     let builder = ClientBuilder::from_uri(config.live_url.parse().context("parse live url")?)
         .add_header(
             "authorization".parse().context("header name")?,
@@ -609,7 +616,7 @@ async fn connect_live(
     })
     .await
     .context("live session.start timed out")??;
-    eprintln!("[voice-agent] live session.started");
+    tracing::info!(target: "idfon.voice", "live session.started");
     Ok(ws)
 }
 
@@ -646,7 +653,7 @@ where
                 chunks += 1;
                 sent_samples += pcm.len() as u64;
                 if chunks == 1 || chunks % 50 == 0 {
-                    eprintln!("[voice-agent] caller appends={chunks}");
+                    tracing::debug!(target: "idfon.voice", chunks, "caller audio appended");
                 }
                 if sent_samples >= reply_max_seconds.max(1) * rate { break; }
             }

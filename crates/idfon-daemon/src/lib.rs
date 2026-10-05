@@ -191,17 +191,17 @@ impl TransportMode {
         let mut last_error = None;
         let mut last_ack = None;
         for (endpoint_id, address) in targets {
-            eprintln!("[idfond] transport send attempt identity={} peer={} device={} message_id={} target_bytes={}", identity, peer.id, endpoint_id, message.message_id, address.len());
+            tracing::info!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, target_bytes = address.len(), "transport send attempt");
             match self.send_to(identity, &address, message) {
                 Ok(ack) => {
-                    eprintln!("[idfond] transport send acknowledged identity={} peer={} device={} message_id={} status={:?}", identity, peer.id, endpoint_id, message.message_id, ack.status);
+                    tracing::info!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, status = ?ack.status, "transport send acknowledged");
                     last_ack = Some(ack);
                     if !all {
                         return last_ack.ok_or_else(|| io::Error::other("missing acknowledgement"));
                     }
                 }
                 Err(error) => {
-                    eprintln!("[idfond] transport send failed identity={} peer={} device={} message_id={} error={}", identity, peer.id, endpoint_id, message.message_id, error);
+                    tracing::error!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, error = %error, "transport send failed");
                     last_error = Some(error);
                     if !all {
                         break;
@@ -460,6 +460,10 @@ pub struct DaemonConfig {
 /// until ctrl_c or an error. Used by the thin `idfond` binary through the
 /// dylib's `idfon_daemon_run` C ABI.
 pub fn run_blocking(config: DaemonConfig) -> io::Result<()> {
+    // Install the shared subscriber unless the embedding app already did
+    // (first call wins), so a CLI-spawned daemon's tracing reaches a log file
+    // instead of the discarded stderr. `IDFON_LOG_FILE` picks the sink.
+    idfon_telemetry::init("idfond", "info");
     // IDFON_IDLE_EXIT_SECS lets the thin `idfond` binary / CLI-spawned
     // daemons opt into idle shutdown without touching the C ABI. "0" = off.
     let env_idle_exit = std::env::var("IDFON_IDLE_EXIT_SECS")
@@ -597,7 +601,7 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
                 } else {
                     let since = *idle_since.get_or_insert_with(tokio::time::Instant::now);
                     if since.elapsed() >= idle_exit {
-                        eprintln!("[idfond] no connected clients for {idle_exit:?}; shutting down");
+                        tracing::info!(target: "idfon.daemon", idle_exit = ?idle_exit, "no connected clients; shutting down");
                         shutdown.notify_waiters();
                         return;
                     }
@@ -631,7 +635,7 @@ async fn accept_loop(
             // what long-poll (`wait`) and `events --follow` hold open.
             let _conn = ConnGuard(connections);
             if let Err(error) = serve(stream, store, transport, shutdown).await {
-                eprintln!("idfond client error: {error}");
+                tracing::warn!(target: "idfon.daemon", error = %error, "client error");
             }
         });
     }
@@ -1037,7 +1041,7 @@ fn spawn_receiver(
             })
             .await;
         if let Err(error) = result {
-            eprintln!("idfond Iroh receiver ({identity}) stopped: {error}");
+            tracing::warn!(target: "idfon.daemon", identity = %identity, error = %error, "iroh receiver stopped");
         }
     });
 }
@@ -1999,7 +2003,7 @@ async fn join_gossip_room(
     let topic = match service.subscribe(room_topic(&room_id), bootstrap).await {
         Ok(topic) => topic,
         Err(error) => {
-            eprintln!("[idfond] gossip room join failed room={room_id}: {error}");
+            tracing::warn!(target: "idfon.daemon", room = %room_id, error = %error, "gossip room join failed");
             return;
         }
     };
@@ -2110,7 +2114,7 @@ fn gossip_room_send(
         }
         let signing_key = state.identity_key(&identity.id).ok()?;
         let message_id = format!("msg_{}", state.operations.len() + 1);
-        let envelope = idfon_core::sign_message_with_ticket(
+        let mut envelope = idfon_core::sign_message_with_ticket(
             &signing_key,
             identity.endpoint_id.unwrap_or_default(),
             message_id.clone(),
@@ -2120,6 +2124,7 @@ fn gossip_room_send(
             capability_ticket,
         )
         .ok()?;
+        envelope.trace = Some(idfon_core::new_traceparent());
         let timestamp = now();
         let operation = idfon_protocol::Operation {
             identity: identity.id,
@@ -2563,10 +2568,7 @@ fn send_message(
     }) {
         Some(peer) => peer.clone(),
         None => {
-            eprintln!(
-                "[idfond] message send peer lookup failed identity={} target={}",
-                identity.id, to
-            );
+            tracing::warn!(target: "idfon.daemon", identity = %identity.id, target_peer = %to, "message send peer lookup failed");
             return error_response(
                 request.id.clone(),
                 &request.method,
@@ -2576,7 +2578,7 @@ fn send_message(
             );
         }
     };
-    eprintln!("[idfond] message send peer resolved identity={} target={} peer={} endpoint_id={:?} endpoint_addr_len={:?} key={}", identity.id, to, peer.id, peer.endpoint_id, peer.endpoint_addr.as_ref().map(String::len), key);
+    tracing::info!(target: "idfon.daemon", identity = %identity.id, target_peer = %to, peer = %peer.id, endpoint_id = ?peer.endpoint_id, endpoint_addr_len = ?peer.endpoint_addr.as_ref().map(String::len), key = %key, "message send peer resolved");
     let is_self = identity
         .public_key
         .as_deref()
@@ -2633,7 +2635,7 @@ fn send_message(
         if existing.request_fingerprint.as_deref() != Some(fingerprint.as_str()) {
             // Log it: clients reuse keys after restarts and a silent conflict
             // looks like a vanished message (found via a stuck video call).
-            eprintln!("[idfond] message send idempotency conflict identity={} key={} existing_operation={}", identity.id, key, existing.operation_id);
+            tracing::warn!(target: "idfon.daemon", identity = %identity.id, key = %key, existing_operation = %existing.operation_id, "message send idempotency conflict");
             return error_response(
                 request.id.clone(),
                 &request.method,
@@ -2660,7 +2662,7 @@ fn send_message(
         }
     };
     let message_id = format!("msg_{}", state.operations.len() + 1);
-    let envelope = match idfon_core::sign_message_with_ticket(
+    let mut envelope = match idfon_core::sign_message_with_ticket(
         &signing_key,
         identity.endpoint_id.unwrap_or_default(),
         message_id.clone(),
@@ -2680,6 +2682,9 @@ fn send_message(
             )
         }
     };
+    // Correlation id for the logical send. A caller-supplied `trace` wins;
+    // otherwise mint one so every outbound flow is joinable end to end.
+    envelope.trace = Some(request_text(&request.params, "trace").unwrap_or_else(idfon_core::new_traceparent));
     let timestamp = now();
     let operation = idfon_protocol::Operation {
         identity: identity.id.clone(),
@@ -2707,12 +2712,14 @@ fn send_message(
             true,
         );
     }
-    eprintln!(
-        "[idfond] message send queued identity={} operation_id={} message_id={} peer={}",
-        operation.identity,
-        operation.operation_id,
-        operation.message_id.as_deref().unwrap_or(""),
-        peer.id
+    tracing::info!(
+        target: "idfon.daemon",
+        identity = %operation.identity,
+        operation_id = %operation.operation_id,
+        message_id = %operation.message_id.as_deref().unwrap_or(""),
+        peer = %peer.id,
+        trace = ?envelope.trace,
+        "message send queued"
     );
     let operation_id = operation.operation_id.clone();
     let response_message_id = envelope.message_id.clone();
@@ -2742,7 +2749,7 @@ fn send_message(
         }
         let mut delivery = Err(io::Error::other("no transport attempt"));
         for attempt in 0..=retries {
-            eprintln!("[idfond] message send transport attempt identity={} operation_id={} message_id={} attempt={}", worker_identity, operation_id, worker_envelope.message_id, attempt);
+            tracing::info!(target: "idfon.daemon", identity = %worker_identity, operation_id = %operation_id, message_id = %worker_envelope.message_id, attempt, "message send transport attempt");
             if is_cancelled(&worker_store, &operation_id, &worker_identity) {
                 let _ = update_operation(
                     &worker_store,
@@ -2766,8 +2773,8 @@ fn send_message(
                 Err(error) => Err(io::Error::other(error)),
             };
             match &delivery {
-                Ok(ack) => eprintln!("[idfond] message send delivered identity={} operation_id={} message_id={} status={:?}", worker_identity, operation_id, worker_envelope.message_id, ack.status),
-                Err(error) => eprintln!("[idfond] message send attempt failed identity={} operation_id={} message_id={} error={}", worker_identity, operation_id, worker_envelope.message_id, error),
+                Ok(ack) => tracing::info!(target: "idfon.daemon", identity = %worker_identity, operation_id = %operation_id, message_id = %worker_envelope.message_id, status = ?ack.status, "message send delivered"),
+                Err(error) => tracing::error!(target: "idfon.daemon", identity = %worker_identity, operation_id = %operation_id, message_id = %worker_envelope.message_id, error = %error, "message send attempt failed"),
             }
             if delivery.is_ok() {
                 break;
@@ -2778,9 +2785,13 @@ fn send_message(
         } else {
             idfon_protocol::OperationStatus::Failed
         };
-        eprintln!(
-            "[idfond] message send finished identity={} operation_id={} message_id={} status={:?}",
-            worker_identity, operation_id, worker_envelope.message_id, status
+        tracing::info!(
+            target: "idfon.daemon",
+            identity = %worker_identity,
+            operation_id = %operation_id,
+            message_id = %worker_envelope.message_id,
+            status = ?status,
+            "message send finished"
         );
         let identity = worker_identity.clone();
         let _ = tokio::task::spawn_blocking(move || {
@@ -2879,7 +2890,7 @@ fn update_operation(
         .iter_mut()
         .find(|operation| operation.operation_id == operation_id && operation.identity == identity)
     {
-        eprintln!("[idfond] operation state changed identity={} operation_id={} message_id={:?} status={:?}", identity, operation_id, operation.message_id, status);
+        tracing::info!(target: "idfon.daemon", identity = %identity, operation_id = %operation_id, message_id = ?operation.message_id, status = ?status, "operation state changed");
         operation.status = status.clone();
         operation.updated_at = now();
         let event_number = next_event_number(&state.events);
@@ -2916,9 +2927,12 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             }
         };
     if let Err(error) = idfon_core::verify_message(&envelope) {
-        eprintln!(
-            "[idfond] message receive authentication failed message_id={} sender={} error={}",
-            envelope.message_id, envelope.sender.peer_id, error
+        tracing::error!(
+            target: "idfon.daemon",
+            message_id = %envelope.message_id,
+            sender = %envelope.sender.peer_id,
+            error = %error,
+            "message receive authentication failed"
         );
         return error_response(
             request.id.clone(),
@@ -2931,7 +2945,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let state = store.lock().expect("store mutex poisoned");
     let receiving_identity =
         request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
-    eprintln!("[idfond] message receive authenticated identity={} message_id={} sender={} sender_endpoint={}", receiving_identity, envelope.message_id, envelope.sender.peer_id, envelope.sender.endpoint_id);
+    tracing::info!(target: "idfon.daemon", identity = %receiving_identity, message_id = %envelope.message_id, sender = %envelope.sender.peer_id, sender_endpoint = %envelope.sender.endpoint_id, trace = ?envelope.trace, "message receive authenticated");
     if let Some(ticket) = &envelope.capability_ticket {
         if idfon_core::verify_capability_ticket(ticket).is_err()
             || ticket.issuer
@@ -2986,7 +3000,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         );
     drop(state);
     if !known_peer {
-        eprintln!("[idfond] message receive rejected: unknown peer identity={} message_id={} sender={} sender_endpoint={}", receiving_identity, envelope.message_id, envelope.sender.peer_id, envelope.sender.endpoint_id);
+        tracing::warn!(target: "idfon.daemon", identity = %receiving_identity, message_id = %envelope.message_id, sender = %envelope.sender.peer_id, sender_endpoint = %envelope.sender.endpoint_id, trace = ?envelope.trace, "message receive rejected: unknown peer");
         return error_response(
             request.id.clone(),
             &request.method,
@@ -2996,7 +3010,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         );
     }
     if !allowed {
-        eprintln!("[idfond] message receive rejected: capability denied identity={} message_id={} sender={}", receiving_identity, envelope.message_id, envelope.sender.peer_id);
+        tracing::warn!(target: "idfon.daemon", identity = %receiving_identity, message_id = %envelope.message_id, sender = %envelope.sender.peer_id, trace = ?envelope.trace, "message receive rejected: capability denied");
         return error_response(
             request.id.clone(),
             &request.method,
@@ -3005,9 +3019,13 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             false,
         );
     }
-    eprintln!(
-        "[idfond] message receive accepted identity={} message_id={} sender={}",
-        receiving_identity, envelope.message_id, envelope.sender.peer_id
+    tracing::info!(
+        target: "idfon.daemon",
+        identity = %receiving_identity,
+        message_id = %envelope.message_id,
+        sender = %envelope.sender.peer_id,
+        trace = ?envelope.trace,
+        "message receive accepted"
     );
     let mut state = store.lock().expect("store mutex poisoned");
     // Receiving an authorized message establishes the reciprocal reply path.
@@ -3058,7 +3076,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             && message.conversation == envelope.conversation
     }) {
         if existing.content != envelope.content {
-            eprintln!("[idfond] message receive rejected: duplicate key with different content identity={} message_id={} sender={}", receiving_identity, envelope.message_id, envelope.sender.peer_id);
+            tracing::warn!(target: "idfon.daemon", identity = %receiving_identity, message_id = %envelope.message_id, sender = %envelope.sender.peer_id, "message receive rejected: duplicate key with different content");
             return error_response(
                 request.id.clone(),
                 &request.method,
@@ -3067,9 +3085,13 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
                 false,
             );
         }
-        eprintln!(
-            "[idfond] message receive duplicate identity={} message_id={} sender={}",
-            receiving_identity, existing.message_id, envelope.sender.peer_id
+        tracing::info!(
+            target: "idfon.daemon",
+            identity = %receiving_identity,
+            message_id = %existing.message_id,
+            sender = %envelope.sender.peer_id,
+            trace = ?envelope.trace,
+            "message receive duplicate"
         );
         return success(
             request,
@@ -3586,9 +3608,13 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
         );
     };
     let capability = media_capability(&kind);
-    eprintln!(
-        "[idfond] media session start requested identity={} peer={} kind={:?} capability={:?}",
-        identity_ref, peer, kind, capability
+    tracing::info!(
+        target: "idfon.daemon",
+        identity = %identity_ref,
+        peer = %peer,
+        kind = ?kind,
+        capability = ?capability,
+        "media session start requested"
     );
     let mut state = store.lock().expect("store mutex poisoned");
     let Some(identity) = state
@@ -3626,7 +3652,7 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
         granted(&capability) || granted(&idfon_protocol::Capability::MessageSend)
     };
     if !allowed {
-        eprintln!("[idfond] media session start rejected: capability denied identity={} peer={} capability={:?}", identity, peer, capability);
+        tracing::warn!(target: "idfon.daemon", identity = %identity, peer = %peer, capability = ?capability, "media session start rejected: capability denied");
         return error_response(
             request.id.clone(),
             &request.method,
@@ -3663,9 +3689,13 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
         .get("mode")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("record");
-    eprintln!(
-        "[idfond] media session authorized session_id={} identity={} peer={} mode={}",
-        session.session_id, session.identity, session.peer, mode
+    tracing::info!(
+        target: "idfon.daemon",
+        session_id = %session.session_id,
+        identity = %session.identity,
+        peer = %session.peer,
+        mode = %mode,
+        "media session authorized"
     );
     let live_ticket = if session.kind == idfon_protocol::MediaKind::LiveAudio && mode == "publish" {
         let Some(handle) = media_handle.clone() else {
@@ -3769,10 +3799,11 @@ fn media_session_start(request: &Request, store: &Arc<Mutex<Store>>) -> Response
             true,
         );
     }
-    eprintln!(
-        "[idfond] media session started session_id={} live_ticket_len={:?}",
-        session.session_id,
-        live_ticket.as_ref().map(String::len)
+    tracing::info!(
+        target: "idfon.daemon",
+        session_id = %session.session_id,
+        live_ticket_len = ?live_ticket.as_ref().map(String::len),
+        "media session started"
     );
     success(
         request,
@@ -3810,9 +3841,12 @@ fn media_session_stop(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
             false,
         );
     };
-    eprintln!(
-        "[idfond] media session stopping identity={} session_id={} peer={}",
-        session.identity, session.session_id, session.peer
+    tracing::info!(
+        target: "idfon.daemon",
+        identity = %session.identity,
+        session_id = %session.session_id,
+        peer = %session.peer,
+        "media session stopping"
     );
     session.active = false;
     if let Some(service) = MEDIA_SERVICE.get() {
@@ -3826,9 +3860,11 @@ fn media_session_stop(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
         }
         let _ = service.stop(id);
     }
-    eprintln!(
-        "[idfond] media session stopped identity={} session_id={}",
-        session.identity, session.session_id
+    tracing::info!(
+        target: "idfon.daemon",
+        identity = %session.identity,
+        session_id = %session.session_id,
+        "media session stopped"
     );
     let data_dir = state.data_dir.clone();
     if let Err(error) = state.save(&data_dir) {
@@ -5334,9 +5370,11 @@ fn compact_events(
         if fields.iter().any(|value| value.len() > u16::MAX as usize) {
             // ponytail: skipped rather than wedging the stream; pathological
             // input only — the log makes it observable if it ever fires.
-            eprintln!(
-                "[idfond] events.compact skipping oversized event {} identity={}",
-                event.event_id, event.identity
+            tracing::warn!(
+                target: "idfon.daemon",
+                event_id = %event.event_id,
+                identity = %event.identity,
+                "events.compact skipping oversized event"
             );
             continue;
         }

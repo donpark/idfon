@@ -35,6 +35,8 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    // Shared subscriber on stderr; stdout is the MCP stdio channel.
+    idfon_telemetry::init("idfon-mcp-server", "info");
     let cli = Cli::parse();
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();

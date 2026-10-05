@@ -20,7 +20,9 @@ clap = { version = "4", features = ["derive"] }
 idfon-core = { path = "../idfon-core" }
 idfon-h3 = { path = "../idfon-h3" }
 idfon-protocol = { path = "../idfon-protocol" }
+idfon-telemetry = { path = "../idfon-telemetry" }
 iroh = "1"
 percent-encoding = "2"
 serde_json = "1"
+tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "process", "net", "signal"] }

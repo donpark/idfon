@@ -180,9 +180,9 @@ Open-source / local providers:
 
 idfon's value here is the **real-use harness**: add a contact per provider and
 actually converse, then compare latency/cost/quality — not a synthetic
-benchmark. Each turn logs one `[voice-metrics]` JSON line (STT ms, TTS
-first/total ms, audio ms, estimated cost); `None` when a provider has no price
-table rather than a made-up number.
+benchmark. Each turn logs one structured `idfon.voice.metrics` event (STT ms,
+TTS first/total ms, audio ms, estimated cost); `None` when a provider has no
+price table rather than a made-up number.
 
 ### Try a provider (one command)
 

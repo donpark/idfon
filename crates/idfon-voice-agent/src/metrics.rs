@@ -26,13 +26,21 @@ pub struct TurnMetrics {
 }
 
 impl TurnMetrics {
-    /// Log one JSON line so a call can be compared against another provider's.
+    /// Log one structured turn-metrics event so a call can be compared against
+    /// another provider's. Grep the unified log for `target=idfon.voice.metrics`.
     pub fn log(&self) {
-        match serde_json::to_string(self) {
-            Ok(json) => eprintln!("[voice-metrics] {json}"),
-            Err(_) => eprintln!("[voice-metrics] provider={} stt_ms={} tts_ms={}",
-                self.provider, self.stt_ms, self.tts_total_ms),
-        }
+        tracing::info!(
+            target: "idfon.voice.metrics",
+            provider = %self.provider,
+            stt_ms = self.stt_ms,
+            tts_first_ms = self.tts_first_ms,
+            tts_total_ms = self.tts_total_ms,
+            caller_audio_ms = self.caller_audio_ms,
+            tts_audio_ms = self.tts_audio_ms,
+            tts_chars = self.tts_chars,
+            est_cost_usd = ?self.est_cost_usd,
+            "voice-metrics"
+        );
     }
 
     pub fn cost_estimate(&self) -> Option<f64> {
