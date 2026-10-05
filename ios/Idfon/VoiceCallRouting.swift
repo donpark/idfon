@@ -101,6 +101,36 @@ enum ContactVoiceSelection {
     }
 }
 
+/// Per-contact on-device engine choice, used when the call runs the client
+/// cascade. Absent = the app's global default (`SpeechEngines`). Stored as raw
+/// backend names so this file stays Foundation-only (no AVFoundation/ML deps);
+/// the call path resolves them to `AsrBackend`/`TtsBackend`.
+enum ContactOnDeviceEngines {
+    private static let key = "idfon.on-device-engines"
+
+    static func asr(for peerID: String) -> String? { table()[peerID]?["asr"] }
+    static func tts(for peerID: String) -> String? { table()[peerID]?["tts"] }
+
+    static func set(asr: String?, tts: String?, for peerID: String) {
+        var next = table()
+        var entry = next[peerID] ?? [:]
+        if let asr { entry["asr"] = asr } else { entry.removeValue(forKey: "asr") }
+        if let tts { entry["tts"] = tts } else { entry.removeValue(forKey: "tts") }
+        if entry.isEmpty { next.removeValue(forKey: peerID) } else { next[peerID] = entry }
+        UserDefaults.standard.set(next, forKey: key)
+    }
+
+    static func remove(for peerID: String) {
+        var next = table()
+        next.removeValue(forKey: peerID)
+        UserDefaults.standard.set(next, forKey: key)
+    }
+
+    private static func table() -> [String: [String: String]] {
+        UserDefaults.standard.dictionary(forKey: key) as? [String: [String: String]] ?? [:]
+    }
+}
+
 /// What a call actually becomes once the per-contact selection and the signed
 /// route are both known. Resolved by `VoiceCallRouting.decide`, a pure function
 /// so the branch is testable without a daemon or a UI framework.

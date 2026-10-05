@@ -65,6 +65,10 @@ ticket stays small.
 - **Full-duplex coupling** — a `full-duplex` option (e.g. GPT-Live-1) fills
   both slots: choosing it for either STT or TTS sets both, and pins
   `mode = native-duplex`.
+- **On-device engines** — when a call runs the client cascade, each contact can
+  pick its own recognizer and reply voice (`ContactOnDeviceEngines`: Parakeet /
+  Apple ASR, Kokoro / Apple TTS). Resolved at call start (`VoiceAgentSession`);
+  absent = the app's global default (`SpeechEngines`).
 
 The routing decision is pure (`VoiceCallRouting.decide`): a server/full-duplex
 selection dials the holder's live session, an all-client selection is a client

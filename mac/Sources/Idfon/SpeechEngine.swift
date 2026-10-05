@@ -82,7 +82,7 @@ enum SpeechEngines {
     private static let asrKey = "idfon.asr-backend"
 
     /// The active engine; read by `VoiceAgentSession` at call time.
-    static var tts: TtsEngine = make(ttsBackend)
+    static var tts: TtsEngine = makeTts(ttsBackend)
 
     /// Persisted reply-voice choice; `IDFON_TTS`/`-ttsbackend` override.
     static var ttsBackend: TtsBackend {
@@ -96,7 +96,7 @@ enum SpeechEngines {
 
     static func setBackend(_ backend: TtsBackend) {
         UserDefaults.standard.set(backend.rawValue, forKey: ttsKey)
-        tts = make(backend)
+        tts = makeTts(backend)
         prewarm()
     }
 
@@ -131,8 +131,12 @@ enum SpeechEngines {
 
     /// The configured recognizer, or nil to use the SFSpeech fallback (system
     /// backend on macOS < 26).
-    static func makeAsr() -> (any AsrEngine)? {
-        switch asrBackend {
+    static func makeAsr() -> (any AsrEngine)? { makeAsr(asrBackend) }
+
+    /// Build a recognizer for `backend`, independent of the persisted global
+    /// choice (per-contact on-device selection).
+    static func makeAsr(_ backend: AsrBackend) -> (any AsrEngine)? {
+        switch backend {
         case .parakeet:
             guard #available(macOS 15.0, *) else { return nil }
             Automation.mark("voice: asr backend=parakeet")
@@ -146,7 +150,9 @@ enum SpeechEngines {
         }
     }
 
-    private static func make(_ backend: TtsBackend) -> TtsEngine {
+    /// Build a reply-voice engine for `backend`, independent of the persisted
+    /// global choice (per-contact on-device selection).
+    static func makeTts(_ backend: TtsBackend) -> TtsEngine {
         Automation.mark("voice: tts backend=\(backend.rawValue)")
         switch backend {
         case .apple: return AppleTtsEngine()
