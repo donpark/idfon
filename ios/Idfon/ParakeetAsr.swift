@@ -35,32 +35,27 @@ final class ParakeetReduxAsr: AsrEngine {
     func prepare() async { await Self.warmCache() }
 
     static func warmCache() async {
-        warmLock.lock()
-        if let task = warmTask {
-            warmLock.unlock()
-            await task.value
-            return
-        }
-        let task = Task {
-            let throttle = ProgressThrottle()
-            Automation.mark("voice: parakeet prewarming")
-            do {
-                _ = try await AsrModels.downloadAndLoad(version: .redux) { progress in
-                    if throttle.shouldLog(progress.fractionCompleted) {
-                        Automation.mark("voice: parakeet download \(Int(progress.fractionCompleted * 100))%")
+        let task = warmLock.withLock { () -> Task<Void, Never> in
+            if let existing = warmTask { return existing }
+            let created = Task {
+                let throttle = ProgressThrottle()
+                Automation.mark("voice: parakeet prewarming")
+                do {
+                    _ = try await AsrModels.downloadAndLoad(version: .redux) { progress in
+                        if throttle.shouldLog(progress.fractionCompleted) {
+                            Automation.mark("voice: parakeet download \(Int(progress.fractionCompleted * 100))%")
+                        }
                     }
+                    Automation.mark("voice: parakeet prewarmed")
+                } catch {
+                    Automation.mark("voice: parakeet prewarm failed \(error.localizedDescription)")
                 }
-                Automation.mark("voice: parakeet prewarmed")
-            } catch {
-                Automation.mark("voice: parakeet prewarm failed \(error.localizedDescription)")
             }
+            warmTask = created
+            return created
         }
-        warmTask = task
-        warmLock.unlock()
         await task.value
-        warmLock.lock()
-        warmTask = nil  // allow a retry after a transient failure
-        warmLock.unlock()
+        warmLock.withLock { warmTask = nil }  // allow a retry after a transient failure
     }
 
     func start(

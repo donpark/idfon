@@ -45,7 +45,7 @@ final class VoiceAgentSession: NSObject {
     /// Mic gate, driven by the call UI's mute button.
     private var micMuted = false
 
-    private var stopRequested = false
+    nonisolated(unsafe) private var stopRequested = false
     private var turnLimit = Int.max
     private var turnsDone = 0
     /// Consecutive silent turns; a call is only dropped after several.
@@ -322,7 +322,7 @@ final class VoiceAgentSession: NSObject {
         try? session.setCategory(
             .playAndRecord,
             mode: .default,
-            options: [.defaultToSpeaker, .allowBluetooth]
+            options: [.defaultToSpeaker, .allowBluetoothHFP]
         )
         try? session.setActive(true, options: .notifyOthersOnDeactivation)
         let outputs = session.currentRoute.outputs.map(\.portType.rawValue).joined(separator: ",")

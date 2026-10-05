@@ -132,7 +132,7 @@ extension OnDeviceVoice {
         try? session.setCategory(
             .playAndRecord,
             mode: .voiceChat,
-            options: [.defaultToSpeaker, .allowBluetooth]
+            options: [.defaultToSpeaker, .allowBluetoothHFP]
         )
         try? session.setActive(true, options: .notifyOthersOnDeactivation)
 
@@ -197,12 +197,12 @@ extension OnDeviceVoice {
             startListening(configureSession: false, onPartial: handle) { _ in }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
             player.play()
             Automation.mark("voice: bargein playing")
             // Fail fast if playback finishes without an interruption.
-            DispatchQueue.main.asyncAfter(deadline: .now() + player.duration + 1) { [weak self] in
-                guard let self, let current = self.bargeInPlayer, !current.isPlaying else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + player.duration + 1) { [self] in
+                guard let current = self.bargeInPlayer, !current.isPlaying else { return }
                 self.bargeInPlayer = nil
                 self.stopSystemTranscriber()
                 Automation.mark("voice: FAIL bargein no interruption")
