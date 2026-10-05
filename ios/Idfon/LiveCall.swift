@@ -23,12 +23,14 @@ enum LiveCallHarness {
         let session = AVAudioSession.sharedInstance()
         // Set the mode in the category call, then move the route last: calling
         // setMode(.voiceChat) after overrideOutputAudioPort() re-evaluates the
-        // route and drops back to the receiver. (`.voiceChat` selects
-        // VoiceProcessingIO for echo cancellation; its output gain has no
-        // public API — see the low-volume notes on the playback gain.)
+        // route and drops back to the receiver. `.default` (not `.voiceChat`):
+        // voiceChat routes playback through VoiceProcessingIO, whose output
+        // gain is attenuated with no public API to undo it. AEC comes from
+        // `setVoiceProcessingEnabled` on the capture input node instead
+        // (docs/troubleshooting.md, "audio too quiet").
         try? session.setCategory(
             .playAndRecord,
-            mode: .voiceChat,
+            mode: .default,
             options: [.allowBluetoothHFP, .defaultToSpeaker]
         )
         try? session.setActive(true)
