@@ -523,6 +523,8 @@ fn voice_route_from_live_params(params: &serde_json::Value) -> VoiceRoute {
             .or_else(|| Some("pcm24k".to_owned())),
         model: params.get("model").and_then(|value| value.as_str()).map(str::to_owned),
         delegate: None,
+        stt: None,
+        tts: None,
     }
 }
 

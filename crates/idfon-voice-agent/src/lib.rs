@@ -69,6 +69,9 @@ pub trait VoiceBackendFactory: Send + Sync {
 pub struct VoiceMedia {
     /// Caller audio as paced 20 ms, 24 kHz mono frames.
     pub caller: mpsc::Receiver<Vec<i16>>,
+    /// Caller transcripts injected by the app when it runs STT on-device
+    /// (`voice_route.stt = client`); the backend skips its own STT then.
+    pub caller_text: mpsc::UnboundedReceiver<String>,
     /// Agent-output deltas (F11) routed from the holder, for incremental TTS.
     pub deltas: mpsc::UnboundedReceiver<eve_idfon::deltas::Delta>,
     /// Return-leg audio the backend renders for the caller.
@@ -257,10 +260,26 @@ pub struct VoiceAgentConfig {
     pub broadcast: String,
     /// Provenance tag on injected turns.
     pub source: String,
+    /// Who runs STT: `true` = holder, `false` = caller (on-device).
+    pub stt_server: bool,
+    /// Who runs TTS: `true` = holder, `false` = caller (on-device).
+    pub tts_server: bool,
 }
 
 impl VoiceAgentConfig {
     pub fn from_params(params: &Value) -> Self {
+        // Hybrid ownership comes from the signed `voice_route` block; absent,
+        // the holder does both halves (the original server-cascade).
+        let route = params
+            .get("voice_route")
+            .and_then(|value| serde_json::from_value::<idfon_protocol::VoiceRoute>(value.clone()).ok());
+        let (stt_server, tts_server) = match route {
+            Some(route) => (
+                route.stt_side() == idfon_protocol::VoiceHalf::Server,
+                route.tts_side() == idfon_protocol::VoiceHalf::Server,
+            ),
+            None => (true, true),
+        };
         Self {
             backend: params
                 .get("backend")
@@ -278,6 +297,8 @@ impl VoiceAgentConfig {
                 .and_then(|value| value.as_str())
                 .unwrap_or("voice-agent")
                 .to_string(),
+            stt_server,
+            tts_server,
         }
     }
 }
@@ -314,10 +335,45 @@ impl LiveCallHandler for VoiceAgentHandler {
     }
 
     fn handle(&self, ctx: LiveCallContext) -> LiveCallFuture {
+        // In-call caller text from an app running STT on-device.
+        if let Some(text) = caller_text_control(&ctx.text) {
+            return Box::pin(async move {
+                let sender = {
+                    active_call()
+                        .lock()
+                        .ok()
+                        .and_then(|handle| handle.as_ref().map(|handle| handle.text.clone()))
+                };
+                if let Some(sender) = sender {
+                    let _ = sender.send(text);
+                }
+                Ok(true)
+            });
+        }
         let config = VoiceAgentConfig::from_params(&ctx.params);
         let factory = self.factories.get(&config.backend).cloned();
         Box::pin(async move { handle_call(ctx, config, factory).await })
     }
+}
+
+/// Parse a caller-text control: `IDFON-LIVE/1\naction=text\ntext_b64=<base64>`.
+fn caller_text_control(text: &str) -> Option<String> {
+    let body = text.strip_prefix("IDFON-LIVE/1\n")?;
+    let mut action = None;
+    let mut payload = None;
+    for line in body.lines() {
+        if let Some(value) = line.strip_prefix("action=") {
+            action = Some(value);
+        }
+        if let Some(value) = line.strip_prefix("text_b64=") {
+            payload = Some(value);
+        }
+    }
+    if action != Some("text") {
+        return None;
+    }
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    String::from_utf8(BASE64.decode(payload?).ok()?).ok()
 }
 
 async fn handle_call(
@@ -379,10 +435,21 @@ async fn handle_call(
     .await
     .context("start voice-agent call")?;
     let stop = Arc::clone(&session.stop);
+    // Caller audio is only needed when the holder runs STT; otherwise the
+    // caller runs it on-device and sends text over a live control, so we keep
+    // an idle channel (with its sender alive) instead of subscribing.
+    let (caller, caller_keepalive) = if config.stt_server {
+        (subscribe_caller(ticket, profile, Arc::clone(&stop)).await?, None)
+    } else {
+        let (tx, rx) = mpsc::channel(1);
+        (rx, Some(tx))
+    };
+    let (text_tx, caller_text) = mpsc::unbounded_channel::<String>();
     *active_call().lock().expect("call mutex poisoned") = Some(CallHandle {
         stop: Arc::clone(&stop),
+        text: text_tx,
+        _caller_keepalive: caller_keepalive,
     });
-    let caller = subscribe_caller(ticket, profile, Arc::clone(&stop)).await?;
     let audio = session.audio.clone();
     let bridge = TurnBridge::new(
         ctx.sender_peer_id.clone(),
@@ -398,6 +465,7 @@ async fn handle_call(
     let call_peer = ctx.sender_peer_id.clone();
     let media = VoiceMedia {
         caller,
+        caller_text,
         deltas,
         audio,
         stop,
@@ -431,6 +499,10 @@ async fn handle_call(
 
 struct CallHandle {
     stop: Arc<AtomicBool>,
+    /// Caller-text sink for `voice_route.stt = client`.
+    text: mpsc::UnboundedSender<String>,
+    /// Held so the idle caller channel stays open when the holder doesn't STT.
+    _caller_keepalive: Option<mpsc::Sender<Vec<i16>>>,
 }
 
 static ACTIVE_CALL: OnceLock<Mutex<Option<CallHandle>>> = OnceLock::new();
