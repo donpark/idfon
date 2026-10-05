@@ -187,7 +187,7 @@ impl TurnBridge {
                 live_only: true,
             },
         );
-        let _ = self
+        let sent = self
             .out_tx
             .send(IpcFrame::TurnIn {
                 message_id: turn_id.clone(),
@@ -202,7 +202,9 @@ impl TurnBridge {
                 capabilities: None,
                 source: Some(self.source.clone()),
             })
-            .await;
+            .await
+            .is_ok();
+        eprintln!("[voice-agent] inject turn={turn_id} sent={sent} text={text:?}");
         turn_id
     }
 

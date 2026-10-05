@@ -1268,20 +1268,28 @@ async fn handle_reply(
         .get(target_key)
         .cloned()
         .ok_or_else(|| anyhow!("unknown in_reply_to {}", in_reply_to))?;
+    eprintln!(
+        "[eve-idfon] reply in_reply_to={in_reply_to} live_only={} commentary={}",
+        target.live_only,
+        target.live_commentary.is_some()
+    );
     // A live-call delegation also wants the spoken text (envelopes stripped)
     // fed back to the live session; capture it before `text` moves.
     let commentary = target.live_commentary.clone();
     let commentary_text = commentary.as_ref().map(|_| strip_envelopes(&text));
-    // A voice-injected turn is spoken to the live session only: posting it to
-    // the caller's chat would duplicate the `IDFON-CALL/1` transcript the
-    // holder sends.
-    if !target.live_only {
+    let message_id = next_message_id("eve_reply_");
+    // A voice-injected turn is spoken to the live session only (no chat copy);
+    // a normal turn also posts to the caller. Either way the bridge is awaiting
+    // a `reply.ack` keyed by `in_reply_to` — without it `/reply` returns 502 and
+    // the agent's reply is dropped before it reaches the live session.
+    let status = if target.live_only {
+        "delivered".to_string()
+    } else {
         let endpoint_id: EndpointId = target
             .endpoint_id
             .parse()
             .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
         let target_addr = EndpointAddr::new(endpoint_id);
-        let message_id = next_message_id("eve_reply_");
         let text = target
             .a2a_depth
             .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text))
@@ -1299,19 +1307,22 @@ async fn handle_reply(
             reply_ticket,
         )
         .map_err(|error| anyhow!("sign reply: {error}"))?;
-        let ack = transport
-            .send(&target_addr, &envelope)
-            .await
-            .map_err(|error| anyhow!("send reply to {}: {error}", target.peer_id))?;
-        out_tx
-            .send(IpcFrame::ReplyAck {
-                in_reply_to,
-                message_id,
-                status: format!("{:?}", ack.status).to_lowercase(),
-            })
-            .await
-            .map_err(|_| anyhow!("IPC client disconnected"))?;
-    }
+        match transport.send(&target_addr, &envelope).await {
+            Ok(ack) => format!("{:?}", ack.status).to_lowercase(),
+            Err(error) => {
+                eprintln!("[eve-idfon] send reply to {} failed: {error}", target.peer_id);
+                "failed".to_string()
+            }
+        }
+    };
+    out_tx
+        .send(IpcFrame::ReplyAck {
+            in_reply_to,
+            message_id,
+            status,
+        })
+        .await
+        .map_err(|_| anyhow!("IPC client disconnected"))?;
     if let (Some((delegation_id, sender)), Some(spoken)) = (commentary, commentary_text) {
         if !spoken.is_empty() {
             let _ = sender.send((delegation_id, spoken));
