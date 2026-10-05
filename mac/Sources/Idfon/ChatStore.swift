@@ -164,6 +164,30 @@ final class ChatStore {
                 messages[existing].kind = part.1
                 continue
             }
+            // A live holder also delivers the agent's reply as a normal
+            // message; annotate that bubble in place instead of appending a
+            // second copy (the on-device path does this with
+            // `recordSpokenTurn(replacing:)`).
+            if case .callTranscript(let transcript) = part.1,
+               transcript.role == "agent",
+               let existing = messages.lastIndex(where: {
+                   if case .callTranscript = $0.kind { return false }
+                   return $0.peerId == peerId && !$0.outgoing && $0.displayText == transcript.text
+               }) {
+                messages[existing].kind = part.1
+                continue
+            }
+            // Reverse ordering: the annotated copy already landed, so drop the
+            // plain delivery rather than show it twice.
+            if case .text(let incoming) = part.1,
+               messages.contains(where: {
+                   if case .callTranscript(let current) = $0.kind {
+                       return current.role == "agent" && current.text == incoming
+                   }
+                   return false
+               }) {
+                continue
+            }
             messages.append(ChatMessage(id: partID, peerId: peerId, kind: part.1, outgoing: false, status: nil, timestamp: timestamp, conversation: event.conversationId))
             switch part.1 {
             case .recording(let ticket, _):
