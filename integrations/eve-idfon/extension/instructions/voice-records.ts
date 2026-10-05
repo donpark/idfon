@@ -1,6 +1,9 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
 import extension from "../extension";
+import { logger } from "../log";
+
+const log = logger("idfon.agent");
 
 // P0 of the voice side-channel: drain the durable holder-side record buffer at
 // a turn boundary and surface it as a user-role dynamic instruction. Records
@@ -46,13 +49,11 @@ export default defineDynamic({
         records = ((await response.json()) as { records?: VoiceRecord[] }).records ?? [];
       } catch (error) {
         // A down bridge must not fail the turn; the records stay buffered.
-        console.error(`[eve-idfon] voice records drain failed: ${String(error)}`);
+        log.error("voice records drain failed", { error: String(error), turn_id: turnId });
         return null;
       }
       const elapsedMs = Date.now() - started;
-      console.log(
-        `[eve-idfon] voice records drained count=${records.length} in ${elapsedMs}ms turn=${turnId}`,
-      );
+      log.info("voice records drained", { count: records.length, elapsed_ms: elapsedMs, turn_id: turnId });
       if (records.length === 0) return null;
 
       // Structurally encoded (escaped JSON with a fixed `speaker` enum), so a

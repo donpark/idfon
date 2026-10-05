@@ -2,6 +2,9 @@ import { defineChannel, POST } from "eve/channels";
 import { parseInputResponses } from "eve/client";
 
 import extension from "../extension";
+import { logger } from "../log";
+
+const log = logger("idfon.agent");
 
 type TurnIn = {
   message_id: string;
@@ -16,6 +19,8 @@ type TurnIn = {
   capabilities?: string[];
   // Provenance for holder-injected turns (e.g. `gpt-live-delegation`).
   source?: string;
+  // Correlation id from the holder, for joining agent logs to the trace.
+  trace?: string;
 };
 
 type SessionMember = {
@@ -161,7 +166,7 @@ export default defineChannel({
       if (existing) {
         waitUntil(
           attachSession(existing.id).send(message, { auth }).catch((error) =>
-            console.error("idfon room turn failed", error)
+            log.error("room turn failed", { error: String(error), message_id: completeTurn.message_id })
           )
         );
       }

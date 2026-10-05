@@ -32,6 +32,7 @@
   "files": [
     "dist",
     "bridge.mjs",
+    "log.mjs",
     "managed.mjs",
     "README.md",
     "LICENSE-MIT",

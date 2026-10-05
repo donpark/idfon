@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createConnection } from "node:net";
 import { createServer } from "node:http";
+import { logger } from "./log.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
@@ -15,6 +16,7 @@ if (!socketPath || !targetUrl || !secret || !Number.isInteger(port)) {
 }
 
 const holder = createConnection(socketPath);
+const log = logger("idfon.bridge");
 let input = Buffer.alloc(0);
 const pending = new Map();
 // Outbound sends awaiting a reply turn (the intro flow: ask the target agent
@@ -51,6 +53,13 @@ function processFrames() {
     const value = JSON.parse(input.subarray(4, size + 4));
     input = input.subarray(size + 4);
     if (value.type === "turn.in" || value.type === "input.in" || value.type === "status.in") {
+      log.info("forwarding to agent", {
+        type: value.type,
+        message_id: value.message_id,
+        peer_id: value.peer_id,
+        conversation: value.conversation,
+        trace: value.trace,
+      });
       // A reply to an in-flight intro is consumed here, not forwarded as a turn.
       if (value.type === "turn.in") {
         const match = /(?:^|\n)reply_to=([A-Za-z0-9._-]+)/.exec(value.text ?? "");
@@ -66,7 +75,7 @@ function processFrames() {
         method: "POST",
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
-      }).catch((error) => console.error(`[eve-idfon] ${value.type} delivery failed: ${error}`));
+      }).catch((error) => log.error("delivery failed", { type: value.type, message_id: value.message_id, peer_id: value.peer_id, trace: value.trace, error: String(error) }));
     } else if (value.type === "audio.frame") {
       const line = `data: ${JSON.stringify(value)}\n\n`;
       for (const client of sseClients) {
@@ -84,16 +93,16 @@ function processFrames() {
         pending.delete(key);
         waiter.reject(new Error(`${value.code}: ${value.message}`));
       }
-      console.error(`[eve-idfon] holder error: ${value.code}: ${value.message}`);
+      log.error("holder error", { code: value.code, message: value.message });
     }
   }
 }
 
 holder.on("data", (chunk) => {
   input = Buffer.concat([input, chunk]);
-  try { processFrames(); } catch (error) { console.error(error); holder.destroy(error); }
+  try { processFrames(); } catch (error) { log.error("frame processing failed", { error: String(error) }); holder.destroy(error); }
 });
-holder.on("error", (error) => { console.error(`[eve-idfon] holder IPC: ${error}`); process.exitCode = 1; });
+holder.on("error", (error) => { log.error("holder ipc error", { error: String(error) }); process.exitCode = 1; });
 holder.on("close", () => process.exitCode ||= 1);
 
 const server = createServer(async (request, response) => {
@@ -438,4 +447,4 @@ const server = createServer(async (request, response) => {
     response.writeHead(502); response.end(`${error}\n`);
   }
 });
-server.listen(port, "127.0.0.1", () => console.error(`[eve-idfon] bridge listening on ${port}`));
+server.listen(port, "127.0.0.1", () => log.info("bridge listening", { port }));

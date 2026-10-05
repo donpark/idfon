@@ -151,6 +151,9 @@ pub enum IpcFrame {
         /// distinct auth attribute so approval/F10 policies can tell it apart.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
+        /// Correlation id, so an agent/bridge can log against the same trace.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace: Option<String>,
     },
     #[serde(rename = "reply.out")]
     ReplyOut {
@@ -181,6 +184,8 @@ pub enum IpcFrame {
         conversation: Option<String>,
         event: String,
         data: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace: Option<String>,
     },
     #[serde(rename = "status.ack")]
     StatusAck {
@@ -208,6 +213,8 @@ pub enum IpcFrame {
         responses: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capabilities: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trace: Option<String>,
     },
     #[serde(rename = "input.ack")]
     InputAck {
@@ -1202,6 +1209,7 @@ async fn handle_message(
                 conversation: message.conversation.clone(),
                 event,
                 data,
+                trace: message.trace.clone(),
             })
             .await
             .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -1226,6 +1234,7 @@ async fn handle_message(
                         .map(|capability| capability.0.to_string())
                         .collect(),
                 ),
+                trace: message.trace.clone(),
             })
             .await
             .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -1287,6 +1296,7 @@ async fn handle_message(
                     .collect(),
             ),
             source: None,
+            trace: message.trace.clone(),
         })
         .await
         .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -2378,12 +2388,13 @@ mod tests {
             a2a_depth: None,
             capabilities: None,
             source: None,
+            trace: Some("00-trace-1".into()),
         };
         let (mut writer, mut reader) = duplex(4096);
         write_frame(&mut writer, &frame).await.unwrap();
         drop(writer);
         assert!(
-            matches!(read_frame(&mut reader).await.unwrap(), Some(IpcFrame::TurnIn { text, .. }) if text == "hello")
+            matches!(read_frame(&mut reader).await.unwrap(), Some(IpcFrame::TurnIn { text, trace, .. }) if text == "hello" && trace.as_deref() == Some("00-trace-1"))
         );
     }
 
