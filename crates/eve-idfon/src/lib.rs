@@ -26,6 +26,7 @@ use idfon_protocol::{
 use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, EndpointId};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 pub mod deltas;
 pub mod live;
@@ -682,6 +683,18 @@ async fn serve(
         tokio::spawn(async move {
             transport
                 .serve_with_peer(move |message, remote_id| {
+                    // One span per admitted crossing: the OTel trace root for
+                    // this process, continuing the sender's trace when present.
+                    let span = tracing::info_span!(
+                        "idfon.seam",
+                        direction = "in",
+                        kind = "message",
+                        message_id = %message.message_id,
+                        peer_id = %message.sender.peer_id,
+                        trace = ?message.trace,
+                        telemetry = ?message.telemetry,
+                    );
+                    idfon_telemetry::set_remote_parent(&span, message.trace.as_deref());
                     handle_message(
                         message,
                         remote_id.to_string(),
@@ -696,6 +709,7 @@ async fn serve(
                         Arc::clone(&live_registry),
                         live_params.clone(),
                     )
+                    .instrument(span)
                 })
                 .await
         })
@@ -1010,9 +1024,9 @@ async fn handle_message(
     let wire_text = match &message.content {
         MessageContent::Text { text } => text.clone(),
     };
-    let (text, a2a_depth, _a2a_trace) = parse_a2a_envelope(&wire_text)
-        .map(|(depth, text, trace)| (text, Some(depth), trace))
-        .unwrap_or((wire_text.clone(), None, None));
+    let (text, a2a_depth) = parse_a2a_envelope(&wire_text)
+        .map(|envelope| (envelope.text, Some(envelope.depth)))
+        .unwrap_or((wire_text.clone(), None));
     if a2a_depth.is_some()
         && !ticket
             .capabilities
@@ -1100,6 +1114,7 @@ async fn handle_message(
         a2a_depth = a2a_depth.unwrap_or(0),
         attachment = attachment.is_some(),
         trace = ?message.trace,
+        telemetry = ?message.telemetry,
         "boundary"
     );
 
@@ -1326,7 +1341,7 @@ async fn handle_reply(
         let target_addr = EndpointAddr::new(endpoint_id);
         let text = target
             .a2a_depth
-            .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text, target.trace.as_deref()))
+            .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text, target.trace.as_deref(), Some(idfon_telemetry::mode())))
             .unwrap_or(text);
         let reply_ticket = reply_ticket
             .filter(|ticket| ticket.issuer == target.peer_id)
@@ -1342,6 +1357,7 @@ async fn handle_reply(
         )
         .map_err(|error| anyhow!("sign reply: {error}"))?;
         envelope.trace = target.trace.clone();
+        envelope.telemetry = Some(idfon_telemetry::mode().to_string());
         match transport.send(&target_addr, &envelope).await {
             Ok(ack) => format!("{:?}", ack.status).to_lowercase(),
             Err(error) => {
@@ -1432,6 +1448,7 @@ async fn handle_status(
     )
     .map_err(|error| anyhow!("sign status: {error}"))?;
     envelope.trace = target.trace.clone();
+    envelope.telemetry = Some(idfon_telemetry::mode().to_string());
     transport
         .send(&EndpointAddr::new(endpoint_id), &envelope)
         .await
@@ -1486,6 +1503,7 @@ async fn handle_input(
     )
     .map_err(|error| anyhow!("sign input request: {error}"))?;
     envelope.trace = Some(idfon_core::new_traceparent());
+    envelope.telemetry = Some(idfon_telemetry::mode().to_string());
     let ack = transport
         .send(&EndpointAddr::new(endpoint_id), &envelope)
         .await
@@ -1512,35 +1530,54 @@ async fn handle_input(
     Ok(())
 }
 
-fn encode_a2a_envelope(depth: u8, text: &str, trace: Option<&str>) -> String {
+fn encode_a2a_envelope(
+    depth: u8,
+    text: &str,
+    trace: Option<&str>,
+    telemetry: Option<&str>,
+) -> String {
     let mut envelope = format!("IDFON-A2A/1\ndepth={depth}\n");
+    // Offered to the agent as optional correlation/participation hints; older
+    // decoders ignore unknown lines.
     if let Some(trace) = trace {
-        // Offered to the agent as an optional correlation id; older decoders
-        // ignore unknown lines.
         envelope.push_str(&format!("trace={trace}\n"));
+    }
+    if let Some(telemetry) = telemetry {
+        envelope.push_str(&format!("telemetry={telemetry}\n"));
     }
     envelope.push_str(&format!("payload={}\n", BASE64.encode(text.as_bytes())));
     envelope
 }
 
-fn parse_a2a_envelope(text: &str) -> Option<(u8, String, Option<String>)> {
+#[derive(Debug, PartialEq)]
+struct A2aEnvelope {
+    depth: u8,
+    text: String,
+    trace: Option<String>,
+    telemetry: Option<String>,
+}
+
+fn parse_a2a_envelope(text: &str) -> Option<A2aEnvelope> {
     let mut depth = None;
     let mut payload = None;
     let mut trace = None;
+    let mut telemetry = None;
     for line in text.strip_prefix("IDFON-A2A/1\n")?.lines() {
         let (key, value) = line.split_once('=')?;
         match key {
             "depth" => depth = value.parse().ok(),
             "trace" => trace = Some(value.to_owned()),
+            "telemetry" => telemetry = Some(value.to_owned()),
             "payload" => payload = Some(value),
             _ => {}
         }
     }
-    Some((
-        depth?,
-        String::from_utf8(BASE64.decode(payload?).ok()?).ok()?,
+    Some(A2aEnvelope {
+        depth: depth?,
+        text: String::from_utf8(BASE64.decode(payload?).ok()?).ok()?,
         trace,
-    ))
+        telemetry,
+    })
 }
 
 fn encode_status_envelope(event: &str, data: &serde_json::Value) -> Result<String> {
@@ -1598,7 +1635,7 @@ async fn handle_peer_send(
     };
     let message_id = next_message_id("eve_peer_");
     let trace = idfon_core::new_traceparent();
-    let text = encode_a2a_envelope(a2a_depth, &text, Some(&trace));
+    let text = encode_a2a_envelope(a2a_depth, &text, Some(&trace), Some(idfon_telemetry::mode()));
     let mut envelope = sign_message_with_ticket(
         key,
         peer_id(key),
@@ -1610,6 +1647,7 @@ async fn handle_peer_send(
     )
     .map_err(|error| anyhow!("sign peer message: {error}"))?;
     envelope.trace = Some(trace);
+    envelope.telemetry = Some(idfon_telemetry::mode().to_string());
     let ack = transport
         .send(&EndpointAddr::new(endpoint_id), &envelope)
         .await
@@ -2223,15 +2261,25 @@ mod tests {
     #[test]
     fn a2a_envelope_round_trips_and_rejects_plain_text() {
         let trace = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
-        let encoded = encode_a2a_envelope(1, "hello\npeer", Some(trace));
+        let encoded = encode_a2a_envelope(1, "hello\npeer", Some(trace), Some("correlate"));
         assert_eq!(
             parse_a2a_envelope(&encoded),
-            Some((1, "hello\npeer".into(), Some(trace.into())))
+            Some(A2aEnvelope {
+                depth: 1,
+                text: "hello\npeer".into(),
+                trace: Some(trace.into()),
+                telemetry: Some("correlate".into()),
+            })
         );
-        // Older payloads without a trace still parse.
+        // Older payloads without trace/telemetry still parse.
         assert_eq!(
-            parse_a2a_envelope(&encode_a2a_envelope(1, "x", None)),
-            Some((1, "x".into(), None))
+            parse_a2a_envelope(&encode_a2a_envelope(1, "x", None, None)),
+            Some(A2aEnvelope {
+                depth: 1,
+                text: "x".into(),
+                trace: None,
+                telemetry: None,
+            })
         );
         assert_eq!(parse_a2a_envelope("hello"), None);
     }

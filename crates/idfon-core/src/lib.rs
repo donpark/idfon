@@ -118,6 +118,7 @@ pub fn sign_message_with_ticket(
         capability_ticket,
         conversation,
         trace: None,
+        telemetry: None,
     };
     let signature = key.sign(&auth_bytes(&unsigned)?);
     Ok(MessageEnvelope {
@@ -498,6 +499,9 @@ mod tests {
         // Attaching or replacing a trace must not invalidate the signature:
         // it is a convenience correlation id, not authenticated content.
         message.trace = Some(new_traceparent());
+        assert!(verify_message(&message).is_ok());
+        // `telemetry` is likewise an unsigned, best-effort advertisement.
+        message.telemetry = Some("inject".into());
         assert!(verify_message(&message).is_ok());
         assert_eq!(new_traceparent().len(), 55);
         assert_ne!(new_traceparent(), new_traceparent());

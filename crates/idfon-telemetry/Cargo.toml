@@ -4,6 +4,22 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 
+[features]
+default = []
+# Opt-in OTLP export. Off by default so the daemon dylib (shared with iOS)
+# stays lean; enabled only by the non-dylib binaries (holder, MCP, CLI).
+# See docs/observability.md (P2).
+otlp = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
+
 [dependencies]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+opentelemetry = { version = "0.33", optional = true }
+opentelemetry_sdk = { version = "0.33", optional = true }
+opentelemetry-otlp = { version = "0.33", optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }

@@ -582,6 +582,7 @@ mod tests {
                 capability_ticket: None,
                 conversation: None,
                 trace: None,
+                telemetry: None,
             };
             let ack = sender
                 .send(&receiver.endpoint().addr(), &message)
@@ -619,6 +620,7 @@ mod tests {
             capability_ticket: None,
             conversation: None,
             trace: None,
+            telemetry: None,
         };
         let target = EndpointAddr::from_parts(
             "0000000000000000000000000000000000000000000000000000000000000000"

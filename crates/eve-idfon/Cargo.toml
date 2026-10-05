@@ -18,7 +18,7 @@ ed25519-dalek = "3"
 idfon-core = { path = "../idfon-core" }
 idfon-media = { path = "../idfon-media" }
 idfon-protocol = { path = "../idfon-protocol" }
-idfon-telemetry = { path = "../idfon-telemetry" }
+idfon-telemetry = { path = "../idfon-telemetry", features = ["otlp"] }
 iroh = "1"
 iroh-blobs = "0.103"
 serde = { version = "1", features = ["derive"] }
