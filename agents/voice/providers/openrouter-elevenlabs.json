@@ -1,0 +1,14 @@
+{
+  "_comment": "No-Deepgram-key fallback: Deepgram nova-3 STT via OpenRouter (env OPENROUTER_API_KEY; batch HTTP — OpenRouter has no streaming transcription) + ElevenLabs /stream TTS (env ELEVENLABS_API_KEY). Use when DEEPGRAM_API_KEY is unavailable.",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
+  "engine": {
+    "stt": {
+      "provider": "openai-compatible",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "stt_model": "deepgram/nova-3"
+    },
+    "tts": { "provider": "elevenlabs", "voice": "EXAVITQu4vr4xnSDxMaL", "model": "eleven_turbo_v2_5" }
+  }
+}
