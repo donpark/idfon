@@ -1,0 +1,6 @@
+{
+  "_comment": "Hybrid: on-device STT (caller) + holder TTS. The caller transcribes on-device and sends text via IDFON-LIVE/1 action=text; the holder runs the agent and ElevenLabs TTS. The STT provider is unused, so a TTS-only engine suffices (no DEEPGRAM_API_KEY needed).",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k", "stt": "client", "tts": "server" },
+  "engine": { "provider": "elevenlabs", "voice": "EXAVITQu4vr4xnSDxMaL", "model": "eleven_turbo_v2_5" }
+}

@@ -136,6 +136,12 @@ final class ChatStore {
         if parts.isEmpty { parts.append((text, .text(text))) }
         for (index, part) in parts.enumerated() {
             let partID = index == 0 ? messageID : "\(messageID)#\(index)"
+            // Hybrid: with on-device TTS, speak the agent's final transcript.
+            if case .callTranscript(let transcript) = part.1, transcript.final {
+                Task { @MainActor in
+                    HybridVoice.shared.maybeSpeak(peerId: peerId, role: transcript.role, text: transcript.text)
+                }
+            }
             // Transcript snapshots stream for one turn: upsert the bubble by
             // turn id instead of appending a new one per snapshot.
             if case .callTranscript(let transcript) = part.1,

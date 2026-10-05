@@ -65,8 +65,16 @@ enum CapabilityTickets {
             model: voice["model"] as? String,
             delegatePeerId: delegate?["peer_id"] as? String,
             delegateContact: jsonString(delegate?["contact"]),
-            delegateTicket: jsonString(delegate?["ticket"]))
+            delegateTicket: jsonString(delegate?["ticket"]),
+            stt: (voice["stt"] as? String).flatMap(VoiceHalf.init(rawValue:)),
+            tts: (voice["tts"] as? String).flatMap(VoiceHalf.init(rawValue:)))
     }
+}
+
+/// Which side owns one half of the speech pipeline.
+enum VoiceHalf: String {
+    case server
+    case client
 }
 
 /// Holder-signed voice routing (`capability_ticket.voice`).
@@ -91,4 +99,17 @@ struct VoiceRoute {
     let delegateContact: String?
     /// Delegate capability ticket JSON when `mode == .delegated`.
     let delegateTicket: String?
+    /// Which side runs STT/TTS; nil = the mode's default.
+    let stt: VoiceHalf?
+    let tts: VoiceHalf?
+
+    /// Effective STT ownership, defaulting by mode.
+    var sttSide: VoiceHalf { stt ?? (mode == .clientCascade ? .client : .server) }
+    /// Effective TTS ownership, defaulting by mode.
+    var ttsSide: VoiceHalf { tts ?? (mode == .clientCascade ? .client : .server) }
+
+    /// True when the holder runs a live session but the caller supplies one half.
+    var isHybrid: Bool {
+        mode != .delegated && (sttSide == .client || ttsSide == .client)
+    }
 }

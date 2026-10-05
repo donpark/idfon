@@ -558,4 +558,30 @@ mod tests {
         );
         assert_eq!(strip_envelopes("plain reply"), "plain reply");
     }
+
+    #[test]
+    fn parses_caller_text_control() {
+        assert_eq!(
+            caller_text_control("IDFON-LIVE/1\naction=text\ntext_b64=aGVsbG8=").as_deref(),
+            Some("hello")
+        );
+        // Non-text controls and malformed payloads are ignored.
+        assert_eq!(caller_text_control("IDFON-LIVE/1\naction=start"), None);
+        assert_eq!(caller_text_control("IDFON-LIVE/1\naction=text"), None);
+        assert_eq!(caller_text_control("plain"), None);
+    }
+
+    #[test]
+    fn hybrid_ownership_from_voice_route() {
+        let hybrid = VoiceAgentConfig::from_params(&serde_json::json!({
+            "voice_route": { "mode": "server-cascade", "stt": "client", "tts": "server" }
+        }));
+        assert!(!hybrid.stt_server);
+        assert!(hybrid.tts_server);
+        // Absent overrides: the holder does both halves.
+        let both = VoiceAgentConfig::from_params(&serde_json::json!({
+            "voice_route": { "mode": "server-cascade" }
+        }));
+        assert!(both.stt_server && both.tts_server);
+    }
 }

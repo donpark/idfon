@@ -1,0 +1,6 @@
+{
+  "_comment": "Hybrid: holder STT + on-device TTS (caller). The holder transcribes and runs the agent, then sends the reply transcript; the caller speaks it with on-device TTS. The TTS provider is unused, so an STT-only engine suffices.",
+  "backend": "cascade",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k", "stt": "server", "tts": "client" },
+  "engine": { "provider": "deepgram", "model": "nova-3", "stream": true }
+}

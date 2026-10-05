@@ -844,7 +844,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 let pcm = route.audio == "pcm24k"
                     || (route.audio == nil && ContactAudioProfiles.profile(for: peer.id) == .pcm24k)
                 if pcm {
-                    LiveCall.shared.dial(peer.id)
+                    if route.isHybrid {
+                        HybridVoice.shared.start(peerRef: peer.id, route: route)
+                    } else {
+                        LiveCall.shared.dial(peer.id)
+                    }
                 } else {
                     VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)
                 }

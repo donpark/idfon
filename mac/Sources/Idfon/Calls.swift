@@ -391,6 +391,7 @@ final class LiveCall {
     private func terminate(local: Bool) {
         NSLog("idfon live terminate local=\(local) state=\(state) peer=\(activePeer ?? "nil") published=\(published)")
         guard let peer = activePeer else { return }
+        HybridVoice.shared.stop()
         if local {
             if published {
                 Task { try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: "", call: false)) }
@@ -898,4 +899,78 @@ final class VideoCall {
         }
     }
 
+}
+
+/// Hybrid server-cascade call (macOS mirror of the iOS controller): the holder
+/// runs the live session; the caller supplies one half on-device.
+@MainActor
+final class HybridVoice {
+    static let shared = HybridVoice()
+
+    private let client = DaemonClient()
+    private let segmenter = VoicePromptSegmenter()
+    private var asr: (any AsrEngine)?
+    private(set) var isActive = false
+    private var peerId: String?
+    private var speakLocal = false
+
+    func start(peerRef: String, route: VoiceRoute) {
+        guard !isActive, route.isHybrid else { return }
+        isActive = true
+        peerId = peerRef
+        speakLocal = route.ttsSide == .client
+        LiveCall.shared.dial(peerRef)
+        if route.sttSide == .client {
+            Task { @MainActor in await self.startLocalAsr(peerRef: peerRef) }
+        }
+    }
+
+    func stop() {
+        guard isActive else { return }
+        isActive = false
+        peerId = nil
+        speakLocal = false
+        segmenter.stop()
+        asr?.stop()
+        asr = nil
+    }
+
+    func maybeSpeak(peerId: String, role: String, text: String) {
+        guard isActive, speakLocal, role == "agent", !text.isEmpty else { return }
+        Task { @MainActor in await SpeechEngines.tts.speak(text) }
+    }
+
+    private func startLocalAsr(peerRef: String) async {
+        let peers = (try? await client.peers()) ?? []
+        guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else { return }
+        peerId = peer.id
+        segmenter.onPartial = { _ in }
+        segmenter.onCommit = { [weak self] text in self?.sendTranscript(text) }
+        segmenter.start()
+        let engine = SpeechEngines.makeAsr()
+        asr = engine
+        do {
+            try await engine?.start(
+                enableVoiceProcessing: true,
+                onText: { [weak self] text, isFinal in
+                    DispatchQueue.main.async { self?.segmenter.handle(text, isFinal: isFinal) }
+                },
+                onError: { message in Automation.mark("hybrid: asr error \(message)") }
+            )
+        } catch {
+            Automation.mark("hybrid: asr start failed \(error.localizedDescription)")
+        }
+        asr?.resume()
+    }
+
+    private func sendTranscript(_ text: String) {
+        guard let peerId, !text.isEmpty else { return }
+        let payload = Data(text.utf8).base64EncodedString()
+        let control = "IDFON-LIVE/1\naction=text\ntext_b64=\(payload)"
+        Automation.mark("hybrid: caller text=\(text)")
+        Task { @MainActor in
+            do { try await client.sendText(to: peerId, control) }
+            catch { Automation.mark("hybrid: text send failed \(error.localizedDescription)") }
+        }
+    }
 }
