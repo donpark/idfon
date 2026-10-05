@@ -91,6 +91,15 @@ console plus the holder log in one command; note that
 `xcrun devicectl device process launch --console` ignores SIGINT, so the
 script runs it as a child and kills it on Ctrl-C.
 
+**Side-channel variant (2026-10-04).** The on-device client-cascade voice call
+(`VoiceAgentSession`, `ios/Idfon/VoiceAgentSession.swift`) hit the same
+attenuation: with `.voiceChat` its TTS (Kokoro `AVAudioPlayer` /
+`AVSpeechSynthesizer`) was at whisper level. It does **not** need `.voiceChat` —
+AEC comes from `AVAudioInputNode.setVoiceProcessingEnabled(true)`, which works
+on a plain `.playAndRecord`/`.default` session. The session now stays `.default`
++ `overrideOutputAudioPort(.speaker)`, so playback skips VoiceProcessingIO
+entirely and barge-in still works (verified on an iPhone 16).
+
 ## Live-call playback crackles / breaks up (2026-09-26, FIXED; re-verified 2026-09-29)
 
 **Symptom.** Call playback broke up into crackles rather than steady audio.

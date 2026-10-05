@@ -518,7 +518,8 @@ client-owned audio path the design calls A1.
 alive for the whole session — `SystemSpeechTranscriber` on iOS 26+,
 `MacSpeechTranscriber` on macOS 26+ (SFSpeech remains the pre-26 fallback). The
 mic tap stays live while the agent speaks so the caller can barge in: iOS
-enables AEC (`setVoiceProcessingEnabled(true)` under a `.voiceChat` session),
+enables AEC (`setVoiceProcessingEnabled(true)` on a `.playAndRecord`/`.default`
+session — *not* `.voiceChat`, whose VoiceProcessingIO output is attenuated),
 macOS uses the gated peak threshold, and each committed utterance is filtered
 through `is_cancellable` and `EchoSuppressor`; a cancellable non-echo utterance
 stops playback (`tts.stop()`) and becomes the next turn. Hang-up also cancels
@@ -669,6 +670,11 @@ optional.
   (P5)**: a `.voiceChat` session alone was *not* enough for the side-channel
   listener — echo cancellation only engaged after
   `AVAudioInputNode.setVoiceProcessingEnabled(true)` on the input node.
+- **Side-channel keeps `.default`, not `.voiceChat`** (2026-10-04):
+  `setVoiceProcessingEnabled(true)` engages AEC without VoiceProcessingIO's
+  attenuated output, so `VoiceAgentSession` stays on `.default` +
+  `overrideOutputAudioPort(.speaker)` and its TTS plays at normal volume
+  (`troubleshooting.md`).
 - **macOS has none** — `troubleshooting.md:45` notes it is deliberately left
   without VPIO; `audio-media.md` states there is no echo cancellation.
 - **AEC is a P5 concern.** Full barge-in where AEC exists (iOS); **gated or

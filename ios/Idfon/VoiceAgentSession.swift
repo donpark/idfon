@@ -332,12 +332,18 @@ final class VoiceAgentSession: NSObject {
     /// reconfigure it mid-session.
     private func configureSession() {
         let session = AVAudioSession.sharedInstance()
+        // `.default` (not `.voiceChat`): voiceChat routes playback through
+        // VoiceProcessingIO, whose output gain is attenuated with no public API
+        // to undo it (docs/troubleshooting.md, "audio too quiet"). AEC still
+        // comes from `setVoiceProcessingEnabled` on the input node.
         try? session.setCategory(
             .playAndRecord,
-            mode: .voiceChat,
+            mode: .default,
             options: [.defaultToSpeaker, .allowBluetoothHFP]
         )
         try? session.setActive(true, options: .notifyOthersOnDeactivation)
+        // Route to the loudspeaker; must come after setCategory/setActive.
+        try? session.overrideOutputAudioPort(.speaker)
         let outputs = session.currentRoute.outputs.map(\.portType.rawValue).joined(separator: ",")
         Automation.mark(
             "voice: route outputs=\(outputs) category=\(session.category.rawValue) mode=\(session.mode.rawValue)"
