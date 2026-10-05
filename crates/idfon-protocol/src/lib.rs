@@ -59,6 +59,11 @@ pub struct MessageEnvelope {
     /// signature; trust continues to come from `sender.peer_id`, never the trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<String>,
+    /// Optional advertised telemetry participation: `none` | `correlate` |
+    /// `inject`. Unsigned like `trace`; unknown values are ignored by receivers
+    /// (forward compatible). Absent means the sender does not advertise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -860,6 +865,7 @@ mod tests {
             capability_ticket: None,
             conversation: Some("conversation-1".into()),
             trace: Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
+            telemetry: Some("correlate".into()),
         };
         let frame = encode_frame(&message).unwrap();
         assert_eq!(decode_frame::<MessageEnvelope>(&frame).unwrap(), message);

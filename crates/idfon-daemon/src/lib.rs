@@ -191,7 +191,7 @@ impl TransportMode {
         let mut last_error = None;
         let mut last_ack = None;
         for (endpoint_id, address) in targets {
-            tracing::info!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, target_bytes = address.len(), "transport send attempt");
+            tracing::info!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, telemetry = ?message.telemetry, target_bytes = address.len(), "transport send attempt");
             match self.send_to(identity, &address, message) {
                 Ok(ack) => {
                     tracing::info!(target: "idfon.daemon", identity = %identity, peer = %peer.id, device = %endpoint_id, message_id = %message.message_id, trace = ?message.trace, status = ?ack.status, "transport send acknowledged");
@@ -2125,6 +2125,7 @@ fn gossip_room_send(
         )
         .ok()?;
         envelope.trace = Some(idfon_core::new_traceparent());
+        envelope.telemetry = Some(idfon_telemetry::mode().to_string());
         let timestamp = now();
         let operation = idfon_protocol::Operation {
             identity: identity.id,
@@ -2685,6 +2686,8 @@ fn send_message(
     // Correlation id for the logical send. A caller-supplied `trace` wins;
     // otherwise mint one so every outbound flow is joinable end to end.
     envelope.trace = Some(request_text(&request.params, "trace").unwrap_or_else(idfon_core::new_traceparent));
+    // Advertise this process's telemetry participation alongside the trace.
+    envelope.telemetry = Some(idfon_telemetry::mode().to_string());
     let timestamp = now();
     let operation = idfon_protocol::Operation {
         identity: identity.id.clone(),
@@ -2945,7 +2948,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let state = store.lock().expect("store mutex poisoned");
     let receiving_identity =
         request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
-    tracing::info!(target: "idfon.daemon", identity = %receiving_identity, message_id = %envelope.message_id, sender = %envelope.sender.peer_id, sender_endpoint = %envelope.sender.endpoint_id, trace = ?envelope.trace, "message receive authenticated");
+    tracing::info!(target: "idfon.daemon", identity = %receiving_identity, message_id = %envelope.message_id, sender = %envelope.sender.peer_id, sender_endpoint = %envelope.sender.endpoint_id, trace = ?envelope.trace, telemetry = ?envelope.telemetry, "message receive authenticated");
     if let Some(ticket) = &envelope.capability_ticket {
         if idfon_core::verify_capability_ticket(ticket).is_err()
             || ticket.issuer
@@ -3025,6 +3028,7 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         message_id = %envelope.message_id,
         sender = %envelope.sender.peer_id,
         trace = ?envelope.trace,
+        telemetry = ?envelope.telemetry,
         "message receive accepted"
     );
     let mut state = store.lock().expect("store mutex poisoned");

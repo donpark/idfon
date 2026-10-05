@@ -6,8 +6,9 @@ do not own** — without turning observability into a hard dependency on a hoste
 service, and without shipping telemetry over the peer network.
 
 > Status: **design**, 2026-10-05. P0 (shared subscriber + boundary wide
-> events) and P1 (correlation seam) implemented; P2 not started. Grounds every
-> claim in the code as it stands.
+> events), P1 (correlation seam), and P2 (opt-in OTLP on the non-dylib
+> binaries + `telemetry` capability) implemented. Grounds every claim in the
+> code as it stands.
 
 ## 1. Problem
 
@@ -76,9 +77,10 @@ Two optional additions, both ignorable:
   message/call envelope and on the A2A `IDFON-*` payloads. When present, our
   spans continue the caller's trace; when absent, we mint one and the agent is
   a boundary edge.
-- **Capability negotiation.** A `telemetry: none | correlate | inject` value in
-  the MCP/A2A handshake, so each side knows what the other will do and can
-  degrade gracefully.
+- **Capability negotiation.** A `telemetry: none | correlate | inject` value
+  carried on the message envelope and the A2A payload, so each side knows what
+  the other will do and can degrade gracefully. The MCP bridge is a pure byte
+  pump with no handshake, so it is not a negotiation point.
 
 Participation has two levels, and both are offered because they unlock
 different things:
@@ -106,14 +108,24 @@ gap.
 
 ## 6. OTLP externalization (opt-in)
 
-- Add `tracing-opentelemetry` + an OTLP exporter behind `IDFON_OTEL_ENDPOINT`.
-  Unset ⇒ no-op. Never a hard dependency on a reachable collector.
-- Long-lived processes (daemon, holder, bridge) are good OTLP citizens.
-  Short-lived CLI invocations stay file-only; the batch/shutdown-flush tax on a
-  sub-second process is not worth it.
-- Self-host for dev (OTel Collector / Grafana Alloy → Tempo + Loki). No SaaS,
-  so the budget is a local container. Sample aggressively; never span per media
-  frame or per datagram.
+- `idfon-telemetry` has an `otlp` feature: with `IDFON_OTEL_ENDPOINT` set it
+  adds an OTLP/HTTP batch span exporter, sampled at `IDFON_OTEL_SAMPLE_RATIO`
+  (default `0.1`), and installs a `TraceContextPropagator` so W3C context from
+  the envelope's `trace` becomes the span's remote parent. Unset ⇒ the layer is
+  inert. Never a hard dependency on a reachable collector.
+- The feature is enabled only by the non-dylib binaries (holder, MCP, CLI); the
+  daemon dylib stays lean on mobile. Long-lived holder/MCP processes are the
+  intended exporters; a short-lived CLI run may exit before the batch flushes,
+  so treat the CLI as file-first even with an endpoint set.
+- Self-host for dev:
+
+  ```sh
+  docker run --rm -p 4318:4318 otel/opentelemetry-collector:latest
+  IDFON_OTEL_ENDPOINT=http://127.0.0.1:4318/v1/traces eve-idfon-voice ...
+  ```
+
+  No SaaS, so the budget is a local container. Sample aggressively; never span
+  per media frame or per datagram.
 - `inject`-level agent spans are accepted but recorded as **agent-reported**,
   distinct from **idfon-observed**, and sanitized/capped. A bad actor must not
   be able to forge causality in the unified view or DoS the collector with
@@ -150,9 +162,16 @@ gap.
    events, and echoes them onto replies/status; the daemon logs them on receive.
    Explicit `telemetry` capability negotiation is deferred until the `inject`
    mode (P2) exists to negotiate.
-3. **P2 — inject + export.** Opt-in OTLP export; documented ingest for
-   participants; W3C context propagation across our own components first,
-   peer propagation after.
+3. **P2 — inject + export (done 2026-10-05).** `idfon-telemetry` gains an
+   optional `otlp` feature: `IDFON_OTEL_ENDPOINT` adds an OTLP/HTTP batch span
+   exporter, sampled at `IDFON_OTEL_SAMPLE_RATIO` (default 0.1), with a
+   `TraceContextPropagator` for W3C context and a provider kept alive for the
+   process. The feature is enabled only by the non-dylib binaries (holder,
+   MCP, CLI) so the daemon dylib stays lean on mobile. The inbound seam is
+   instrumented with a span whose parent is the sender's `trace`
+   (`set_remote_parent`). `telemetry` advertises this process's level via
+   `idfon_telemetry::mode()` (`inject` when exporting, else `correlate`).
+   Outbound seam spans and daemon-side spans are follow-up.
 
 ## 9. Trust, privacy, licensing
 

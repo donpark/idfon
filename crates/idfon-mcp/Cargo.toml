@@ -20,7 +20,7 @@ clap = { version = "4", features = ["derive"] }
 idfon-core = { path = "../idfon-core" }
 idfon-h3 = { path = "../idfon-h3" }
 idfon-protocol = { path = "../idfon-protocol" }
-idfon-telemetry = { path = "../idfon-telemetry" }
+idfon-telemetry = { path = "../idfon-telemetry", features = ["otlp"] }
 iroh = "1"
 percent-encoding = "2"
 serde_json = "1"
