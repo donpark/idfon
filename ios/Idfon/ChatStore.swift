@@ -159,17 +159,6 @@ final class ChatStore {
                 messages[existing].kind = part.1
                 continue
             }
-            // Reverse ordering: the annotated copy already landed, so drop the
-            // plain delivery rather than show it twice.
-            if case .text(let incoming) = part.1,
-               messages.contains(where: {
-                   if case .callTranscript(let current) = $0.kind {
-                       return current.role == "agent" && current.text == incoming
-                   }
-                   return false
-               }) {
-                continue
-            }
             if case .file(_, let name, let sizeBytes, _) = part.1 {
                 NSLog("idfon file: received name=\(name) size=\(sizeBytes)")
             }
