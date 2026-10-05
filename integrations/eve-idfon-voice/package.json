@@ -27,6 +27,9 @@
   "dependencies": {
     "zod": "^4.6.5"
   },
+  "devDependencies": {
+    "eve-idfon": "workspace:*"
+  },
   "peerDependencies": {
     "eve": "0.68.0",
     "eve-idfon": "*"
