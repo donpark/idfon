@@ -2,18 +2,18 @@
 
 Idfon is a peer-to-peer communication and data-transfer system built on
 [iroh](https://www.iroh.computer). It provides a local daemon, a CLI, and
-native clients. Identities and peer state are stored locally; connections may
-use direct paths, discovery, or relays supplied by iroh.
+native clients. Idfon stores identities and peer state on the local machine.
+Connections may use direct paths, discovery, or relays supplied by iroh.
 
 > **Status:** experimental and pre-release. The CLI is available as an npm
-> package. Native clients are usable for development; the iOS ↔ Eve text-agent
-> demo is validated end to end on a physical iPhone. Voice/STT/TTS remains a
+> package. Native clients are usable for development. The iOS ↔ Eve text-agent
+> demo passes end-to-end tests on a physical iPhone. Voice/STT/TTS remains a
 > separate follow-up.
 
 ## CLI installation
 
 The npm package includes prebuilt binaries for macOS (arm64, x64) and Linux
-(x64, arm64). Node.js 18 or later is required by the launcher.
+(x64, arm64). The launcher requires Node.js 18 or later.
 
 ```sh
 npx idfon status
@@ -71,19 +71,19 @@ idfon recv --stream --out reply.wav
 ```
 
 `put` stores data and prints a `BlobTicket`. `get` fetches a blob ticket to
-stdout or a file. Transfers are chunked by the CLI and stored by the daemon;
-the data itself is not sent through the chat message path.
+stdout or a file. The CLI chunks transfers and the daemon stores them. The
+data does not go through the chat message path.
 
-`send PEER --file` stores a blob, sends its ticket as a peer message, and
-`recv` waits for that message before fetching the blob. Text and file delivery
+`send PEER --file` stores a blob and sends its ticket as a peer message.
+`recv` waits for that message, then fetches the blob. Text and file delivery
 require the relevant local capability grants. See
 [CLI data transfer](docs/cli-data.md) for pairing and transfer details.
 
 `send --stream` without a peer publishes live audio and prints an
-`iroh-live:` ticket. With a peer it opens a session-scoped 1:1 stream instead;
-`recv --stream` accepts that stream. File sources are supported by the CLI;
-microphone capture is provided by the native clients, not this command. Video
-broadcasts are available with `send --stream --video`; see
+`iroh-live:` ticket. With a peer it opens a session-scoped 1:1 stream instead.
+`recv --stream` accepts that stream. The CLI supports file sources. The native
+clients provide microphone capture, not this command. Use
+`send --stream --video` for video broadcasts. See
 [video media](docs/video-media.md).
 
 Useful operational commands:
@@ -103,7 +103,7 @@ Use `--json` for response envelopes intended for scripts. `--socket`,
 ## MCP transport
 
 Idfon includes an MCP transport bridge. It carries MCP stdio traffic over the
-`idfon/mcp/1` iroh protocol; it does not implement MCP semantics.
+`idfon/mcp/1` iroh protocol. It does not implement MCP semantics.
 
 ```sh
 # On the MCP-server side
@@ -113,10 +113,11 @@ idfon-mcp serve --command '<local-mcp-server>'
 idfon-mcp connect --peer '<peer-ticket>'
 ```
 
-The exact bridge options are shown by `idfon-mcp --help`. The daemon also has
+`idfon-mcp --help` shows the exact bridge options. The daemon also has
 `idfon mcp listen` and `idfon mcp configure` commands for daemon-backed
 connections. `idfon-mcp-server` exposes selected idfon operations as MCP
-tools. This area is experimental; see [MCP transport](docs/mcp-transport.md).
+tools. This area is experimental. See
+[MCP transport](docs/mcp-transport.md).
 
 ## Native clients
 
@@ -130,7 +131,7 @@ Install the JavaScript workspace dependencies first:
 pnpm install
 ```
 
-Build and launch the iOS app on a connected, unlocked iPhone:
+Build and start the iOS app on a connected, unlocked iPhone:
 
 ```sh
 pnpm ios build
@@ -138,10 +139,10 @@ DEVICE=<iphone-udid-or-name> pnpm ios device
 ```
 
 `pnpm ios build` produces a device Release build. `pnpm ios device` installs
-and launches it through `devicectl`; omit `DEVICE` to use the first available
-physical iPhone. The iOS app is device-only — the simulator is not supported.
+and starts it through `devicectl`. Omit `DEVICE` to use the first available
+physical iPhone. The iOS app is device-only. The simulator is not supported.
 
-Build and launch the macOS app:
+Build and start the macOS app:
 
 ```sh
 pnpm mac build
@@ -157,16 +158,16 @@ components. See the platform-specific docs for details:
 
 ## Eve extension and agents
 
-The `eve-idfon` extension and the agents under `agents/` are built
-separately from the native clients. `pnpm eve` builds the extension first,
-then every installed agent:
+Build the `eve-idfon` extension and the agents under `agents/` separately from
+the native clients. `pnpm eve` builds the extension first, then every
+installed agent:
 
 ```sh
 pnpm eve build      # eve-idfon + all agents
 pnpm eve clean      # remove dist/.output everywhere
 ```
 
-Individual agents are managed with `pnpm agent`:
+Use `pnpm agent` to manage individual agents:
 
 ```sh
 pnpm agent build <name|all>     # eve build in agents/<name>
@@ -181,8 +182,8 @@ The agents under `agents/` are:
 | Agent | Served | What it is |
 | --- | --- | --- |
 | `live-voice` | yes | GPT-Live full-duplex voice agent (audio/video calls, artifacts) |
-| `llm` | yes | text-only agent reached by voice; model is per-instance, so one agent can back several contacts |
-| `agency` | yes | go-between: introduces registered agents (A2A card relay; signs nothing) |
+| `llm` | yes | text-only agent reached by voice. The model is per-instance, so one agent can back several contacts |
+| `agency` | yes | go-between. It introduces registered agents (A2A card relay) and signs nothing |
 | `chat-echo` | no | deterministic echo mock used by the e2e scripts and `eve-spike` |
 
 See [live-voice agent](docs/live-voice.md),
@@ -192,7 +193,8 @@ and [Eve ingress channel](docs/idfon-eve.md).
 
 ## Documentation
 
-Start at [docs/README.md](docs/README.md) — the index of current docs by topic.
+Start at [docs/README.md](docs/README.md). It is the index of current docs by
+topic.
 
 ## Development
 
@@ -203,9 +205,9 @@ scripts/test-e2e.sh
 scripts/stream-e2e.sh
 ```
 
-The workspace is organized around the protocol, core networking, daemon,
-client, CLI, media, and MCP crates. See the architecture documentation for
-the current boundaries and known limitations.
+The workspace has the protocol, core networking, daemon, client, CLI, media,
+and MCP crates. See the architecture documentation for the current boundaries
+and known limitations.
 
 ## License
 
