@@ -170,6 +170,21 @@ impl AudioQueue {
         }
     }
 
+    /// Drop everything still queued (barge-in: stop playback now).
+    pub fn clear(&self) {
+        if let Ok(mut samples) = self.samples.lock() {
+            samples.clear();
+        }
+        if let Ok(mut trailing) = self.trailing_byte.lock() {
+            *trailing = None;
+        }
+    }
+
+    /// Whether the return-leg queue has drained (playback finished).
+    pub fn is_empty(&self) -> bool {
+        self.samples.lock().map(|samples| samples.is_empty()).unwrap_or(true)
+    }
+
     fn fill(&self, output: &mut [i16]) -> usize {
         let Ok(mut samples) = self.samples.lock() else {
             output.fill(0);
