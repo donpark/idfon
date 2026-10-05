@@ -84,8 +84,6 @@ impl CascadeBackend {
                 queue.push_samples(&chunk.samples);
             })
         };
-        let mut speaker: Option<StreamingSpeaker> = None;
-        let mut deltas_seen = false;
         // F6 barge-in state: the counter-based controller, the echo filter over
         // the text being spoken, the turn currently playing, and the turns a
         // barge-in cancelled (their remaining deltas are dropped).
@@ -106,7 +104,12 @@ impl CascadeBackend {
                     if let Some(EndpointEvent::SpeechEnded) = endpointer.push(&pcm)? {
                         let playing = bargein.is_playing();
                         let started = Instant::now();
-                        if let Some(text) = stt.flush()? {
+                        let flushed = stt.flush()?;
+                        eprintln!(
+                            "[voice-agent] endpoint flush chars={}",
+                            flushed.as_deref().map(str::len).unwrap_or(0)
+                        );
+                        if let Some(text) = flushed {
                             let text = text.trim().to_string();
                             if !text.is_empty() && !echo.is_echo(&text) {
                                 match caller_decision(&text, playing, false) {
@@ -117,10 +120,6 @@ impl CascadeBackend {
                                     CallerDecision::Steer => {
                                         // Before playback an utterance is a steer:
                                         // drop nothing, queue it as the next turn.
-                                        if let Some(mut active) = speaker.take() {
-                                            emit(active.finish()?, &sink);
-                                        }
-                                        deltas_seen = false;
                                         first_ms.store(0, Ordering::Relaxed);
                                         audio_ms.store(0, Ordering::Relaxed);
                                         if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
@@ -152,8 +151,6 @@ impl CascadeBackend {
                                             cancelled.insert(turn);
                                         }
                                         media.audio.clear();
-                                        speaker = None;
-                                        deltas_seen = false;
                                         played_text.clear();
                                         echo.clear_spoken();
                                         first_ms.store(0, Ordering::Relaxed);
@@ -195,12 +192,8 @@ impl CascadeBackend {
                                 cancelled.insert(turn);
                             }
                             media.audio.clear();
-                            speaker = None;
-                            deltas_seen = false;
                             played_text.clear();
                             echo.clear_spoken();
-                        } else if let Some(mut active) = speaker.take() {
-                            emit(active.finish()?, &sink);
                         }
                         first_ms.store(0, Ordering::Relaxed);
                         audio_ms.store(0, Ordering::Relaxed);
@@ -219,27 +212,17 @@ impl CascadeBackend {
                         .await;
                     }
                 }
-                Some((turn_id, step, seq, text)) = media.deltas.recv() => {
-                    // Deltas for a barge-in-cancelled turn are dropped by turn
-                    // id; the counter bump guarantees the old turn is dead while
-                    // the queued follow-up (a fresh turn) speaks normally.
+                Some((turn_id, _step, _seq, text)) = media.deltas.recv() => {
+                    // Deltas don't drive TTS: synthesizing them incrementally
+                    // raced the completed reply and truncated multi-clause
+                    // answers (only what arrived before the reply finished got
+                    // spoken). Track the text for echo/barge-in; synthesize once
+                    // on the completed reply below — the provider still streams
+                    // the audio as it synthesizes.
                     if tts_server && !cancelled.contains(&turn_id) {
-                        if speaker.is_none() {
-                            speaker = Some(StreamingSpeaker::new(
-                                self.engine.tts_with_sink("default", format, sink.clone())?,
-                            ));
-                            bargein.playback_started();
-                            if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
-                        }
-                        deltas_seen = true;
-                        current_turn = Some(turn_id.clone());
+                        current_turn = Some(turn_id);
                         played_text.push_str(&text);
                         echo.set_spoken(&played_text);
-                        let chunks = speaker
-                            .as_mut()
-                            .expect("speaker just set")
-                            .push(MessageDelta::new(turn_id, step, seq, &text))?;
-                        emit(chunks, &sink);
                     }
                 }
                 Some((turn_id, reply)) = media.bridge.next_reply() => {
@@ -247,30 +230,24 @@ impl CascadeBackend {
                     // Forget the cancelled turn once its own (empty) reply
                     // arrives, so a later turn reusing the id is not dropped.
                     let cancelled_turn = cancelled.remove(&turn_id);
-                    if tts_server {
-                        if cancelled_turn {
-                            // The reply that barge-in cancelled: never speak it.
-                        } else if deltas_seen {
-                            if let Some(mut active) = speaker.take() {
-                                emit(active.finish()?, &sink);
-                            }
-                        } else if !spoken.is_empty() {
-                            // Fallback: no deltas (older bridge) — speak the whole reply.
-                            if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
-                            bargein.playback_started();
-                            current_turn = Some(turn_id.clone());
-                            let normalized = normalize_for_speech(&spoken);
-                            played_text.clear();
-                            played_text.push_str(&normalized);
-                            echo.set_spoken(&played_text);
-                            let mut whole = StreamingSpeaker::new(
-                                self.engine.tts_with_sink("default", format, sink.clone())?,
-                            );
-                            let chunks = whole.push(MessageDelta::new("reply", 0, 0, &normalized))?;
-                            emit(chunks, &sink);
-                            let tail = whole.finish()?;
-                            emit(tail, &sink);
-                        }
+                    if tts_server && !cancelled_turn && !spoken.is_empty() {
+                        // Speak the whole (stripped) reply as one turn so a
+                        // multi-clause answer is never truncated; the provider
+                        // still streams the audio as it synthesizes.
+                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                        bargein.playback_started();
+                        current_turn = Some(turn_id.clone());
+                        let normalized = normalize_for_speech(&spoken);
+                        played_text.clear();
+                        played_text.push_str(&normalized);
+                        echo.set_spoken(&played_text);
+                        let mut whole = StreamingSpeaker::new(
+                            self.engine.tts_with_sink("default", format, sink.clone())?,
+                        );
+                        let chunks = whole.push(MessageDelta::new("reply", 0, 0, &normalized))?;
+                        emit(chunks, &sink);
+                        let tail = whole.finish()?;
+                        emit(tail, &sink);
                     }
                     let (stt_ms, caller_audio_ms) = pending.take().unwrap_or((0, 0));
                     let mut metrics = TurnMetrics {
@@ -300,8 +277,6 @@ impl CascadeBackend {
                         )
                         .await;
                     }
-                    speaker = None;
-                    deltas_seen = false;
                     first_ms.store(0, Ordering::Relaxed);
                     audio_ms.store(0, Ordering::Relaxed);
                     // Playback (and its barge-in window) ends once the return
