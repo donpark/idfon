@@ -174,6 +174,7 @@ impl DeepgramEngine {
             control: control_tx,
             events: event_rx,
             task,
+            pending: String::new(),
         })
     }
 }
@@ -186,11 +187,17 @@ enum StreamControl {
 
 /// Streaming Deepgram STT: a background WS task forwards caller PCM and feeds
 /// partial/final transcripts back. `flush` finalizes the current utterance and
-/// waits for its final; the connection stays open across turns.
+/// returns every final accumulated since the last flush; the connection stays
+/// open across turns.
 pub struct StreamingDeepgramStt {
     control: mpsc::UnboundedSender<StreamControl>,
     events: mpsc::UnboundedReceiver<TranscriptEvent>,
     task: tokio::task::JoinHandle<()>,
+    /// Final segments accumulated since the last `flush`. Deepgram finalizes
+    /// (and emits `Final`) as it goes, not only on `Finalize`, so those finals
+    /// must be kept — not dropped — or an utterance whose segments all
+    /// finalized mid-speech flushes to nothing.
+    pending: String,
 }
 
 impl SttSession for StreamingDeepgramStt {
@@ -198,7 +205,10 @@ impl SttSession for StreamingDeepgramStt {
         let _ = self.control.send(StreamControl::Audio(pcm.to_vec()));
         let mut out = Vec::new();
         while let Ok(event) = self.events.try_recv() {
-            out.push(event);
+            match event {
+                TranscriptEvent::Final(text) => self.pending.push_str(&text),
+                partial @ TranscriptEvent::Partial(_) => out.push(partial),
+            }
         }
         Ok(out)
     }
@@ -206,21 +216,31 @@ impl SttSession for StreamingDeepgramStt {
     fn flush(&mut self) -> Result<Option<String>> {
         let _ = self.control.send(StreamControl::Finalize);
         let events = &mut self.events;
-        let text = block_on(async move {
-            let deadline = tokio::time::sleep(Duration::from_secs(5));
-            tokio::pin!(deadline);
-            loop {
-                tokio::select! {
-                    _ = &mut deadline => return None,
-                    event = events.recv() => match event {
-                        Some(TranscriptEvent::Final(text)) => return Some(text),
+        // Wait for the `from_finalize` final, bounded so a silent tail cannot
+        // stall the turn; whatever already accumulated is returned regardless.
+        let last = block_on(async move {
+            tokio::time::timeout(Duration::from_millis(800), async {
+                loop {
+                    match events.recv().await {
+                        Some(TranscriptEvent::Final(text)) => break Some(text),
                         Some(TranscriptEvent::Partial(_)) => continue,
-                        None => return None,
+                        None => break None,
                     }
                 }
-            }
+            })
+            .await
+            .unwrap_or(None)
         });
-        Ok(text.filter(|text| !text.trim().is_empty()))
+        if let Some(text) = last {
+            self.pending.push_str(&text);
+        }
+        while let Ok(event) = self.events.try_recv() {
+            if let TranscriptEvent::Final(text) = event {
+                self.pending.push_str(&text);
+            }
+        }
+        let text = std::mem::take(&mut self.pending).trim().to_string();
+        Ok((!text.is_empty()).then_some(text))
     }
 
     fn finish(&mut self) -> Result<Option<String>> {
@@ -412,5 +432,44 @@ impl TtsSession for DeepgramTts {
             return Ok(Vec::new());
         }
         Ok(vec![self.engine.speak(&self.voice, self.format, &text)?])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Network smoke test: stream a 24 kHz s16 mono PCM file through the
+    /// Deepgram WebSocket and print the transcript.
+    ///
+    /// `DEEPGRAM_API_KEY` + `IDFON_STT_TEST_PCM` (raw PCM path) required.
+    /// `cargo test -p idfon-voice --features gateway deepgram_stream -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "network + DEEPGRAM_API_KEY"]
+    async fn deepgram_stream_transcribes_speech() {
+        let key = std::env::var("DEEPGRAM_API_KEY").unwrap_or_default();
+        if key.is_empty() {
+            return;
+        }
+        let path = std::env::var("IDFON_STT_TEST_PCM").expect("IDFON_STT_TEST_PCM");
+        let bytes = std::fs::read(&path).expect("read pcm");
+        let pcm: Vec<i16> = bytes
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let engine = DeepgramEngine::from_config(&serde_json::json!({
+            "provider": "deepgram", "model": "nova-3", "stream": true
+        }))
+        .expect("engine");
+        let format = AudioFormat::PCM_24K_MONO;
+        let mut stt = engine.stt(format).expect("stt session");
+        for frame in pcm.chunks(480) {
+            let _ = stt.push(frame);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let text = stt.flush().expect("flush");
+        eprintln!("deepgram stream transcript = {text:?}");
+        stt.finish().expect("finish");
+        assert!(text.is_some(), "streaming STT returned no transcript");
     }
 }
