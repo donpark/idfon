@@ -804,62 +804,74 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func callTapped() {
-        // Voice routing is a holder-signed fact on the capability ticket
-        // (`voice.mode`); legacy tickets have no block and keep the old
-        // name/profile heuristic. `native-duplex`/`server-cascade` dial a live
-        // session (the holder terminates audio, whatever backend it runs);
-        // `client-cascade` drives the agent with the on-device cascade instead.
-        if let route = CapabilityTickets.voiceRoute(for: peer.id) {
-            switch route.mode {
-            case .clientCascade:
-                voiceAgentTapped()
-                return
-            case .delegated:
-                // Calls go to the delegate voice agent; text stays on this peer.
-                guard let delegate = route.delegatePeerId else {
-                    voiceAgentTapped()
-                    return
-                }
-                if let contact = route.delegateContact {
-                    // Add the delegate from the signed contact (once), then dial.
-                    let client = self.client
-                    let ticket = route.delegateTicket
-                    Task { @MainActor in
-                        let identity = (try? await client.identityId()) ?? "default"
-                        let peers = (try? await client.peers()) ?? []
-                        if !peers.contains(where: { $0.id == delegate }) {
-                            try? await client.addChannel(name: delegate, ticketJSON: contact, identity: identity)
-                            if let ticket { _ = CapabilityTickets.store(ticket, for: delegate) }
-                        }
-                        LiveCall.shared.dial(delegate)
-                    }
-                } else {
-                    LiveCall.shared.dial(delegate)
-                }
-                return
-            case .nativeDuplex, .serverCascade:
-                // The holder declares the codec; dial the live media session
-                // only for the PCM profile, else the default audio call. Falls
-                // back to the local profile only when the ticket omits it.
-                let pcm = route.audio == "pcm24k"
-                    || (route.audio == nil && ContactAudioProfiles.profile(for: peer.id) == .pcm24k)
-                if pcm {
-                    if route.isHybrid {
-                        HybridVoice.shared.start(peerRef: peer.id, route: route)
-                    } else {
-                        LiveCall.shared.dial(peer.id)
-                    }
-                } else {
-                    VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)
-                }
-                return
-            }
+        // The per-contact STT/TTS selection (option ids from the agent's
+        // `idfon.json` catalog) rides the invite; the holder resolves it. The
+        // catalog is a fetched resource, cached after the contact screen.
+        let peerID = peer.id
+        let client = self.client
+        let legacyRemote = peer.name == "live-voice"
+            || ContactAudioProfiles.profile(for: peerID) == .pcm24k
+        let signed = CapabilityTickets.voiceRoute(for: peerID)
+        let selection = ContactVoiceSelection.selection(for: peerID)
+        Task { @MainActor in
+            let catalog = await VoiceCatalog.options(for: peerID, client: client)
+            let decision = VoiceCallRouting.decide(
+                selection: selection, catalog: catalog, signed: signed, legacyRemote: legacyRemote)
+            self.perform(decision)
         }
-        // Legacy ticket (no voice block): name/profile heuristic.
-        if peer.name == "live-voice" || ContactAudioProfiles.profile(for: peer.id) == .pcm24k {
-            LiveCall.shared.dial(peer.id)
-        } else {
+    }
+
+    private func perform(_ decision: VoiceCallDecision) {
+        switch decision {
+        case .onDevice:
+            voiceAgentTapped()
+        case .delegated(let route):
+            dialDelegate(route)
+        case .live(let route):
+            dialLive(route)
+        case .classic:
             VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)
+        }
+    }
+
+    /// Calls go to the delegate voice agent; text stays on this peer.
+    private func dialDelegate(_ route: VoiceRoute) {
+        guard let delegate = route.delegatePeerId else {
+            voiceAgentTapped()
+            return
+        }
+        if let contact = route.delegateContact {
+            // Add the delegate from the signed contact (once), then dial.
+            let client = self.client
+            let ticket = route.delegateTicket
+            Task { @MainActor in
+                let identity = (try? await client.identityId()) ?? "default"
+                let peers = (try? await client.peers()) ?? []
+                if !peers.contains(where: { $0.id == delegate }) {
+                    try? await client.addChannel(name: delegate, ticketJSON: contact, identity: identity)
+                    if let ticket { _ = CapabilityTickets.store(ticket, for: delegate) }
+                }
+                LiveCall.shared.dial(delegate)
+            }
+        } else {
+            LiveCall.shared.dial(delegate)
+        }
+    }
+
+    /// The holder terminates audio. Its `voice.audio` codec decides between the
+    /// live PCM media session (optionally hybrid) and the ordinary audio call.
+    /// `route` is nil for a legacy ticket dialed on the name/profile heuristic.
+    private func dialLive(_ route: VoiceRoute?) {
+        let pcm = route?.audio == "pcm24k"
+            || (route?.audio == nil && ContactAudioProfiles.profile(for: peer.id) == .pcm24k)
+        guard pcm else {
+            VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)
+            return
+        }
+        if let route, route.isHybrid {
+            HybridVoice.shared.start(peerRef: peer.id, route: route)
+        } else {
+            LiveCall.shared.dial(peer.id)
         }
     }
 

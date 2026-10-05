@@ -303,6 +303,11 @@ pub enum IpcFrame {
     /// (s16le base64). The bridge fans it out to SSE subscribers.
     #[serde(rename = "audio.frame")]
     AudioFrameOut { peer_id: String, pcm_base64: String },
+    /// Holder → bridge: the voice pipeline this holder runs, sent once at
+    /// startup so the agent can answer which model/STT/TTS it is using. The
+    /// bridge caches it and serves `/voice/info` to the Eve extension.
+    #[serde(rename = "voice.info")]
+    VoiceInfo { info: serde_json::Value },
     #[serde(rename = "live.publish")]
     LivePublish {
         request_id: String,
@@ -519,6 +524,166 @@ fn admit_caller_to(path: &str, subject: &str) {
     }
 }
 
+/// A structured, vendor-neutral description of the voice pipeline this holder
+/// runs, for introspection. Derived only from known live-config keys plus the
+/// agent-model env, so no vendor is baked in; the `engine` block is passed
+/// through verbatim so a backend's own fields stay visible. Returned to the
+/// agent over the bridge (`/voice/info`) and appended to a full-duplex
+/// session's instructions, so a caller can ask what is answering.
+pub fn voice_info(params: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{Map, Value};
+    let mut info = Map::new();
+    let mode = params
+        .get("voice_route")
+        .and_then(|route| route.get("mode"))
+        .and_then(Value::as_str)
+        .unwrap_or(if params.is_null() {
+            "client-cascade"
+        } else {
+            "native-duplex"
+        });
+    info.insert("mode".into(), Value::from(mode));
+    if let Some(backend) = params
+        .get("backend")
+        .or_else(|| params.get("engine").and_then(|engine| engine.get("kind")))
+        .and_then(Value::as_str)
+    {
+        info.insert("backend".into(), Value::from(backend));
+    }
+    // `model` / `audio` live at the top level of most configs but inside
+    // `voice_route` in others; read either.
+    if let Some(model) = params
+        .get("model")
+        .or_else(|| params.get("voice_route").and_then(|route| route.get("model")))
+        .and_then(Value::as_str)
+    {
+        info.insert("voice_model".into(), Value::from(model));
+    }
+    if let Some(voice) = params.get("voice").and_then(Value::as_str) {
+        info.insert("voice".into(), Value::from(voice));
+    }
+    if let Ok(agent_model) = std::env::var("EVE_IDFON_MODEL") {
+        if !agent_model.is_empty() {
+            info.insert("agent_model".into(), Value::from(agent_model));
+        }
+    }
+    if let Some(audio) = params
+        .get("audio")
+        .or_else(|| params.get("voice_route").and_then(|route| route.get("audio")))
+        .and_then(Value::as_str)
+    {
+        info.insert("audio".into(), Value::from(audio));
+    }
+    if let Some(engine) = params.get("engine") {
+        info.insert("engine".into(), engine.clone());
+    }
+    let options = voice_options(params);
+    if !options.is_empty() {
+        info.insert("options".into(), Value::Array(options));
+    }
+    Value::Object(info)
+}
+
+/// The agent's `idfon.json` manifest: its declared metadata with the holder's
+/// resolved voice pipeline merged in. Served as a resource at path
+/// `idfon.json` (`idfon://<holder>/idfon.json`) and mirrored by the bridge's
+/// `/voice/info`, so the Web/MCP view and the agent's own view never drift.
+pub fn idfon_manifest(params: &serde_json::Value) -> serde_json::Value {
+    let mut manifest = params
+        .get("idfon_manifest")
+        .cloned()
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(object) = manifest.as_object_mut() {
+        object.insert("voice".into(), voice_info(params));
+    }
+    manifest
+}
+
+/// The catalog of selectable voice options a holder advertises. Defaults are
+/// derived from the live config; an agent-supplied manifest
+/// (`params.idfon_manifest.voice.options`, injected by the serve tooling from
+/// the agent's `idfon.json`) is merged over them by `id`, so an agent can
+/// integrate (keep a default) or override (replace an entry) per option.
+pub fn voice_options(params: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut options = derived_voice_options(params);
+    let agent = params
+        .get("idfon_manifest")
+        .and_then(|manifest| manifest.get("voice"))
+        .and_then(|voice| voice.get("options"))
+        .and_then(serde_json::Value::as_array);
+    for option in agent.into_iter().flatten() {
+        let Some(id) = option.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        match options.iter().position(|existing| {
+            existing.get("id").and_then(serde_json::Value::as_str) == Some(id)
+        }) {
+            Some(index) => options[index] = option.clone(),
+            None => options.push(option.clone()),
+        }
+    }
+    options
+}
+
+/// Holder-config-derived defaults. An explicit `voice_options` array wins;
+/// otherwise one option per configured half (`engine.stt` / `engine.tts`), or a
+/// single `full-duplex` option when the config names a model and no engine.
+fn derived_voice_options(params: &serde_json::Value) -> Vec<serde_json::Value> {
+    use serde_json::{json, Value};
+    if let Some(explicit) = params.get("voice_options").and_then(Value::as_array) {
+        return explicit.clone();
+    }
+    if let Some(engine) = params.get("engine").filter(|value| !value.is_null()) {
+        let split = engine.get("stt").is_some() || engine.get("tts").is_some();
+        if split {
+            return ["stt", "tts"]
+                .iter()
+                .filter_map(|kind| engine.get(kind).map(|block| engine_option(kind, block)))
+                .collect();
+        }
+        // One provider serves both halves; offer it in both slots.
+        return vec![engine_option("stt", engine), engine_option("tts", engine)];
+    }
+    if let Some(model) = params.get("model").and_then(Value::as_str) {
+        return vec![json!({
+            "id": model,
+            "kind": "full-duplex",
+            "label": model,
+            "side": "server",
+            "backend": params.get("backend").and_then(Value::as_str),
+            "model": model,
+        })];
+    }
+    Vec::new()
+}
+
+/// One derived option from an engine block: a stable id and a display label.
+fn engine_option(kind: &str, block: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{json, Value};
+    let provider = block
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or("openai-compatible");
+    let model = block
+        .get("model")
+        .or_else(|| block.get("stt_model"))
+        .or_else(|| block.get("tts_model"))
+        .and_then(Value::as_str);
+    let (id, label) = match model {
+        Some(model) => (format!("{provider}:{model}"), format!("{provider} {model}")),
+        None => (provider.to_string(), provider.to_string()),
+    };
+    json!({
+        "id": id,
+        "kind": kind,
+        "label": label,
+        "side": "server",
+        "provider": provider,
+        "model": model,
+    })
+}
+
 fn voice_route_from_live_params(params: &serde_json::Value) -> VoiceRoute {
     if let Some(voice) = params.get("voice_route") {
         if let Ok(route) = serde_json::from_value::<VoiceRoute>(voice.clone()) {
@@ -611,6 +776,23 @@ async fn serve(
         transport.endpoint().online(),
     )
     .await;
+    // The agent's `idfon.json` as a resource over `idfon/http3/1`, so
+    // `idfon://<holder>/idfon.json` resolves through the gateway and the same
+    // object is available to MCP/Web consumers. Built once; the holder's
+    // pipeline is static for its lifetime.
+    let _manifest_h3 = idfon_h3::serve_router(
+        &transport,
+        axum::Router::new().route(
+            "/idfon.json",
+            axum::routing::get({
+                let manifest = idfon_manifest(&live_params);
+                move || {
+                    let manifest = manifest.clone();
+                    async move { axum::Json(manifest) }
+                }
+            }),
+        ),
+    );
     println!(
         "{}",
         serde_json::to_string(&transport.endpoint().addr()).context("serialize endpoint ticket")?
@@ -646,6 +828,14 @@ async fn serve(
     // Advertised on every ticket this holder mints and used to decide whether
     // inbound live controls should reach a registered live-call handler.
     let voice_route = voice_route_from_live_params(&live_params);
+    // Tell the bridge (and through it the agent) what pipeline this holder
+    // runs, so a caller can ask which model/STT/TTS is answering. Best-effort:
+    // a bridge that ignores the frame just gets no introspection.
+    let _ = out_tx
+        .send(IpcFrame::VoiceInfo {
+            info: voice_info(&live_params),
+        })
+        .await;
     let delegate_allow_file = live_params
         .get("voice_delegate_allow_file")
         .and_then(|value| value.as_str())
@@ -2235,6 +2425,100 @@ mod tests {
             delegated.delegate.as_ref().map(|delegate| delegate.peer_id.as_str()),
             Some("voice-agent")
         );
+    }
+
+    #[test]
+    fn voice_info_describes_the_pipeline() {
+        // Full-duplex: the voice model, the orchestrator model from env, codec.
+        std::env::set_var("EVE_IDFON_MODEL", "openai/gpt-6-luna");
+        // `audio` only inside `voice_route` here, to exercise the fallback.
+        let duplex = voice_info(&serde_json::json!({
+            "backend": "gpt-live",
+            "model": "openai/gpt-live-1",
+            "voice_route": { "mode": "native-duplex", "audio": "pcm24k" }
+        }));
+        assert_eq!(duplex["mode"], "native-duplex");
+        assert_eq!(duplex["backend"], "gpt-live");
+        assert_eq!(duplex["voice_model"], "openai/gpt-live-1");
+        assert_eq!(duplex["agent_model"], "openai/gpt-6-luna");
+        assert_eq!(duplex["audio"], "pcm24k");
+        std::env::remove_var("EVE_IDFON_MODEL");
+
+        // Server cascade: the engine block passes through for STT/TTS.
+        let cascade = voice_info(&serde_json::json!({
+            "backend": "cascade",
+            "voice_route": { "mode": "server-cascade" },
+            "engine": { "stt": { "provider": "deepgram", "model": "nova-3" } }
+        }));
+        assert_eq!(cascade["mode"], "server-cascade");
+        assert_eq!(cascade["engine"]["stt"]["provider"], "deepgram");
+
+        // No live config: on-device cascade, no engine.
+        let client = voice_info(&serde_json::Value::Null);
+        assert_eq!(client["mode"], "client-cascade");
+        assert!(client.get("engine").is_none());
+    }
+
+    #[test]
+    fn idfon_manifest_carries_agent_metadata_and_resolved_voice() {
+        let manifest = idfon_manifest(&serde_json::json!({
+            "backend": "gpt-live",
+            "model": "openai/gpt-live-1",
+            "idfon_manifest": {
+                "name": "GPT-6-Luna",
+                "voice": { "options": [ { "id": "on-device:parakeet", "kind": "stt", "label": "Parakeet", "side": "client" } ] }
+            }
+        }));
+        assert_eq!(manifest["name"], "GPT-6-Luna");
+        assert_eq!(manifest["voice"]["mode"], "native-duplex");
+        assert_eq!(manifest["voice"]["voice_model"], "openai/gpt-live-1");
+        // Config-derived full-duplex option plus the agent's client option.
+        let options = manifest["voice"]["options"].as_array().unwrap();
+        assert!(options.iter().any(|o| o["kind"] == "full-duplex"));
+        assert!(options.iter().any(|o| o["id"] == "on-device:parakeet"));
+    }
+
+    #[test]
+    fn voice_options_merge_agent_overrides_over_config_defaults() {
+        // Split engine -> one option per half.
+        let split = voice_options(&serde_json::json!({
+            "engine": { "stt": { "provider": "deepgram", "model": "nova-3" },
+                        "tts": { "provider": "elevenlabs", "model": "eleven_turbo_v2_5" } }
+        }));
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0]["kind"], "stt");
+        assert_eq!(split[0]["id"], "deepgram:nova-3");
+        assert_eq!(split[1]["kind"], "tts");
+
+        // One unsplit provider serves both halves.
+        let single = voice_options(&serde_json::json!({
+            "engine": { "provider": "openai-compatible", "model": "gpt-audio" }
+        }));
+        assert_eq!(single.len(), 2);
+        assert_eq!(single[0]["kind"], "stt");
+        assert_eq!(single[1]["kind"], "tts");
+
+        // A full-duplex model with no engine -> one full-duplex option.
+        let duplex = voice_options(&serde_json::json!({
+            "backend": "gpt-live", "model": "openai/gpt-live-1"
+        }));
+        assert_eq!(duplex.len(), 1);
+        assert_eq!(duplex[0]["kind"], "full-duplex");
+        assert_eq!(duplex[0]["backend"], "gpt-live");
+
+        // The agent manifest overrides by id and adds new options.
+        let merged = voice_options(&serde_json::json!({
+            "engine": { "stt": { "provider": "deepgram", "model": "nova-3" },
+                        "tts": { "provider": "elevenlabs", "model": "eleven_turbo_v2_5" } },
+            "idfon_manifest": { "voice": { "options": [
+                { "id": "deepgram:nova-3", "kind": "stt", "label": "Deepgram (fast)" },
+                { "id": "on-device:parakeet", "kind": "stt", "label": "Parakeet", "side": "client" }
+            ] } }
+        }));
+        assert_eq!(merged.len(), 3);
+        let deepgram = merged.iter().find(|o| o["id"] == "deepgram:nova-3").unwrap();
+        assert_eq!(deepgram["label"], "Deepgram (fast)");
+        assert!(merged.iter().any(|o| o["id"] == "on-device:parakeet"));
     }
 
     #[test]

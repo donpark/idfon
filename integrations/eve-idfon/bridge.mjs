@@ -28,6 +28,9 @@ const roomMembers = new Map();
 const sseClients = new Set();
 let writeTail = Promise.resolve();
 let nextRequestId = 1;
+// Voice pipeline this holder runs, pushed once at startup (`voice.info`).
+// Served to the agent as `/voice/info` for introspection.
+let voiceInfo = null;
 
 function frame(value) {
   const payload = Buffer.from(JSON.stringify(value));
@@ -81,6 +84,9 @@ function processFrames() {
       for (const client of sseClients) {
         try { client.write(line); } catch { sseClients.delete(client); }
       }
+    } else if (value.type === "voice.info") {
+      voiceInfo = value.info ?? null;
+      log.info("voice pipeline info received", { mode: voiceInfo?.mode, backend: voiceInfo?.backend });
     } else if (value.type === "reply.ack" || value.type === "blob.result" || value.type === "blob.put.result" || value.type === "records.drain.result" || value.type === "stream.append.result" || value.type === "audio.append.result" || value.type === "ticket.issue.result" || value.type === "input.ack" || value.type === "peer.ack" || value.type === "status.ack" || value.type === "live.publish.result" || value.type === "live.stop.result") {
       const key = value.type === "reply.ack" ? value.in_reply_to : value.request_id;
       const waiter = pending.get(key);
@@ -118,7 +124,7 @@ const server = createServer(async (request, response) => {
     request.on("close", () => sseClients.delete(response));
     return;
   }
-  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/stream/append", "/live/audio", "/input", "/send", "/card", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
+  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/voice/info", "/stream/append", "/live/audio", "/input", "/send", "/card", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -397,6 +403,12 @@ const server = createServer(async (request, response) => {
       pending.delete(requestId);
       response.writeHead(502); response.end(`${error}\n`);
     }
+    return;
+  }
+  if (request.url === "/voice/info") {
+    // Cached from the holder's startup push; `{}` until it arrives.
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(voiceInfo ?? {}));
     return;
   }
   if (request.url === "/records/drain") {

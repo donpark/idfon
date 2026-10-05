@@ -353,10 +353,134 @@ impl LiveCallHandler for VoiceAgentHandler {
                 Ok(true)
             });
         }
-        let config = VoiceAgentConfig::from_params(&ctx.params);
-        let factory = self.factories.get(&config.backend).cloned();
-        Box::pin(async move { handle_call(ctx, config, factory).await })
+        // The backend is chosen inside the call: the caller's per-contact
+        // selection can switch it (e.g. pick a full-duplex model).
+        let factories = self.factories.clone();
+        Box::pin(async move { handle_call(ctx, factories).await })
     }
+}
+
+/// Resolve a caller's per-contact STT/TTS selection (option ids from the
+/// holder's `idfon.json` catalog) into the live params. A `full-duplex`
+/// selection pins that backend and both halves; otherwise the cascade engine's
+/// halves are overridden from the selected options and `voice_route.stt`/`tts`
+/// record which side owns each. Unknown ids fall back to the config defaults.
+fn apply_voice_selection(params: &Value, stt: Option<&str>, tts: Option<&str>) -> Value {
+    if stt.is_none() && tts.is_none() {
+        return params.clone();
+    }
+    let catalog = eve_idfon::voice_options(params);
+    let option = |id: &str| {
+        catalog
+            .iter()
+            .find(|option| option.get("id").and_then(Value::as_str) == Some(id))
+            .cloned()
+    };
+    // No selected id is in the catalog: keep the config defaults untouched.
+    if ![stt, tts]
+        .into_iter()
+        .flatten()
+        .any(|id| option(id).is_some())
+    {
+        return params.clone();
+    }
+    // Full-duplex: either slot selecting one pins the backend and both halves.
+    for id in [stt, tts].into_iter().flatten() {
+        let Some(option) = option(id)
+            .filter(|option| option.get("kind").and_then(Value::as_str) == Some("full-duplex"))
+        else {
+            continue;
+        };
+        let mut next = params.clone();
+        if let Some(object) = next.as_object_mut() {
+            if let Some(backend) = option.get("backend").and_then(Value::as_str) {
+                object.insert("backend".into(), Value::from(backend));
+            }
+            let model = option.get("model").cloned().unwrap_or(Value::Null);
+            object.insert("model".into(), model.clone());
+            object.insert(
+                "voice_route".into(),
+                serde_json::json!({ "mode": "native-duplex", "audio": "pcm24k", "model": model }),
+            );
+        }
+        return next;
+    }
+    // Cascade: override each selected half and record its side.
+    let mut next = params.clone();
+    let Some(object) = next.as_object_mut() else {
+        return next;
+    };
+    object.insert("backend".into(), Value::from("cascade"));
+    let mut route = serde_json::Map::new();
+    route.insert("mode".into(), Value::from("server-cascade"));
+    route.insert("audio".into(), Value::from("pcm24k"));
+    let mut stt_engine = None;
+    let mut tts_engine = None;
+    for (kind, id) in [("stt", stt), ("tts", tts)] {
+        let Some(id) = id else { continue };
+        let Some(option) = option(id) else { continue };
+        let side = option.get("side").and_then(Value::as_str).unwrap_or("server");
+        route.insert(kind.into(), Value::from(side));
+        if side == "server" {
+            let engine = option_engine(params, kind, id);
+            match kind {
+                "stt" => stt_engine = engine,
+                _ => tts_engine = engine,
+            }
+        }
+    }
+    object.insert("voice_route".into(), Value::Object(route));
+    if let Some(engine) = override_engine(params.get("engine"), stt_engine, tts_engine) {
+        object.insert("engine".into(), engine);
+    }
+    next
+}
+
+/// The engine block for one selected option: an explicit option's inline
+/// `engine`, else the config's block for that half.
+fn option_engine(params: &Value, kind: &str, id: &str) -> Option<Value> {
+    if let Some(option) = params
+        .get("voice_options")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("id").and_then(Value::as_str) == Some(id))
+        })
+    {
+        if let Some(engine) = option.get("engine").filter(|value| !value.is_null()) {
+            return Some(engine.clone());
+        }
+    }
+    let engine = params.get("engine").filter(|value| !value.is_null())?;
+    Some(engine.get(kind).unwrap_or(engine).clone())
+}
+
+/// Overlay selected engine halves on the config's default engine. A missing
+/// half falls back to the other (one provider can serve both).
+fn override_engine(
+    default: Option<&Value>,
+    stt: Option<Value>,
+    tts: Option<Value>,
+) -> Option<Value> {
+    if stt.is_none() && tts.is_none() {
+        return default.cloned();
+    }
+    let (default_stt, default_tts) = match default.filter(|value| !value.is_null()) {
+        Some(engine) => (
+            engine.get("stt").unwrap_or(engine).clone(),
+            engine.get("tts").unwrap_or(engine).clone(),
+        ),
+        None => (Value::Null, Value::Null),
+    };
+    let stt = stt.unwrap_or(default_stt);
+    let tts = tts.unwrap_or(default_tts);
+    if stt.is_null() && tts.is_null() {
+        return None;
+    }
+    let stt = if stt.is_null() { tts.clone() } else { stt };
+    let tts = if tts.is_null() { stt.clone() } else { tts };
+    Some(serde_json::json!({ "stt": stt, "tts": tts }))
 }
 
 /// Parse a caller-text control: `IDFON-LIVE/1\naction=text\ntext_b64=<base64>`.
@@ -381,8 +505,7 @@ fn caller_text_control(text: &str) -> Option<String> {
 
 async fn handle_call(
     ctx: LiveCallContext,
-    config: VoiceAgentConfig,
-    factory: Option<Arc<dyn VoiceBackendFactory>>,
+    factories: HashMap<String, Arc<dyn VoiceBackendFactory>>,
 ) -> Result<bool> {
     // Voice is 1:1 only.
     if ctx.is_room() {
@@ -398,13 +521,17 @@ async fn handle_call(
     if !invite.is_start {
         return Ok(true);
     }
-    let Some(factory) = factory else {
+    // Resolve the caller's per-contact selection, then pick the backend it
+    // names: a full-duplex selection can switch backends for this call.
+    let params = apply_voice_selection(&ctx.params, invite.stt.as_deref(), invite.tts.as_deref());
+    let config = VoiceAgentConfig::from_params(&params);
+    let Some(factory) = factories.get(&config.backend).cloned() else {
         tracing::warn!(target: "idfon.voice", backend = %config.backend, "unknown backend; falling through to text");
         return Ok(false);
     };
     // A backend that cannot start (e.g. no provider key) declines the call, and
     // the control becomes a text turn.
-    let mut backend = match factory.create(&ctx.params) {
+    let mut backend = match factory.create(&params) {
         Ok(backend) => backend,
         Err(error) => {
             tracing::warn!(target: "idfon.voice", backend = %config.backend, error = %error, "backend unavailable");
@@ -587,5 +714,34 @@ mod tests {
             "voice_route": { "mode": "server-cascade" }
         }));
         assert!(both.stt_server && both.tts_server);
+    }
+
+    #[test]
+    fn voice_selection_resolves_to_backend_and_engine() {
+        let params = serde_json::json!({
+            "backend": "cascade",
+            "voice_route": { "mode": "server-cascade" },
+            "engine": { "stt": { "provider": "deepgram", "model": "nova-3" },
+                        "tts": { "provider": "elevenlabs", "model": "turbo" } },
+            "voice_options": [
+                { "id": "groq:whisper", "kind": "stt", "side": "server",
+                  "engine": { "provider": "openai-compatible", "model": "whisper-large-v3" } },
+                { "id": "gpt-live-1", "kind": "full-duplex", "backend": "gpt-live", "model": "openai/gpt-live-1" }
+            ]
+        });
+        // No selection: unchanged.
+        assert_eq!(apply_voice_selection(&params, None, None), params);
+        // The explicit STT option overrides that half; the other keeps default.
+        let chosen = apply_voice_selection(&params, Some("groq:whisper"), None);
+        assert_eq!(chosen["engine"]["stt"]["provider"], "openai-compatible");
+        assert_eq!(chosen["engine"]["tts"]["provider"], "elevenlabs");
+        assert_eq!(chosen["voice_route"]["stt"], "server");
+        // A full-duplex selection pins the backend and both halves.
+        let duplex = apply_voice_selection(&params, Some("gpt-live-1"), None);
+        assert_eq!(duplex["backend"], "gpt-live");
+        assert_eq!(duplex["model"], "openai/gpt-live-1");
+        assert_eq!(duplex["voice_route"]["mode"], "native-duplex");
+        // An unknown id falls back to the config defaults.
+        assert_eq!(apply_voice_selection(&params, Some("nope"), None), params);
     }
 }

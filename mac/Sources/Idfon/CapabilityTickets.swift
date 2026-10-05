@@ -71,7 +71,7 @@ enum VoiceHalf: String {
     case client
 }
 
-struct VoiceRoute {
+struct VoiceRoute: Equatable {
     enum Mode: String {
         /// The target's holder terminates audio with a full-duplex model session.
         case nativeDuplex = "native-duplex"

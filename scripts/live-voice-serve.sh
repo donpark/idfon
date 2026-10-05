@@ -33,6 +33,20 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cli="${IDFON_CLI:-$root/target/release/idfon}"
 socket="${IDFON_SOCKET:-/tmp/idfon/idfond.sock}"
 agent="${EVE_AGENT:-llm}"
+# Live config: the agent's own, or an override for a provider tryout
+# (scripts/voice-serve.sh passes EVE_LIVE_CONFIG). Resolved and validated up
+# front: an explicitly configured live config that does not exist is an
+# operator error, and starting with none makes the holder advertise no `voice`
+# block, which callers then misread as a legacy ticket.
+live_config_path="${EVE_LIVE_CONFIG:-$root/agents/$agent/live.json}"
+live_args=()
+if [ -n "${EVE_LIVE_CONFIG:-}" ] && [ ! -f "$live_config_path" ]; then
+  echo "EVE_LIVE_CONFIG points at a missing live config: $live_config_path" >&2
+  exit 1
+fi
+if [ -f "$live_config_path" ]; then
+  live_args=(--live-config "$live_config_path")
+fi
 # EVE_INSTANCE keys the contact's identity/home/ports. `auto` derives a slug
 # from the contact/model so contacts get stable, readable instance names
 # instead of ad-hoc ones; unset keeps the agent name.
@@ -71,6 +85,16 @@ holder_features="${EVE_IDFON_FEATURES:-gpt-live}"
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
 model="${EVE_IDFON_MODEL:-openai/gpt-6-luna}"
 export EVE_IDFON_MODEL="$model"
+
+# Fold the agent's own `idfon.json` manifest into the live config, so the
+# holder serves it as a resource (`idfon://<holder>/idfon.json`) and merges its
+# voice catalog over the config-derived defaults (the agent integrates or
+# overrides per option id). No file = the holder serves config-derived info.
+if [ -f "$live_config_path" ] && [ -f "$root/agents/$agent/idfon.json" ]; then
+  jq -c --slurpfile manifest "$root/agents/$agent/idfon.json" \
+    '. + { idfon_manifest: $manifest[0] }' "$live_config_path" > "$home/live.json"
+  live_args=(--live-config "$home/live.json")
+fi
 
 mkdir -p "$home"
 key="$home/holder.key"
@@ -126,7 +150,8 @@ if [ -d "$app/.output" ] && grep -q "bridgeUrl: \"http://127.0.0.1:[0-9]*\"" "$a
 fi
 if [ ! -d "$app/.output" ] || [ "${FORCE_BUILD:-}" = 1 ] || \
    [ "$root/agents/$agent/package.json" -nt "$app/.output" ] || \
-   [ -n "$(find "$root/agents/$agent/agent" -newer "$app/.output" -print -quit 2>/dev/null)" ]; then
+   [ -n "$(find "$root/agents/$agent/agent" -newer "$app/.output" -print -quit 2>/dev/null)" ] || \
+   [ -n "$(find "$integration/dist" -newer "$app/.output" -print -quit 2>/dev/null)" ]; then
   rm -rf "$app"
   mkdir -p "$app"
   cp -R "$root/agents/$agent/agent" "$root/agents/$agent/package.json" \
@@ -173,14 +198,6 @@ sleep 0.5
 # Senders admitted after startup (e.g. an agency invite) are appended here by
 # the provisioner; the holder reloads the file while running.
 touch "$home/allowed-peers"
-live_args=()
-# Live config: the agent's own, or an override for a provider tryout
-# (scripts/voice-serve.sh passes EVE_LIVE_CONFIG).
-live_config_path="${EVE_LIVE_CONFIG:-$root/agents/$agent/live.json}"
-if [ -f "$live_config_path" ]; then
-  live_args=(--live-config "$live_config_path")
-fi
-
 # Reply credential: to answer the agency's A2A intro the holder must present a
 # ticket the agency issued for US (subject = our holder endpoint id). Fetch it
 # before the holder starts so it can be loaded with --reply-ticket-file; the

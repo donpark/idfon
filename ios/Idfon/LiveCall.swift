@@ -199,7 +199,7 @@ final class LiveCall {
                 let encodedAddr = Data(returnAddr.utf8).base64EncodedString()
                 try await client.sendText(
                     to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)"
+                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId))"
                 )
                 // Dial watchdog: the invite was accepted for delivery, but if the
                 // return leg never lands (peer offline, relay flap, network

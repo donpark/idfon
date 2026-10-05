@@ -176,7 +176,7 @@ final class LiveCall {
                 Automation.mark("live: sending invite peer=\(peerId) ticket_len=\(ticket.count)")
                 try await client.sendText(
                     to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(ContactVoiceSelection.inviteLines(for: peerId))"
                 )
             } catch {
                 let ns = error as NSError

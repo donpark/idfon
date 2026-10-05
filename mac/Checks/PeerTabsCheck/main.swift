@@ -2,8 +2,10 @@
 // The tabs are dependency-free (peer/recent sources are injected), so this
 // builds and runs on the host with plain swiftc:
 //
-//   swiftc -o /tmp/mac-tabscheck mac/Sources/Idfon/Models.swift \
-//     mac/Sources/Idfon/PeerTabsViewController.swift mac/Checks/PeerTabsCheck/main.swift
+//   swiftc -o /tmp/mac-tabscheck mac/Sources/Idfon/Artifact.swift \
+//     mac/Sources/Idfon/CapabilityTickets.swift mac/Sources/Idfon/VoiceCallRouting.swift \
+//     mac/Sources/Idfon/Models.swift mac/Sources/Idfon/PeerTabsViewController.swift \
+//     mac/Checks/PeerTabsCheck/main.swift
 //   /tmp/mac-tabscheck
 //
 // Prints "ALL OK" or the first failing assertion (exit 1).
@@ -14,6 +16,16 @@ func check(_ cond: Bool, _ msg: String) { if !cond { print("FAIL:", msg); exit(1
 // Models.swift's `Event` needs the type/conformance; the check never decodes one.
 struct AnyEncodable: Decodable { let value: Any
     init(from decoder: Decoder) throws { value = NSNull() }
+}
+
+// The view talks to the daemon only for rename/remove; this check exercises list
+// rendering, so stub those two methods instead of linking DaemonClient.swift.
+final class DaemonClient {
+    func renamePeer(ref: String, name: String) async throws {}
+    func removePeer(ref: String) async throws {}
+    func fetchRemoteResource(account: String, path: String) async throws -> Data {
+        throw NSError(domain: "check", code: 1)
+    }
 }
 
 MainActor.assumeIsolated {
