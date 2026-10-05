@@ -69,5 +69,5 @@ kept because it records decisions; **design** = not all implemented.
 | Doc | Covers |
 | --- | --- |
 | `troubleshooting.md` | known issues, diagnoses, fixes |
-| `observability.md` | unified telemetry plan: internal tracing, the external-agent seam, opt-in OTLP (design) |
+| `observability.md` | unified telemetry: shared subscriber, structured fields, `trace` correlation, opt-in OTLP, the external-agent seam (as-built; open items in §10) |
 | `dylib-refactoring-plan.md` | shared-dylib build as-built + follow-up log |

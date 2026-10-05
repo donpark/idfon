@@ -228,8 +228,9 @@ operation was created in the daemon store.
 
 **Diagnosis path.**
 
-1. GUI trace logs (`/tmp/idfon-<pid>.log`, written by `native/src/iroh_ffi.zig`)
-   showed the daemon's response to `message.send`:
+1. GUI trace logs (`/tmp/idfon-<pid>.log`, written by the FFI tracing
+   subscriber in `native/vendor/iroh-c-ffi/src/util.rs`, enabled from
+   `native/src/iroh_ffi.zig`) showed the daemon's response to `message.send`:
    `{"ok":false,"error":{"code":"idempotency_key_conflict",...}}`.
 2. The daemon store (`/tmp/idfon*/state.json`) contained operations from
    *previous* testing sessions with the same `(target, idempotency_key)` pair

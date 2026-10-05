@@ -5,10 +5,10 @@ processes — daemon, CLI, GUIs, holder, bridge, MCP, and **third-party agents w
 do not own** — without turning observability into a hard dependency on a hosted
 service, and without shipping telemetry over the peer network.
 
-> Status: **design**, 2026-10-05. P0 (shared subscriber + boundary wide
+> Status: **as-built**, 2026-10-05. P0 (shared subscriber + boundary wide
 > events), P1 (correlation seam), and P2 (opt-in OTLP on the non-dylib
-> binaries + `telemetry` capability) implemented. Grounds every claim in the
-> code as it stands.
+> binaries + `telemetry` capability) are implemented; §8 records the phases and
+> §10 lists what is still open. Grounds every claim in the code as it stands.
 
 ## 1. Problem
 
@@ -28,7 +28,8 @@ Today triage means hopping disjoint, unstructured logs:
 `~/.idfon/<instance>/holder.log`, `bridge.log`, `agents/*/eve.log`. There is no
 single correlation id joining those files, so "what led to this behavior?"
 cannot be answered exactly. `docs/troubleshooting.md` documents this pain entry
-by entry.
+by entry. P0–P2 below close most of that gap: one subscriber, one `trace` id,
+and structured seam events.
 
 ## 2. What exists today
 
@@ -47,11 +48,12 @@ by entry.
   trace. The native Swift apps log through an `IdfonLog` helper
   (`os.Logger`, subsystem `app.idfon`, category = source file), filterable with
   e.g. `log stream --predicate 'subsystem == "app.idfon"'`.
-- **The correlation keys already exist.** The protocol carries
+- **The correlation keys are carried.** The protocol has always carried
   `message_id`, `idempotency_key`, `operation_id`, and `in_reply_to`
   (`crates/idfon-protocol/src/lib.rs`, `crates/eve-idfon/src/lib.rs`), plus
-  authenticated `peer_id` / `endpoint_id` on every crossing. The spans are
-  latent; nothing tags them as one event.
+  authenticated `peer_id` / `endpoint_id` on every crossing. The daemon mints a
+  `trace` and the holder echoes it (P1), and every seam event is tagged with it,
+  so one `trace` id joins the files above.
 - **The seams are owned by us.** Every inbound crossing lands in a known
   handler on our side: `handle_message`, `handle_reply`, `handle_status`,
   `handle_input`, `handle_peer_send` (`crates/eve-idfon/src/lib.rs`), the MCP
@@ -111,7 +113,8 @@ subject, direction, outcome, latency. This is the join key that makes any
 distributed trace usable, and it works for every third party immediately.
 
 "A reply was expected by T and did not arrive" is a first-class outcome, not a
-gap.
+gap. The events carry the ids and direction today; latency/outcome are only
+partial (status is on the reply/status events, not a measured duration).
 
 ## 6. OTLP externalization (opt-in)
 
@@ -139,10 +142,11 @@ gap.
 - A span is exported end to end (verified by an integration test that stands up
   a throwaway TCP collector). `idfon_telemetry::flush()` / `shutdown()` are
   called on a clean holder exit so the final batch is not lost.
-- `inject`-level agent spans are accepted but recorded as **agent-reported**,
-  distinct from **idfon-observed**, and sanitized/capped. A bad actor must not
-  be able to forge causality in the unified view or DoS the collector with
-  cardinality.
+- `inject`-level agent spans go straight to the collector from the agent;
+  idfon does not ingest them, so cardinality is bounded by the collector and no
+  extra trust is placed in them. Keep them distinguishable from idfon-observed
+  spans (separate `service.name` / attributes) so a bad actor cannot forge
+  causality in the unified view. This path is not yet exercised by a test.
 
 ## 7. Non-goals
 
@@ -173,8 +177,8 @@ gap.
    payloads. The daemon mints a trace per outbound flow (a caller-supplied
    `trace` param wins); the holder reads inbound traces, logs them on the seam
    events, and echoes them onto replies/status; the daemon logs them on receive.
-   Explicit `telemetry` capability negotiation is deferred until the `inject`
-   mode (P2) exists to negotiate.
+   The `telemetry` capability is advertised (see P2); explicitly acting on a
+   peer's advertised mode is still deferred (§10).
 3. **P2 — inject + export (done 2026-10-05).** `idfon-telemetry` gains an
    optional `otlp` feature: `IDFON_OTEL_ENDPOINT` adds an OTLP/HTTP batch span
    exporter, sampled at `IDFON_OTEL_SAMPLE_RATIO` (default 0.1), with a
@@ -201,10 +205,12 @@ gap.
 
 ## 10. Open questions
 
-- Exact wire name/shape of the correlation field (`trace` vs nested object) and
-  whether it rides `MessageEnvelope`, the `Request` wrapper, or both.
-- Whether `telemetry` capability is per-connection, per-conversation, or
-  per-turn.
+- Explicitly acting on a peer's advertised `telemetry` mode (today it is
+  advertised and logged only; see the P2 gap above).
 - Sampling policy for `inject`-level agent spans, and the cap on
   agent-reported cardinality.
-- Whether the boundary wide event is human-readable, JSON, or both by sink.
+- Whether the boundary wide event should also be JSON by sink, beyond the
+  current `tracing` fmt output.
+
+Decided in P1/P2: correlation rides `MessageEnvelope.trace` plus a `trace=`
+line on `IDFON-A2A/1`; `telemetry` is per-message on the envelope.
