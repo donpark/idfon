@@ -198,18 +198,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composerText.textContainerInset = UIEdgeInsets(top: 10, left: 6, bottom: 10, right: 6)
         composerText.delegate = self
 
+        // One symbol size for every composer control; the default symbol size
+        // rendered these too small to hit comfortably.
+        let composerSymbol = UIImage.SymbolConfiguration(pointSize: 22, weight: .regular)
+
         micButton.translatesAutoresizingMaskIntoConstraints = false
-        micButton.setImage(UIImage(systemName: "waveform"), for: .normal)
+        micButton.setImage(UIImage(systemName: "waveform", withConfiguration: composerSymbol), for: .normal)
         micButton.tintColor = .secondaryLabel
         micButton.addTarget(self, action: #selector(micTapped), for: .touchUpInside)
 
         sendButton.translatesAutoresizingMaskIntoConstraints = false
-        sendButton.setImage(UIImage(systemName: "arrow.up.circle.fill"), for: .normal)
-        sendButton.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
+        sendButton.setImage(UIImage(systemName: "arrow.up.circle.fill", withConfiguration: composerSymbol), for: .normal)
         sendButton.addTarget(self, action: #selector(sendTapped), for: .touchUpInside)
 
         attachButton.translatesAutoresizingMaskIntoConstraints = false
-        attachButton.setImage(UIImage(systemName: "plus.circle"), for: .normal)
+        attachButton.setImage(UIImage(systemName: "plus.circle", withConfiguration: composerSymbol), for: .normal)
         attachButton.tintColor = .secondaryLabel
         attachButton.addTarget(self, action: #selector(attachTapped), for: .touchUpInside)
 
@@ -227,16 +230,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         elapsedLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .medium)
 
         stopButton.translatesAutoresizingMaskIntoConstraints = false
-        stopButton.setImage(UIImage(systemName: "stop.fill"), for: .normal)
+        stopButton.setImage(UIImage(systemName: "stop.fill", withConfiguration: composerSymbol), for: .normal)
         stopButton.tintColor = .systemRed
         stopButton.addTarget(self, action: #selector(stopRecordingTapped), for: .touchUpInside)
 
         closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
+        closeButton.setImage(UIImage(systemName: "xmark", withConfiguration: composerSymbol), for: .normal)
         closeButton.addTarget(self, action: #selector(discardMemoTapped), for: .touchUpInside)
 
         playButton.translatesAutoresizingMaskIntoConstraints = false
-        playButton.setImage(UIImage(systemName: "play.fill"), for: .normal)
+        playButton.setImage(UIImage(systemName: "play.fill", withConfiguration: composerSymbol), for: .normal)
         playButton.addTarget(self, action: #selector(playMemoTapped), for: .touchUpInside)
 
         reviewWaveform.translatesAutoresizingMaskIntoConstraints = false
@@ -302,7 +305,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composerBar.addSubview(playButton)
         composerBar.addSubview(reviewWaveform)
 
-        composerHeight = composerText.heightAnchor.constraint(equalToConstant: 40)
+        composerHeight = composerText.heightAnchor.constraint(equalToConstant: 44)
         referenceChipHeight = referenceChip.heightAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
@@ -341,32 +344,44 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             composerText.topAnchor.constraint(equalTo: composerBar.topAnchor),
             composerText.bottomAnchor.constraint(equalTo: composerBar.bottomAnchor),
             composerText.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 6),
+            composerText.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -6),
             composerHeight,
 
             attachButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
-            attachButton.leadingAnchor.constraint(equalTo: composerBar.leadingAnchor, constant: 10),
-            attachButton.widthAnchor.constraint(equalToConstant: 28),
+            attachButton.leadingAnchor.constraint(equalTo: composerBar.leadingAnchor, constant: 8),
+            attachButton.widthAnchor.constraint(equalToConstant: 36),
+            attachButton.heightAnchor.constraint(equalToConstant: 36),
 
+            // Mic and send share one trailing slot: they are mutually exclusive
+            // (mic while the field is empty, send once it has text), so both pin
+            // to the same edge instead of stacking on top of each other.
             micButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
-            micButton.leadingAnchor.constraint(equalTo: composerText.trailingAnchor),
-            micButton.trailingAnchor.constraint(equalTo: composerBar.trailingAnchor, constant: -14),
-            micButton.widthAnchor.constraint(equalToConstant: 28),
+            micButton.trailingAnchor.constraint(equalTo: composerBar.trailingAnchor, constant: -8),
+            micButton.widthAnchor.constraint(equalToConstant: 36),
+            micButton.heightAnchor.constraint(equalToConstant: 36),
 
             sendButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
-            sendButton.leadingAnchor.constraint(equalTo: composerText.trailingAnchor),
-            sendButton.trailingAnchor.constraint(equalTo: composerBar.trailingAnchor, constant: -10),
+            sendButton.trailingAnchor.constraint(equalTo: composerBar.trailingAnchor, constant: -8),
+            sendButton.widthAnchor.constraint(equalToConstant: 36),
+            sendButton.heightAnchor.constraint(equalToConstant: 36),
 
             elapsedLabel.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
             elapsedLabel.trailingAnchor.constraint(equalTo: composerBar.trailingAnchor, constant: -64),
 
             stopButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
             stopButton.trailingAnchor.constraint(equalTo: composerBar.trailingAnchor, constant: -16),
+            stopButton.widthAnchor.constraint(equalToConstant: 36),
+            stopButton.heightAnchor.constraint(equalToConstant: 36),
 
             closeButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
             closeButton.leadingAnchor.constraint(equalTo: composerBar.leadingAnchor, constant: 16),
+            closeButton.widthAnchor.constraint(equalToConstant: 36),
+            closeButton.heightAnchor.constraint(equalToConstant: 36),
 
             playButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
-            playButton.leadingAnchor.constraint(equalTo: composerBar.leadingAnchor, constant: 56),
+            playButton.leadingAnchor.constraint(equalTo: composerBar.leadingAnchor, constant: 60),
+            playButton.widthAnchor.constraint(equalToConstant: 36),
+            playButton.heightAnchor.constraint(equalToConstant: 36),
 
             reviewWaveform.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
             reviewWaveform.leadingAnchor.constraint(equalTo: playButton.trailingAnchor, constant: 12),
@@ -381,9 +396,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func applyMode() {
         let recording = mode == .recording
         let review = mode == .review
-        [composerText, sendButton].forEach { $0.isHidden = recording || review }
-        micButton.isHidden = recording || review
-        attachButton.isHidden = recording || review
+        let composing = !recording && !review
+        composerText.isHidden = !composing
+        attachButton.isHidden = !composing
+        // Mic and send share one slot: show exactly one (mic on an empty field,
+        // send once there is text). Without this both were visible on load and
+        // drew on top of each other.
+        let hasText = !composerText.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        sendButton.isHidden = !composing || !hasText
+        micButton.isHidden = !composing || hasText
         [elapsedLabel, stopButton].forEach { $0.isHidden = !recording }
         elapsedLabel.isHidden = !recording && !review
         [closeButton, playButton, reviewWaveform].forEach { $0.isHidden = !review }
@@ -394,10 +415,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // MARK: - Text composer
 
     func textViewDidChange(_ textView: UITextView) {
-        sendButton.isHidden = textView.text.isEmpty
-        micButton.isHidden = !textView.text.isEmpty
+        let hasText = !textView.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        sendButton.isHidden = !hasText
+        micButton.isHidden = hasText
         let maxHeight: CGFloat = 100
-        let target = min(textView.sizeThatFits(.init(width: textView.frame.width, height: .greatestFiniteMagnitude)).height, maxHeight)
+        let target = max(44, min(textView.sizeThatFits(.init(width: textView.frame.width, height: .greatestFiniteMagnitude)).height, maxHeight))
         composerHeight.constant = target
         textView.isScrollEnabled = target >= maxHeight
         view.layoutIfNeeded()
