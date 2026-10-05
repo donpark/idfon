@@ -11,7 +11,10 @@ ios/
 │   ├── Automation.swift      # -sendfile launch-arg entry + idfon-auto: markers (device harness)
 │   ├── AppNavigationController.swift # per-tab nav clearance + content-shift for the Bar
 │   ├── PeerListViewController.swift  # Contacts tab: searchable list → chat; swipe-delete; ⓘ → detail
-│   ├── ContactDetailViewController.swift # contact detail: rename (peer.update) + delete
+│   ├── ContactDetailViewController.swift # contact detail: rename (peer.update),
+│   │                         #   per-contact voice engines (catalog STT/TTS + on-device), delete
+│   ├── VoiceCallRouting.swift # voice catalog (fetched `idfon.json`), per-contact
+│   │                         #   STT/TTS + on-device engine selection, call-plan resolver
 │   ├── PlaceholderViewController.swift # empty-state tab (Favorites, Recents)
 │   ├── ChatViewController.swift      # chat table + composer (text/record/review)
 │   │                         #   + inline live-video pane, incoming-call-mode menu
