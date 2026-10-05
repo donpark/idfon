@@ -232,8 +232,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                     // One call entry. `callTapped` routes by the ticket's voice
                     // mode: client-cascade starts the on-device voice call, which
                     // uses the same call Bar/End UI as a live call.
+                    // The codec is the holder's signed `voice.audio`; the
+                    // engines live in Peer details, so no separate Audio control.
                     buttons = [headerSymbolButton("phone.arrow.up.right", #selector(callTapped), "Start call"),
-                               headerButton("Audio", #selector(audioProfileTapped)),
                                headerSymbolButton("arrow.down.doc", #selector(shareVideoTapped), "Share a video file"),
                                headerSymbolButton("person.crop.circle", #selector(peerDetailsTapped), "Peer details")]
                 }
@@ -1086,24 +1087,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             HybridVoice.shared.start(peerRef: peer.id, route: route)
         } else {
             live.dial(peer.id)
-        }
-    }
-
-    @objc private func audioProfileTapped() {
-        let selected = ContactAudioProfiles.profile(for: peer.id)
-        let alert = NSAlert()
-        alert.messageText = "Audio profile"
-        alert.informativeText = "Current: \(selected.title). Saved for \(conversation.title)."
-        alert.addButton(withTitle: ContactAudioProfile.opus48k.title)
-        alert.addButton(withTitle: ContactAudioProfile.pcm24k.title)
-        alert.addButton(withTitle: "Cancel")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            ContactAudioProfiles.set(.opus48k, for: peer.id)
-        case .alertSecondButtonReturn:
-            ContactAudioProfiles.set(.pcm24k, for: peer.id)
-        default:
-            break
         }
     }
 

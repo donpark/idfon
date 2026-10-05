@@ -69,6 +69,10 @@ ticket stays small.
   pick its own recognizer and reply voice (`ContactOnDeviceEngines`: Parakeet /
   Apple ASR, Kokoro / Apple TTS). Resolved at call start (`VoiceAgentSession`);
   absent = the app's global default (`SpeechEngines`).
+- **Codec** — the live-call audio codec is the holder's signed `voice.audio`
+  (`pcm24k` → PCM, else Opus), not a manual per-contact choice. The media
+  session, the dial decision, and the invite all derive it from the route, so
+  the apps no longer expose an audio-profile picker.
 
 The routing decision is pure (`VoiceCallRouting.decide`): a server/full-duplex
 selection dials the holder's live session, an all-client selection is a client
