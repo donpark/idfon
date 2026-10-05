@@ -919,16 +919,30 @@ async fn serve(
                 conversation,
                 requests,
             } => {
+                // New outbound flow: mint the trace, then root the span on it so
+                // the collector trace id matches the envelope's `trace`.
+                let trace = idfon_core::new_traceparent();
+                let span = tracing::info_span!(
+                    "idfon.seam",
+                    direction = "out",
+                    kind = "input",
+                    request_id = %request_id,
+                    peer_id = %peer_id,
+                    trace = %trace,
+                );
+                idfon_telemetry::set_remote_parent(&span, Some(&trace));
                 handle_input(
                     request_id,
                     peer_id,
                     endpoint_id,
                     conversation,
                     requests,
+                    trace,
                     &key,
                     &transport,
                     out_tx.clone(),
                 )
+                .instrument(span)
                 .await
             }
             IpcFrame::PeerSendOut {
@@ -940,6 +954,16 @@ async fn serve(
                 capability_ticket,
                 a2a_depth,
             } => {
+                let trace = idfon_core::new_traceparent();
+                let span = tracing::info_span!(
+                    "idfon.seam",
+                    direction = "out",
+                    kind = "peer_send",
+                    request_id = %request_id,
+                    peer_id = %peer_id,
+                    trace = %trace,
+                );
+                idfon_telemetry::set_remote_parent(&span, Some(&trace));
                 handle_peer_send(
                     request_id,
                     peer_id,
@@ -948,10 +972,12 @@ async fn serve(
                     text,
                     capability_ticket,
                     a2a_depth,
+                    trace,
                     &key,
                     &transport,
                     out_tx.clone(),
                 )
+                .instrument(span)
                 .await
             }
             _ => Err(anyhow!("unexpected IPC frame from consumer")),
@@ -1545,6 +1571,7 @@ async fn handle_input(
     endpoint_id: String,
     conversation: Option<String>,
     requests: serde_json::Value,
+    trace: String,
     key: &SigningKey,
     transport: &IrohTransport,
     out_tx: mpsc::Sender<IpcFrame>,
@@ -1564,7 +1591,7 @@ async fn handle_input(
         conversation,
     )
     .map_err(|error| anyhow!("sign input request: {error}"))?;
-    envelope.trace = Some(idfon_core::new_traceparent());
+    envelope.trace = Some(trace);
     envelope.telemetry = Some(idfon_telemetry::mode().to_string());
     let ack = transport
         .send(&EndpointAddr::new(endpoint_id), &envelope)
@@ -1680,6 +1707,7 @@ async fn handle_peer_send(
     text: String,
     capability_ticket: serde_json::Value,
     a2a_depth: u8,
+    trace: String,
     key: &SigningKey,
     transport: &IrohTransport,
     out_tx: mpsc::Sender<IpcFrame>,
@@ -1696,7 +1724,6 @@ async fn handle_peer_send(
         )
     };
     let message_id = next_message_id("eve_peer_");
-    let trace = idfon_core::new_traceparent();
     let text = encode_a2a_envelope(a2a_depth, &text, Some(&trace), Some(idfon_telemetry::mode()));
     let mut envelope = sign_message_with_ticket(
         key,

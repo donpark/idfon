@@ -180,9 +180,10 @@ gap.
    (`set_remote_parent`). `telemetry` advertises this process's level via
    `idfon_telemetry::mode()` (`inject` when exporting, else `correlate`). An
    integration test proves a span reaches a collector; the holder flushes on
-   clean shutdown. Inbound spans carry the caller's `trace` as parent; replies
-   and status continue that trace on the outbound side. Input/peer_send and
-   daemon-side spans are follow-up (the lean daemon does not export).
+   clean shutdown. Inbound spans carry the caller's `trace` as parent; replies,
+   status, input, and peer_send are instrumented on the outbound side, with the
+   minted trace used both as the span root and the envelope `trace`. Daemon-side
+   spans are intentionally omitted (the lean daemon does not export).
 
 ## 9. Trust, privacy, licensing
 
