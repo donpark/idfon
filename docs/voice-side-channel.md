@@ -99,11 +99,11 @@ The concrete demos (see `docs/voice-agent.md` for the full current picture):
   `voice_route.mode = native-duplex`. Served by `scripts/gpt-live-1-serve.sh`
   (runner `eve-idfon-voice`, backend `gpt-live`). One backend among several, not
   a special path.
-- **`agents/voice-agent` — the generic server-cascade voice agent** (Rust
+- **`agents/voice` — the generic server-cascade voice agent** (Rust
   STT→agent→TTS via `idfon-voice` providers; provider seam, wrapping,
   self-answer, and the standalone `relay` backend for TS-terminated live
   calls). Its `live.json` advertises `server-cascade`. Provider tryouts:
-  `scripts/voice-agent-serve.sh <provider.json>`.
+  `scripts/voice-serve.sh <provider.json>`.
 
 ## Goal
 

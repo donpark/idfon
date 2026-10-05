@@ -170,12 +170,12 @@ table rather than a made-up number.
 The generic voice agent plus a provider file is the whole flow:
 
 ```sh
-scripts/voice-agent-serve.sh agents/voice-agent/providers/groq.json
-scripts/voice-agent-serve.sh agents/voice-agent/providers/deepgram-elevenlabs.json
-scripts/voice-agent-serve.sh            # default live.json (AI Gateway env)
+scripts/voice-serve.sh agents/voice/providers/groq.json
+scripts/voice-serve.sh agents/voice/providers/deepgram-elevenlabs.json
+scripts/voice-serve.sh            # default live.json (AI Gateway env)
 ```
 
-`agents/voice-agent/providers/*.json` are full live configs (backend +
+`agents/voice/providers/*.json` are full live configs (backend +
 `voice_route` + `engine`); add one per service. Keys come from the env vars the
 file names. `EVE_LIVE_CONFIG` overrides the agent's own `live.json`.
 
@@ -250,7 +250,7 @@ tickets carry the route:
 ```sh
 AGENCY_VOICE_DELEGATE=<voice-agent-peer> \
 AGENCY_VOICE_DELEGATE_CONTACT='<endpoint-addr JSON>' \
-AGENCY_VOICE_DELEGATE_ALLOW_FILE="$HOME/.idfon/voice-agent/allowed-peers" \
+AGENCY_VOICE_DELEGATE_ALLOW_FILE="$HOME/.idfon/voice/allowed-peers" \
   scripts/agency-serve.sh
 ```
 
@@ -265,7 +265,7 @@ by allow-list, not a per-caller ticket).
 ### Live calls in TypeScript (standalone relay)
 
 A live call can be terminated in TypeScript without the agent being an Eve
-agent. The holder runs `backend = "relay"` (`agents/voice-agent/relay.json`),
+agent. The holder runs `backend = "relay"` (`agents/voice/relay.json`),
 which:
 
 - forwards each caller PCM frame to the bridge as `audio.frame`;
@@ -281,7 +281,7 @@ the provider seam, plus `wrap` for the wrapped agent).
 
 ```sh
 # 1. voice agent with the relay backend (writes $home/bridge-url)
-EVE_LIVE_CONFIG=agents/voice-agent/relay.json scripts/voice-agent-serve.sh
+EVE_LIVE_CONFIG=agents/voice/relay.json scripts/voice-serve.sh
 # 2. the relay, pointed at that bridge
 IDFON_VOICE_ENGINE='{"stt":{"provider":"openai-compatible"},"tts":{"provider":"openai-compatible"},"wrap":{"peer_id":"…","endpoint_id":"…","ticket":{…}}}' \
   scripts/voice-live-relay.sh
@@ -308,7 +308,7 @@ crates and a backend is the only code an engine needs:
   and `relay` (`RelayFactory`, frames to a standalone TS agent). GPT-Live is a
   separate `LiveCallHandler` on the same shared transport (`idfon-live-media`),
   not a `VoiceBackend`.
-- `agents/voice-agent` — the generic template (providers/relay/wrapping); its
+- `agents/voice` — the generic template (providers/relay/wrapping); its
   `live.json` sets `backend` and `voice_route.mode = server-cascade`.
 
 So: **add an engine** = one `VoiceBackend` impl + one registration; **add a

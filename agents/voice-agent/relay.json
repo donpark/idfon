@@ -1,5 +1,0 @@
-{
-  "_comment": "Live config for the standalone TS voice relay: the holder runs backend=relay (forwards caller frames over the bridge SSE and plays agent audio back); the TypeScript relay process does STT/TTS and the relay-to-wrapped-agent hop. Serve with EVE_LIVE_CONFIG=agents/voice-agent/relay.json. The Relay backend does no STT/TTS itself, so no engine block is needed here.",
-  "backend": "relay",
-  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" }
-}

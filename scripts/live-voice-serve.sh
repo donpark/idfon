@@ -175,7 +175,7 @@ sleep 0.5
 touch "$home/allowed-peers"
 live_args=()
 # Live config: the agent's own, or an override for a provider tryout
-# (scripts/voice-agent-serve.sh passes EVE_LIVE_CONFIG).
+# (scripts/voice-serve.sh passes EVE_LIVE_CONFIG).
 live_config_path="${EVE_LIVE_CONFIG:-$root/agents/$agent/live.json}"
 if [ -f "$live_config_path" ]; then
   live_args=(--live-config "$live_config_path")

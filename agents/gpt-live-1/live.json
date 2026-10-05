@@ -1,5 +1,5 @@
 {
-  "_comment": "Demo voice agent running the GPT-Live-1 full-duplex model (one backend among several; see docs/voice-agent.md). backend=gpt-live selects the idfon-voice-agent backend; voice_route.mode=native-duplex tells callers the holder terminates audio. The generic server-cascade capability is agents/voice-agent.",
+  "_comment": "Demo voice agent running the GPT-Live-1 full-duplex model (one backend among several; see docs/voice-agent.md). backend=gpt-live selects the idfon-voice-agent backend; voice_route.mode=native-duplex tells callers the holder terminates audio. The generic server-cascade capability is agents/voice.",
   "backend": "gpt-live",
   "live_url": "wss://ai-gateway.vercel.sh/v1/live/sessions",
   "model": "openai/gpt-live-1",

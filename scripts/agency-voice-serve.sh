@@ -26,7 +26,7 @@ agency_peer=$(head -1 "$agency_addr_file" | jq -r .id)
   exit 1
 }
 
-export EVE_AGENT="${EVE_AGENT:-voice-agent}"
+export EVE_AGENT="${EVE_AGENT:-voice}"
 export EVE_IDFON_PKG="${EVE_IDFON_PKG:-idfon-voice-agent}"
 export EVE_IDFON_BIN="${EVE_IDFON_BIN:-eve-idfon-voice}"
 
@@ -40,7 +40,7 @@ if [ ! -s "$key" ]; then printf '%064d' "$((RANDOM * RANDOM))" > "$key"; fi
 # starts) so we can mint the Agency-issued ticket and admit both directions.
 self_id="$("$root/target/release/$EVE_IDFON_BIN" --key-file "$key" ticket --subject self 2>/dev/null | jq -r .issuer)"
 [ -n "$self_id" ] && [ "$self_id" != null ] || {
-  echo "cannot derive the voice-agent endpoint id" >&2
+  echo "cannot derive the voice endpoint id" >&2
   exit 1
 }
 
