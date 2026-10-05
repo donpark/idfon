@@ -734,6 +734,20 @@ async fn serve(
                 event,
                 data,
             } => {
+                // Continue the caller's trace on the status reply, as for reply.
+                let trace = targets
+                    .lock()
+                    .await
+                    .get(&in_reply_to)
+                    .and_then(|target| target.trace.clone());
+                let span = tracing::info_span!(
+                    "idfon.seam",
+                    direction = "out",
+                    kind = "status",
+                    in_reply_to = %in_reply_to,
+                    trace = ?trace,
+                );
+                idfon_telemetry::set_remote_parent(&span, trace.as_deref());
                 handle_status(
                     request_id,
                     in_reply_to,
@@ -745,6 +759,7 @@ async fn serve(
                     reply_ticket.as_ref(),
                     out_tx.clone(),
                 )
+                .instrument(span)
                 .await
             }
             IpcFrame::BlobFetch { request_id, ticket } => {
@@ -1299,7 +1314,42 @@ async fn admit_message(rate_limits: &RateLimits, peer_id: &str) -> bool {
     true
 }
 
+/// Wraps [`handle_reply_inner`] in a span that continues the caller's trace, so
+/// the holder's reply shares the trace of the message that started it.
 async fn handle_reply(
+    frame: IpcFrame,
+    key: &SigningKey,
+    transport: &IrohTransport,
+    targets: &Targets,
+    reply_ticket: Option<&CapabilityTicket>,
+    out_tx: mpsc::Sender<IpcFrame>,
+) -> Result<()> {
+    let in_reply_to = match &frame {
+        IpcFrame::ReplyOut { in_reply_to, .. } => in_reply_to.clone(),
+        _ => return Err(anyhow!("expected reply.out frame")),
+    };
+    let target_key = in_reply_to
+        .split_once('|')
+        .map_or(in_reply_to.as_str(), |(key, _)| key);
+    let trace = targets
+        .lock()
+        .await
+        .get(target_key)
+        .and_then(|target| target.trace.clone());
+    let span = tracing::info_span!(
+        "idfon.seam",
+        direction = "out",
+        kind = "reply",
+        in_reply_to = %in_reply_to,
+        trace = ?trace,
+    );
+    idfon_telemetry::set_remote_parent(&span, trace.as_deref());
+    handle_reply_inner(frame, key, transport, targets, reply_ticket, out_tx)
+        .instrument(span)
+        .await
+}
+
+async fn handle_reply_inner(
     frame: IpcFrame,
     key: &SigningKey,
     transport: &IrohTransport,
