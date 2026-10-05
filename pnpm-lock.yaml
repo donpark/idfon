@@ -26,6 +26,19 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  integrations/eve-idfon-voice:
+    dependencies:
+      eve:
+        specifier: 0.68.0
+        version: 0.68.0(ai@7.0.100(zod@4.6.5))
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+    devDependencies:
+      eve-idfon:
+        specifier: workspace:*
+        version: link:../eve-idfon
+
   ios: {}
 
   mac: {}
