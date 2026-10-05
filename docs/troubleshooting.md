@@ -38,6 +38,40 @@ the `· spoken` annotation were gone.
 bubbles — an incoming reply appearing in the chat is not evidence that the
 caller's side is recorded.
 
+## Server-cascade voice call: replies dropped, truncated, or overlapping (2026-10-04, FIXED)
+
+**Symptom.** On a `server-cascade` call (`eve` = holder STT → agent → holder
+TTS): the agent didn't answer at all (no chat or spoken reply), or answered
+once then went quiet, or spoke only the first sentence of a reply, or played
+the reply on top of itself.
+
+**Cause and fixes** (stacked — each masked the next).
+
+- *No reply at all*: `handle_reply` skipped the `reply.ack` for voice
+  (`ReplyTarget.live_only`) turns. The bridge's `POST /reply` writes `reply.out`
+  to the holder and **blocks on a `reply.ack` keyed by `in_reply_to`**; without
+  it the bridge returns **502** and the Eve app discards the reply. Ack every
+  reply, chat copy or not (normal turns ack even on send failure).
+- *Went quiet after the first turn*: `StreamingDeepgramStt::push` discarded
+  segment finals Deepgram had already emitted mid-speech, so `flush` (after the
+  endpointer's `Finalize`) returned nothing. Accumulate finals and return them
+  on `flush`.
+- *Truncated after the first sentence*: the incremental delta→TTS path only
+  synthesized deltas that arrived before the reply completed. Synthesize the
+  **whole** stripped reply once on `next_reply` (the provider still streams).
+- *Overlapping audio*: `StreamingElevenLabsTts::push_text` spawned a task per
+  clause, so a multi-clause reply synthesized concurrently and interleaved PCM
+  into the shared queue. Send clauses to a **single ordered worker**.
+
+**Files.** `crates/eve-idfon/src/lib.rs` (ack),
+`crates/idfon-voice/src/deepgram.rs` (accumulate),
+`crates/idfon-voice-agent/src/cascade.rs` (whole-reply),
+`crates/idfon-voice/src/elevenlabs.rs` (ordered worker).
+
+**Lesson.** In the cascade, TTS must be driven by the **completed** reply, not
+by best-effort stream ordering; and an ack the bridge waits on is part of the
+delivery contract, not an optional courtesy.
+
 ## iOS live-call audio too quiet; volume buttons barely change it (2026-09-25, FIXED)
 
 **Symptom.** On the iPhone, GPT-Live's voice during a `gpt-live-1` live

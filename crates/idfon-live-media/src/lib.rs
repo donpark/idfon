@@ -386,11 +386,6 @@ pub async fn subscribe_caller(
             Duration::from_millis(CHUNK_MS),
         );
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // Visibility: raw = decoded frames received from the caller's
-        // broadcast, emitted = paced 20 ms frames handed to the backend. If raw
-        // stays 0 the caller audio never reached the holder.
-        let mut raw_frames = 0u64;
-        let mut emitted = 0u64;
         loop {
             tokio::select! {
                 _ = tick.tick() => {
@@ -398,15 +393,10 @@ pub async fn subscribe_caller(
                     let mut pcm = vec![0i16; CHUNK_SAMPLES];
                     let _ = pacer.tick(&mut pcm);
                     if frame_tx.send(pcm).await.is_err() { break; }
-                    emitted += 1;
-                    if emitted % 50 == 0 {
-                        eprintln!("[live-media] caller frames raw={raw_frames} emitted={emitted}");
-                    }
                 }
                 item = raw.recv() => {
                     match item {
                         Some(Ok(frame)) => {
-                            raw_frames += 1;
                             let samples: Vec<i16> = frame.data
                                 .chunks_exact(2)
                                 .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
@@ -418,7 +408,6 @@ pub async fn subscribe_caller(
                 }
             }
         }
-        eprintln!("[live-media] caller subscription ended raw={raw_frames} emitted={emitted}");
         drop(live);
     });
     Ok(frame_rx)

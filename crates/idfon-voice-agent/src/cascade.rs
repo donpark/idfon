@@ -104,12 +104,7 @@ impl CascadeBackend {
                     if let Some(EndpointEvent::SpeechEnded) = endpointer.push(&pcm)? {
                         let playing = bargein.is_playing();
                         let started = Instant::now();
-                        let flushed = stt.flush()?;
-                        eprintln!(
-                            "[voice-agent] endpoint flush chars={}",
-                            flushed.as_deref().map(str::len).unwrap_or(0)
-                        );
-                        if let Some(text) = flushed {
+                        if let Some(text) = stt.flush()? {
                             let text = text.trim().to_string();
                             if !text.is_empty() && !echo.is_echo(&text) {
                                 match caller_decision(&text, playing, false) {

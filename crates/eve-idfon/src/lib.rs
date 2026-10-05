@@ -1268,11 +1268,6 @@ async fn handle_reply(
         .get(target_key)
         .cloned()
         .ok_or_else(|| anyhow!("unknown in_reply_to {}", in_reply_to))?;
-    eprintln!(
-        "[eve-idfon] reply in_reply_to={in_reply_to} live_only={} commentary={}",
-        target.live_only,
-        target.live_commentary.is_some()
-    );
     // A live-call delegation also wants the spoken text (envelopes stripped)
     // fed back to the live session; capture it before `text` moves.
     let commentary = target.live_commentary.clone();
