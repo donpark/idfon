@@ -173,13 +173,12 @@ impl VoiceEngine for ElevenLabsTtsEngine {
         format: AudioFormat,
         sink: AudioSink,
     ) -> Result<Box<dyn TtsSession>> {
-        Ok(Box::new(StreamingElevenLabsTts {
-            engine: self.clone(),
+        Ok(Box::new(StreamingElevenLabsTts::new(
+            self.clone(),
             format,
-            voice: voice.to_string(),
+            voice.to_string(),
             sink,
-            tasks: Vec::new(),
-        }))
+        )))
     }
 
     fn endpointer(&self, format: AudioFormat) -> Result<Box<dyn Endpointer>> {
@@ -187,14 +186,35 @@ impl VoiceEngine for ElevenLabsTtsEngine {
     }
 }
 
-/// Streaming session: each clause is synthesized in a background task that
-/// pushes audio to the sink; `finish` waits for the tasks.
+/// Streaming session: clauses go to a single worker that synthesizes them **in
+/// order**, streaming each to the sink. A task *per clause* is wrong here —
+/// concurrent syntheses interleave their PCM and a multi-clause reply plays on
+/// top of itself.
 struct StreamingElevenLabsTts {
-    engine: ElevenLabsTtsEngine,
-    format: AudioFormat,
-    voice: String,
-    sink: AudioSink,
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    worker: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl StreamingElevenLabsTts {
+    fn new(
+        engine: ElevenLabsTtsEngine,
+        format: AudioFormat,
+        voice: String,
+        sink: AudioSink,
+    ) -> Self {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let worker = tokio::spawn(async move {
+            while let Some(text) = rx.recv().await {
+                if let Err(error) = engine.stream_speak(&voice, format, &text, &sink).await {
+                    eprintln!("[idfon-voice] elevenlabs stream failed: {error}");
+                }
+            }
+        });
+        Self {
+            tx: Some(tx),
+            worker: Some(worker),
+        }
+    }
 }
 
 impl TtsSession for StreamingElevenLabsTts {
@@ -202,26 +222,20 @@ impl TtsSession for StreamingElevenLabsTts {
         if delta.trim().is_empty() {
             return Ok(Vec::new());
         }
-        let engine = self.engine.clone();
-        let voice = self.voice.clone();
-        let format = self.format;
-        let sink = self.sink.clone();
-        let text = delta.to_string();
-        self.tasks.push(tokio::spawn(async move {
-            if let Err(error) = engine.stream_speak(&voice, format, &text, &sink).await {
-                eprintln!("[idfon-voice] elevenlabs stream failed: {error}");
-            }
-        }));
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(delta.to_string());
+        }
         Ok(Vec::new())
     }
 
     fn finish(&mut self) -> Result<Vec<PcmChunk>> {
-        let tasks = std::mem::take(&mut self.tasks);
-        block_on(async move {
-            for task in tasks {
-                let _ = task.await;
-            }
-        });
+        // Close the queue and wait for the worker to drain every clause.
+        drop(self.tx.take());
+        if let Some(worker) = self.worker.take() {
+            block_on(async move {
+                let _ = worker.await;
+            });
+        }
         Ok(Vec::new())
     }
 }
