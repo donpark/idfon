@@ -92,6 +92,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private weak var voiceCaptionLabel: NSTextField?
     private var voiceEnginePopups: [VoiceOption.Kind: NSPopUpButton] = [:]
     private var voiceCatalog: [VoiceOption] = []
+    private weak var asrEnginePopup: NSPopUpButton?
+    private weak var ttsEnginePopup: NSPopUpButton?
 
     init(peer: Peer, app: AppModel) {
         self.peer = peer
@@ -1347,6 +1349,18 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         voiceCatalog = []
         rebuildVoiceEngines()
 
+        // Per-contact on-device engines (used when the call runs the client
+        // cascade); "Automatic" follows the app's global default.
+        let onDeviceAsrPopup = NSPopUpButton()
+        onDeviceAsrPopup.target = self
+        onDeviceAsrPopup.action = #selector(onDeviceEngineChanged(_:))
+        asrEnginePopup = onDeviceAsrPopup
+        let onDeviceTtsPopup = NSPopUpButton()
+        onDeviceTtsPopup.target = self
+        onDeviceTtsPopup.action = #selector(onDeviceEngineChanged(_:))
+        ttsEnginePopup = onDeviceTtsPopup
+        rebuildOnDeviceEngines()
+
         let stack = NSStackView(views: [
             NSTextField(labelWithString: peer.displayName),
             endpoint,
@@ -1354,6 +1368,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             NSTextField(labelWithString: "Speech to text"), sttPopup,
             NSTextField(labelWithString: "Text to speech"), ttsPopup,
             voiceCaption,
+            NSTextField(labelWithString: "On-device recognizer"), onDeviceAsrPopup,
+            NSTextField(labelWithString: "On-device voice"), onDeviceTtsPopup,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -1394,6 +1410,38 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         voiceCaptionLabel?.stringValue = voiceCatalog.isEmpty
             ? "No voice catalog advertised by this agent."
             : "Engines the agent advertises. A full-duplex model fills both."
+    }
+
+    private func rebuildOnDeviceEngines() {
+        let asr = ContactOnDeviceEngines.asr(for: peer.id).flatMap(AsrBackend.init(rawValue:))
+        let tts = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:))
+        fillEnginePopup(asrEnginePopup, selected: asr?.rawValue,
+                        options: AsrBackend.allCases.map { ($0.rawValue, $0.title) })
+        fillEnginePopup(ttsEnginePopup, selected: tts?.rawValue,
+                        options: TtsBackend.allCases.map { ($0.rawValue, $0.title) })
+    }
+
+    private func fillEnginePopup(_ popup: NSPopUpButton?, selected: String?, options: [(String, String)]) {
+        guard let popup else { return }
+        popup.removeAllItems()
+        popup.addItem(withTitle: "Automatic")
+        for (raw, title) in options {
+            popup.addItem(withTitle: title)
+            popup.lastItem?.representedObject = raw
+        }
+        if let selected,
+           let index = popup.itemArray.firstIndex(where: { ($0.representedObject as? String) == selected }) {
+            popup.selectItem(at: index)
+        } else {
+            popup.selectItem(at: 0)
+        }
+    }
+
+    @objc private func onDeviceEngineChanged(_ sender: NSPopUpButton) {
+        let asr = asrEnginePopup?.selectedItem?.representedObject as? String
+        let tts = ttsEnginePopup?.selectedItem?.representedObject as? String
+        ContactOnDeviceEngines.set(asr: asr, tts: tts, for: peer.id)
+        rebuildOnDeviceEngines()
     }
 
     @objc private func voiceEngineChanged(_ sender: NSPopUpButton) {

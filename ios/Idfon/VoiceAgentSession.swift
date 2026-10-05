@@ -25,8 +25,11 @@ final class VoiceAgentSession: NSObject {
     }
 
     private let voice = OnDeviceVoice.shared
-    /// Reply speech backend (Apple default; Kokoro opt-in via `IDFON_TTS`).
-    private let tts = SpeechEngines.tts
+    /// Reply speech backend; resolved per contact at `start` (else the global
+    /// default: Apple fallback, Kokoro opt-in via `IDFON_TTS`).
+    private var tts: TtsEngine = SpeechEngines.tts
+    /// Recognizer backend; resolved per contact at `start`.
+    private var asrBackend = SpeechEngines.asrBackend
     private let segmenter = VoicePromptSegmenter()
     private var asr: (any AsrEngine)?
 
@@ -96,6 +99,11 @@ final class VoiceAgentSession: NSObject {
                 return
             }
             Automation.mark("voice-agent: start peer=\(peer.id)")
+            // Per-contact on-device engines (else the app defaults). Resolved
+            // here, once the peer id is known, before the recognizer is built.
+            tts = SpeechEngines.makeTts(
+                ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.backend)
+            asrBackend = ContactOnDeviceEngines.asr(for: peer.id).flatMap(AsrBackend.init(rawValue:)) ?? SpeechEngines.asrBackend
             setState(.listening(""))
             // A recognizer may need a first-run download/CoreML compile;
             // block the turn loop until it is ready so the first listen does
@@ -351,7 +359,7 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func startAnalyzer() async {
-        let engine = SpeechEngines.makeAsr()
+        let engine = SpeechEngines.makeAsr(asrBackend)
         asr = engine
         guard let engine else { return }
         do {

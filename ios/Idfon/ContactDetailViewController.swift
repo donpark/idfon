@@ -14,6 +14,8 @@ final class ContactDetailViewController: UIViewController {
     private let sttButton = UIButton(type: .system)
     private let ttsButton = UIButton(type: .system)
     private let voiceCaption = UILabel()
+    private let asrEngineButton = UIButton(type: .system)
+    private let ttsEngineButton = UIButton(type: .system)
     private var catalog: [VoiceOption] = []
 
     init(peer: Peer) {
@@ -45,6 +47,7 @@ final class ContactDetailViewController: UIViewController {
         idLabel.numberOfLines = 0
 
         configureVoiceControls()
+        configureEngines()
 
         let delete = UIButton(type: .system)
         delete.setTitle("Delete Contact", for: .normal)
@@ -59,6 +62,9 @@ final class ContactDetailViewController: UIViewController {
             voiceRow("Speech to text", sttButton),
             voiceRow("Text to speech", ttsButton),
             voiceCaption,
+            sectionLabel("On-device"),
+            voiceRow("Recognizer", asrEngineButton),
+            voiceRow("Voice", ttsEngineButton),
             delete,
         ])
         stack.axis = .vertical
@@ -138,6 +144,47 @@ final class ContactDetailViewController: UIViewController {
         rebuildVoice()
     }
 
+    // MARK: - On-device engines
+
+    private func configureEngines() {
+        for button in [asrEngineButton, ttsEngineButton] {
+            button.showsMenuAsPrimaryAction = true
+            button.contentHorizontalAlignment = .leading
+            button.titleLabel?.font = .preferredFont(forTextStyle: .body)
+            button.setTitleColor(.label, for: .normal)
+        }
+        rebuildEngines()
+    }
+
+    private func rebuildEngines() {
+        let asr = ContactOnDeviceEngines.asr(for: peer.id).flatMap(AsrBackend.init(rawValue:))
+        let tts = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:))
+        asrEngineButton.setTitle(asr?.title ?? "Automatic", for: .normal)
+        ttsEngineButton.setTitle(tts?.title ?? "Automatic", for: .normal)
+        asrEngineButton.menu = engineMenu(
+            selected: asr?.rawValue, options: AsrBackend.allCases.map { ($0.rawValue, $0.title) }) { [weak self] raw in
+            self?.chooseEngine(asr: raw, tts: ContactOnDeviceEngines.tts(for: self?.peer.id ?? ""))
+        }
+        ttsEngineButton.menu = engineMenu(
+            selected: tts?.rawValue, options: TtsBackend.allCases.map { ($0.rawValue, $0.title) }) { [weak self] raw in
+            self?.chooseEngine(asr: ContactOnDeviceEngines.asr(for: self?.peer.id ?? ""), tts: raw)
+        }
+    }
+
+    private func engineMenu(selected: String?, options: [(String, String)],
+                            choose: @escaping (String?) -> Void) -> UIMenu {
+        var actions = [UIAction(title: "Automatic", state: selected == nil ? .on : .off) { _ in choose(nil) }]
+        for (raw, title) in options {
+            actions.append(UIAction(title: title, state: raw == selected ? .on : .off) { _ in choose(raw) })
+        }
+        return UIMenu(children: actions)
+    }
+
+    private func chooseEngine(asr: String?, tts: String?) {
+        ContactOnDeviceEngines.set(asr: asr, tts: tts, for: peer.id)
+        rebuildEngines()
+    }
+
     private func voiceRow(_ title: String, _ button: UIButton) -> UIStackView {
         let label = UILabel()
         label.text = title
@@ -195,6 +242,7 @@ final class ContactDetailViewController: UIViewController {
                 try await client.removePeer(ref: peer.id)
                 CapabilityTickets.remove(for: peer.id)
                 ContactVoiceSelection.remove(for: peer.id)
+                ContactOnDeviceEngines.remove(for: peer.id)
                 await MainActor.run {
                     self.onChanged?()
                     self.navigationController?.popViewController(animated: true)

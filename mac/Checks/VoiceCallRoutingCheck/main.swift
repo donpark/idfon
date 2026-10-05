@@ -76,4 +76,15 @@ check(ContactVoiceSelection.selection(for: peer).tts == "openai/gpt-live-1", "tt
 ContactVoiceSelection.remove(for: peer)
 check(ContactVoiceSelection.selection(for: peer).tts == nil, "remove clears the entry")
 
+// On-device engine choice: unset by default; per-half; removed with the contact.
+check(ContactOnDeviceEngines.asr(for: peer) == nil, "default on-device asr is unset")
+ContactOnDeviceEngines.set(asr: "parakeet", tts: "kokoro", for: peer)
+check(ContactOnDeviceEngines.asr(for: peer) == "parakeet", "on-device asr persists")
+check(ContactOnDeviceEngines.tts(for: peer) == "kokoro", "on-device tts persists")
+ContactOnDeviceEngines.set(asr: nil, tts: "kokoro", for: peer)
+check(ContactOnDeviceEngines.asr(for: peer) == nil, "on-device asr cleared")
+check(ContactOnDeviceEngines.tts(for: peer) == "kokoro", "on-device tts kept")
+ContactOnDeviceEngines.remove(for: peer)
+check(ContactOnDeviceEngines.tts(for: peer) == nil, "on-device remove clears the entry")
+
 print("ALL OK")

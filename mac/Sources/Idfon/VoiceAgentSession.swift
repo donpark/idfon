@@ -24,6 +24,9 @@ final class VoiceAgentSession: NSObject {
     }
 
     private let voice = OnDeviceVoice.shared
+    /// Reply-voice and recognizer backends; resolved per contact at `start`.
+    private var tts: TtsEngine = SpeechEngines.tts
+    private var asrBackend = SpeechEngines.asrBackend
     private let segmenter = VoicePromptSegmenter()
     private var asr: (any AsrEngine)?
 
@@ -87,6 +90,11 @@ final class VoiceAgentSession: NSObject {
                 return
             }
             Automation.mark("voice-agent: start peer=\(peer.id)")
+            // Per-contact on-device engines (else the app defaults). Resolved
+            // here, once the peer id is known, before the recognizer is built.
+            tts = SpeechEngines.makeTts(
+                ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.ttsBackend)
+            asrBackend = ContactOnDeviceEngines.asr(for: peer.id).flatMap(AsrBackend.init(rawValue:)) ?? SpeechEngines.asrBackend
             // Wait for the recognizer before the turn loop (first-run model).
             await startAnalyzer()
             setState(.listening(""))
@@ -122,7 +130,7 @@ final class VoiceAgentSession: NSObject {
         stopRequested = true
         // Cancel in-flight speech now; otherwise hang-up waits out the whole
         // utterance while the loop is parked in `speak()`.
-        SpeechEngines.tts.stop()
+        tts.stop()
         deliver(nil)
     }
 
@@ -147,7 +155,6 @@ final class VoiceAgentSession: NSObject {
         } else {
             parts.append(asrLabel)
         }
-        let tts = SpeechEngines.tts
         let ttsLabel = tts.name == "kokoro" ? "Kokoro" : tts.name.capitalized
         if let ms = tts.lastLatencyMs {
             parts.append("\(ttsLabel) \(String(format: "%.1f", Double(ms) / 1000)) s")
@@ -306,7 +313,7 @@ final class VoiceAgentSession: NSObject {
     // MARK: - analyzer lifecycle
 
     private func startAnalyzer() async {
-        let engine = SpeechEngines.makeAsr()
+        let engine = SpeechEngines.makeAsr(asrBackend)
         asr = engine
         guard let engine else { return }
         do {
@@ -458,7 +465,7 @@ final class VoiceAgentSession: NSObject {
             segmenter.setEnabled(true)
             asr?.resume()
         }
-        await SpeechEngines.tts.speak(text)
+        await tts.speak(text)
         var interrupted: String?
         if armed {
             bargeInArmed = false
@@ -493,7 +500,7 @@ final class VoiceAgentSession: NSObject {
         }
         Automation.mark("voice-agent: barge-in engaged text=\(text)")
         bargeInHeard = text
-        SpeechEngines.tts.stop()
+        tts.stop()
     }
 
     static func stripEnvelopes(_ text: String) -> String {
