@@ -11,14 +11,15 @@
 //! [`AudioSink`] as they produce it (`tts_with_sink`). Batch providers return
 //! chunks, which are routed through the same sink.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use idfon_voice::{
-    normalize_for_speech, AudioFormat, AudioSink, EndpointEvent, MessageDelta, PcmChunk,
-    StreamingSpeaker, VoiceEngine,
+    is_cancellable, normalize_for_speech, AudioFormat, AudioSink, BargeInController,
+    EchoSuppressor, EndpointEvent, MessageDelta, PcmChunk, StreamingSpeaker, VoiceEngine,
 };
 use serde_json::Value;
 use tokio::time::MissedTickBehavior;
@@ -76,6 +77,14 @@ impl CascadeBackend {
         };
         let mut speaker: Option<StreamingSpeaker> = None;
         let mut deltas_seen = false;
+        // F6 barge-in state: the counter-based controller, the echo filter over
+        // the text being spoken, the turn currently playing, and the turns a
+        // barge-in cancelled (their remaining deltas are dropped).
+        let mut bargein = BargeInController::new();
+        let mut echo = EchoSuppressor::new();
+        let mut played_text = String::new();
+        let mut current_turn: Option<String> = None;
+        let mut cancelled: HashSet<String> = HashSet::new();
 
         loop {
             tokio::select! {
@@ -84,56 +93,113 @@ impl CascadeBackend {
                     caller_frames += 1;
                     let _ = stt.push(&pcm);
                     if let Some(EndpointEvent::SpeechEnded) = endpointer.push(&pcm)? {
-                        // Close out any in-flight reply before the next turn.
-                        if let Some(mut active) = speaker.take() {
-                            emit(active.finish()?, &sink);
-                        }
-                        deltas_seen = false;
-                        first_ms.store(0, Ordering::Relaxed);
-                        audio_ms.store(0, Ordering::Relaxed);
-                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                        let playing = bargein.is_playing();
                         let started = Instant::now();
                         if let Some(text) = stt.flush()? {
                             let text = text.trim().to_string();
-                            if !text.is_empty() {
-                                pending = Some((
-                                    started.elapsed().as_millis() as u64,
-                                    caller_frames * idfon_live_media::CHUNK_MS,
-                                ));
-                                media.bridge.record("caller", &text);
-                                media.bridge.inject(&text).await;
+                            if !text.is_empty() && !echo.is_echo(&text) {
+                                match caller_decision(&text, playing, false) {
+                                    CallerDecision::Ignore => {
+                                        // Backchannel/sub-minimum while the agent
+                                        // speaks: keep playing, do not take a turn.
+                                    }
+                                    CallerDecision::Steer => {
+                                        // Before playback an utterance is a steer:
+                                        // drop nothing, queue it as the next turn.
+                                        if let Some(mut active) = speaker.take() {
+                                            emit(active.finish()?, &sink);
+                                        }
+                                        deltas_seen = false;
+                                        first_ms.store(0, Ordering::Relaxed);
+                                        audio_ms.store(0, Ordering::Relaxed);
+                                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                                        pending = Some((
+                                            started.elapsed().as_millis() as u64,
+                                            caller_frames * idfon_live_media::CHUNK_MS,
+                                        ));
+                                        media.bridge.record("caller", &text);
+                                        media.bridge.inject(&text).await;
+                                    }
+                                    CallerDecision::Queue => {
+                                        // During playback a cancellable utterance
+                                        // cancels: flush the return queue, drop the
+                                        // rest of the turn, record what played, and
+                                        // queue the caller's new turn.
+                                        bargein.barge_in();
+                                        if let Some(turn) = current_turn.take() {
+                                            bargein.record_truncation(turn.as_str(), played_text.as_str());
+                                            media.bridge.record_playback_truncated(&turn, &played_text);
+                                            cancelled.insert(turn);
+                                        }
+                                        media.audio.clear();
+                                        speaker = None;
+                                        deltas_seen = false;
+                                        played_text.clear();
+                                        echo.clear_spoken();
+                                        first_ms.store(0, Ordering::Relaxed);
+                                        audio_ms.store(0, Ordering::Relaxed);
+                                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                                        pending = Some((
+                                            started.elapsed().as_millis() as u64,
+                                            caller_frames * idfon_live_media::CHUNK_MS,
+                                        ));
+                                        media.bridge.record("caller", &text);
+                                        media.bridge.inject(&text).await;
+                                    }
+                                }
                             }
                         }
                         caller_frames = 0;
                     }
                 }
                 Some((turn_id, step, seq, text)) = media.deltas.recv() => {
-                    if speaker.is_none() {
-                        speaker = Some(StreamingSpeaker::new(
-                            self.engine.tts_with_sink("default", format, sink.clone())?,
-                        ));
-                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                    // Deltas for a barge-in-cancelled turn are dropped by turn
+                    // id; the counter bump guarantees the old turn is dead while
+                    // the queued follow-up (a fresh turn) speaks normally.
+                    if cancelled.contains(&turn_id) {
+                        // drop
+                    } else {
+                        if speaker.is_none() {
+                            speaker = Some(StreamingSpeaker::new(
+                                self.engine.tts_with_sink("default", format, sink.clone())?,
+                            ));
+                            bargein.playback_started();
+                            if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                        }
+                        deltas_seen = true;
+                        current_turn = Some(turn_id.clone());
+                        played_text.push_str(&text);
+                        echo.set_spoken(&played_text);
+                        let chunks = speaker
+                            .as_mut()
+                            .expect("speaker just set")
+                            .push(MessageDelta::new(turn_id, step, seq, &text))?;
+                        emit(chunks, &sink);
                     }
-                    deltas_seen = true;
-                    let chunks = speaker
-                        .as_mut()
-                        .expect("speaker just set")
-                        .push(MessageDelta::new(turn_id, step, seq, &text))?;
-                    emit(chunks, &sink);
                 }
-                Some((_turn_id, reply)) = media.bridge.next_reply() => {
+                Some((turn_id, reply)) = media.bridge.next_reply() => {
                     let spoken = strip_envelopes(&reply);
-                    if deltas_seen {
+                    // Forget the cancelled turn once its own (empty) reply
+                    // arrives, so a later turn reusing the id is not dropped.
+                    let cancelled_turn = cancelled.remove(&turn_id);
+                    if cancelled_turn {
+                        // The reply that barge-in cancelled: never speak it.
+                    } else if deltas_seen {
                         if let Some(mut active) = speaker.take() {
                             emit(active.finish()?, &sink);
                         }
                     } else if !spoken.is_empty() {
                         // Fallback: no deltas (older bridge) — speak the whole reply.
                         if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                        bargein.playback_started();
+                        current_turn = Some(turn_id.clone());
+                        let normalized = normalize_for_speech(&spoken);
+                        played_text.clear();
+                        played_text.push_str(&normalized);
+                        echo.set_spoken(&played_text);
                         let mut whole = StreamingSpeaker::new(
                             self.engine.tts_with_sink("default", format, sink.clone())?,
                         );
-                        let normalized = normalize_for_speech(&spoken);
                         let chunks = whole.push(MessageDelta::new("reply", 0, 0, &normalized))?;
                         emit(chunks, &sink);
                         let tail = whole.finish()?;
@@ -160,9 +226,26 @@ impl CascadeBackend {
                     deltas_seen = false;
                     first_ms.store(0, Ordering::Relaxed);
                     audio_ms.store(0, Ordering::Relaxed);
+                    // Playback (and its barge-in window) ends once the return
+                    // queue has drained; keep the turn/text until then so a
+                    // drain-window barge-in can still record truncation.
+                    if media.audio.is_empty() {
+                        bargein.playback_ended();
+                        current_turn = None;
+                        played_text.clear();
+                        echo.clear_spoken();
+                    }
                 }
                 _ = tick.tick() => {
                     if media.stop.load(Ordering::Relaxed) { break; }
+                    // The reply ended but its audio is still draining; close the
+                    // barge-in playback window when the queue empties.
+                    if bargein.is_playing() && media.audio.is_empty() {
+                        bargein.playback_ended();
+                        current_turn = None;
+                        played_text.clear();
+                        echo.clear_spoken();
+                    }
                 }
             }
         }
@@ -219,4 +302,49 @@ fn provider_label(engine: Option<&Value>) -> String {
         return format!("{}|{}", name(stt), tts);
     }
     name(engine)
+}
+
+/// What to do with a caller utterance, per F6: an utterance heard before
+/// playback steers (drop nothing); a cancellable utterance during playback
+/// cancels playback and queues the follow-up; a backchannel/sub-minimum (or a
+/// tool-window utterance) while playing is ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallerDecision {
+    Ignore,
+    Steer,
+    Queue,
+}
+
+fn caller_decision(text: &str, playing: bool, in_tool_window: bool) -> CallerDecision {
+    if !playing {
+        return CallerDecision::Steer;
+    }
+    if is_cancellable(text, playing, in_tool_window) {
+        CallerDecision::Queue
+    } else {
+        CallerDecision::Ignore
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellable_speech_during_playback_cancels_and_queues() {
+        assert_eq!(caller_decision("stop that", true, false), CallerDecision::Queue);
+    }
+
+    #[test]
+    fn backchannel_and_sub_minimum_are_ignored_while_playing() {
+        assert_eq!(caller_decision("uh-huh", true, false), CallerDecision::Ignore);
+        assert_eq!(caller_decision("x", true, false), CallerDecision::Ignore);
+        assert_eq!(caller_decision("stop that", true, true), CallerDecision::Ignore);
+    }
+
+    #[test]
+    fn pre_playback_speech_steers_without_cancelling() {
+        assert_eq!(caller_decision("hello there", false, false), CallerDecision::Steer);
+        assert_eq!(caller_decision("uh-huh", false, false), CallerDecision::Steer);
+    }
 }

@@ -190,6 +190,15 @@ impl TurnBridge {
         );
     }
 
+    /// Record what the caller had heard before a barge-in cancelled playback
+    /// (F6/P4): the truncated agent turn id and the text played so far.
+    pub fn record_playback_truncated(&self, msg_id: &str, heard_until: &str) {
+        records::store().append(
+            &self.peer_id,
+            records::VoiceRecord::playback_truncated(&self.call_id, msg_id, heard_until),
+        );
+    }
+
     pub fn call_id(&self) -> &str {
         &self.call_id
     }
