@@ -36,6 +36,9 @@ pub struct CascadeBackend {
     engine: Arc<dyn VoiceEngine>,
     provider: String,
     format: AudioFormat,
+    /// Who runs each half (hybrid `voice_route`): `false` = caller on-device.
+    stt_server: bool,
+    tts_server: bool,
 }
 
 impl VoiceBackend for CascadeBackend {
@@ -51,8 +54,10 @@ impl VoiceBackend for CascadeBackend {
 impl CascadeBackend {
     async fn run_loop(&mut self, mut media: VoiceMedia) -> Result<()> {
         let format = self.format;
-        let mut stt = self.engine.stt(format)?;
-        let mut endpointer = self.engine.endpointer(format)?;
+        let stt_server = self.stt_server;
+        let tts_server = self.tts_server;
+        let mut stt = if stt_server { Some(self.engine.stt(format)?) } else { None };
+        let mut endpointer = if stt_server { Some(self.engine.endpointer(format)?) } else { None };
         let mut tick = tokio::time::interval(Duration::from_millis(200));
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -92,9 +97,11 @@ impl CascadeBackend {
 
         loop {
             tokio::select! {
-                item = media.caller.recv() => {
+                item = media.caller.recv(), if stt_server => {
                     let Some(pcm) = item else { break };
                     caller_frames += 1;
+                    let stt = stt.as_mut().expect("stt session");
+                    let endpointer = endpointer.as_mut().expect("endpointer");
                     let _ = stt.push(&pcm);
                     if let Some(EndpointEvent::SpeechEnded) = endpointer.push(&pcm)? {
                         let playing = bargein.is_playing();
@@ -174,13 +181,49 @@ impl CascadeBackend {
                         caller_frames = 0;
                     }
                 }
+                // STT on-device: the app sends the caller transcript.
+                Some(text) = media.caller_text.recv(), if !stt_server => {
+                    let text = text.trim().to_string();
+                    if !text.is_empty()
+                        && !matches!(caller_decision(&text, bargein.is_playing(), false), CallerDecision::Ignore)
+                    {
+                        if bargein.is_playing() {
+                            bargein.barge_in();
+                            if let Some(turn) = current_turn.take() {
+                                bargein.record_truncation(turn.as_str(), played_text.as_str());
+                                media.bridge.record_playback_truncated(&turn, &played_text);
+                                cancelled.insert(turn);
+                            }
+                            media.audio.clear();
+                            speaker = None;
+                            deltas_seen = false;
+                            played_text.clear();
+                            echo.clear_spoken();
+                        } else if let Some(mut active) = speaker.take() {
+                            emit(active.finish()?, &sink);
+                        }
+                        first_ms.store(0, Ordering::Relaxed);
+                        audio_ms.store(0, Ordering::Relaxed);
+                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                        pending = Some((0, 0));
+                        media.bridge.record("caller", &text);
+                        let turn_id = media.bridge.inject(&text).await;
+                        send_call_transcript(
+                            &media.platform,
+                            media.bridge.call_id(),
+                            CallSpeaker::Caller,
+                            &turn_id,
+                            &text,
+                            true,
+                        )
+                        .await;
+                    }
+                }
                 Some((turn_id, step, seq, text)) = media.deltas.recv() => {
                     // Deltas for a barge-in-cancelled turn are dropped by turn
                     // id; the counter bump guarantees the old turn is dead while
                     // the queued follow-up (a fresh turn) speaks normally.
-                    if cancelled.contains(&turn_id) {
-                        // drop
-                    } else {
+                    if tts_server && !cancelled.contains(&turn_id) {
                         if speaker.is_none() {
                             speaker = Some(StreamingSpeaker::new(
                                 self.engine.tts_with_sink("default", format, sink.clone())?,
@@ -204,28 +247,30 @@ impl CascadeBackend {
                     // Forget the cancelled turn once its own (empty) reply
                     // arrives, so a later turn reusing the id is not dropped.
                     let cancelled_turn = cancelled.remove(&turn_id);
-                    if cancelled_turn {
-                        // The reply that barge-in cancelled: never speak it.
-                    } else if deltas_seen {
-                        if let Some(mut active) = speaker.take() {
-                            emit(active.finish()?, &sink);
+                    if tts_server {
+                        if cancelled_turn {
+                            // The reply that barge-in cancelled: never speak it.
+                        } else if deltas_seen {
+                            if let Some(mut active) = speaker.take() {
+                                emit(active.finish()?, &sink);
+                            }
+                        } else if !spoken.is_empty() {
+                            // Fallback: no deltas (older bridge) — speak the whole reply.
+                            if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
+                            bargein.playback_started();
+                            current_turn = Some(turn_id.clone());
+                            let normalized = normalize_for_speech(&spoken);
+                            played_text.clear();
+                            played_text.push_str(&normalized);
+                            echo.set_spoken(&played_text);
+                            let mut whole = StreamingSpeaker::new(
+                                self.engine.tts_with_sink("default", format, sink.clone())?,
+                            );
+                            let chunks = whole.push(MessageDelta::new("reply", 0, 0, &normalized))?;
+                            emit(chunks, &sink);
+                            let tail = whole.finish()?;
+                            emit(tail, &sink);
                         }
-                    } else if !spoken.is_empty() {
-                        // Fallback: no deltas (older bridge) — speak the whole reply.
-                        if let Ok(mut started) = reply_started.lock() { *started = Instant::now(); }
-                        bargein.playback_started();
-                        current_turn = Some(turn_id.clone());
-                        let normalized = normalize_for_speech(&spoken);
-                        played_text.clear();
-                        played_text.push_str(&normalized);
-                        echo.set_spoken(&played_text);
-                        let mut whole = StreamingSpeaker::new(
-                            self.engine.tts_with_sink("default", format, sink.clone())?,
-                        );
-                        let chunks = whole.push(MessageDelta::new("reply", 0, 0, &normalized))?;
-                        emit(chunks, &sink);
-                        let tail = whole.finish()?;
-                        emit(tail, &sink);
                     }
                     let (stt_ms, caller_audio_ms) = pending.take().unwrap_or((0, 0));
                     let mut metrics = TurnMetrics {
@@ -305,12 +350,26 @@ impl VoiceBackendFactory for CascadeFactory {
     }
 
     fn create(&self, params: &Value) -> Result<Box<dyn VoiceBackend>> {
+        // Hybrid ownership from the signed `voice_route` block; absent = both
+        // halves on the holder (the original server-cascade).
+        let route = params
+            .get("voice_route")
+            .and_then(|value| serde_json::from_value::<idfon_protocol::VoiceRoute>(value.clone()).ok());
+        let (stt_server, tts_server) = match route {
+            Some(route) => (
+                route.stt_side() == idfon_protocol::VoiceHalf::Server,
+                route.tts_side() == idfon_protocol::VoiceHalf::Server,
+            ),
+            None => (true, true),
+        };
         Ok(Box::new(CascadeBackend {
             // The voice agent's `engine` block selects the provider(s); no
             // block = AI Gateway env.
             engine: idfon_voice::providers::build_engine(params.get("engine"))?,
             provider: provider_label(params.get("engine")),
             format: AudioFormat::PCM_24K_MONO,
+            stt_server,
+            tts_server,
         }))
     }
 }

@@ -61,6 +61,12 @@ fn build_provider(value: &Value) -> Result<Arc<dyn VoiceEngine>> {
             value,
             AudioFormat::PCM_24K_MONO,
         )?)),
+        // On-device Apple engine (AVSpeechSynthesizer/SFSpeechRecognizer via the
+        // Swift C-ABI bindings). Only usable in a process that registered them
+        // (`idfon_voice_set_bindings`), i.e. the iOS app itself — so a config
+        // can run the cascade with one half on-device and the other vendored.
+        #[cfg(feature = "apple-ffi")]
+        "apple" | "on-device" | "app" => Ok(Arc::new(crate::apple_ffi::AppleVoiceEngine::new())),
         // Kokoro served by its OpenAI-compatible server (kokoro-fastapi) on
         // localhost, no API key. `stt` falls back to the same server's ASR.
         "kokoro" => Ok(Arc::new(OpenAiCompatEngine::new(kokoro_profile(value)?))),

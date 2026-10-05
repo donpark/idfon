@@ -741,7 +741,7 @@ mod tests {
         // Guards the channel-config projection the serve script forwards.
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../agents/live-voice/live.json"
+            "/../../agents/gpt-live-1/live.json"
         );
         let raw = std::fs::read_to_string(path).expect("read live.json");
         let config: GptLiveConfig = serde_json::from_str(&raw).expect("parse live.json");

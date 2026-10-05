@@ -378,6 +378,8 @@ mod tests {
             audio: Some("pcm24k".into()),
             model: Some("openai/gpt-live-1".into()),
             delegate: None,
+            stt: None,
+            tts: None,
         };
         let ticket = issue_capability_ticket_with_voice(
             &key,

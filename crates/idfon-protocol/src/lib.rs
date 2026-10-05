@@ -402,6 +402,46 @@ pub struct VoiceRoute {
     /// Voice provider for `mode = delegated`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegate: Option<VoiceDelegate>,
+    /// Which side runs speech-to-text. Absent = the mode's default (holder for
+    /// `server-cascade`/`native-duplex`, caller for `client-cascade`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stt: Option<VoiceHalf>,
+    /// Which side runs text-to-speech. Same defaulting rules as [`Self::stt`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tts: Option<VoiceHalf>,
+}
+
+/// Which side of a call owns one half of the speech pipeline. Lets a
+/// `server-cascade` run hybrid: on-device STT with holder TTS, or the reverse.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VoiceHalf {
+    /// The holder (agent) runs it.
+    Server,
+    /// The caller runs it on-device (STT: sends text; TTS: speaks transcripts).
+    Client,
+}
+
+impl VoiceRoute {
+    /// Effective STT ownership, defaulting by mode.
+    pub fn stt_side(&self) -> VoiceHalf {
+        self.stt.unwrap_or(match self.mode {
+            VoiceMode::ClientCascade => VoiceHalf::Client,
+            VoiceMode::ServerCascade | VoiceMode::NativeDuplex | VoiceMode::Delegated => {
+                VoiceHalf::Server
+            }
+        })
+    }
+
+    /// Effective TTS ownership, defaulting by mode.
+    pub fn tts_side(&self) -> VoiceHalf {
+        self.tts.unwrap_or(match self.mode {
+            VoiceMode::ClientCascade => VoiceHalf::Client,
+            VoiceMode::ServerCascade | VoiceMode::NativeDuplex | VoiceMode::Delegated => {
+                VoiceHalf::Server
+            }
+        })
+    }
 }
 
 /// Structurally what a peer is, for voice purposes.
