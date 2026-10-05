@@ -56,6 +56,7 @@ idfon-protocol = { path = "../../../crates/idfon-protocol" }
 idfon-client = { path = "../../../crates/idfon-client" }
 idfon-media = { path = "../../../crates/idfon-media" }
 idfon-daemon = { path = "../../../crates/idfon-daemon" }
+idfon-telemetry = { path = "../../../crates/idfon-telemetry" }
 
 # objc2 hard-fails to compile on non-Apple platforms, hence the target gate.
 [target.'cfg(not(target_os = "linux"))'.dependencies]

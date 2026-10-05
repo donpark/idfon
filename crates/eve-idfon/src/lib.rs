@@ -352,6 +352,9 @@ pub struct ReplyTarget {
     /// post a second (text) copy to the caller's chat. The `IDFON-CALL/1`
     /// transcript the holder sends is the single record.
     pub live_only: bool,
+    /// Correlation id read from the inbound message; echoed onto replies and
+    /// status so the whole exchange joins under one trace.
+    pub trace: Option<String>,
 }
 
 pub type Targets = Arc<Mutex<HashMap<String, ReplyTarget>>>;
@@ -385,10 +388,15 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
     // iroh needs an explicit process-default rustls provider when multiple
     // provider features are unified in the binary.
     let _ = rustls::crypto::ring::default_provider().install_default();
-    // MoQ/iroh diagnostics go to /tmp/idfon-holder-<pid>.log; env IROH_C_LOG
-    // controls the filter (default info). Essential for debugging silent
-    // subscription stalls on the live-call return leg.
-    iroh_c_ffi::util::init_tracing(PathBuf::from(format!("/tmp/idfon-holder-{}.log", std::process::id())));
+    // Holder diagnostics go to /tmp/idfon-holder-<pid>.log via the shared
+    // subscriber; IDFON_LOG/RUST_LOG/IROH_C_LOG control the filter (default
+    // info). Essential for debugging silent subscription stalls on the
+    // live-call return leg.
+    idfon_telemetry::init_file(
+        "eve-idfon",
+        &PathBuf::from(format!("/tmp/idfon-holder-{}.log", std::process::id())),
+        "info",
+    );
     let cli = Cli::parse();
     let key_file = cli.key_file;
     let live_config = cli.live_config;
@@ -499,7 +507,7 @@ fn admit_caller_to(path: &str, subject: &str) {
     {
         use std::io::Write as _;
         let _ = writeln!(file, "{subject}");
-        eprintln!("[eve-idfon] admitted voice-delegate caller {subject} to {path}");
+        tracing::info!(target: "idfon.holder", subject = %subject, path = %path, "admitted voice-delegate caller");
     }
 }
 
@@ -547,7 +555,7 @@ fn load_key(path: Option<&Path>, ephemeral: bool) -> Result<SigningKey> {
         Some(value) => idfon_core::decode_signing_key(value.trim())
             .ok_or_else(|| anyhow!("invalid key: expected 64 hex characters")),
         None if ephemeral => {
-            eprintln!("[eve-idfon] WARNING: no stable key; using an ephemeral identity");
+            tracing::warn!(target: "idfon.holder", "no stable key; using an ephemeral identity");
             Ok(idfon_core::generate_identity())
         }
         None => Err(anyhow!(
@@ -599,9 +607,10 @@ async fn serve(
         "{}",
         serde_json::to_string(&transport.endpoint().addr()).context("serialize endpoint ticket")?
     );
-    eprintln!(
-        "[eve-idfon] serving as {}",
-        transport.endpoint().id()
+    tracing::info!(
+        target: "idfon.holder",
+        identity = %transport.endpoint().id(),
+        "serving"
     );
 
     let (stream, _) = listener.accept().await.context("accept IPC client")?;
@@ -782,9 +791,13 @@ async fn serve(
                         })
                         .unwrap_or(false);
                     if !routed {
-                        eprintln!(
-                            "[eve-idfon] stream delta turn={turn_id} step={step_index} seq={sequence} chars={}",
-                            text.chars().count()
+                        tracing::info!(
+                            target: "idfon.holder",
+                            turn_id = %turn_id,
+                            step = step_index,
+                            seq = sequence,
+                            chars = text.chars().count(),
+                            "stream delta not routed"
                         );
                     }
                 }
@@ -973,14 +986,16 @@ async fn handle_message(
         match validate_message(&message, &remote_endpoint_id, allow.as_slice(), &holder_peer_id) {
             Ok(ticket) => ticket,
             Err(error) => {
-                eprintln!(
-                    "[eve-idfon] rejected message={} sender={} signed_endpoint={} remote_endpoint={} ticket_issuer={:?} ticket_subject={:?}: {error}",
-                    message.message_id,
-                    message.sender.peer_id,
-                    message.sender.endpoint_id,
-                    remote_endpoint_id,
-                    message.capability_ticket.as_ref().map(|ticket| ticket.issuer.as_str()),
-                    message.capability_ticket.as_ref().and_then(|ticket| ticket.subject.as_deref()),
+                tracing::warn!(
+                    target: "idfon.holder",
+                    message_id = %message.message_id,
+                    sender = %message.sender.peer_id,
+                    signed_endpoint = %message.sender.endpoint_id,
+                    remote_endpoint = %remote_endpoint_id,
+                    ticket_issuer = ?message.capability_ticket.as_ref().map(|ticket| ticket.issuer.as_str()),
+                    ticket_subject = ?message.capability_ticket.as_ref().and_then(|ticket| ticket.subject.as_deref()),
+                    error = %error,
+                    "rejected message"
                 );
                 let _ = out_tx
                     .send(IpcFrame::Error {
@@ -995,9 +1010,9 @@ async fn handle_message(
     let wire_text = match &message.content {
         MessageContent::Text { text } => text.clone(),
     };
-    let (text, a2a_depth) = parse_a2a_envelope(&wire_text)
-        .map(|(depth, text)| (text, Some(depth)))
-        .unwrap_or((wire_text.clone(), None));
+    let (text, a2a_depth, _a2a_trace) = parse_a2a_envelope(&wire_text)
+        .map(|(depth, text, trace)| (text, Some(depth), trace))
+        .unwrap_or((wire_text.clone(), None, None));
     if a2a_depth.is_some()
         && !ticket
             .capabilities
@@ -1047,9 +1062,11 @@ async fn handle_message(
                 return Err(TransportError::Failed(error.to_string()));
             }
             if text.starts_with("IDFON-LIVE/1") {
-                eprintln!(
-                    "[eve-idfon] duplicate live control ignored peer={} idempotency_key={}",
-                    message.sender.peer_id, message.idempotency_key
+                tracing::info!(
+                    target: "idfon.holder",
+                    peer_id = %message.sender.peer_id,
+                    idempotency_key = %message.idempotency_key,
+                    "duplicate live control ignored"
                 );
             }
             return Ok(MessageAck {
@@ -1070,6 +1087,22 @@ async fn handle_message(
         seen_guard.insert(key, wire_text);
     }
 
+    // Canonical boundary event: one structured line per admitted crossing, so
+    // triage can join daemon/agent/holder logs on message_id / peer_id.
+    tracing::info!(
+        target: "idfon.seam",
+        direction = "in",
+        kind = "message",
+        message_id = %message.message_id,
+        peer_id = %message.sender.peer_id,
+        endpoint_id = %remote_endpoint_id,
+        conversation = message.conversation.as_deref().unwrap_or(""),
+        a2a_depth = a2a_depth.unwrap_or(0),
+        attachment = attachment.is_some(),
+        trace = ?message.trace,
+        "boundary"
+    );
+
     // Deduplicate call controls before they mutate the active session; transport
     // retries must not replace a call that is already running. Voice is 1:1
     // only; room membership is recorded per inbound message (below) and the
@@ -1085,14 +1118,19 @@ async fn handle_message(
             voice_mode,
             VoiceMode::NativeDuplex | VoiceMode::ServerCascade
         ) {
-            eprintln!(
-                "[eve-idfon] live control ignored: voice.mode={voice_mode:?} (text turn) message={}",
-                message.message_id
+            tracing::info!(
+                target: "idfon.holder",
+                voice_mode = ?voice_mode,
+                message_id = %message.message_id,
+                "live control ignored (text turn)"
             );
         } else if let Some(handler) = live_registry.get(capability).cloned() {
-            eprintln!(
-                "[eve-idfon] dispatch live control capability={capability} message={} idempotency_key={}",
-                message.message_id, message.idempotency_key
+            tracing::info!(
+                target: "idfon.holder",
+                capability = %capability,
+                message_id = %message.message_id,
+                idempotency_key = %message.idempotency_key,
+                "dispatch live control"
             );
             let ctx = live::LiveCallContext {
                 text: text.clone(),
@@ -1188,6 +1226,7 @@ async fn handle_message(
             a2a_depth,
             live_commentary: None,
             live_only: false,
+            trace: message.trace.clone(),
         },
     );
     drop(targets_guard);
@@ -1287,12 +1326,12 @@ async fn handle_reply(
         let target_addr = EndpointAddr::new(endpoint_id);
         let text = target
             .a2a_depth
-            .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text))
+            .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text, target.trace.as_deref()))
             .unwrap_or(text);
         let reply_ticket = reply_ticket
             .filter(|ticket| ticket.issuer == target.peer_id)
             .cloned();
-        let envelope = sign_message_with_ticket(
+        let mut envelope = sign_message_with_ticket(
             key,
             peer_id(key),
             message_id.clone(),
@@ -1302,14 +1341,27 @@ async fn handle_reply(
             reply_ticket,
         )
         .map_err(|error| anyhow!("sign reply: {error}"))?;
+        envelope.trace = target.trace.clone();
         match transport.send(&target_addr, &envelope).await {
             Ok(ack) => format!("{:?}", ack.status).to_lowercase(),
             Err(error) => {
-                eprintln!("[eve-idfon] send reply to {} failed: {error}", target.peer_id);
+                tracing::warn!(target: "idfon.holder", peer_id = %target.peer_id, error = %error, "send reply failed");
                 "failed".to_string()
             }
         }
     };
+    tracing::info!(
+        target: "idfon.seam",
+        direction = "out",
+        kind = "reply",
+        in_reply_to = %in_reply_to,
+        message_id = %message_id,
+        peer_id = %target.peer_id,
+        live_only = target.live_only,
+        status = %status,
+        trace = ?target.trace,
+        "boundary"
+    );
     out_tx
         .send(IpcFrame::ReplyAck {
             in_reply_to,
@@ -1367,7 +1419,7 @@ async fn handle_status(
     let reply_ticket = reply_ticket
         .filter(|ticket| ticket.issuer == target.peer_id)
         .cloned();
-    let envelope = sign_message_with_ticket(
+    let mut envelope = sign_message_with_ticket(
         key,
         peer_id(key),
         message_id.clone(),
@@ -1379,10 +1431,22 @@ async fn handle_status(
         reply_ticket,
     )
     .map_err(|error| anyhow!("sign status: {error}"))?;
+    envelope.trace = target.trace.clone();
     transport
         .send(&EndpointAddr::new(endpoint_id), &envelope)
         .await
         .map_err(|error| anyhow!("send status to {}: {error}", target.peer_id))?;
+    tracing::info!(
+        target: "idfon.seam",
+        direction = "out",
+        kind = "status",
+        in_reply_to = %in_reply_to,
+        message_id = %message_id,
+        peer_id = %target.peer_id,
+        event = %event,
+        trace = ?envelope.trace,
+        "boundary"
+    );
     targets.lock().await.remove(&in_reply_to);
     out_tx
         .send(IpcFrame::StatusAck {
@@ -1412,7 +1476,7 @@ async fn handle_input(
     let payload = serde_json::to_vec(&requests).context("encode input requests")?;
     let text = format!("IDFON-HITL/1\npayload={}\n", BASE64.encode(payload));
     let message_id = next_message_id("eve_input_");
-    let envelope = sign_message(
+    let mut envelope = sign_message(
         key,
         peer_id(key),
         message_id.clone(),
@@ -1421,10 +1485,22 @@ async fn handle_input(
         conversation,
     )
     .map_err(|error| anyhow!("sign input request: {error}"))?;
+    envelope.trace = Some(idfon_core::new_traceparent());
     let ack = transport
         .send(&EndpointAddr::new(endpoint_id), &envelope)
         .await
         .map_err(|error| anyhow!("send input request to {target_peer_id}: {error}"))?;
+    tracing::info!(
+        target: "idfon.seam",
+        direction = "out",
+        kind = "input",
+        request_id = %request_id,
+        message_id = %message_id,
+        peer_id = %target_peer_id,
+        status = ?ack.status,
+        trace = ?envelope.trace,
+        "boundary"
+    );
     out_tx
         .send(IpcFrame::InputAck {
             request_id,
@@ -1436,20 +1512,26 @@ async fn handle_input(
     Ok(())
 }
 
-fn encode_a2a_envelope(depth: u8, text: &str) -> String {
-    format!(
-        "IDFON-A2A/1\ndepth={depth}\npayload={}\n",
-        BASE64.encode(text.as_bytes())
-    )
+fn encode_a2a_envelope(depth: u8, text: &str, trace: Option<&str>) -> String {
+    let mut envelope = format!("IDFON-A2A/1\ndepth={depth}\n");
+    if let Some(trace) = trace {
+        // Offered to the agent as an optional correlation id; older decoders
+        // ignore unknown lines.
+        envelope.push_str(&format!("trace={trace}\n"));
+    }
+    envelope.push_str(&format!("payload={}\n", BASE64.encode(text.as_bytes())));
+    envelope
 }
 
-fn parse_a2a_envelope(text: &str) -> Option<(u8, String)> {
+fn parse_a2a_envelope(text: &str) -> Option<(u8, String, Option<String>)> {
     let mut depth = None;
     let mut payload = None;
+    let mut trace = None;
     for line in text.strip_prefix("IDFON-A2A/1\n")?.lines() {
         let (key, value) = line.split_once('=')?;
         match key {
             "depth" => depth = value.parse().ok(),
+            "trace" => trace = Some(value.to_owned()),
             "payload" => payload = Some(value),
             _ => {}
         }
@@ -1457,6 +1539,7 @@ fn parse_a2a_envelope(text: &str) -> Option<(u8, String)> {
     Some((
         depth?,
         String::from_utf8(BASE64.decode(payload?).ok()?).ok()?,
+        trace,
     ))
 }
 
@@ -1514,8 +1597,9 @@ async fn handle_peer_send(
         )
     };
     let message_id = next_message_id("eve_peer_");
-    let text = encode_a2a_envelope(a2a_depth, &text);
-    let envelope = sign_message_with_ticket(
+    let trace = idfon_core::new_traceparent();
+    let text = encode_a2a_envelope(a2a_depth, &text, Some(&trace));
+    let mut envelope = sign_message_with_ticket(
         key,
         peer_id(key),
         message_id.clone(),
@@ -1525,10 +1609,22 @@ async fn handle_peer_send(
         ticket,
     )
     .map_err(|error| anyhow!("sign peer message: {error}"))?;
+    envelope.trace = Some(trace);
     let ack = transport
         .send(&EndpointAddr::new(endpoint_id), &envelope)
         .await
         .map_err(|error| anyhow!("send peer message to {target_peer_id}: {error}"))?;
+    tracing::info!(
+        target: "idfon.seam",
+        direction = "out",
+        kind = "peer_send",
+        request_id = %request_id,
+        message_id = %message_id,
+        peer_id = %target_peer_id,
+        status = ?ack.status,
+        trace = ?envelope.trace,
+        "boundary"
+    );
     out_tx
         .send(IpcFrame::PeerSendAck {
             request_id,
@@ -1912,7 +2008,7 @@ where
             }
             Ok(None) => break,
             Err(error) => {
-                eprintln!("[eve-idfon] IPC read failed: {error}");
+                tracing::warn!(target: "idfon.holder", error = %error, "IPC read failed");
                 break;
             }
         }
@@ -1925,7 +2021,7 @@ where
 {
     while let Some(frame) = rx.recv().await {
         if let Err(error) = write_frame(&mut writer, &frame).await {
-            eprintln!("[eve-idfon] IPC write failed: {error}");
+            tracing::warn!(target: "idfon.holder", error = %error, "IPC write failed");
             break;
         }
     }
@@ -2126,10 +2222,16 @@ mod tests {
 
     #[test]
     fn a2a_envelope_round_trips_and_rejects_plain_text() {
-        let encoded = encode_a2a_envelope(1, "hello\npeer");
+        let trace = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let encoded = encode_a2a_envelope(1, "hello\npeer", Some(trace));
         assert_eq!(
             parse_a2a_envelope(&encoded),
-            Some((1, "hello\npeer".into()))
+            Some((1, "hello\npeer".into(), Some(trace.into())))
+        );
+        // Older payloads without a trace still parse.
+        assert_eq!(
+            parse_a2a_envelope(&encode_a2a_envelope(1, "x", None)),
+            Some((1, "x".into(), None))
         );
         assert_eq!(parse_a2a_envelope("hello"), None);
     }

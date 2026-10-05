@@ -31,6 +31,27 @@ pub fn peer_id(key: &SigningKey) -> String {
     encode_hex(key.verifying_key().as_bytes())
 }
 
+/// Mint a W3C-traceparent-shaped correlation id (`00-<32hex>-<16hex>-01`).
+///
+/// Not cryptographically meaningful — the trace is an unsigned convenience id,
+/// never an authority (see `docs/observability.md`). Unique per call across
+/// processes via time + pid + a process-local counter, spread by blake3.
+pub fn new_traceparent() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let digest = blake3::hash(format!("{}:{}:{}", nanos, std::process::id(), seq).as_bytes());
+    let bytes = digest.as_bytes();
+    format!(
+        "00-{}-{}-01",
+        encode_hex(&bytes[..16]),
+        encode_hex(&bytes[16..24])
+    )
+}
+
 /// Stable, non-revealing account handle: `blake3(account_id)` in lowercase hex.
 ///
 /// Every contact already carries `account_id`, so the handle is derivable rather
@@ -96,6 +117,7 @@ pub fn sign_message_with_ticket(
         idempotency_key: idempotency_key.into(),
         capability_ticket,
         conversation,
+        trace: None,
     };
     let signature = key.sign(&auth_bytes(&unsigned)?);
     Ok(MessageEnvelope {
@@ -456,5 +478,28 @@ mod tests {
         .unwrap();
         message.sender.endpoint_id = "endpoint-b".into();
         assert_eq!(verify_message(&message), Err(AuthError::VerificationFailed));
+    }
+
+    #[test]
+    fn trace_is_unsigned_and_does_not_break_verification() {
+        let key = generate_identity();
+        let mut message = sign_message(
+            &key,
+            "endpoint-a",
+            "msg-trace",
+            MessageContent::Text {
+                text: "hello".into(),
+            },
+            "retry-trace",
+            None,
+        )
+        .unwrap();
+        assert!(verify_message(&message).is_ok());
+        // Attaching or replacing a trace must not invalidate the signature:
+        // it is a convenience correlation id, not authenticated content.
+        message.trace = Some(new_traceparent());
+        assert!(verify_message(&message).is_ok());
+        assert_eq!(new_traceparent().len(), 55);
+        assert_ne!(new_traceparent(), new_traceparent());
     }
 }

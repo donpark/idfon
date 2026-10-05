@@ -48,7 +48,7 @@ pub async fn spawn_inbound(
             let identity = identity.clone();
             tokio::spawn(async move {
                 if let Err(error) = inbound(connection, &store, &identity).await {
-                    eprintln!("[idfond] mcp inbound ended: {error:#}");
+                    tracing::warn!(target: "idfon.daemon", error = %error, "mcp inbound ended");
                 }
             });
         }
@@ -215,10 +215,10 @@ pub fn listen(
         match listener.accept().await {
             Ok((stream, _)) => {
                 if let Err(error) = outbound(manager, identity, target, stream).await {
-                    eprintln!("[idfond] mcp outbound ended: {error:#}");
+                    tracing::warn!(target: "idfon.daemon", error = %error, "mcp outbound ended");
                 }
             }
-            Err(error) => eprintln!("[idfond] mcp accept failed: {error}"),
+            Err(error) => tracing::warn!(target: "idfon.daemon", error = %error, "mcp accept failed"),
         }
         let _ = std::fs::remove_file(&cleanup);
     });

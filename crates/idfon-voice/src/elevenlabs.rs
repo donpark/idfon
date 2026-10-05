@@ -206,7 +206,7 @@ impl StreamingElevenLabsTts {
         let worker = tokio::spawn(async move {
             while let Some(text) = rx.recv().await {
                 if let Err(error) = engine.stream_speak(&voice, format, &text, &sink).await {
-                    eprintln!("[idfon-voice] elevenlabs stream failed: {error}");
+                    tracing::warn!(target: "idfon.voice", error = %error, "elevenlabs stream failed");
                 }
             }
         });

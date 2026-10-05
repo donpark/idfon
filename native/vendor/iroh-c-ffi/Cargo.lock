@@ -2969,6 +2969,7 @@ dependencies = [
  "idfon-h3",
  "idfon-media",
  "idfon-protocol",
+ "idfon-telemetry",
  "iroh",
  "iroh-blobs",
  "iroh-gossip",
@@ -2977,6 +2978,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3041,6 +3043,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "idfon-telemetry"
+version = "0.7.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "idfon-voice"
 version = "0.7.0"
 dependencies = [
@@ -3049,6 +3059,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3315,6 +3326,7 @@ dependencies = [
  "idfon-daemon",
  "idfon-media",
  "idfon-protocol",
+ "idfon-telemetry",
  "idfon-voice",
  "iroh",
  "iroh-blobs",

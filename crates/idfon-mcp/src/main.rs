@@ -82,6 +82,8 @@ enum Mode {
 }
 
 fn main() -> Result<()> {
+    // Shared subscriber on stderr; stdout is the MCP stdio channel.
+    idfon_telemetry::init("idfon-mcp", "info");
     let cli = Cli::parse();
     // The resource server is stdio-only and needs no identity; handle it before
     // `load_key`, which would otherwise mint an ephemeral key.
@@ -126,9 +128,9 @@ fn load_key(key_file: Option<&Path>) -> Result<[u8; 32]> {
             Ok(idfon_core::signing_key_bytes(&key))
         }
         None => {
-            eprintln!(
-                "[idfon-mcp] WARNING: no --key-file or IDFON_MCP_KEY; using an ephemeral \
-                 identity (grants will not survive a restart)"
+            tracing::warn!(
+                target: "idfon.mcp",
+                "no --key-file or IDFON_MCP_KEY; using an ephemeral identity (grants will not survive a restart)"
             );
             Ok(idfon_core::signing_key_bytes(
                 &idfon_core::generate_identity(),
@@ -165,7 +167,7 @@ async fn serve(
             })
             .await;
         if let Err(error) = result {
-            eprintln!("[idfon-mcp] accept loop ended: {error}");
+            tracing::warn!(target: "idfon.mcp", error = %error, "accept loop ended");
         }
     });
 
@@ -192,7 +194,7 @@ async fn serve(
             })
             .context("serialize contact ticket")?,
             Err(error) => {
-                eprintln!("[idfon-mcp] server/discover probe failed: {error:#}");
+                tracing::warn!(target: "idfon.mcp", error = %error, "server/discover probe failed");
                 serde_json::to_string(&address).context("serialize endpoint ticket")?
             }
         }
@@ -200,13 +202,13 @@ async fn serve(
         serde_json::to_string(&address).context("serialize endpoint ticket")?
     };
     println!("{ticket}");
-    eprintln!("[idfon-mcp] serving as {}", transport.endpoint().id());
+    tracing::info!(target: "idfon.mcp", identity = %transport.endpoint().id(), "serving");
 
     while let Some(connection) = rx.recv().await {
         let command = mcp_command.clone();
         tokio::spawn(async move {
             if let Err(error) = serve_connection(connection, command).await {
-                eprintln!("[idfon-mcp] connection ended: {error:#}");
+                tracing::warn!(target: "idfon.mcp", error = %error, "connection ended");
             }
         });
     }
@@ -314,10 +316,11 @@ async fn expose(key: [u8; 32], root: std::path::PathBuf, account: String) -> Res
         "{}",
         serde_json::to_string(&transport.endpoint().addr()).context("serialize endpoint ticket")?
     );
-    eprintln!(
-        "[idfon-mcp] exposing {} over idfon/http3/1 as {}",
-        root.display(),
-        transport.endpoint().id()
+    tracing::info!(
+        target: "idfon.mcp",
+        root = %root.display(),
+        identity = %transport.endpoint().id(),
+        "exposing over idfon/http3/1"
     );
     tokio::signal::ctrl_c().await.context("wait for ctrl_c")?;
     Ok(())

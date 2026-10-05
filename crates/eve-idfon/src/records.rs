@@ -158,7 +158,7 @@ impl RecordStore {
         });
         let result = f(log);
         if let Err(error) = self.persist(peer_id, log) {
-            eprintln!("[eve-idfon] voice record persist failed peer={peer_id}: {error}");
+            tracing::warn!(target: "idfon.holder", peer_id = %peer_id, error = %error, "voice record persist failed");
         }
         result
     }
