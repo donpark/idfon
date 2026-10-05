@@ -66,6 +66,24 @@ fn mode_for(exporting: bool) -> &'static str {
     "correlate"
 }
 
+/// Flush any buffered OTLP spans. No-op without the `otlp` feature. Call on a
+/// graceful shutdown path so the last batch is not lost when the process exits.
+pub fn flush() {
+    #[cfg(feature = "otlp")]
+    if let Some(provider) = OTLP_PROVIDER.get() {
+        let _ = provider.force_flush();
+    }
+}
+
+/// Shut the OTLP exporter down, flushing buffered spans. No-op without the
+/// `otlp` feature.
+pub fn shutdown() {
+    #[cfg(feature = "otlp")]
+    if let Some(provider) = OTLP_PROVIDER.get() {
+        let _ = provider.shutdown();
+    }
+}
+
 /// Attach the remote trace in `trace` (a W3C `traceparent`) as the parent of
 /// `span`, so a participating process continues the caller's trace instead of
 /// starting a new one. The trace is a hint, never an authority. No-op unless
@@ -156,6 +174,11 @@ static OTLP_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerPro
 #[cfg(feature = "otlp")]
 fn init_otlp(service: &str, endpoint: &str) {
     use opentelemetry_otlp::WithExportConfig;
+
+    // Multiple rustls provider features can be unified into one binary, leaving
+    // no process default; reqwest's blocking client then panics. Install ring
+    // unless a provider is already set (the holder does this too).
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let exporter = match opentelemetry_otlp::SpanExporter::builder()
         .with_http()

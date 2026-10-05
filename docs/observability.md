@@ -126,6 +126,9 @@ gap.
 
   No SaaS, so the budget is a local container. Sample aggressively; never span
   per media frame or per datagram.
+- A span is exported end to end (verified by an integration test that stands up
+  a throwaway TCP collector). `idfon_telemetry::flush()` / `shutdown()` are
+  called on a clean holder exit so the final batch is not lost.
 - `inject`-level agent spans are accepted but recorded as **agent-reported**,
   distinct from **idfon-observed**, and sanitized/capped. A bad actor must not
   be able to forge causality in the unified view or DoS the collector with
@@ -170,8 +173,9 @@ gap.
    MCP, CLI) so the daemon dylib stays lean on mobile. The inbound seam is
    instrumented with a span whose parent is the sender's `trace`
    (`set_remote_parent`). `telemetry` advertises this process's level via
-   `idfon_telemetry::mode()` (`inject` when exporting, else `correlate`).
-   Outbound seam spans and daemon-side spans are follow-up.
+   `idfon_telemetry::mode()` (`inject` when exporting, else `correlate`). An
+   integration test proves a span reaches a collector; the holder flushes on
+   clean shutdown. Outbound seam spans and daemon-side spans are follow-up.
 
 ## 9. Trust, privacy, licensing
 
