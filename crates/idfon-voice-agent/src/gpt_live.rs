@@ -176,6 +176,8 @@ impl GptLiveBackend {
                             conversation: None,
                             a2a_depth: None,
                             live_commentary: Some((delegation.delegation_id.clone(), delegation.reply)),
+                            // Delegated turn keeps its chat reply too.
+                            live_only: false,
                         },
                     );
                     let frame = IpcFrame::TurnIn {

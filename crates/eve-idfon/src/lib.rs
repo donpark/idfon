@@ -348,6 +348,10 @@ pub struct ReplyTarget {
     /// back to the live session as `(delegation_id, spoken_text)` so the
     /// voice model can say the result.
     pub live_commentary: Option<(String, mpsc::UnboundedSender<(String, String)>)>,
+    /// Voice-injected turn: speak the reply to the live session only, never
+    /// post a second (text) copy to the caller's chat. The `IDFON-CALL/1`
+    /// transcript the holder sends is the single record.
+    pub live_only: bool,
 }
 
 pub type Targets = Arc<Mutex<HashMap<String, ReplyTarget>>>;
@@ -1181,6 +1185,7 @@ async fn handle_message(
             conversation: message.conversation.clone(),
             a2a_depth,
             live_commentary: None,
+            live_only: false,
         },
     );
     drop(targets_guard);
@@ -1261,45 +1266,50 @@ async fn handle_reply(
         .get(target_key)
         .cloned()
         .ok_or_else(|| anyhow!("unknown in_reply_to {}", in_reply_to))?;
-    let endpoint_id: EndpointId = target
-        .endpoint_id
-        .parse()
-        .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
-    let target_addr = EndpointAddr::new(endpoint_id);
     // A live-call delegation also wants the spoken text (envelopes stripped)
     // fed back to the live session; capture it before `text` moves.
     let commentary = target.live_commentary.clone();
     let commentary_text = commentary.as_ref().map(|_| strip_envelopes(&text));
-    let message_id = next_message_id("eve_reply_");
-    let text = target
-        .a2a_depth
-        .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text))
-        .unwrap_or(text);
-    let reply_ticket = reply_ticket
-        .filter(|ticket| ticket.issuer == target.peer_id)
-        .cloned();
-    let envelope = sign_message_with_ticket(
-        key,
-        peer_id(key),
-        message_id.clone(),
-        MessageContent::Text { text },
-        idempotency_key.unwrap_or_else(|| format!("eve-reply-{in_reply_to}")),
-        target.conversation,
-        reply_ticket,
-    )
-    .map_err(|error| anyhow!("sign reply: {error}"))?;
-    let ack = transport
-        .send(&target_addr, &envelope)
-        .await
-        .map_err(|error| anyhow!("send reply to {}: {error}", target.peer_id))?;
-    out_tx
-        .send(IpcFrame::ReplyAck {
-            in_reply_to,
-            message_id,
-            status: format!("{:?}", ack.status).to_lowercase(),
-        })
-        .await
-        .map_err(|_| anyhow!("IPC client disconnected"))?;
+    // A voice-injected turn is spoken to the live session only: posting it to
+    // the caller's chat would duplicate the `IDFON-CALL/1` transcript the
+    // holder sends.
+    if !target.live_only {
+        let endpoint_id: EndpointId = target
+            .endpoint_id
+            .parse()
+            .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
+        let target_addr = EndpointAddr::new(endpoint_id);
+        let message_id = next_message_id("eve_reply_");
+        let text = target
+            .a2a_depth
+            .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text))
+            .unwrap_or(text);
+        let reply_ticket = reply_ticket
+            .filter(|ticket| ticket.issuer == target.peer_id)
+            .cloned();
+        let envelope = sign_message_with_ticket(
+            key,
+            peer_id(key),
+            message_id.clone(),
+            MessageContent::Text { text },
+            idempotency_key.unwrap_or_else(|| format!("eve-reply-{in_reply_to}")),
+            target.conversation,
+            reply_ticket,
+        )
+        .map_err(|error| anyhow!("sign reply: {error}"))?;
+        let ack = transport
+            .send(&target_addr, &envelope)
+            .await
+            .map_err(|error| anyhow!("send reply to {}: {error}", target.peer_id))?;
+        out_tx
+            .send(IpcFrame::ReplyAck {
+                in_reply_to,
+                message_id,
+                status: format!("{:?}", ack.status).to_lowercase(),
+            })
+            .await
+            .map_err(|_| anyhow!("IPC client disconnected"))?;
+    }
     if let (Some((delegation_id, sender)), Some(spoken)) = (commentary, commentary_text) {
         if !spoken.is_empty() {
             let _ = sender.send((delegation_id, spoken));

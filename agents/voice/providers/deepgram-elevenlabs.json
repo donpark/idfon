@@ -1,9 +1,9 @@
 {
-  "_comment": "Split bespoke providers: Deepgram STT (env DEEPGRAM_API_KEY) + ElevenLabs TTS (env ELEVENLABS_API_KEY). Set `voice` to an ElevenLabs voice id.",
+  "_comment": "Streaming split: Deepgram WebSocket STT (env DEEPGRAM_API_KEY) + ElevenLabs /stream TTS (env ELEVENLABS_API_KEY). `stream: true` keeps STT partials/first-final latency low, and ElevenLabs streams synthesis to the sink — so the cascade no longer fakes streaming with batch request/response providers.",
   "backend": "cascade",
   "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
   "engine": {
-    "stt": { "provider": "deepgram", "model": "nova-3" },
-    "tts": { "provider": "elevenlabs", "voice": "<elevenlabs-voice-id>", "model": "eleven_turbo_v2_5" }
+    "stt": { "provider": "deepgram", "model": "nova-3", "stream": true },
+    "tts": { "provider": "elevenlabs", "voice": "EXAVITQu4vr4xnSDxMaL", "model": "eleven_turbo_v2_5" }
   }
 }
