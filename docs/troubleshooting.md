@@ -3,6 +3,31 @@
 Notes on real failure modes observed during testing, their root causes, and
 the fixes. Kept so the same class of bug is easy to recognize next time.
 
+## Where to look first
+
+Most triage starts by joining one flow across processes. See
+`docs/observability.md` for the full model; the short version:
+
+- **One `trace` id.** A daemon mints it and each hop echoes it (the envelope's
+  `trace`, and the holder's `turn.in`/`status.in`/`input.in`). Grep the same
+  `trace=<id>` (or `message_id=<id>`, `peer_id=<id>`) across the files below.
+- **Daemon.** CLI-spawned: `<data_dir>/idfond.log` (default
+  `/tmp/idfon/idfond.log`; its stderr is captured there). App-spawned: the FFI
+  subscriber writes `/tmp/idfon-<pid>.log`.
+- **Holder / bridge / agent.** `/tmp/idfon-holder-<pid>.log` (holder tracing),
+  `~/.idfon/<instance>/holder.log`, `bridge.log`, `agents/*/eve.log`. The node
+  bridge/relay and Eve extension emit single-line JSON tagged `idfon.bridge` /
+  `idfon.managed` / `idfon.live-relay` / `idfon.agent`.
+- **Boundary events.** Each crossing logs `target: "idfon.seam"` with
+  `direction`, `kind`, `message_id`, `peer_id`, `conversation`, and `trace`.
+- **Native apps.** Unified log: `log stream --predicate 'subsystem ==
+  "app.idfon"'`.
+- **Verbosity.** `IDFON_LOG` > `RUST_LOG` > `IROH_C_LOG` (default `info`);
+  `IDFON_LOG_FILE` diverts the sink. Set `debug` to include per-delta stream
+  logs.
+- **OTLP (opt-in).** `IDFON_OTEL_ENDPOINT` on the holder/MCP/CLI exports spans;
+  the daemon does not export by design.
+
 ## Client-cascade voice call: dead air after "answered", dropped while silent, caller turns missing (2026-10-04, FIXED)
 
 **Symptom.** On a `client-cascade` voice call (on-device STT → text turn →
