@@ -385,9 +385,14 @@ to the cascade.
   `Steer` before playback (drop nothing) and `CancelThenQueue` during playback,
   bumping a **counter**; `should_drop(counter)` drops only pre-cancel deltas, so
   a steered follow-up with the same `turnId` survives.
+- **Holder wiring** (2026-10-04, `cascade.rs`): the server-cascade loop runs
+  `caller_decision` (steer before playback / cancel+queue during) and, on
+  cancel, flushes `AudioQueue`, drops the cancelled turn's remaining deltas, and
+  records `playback.truncated` through `TurnBridge::record_playback_truncated`
+  (echo-suppressed via `EchoSuppressor`).
 - **Truncation** is recorded through the P0 buffer
-  (`VoiceRecord::playback_truncated { msg_id, heard_until }`); the client sender
-  lands with the barge-in wiring.
+  (`VoiceRecord::playback_truncated { msg_id, heard_until }`) by both the
+  client-cascade and holder-cascade barge-in paths.
 - **Transport**: the channel subscribes to `message.appended` and POSTs each
   delta `{turn_id, step_index, sequence, text}` to bridge `/stream/append`, which
   forwards `stream.append` over holder IPC. The hop stays per-delta so the
@@ -512,8 +517,13 @@ client-owned audio path the design calls A1.
 **Continuous endpointing (2026-10-02).** The loop now keeps one `SpeechAnalyzer`
 alive for the whole session — `SystemSpeechTranscriber` on iOS 26+,
 `MacSpeechTranscriber` on macOS 26+ (SFSpeech remains the pre-26 fallback). The
-mic tap is paused while the agent thinks/speaks so its own TTS can't leak into
-the next prompt. `VoicePromptSegmenter` (`ios/Idfon/VoicePromptSegmenter.swift`,
+mic tap stays live while the agent speaks so the caller can barge in: iOS
+enables AEC (`setVoiceProcessingEnabled(true)` under a `.voiceChat` session),
+macOS uses the gated peak threshold, and each committed utterance is filtered
+through `is_cancellable` and `EchoSuppressor`; a cancellable non-echo utterance
+stops playback (`tts.stop()`) and becomes the next turn. Hang-up also cancels
+in-flight TTS, so End is immediate even on a long reply.
+`VoicePromptSegmenter` (`ios/Idfon/VoicePromptSegmenter.swift`,
 mirrored for macOS) picks utterance boundaries: a final transcriber result
 commits immediately, and a 1.2 s no-change gap commits the accumulated partial
 as a fallback; committed text is deduped so a late final for the same segment
@@ -845,7 +855,8 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   one-speaker `Arbiter` with the F9 closed non-actor kinds, `EchoSuppressor`
   with the pending-approval exemption, barge-in filters/modes, iOS full
   barge-in (AEC via `setVoiceProcessingEnabled`) and macOS gated barge-in
-  (`SpeechAnalyzer` partials + Rust filters). macOS AEC is opt-in (`IDFON_MACOS_AEC=1`) and verified with AirPods Pro.
+  (`SpeechAnalyzer` partials + Rust filters), and the holder server-cascade
+  loop's F6 wiring (`cascade.rs`). macOS AEC is opt-in (`IDFON_MACOS_AEC=1`) and verified with AirPods Pro.
 - **P6 — on-device.** **Apple-native path implemented + verified** (2026-10-01):
   `AVSpeechSynthesizer`/`SFSpeechRecognizer` on-device round trip verified on an
   iPhone 16; native G2P landed and is covered by the pipeline check. MLX model
