@@ -15,6 +15,18 @@ const secret = process.env.IDFON_BRIDGE_SECRET || "m2-test-secret";
 const engine = process.env.IDFON_VOICE_ENGINE ? JSON.parse(process.env.IDFON_VOICE_ENGINE) : {};
 const RATE = 24_000;
 
+// Inline structured logger: this script is standalone (its own package) and must
+// not reach into eve-idfon internals. Single-line JSON on stderr, tagged
+// `idfon.live-relay`, mirroring log.mjs.
+const log = ((service) => {
+  const emit = (level, message, fields) => {
+    const record = { ts: new Date().toISOString(), level, service, target: "idfon.live-relay", message };
+    if (fields) for (const [k, v] of Object.entries(fields)) if (v != null && v !== "") record[k] = v;
+    process.stderr.write(JSON.stringify(record) + "\n");
+  };
+  return { info: (m, f) => emit("info", m, f), warn: (m, f) => emit("warn", m, f), error: (m, f) => emit("error", m, f) };
+})(process.env.IDFON_SERVICE_NAME ?? "eve-idfon-voice");
+
 function apiKey(cfg) {
   const name = cfg?.api_key_env || "AI_GATEWAY_API_KEY";
   const key = process.env[name] || "";
@@ -154,18 +166,18 @@ async function onFrame(frame) {
   try {
     const transcript = (await transcribe(speech)).trim();
     if (!transcript) return;
-    console.error(`[live-relay] heard: ${transcript}`);
+    log.info("heard", { transcript });
     const reply = (await forward(transcript)).trim();
     if (!reply) return;
-    console.error(`[live-relay] reply: ${reply}`);
+    log.info("reply", { reply, peer_id: frame?.peer_id, trace: frame?.trace });
     await speak(reply, frame.peer_id);
   } catch (error) {
-    console.error(`[live-relay] turn failed: ${error}`);
+    log.error("turn failed", { peer_id: frame?.peer_id, trace: frame?.trace, error: String(error) });
   }
 }
 
 async function main() {
-  console.error(`[live-relay] listening on ${bridge}/live/stream`);
+  log.info("listening", { bridge });
   const response = await fetch(`${bridge}/live/stream`, { headers: { accept: "text/event-stream" } });
   if (!response.ok || !response.body) throw new Error(`stream HTTP ${response.status}`);
   const reader = response.body.getReader();
@@ -188,4 +200,4 @@ async function main() {
   }
 }
 
-main().catch((error) => { console.error(`[live-relay] fatal: ${error}`); process.exit(1); });
+main().catch((error) => { log.error("fatal", { error: String(error) }); process.exit(1); });

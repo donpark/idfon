@@ -40,6 +40,11 @@ by entry.
   `crates/idfon-telemetry` and is installed by the daemon, CLI, holder, MCP
   bridge/server, and the FFI app entry point. Residual `println!` are
   user-facing output contracts (CLI results, endpoint tickets), not logs.
+- **Agent-side logs are structured too.** The node bridge scripts emit
+  single-line JSON on stderr tagged `idfon.bridge` / `idfon.managed` /
+  `idfon.live-relay`, and the Eve extension logs `idfon.agent`; the holder now
+  passes `trace` on `turn.in`/`status.in`/`input.in` so agent logs join the
+  trace. The native Swift apps still use `NSLog` (deferred).
 - **The correlation keys already exist.** The protocol carries
   `message_id`, `idempotency_key`, `operation_id`, and `in_reply_to`
   (`crates/idfon-protocol/src/lib.rs`, `crates/eve-idfon/src/lib.rs`), plus

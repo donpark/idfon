@@ -4,9 +4,11 @@ import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { logger } from "./log.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const bridge = resolve(here, "bridge.mjs");
+const log = logger("idfon.managed");
 const require = createRequire(import.meta.url);
 
 // The holder ships as per-platform packages (optional dependencies of this
@@ -72,7 +74,7 @@ if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(targetUrl.hostname)) {
 }
 
 function usage(error) {
-  if (error) console.error(`eve-idfon managed: ${error}`);
+  if (error) log.error("usage", { error: String(error) });
   console.error("usage: managed.mjs [--holder-command PATH] [--live-config FILE] --target URL --secret VALUE --socket PATH --key-file FILE --port PORT [--blob-dir PATH] [--allow PEER_ID]...");
   process.exit(2);
 }
@@ -172,11 +174,11 @@ try {
   });
   holder.once("exit", (code) => {
     if (!stopping) {
-      console.error(`[eve-idfon] holder exited (${code ?? "signal"})`);
+      log.info("holder exited", { code: code ?? "signal" });
       void cleanup(code || 1);
     }
   });
 } catch (error) {
-  console.error(`[eve-idfon] managed startup failed: ${error.message}`);
+  log.error("startup failed", { error: error.message });
   await cleanup(1);
 }

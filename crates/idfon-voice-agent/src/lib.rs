@@ -175,6 +175,7 @@ impl TurnBridge {
     /// Inject one caller transcript as an agent turn; returns the turn id.
     pub async fn inject(&self, text: &str) -> String {
         let turn_id = format!("voice_{}", rand_suffix());
+        let trace = idfon_core::new_traceparent();
         self.targets.lock().await.insert(
             turn_id.clone(),
             ReplyTarget {
@@ -185,7 +186,7 @@ impl TurnBridge {
                 live_commentary: Some((turn_id.clone(), self.reply_tx.clone())),
                 // Voice turn: speak it, don't post a text copy to the caller.
                 live_only: true,
-                trace: None,
+                trace: Some(trace.clone()),
             },
         );
         let _ = self
@@ -202,6 +203,7 @@ impl TurnBridge {
                 a2a_depth: None,
                 capabilities: None,
                 source: Some(self.source.clone()),
+                trace: Some(trace),
             })
             .await;
         turn_id
