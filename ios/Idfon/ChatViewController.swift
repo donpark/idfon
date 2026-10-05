@@ -127,15 +127,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // callee's name when a thread is stacked on another.
         navigationItem.backButtonDisplayMode = .generic
         if !conversation.isRoom {
-            let profile = UIBarButtonItem(image: UIImage(systemName: "waveform"), style: .plain, target: self, action: #selector(audioProfileTapped))
-            profile.accessibilityLabel = "Audio profile"
             // One call entry. `callTapped` routes by the ticket's voice mode:
             // client-cascade starts the on-device voice call, which uses the
-            // same call Bar/End UI as a live call. No separate voice button.
-            navigationItem.rightBarButtonItems = [
-                UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"), style: .plain, target: self, action: #selector(callTapped)),
-                profile,
-            ]
+            // same call Bar/End UI as a live call. No separate voice button;
+            // the codec is the holder's signed `voice.audio`, and the engines
+            // live in Contact Info.
+            navigationItem.rightBarButtonItem = UIBarButtonItem(
+                image: UIImage(systemName: "phone.arrow.up.right"), style: .plain,
+                target: self, action: #selector(callTapped))
         }
 
         buildViews()
@@ -873,20 +872,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         } else {
             LiveCall.shared.dial(peer.id)
         }
-    }
-
-    @objc private func audioProfileTapped() {
-        let selected = ContactAudioProfiles.profile(for: peer.id)
-        let alert = UIAlertController(title: "Audio profile", message: "Saved for \(conversation.title). Applies to audio calls.", preferredStyle: .actionSheet)
-        for profile in ContactAudioProfile.allCases {
-            let title = profile == selected ? "✓ \(profile.title)" : profile.title
-            alert.addAction(UIAlertAction(title: title, style: .default) { _ in
-                ContactAudioProfiles.set(profile, for: self.peer.id)
-            })
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItems?.last
-        present(alert, animated: true)
     }
 
     /// Automation entry (`idfon://dial` + the `idfon.dial` notification): the

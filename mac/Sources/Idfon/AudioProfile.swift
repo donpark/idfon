@@ -10,18 +10,11 @@ enum ContactAudioProfile: String, CaseIterable {
 }
 
 enum ContactAudioProfiles {
-    private static let key = "idfon.live-audio-profiles"
-
+    /// The live-call codec is the holder's signed fact (`voice.audio`), not a
+    /// manual per-contact choice: `pcm24k` selects PCM, anything else (or a
+    /// legacy ticket with no block) selects Opus. Deriving it here keeps the
+    /// media session, the dial decision, and the invite in agreement.
     static func profile(for peerID: String) -> ContactAudioProfile {
-        guard let raw = (UserDefaults.standard.dictionary(forKey: key) as? [String: String])?[peerID] else {
-            return .opus48k
-        }
-        return ContactAudioProfile(rawValue: raw) ?? .opus48k
-    }
-
-    static func set(_ profile: ContactAudioProfile, for peerID: String) {
-        var profiles = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
-        profiles[peerID] = profile.rawValue
-        UserDefaults.standard.set(profiles, forKey: key)
+        CapabilityTickets.voiceRoute(for: peerID)?.audio == "pcm24k" ? .pcm24k : .opus48k
     }
 }
