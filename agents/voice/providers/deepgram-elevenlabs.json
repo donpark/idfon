@@ -1,9 +1,14 @@
 {
-  "_comment": "Streaming split: Deepgram WebSocket STT (env DEEPGRAM_API_KEY) + ElevenLabs /stream TTS (env ELEVENLABS_API_KEY). `stream: true` keeps STT partials/first-final latency low, and ElevenLabs streams synthesis to the sink — so the cascade no longer fakes streaming with batch request/response providers.",
+  "_comment": "Deepgram nova-3 STT via OpenRouter (env OPENROUTER_API_KEY, batch HTTP) + ElevenLabs /stream TTS (env ELEVENLABS_API_KEY). No direct Deepgram key needed; for streaming STT use deepgram-streaming.json with DEEPGRAM_API_KEY.",
   "backend": "cascade",
   "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
   "engine": {
-    "stt": { "provider": "deepgram", "model": "nova-3", "stream": true },
+    "stt": {
+      "provider": "openai-compatible",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "stt_model": "deepgram/nova-3"
+    },
     "tts": { "provider": "elevenlabs", "voice": "EXAVITQu4vr4xnSDxMaL", "model": "eleven_turbo_v2_5" }
   }
 }
