@@ -146,7 +146,11 @@ final class AudioMeter {
         AVAudioApplication.requestRecordPermission { [weak self] granted in
             guard granted, let self, !self.running else { return }
             do {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                // Reuse the call's session config — never flip it to
+                // `.voiceChat` here, which would route the whole session
+                // through VoiceProcessingIO and attenuate playback. Match the
+                // on-device voice-agent: `.default` + loudspeaker.
+                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
                 try session.setActive(true)
                 let input = self.engine.inputNode
                 let format = input.outputFormat(forBus: 0)

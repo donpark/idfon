@@ -670,13 +670,15 @@ impl std::error::Error for SubscribeEndError {}
 
 /// Phone-side makeup gain for live-call playback.
 ///
-/// iOS routes a `.playAndRecord` + `.voiceChat` session through
-/// VoiceProcessingIO, which drops output gain, and there is no public API to
-/// adjust it (StackOverflow 17528057 / 13502293). Compensate in software,
-/// soft-clipping with `tanh` so loud passages limit instead of wrapping.
-/// Override with `IDFON_PLAYBACK_GAIN_DB`; the default covers the typical
-/// VoiceProcessingIO drop.
-const PLAYBACK_GAIN_DB_DEFAULT: f32 = 12.0;
+/// Historically this compensated for `.playAndRecord` + `.voiceChat` routing
+/// playback through VoiceProcessingIO, which drops output gain with no public
+/// API to adjust it (StackOverflow 17528057 / 13502293). The shells now keep
+/// the live session at `.default` and get AEC from
+/// `setVoiceProcessingEnabled` on the capture input instead (see the on-device
+/// voice-agent and `docs/troubleshooting.md`), so the default is unity. It
+/// stays a knob for devices/paths that still end up on VoiceProcessingIO:
+/// override with `IDFON_PLAYBACK_GAIN_DB`.
+const PLAYBACK_GAIN_DB_DEFAULT: f32 = 0.0;
 
 fn playback_gain() -> f32 {
     // VoiceProcessingIO's output drop is iOS-only; leave other platforms at

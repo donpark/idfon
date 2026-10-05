@@ -89,9 +89,13 @@ final class AudioPusher {
             // Set the mode in the category call and move the route override
             // last: setMode(.voiceChat) after overrideOutputAudioPort()
             // re-evaluates the route back to the receiver.
+            // `.default`, not `.voiceChat`: voiceChat routes the whole session
+            // through VoiceProcessingIO and attenuates playback (see the
+            // on-device voice-agent and troubleshooting.md). AEC comes from
+            // setVoiceProcessingEnabled on the input node below.
             try session.setCategory(
                 .playAndRecord,
-                mode: .voiceChat,
+                mode: .default,
                 options: [.allowBluetoothHFP, .defaultToSpeaker]
             )
             try session.setActive(true)
@@ -104,6 +108,12 @@ final class AudioPusher {
             // Insurance: installTap aborts if a tap somehow survived.
             input.removeTap(onBus: 0)
             tapInstalled = false
+            // AEC on the input node rather than VoiceProcessingIO session mode.
+            do {
+                try input.setVoiceProcessingEnabled(true)
+            } catch {
+                NSLog("idfon audio push: voice processing unsupported: \(error.localizedDescription)")
+            }
             let format = input.outputFormat(forBus: 0)
             let pipelineFormat = pipelineFormat()
             guard let converter = AVAudioConverter(from: format, to: pipelineFormat) else {
