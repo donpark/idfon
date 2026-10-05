@@ -328,3 +328,32 @@ control when it advertises `native-duplex` or `server-cascade`.
 - The injected (behind) deployment's service API (`speak`/`listen` calls from a
   target agent) — the `delegated` route recognizes it; wiring it follows.
 - Local/on-device engines for the holder process.
+
+## Hybrid STT/TTS ownership
+
+A `server-cascade` voice agent does not have to own both halves. Its signed
+`voice_route` can put one half on the caller:
+
+```json
+"voice_route": { "mode": "server-cascade", "audio": "pcm24k",
+                 "stt": "client", "tts": "server" }
+```
+
+- `stt: "client"` — the caller runs STT on-device and sends each caller transcript
+  to the holder as an `IDFON-LIVE/1 action=text text_b64=<base64>` control. The
+  holder skips subscribing/STT and injects the text as the turn.
+- `tts: "client"` — the holder skips synthesis and emits only the agent
+  `IDFON-CALL/1` transcript; the caller speaks it with on-device TTS.
+
+Both fields default to the mode's side (`server-cascade` → `server`), and the
+holder advertises them in its capability ticket so the app routes accordingly
+(`ios/Idfon/CapabilityTickets.swift`, `mac/Sources/Idfon/CapabilityTickets.swift`).
+The app-side halves live in `HybridVoice` (`ios/Idfon/LiveCall.swift`,
+`mac/Sources/Idfon/Calls.swift`): it dials the live session and either runs the
+on-device ASR (sending text controls) or speaks the agent transcripts.
+
+Ready-made configs: `agents/voice/providers/hybrid-stt-client.json` (caller
+STT + holder ElevenLabs TTS) and `hybrid-tts-client.json` (holder Deepgram STT +
+caller TTS). An in-process variant is also available: the `apple` provider
+(`idfon-voice/apple_ffi`) selects the on-device engine where the app registered
+`idfon_voice_set_bindings`, e.g. `{ "stt": { "provider": "apple" }, "tts": { … } }`.

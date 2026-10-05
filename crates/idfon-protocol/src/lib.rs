@@ -897,3 +897,48 @@ mod tests {
         assert_eq!(value["ok"], false);
     }
 }
+
+#[cfg(test)]
+mod hybrid_route_tests {
+    use super::*;
+
+    #[test]
+    fn voice_route_sides_default_by_mode_and_override() {
+        let server = VoiceRoute {
+            mode: VoiceMode::ServerCascade,
+            ..Default::default()
+        };
+        assert_eq!(server.stt_side(), VoiceHalf::Server);
+        assert_eq!(server.tts_side(), VoiceHalf::Server);
+
+        let client = VoiceRoute {
+            mode: VoiceMode::ClientCascade,
+            ..Default::default()
+        };
+        assert_eq!(client.stt_side(), VoiceHalf::Client);
+        assert_eq!(client.tts_side(), VoiceHalf::Client);
+
+        let hybrid = VoiceRoute {
+            mode: VoiceMode::ServerCascade,
+            stt: Some(VoiceHalf::Client),
+            tts: Some(VoiceHalf::Server),
+            ..Default::default()
+        };
+        assert_eq!(hybrid.stt_side(), VoiceHalf::Client);
+        assert_eq!(hybrid.tts_side(), VoiceHalf::Server);
+    }
+
+    #[test]
+    fn hybrid_route_round_trips_through_json() {
+        let route = VoiceRoute {
+            mode: VoiceMode::ServerCascade,
+            audio: Some("pcm24k".into()),
+            stt: Some(VoiceHalf::Client),
+            tts: Some(VoiceHalf::Client),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&route).unwrap();
+        let back: VoiceRoute = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, route);
+    }
+}

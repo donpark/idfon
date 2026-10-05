@@ -1053,7 +1053,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 let pcm = route.audio == "pcm24k"
                     || (route.audio == nil && ContactAudioProfiles.profile(for: peer.id) == .pcm24k)
                 if pcm {
-                    live.dial(peer.id)
+                    if route.isHybrid {
+                        HybridVoice.shared.start(peerRef: peer.id, route: route)
+                    } else {
+                        live.dial(peer.id)
+                    }
                 } else {
                     video.dial(peer.id, cameraOn: false)
                 }
