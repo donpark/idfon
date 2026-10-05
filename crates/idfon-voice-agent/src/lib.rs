@@ -180,6 +180,8 @@ impl TurnBridge {
                 conversation: None,
                 a2a_depth: None,
                 live_commentary: Some((turn_id.clone(), self.reply_tx.clone())),
+                // Voice turn: speak it, don't post a text copy to the caller.
+                live_only: true,
             },
         );
         let _ = self

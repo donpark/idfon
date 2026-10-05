@@ -24,7 +24,7 @@ use crate::deepgram::DeepgramEngine;
 use crate::elevenlabs::ElevenLabsTtsEngine;
 use crate::gateway::{OpenAiCompatEngine, Profile};
 use crate::process::ProcessVoiceEngine;
-use crate::{AudioFormat, Endpointer, SttSession, TtsSession, VoiceEngine};
+use crate::{AudioFormat, AudioSink, Endpointer, SttSession, TtsSession, VoiceEngine};
 
 /// Build the engine for one voice agent from its `engine` config block.
 pub fn build_engine(engine: Option<&Value>) -> Result<Arc<dyn VoiceEngine>> {
@@ -86,6 +86,17 @@ impl VoiceEngine for CompositeVoiceEngine {
 
     fn tts(&self, voice: &str, format: AudioFormat) -> Result<Box<dyn TtsSession>> {
         self.tts.tts(voice, format)
+    }
+
+    fn tts_with_sink(
+        &self,
+        voice: &str,
+        format: AudioFormat,
+        sink: AudioSink,
+    ) -> Result<Box<dyn TtsSession>> {
+        // Forward so a split config keeps the provider's streaming TTS
+        // (e.g. ElevenLabs `/stream`); the default would fall back to batch.
+        self.tts.tts_with_sink(voice, format, sink)
     }
 
     fn endpointer(&self, format: AudioFormat) -> Result<Box<dyn Endpointer>> {
