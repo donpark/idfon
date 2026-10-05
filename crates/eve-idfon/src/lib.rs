@@ -952,6 +952,8 @@ async fn serve(
     let _ = blob_router.shutdown().await;
     blob_endpoint.close().await;
     let _ = std::fs::remove_file(&socket);
+    // Flush buffered OTLP spans on a clean shutdown (no-op without the exporter).
+    idfon_telemetry::shutdown();
     Ok(())
 }
 

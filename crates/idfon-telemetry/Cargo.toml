@@ -13,6 +13,7 @@ otlp = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
     "dep:opentelemetry-otlp",
+    "dep:rustls",
     "dep:tracing-opentelemetry",
 ]
 
@@ -22,4 +23,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opentelemetry = { version = "0.33", optional = true }
 opentelemetry_sdk = { version = "0.33", optional = true }
 opentelemetry-otlp = { version = "0.33", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 tracing-opentelemetry = { version = "0.34", optional = true }
