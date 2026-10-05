@@ -161,7 +161,7 @@ final class AudioMeter {
                 try self.engine.start()
                 self.running = true
             } catch {
-                NSLog("idfon audio meter failed: \(error.localizedDescription)")
+                idfonError("idfon audio meter failed: \(error.localizedDescription)")
             }
         }
     }

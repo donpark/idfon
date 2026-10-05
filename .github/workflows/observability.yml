@@ -1,0 +1,33 @@
+# Live OTLP end-to-end against a real collector (see scripts/otel-e2e.sh and
+# docs/observability.md). The script self-skips when docker is unavailable.
+name: observability
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/idfon-telemetry/**"
+      - "scripts/otel-e2e.sh"
+      - "scripts/otel-collector.yaml"
+      - "docs/observability.md"
+      - ".github/workflows/observability.yml"
+  pull_request:
+    paths:
+      - "crates/idfon-telemetry/**"
+      - "scripts/otel-e2e.sh"
+      - "scripts/otel-collector.yaml"
+      - "docs/observability.md"
+      - ".github/workflows/observability.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  otlp-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/otel-e2e.sh

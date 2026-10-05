@@ -1,0 +1,23 @@
+# Minimal collector for scripts/otel-e2e.sh: receive OTLP/HTTP traces and write
+# them to a file the script can grep. Run:
+#
+#   docker run --rm -p 4318:4318 -p 13133:13133 \
+#     -v "$PWD/scripts/otel-collector.yaml":/etc/otelcol/config.yaml \
+#     otel/opentelemetry-collector:latest --config /etc/otelcol/config.yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  file:
+    path: /out/spans.json
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [file]

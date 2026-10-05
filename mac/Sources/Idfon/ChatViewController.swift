@@ -375,7 +375,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let meter = AudioMeter.shared
         meter.add(view: wave)
         meter.pushToEncoder = true
-        NSLog("idfon call capture: using shared AudioMeter pushToEncoder=true")
+        idfonLog("idfon call capture: using shared AudioMeter pushToEncoder=true")
         if let fullscreenWaveView { meter.add(view: fullscreenWaveView) }
         meter.start()
         callMeter = meter
@@ -1159,13 +1159,13 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                                                  kind: .file(ticket: ticket, name: safeName, sizeBytes: size),
                                                  outgoing: true, status: "Sent", conversation: conversation.room?.id))
                 TransferCenter.shared.finish(id: transferId)
-                NSLog("idfon file: sent name=\(safeName) size=\(size) ticket=\(ticket)")
+                idfonLog("idfon file: sent name=\(safeName) size=\(size) ticket=\(ticket)")
             } catch is CancellationError {
                 TransferCenter.shared.finish(id: transferId)
-                NSLog("idfon file: send cancelled name=\(name)")
+                idfonLog("idfon file: send cancelled name=\(name)")
             } catch {
                 TransferCenter.shared.finish(id: transferId)
-                NSLog("idfon file: send failed \(error.localizedDescription)")
+                idfonError("idfon file: send failed \(error.localizedDescription)")
                 showBanner("Send failed: \(error.localizedDescription)")
             }
         }
@@ -1344,7 +1344,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 do {
                     _ = try memo.start()
                 } catch {
-                    NSLog("idfon memo start failed: \(error.localizedDescription)")
+                    idfonError("idfon memo start failed: \(error.localizedDescription)")
                     return
                 }
                 self.memo = memo

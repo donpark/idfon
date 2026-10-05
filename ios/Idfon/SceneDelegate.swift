@@ -100,7 +100,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// The resource path is parsed but not yet routed to a screen.
     private func handleURL(_ context: UIOpenURLContext) {
         guard let link = IdfonURL(context.url) else { return }
-        NSLog("idfon openURL: \(context.url)")
+        idfonLog("idfon openURL: \(context.url)")
         switch link {
         case .dial(let ref):
             NotificationCenter.default.post(name: .init("idfon.dial"), object: nil, userInfo: ["ref": ref])

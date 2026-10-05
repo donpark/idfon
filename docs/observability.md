@@ -44,7 +44,9 @@ by entry.
   single-line JSON on stderr tagged `idfon.bridge` / `idfon.managed` /
   `idfon.live-relay`, and the Eve extension logs `idfon.agent`; the holder now
   passes `trace` on `turn.in`/`status.in`/`input.in` so agent logs join the
-  trace. The native Swift apps still use `NSLog` (deferred).
+  trace. The native Swift apps log through an `IdfonLog` helper
+  (`os.Logger`, subsystem `app.idfon`, category = source file), filterable with
+  e.g. `log stream --predicate 'subsystem == "app.idfon"'`.
 - **The correlation keys already exist.** The protocol carries
   `message_id`, `idempotency_key`, `operation_id`, and `in_reply_to`
   (`crates/idfon-protocol/src/lib.rs`, `crates/eve-idfon/src/lib.rs`), plus
@@ -128,6 +130,9 @@ gap.
   docker run --rm -p 4318:4318 otel/opentelemetry-collector:latest
   IDFON_OTEL_ENDPOINT=http://127.0.0.1:4318/v1/traces eve-idfon-voice ...
   ```
+
+  Or run the scripted live check against a real collector (skips without
+  docker): `./scripts/otel-e2e.sh` (also runs in the `observability` CI job).
 
   No SaaS, so the budget is a local container. Sample aggressively; never span
   per media frame or per datagram.

@@ -60,7 +60,7 @@ final class CallTonePlayer {
         do {
             try engine.start()
         } catch {
-            NSLog("idfon call tones: engine start failed: \(error)")
+            idfonError("idfon call tones: engine start failed: \(error)")
             return false
         }
         player.play()

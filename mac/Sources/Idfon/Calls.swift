@@ -281,7 +281,7 @@ final class LiveCall {
             CallTonePlayer.shared.start(.answered)
             Task {
                 if await !subscribe(ticket: invite.ticket) {
-                    NSLog("idfon live call: return-leg subscribe failed")
+                    idfonError("idfon live call: return-leg subscribe failed")
                 }
                 if case .calling = state { state = .inCall(peer: peerID); notify() }
             }
@@ -293,7 +293,7 @@ final class LiveCall {
         if case .incoming(let pendingPeer) = state {
             guard pendingPeer == peerID else { return }
             pendingInvite = (peerID, invite.ticket)
-            NSLog("idfon live: replaced pending invite from \(peerID)")
+            idfonLog("idfon live: replaced pending invite from \(peerID)")
             notify()
             return
         }
@@ -389,7 +389,7 @@ final class LiveCall {
     }
 
     private func terminate(local: Bool) {
-        NSLog("idfon live terminate local=\(local) state=\(state) peer=\(activePeer ?? "nil") published=\(published)")
+        idfonLog("idfon live terminate local=\(local) state=\(state) peer=\(activePeer ?? "nil") published=\(published)")
         guard let peer = activePeer else { return }
         HybridVoice.shared.stop()
         if local {
@@ -418,7 +418,7 @@ final class LiveCall {
     }
 
     private func fail(_ message: String) {
-        NSLog("idfon live call failed: \(message)")
+        idfonError("idfon live call failed: \(message)")
         lastError = message
         terminate(local: false)
     }
@@ -532,10 +532,10 @@ final class VideoCall {
         guard videoAvailable else { return }
         if enabled {
             CameraPusher.shared.start()
-            NSLog("idfon video: enabling camera capture; published=\(published) video=\(videoEnabled)")
+            idfonLog("idfon video: enabling camera capture; published=\(published) video=\(videoEnabled)")
         } else {
             CameraPusher.shared.stop()
-            NSLog("idfon video: disabling camera capture; published=\(published)")
+            idfonLog("idfon video: disabling camera capture; published=\(published)")
         }
         videoEnabled = enabled
         applySendState()
@@ -727,7 +727,7 @@ final class VideoCall {
         let watchOnly = invite.media == "video" // audio invites route to LiveCall
         guard watchOnly || invite.media == "video-call" else { return }
         if state == .calling || state == .inCall {
-            NSLog("idfon video return invite from \(peerID), state=\(state)")
+            idfonLog("idfon video return invite from \(peerID), state=\(state)")
             peer = peerID
             Task { await join(ticket: invite.ticket) }
         } else if state == .incoming {
@@ -735,7 +735,7 @@ final class VideoCall {
             guard pendingPeer == peerID else { return }
             pendingInvite = (peerID, invite.ticket)
             pendingIsWatchOnly = watchOnly
-            NSLog("idfon video: replaced pending invite from \(peerID)")
+            idfonLog("idfon video: replaced pending invite from \(peerID)")
             notify()
         } else if state == .idle {
             pendingInvite = (peerID, invite.ticket)
@@ -758,12 +758,12 @@ final class VideoCall {
                     guard let timestamp = Double($0.timestamp), let started = callStartedAt?.timeIntervalSince1970 else { return false }
                     return $0.messagePeerId == peer && invite.isStart && invite.media == "video-call" && timestamp >= started - 2
                 }), let text = event.messageText {
-                    NSLog("idfon video return invite found attempt=\(attempt) event=\(event.eventId)")
+                    idfonLog("idfon video return invite found attempt=\(attempt) event=\(event.eventId)")
                     handleEnvelope(peer: peer, text)
                     return
                 }
-                if attempt == 0 || attempt % 10 == 0 { NSLog("idfon video waiting return invite peer=\(peer) events=\(events.count)") }
-            } catch { NSLog("idfon video return poll failed: \(error.localizedDescription)") }
+                if attempt == 0 || attempt % 10 == 0 { idfonLog("idfon video waiting return invite peer=\(peer) events=\(events.count)") }
+            } catch { idfonError("idfon video return poll failed: \(error.localizedDescription)") }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
     }
@@ -798,7 +798,7 @@ final class VideoCall {
             }
         }
         if state == .idle { return } // hung up while subscribing
-        NSLog("idfon video watch started path=\(path)")
+        idfonLog("idfon video watch started path=\(path)")
         startFramePolling()
         if state == .calling { state = .inCall }
         notify()
@@ -839,7 +839,7 @@ final class VideoCall {
     }
 
     private func fail(_ message: String) {
-        NSLog("idfon video call failed: \(message)")
+        idfonError("idfon video call failed: \(message)")
         lastError = message
         // Tell the peer: they were invited (or answered) and would otherwise
         // sit in a one-sided call until they hang up themselves.

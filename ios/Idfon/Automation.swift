@@ -17,10 +17,10 @@ enum Automation {
     }()
 
     /// Writes a harness-visible marker. `stderr` is unbuffered, so it lands in
-    /// `devicectl ... --console` immediately; the `NSLog` is for the device
-    /// console / sysdiagnose trail.
+    /// `devicectl ... --console` immediately; the `idfonLog` line is for the
+    /// device console / sysdiagnose trail.
     static func mark(_ message: String) {
         FileHandle.standardError.write(Data("idfon-auto: \(message)\n".utf8))
-        NSLog("idfon-auto: \(message)")
+        idfonLog("idfon-auto: \(message)")
     }
 }

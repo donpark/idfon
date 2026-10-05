@@ -17,9 +17,9 @@ enum Automation {
     }()
 
     /// Writes a harness-visible marker. `stderr` is unbuffered, so it lands
-    /// immediately; the `NSLog` is for the unified log trail.
+    /// immediately; the `idfonLog` line is for the unified log trail.
     static func mark(_ message: String) {
         FileHandle.standardError.write(Data("idfon-auto: \(message)\n".utf8))
-        NSLog("idfon-auto: \(message)")
+        idfonLog("idfon-auto: \(message)")
     }
 }

@@ -32,7 +32,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             idfon_apple_voice_free,
             idfon_apple_voice_free_text
         )
-        NSLog("idfon voice: registered apple engine status=\(status)")
+        idfonLog("idfon voice: registered apple engine status=\(status)")
     }
 
     /// Confirmation for an `IDFON-INVITE/1` from a sender that is not marked
@@ -80,7 +80,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             let ref = args[i + 1]
             Task { @MainActor in
                 LiveCall.shared.dial(ref)
-                NSLog("idfon audio dial started: \(ref)")
+                idfonLog("idfon audio dial started: \(ref)")
             }
         }
         if args.contains("-answer") {
@@ -114,9 +114,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         if let i = args.firstIndex(of: "-trust-enroll"), args.count > i + 1 {
             AutoEnroll.trust(args[i + 1])
-            NSLog("idfon trust-enroll: \(args[i + 1])")
+            idfonLog("idfon trust-enroll: \(args[i + 1])")
         }
-        // Debug: NSLog the tail of the daemon tracing log (see iroh_enable_tracing).
+        // Debug: log the tail of the daemon tracing log (see iroh_enable_tracing).
         if args.contains("-dumplog") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { Self.dumpLog() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 15) { Self.dumpLog() }
@@ -164,11 +164,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let i = args.firstIndex(of: "-memo"), args.count > i + 2, let seconds = TimeInterval(args[i + 1]) {
             let ref = args[i + 2]
             VoiceMemo.requestPermission { granted in
-                guard granted else { NSLog("idfon memo: no mic permission"); return }
+                guard granted else { idfonLog("idfon memo: no mic permission"); return }
                 let memoClient = DaemonClient()
                 let memo = VoiceMemo()
                 do { _ = try memo.start() } catch {
-                    NSLog("idfon memo start failed: \(error.localizedDescription)")
+                    idfonError("idfon memo start failed: \(error.localizedDescription)")
                     return
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
@@ -187,9 +187,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                             ticket=\(ticket)
                             """
                             try await memoClient.sendText(to: ref, envelope)
-                            NSLog("idfon memo sent: \(result.duration)s, ticket \(ticket.prefix(16))...")
+                            idfonLog("idfon memo sent: \(result.duration)s, ticket \(ticket.prefix(16))...")
                         } catch {
-                            NSLog("idfon memo send failed: \(error.localizedDescription)")
+                            idfonError("idfon memo send failed: \(error.localizedDescription)")
                         }
                     }
                 }
@@ -205,17 +205,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         for _ in 0..<600 {
             if audio, case .incoming = LiveCall.shared.state {
                 LiveCall.shared.answer()
-                NSLog("idfon audio answer started")
+                idfonLog("idfon audio answer started")
                 return
             }
             if !audio, VideoCall.shared.state == .incoming {
                 VideoCall.shared.answer(cameraOn: true)
-                NSLog("idfon video answer started camera=1")
+                idfonLog("idfon video answer started camera=1")
                 return
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
-        NSLog("idfon answer timed out waiting for incoming call")
+        idfonLog("idfon answer timed out waiting for incoming call")
     }
 
     /// Device pairing automation (no peer-add UI on iOS): launch with
@@ -237,21 +237,21 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             // The raw endpoint ticket is the fallback while the endpoint is
             // still binding.
             if let contact = try? await client.contactTicket(identity: identity), !contact.isEmpty {
-                NSLog("idfon self ticket: \(contact)")
+                idfonLog("idfon self ticket: \(contact)")
             } else if let ticketBytes = status?["ticket"]?.asArray {
                 let data = Data(ticketBytes.compactMap { enc -> UInt8? in
                     guard let v = enc.intValue, v > 0, v < 256 else { return nil }
                     return UInt8(v)
                 })
-                NSLog("idfon self ticket: \(String(data: data, encoding: .utf8) ?? "?")")
+                idfonLog("idfon self ticket: \(String(data: data, encoding: .utf8) ?? "?")")
             }
             guard let ticket = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any] else {
-                NSLog("idfon pair failed: invalid ticket JSON")
+                idfonError("idfon pair failed: invalid ticket JSON")
                 return
             }
             let transport = (ticket["endpoint_addr"] as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ticket
             guard let endpointId = (ticket["endpoint_id"] as? String) ?? (transport["id"] as? String), !endpointId.isEmpty else {
-                NSLog("idfon pair failed: ticket has no endpoint_id")
+                idfonError("idfon pair failed: ticket has no endpoint_id")
                 return
             }
             let accountId = (ticket["account_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? endpointId
@@ -274,9 +274,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                     "capability": AnyEncodable(capability),
                 ])
             }
-            NSLog("idfon paired: peer \(endpointId.prefix(16)) as \(name), identity \(identity)")
+            idfonLog("idfon paired: peer \(endpointId.prefix(16)) as \(name), identity \(identity)")
         } catch {
-            NSLog("idfon pair failed: \(error.localizedDescription)")
+            idfonError("idfon pair failed: \(error.localizedDescription)")
         }
     }
 
@@ -301,28 +301,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         } else if let contents = try? String(contentsOfFile: jsonOrPath, encoding: .utf8) {
             json = contents
         } else {
-            NSLog("idfon ticket failed: not JSON or a readable file")
+            idfonError("idfon ticket failed: not JSON or a readable file")
             return
         }
         guard CapabilityTickets.store(json, for: peer) else {
-            NSLog("idfon ticket failed: not a JSON object")
+            idfonError("idfon ticket failed: not a JSON object")
             return
         }
-        NSLog("idfon ticket stored for peer \(peer.prefix(16))")
+        idfonLog("idfon ticket stored for peer \(peer.prefix(16))")
     }
 
     private static func dumpLog() {
         // Rust's /tmp resolves to the app sandbox tmp on iOS (std::env::temp_dir).
         let tmp = FileManager.default.temporaryDirectory
         let files = (try? FileManager.default.contentsOfDirectory(atPath: tmp.path)) ?? []
-        NSLog("idfon dumplog: tmp has \(files.sorted())")
+        idfonLog("idfon dumplog: tmp has \(files.sorted())")
         let path = tmp.appendingPathComponent("idfon-\(ProcessInfo.processInfo.processIdentifier).log").path
         guard let lines = try? String(contentsOfFile: path, encoding: .utf8).split(separator: "\n") else {
-            NSLog("idfon dumplog: no log at \(path)")
+            idfonLog("idfon dumplog: no log at \(path)")
             return
         }
-        NSLog("idfon dumplog: \(lines.count) lines total, tail:")
-        for line in lines.suffix(40) { NSLog("| \(line)") }
+        idfonLog("idfon dumplog: \(lines.count) lines total, tail:")
+        for line in lines.suffix(40) { idfonLog("| \(line)") }
     }
 
     func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
@@ -337,7 +337,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         Task {
             for _ in 0..<50 {
                 if let status = try? await client.status(), status.ready {
-                    NSLog("idfon daemon ready, identity: \(status.identityName)")
+                    idfonLog("idfon daemon ready, identity: \(status.identityName)")
                     break
                 }
                 try? await Task.sleep(nanoseconds: 200_000_000)

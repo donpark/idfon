@@ -264,7 +264,7 @@ final class OnDeviceVoice: NSObject {
                     try file.write(from: pcm)
                     state.frames += Int(pcm.frameLength)
                 } catch {
-                    NSLog("idfon voice: tts write failed \(error.localizedDescription)")
+                    idfonError("idfon voice: tts write failed \(error.localizedDescription)")
                 }
             }
         }

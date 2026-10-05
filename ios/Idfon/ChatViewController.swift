@@ -477,7 +477,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     self?.elapsedLabel.text = Self.format(elapsed)
                 }
             } catch {
-                NSLog("idfon memo start failed: \(error.localizedDescription)")
+                idfonError("idfon memo start failed: \(error.localizedDescription)")
             }
         }
     }
@@ -587,11 +587,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 self.showCallStatus(nil)
             } catch is CancellationError {
                 TransferCenter.shared.finish(id: transferId)
-                NSLog("idfon file: memo cancelled")
+                idfonLog("idfon file: memo cancelled")
                 self.showCallStatus("Voice message cancelled")
             } catch {
                 TransferCenter.shared.finish(id: transferId)
-                NSLog("idfon file: memo failed \(error.localizedDescription)")
+                idfonError("idfon file: memo failed \(error.localizedDescription)")
                 self.showCallStatus("Send failed: \(error.localizedDescription)")
             }
         }
@@ -640,16 +640,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 """
                 try await sendConversationText(envelope)
                 ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id, kind: .file(ticket: ticket, name: safeName, sizeBytes: size, localURL: nil), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
-                NSLog("idfon file: sent name=\(safeName) size=\(size) ticket=\(ticket)")
+                idfonLog("idfon file: sent name=\(safeName) size=\(size) ticket=\(ticket)")
                 TransferCenter.shared.finish(id: transferId)
                 self.showCallStatus(nil)
             } catch is CancellationError {
                 TransferCenter.shared.finish(id: transferId)
-                NSLog("idfon file: send cancelled name=\(name)")
+                idfonLog("idfon file: send cancelled name=\(name)")
                 self.showCallStatus("Send cancelled")
             } catch {
                 TransferCenter.shared.finish(id: transferId)
-                NSLog("idfon file: send failed \(error.localizedDescription)")
+                idfonError("idfon file: send failed \(error.localizedDescription)")
                 self.showCallStatus("Send failed: \(error.localizedDescription)")
             }
         }
@@ -741,7 +741,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 ChatStore.shared.attachFile(at: url, to: message.id)
                 self.share(url: url, source: sender)
             } catch {
-                NSLog("idfon file: download failed \(error.localizedDescription)")
+                idfonError("idfon file: download failed \(error.localizedDescription)")
                 self.showCallStatus("Download failed: \(error.localizedDescription)")
             }
         }
@@ -880,7 +880,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Automation entry (`idfon://dial` + the `idfon.dial` notification): the
     /// daemon-side WAV harness, not the real audio state machine.
     private func dial(peerRef: String) {
-        NSLog("idfon dial: \(peerRef)")
+        idfonLog("idfon dial: \(peerRef)")
         showCallStatus("Calling…")
         Task { [weak self] in
             guard let self else { return }
@@ -1012,7 +1012,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 players[ticket] = player
                 tableView.reloadRows(at: [IndexPath(row: sender.tag, section: 0)], with: .none)
             } catch {
-                NSLog("idfon recording fetch failed: \(error.localizedDescription)")
+                idfonError("idfon recording fetch failed: \(error.localizedDescription)")
             }
         }
     }

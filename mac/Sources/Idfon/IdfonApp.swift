@@ -79,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             guard let link = IdfonURL(url) else { continue }
-            NSLog("idfon openURL: \(url)")
+            idfonLog("idfon openURL: \(url)")
             switch link {
             case .resource(let ref, _):
                 openPeerThread(ref: ref)
@@ -188,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(nanoseconds: 300_000_000)
                 }
                 LiveCall.shared.dial(peer)
-                NSLog("idfon audio dial started: \(peer)")
+                idfonLog("idfon audio dial started: \(peer)")
             }
         }
         if let index = args.firstIndex(of: "-videodial"), args.count > index + 1 {
@@ -204,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     VideoCall.shared.dial(peer)
                 }
-                NSLog("idfon video dial started: \(peer)")
+                idfonLog("idfon video dial started: \(peer)")
             }
         }
         if args.contains("-answer") { waitForIncomingCall(video: false) }
@@ -241,17 +241,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for _ in 0..<600 {
                 if video, VideoCall.shared.state == .incoming {
                     VideoCall.shared.answer()
-                    NSLog("idfon video answer started")
+                    idfonLog("idfon video answer started")
                     return
                 }
                 if !video, case .incoming = LiveCall.shared.state {
                     LiveCall.shared.answer()
-                    NSLog("idfon audio answer started")
+                    idfonLog("idfon audio answer started")
                     return
                 }
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
-            NSLog("idfon \(video ? "video" : "audio") answer timed out")
+            idfonLog("idfon \(video ? "video" : "audio") answer timed out")
         }
     }
 
