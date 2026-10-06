@@ -6,6 +6,7 @@ import {
   opusToPcm24k as toPcm24k,
   putAudio,
   RATE,
+  trimLeadingSilence,
   trimTrailingSilence,
   wavWrap,
 } from "eve-idfon-voice";
@@ -188,7 +189,10 @@ function runLiveSession(pcmIn: Buffer, guidance?: string): Promise<LiveReply> {
       } else if (event.type === "error") {
         finish(undefined, new Error(`gpt-live session error: ${event.error?.message ?? JSON.stringify(event.error)}`));
       } else if (event.type === "session.closed") {
-        finish({ pcm: trimTrailingSilence(Buffer.concat(outChunks)), transcript: transcript.trim() });
+        finish({
+          pcm: trimTrailingSilence(trimLeadingSilence(Buffer.concat(outChunks))),
+          transcript: transcript.trim(),
+        });
       }
     });
 

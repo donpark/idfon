@@ -52,6 +52,9 @@ const EVENT_RETENTION: usize = 1000;
 const COMPACT_EVENTS_MAX_BYTES: usize = 128 * 1024;
 static SYNC_GUARDS: OnceLock<Mutex<Vec<SideChannelGuard>>> = OnceLock::new();
 const MAX_RESOURCE_BYTES: usize = 512 * 1024;
+/// Cap on the unsigned per-turn `context` a sender may attach. Pushed by the
+/// UI for active caller-side state; receivers treat it as untrusted data.
+const MAX_CONTEXT_CHARS: usize = 4096;
 static MEDIA_SERVICE: OnceLock<MediaService> = OnceLock::new();
 struct GossipTopicHandle {
     sender: GossipSender,
@@ -2688,6 +2691,11 @@ fn send_message(
     envelope.trace = Some(request_text(&request.params, "trace").unwrap_or_else(idfon_core::new_traceparent));
     // Advertise this process's telemetry participation alongside the trace.
     envelope.telemetry = Some(idfon_telemetry::mode().to_string());
+    // Caller-pushed per-turn context (e.g. the active per-contact speech
+    // settings). Unsigned like `trace`; bounded so it cannot bloat the envelope.
+    envelope.context = request_text(&request.params, "context")
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(MAX_CONTEXT_CHARS).collect());
     let timestamp = now();
     let operation = idfon_protocol::Operation {
         identity: identity.id.clone(),
@@ -6022,6 +6030,76 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    /// `message.send` stamps the caller-pushed `context` onto the outbound
+    /// envelope, and leaves it unset when the caller did not supply one.
+    #[tokio::test]
+    async fn message_send_stamps_context_on_the_envelope() {
+        let dir = temp_dir("send-context");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let transport = Arc::new(TransportMode::new("fake", None).await.unwrap());
+        let key = idfon_core::generate_identity();
+        let peer_id = idfon_core::peer_id(&key);
+        {
+            let mut state = store.lock().unwrap();
+            state.identities.push(Identity {
+                id: "default".into(),
+                name: "default".into(),
+                endpoint_id: None,
+                public_key: None,
+                active: false,
+            });
+            let data_dir = state.data_dir.clone();
+            state.ensure_identity_keys(&data_dir).unwrap();
+            state.peers.push(idfon_protocol::Peer {
+                id: peer_id.clone(),
+                identity: "default".into(),
+                name: "Alice".into(),
+                endpoint_id: Some("ep".into()),
+                endpoint_addr: None,
+                devices: Vec::new(),
+                aliases: vec![],
+                call_mode: idfon_protocol::IncomingCallMode::default(),
+            });
+            state.grants.push(idfon_protocol::CapabilityGrant {
+                capability: idfon_protocol::Capability::MessageSend,
+                identity: "default".into(),
+                subject: peer_id.clone(),
+                conversation: None,
+                active_at: "0".into(),
+                expires_at: None,
+                revision: 1,
+                revoked_at: None,
+            });
+        }
+        let send = |key: &str, to: &str, context: Option<&str>| {
+            let mut params = serde_json::json!({
+                "identity": "default",
+                "to": to,
+                "text": "hi",
+                "idempotency_key": key,
+            });
+            if let Some(context) = context {
+                params["context"] = serde_json::Value::from(context);
+            }
+            let request = Request {
+                version: PROTOCOL_VERSION,
+                id: "test".into(),
+                method: "message.send".into(),
+                params,
+            };
+            send_message(&request, &store, &transport)
+        };
+        assert!(send("k1", &peer_id, Some("Client STT=Apple Built-in")).ok);
+        {
+            let state = store.lock().unwrap();
+            let envelope = state.operations.last().unwrap().outbound.as_ref().unwrap();
+            assert_eq!(envelope.context.as_deref(), Some("Client STT=Apple Built-in"));
+        }
+        assert!(send("k2", &peer_id, None).ok);
+        let state = store.lock().unwrap();
+        assert!(state.operations.last().unwrap().outbound.as_ref().unwrap().context.is_none());
     }
 
     async fn http_get(addr: std::net::SocketAddr, path: &str, token: &str) -> (u16, String) {

@@ -98,13 +98,17 @@ extension DaemonClient {
         _ = try await requestWithLaunch(method: "room.leave", params: ["room": AnyEncodable(room)])
     }
 
-    func sendText(to peer: String, _ text: String, conversation: String? = nil) async throws {
+    func sendText(to peer: String, _ text: String, conversation: String? = nil,
+                  context: String? = nil) async throws {
         var params: [String: AnyEncodable] = [
             "to": AnyEncodable(peer),
             "text": AnyEncodable(text),
             "idempotency_key": AnyEncodable("mac-\(UUID().uuidString)"),
         ]
         if let conversation { params["conversation"] = AnyEncodable(conversation) }
+        // Per-turn caller context (unsigned, untrusted data): the active
+        // caller-side state the UI applied to this turn.
+        if let context { params["context"] = AnyEncodable(context) }
         // Gated peers (the Eve agent's holder) require their holder-signed
         // ticket; ungated peers ignore it and use local grants.
         if let ticket = CapabilityTickets.ticket(for: peer) {

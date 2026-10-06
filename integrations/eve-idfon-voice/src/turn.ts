@@ -56,6 +56,23 @@ export class EnergyEndpointer {
   }
 }
 
+/** Drop leading near-silence, keeping a short lead-in (no click). A live
+ * model streams silence until its first audio token (TTFB), so without this a
+ * reply clip opens with dead air. */
+export function trimLeadingSilence(
+  pcm: Buffer,
+  { threshold = ENERGY_THRESHOLD, keepMs = 100, rate = RATE } = {},
+): Buffer {
+  let start = 0;
+  while (start + 2 <= pcm.length) {
+    const sample = pcm.readInt16LE(start);
+    if (sample > threshold || sample < -threshold) break;
+    start += 2;
+  }
+  const keep = Math.max(0, start - rate * 2 * (keepMs / 1000));
+  return pcm.subarray(keep);
+}
+
 /** Drop trailing near-silence, keeping a short fade-out tail (no click). */
 export function trimTrailingSilence(
   pcm: Buffer,

@@ -45,8 +45,8 @@ The `voice` block is the holder's *advertisement*; the caller still chooses
 which STT/TTS engines to run, per contact. The catalog is **not** in the signed
 ticket — it is a resource the agent serves at path `idfon.json`
 (`idfon://<holder>/idfon.json`), fetched on demand through the loopback
-gateway and cached by the app. So it stays fresh without re-pairing and the
-ticket stays small.
+gateway (bounded at 3s) and cached by the app. So it stays fresh without
+re-pairing and the ticket stays small.
 
 - **`idfon.json`** — the agent's manifest. `voice.options` lists what it can
   run: `stt` / `tts` / `full-duplex` options, each with an `id`, a `label`, and
@@ -57,18 +57,31 @@ ticket stays small.
   `id`**: the agent integrates (keeps a default) or overrides per option.
   `scripts/live-voice-serve.sh` folds `agents/<name>/idfon.json` into the live
   config as `idfon_manifest`.
-- **Selection** — both apps store the chosen `stt`/`tts` option ids per contact
-  (`ContactVoiceSelection`, UserDefaults keyed by peer id). The ids ride the
-  `IDFON-LIVE/1` invite (`stt=<id>` / `tts=<id>`); `apply_voice_selection`
-  resolves them on the holder into the cascade engine halves (or switches the
-  backend for a `full-duplex` choice).
+- **Selection** — the contact detail has one **Speech** section with two
+  pickers, **Recognition** (STT) and **Generation** (TTS). Each picker spans
+  the app's on-device backends (`AsrBackend`/`TtsBackend`) and the agent's
+  fetched `idfon.json` options; `ContactSpeech` reads/writes both stores behind
+  one pick. The displayed value is the effective engine (the stored pick, else
+  the app-global default — Apple Built-in for STT), never "Automatic". Catalog
+  ids ride the `IDFON-LIVE/1` invite (`stt=<id>` / `tts=<id>`);
+  `apply_voice_selection` resolves them on the holder into the cascade engine
+  halves.
 - **Full-duplex coupling** — a `full-duplex` option (e.g. GPT-Live-1) fills
-  both slots: choosing it for either STT or TTS sets both, and pins
+  both halves: choosing it for either picker sets both, and pins
   `mode = native-duplex`.
-- **On-device engines** — when a call runs the client cascade, each contact can
-  pick its own recognizer and reply voice (`ContactOnDeviceEngines`: Parakeet /
-  Apple ASR, Kokoro / Apple TTS). Resolved at call start (`VoiceAgentSession`);
-  absent = the app's global default (`SpeechEngines`).
+- **On-device engines** — when a call runs the client cascade, the on-device
+  pick is stored per contact (`ContactOnDeviceEngines`: Parakeet / Apple ASR,
+  Kokoro / Apple TTS). Resolved at call start (`VoiceAgentSession`); absent =
+  the app's global default (`SpeechEngines`). Choosing one clears the catalog
+  pick for that half (and vice versa), so exactly one store owns each half.
+- **Per-contact hybrid** — a live invite carries `stt_side=client` /
+  `tts_side=client` when this device runs that half on-device (an on-device
+  pick), so `apply_voice_selection` overrides the signed route's ownership for
+  the call instead of the holder silently running both halves. The app runs it
+  via `HybridVoice` (on-device ASR or TTS over the live session) using the same
+  per-contact engine; `VoiceCallRouting.decide` resolves the route from the
+  picks so a hybrid is actually detected. `VoiceRoute.resolving` is the shared
+  Foundation-only resolver.
 - **Codec** — the live-call audio codec is the holder's signed `voice.audio`
   (`pcm24k` → PCM, else Opus), not a manual per-contact choice. The media
   session, the dial decision, and the invite all derive it from the route, so
@@ -76,9 +89,17 @@ ticket stays small.
 
 The routing decision is pure (`VoiceCallRouting.decide`): a server/full-duplex
 selection dials the holder's live session, an all-client selection is a client
-cascade, and with no selection the signed route is followed (legacy tickets
-keep the name/PCM heuristic). Checked by `mac/Checks/VoiceCallRoutingCheck` +
-`ios/Checks/VoiceCallRoutingCheck`.
+cascade, and with no selection the signed route is followed. A stored holder
+ticket with no `voice` block (an agent whose holder predates voice routing) is
+treated as its documented default, `client-cascade` — on-device — never the
+silent video-call fallback. Only a peer with no holder ticket at all (an
+ordinary contact) keeps the name/PCM heuristic and the classic video call. The
+`idfon.json` catalog fetch is bounded (3s) so a hung gateway cannot stall the
+decision. Checked by `mac/Checks/VoiceCallRoutingCheck` +
+`ios/Checks/VoiceCallRoutingCheck`. A call that cannot start posts a transient
+chat status (`CallFeedback`: "No voice call available", "No live calls from
+this contact", or "A call is already in progress") instead of failing
+silently.
 
 `scripts/live-voice-serve.sh` refuses to start when `EVE_LIVE_CONFIG` names a
 missing file, so a holder cannot silently advertise no route.
@@ -100,6 +121,18 @@ consumers use it:
 
 No vendor is baked into the platform: the manifest is generic metadata, and a
 missing bridge/manifest simply means no introspection.
+
+Beyond the holder's own manifest, the UI can push **per-turn caller context**
+when it initiates a turn: an unsigned, bounded `context` field on
+`message.send`. It rides the envelope (`MessageEnvelope.context`, like `trace`,
+so older receivers ignore it) and the `voice-pipeline` dynamic instruction
+injects it as an untrusted data block, flagged as the live state so it wins over
+the static holder manifest. A client-cascade call uses it to report the
+on-device engines it actually runs (e.g. "Recognition: Apple Built-in"), which
+the holder cannot observe. Live calls carry the same string as `context_b64=`
+on the `IDFON-LIVE/1` invite, folded into the holder's resolved per-call
+pipeline (`voice_info`) for every injected transcript and the full-duplex
+session instructions.
 
 ## Agent-initiated calls (clarification)
 

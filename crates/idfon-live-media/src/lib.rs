@@ -87,6 +87,15 @@ pub struct LiveInvite {
     pub stt: Option<String>,
     /// Chosen TTS option id from the holder's `idfon.json` catalog.
     pub tts: Option<String>,
+    /// Caller-pushed per-turn context (base64 UTF-8), e.g. the active
+    /// per-contact speech settings. Untrusted data, never instructions.
+    pub context: Option<String>,
+    /// Per-call ownership override for STT: `client` or `server`. The caller
+    /// sets `client` when it runs that half on-device (a per-contact hybrid),
+    /// so the holder does not also run it.
+    pub stt_side: Option<String>,
+    /// Per-call ownership override for TTS (`client` / `server`).
+    pub tts_side: Option<String>,
 }
 
 /// Parse a live control, or `None` for non-live text.
@@ -121,6 +130,18 @@ pub fn parse_invite(text: &str) -> Option<LiveInvite> {
         .find_map(|line| line.strip_prefix("tts="))
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
+    let context = rest
+        .lines()
+        .find_map(|line| line.strip_prefix("context_b64="))
+        .filter(|value| !value.is_empty())
+        .and_then(|value| BASE64.decode(value).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok());
+    let side = |name: &str| {
+        rest.lines()
+            .find_map(|line| line.strip_prefix(name))
+            .filter(|value| *value == "client" || *value == "server")
+            .map(str::to_owned)
+    };
     Some(LiveInvite {
         is_start: action == "start",
         is_stop: action == "stop",
@@ -130,6 +151,9 @@ pub fn parse_invite(text: &str) -> Option<LiveInvite> {
         audio_sample_rate,
         stt,
         tts,
+        context,
+        stt_side: side("stt_side="),
+        tts_side: side("tts_side="),
     })
 }
 
@@ -591,6 +615,31 @@ mod tests {
         let none = parse_invite("IDFON-LIVE/1\naction=start\nticket=abc\nstt=\ntts=").unwrap();
         assert_eq!(none.stt, None);
         assert_eq!(none.tts, None);
+    }
+
+    #[test]
+    fn invite_parses_caller_context() {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        let encoded = BASE64.encode("Client cascade: STT=Apple Built-in");
+        let text = format!("IDFON-LIVE/1\naction=start\nticket=abc\ncontext_b64={encoded}");
+        let invite = parse_invite(&text).unwrap();
+        assert_eq!(invite.context.as_deref(), Some("Client cascade: STT=Apple Built-in"));
+        // Absent and non-UTF8/empty values leave it unset rather than failing.
+        assert_eq!(parse_invite("IDFON-LIVE/1\naction=start\nticket=abc").unwrap().context, None);
+        assert_eq!(parse_invite("IDFON-LIVE/1\naction=start\nticket=abc\ncontext_b64=").unwrap().context, None);
+    }
+
+    #[test]
+    fn invite_parses_side_overrides() {
+        let invite = parse_invite(
+            "IDFON-LIVE/1\naction=start\nticket=abc\nstt_side=client\ntts_side=server",
+        )
+        .unwrap();
+        assert_eq!(invite.stt_side.as_deref(), Some("client"));
+        assert_eq!(invite.tts_side.as_deref(), Some("server"));
+        // Junk values are ignored rather than propagated to the route.
+        let junk = parse_invite("IDFON-LIVE/1\naction=start\nticket=abc\nstt_side=bogus").unwrap();
+        assert_eq!(junk.stt_side, None);
     }
 
     #[test]

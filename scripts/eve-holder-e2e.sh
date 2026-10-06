@@ -63,6 +63,7 @@ pids="$pids $!"
 pids="$pids $!"
 
 "$NUF" --socket "$A" send "$HOLDER_PID" --text hello \
+  --context "holder-e2e context" \
   --idempotency-key eve-holder-m1 \
   --capability-ticket "$HOLDER_TICKET" --retries 2 >"$work/send.out"
 
@@ -81,6 +82,10 @@ assert ipc, "IPC fixture produced no result"
 result = json.loads(ipc)
 assert result["turn"]["type"] == "turn.in"
 assert result["turn"]["text"] == "hello"
+# The caller-pushed per-turn context rides the envelope to the holder frame.
+assert result["turn"]["context"] == "holder-e2e context"
+# The holder advertises its pipeline before the turn.
+assert result["voice_info"]["type"] == "voice.info"
 assert result["ack"]["type"] == "reply.ack"
 assert result["ack"]["status"] == "accepted"
 assert result["status_ack"]["event"] == "turn.cancelled"

@@ -31,7 +31,16 @@ def write_frame(stream, frame):
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 sock.connect(sys.argv[1])
 with sock:
-    turn = read_frame(sock)
+    # The holder pushes its pipeline manifest (`voice.info`) at startup, before
+    # any turn; skip it and keep waiting for the turn under test.
+    turn = None
+    voice_info = None
+    while turn is None:
+        frame = read_frame(sock)
+        if frame["type"] == "voice.info":
+            voice_info = frame
+            continue
+        turn = frame
     assert turn["type"] == "turn.in", turn
     assert turn["peer_id"] == sys.argv[2], turn
     write_frame(
@@ -56,4 +65,9 @@ with sock:
     )
     status_ack = read_frame(sock)
     assert status_ack["type"] == "status.ack", status_ack
-    print(json.dumps({"turn": turn, "ack": ack, "status_ack": status_ack}))
+    print(json.dumps({
+        "turn": turn,
+        "voice_info": voice_info,
+        "ack": ack,
+        "status_ack": status_ack,
+    }))

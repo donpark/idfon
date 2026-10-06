@@ -29,6 +29,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private let bannerBox = NSView()
     private let bannerLabel = NSTextField(labelWithString: "")
     private var bannerTimer: Timer?
+    private var callStatusObserver: NSObjectProtocol?
 
     // video panel
     private var videoPanel: NSView?
@@ -89,11 +90,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     // popovers
     private var peerPopover: NSPopover?
-    private weak var voiceCaptionLabel: NSTextField?
-    private var voiceEnginePopups: [VoiceOption.Kind: NSPopUpButton] = [:]
     private var voiceCatalog: [VoiceOption] = []
-    private weak var asrEnginePopup: NSPopUpButton?
-    private weak var ttsEnginePopup: NSPopUpButton?
+    private weak var recognitionPopup: NSPopUpButton?
+    private weak var generationPopup: NSPopUpButton?
 
     init(peer: Peer, app: AppModel) {
         self.peer = peer
@@ -643,6 +642,12 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         LiveCall.shared.addStateObserver(self)
         VideoCall.shared.addStateObserver(self)
         VideoCall.shared.onFrame = { [weak self] image in self?.updateVideoFrame(image) }
+        // Call feedback from the call singletons ("No voice call available",
+        // "No live calls …", "A call is already in progress").
+        callStatusObserver = NotificationCenter.default.addObserver(forName: .idfonCallStatus, object: nil, queue: .main) { [weak self] note in
+            guard let text = note.userInfo?["text"] as? String else { return }
+            self?.showBanner(text)
+        }
         syncMessages()
         // Media artifacts (video-frame.jpg, recordings) for this conversation.
         let scope = peer.endpointId ?? peer.id
@@ -655,6 +660,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         stopCallMeter()
         memoTimer?.invalidate()
         bannerTimer?.invalidate()
+        if let observer = callStatusObserver {
+            NotificationCenter.default.removeObserver(observer)
+            callStatusObserver = nil
+        }
         player?.stop()
         if let callMemo {
             callMemo.discard()
@@ -1030,11 +1039,15 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let legacyRemote = peer.name == "live-voice"
             || ContactAudioProfiles.profile(for: peerID) == .pcm24k
         let signed = CapabilityTickets.voiceRoute(for: peerID)
+        let holderTicket = CapabilityTickets.hasTicket(for: peerID)
         let selection = ContactVoiceSelection.selection(for: peerID)
+        let onDevice = (stt: ContactOnDeviceEngines.asr(for: peerID),
+                        tts: ContactOnDeviceEngines.tts(for: peerID))
         Task { @MainActor in
             let catalog = await VoiceCatalog.options(for: peerID, client: client)
             let decision = VoiceCallRouting.decide(
-                selection: selection, catalog: catalog, signed: signed, legacyRemote: legacyRemote)
+                selection: selection, onDevice: onDevice, catalog: catalog, signed: signed,
+                holderTicket: holderTicket, legacyRemote: legacyRemote)
             self.perform(decision)
         }
     }
@@ -1313,46 +1326,22 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let copy = NSButton(title: "Copy endpoint ID", target: self, action: #selector(copyEndpointTapped))
         copy.bezelStyle = .rounded
 
-        // Per-contact STT/TTS from the agent's `idfon.json` catalog; the
-        // catalog is fetched, so the menus fill in once it lands.
-        func enginePopup(_ kind: VoiceOption.Kind) -> NSPopUpButton {
-            let popup = NSPopUpButton()
-            popup.target = self
-            popup.action = #selector(voiceEngineChanged(_:))
-            popup.identifier = NSUserInterfaceItemIdentifier(kind.rawValue)
-            voiceEnginePopups[kind] = popup
-            return popup
-        }
-        let sttPopup = enginePopup(.stt)
-        let ttsPopup = enginePopup(.tts)
-        let voiceCaption = NSTextField(wrappingLabelWithString: "Loading voice catalog…")
-        voiceCaption.font = NSFont.systemFont(ofSize: 10)
-        voiceCaption.textColor = .secondaryLabelColor
-        voiceCaptionLabel = voiceCaption
+        // One "Speech" section: each picker spans the app's on-device backends
+        // and the agent's fetched `idfon.json` options.
+        let recognition = speechPopup(for: .recognition)
+        let generation = speechPopup(for: .generation)
+        recognitionPopup = recognition
+        generationPopup = generation
         voiceCatalog = []
-        rebuildVoiceEngines()
-
-        // Per-contact on-device engines (used when the call runs the client
-        // cascade); "Automatic" follows the app's global default.
-        let onDeviceAsrPopup = NSPopUpButton()
-        onDeviceAsrPopup.target = self
-        onDeviceAsrPopup.action = #selector(onDeviceEngineChanged(_:))
-        asrEnginePopup = onDeviceAsrPopup
-        let onDeviceTtsPopup = NSPopUpButton()
-        onDeviceTtsPopup.target = self
-        onDeviceTtsPopup.action = #selector(onDeviceEngineChanged(_:))
-        ttsEnginePopup = onDeviceTtsPopup
-        rebuildOnDeviceEngines()
+        rebuildSpeech()
 
         let stack = NSStackView(views: [
             NSTextField(labelWithString: peer.displayName),
             endpoint,
             copy,
-            NSTextField(labelWithString: "Speech to text"), sttPopup,
-            NSTextField(labelWithString: "Text to speech"), ttsPopup,
-            voiceCaption,
-            NSTextField(labelWithString: "On-device recognizer"), onDeviceAsrPopup,
-            NSTextField(labelWithString: "On-device voice"), onDeviceTtsPopup,
+            NSTextField(labelWithString: "Speech"),
+            NSTextField(labelWithString: "Recognition"), recognition,
+            NSTextField(labelWithString: "Generation"), generation,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -1368,80 +1357,64 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let client = self.client
         Task { @MainActor in
             self.voiceCatalog = await VoiceCatalog.options(for: peerID, client: client)
-            self.rebuildVoiceEngines()
+            self.rebuildSpeech()
         }
     }
 
-    /// Fill both popups from the fetched catalog plus the current selection.
-    private func rebuildVoiceEngines() {
-        let (stt, tts) = ContactVoiceSelection.selection(for: peer.id)
-        for (kind, popup) in voiceEnginePopups {
-            let selected = kind == .stt ? stt : tts
+    private func speechPopup(for slot: SpeechSlot) -> NSPopUpButton {
+        let popup = NSPopUpButton()
+        popup.target = self
+        popup.action = #selector(speechChanged(_:))
+        popup.identifier = NSUserInterfaceItemIdentifier(slot == .recognition ? "recognition" : "generation")
+        return popup
+    }
+
+    private func popup(for slot: SpeechSlot) -> NSPopUpButton? {
+        slot == .recognition ? recognitionPopup : generationPopup
+    }
+
+    /// On-device backends first, then the agent's catalog options for the slot.
+    private func choices(for slot: SpeechSlot) -> [SpeechChoice] {
+        let onDevice: [SpeechChoice] = slot == .recognition
+            ? AsrBackend.allCases.map { SpeechChoice(store: .onDevice, id: $0.rawValue, title: $0.title) }
+            : TtsBackend.allCases.map { SpeechChoice(store: .onDevice, id: $0.rawValue, title: $0.title) }
+        let kind: VoiceOption.Kind = slot == .recognition ? .stt : .tts
+        let advertised = voiceCatalog
+            .filter { $0.kind == kind || $0.fillsBothSlots }
+            .map { SpeechChoice(store: .catalog, id: $0.id, title: $0.label) }
+        return onDevice + advertised
+    }
+
+    /// The effective pick: the stored choice, else the app-global backend for
+    /// the slot, so the popup always shows a real engine (never "Automatic").
+    private func effectiveChoice(for slot: SpeechSlot) -> SpeechChoice {
+        ContactSpeech.stored(for: peer.id, slot: slot) ?? SpeechChoice(
+            store: .onDevice,
+            id: slot == .recognition ? SpeechEngines.asrBackend.rawValue : SpeechEngines.ttsBackend.rawValue,
+            title: "")
+    }
+
+    private func rebuildSpeech() {
+        for slot in [SpeechSlot.recognition, .generation] {
+            guard let popup = popup(for: slot) else { continue }
+            let effective = effectiveChoice(for: slot)
             popup.removeAllItems()
-            popup.addItem(withTitle: "Automatic")
-            for option in voiceCatalog where option.kind == kind || option.fillsBothSlots {
-                popup.addItem(withTitle: option.label)
-                popup.lastItem?.representedObject = option.id
+            var selectedIndex = 0
+            for (index, choice) in choices(for: slot).enumerated() {
+                popup.addItem(withTitle: choice.title)
+                popup.lastItem?.representedObject = choice
+                if effective.store == choice.store && effective.id == choice.id { selectedIndex = index }
             }
-            if let selected,
-               let index = popup.itemArray.firstIndex(where: { ($0.representedObject as? String) == selected }) {
-                popup.selectItem(at: index)
-            } else {
-                popup.selectItem(at: 0)
-            }
-        }
-        voiceCaptionLabel?.stringValue = voiceCatalog.isEmpty
-            ? "No voice catalog advertised by this agent."
-            : "Engines the agent advertises. A full-duplex model fills both."
-    }
-
-    private func rebuildOnDeviceEngines() {
-        let asr = ContactOnDeviceEngines.asr(for: peer.id).flatMap(AsrBackend.init(rawValue:))
-        let tts = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:))
-        fillEnginePopup(asrEnginePopup, selected: asr?.rawValue,
-                        options: AsrBackend.allCases.map { ($0.rawValue, $0.title) })
-        fillEnginePopup(ttsEnginePopup, selected: tts?.rawValue,
-                        options: TtsBackend.allCases.map { ($0.rawValue, $0.title) })
-    }
-
-    private func fillEnginePopup(_ popup: NSPopUpButton?, selected: String?, options: [(String, String)]) {
-        guard let popup else { return }
-        popup.removeAllItems()
-        popup.addItem(withTitle: "Automatic")
-        for (raw, title) in options {
-            popup.addItem(withTitle: title)
-            popup.lastItem?.representedObject = raw
-        }
-        if let selected,
-           let index = popup.itemArray.firstIndex(where: { ($0.representedObject as? String) == selected }) {
-            popup.selectItem(at: index)
-        } else {
-            popup.selectItem(at: 0)
+            popup.selectItem(at: selectedIndex)
         }
     }
 
-    @objc private func onDeviceEngineChanged(_ sender: NSPopUpButton) {
-        let asr = asrEnginePopup?.selectedItem?.representedObject as? String
-        let tts = ttsEnginePopup?.selectedItem?.representedObject as? String
-        ContactOnDeviceEngines.set(asr: asr, tts: tts, for: peer.id)
-        rebuildOnDeviceEngines()
-    }
-
-    @objc private func voiceEngineChanged(_ sender: NSPopUpButton) {
-        guard let kind = voiceEnginePopups.first(where: { $0.value === sender })?.key else { return }
-        let id = sender.selectedItem?.representedObject as? String
-        var (stt, tts) = ContactVoiceSelection.selection(for: peer.id)
-        if let id, let option = voiceCatalog.first(where: { $0.id == id }), option.fillsBothSlots {
-            // Full-duplex fills both slots.
-            stt = id
-            tts = id
-        } else if kind == .stt {
-            stt = id
-        } else {
-            tts = id
-        }
-        ContactVoiceSelection.set(stt: stt, tts: tts, for: peer.id)
-        rebuildVoiceEngines()
+    @objc private func speechChanged(_ sender: NSPopUpButton) {
+        guard let choice = sender.selectedItem?.representedObject as? SpeechChoice,
+              let slot: SpeechSlot = sender.identifier?.rawValue == "recognition" ? .recognition : .generation
+        else { return }
+        ContactSpeech.set(choice, catalog: voiceCatalog, for: peer.id, slot: slot)
+        rebuildSpeech()
     }
 
     @objc private func copyEndpointTapped() {

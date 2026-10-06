@@ -83,8 +83,12 @@ registration and intro cards a peer discovers also carry it).
 
 **Consume.** The Apple apps read the stored ticket's `voice.mode`
 (`CapabilityTickets.voiceRoute(for:)`) to pick the call path, and `eve-idfon`
-gates live-control interception on `native-duplex`. Legacy tickets have no
-block and keep the old name/profile heuristic.
+gates live-control interception on `native-duplex`. A holder ticket with no
+`voice` block is an agent whose holder predates voice routing: the caller
+treats it as `client-cascade` (on-device), since that is the holder's
+documented default for a text agent. Only a peer with no holder ticket at all
+keeps the old name/profile heuristic and the classic video call.
+`VoiceCallRouting.decide` takes `holderTicket` for exactly this split.
 
 **Absent block on an older ticket** verifies unchanged: `ticket_unsigned` only
 adds `voice` when set, so the signed bytes stay byte-identical.

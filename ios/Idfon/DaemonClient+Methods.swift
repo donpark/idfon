@@ -168,13 +168,17 @@ extension DaemonClient {
     /// Attaches the peer's provisioned capability ticket when there is one
     /// (`CapabilityTickets`); gated peers such as the Eve agent's holder
     /// require it, ungated idfon peers ignore it and use local grants.
-    func sendText(to peer: String, _ text: String, conversation: String? = nil) async throws {
+    func sendText(to peer: String, _ text: String, conversation: String? = nil,
+                  context: String? = nil) async throws {
         var params: [String: AnyEncodable] = [
             "to": AnyEncodable(peer),
             "text": AnyEncodable(text),
             "idempotency_key": AnyEncodable("ios-\(UUID().uuidString)"),
         ]
         if let conversation { params["conversation"] = AnyEncodable(conversation) }
+        // Per-turn caller context (unsigned, untrusted data): the active
+        // caller-side state the UI applied to this turn.
+        if let context { params["context"] = AnyEncodable(context) }
         if let ticket = CapabilityTickets.ticket(for: peer) {
             params["capability_ticket"] = ticket
         }

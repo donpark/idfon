@@ -154,6 +154,11 @@ pub enum IpcFrame {
         /// Correlation id, so an agent/bridge can log against the same trace.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trace: Option<String>,
+        /// Caller-pushed per-turn context, e.g. the active per-contact speech
+        /// settings. Unsigned and untrusted: reaches the agent as an auth
+        /// attribute, never as instructions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
     },
     #[serde(rename = "reply.out")]
     ReplyOut {
@@ -649,7 +654,10 @@ fn derived_voice_options(params: &serde_json::Value) -> Vec<serde_json::Value> {
         return vec![json!({
             "id": model,
             "kind": "full-duplex",
-            "label": model,
+            // Model label convention: "<model> (cloud)" for a holder-side
+            // engine, "<model> (on-device)" for a client-side one, and
+            // "Apple Built-in" for Apple's own STT/TTS (see SpeechEngine.swift).
+            "label": format!("{model} (cloud)"),
             "side": "server",
             "backend": params.get("backend").and_then(Value::as_str),
             "model": model,
@@ -670,9 +678,10 @@ fn engine_option(kind: &str, block: &serde_json::Value) -> serde_json::Value {
         .or_else(|| block.get("stt_model"))
         .or_else(|| block.get("tts_model"))
         .and_then(Value::as_str);
+    // Derived options are holder-side (remote), so they read "<model> (cloud)".
     let (id, label) = match model {
-        Some(model) => (format!("{provider}:{model}"), format!("{provider} {model}")),
-        None => (provider.to_string(), provider.to_string()),
+        Some(model) => (format!("{provider}:{model}"), format!("{model} (cloud)")),
+        None => (provider.to_string(), format!("{provider} (cloud)")),
     };
     json!({
         "id": id,
@@ -1513,6 +1522,7 @@ async fn handle_message(
             ),
             source: None,
             trace: message.trace.clone(),
+            context: message.context.clone(),
         })
         .await
         .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -2488,7 +2498,9 @@ mod tests {
         assert_eq!(split.len(), 2);
         assert_eq!(split[0]["kind"], "stt");
         assert_eq!(split[0]["id"], "deepgram:nova-3");
+        assert_eq!(split[0]["label"], "nova-3 (cloud)");
         assert_eq!(split[1]["kind"], "tts");
+        assert_eq!(split[1]["label"], "eleven_turbo_v2_5 (cloud)");
 
         // One unsplit provider serves both halves.
         let single = voice_options(&serde_json::json!({
@@ -2505,6 +2517,7 @@ mod tests {
         assert_eq!(duplex.len(), 1);
         assert_eq!(duplex[0]["kind"], "full-duplex");
         assert_eq!(duplex[0]["backend"], "gpt-live");
+        assert_eq!(duplex[0]["label"], "openai/gpt-live-1 (cloud)");
 
         // The agent manifest overrides by id and adds new options.
         let merged = voice_options(&serde_json::json!({
@@ -2700,12 +2713,13 @@ mod tests {
             capabilities: None,
             source: None,
             trace: Some("00-trace-1".into()),
+            context: Some("Client STT=Apple Built-in".into()),
         };
         let (mut writer, mut reader) = duplex(4096);
         write_frame(&mut writer, &frame).await.unwrap();
         drop(writer);
         assert!(
-            matches!(read_frame(&mut reader).await.unwrap(), Some(IpcFrame::TurnIn { text, trace, .. }) if text == "hello" && trace.as_deref() == Some("00-trace-1"))
+            matches!(read_frame(&mut reader).await.unwrap(), Some(IpcFrame::TurnIn { text, trace, context, .. }) if text == "hello" && trace.as_deref() == Some("00-trace-1") && context.as_deref() == Some("Client STT=Apple Built-in"))
         );
     }
 

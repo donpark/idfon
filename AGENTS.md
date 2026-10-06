@@ -15,6 +15,8 @@ add or materially change a doc, update the index.
 
 ## Checks
 
+- Rebuild scope: `docs/build.md` maps a change to the subprojects that must be
+  rebuilt. When you change something shared, say which subprojects to rebuild.
 - Rust: `cargo test -p <crate>` and `cargo check --workspace --all-targets`.
 - macOS app: `swift build` in `mac/`.
 - iOS: source files can be syntax-checked with `swiftc -parse <file>`; a full

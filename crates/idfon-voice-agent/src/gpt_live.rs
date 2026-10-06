@@ -101,6 +101,17 @@ impl GptLiveConfig {
     pub fn from_params(params: &Value) -> Self {
         let mut config: Self = serde_json::from_value(params.clone()).unwrap_or_default();
         config.pipeline = eve_idfon::voice_info(params);
+        // Fold in the caller's pushed context (e.g. client-side engines) so the
+        // full-duplex model can answer from what is actually running.
+        if let Some(caller) = params
+            .get("caller_context")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            if let Some(object) = config.pipeline.as_object_mut() {
+                object.insert("caller_context".into(), Value::String(caller.to_string()));
+            }
+        }
         config
     }
 }
@@ -204,6 +215,7 @@ impl GptLiveBackend {
                         capabilities: None,
                         source: Some(source.clone()),
                         trace: None,
+                        context: None,
                     };
                     if out_tx.send(frame).await.is_err() {
                         break;
@@ -574,8 +586,9 @@ impl TranscriptStream {
 }
 
 /// The system instructions sent to the live session: the configured persona
-/// plus the pipeline manifest, so the voice model can answer questions about
-/// which model/STT/TTS it is (the info is static for the session).
+/// plus the pipeline manifest (resolved for this call, including any caller
+/// context), so the voice model can answer questions about which model/STT/TTS
+/// it is.
 fn session_instructions(config: &GptLiveConfig) -> String {
     if config.pipeline.is_null() {
         config.instructions.clone()

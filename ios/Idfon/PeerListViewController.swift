@@ -25,7 +25,7 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
         refresh()
     }
 
-    /// Global reply-voice backend: Kokoro (on-device neural) or Apple.
+    /// Global reply-voice backend: Kokoro (on-device) or Apple Built-in.
     @objc private func voiceEngineTapped() {
         let current = SpeechEngines.backend
         let alert = UIAlertController(

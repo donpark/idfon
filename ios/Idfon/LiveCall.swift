@@ -141,7 +141,10 @@ final class LiveCall {
     // MARK: - Caller
 
     func dial(_ peerRef: String) {
-        guard case .idle = state else { return }
+        guard case .idle = state else {
+            CallFeedback.post("A call is already in progress.")
+            return
+        }
         operation?.cancel()
         operationGeneration += 1
         let generation = operationGeneration
@@ -197,9 +200,13 @@ final class LiveCall {
                 // Carry the daemon's current dial address: endpoint-id-only
                 // discovery is unreliable for inbound calls to suspended phones.
                 let encodedAddr = Data(returnAddr.utf8).base64EncodedString()
+                // Tell the agent which half(s) this device runs (hybrid route);
+                // nil when the holder runs both, so no context line is sent.
+                let inviteContext = SpeechEngines.clientHalfContext(
+                    for: peerId, route: CapabilityTickets.voiceRoute(for: peerId))
                 try await client.sendText(
                     to: peerId,
-                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId))"
+                    "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
                 )
                 // Dial watchdog: the invite was accepted for delivery, but if the
                 // return leg never lands (peer offline, relay flap, network
@@ -416,6 +423,7 @@ final class LiveCall {
     private func fail(_ message: String) {
         idfonError("idfon live call failed: \(message)")
         lastError = message
+        CallFeedback.post("No live calls from this contact: \(message)")
         terminate(local: false)
     }
 
@@ -446,6 +454,7 @@ final class HybridVoice {
     private let client = DaemonClient()
     private let segmenter = VoicePromptSegmenter()
     private var asr: (any AsrEngine)?
+    private var tts: TtsEngine = SpeechEngines.tts
     private(set) var isActive = false
     private var peerId: String?
     private var speakLocal = false
@@ -455,6 +464,11 @@ final class HybridVoice {
         isActive = true
         peerId = peerRef
         speakLocal = route.ttsSide == .client
+        // Per-contact on-device engine, else the app default.
+        if speakLocal {
+            tts = SpeechEngines.makeTts(
+                ContactOnDeviceEngines.tts(for: peerRef).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.backend)
+        }
         LiveCall.shared.dial(peerRef)
         if route.sttSide == .client {
             Task { @MainActor in await self.startLocalAsr(peerRef: peerRef) }
@@ -474,7 +488,7 @@ final class HybridVoice {
     /// Speak an agent transcript when TTS is on-device.
     func maybeSpeak(peerId: String, role: String, text: String) {
         guard isActive, speakLocal, role == "agent", !text.isEmpty else { return }
-        Task { @MainActor in await SpeechEngines.tts.speak(text) }
+        Task { @MainActor in await tts.speak(text) }
     }
 
     private func startLocalAsr(peerRef: String) async {
@@ -484,7 +498,9 @@ final class HybridVoice {
         segmenter.onPartial = { _ in }
         segmenter.onCommit = { [weak self] text in self?.sendTranscript(text) }
         segmenter.start()
-        let engine = SpeechEngines.makeAsr()
+        // Per-contact on-device recognizer, else the app default.
+        let engine = SpeechEngines.makeAsr(
+            ContactOnDeviceEngines.asr(for: peer.id).flatMap(AsrBackend.init(rawValue:)) ?? SpeechEngines.asrBackend)
         asr = engine
         do {
             try await engine?.start(
