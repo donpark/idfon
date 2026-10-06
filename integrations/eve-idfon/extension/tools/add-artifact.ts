@@ -1,17 +1,14 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import idfonExtension from "eve-idfon";
 
-// Publish an agent result as a durable artifact the user can open in the chat
-// thread. The bytes go through the idfon bridge's blob store; the returned
-// IDFON-ARTIFACT/1 envelope rides back in the reply text, and the app renders
-// a card and fetches the blob by ticket. See docs/idfon-artifacts.md.
+import extension from "../extension";
+import { emitEnvelope } from "../outbox";
 
-const bridgeUrl = () =>
-  process.env.EVE_IDFON_BRIDGE_URL || idfonExtension.config?.bridgeUrl || "http://127.0.0.1:18766";
-const bridgeSecret = () =>
-  process.env.EVE_IDFON_SECRET || idfonExtension.config?.secret || "m2-test-secret";
+// Publish a durable artifact for the user (docs/idfon-artifacts.md). Bytes go
+// through the bridge blob store; the IDFON-ARTIFACT/1 envelope is emitted to the
+// outbox and rides the reply, so the model does not echo it. Available to any
+// idfon-aware agent, not just voice agents.
 
 const KINDS = ["document", "image", "audio", "video", "data", "html", "live"] as const;
 type Kind = (typeof KINDS)[number];
@@ -34,15 +31,15 @@ const MIME_BY_EXTENSION: Record<string, string> = {
 };
 
 function inferMime(title: string): string {
-  const extension = title.toLowerCase().split(".").pop() ?? "";
-  return MIME_BY_EXTENSION[extension] ?? "text/plain";
+  const ext = title.toLowerCase().split(".").pop() ?? "";
+  return MIME_BY_EXTENSION[ext] ?? "text/plain";
 }
 
 export default defineTool({
   description:
     "Publish a result as an artifact the user can open in the chat thread — a report, " +
-    "table, JSON, chart, or any file the user should be able to view in detail. " +
-    "Returns an IDFON-ARTIFACT/1 envelope; include it verbatim in your reply text.",
+    "table, JSON, chart, or any file worth viewing in detail. The app shows it " +
+    "automatically; do not restate the content in your reply.",
   inputSchema: z.object({
     title: z.string().min(1).describe("Short filename-like title, e.g. 'q3-summary.md'"),
     content: z.string().optional().describe("Text content of the artifact"),
@@ -65,13 +62,11 @@ export default defineTool({
     }
 
     const resolvedMime = mime ?? inferMime(title);
-    const resolvedKind = kind ?? inferKind(resolvedMime);
-
-    const response = await fetch(`${bridgeUrl()}/blob/put`, {
+    const response = await fetch(`${extension.config.bridgeUrl}/blob/put`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-idfon-channel-secret": bridgeSecret(),
+        "x-idfon-channel-secret": extension.config.secret,
       },
       body: JSON.stringify({ bytes_base64: bytes.toString("base64") }),
     });
@@ -81,7 +76,7 @@ export default defineTool({
     const artifactId = randomUUID();
     const artifact = {
       artifact_id: artifactId,
-      kind: resolvedKind,
+      kind: kind ?? inferKind(resolvedMime),
       mime: resolvedMime,
       title,
       size_bytes: blob.size_bytes,
@@ -89,12 +84,7 @@ export default defineTool({
       created_at: new Date().toISOString(),
       ...(metadata ? { metadata } : {}),
     };
-
-    return {
-      artifact_id: artifactId,
-      ticket: blob.ticket,
-      size_bytes: blob.size_bytes,
-      envelope: `IDFON-ARTIFACT/1\n${JSON.stringify(artifact)}`,
-    };
+    emitEnvelope(ctx.session.id, `IDFON-ARTIFACT/1\n${JSON.stringify(artifact)}`);
+    return { artifact_id: artifactId, ticket: blob.ticket, size_bytes: blob.size_bytes };
   },
 });

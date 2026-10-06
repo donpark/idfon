@@ -21,6 +21,12 @@ private final class SelectionOverlay: UIView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Draw an agent-pointed region, in the overlay's own coordinates.
+    func highlight(_ rect: CGRect) {
+        selection = rect
+        shape.path = UIBezierPath(rect: rect).cgPath
+    }
+
     @objc private func handle(_ gesture: UIPanGestureRecognizer) {
         let point = gesture.location(in: self)
         switch gesture.state {
@@ -73,6 +79,9 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     /// Called with the selection when the user asks about part of the artifact,
     /// plus a PNG of the selected region when one was cropped.
     var onReference: ((ArtifactSelector, Data?) -> Void)?
+    /// An agent-pointed selection (`IDFON-POINT/1`) to open with and highlight.
+    var point: (selector: ArtifactSelector, note: String?)?
+    private var pointApplied = false
 
     init(artifact: Artifact, peerRef: String? = nil) {
         self.artifact = artifact
@@ -81,6 +90,14 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError("storyboards are not used") }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if point != nil, !pointApplied, body != nil, view.bounds.width > 0 {
+            pointApplied = true
+            applyPoint()
+        }
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -257,6 +274,55 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             items.append(shareButton)
             navigationItem.rightBarButtonItems = items
         }
+    }
+
+    /// Apply the agent's point once the body is laid out: image regions draw on
+    /// the overlay, text selections/HTML highlights run in their view, and the
+    /// caption pins above the artifact.
+    private func applyPoint() {
+        guard let point else { return }
+        if let note = point.note, !note.isEmpty {
+            let banner = UILabel()
+            banner.numberOfLines = 0
+            banner.font = .preferredFont(forTextStyle: .subheadline)
+            banner.textColor = .label
+            banner.backgroundColor = UIColor.systemYellow.withAlphaComponent(0.15)
+            banner.layer.cornerRadius = 8
+            banner.layer.masksToBounds = true
+            banner.text = "  \(note)  "
+            stack.insertArrangedSubview(banner, at: 0)
+        }
+        switch point.selector {
+        case .region(let x, let y, let width, let height, _):
+            guard let imageView, let overlay, let image = imageView.image else { return }
+            let imageRect = Self.displayedImageRect(image: image.size, in: imageView.bounds)
+            guard imageRect.width > 0, imageRect.height > 0 else { return }
+            overlay.highlight(CGRect(
+                x: imageRect.minX + CGFloat(x) * imageRect.width,
+                y: imageRect.minY + CGFloat(y) * imageRect.height,
+                width: CGFloat(width) * imageRect.width,
+                height: CGFloat(height) * imageRect.height))
+        case .text(let start, let end, _):
+            if let textView { Self.selectBytes(textView, start: start, end: end) }
+            else { webView?.point(point.selector) }
+        case .element, .timeRange:
+            webView?.point(point.selector)
+        default:
+            break
+        }
+    }
+
+    /// Select a byte range in a text view (the selector offsets are UTF-8 bytes).
+    private static func selectBytes(_ textView: UITextView, start: UInt64, end: UInt64) {
+        guard let data = textView.text.data(using: .utf8) else { return }
+        let clamp = { (value: UInt64) -> Int in Int(min(value, UInt64(data.count))) }
+        let startByte = clamp(start)
+        let endByte = max(startByte, clamp(end))
+        let startUTF16 = String(decoding: data.prefix(startByte), as: UTF8.self).utf16.count
+        let endUTF16 = String(decoding: data.prefix(endByte), as: UTF8.self).utf16.count
+        let range = NSRange(location: startUTF16, length: max(0, endUTF16 - startUTF16))
+        textView.selectedRange = range
+        textView.scrollRangeToVisible(range)
     }
 
     /// Promotes the fetched artifact into the user-visible shared directory the

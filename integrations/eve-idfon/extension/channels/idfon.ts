@@ -3,8 +3,25 @@ import { parseInputResponses } from "eve/client";
 
 import extension from "../extension";
 import { logger } from "../log";
+import { drainEnvelopes } from "../outbox";
 
 const log = logger("idfon.agent");
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", pdf: "application/pdf", txt: "text/plain",
+  md: "text/markdown", json: "application/json", csv: "text/csv",
+  html: "text/html", svg: "image/svg+xml", wav: "audio/wav",
+  mp3: "audio/mpeg", ogg: "audio/ogg", mp4: "video/mp4",
+};
+
+/// Media type for a blob attachment, from its envelope's `name=` line, so an
+/// image (e.g. a screenshot) reaches the model as an image, not a blob.
+function attachmentMediaType(text: string): string {
+  const name = /(?:^|\n)name=([^\n]+)/.exec(text)?.[1]?.trim() ?? "";
+  const ext = name.toLowerCase().split(".").pop() ?? "";
+  return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
+}
 
 type TurnIn = {
   message_id: string;
@@ -42,8 +59,7 @@ type SessionTarget = {
   members: Map<string, SessionMember>;
 };
 
-const sessionTargets = new Map<string, SessionTarget>();
-const roomTargets = new Map<string, SessionTarget>();
+const sessionTargets = new Map<string, SessionTarget>();const roomTargets = new Map<string, SessionTarget>();
 let replyTail: Promise<void> = Promise.resolve();
 
 function authFor(
@@ -117,6 +133,18 @@ export default defineChannel({
       if (completeTurn.a2a_depth !== undefined && completeTurn.a2a_depth > 1) {
         return Response.json({ ignored: true, reason: "a2a_loop_guard" });
       }
+      // Session control (`IDFON-SESSION/1`): not a turn. `rotate` clears the
+      // model history before a new call's first turn so the session log is never
+      // treated as the model's context (docs/session-context.md).
+      if (completeTurn.text.startsWith("IDFON-SESSION/1\n")) {
+        const action = /(?:^|\n)action=([a-z]+)/.exec(completeTurn.text)?.[1];
+        if (action === "rotate" || action === "clear") {
+          const address = completeTurn.conversation || completeTurn.peer_id;
+          const session = await resolveSession(address);
+          if (session) await session.clear();
+          return Response.json({ session: "cleared" });
+        }
+      }
       // A room is one Eve session shared by all senders. Keep 1:1 sessions
       // keyed by peer id, while a room session is keyed by conversation.
       const address = completeTurn.conversation || completeTurn.peer_id;
@@ -126,7 +154,9 @@ export default defineChannel({
             {
               type: "file" as const,
               data: new URL(`idfon-blob:${encodeURIComponent(completeTurn.blob_ticket)}`),
-              mediaType: "application/octet-stream",
+              // Derive the media type from the attachment's `name=` so an image
+              // (e.g. a screenshot) reaches the model as an image, not a blob.
+              mediaType: attachmentMediaType(completeTurn.text),
             },
           ]
         : completeTurn.text;
@@ -261,6 +291,11 @@ export default defineChannel({
     async "message.completed"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
       if (!target || !event.message) return;
+      // Client-facing envelopes emitted by tools (speak/point/show) ride the
+      // reply in tool-call order, so delivery never depends on the model
+      // echoing them (docs/voice-multimodal.md).
+      const emitted = drainEnvelopes(ctx.session.id);
+      const text = emitted.length ? `${event.message}\n${emitted.join("\n")}` : event.message;
       const roomMembers = target.conversation
         ? new Map(
             (await bridgeJson<{ members: Array<{ message_id: string; peer_id: string; endpoint_id: string }> }>(
@@ -282,7 +317,7 @@ export default defineChannel({
             peer_id: member.peerId,
             endpoint_id: member.endpointId,
             conversation: target.conversation,
-            text: event.message,
+            text,
           });
         }
       });
@@ -323,6 +358,8 @@ export default defineChannel({
       });
     },
     async "turn.cancelled"(event, _channel, ctx) {
+      // A cancelled turn's emitted envelopes must not leak into a later one.
+      drainEnvelopes(ctx.session.id);
       const target = sessionTargets.get(ctx.session.id);
       const member = target?.members.get(target.lastPeerId);
       if (!member) return;
@@ -333,6 +370,8 @@ export default defineChannel({
       });
     },
     async "turn.failed"(event, _channel, ctx) {
+      // A failed turn's emitted envelopes must not leak into a later one.
+      drainEnvelopes(ctx.session.id);
       const target = sessionTargets.get(ctx.session.id);
       const member = target?.members.get(target.lastPeerId);
       if (!member) return;

@@ -235,7 +235,11 @@ enum MessageBody {
     static let prefixes = [
         "IDFON-ARTIFACT/1\n",
         "IDFON-REF/1\n",
+        "IDFON-POINT/1\n",
+        "IDFON-SHOW/1\n",
+        "IDFON-SCREENSHOT/1\n",
         "IDFON-DATA/1\n",
+        "IDFON-SPEAK/1\n",
         "IDFON-RECORDING/1\n",
         "IDFON-FILE/1\n",
         "IDFON-CALL/1\n",
@@ -273,6 +277,100 @@ enum MessageBody {
             }
         }
         return best
+    }
+}
+
+/// `IDFON-SPEAK/1`: the spoken form of a reply, produced by the `speak` tool.
+/// The TTS-capable voice agent synthesizes it and the app plays the audio;
+/// long text and visuals travel as artifacts instead.
+struct SpeakEnvelope: Equatable {
+    static let prefix = "IDFON-SPEAK/1\n"
+    let text: String
+    let voice: String?
+    let language: String?
+    let rate: Double?
+    let priority: String?
+    let correlationId: String?
+
+    static func decode(_ raw: String) -> SpeakEnvelope? {
+        guard raw.hasPrefix(prefix) else { return nil }
+        let body = String(raw.dropFirst(prefix.count))
+        guard let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = json["text"] as? String, !text.isEmpty else { return nil }
+        return SpeakEnvelope(
+            text: text,
+            voice: json["voice"] as? String,
+            language: json["language"] as? String,
+            rate: json["rate"] as? Double,
+            priority: json["priority"] as? String,
+            correlationId: json["correlation_id"] as? String)
+    }
+
+    /// Spoken text embedded in a raw reply, in order (empty when none).
+    static func texts(in raw: String) -> [String] {
+        let (_, envelopes) = MessageBody.parse(raw)
+        return envelopes.compactMap { decode($0)?.text }
+    }
+}
+
+/// `IDFON-POINT/1`: the agent points the user at part of an artifact. The app
+/// opens the artifact and highlights the selection (region, text, element, or
+/// media time).
+struct PointEnvelope: Equatable {
+    static let prefix = "IDFON-POINT/1\n"
+    let artifactId: String
+    let selector: ArtifactSelector
+    let blobTicket: String?
+    let note: String?
+
+    private struct Body: Codable {
+        let artifact_id: String
+        let selector: ArtifactSelector
+        let blob_ticket: String?
+        let note: String?
+    }
+
+    static func decode(_ raw: String) -> PointEnvelope? {
+        guard raw.hasPrefix(prefix) else { return nil }
+        let body = String(raw.dropFirst(prefix.count))
+        guard let decoded = try? JSONDecoder().decode(Body.self, from: Data(body.utf8)),
+              !decoded.artifact_id.isEmpty else { return nil }
+        return PointEnvelope(
+            artifactId: decoded.artifact_id,
+            selector: decoded.selector,
+            blobTicket: decoded.blob_ticket,
+            note: decoded.note)
+    }
+}
+
+/// `IDFON-SHOW/1`: the agent asks the app to open an artifact on screen.
+struct ShowEnvelope: Equatable {
+    static let prefix = "IDFON-SHOW/1\n"
+    let artifactId: String
+    let blobTicket: String?
+
+    static func decode(_ raw: String) -> ShowEnvelope? {
+        guard raw.hasPrefix(prefix) else { return nil }
+        let body = String(raw.dropFirst(prefix.count))
+        struct Body: Codable { let artifact_id: String; let blob_ticket: String? }
+        guard let decoded = try? JSONDecoder().decode(Body.self, from: Data(body.utf8)),
+              !decoded.artifact_id.isEmpty else { return nil }
+        return ShowEnvelope(artifactId: decoded.artifact_id, blobTicket: decoded.blob_ticket)
+    }
+}
+
+/// `IDFON-SCREENSHOT/1`: the agent asks for a screenshot of the user's device.
+struct ScreenshotEnvelope: Equatable {
+    static let prefix = "IDFON-SCREENSHOT/1\n"
+    let reason: String?
+
+    static func decode(_ raw: String) -> ScreenshotEnvelope? {
+        guard raw.hasPrefix(prefix) else { return nil }
+        let body = String(raw.dropFirst(prefix.count))
+        struct Body: Codable { let reason: String? }
+        let decoded = try? JSONDecoder().decode(Body.self, from: Data(body.utf8))
+        return ScreenshotEnvelope(reason: decoded?.reason)
     }
 }
 

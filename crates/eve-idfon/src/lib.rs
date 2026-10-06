@@ -1613,7 +1613,7 @@ async fn handle_reply_inner(
     // A live-call delegation also wants the spoken text (envelopes stripped)
     // fed back to the live session; capture it before `text` moves.
     let commentary = target.live_commentary.clone();
-    let commentary_text = commentary.as_ref().map(|_| strip_envelopes(&text));
+    let commentary_text = commentary.as_ref().map(|_| speak_text(&text));
     let message_id = next_message_id("eve_reply_");
     // A voice-injected turn is spoken to the live session only (no chat copy);
     // a normal turn also posts to the caller. Either way the bridge is awaiting
@@ -1696,6 +1696,49 @@ fn strip_envelopes(text: &str) -> String {
         offset += line.len();
     }
     text[..cut].trim_end().to_string()
+}
+
+/// Text to speak: the `IDFON-SPEAK/1` envelope text(s) when present, else the
+/// reply with envelopes stripped. Mirrors `idfon_voice_agent::speak_text`; kept
+/// local because the bridge streams the delegated reply as live commentary.
+fn speak_text(text: &str) -> String {
+    let mut spoken: Vec<String> = Vec::new();
+    let mut in_speak = false;
+    let mut body = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.starts_with("IDFON-") && trimmed.ends_with("/1") {
+            if in_speak {
+                push_speak_json(&body, &mut spoken);
+                body.clear();
+            }
+            in_speak = trimmed == "IDFON-SPEAK/1";
+            continue;
+        }
+        if in_speak {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if in_speak {
+        push_speak_json(&body, &mut spoken);
+    }
+    if spoken.is_empty() {
+        strip_envelopes(text)
+    } else {
+        spoken.join(" ")
+    }
+}
+
+fn push_speak_json(body: &str, out: &mut Vec<String>) {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+        if let Some(text) = value.get("text").and_then(serde_json::Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                out.push(text.to_string());
+            }
+        }
+    }
 }
 
 async fn handle_status(
@@ -1970,7 +2013,8 @@ fn parse_data_envelope(text: &str) -> Option<(String, Option<u64>)> {
     let mut size = None;
     let body = text
         .strip_prefix("IDFON-DATA/1\n")
-        .or_else(|| text.strip_prefix("IDFON-RECORDING/1\n"))?;
+        .or_else(|| text.strip_prefix("IDFON-RECORDING/1\n"))
+        .or_else(|| text.strip_prefix("IDFON-FILE/1\n"))?;
     // A turn can carry a trailing reference/artifact envelope after the
     // attachment (a voice memo asking about an artifact region). Only parse
     // the attachment's own lines, and skip any line that is not `key=value`.

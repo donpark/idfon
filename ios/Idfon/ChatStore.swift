@@ -26,6 +26,35 @@ final class ChatStore {
     /// Fired for an invite that needs confirmation (sender not trusted, or the
     /// ticket expired). The UI prompts; on confirm it calls `acceptInvite`.
     var onInvite: ((ContactInvite, String) -> Void)?
+    /// Fired when an agent points at part of an artifact (`IDFON-POINT/1`). The
+    /// UI opens the artifact with the highlight; no chat bubble is added.
+    var onPoint: ((PointEnvelope, String) -> Void)?
+    /// Fired when an agent asks the app to open an artifact (`IDFON-SHOW/1`).
+    var onShow: ((ShowEnvelope, String) -> Void)?
+    /// Fired when an agent requests a screenshot (`IDFON-SCREENSHOT/1`).
+    var onScreenshot: ((ScreenshotEnvelope, String) -> Void)?
+    /// Points/shows that arrived with no chat on screen, drained when one appears.
+    private var pendingPoints: [String: [PointEnvelope]] = [:]
+    private var pendingShows: [String: [ShowEnvelope]] = [:]
+    private var pendingScreenshots: [String: [ScreenshotEnvelope]] = [:]
+
+    func takePendingPoints(peerId: String) -> [PointEnvelope] {
+        let points = pendingPoints[peerId] ?? []
+        pendingPoints[peerId] = nil
+        return points
+    }
+
+    func takePendingShows(peerId: String) -> [ShowEnvelope] {
+        let shows = pendingShows[peerId] ?? []
+        pendingShows[peerId] = nil
+        return shows
+    }
+
+    func takePendingScreenshots(peerId: String) -> [ScreenshotEnvelope] {
+        let requests = pendingScreenshots[peerId] ?? []
+        pendingScreenshots[peerId] = nil
+        return requests
+    }
 
     /// Registered screens, held weakly so a deallocated one drops out without
     /// an explicit unregister. Touched on the main queue only.
@@ -129,6 +158,31 @@ final class ChatStore {
                     onInvite?(invite, peerId)
                     parts.append(("Contact invite: \(invite.name)", .text("Contact invite: \(invite.name)")))
                 }
+            } else if let point = PointEnvelope.decode(envelope) {
+                if let handler = onPoint {
+                    handler(point, peerId)
+                } else {
+                    pendingPoints[peerId, default: []].append(point)
+                }
+                continue
+            } else if let show = ShowEnvelope.decode(envelope) {
+                if let handler = onShow {
+                    handler(show, peerId)
+                } else {
+                    pendingShows[peerId, default: []].append(show)
+                }
+                continue
+            } else if let screenshot = ScreenshotEnvelope.decode(envelope) {
+                if let handler = onScreenshot {
+                    handler(screenshot, peerId)
+                } else {
+                    pendingScreenshots[peerId, default: []].append(screenshot)
+                }
+                continue
+            } else if SpeakEnvelope.decode(envelope) != nil {
+                // Spoken output from the `speak` tool: not a chat bubble; the
+                // voice path plays it (docs/session-context.md).
+                continue
             } else {
                 parts.append((envelope, MessageKind.parse(envelope)))
             }

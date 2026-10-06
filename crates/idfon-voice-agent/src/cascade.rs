@@ -26,7 +26,7 @@ use tokio::time::MissedTickBehavior;
 
 use crate::metrics::TurnMetrics;
 use crate::{
-    send_call_transcript, strip_envelopes, BackendFuture, VoiceBackend, VoiceBackendFactory,
+    send_call_transcript, speak_text, BackendFuture, VoiceBackend, VoiceBackendFactory,
     VoiceMedia,
 };
 use idfon_protocol::CallSpeaker;
@@ -221,7 +221,7 @@ impl CascadeBackend {
                     }
                 }
                 Some((turn_id, reply)) = media.bridge.next_reply() => {
-                    let spoken = strip_envelopes(&reply);
+                    let spoken = speak_text(&reply);
                     // Forget the cancelled turn once its own (empty) reply
                     // arrives, so a later turn reusing the id is not dropped.
                     let cancelled_turn = cancelled.remove(&turn_id);
