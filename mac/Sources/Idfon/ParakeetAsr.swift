@@ -30,6 +30,17 @@ final class ParakeetReduxAsr: AsrEngine {
 
     func prepare() async { await Self.warmCache() }
 
+    /// `~/.idfon/models/<parakeet repo>`, migrating FluidAudio's old
+    /// `~/Library/Application Support/FluidAudio/Models` copy on first use.
+    private static func modelDirectory() -> URL {
+        let legacy = AsrModels.defaultCacheDirectory(for: .redux)
+        let directory = ModelStore.directory(named: legacy.lastPathComponent)
+        if let moved = ModelStore.migrate(from: legacy, to: directory) {
+            Automation.mark("voice: parakeet models migrated -> \(moved.path)")
+        }
+        return directory
+    }
+
     static func warmCache() async {
         let task = warmLock.withLock { () -> Task<Void, Never> in
             if let existing = warmTask { return existing }
@@ -37,7 +48,7 @@ final class ParakeetReduxAsr: AsrEngine {
                 let throttle = ProgressThrottle()
                 Automation.mark("voice: parakeet prewarming")
                 do {
-                    _ = try await AsrModels.downloadAndLoad(version: .redux) { progress in
+                    _ = try await AsrModels.downloadAndLoad(to: Self.modelDirectory(), version: .redux) { progress in
                         if throttle.shouldLog(progress.fractionCompleted) {
                             Automation.mark("voice: parakeet download \(Int(progress.fractionCompleted * 100))%")
                         }
@@ -62,7 +73,7 @@ final class ParakeetReduxAsr: AsrEngine {
         self.onText = onText
         Automation.mark("voice: parakeet initializing")
         let throttle = ProgressThrottle()
-        let models = try await AsrModels.downloadAndLoad(version: .redux) { progress in
+        let models = try await AsrModels.downloadAndLoad(to: Self.modelDirectory(), version: .redux) { progress in
             if throttle.shouldLog(progress.fractionCompleted) {
                 Automation.mark("voice: parakeet download \(Int(progress.fractionCompleted * 100))%")
             }
