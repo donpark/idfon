@@ -720,6 +720,50 @@ pub fn strip_envelopes(text: &str) -> String {
     out.trim().to_string()
 }
 
+/// Text a voice agent should actually speak: the `IDFON-SPEAK/1` envelope
+/// text(s) when present, else the reply with envelopes stripped. The tool lets
+/// the model send the spoken form separately, so artifacts and display text are
+/// never read aloud.
+pub fn speak_text(text: &str) -> String {
+    let mut spoken: Vec<String> = Vec::new();
+    let mut in_speak = false;
+    let mut body = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.starts_with("IDFON-") && trimmed.ends_with("/1") {
+            if in_speak {
+                push_speak_json(&body, &mut spoken);
+                body.clear();
+            }
+            in_speak = trimmed == "IDFON-SPEAK/1";
+            continue;
+        }
+        if in_speak {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if in_speak {
+        push_speak_json(&body, &mut spoken);
+    }
+    if spoken.is_empty() {
+        strip_envelopes(text)
+    } else {
+        spoken.join(" ")
+    }
+}
+
+fn push_speak_json(body: &str, out: &mut Vec<String>) {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+        if let Some(text) = value.get("text").and_then(serde_json::Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                out.push(text.to_string());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,6 +801,20 @@ mod tests {
             "Sure, here you go."
         );
         assert_eq!(strip_envelopes("plain reply"), "plain reply");
+    }
+
+    #[test]
+    fn speak_text_prefers_the_speak_envelope() {
+        let reply = "Here you go.\nIDFON-SPEAK/1\n{\"text\":\"All set.\"}\nIDFON-ARTIFACT/1\n{\"a\":1}";
+        assert_eq!(speak_text(reply), "All set.");
+        // No speak envelope: fall back to the stripped reply.
+        assert_eq!(speak_text("Just text."), "Just text.");
+        assert_eq!(speak_text("Preamble.\nIDFON-DATA/1\n{}"), "Preamble.");
+        // Multiple speak envelopes join in order.
+        assert_eq!(
+            speak_text("IDFON-SPEAK/1\n{\"text\":\"One.\"}\nIDFON-SPEAK/1\n{\"text\":\"Two.\"}"),
+            "One. Two."
+        );
     }
 
     #[test]

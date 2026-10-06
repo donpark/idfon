@@ -1205,12 +1205,68 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         openArtifact(artifact, peerId: message.peerId)
     }
 
-    private func openArtifact(_ artifact: Artifact, peerId: String) {
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        ChatStore.shared.onPoint = { [weak self] point, _ in self?.handlePoint(point) }
+        ChatStore.shared.onShow = { [weak self] show, _ in self?.handleShow(show) }
+        ChatStore.shared.onScreenshot = { [weak self] request, _ in self?.handleScreenshot(request) }
+        for point in ChatStore.shared.takePendingPoints(peerId: peer.id) { handlePoint(point) }
+        for show in ChatStore.shared.takePendingShows(peerId: peer.id) { handleShow(show) }
+        for request in ChatStore.shared.takePendingScreenshots(peerId: peer.id) { handleScreenshot(request) }
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        ChatStore.shared.onPoint = nil
+        ChatStore.shared.onShow = nil
+        ChatStore.shared.onScreenshot = nil
+    }
+
+    /// The artifact with `artifactId` in this conversation, or a placeholder
+    /// carrying the envelope's blob ticket when the chat never showed it.
+    private func artifact(for artifactId: String, blobTicket: String?) -> Artifact {
+        history.compactMap { message -> Artifact? in
+            if case .artifact(let artifact) = message.kind, artifact.artifactId == artifactId {
+                return artifact
+            }
+            return nil
+        }.last ?? Artifact(
+            artifactId: artifactId, kind: .document, mime: "text/plain",
+            title: artifactId, sizeBytes: 0, blobTicket: blobTicket,
+            sourceMessageId: nil, conversation: nil, createdAt: "")
+    }
+
+    private func handlePoint(_ point: PointEnvelope) {
+        let artifact = artifact(for: point.artifactId, blobTicket: point.blobTicket)
+        openArtifact(artifact, peerId: peer.id, point: (point.selector, point.note))
+    }
+
+    private func handleShow(_ show: ShowEnvelope) {
+        openArtifact(artifact(for: show.artifactId, blobTicket: show.blobTicket), peerId: peer.id)
+    }
+
+    /// Capture this window and send it back to the agent that asked.
+    private func handleScreenshot(_ request: ScreenshotEnvelope) {
+        guard let window = view.window, let content = window.contentView,
+              let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
+        content.cacheDisplay(in: content.bounds, to: rep)
+        guard let data = rep.representation(using: .png, properties: [:]) else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("screenshot-\(UUID().uuidString).png")
+        guard (try? data.write(to: url)) != nil else { return }
+        sendFile(at: url, name: "screenshot.png")
+    }
+
+    private func openArtifact(
+        _ artifact: Artifact, peerId: String,
+        point: (selector: ArtifactSelector, note: String?)? = nil
+    ) {
         // The bubble gesture and the "Open" button can both fire on one click.
         if presentedViewControllers?.contains(where: { $0 is ArtifactDetailViewController }) == true {
             return
         }
         let detail = ArtifactDetailViewController(artifact: artifact, peerRef: peerId)
+        detail.point = point
         detail.onReference = { [weak self] selector, preview in
             guard let self else { return }
             self.pendingReference = (artifact, selector, preview)

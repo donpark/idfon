@@ -135,6 +135,28 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
         evaluateJavaScript("window.__idfonSelectMode = \(on ? "true" : "false");")
     }
 
+    private var loaded = false
+    private var pendingPoint: ArtifactSelector?
+
+    /// Highlight an agent-pointed selection. Queued until the document loads.
+    func point(_ selector: ArtifactSelector) {
+        pendingPoint = selector
+        applyPointIfReady()
+    }
+
+    private func applyPointIfReady() {
+        guard loaded, let selector = pendingPoint,
+              let json = try? JSONEncoder().encode(selector) else { return }
+        pendingPoint = nil
+        let spec = String(decoding: json, as: UTF8.self)
+        evaluateJavaScript("window.__idfonPoint(\(spec));")
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        loaded = true
+        applyPointIfReady()
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
@@ -156,6 +178,44 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
 
     private static let selectionScript = """
     window.__idfonSelectMode = false;
+    window.__idfonPoint = function (spec) {
+      try {
+        document.querySelectorAll('.__idfon_point').forEach(function (e) { e.classList.remove('__idfon_point'); });
+        if (!spec || spec.type === 'whole') return false;
+        if (spec.type === 'time_range') {
+          var media = document.querySelector('video,audio');
+          if (media) { media.currentTime = (spec.start_ms || 0) / 1000; if (media.play) media.play(); }
+          return !!media;
+        }
+        if (spec.type === 'region') {
+          var box = document.createElement('div');
+          box.className = '__idfon_point';
+          box.style.cssText = 'position:fixed;left:' + (spec.x * 100) + '%;top:' + (spec.y * 100) +
+            '%;width:' + (spec.width * 100) + '%;height:' + (spec.height * 100) +
+            '%;border:3px solid #ffcc00;background:rgba(255,204,0,.25);pointer-events:none;z-index:2147483647';
+          document.body.appendChild(box);
+          return true;
+        }
+        var needle = (spec.quote || '').trim();
+        if (!needle) return false;
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+        var node;
+        while ((node = walker.nextNode())) {
+          var at = node.nodeValue.indexOf(needle);
+          if (at < 0) continue;
+          var range = document.createRange();
+          range.setStart(node, at);
+          range.setEnd(node, at + needle.length);
+          var mark = document.createElement('mark');
+          mark.className = '__idfon_point';
+          mark.style.background = 'rgba(255,204,0,.5)';
+          try { range.surroundContents(mark); } catch (e) { return false; }
+          mark.scrollIntoView({ block: 'center' });
+          return true;
+        }
+        return false;
+      } catch (e) { return false; }
+    };
     document.addEventListener('click', function (event) {
       if (!window.__idfonSelectMode) return;
       event.preventDefault();

@@ -62,8 +62,10 @@ kept because it records decisions; **design** = not all implemented.
 | `idfon-eve.md` | idfon as an Eve ingress channel (implemented) |
 | `live-voice.md` | the voice agent built on the Eve channel; transport + front-end decision |
 | `voice-agent.md` | voice agents that speak/listen for other agents (wrapped / injected) |
+| `voice-multimodal.md` | the voice turn contract: text + `IDFON-*/1` envelopes + attachment; references, client-facing tools (`speak`/`point`/`show`) via the outbox, output split, full-duplex gap (design) |
 | `voice-side-channel.md` | shared voice service: requirements, STT/TTS candidates, plan (P0–P7 implemented; A1 client cascade integrated on iOS/macOS — iOS Kokoro/Parakeet seams, call cues, greet-on-connect, `· spoken` chat turns); the text-only `llm` agent and per-run model selection for agency contacts |
 | `agent-agency.md` | the `agency` go-between that introduces registered agents (A2A card relay, `IDFON-INVITE/1`; cards are target-signed, only the reply credential is agency-signed) |
+| `session-context.md` | session as the medium for a shared virtual context edited by user, voice agent, and target agents; no chat-as-context, no recall (design) |
 
 ## Operations
 

@@ -174,6 +174,82 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         })
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        ChatStore.shared.onPoint = { [weak self] point, _ in self?.handlePoint(point) }
+        ChatStore.shared.onShow = { [weak self] show, _ in self?.handleShow(show) }
+        ChatStore.shared.onScreenshot = { [weak self] request, _ in self?.handleScreenshot(request) }
+        if let peerId = conversation.peer?.id {
+            for point in ChatStore.shared.takePendingPoints(peerId: peerId) { handlePoint(point) }
+            for show in ChatStore.shared.takePendingShows(peerId: peerId) { handleShow(show) }
+            for request in ChatStore.shared.takePendingScreenshots(peerId: peerId) { handleScreenshot(request) }
+        }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        ChatStore.shared.onPoint = nil
+        ChatStore.shared.onShow = nil
+        ChatStore.shared.onScreenshot = nil
+    }
+
+    /// The artifact with `artifactId` in this conversation, or a placeholder
+    /// carrying the envelope's blob ticket when the chat never showed it.
+    private func artifact(for artifactId: String, blobTicket: String?) -> Artifact {
+        messages.compactMap { message -> Artifact? in
+            if case .artifact(let artifact) = message.kind, artifact.artifactId == artifactId {
+                return artifact
+            }
+            return nil
+        }.last ?? Artifact(
+            artifactId: artifactId, kind: .document, mime: "text/plain",
+            title: artifactId, sizeBytes: 0, blobTicket: blobTicket,
+            sourceMessageId: nil, conversation: nil, createdAt: "")
+    }
+
+    /// Open the artifact an agent pointed at, with the highlight applied.
+    private func handlePoint(_ point: PointEnvelope) {
+        guard let peerId = conversation.peer?.id else { return }
+        let artifact = artifact(for: point.artifactId, blobTicket: point.blobTicket)
+        let detail = ArtifactDetailViewController(artifact: artifact, peerRef: peerId)
+        detail.point = (point.selector, point.note)
+        detail.onReference = { [weak self] selector, preview in
+            guard let self else { return }
+            self.pendingReference = (artifact, selector, preview)
+            self.updateReferenceChip()
+            self.composerText.becomeFirstResponder()
+        }
+        present(UINavigationController(rootViewController: detail), animated: true)
+    }
+
+    /// Open the artifact an agent asked to show, with no highlight.
+    private func handleShow(_ show: ShowEnvelope) {
+        guard let peerId = conversation.peer?.id else { return }
+        let artifact = artifact(for: show.artifactId, blobTicket: show.blobTicket)
+        let detail = ArtifactDetailViewController(artifact: artifact, peerRef: peerId)
+        detail.onReference = { [weak self] selector, preview in
+            guard let self else { return }
+            self.pendingReference = (artifact, selector, preview)
+            self.updateReferenceChip()
+            self.composerText.becomeFirstResponder()
+        }
+        present(UINavigationController(rootViewController: detail), animated: true)
+    }
+
+    /// Capture this window and send it back to the agent that asked.
+    private func handleScreenshot(_ request: ScreenshotEnvelope) {
+        guard let window = view.window else { return }
+        let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
+        let image = renderer.image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        guard let data = image.pngData() else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("screenshot-\(UUID().uuidString).png")
+        guard (try? data.write(to: url)) != nil else { return }
+        sendFile(at: url, name: "screenshot.png")
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         videoObservers.forEach(NotificationCenter.default.removeObserver)

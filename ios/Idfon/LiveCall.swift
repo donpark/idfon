@@ -204,6 +204,9 @@ final class LiveCall {
                 // nil when the holder runs both, so no context line is sent.
                 let inviteContext = SpeechEngines.clientHalfContext(
                     for: peerId, route: CapabilityTickets.voiceRoute(for: peerId))
+                // Reset the model history before the call: the session log is the
+                // medium, never the model's context (docs/session-context.md).
+                try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
                 try await client.sendText(
                     to: peerId,
                     "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"

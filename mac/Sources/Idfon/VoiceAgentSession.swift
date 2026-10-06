@@ -52,6 +52,8 @@ final class VoiceAgentSession: NSObject {
     private var turnsDone = 0
     /// Consecutive silent turns; a call is only dropped after several.
     private var noSpeechTurns = 0
+    /// True once the "are you still there?" check-in has been spoken this call.
+    private var silencePrompted = false
     /// Identifier for this call, scoping the spoken-turn transcripts.
     private var callId = UUID().uuidString
     private var client = DaemonClient()
@@ -92,6 +94,11 @@ final class VoiceAgentSession: NSObject {
                 return
             }
             Automation.mark("voice-agent: start peer=\(peer.id)")
+            // Reset the model history before a new call: the session log is
+            // the medium, never the model's context (docs/session-context.md).
+            // Sent early; the engine prep and greeting that follow give the
+            // clear time to land.
+            try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
             // Per-contact on-device engines (else the app defaults). Resolved
             // here, once the peer id is known, before the recognizer is built.
             ttsBackend = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.ttsBackend
@@ -105,7 +112,7 @@ final class VoiceAgentSession: NSObject {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             // Greet like a live call, fetched before the cue so "answered" is
             // followed immediately by speech instead of dead air.
-            var greeting: String?
+            var greeting: (display: String, spoken: String)?
             if !stopRequested {
                 greeting = await sendAndAwait(
                     peerId: peer.id,
@@ -115,9 +122,9 @@ final class VoiceAgentSession: NSObject {
                 )
             }
             CallTonePlayer.shared.start(.answered)
-            if let greeting, !greeting.isEmpty, !stopRequested {
-                setState(.speaking(greeting))
-                _ = await speak(greeting)
+            if let greeting, !greeting.spoken.isEmpty, !stopRequested {
+                setState(.speaking(greeting.spoken))
+                _ = await speak(greeting.spoken)
                 updateStats()
             }
             while !stopRequested && turnsDone < turnLimit {
@@ -189,10 +196,10 @@ final class VoiceAgentSession: NSObject {
             }
             Automation.mark("voice-agent-text: start peer=\(peer.id) text=\(text)")
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard let reply = await sendAndAwait(peerId: peer.id, text: text, logPrefix: "voice-agent-text")
+            guard let result = await sendAndAwait(peerId: peer.id, text: text, logPrefix: "voice-agent-text")
             else { return }
-            Automation.mark("voice-agent-text: reply=\(reply)")
-            if !reply.isEmpty { _ = await speak(reply) }
+            Automation.mark("voice-agent-text: reply=\(result.display)")
+            if !result.spoken.isEmpty { _ = await speak(result.spoken) }
             Automation.mark("voice-agent-text: done")
         }
     }
@@ -229,10 +236,19 @@ final class VoiceAgentSession: NSObject {
         guard let heard, !heard.isEmpty else {
             noSpeechTurns += 1
             Automation.mark("voice-agent: no transcript turn=\(turnsDone) streak=\(noSpeechTurns)")
-            // One silent turn is not a hangup; only give up after a few.
-            return noSpeechTurns < 3
+            // Check in once before ending: silence is not a hangup. Then give
+            // the caller a few more chances to answer.
+            if !silencePrompted, noSpeechTurns >= 2, !stopRequested {
+                silencePrompted = true
+                setState(.speaking("Are you still there?"))
+                if let bargeIn = await speak("Are you still there?") { pendingHeard = bargeIn }
+                setState(.idle)
+                return true
+            }
+            return noSpeechTurns < 5
         }
         noSpeechTurns = 0
+        silencePrompted = false
         Automation.mark("voice-agent: heard=\(heard)")
         // Show the caller's spoken turn in the chat, not just the agent's reply.
         ChatStore.shared.recordSpokenTurn(
@@ -240,7 +256,7 @@ final class VoiceAgentSession: NSObject {
             turnId: "\(callId)-\(turnsDone)-user", role: "caller", text: heard
         )
         setState(.thinking)
-        guard let reply = await sendAndAwait(
+        guard let result = await sendAndAwait(
             peerId: peerId, text: heard, logPrefix: "voice-agent",
             spokenTurnId: "\(callId)-\(turnsDone)-agent"
         )
@@ -249,10 +265,10 @@ final class VoiceAgentSession: NSObject {
             Automation.mark("voice-agent: no reply, continuing")
             return true
         }
-        Automation.mark("voice-agent: reply=\(reply)")
-        if !reply.isEmpty {
-            setState(.speaking(reply))
-            pendingHeard = await speak(reply)
+        Automation.mark("voice-agent: reply=\(result.display)")
+        if !result.spoken.isEmpty {
+            setState(.speaking(result.spoken))
+            pendingHeard = await speak(result.spoken)
         }
         updateStats()
         setState(.idle)
@@ -272,7 +288,7 @@ final class VoiceAgentSession: NSObject {
         text: String,
         logPrefix: String,
         spokenTurnId: String? = nil
-    ) async -> String? {
+    ) async -> (display: String, spoken: String)? {
         let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
         do {
             try await client.sendText(to: peerId, text, context: callContext)
@@ -285,16 +301,19 @@ final class VoiceAgentSession: NSObject {
             Automation.mark("\(logPrefix): FAIL no reply")
             return nil
         }
-        let reply = Self.stripEnvelopes(raw)
+        let display = Self.stripEnvelopes(raw)
+        // The model sends the spoken form via `speak`; when it does not, the
+        // reply text is what gets spoken (backward compatible).
+        let spoken = Self.spokenText(from: raw)
         // Relabel the agent's reply as a spoken bubble (voice-call turns are
         // distinguished from typed ones by the "spoken" annotation).
         if let spokenTurnId {
             ChatStore.shared.recordSpokenTurn(
                 peerId: peerId, callId: callId, turnId: spokenTurnId,
-                role: "agent", text: reply, replacing: message.id
+                role: "agent", text: spoken, replacing: message.id
             )
         }
-        return reply
+        return (display, spoken)
     }
 
     private func finish() {
@@ -310,6 +329,7 @@ final class VoiceAgentSession: NSObject {
         turnsDone = 0
         turnLimit = Int.max
         noSpeechTurns = 0
+        silencePrompted = false
         setState(.idle)
         // Play the end cue, then release the tone engine once it has played out.
         CallTonePlayer.shared.start(.ended)
@@ -524,5 +544,12 @@ final class VoiceAgentSession: NSObject {
             lines.append(String(line))
         }
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The spoken form of a raw reply: `IDFON-SPEAK/1` text when present, else
+    /// the reply with envelopes stripped.
+    private static func spokenText(from raw: String) -> String {
+        let texts = SpeakEnvelope.texts(in: raw)
+        return texts.isEmpty ? stripEnvelopes(raw) : texts.joined(separator: " ")
     }
 }
