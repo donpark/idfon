@@ -31,17 +31,21 @@ enum SpeechModel: String {
     }
 }
 
-/// Resolves a model directory from a directly downloaded pack, else `nil` (the
-/// engine's own FluidAudio cache/download path).
+/// Resolves the macOS model directory under `~/.idfon/models/kokoro`, either
+/// from a directly downloaded pack or, if none is configured, the same root
+/// for FluidAudio to download into.
 ///
 /// The Apple-managed `BAAssetPackManager` path used on iOS needs a managed
 /// downloader extension + app group; mac uses the direct pack only.
 enum SpeechProvisioning {
     static func directory(for model: SpeechModel) async -> URL? {
-        if let base = model.directBaseURL {
-            return await directPackDirectory(base: base, model: model)
+        ModelStore.migrateKokoro()
+        if let base = model.directBaseURL,
+           let directory = await directPackDirectory(base: base, model: model) {
+            return directory
         }
-        return nil
+        // No direct pack: FluidAudio downloads into this root.
+        return ModelStore.kokoroRoot
     }
 
     private struct PackManifest: Decodable {
@@ -52,12 +56,12 @@ enum SpeechProvisioning {
         let files: [Entry]
     }
 
-    /// Pulls the pack's files into the app cache and returns the models root.
-    /// Idempotent: files already present at the right size are skipped.
+    /// Pulls the pack's files into `~/.idfon/models/kokoro` and returns the
+    /// models root. Idempotent: files already present at the right size are
+    /// skipped.
     private static func directPackDirectory(base: URL, model: SpeechModel) async -> URL? {
         let fm = FileManager.default
-        guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
-        let root = caches.appendingPathComponent("idfon/speech-packs/\(model.rawValue)", isDirectory: true)
+        let root = ModelStore.kokoroRoot
         let marker = root.appendingPathComponent(model.markerPath)
         if fm.fileExists(atPath: marker.path) {
             Automation.mark("voice: speech pack \(model.rawValue) cached")

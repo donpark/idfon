@@ -611,6 +611,11 @@ sheet; mac in the **Voice** menu. mac needs macOS 14 (FluidAudio).
   `scripts/serve-speech-pack.sh` hosts it on the LAN. Verified on an iPhone 16
   (2026-10-04): 36 files pulled, `speech pack ready` → `kokoro ready` →
   synthesis. G2P still downloads — it is pinned to FluidAudio's own cache path.
+  On **macOS** the model root is `~/.idfon/models` (`ModelStore.swift`): both
+  the direct pack and FluidAudio's own downloads land under
+  `~/.idfon/models/kokoro`, and Parakeet under `~/.idfon/models/<repo>`, with
+  a one-time migration off FluidAudio's old Application Support / cache paths.
+  iOS keeps its per-container FluidAudio layout.
 
 Call UX now matches a live call (the client-cascade path uses the same shared
 Live Activity call bar on iOS):
