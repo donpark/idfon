@@ -26,6 +26,7 @@ final class VoiceAgentSession: NSObject {
     private let voice = OnDeviceVoice.shared
     /// Reply-voice and recognizer backends; resolved per contact at `start`.
     private var tts: TtsEngine = SpeechEngines.tts
+    private var ttsBackend = SpeechEngines.ttsBackend
     private var asrBackend = SpeechEngines.asrBackend
     private let segmenter = VoicePromptSegmenter()
     private var asr: (any AsrEngine)?
@@ -86,14 +87,15 @@ final class VoiceAgentSession: NSObject {
             let peers = (try? await client.peers()) ?? []
             guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
                 Automation.mark("voice-agent: FAIL no peer \(peerRef)")
+                CallFeedback.post("No voice call available for this contact.")
                 finish()
                 return
             }
             Automation.mark("voice-agent: start peer=\(peer.id)")
             // Per-contact on-device engines (else the app defaults). Resolved
             // here, once the peer id is known, before the recognizer is built.
-            tts = SpeechEngines.makeTts(
-                ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.ttsBackend)
+            ttsBackend = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.ttsBackend
+            tts = SpeechEngines.makeTts(ttsBackend)
             asrBackend = ContactOnDeviceEngines.asr(for: peer.id).flatMap(AsrBackend.init(rawValue:)) ?? SpeechEngines.asrBackend
             // Wait for the recognizer before the turn loop (first-run model).
             await startAnalyzer()
@@ -257,6 +259,14 @@ final class VoiceAgentSession: NSObject {
         return turnsDone < turnLimit
     }
 
+    /// Per-turn caller context pushed with every transcript: the client-cascade
+    /// speech engines actually in use, so the agent answers from the live state
+    /// instead of its own configured pipeline (which can name a different
+    /// holder route). Injected as untrusted data, never instructions.
+    private var callContext: String {
+        "Client cascade (on-device speech). Recognition: \(asrBackend.title); Generation: \(ttsBackend.title). The holder only produces text."
+    }
+
     private func sendAndAwait(
         peerId: String,
         text: String,
@@ -265,7 +275,7 @@ final class VoiceAgentSession: NSObject {
     ) async -> String? {
         let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
         do {
-            try await client.sendText(to: peerId, text)
+            try await client.sendText(to: peerId, text, context: callContext)
         } catch {
             Automation.mark("\(logPrefix): FAIL send \(error.localizedDescription)")
             return nil
@@ -315,7 +325,10 @@ final class VoiceAgentSession: NSObject {
     private func startAnalyzer() async {
         let engine = SpeechEngines.makeAsr(asrBackend)
         asr = engine
-        guard let engine else { return }
+        guard let engine else {
+            CallFeedback.post("No voice call available: no recognizer for this contact.")
+            return
+        }
         do {
             try await engine.start(
                 enableVoiceProcessing: false,
@@ -329,6 +342,7 @@ final class VoiceAgentSession: NSObject {
             )
         } catch {
             Automation.mark("voice-agent: analyzer start failed \(error.localizedDescription)")
+            CallFeedback.post("No voice call available: \(error.localizedDescription)")
         }
     }
 

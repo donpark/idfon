@@ -21,7 +21,13 @@ type TurnIn = {
   source?: string;
   // Correlation id from the holder, for joining agent logs to the trace.
   trace?: string;
+  // Caller-pushed per-turn context (unsigned, untrusted). The UI attaches the
+  // active caller-side state (e.g. per-contact speech settings) when it
+  // initiates the turn; the agent sees it as a data block, never instructions.
+  context?: string;
 };
+
+const MAX_CONTEXT_CHARS = 4096;
 
 type SessionMember = {
   messageId: string;
@@ -41,7 +47,7 @@ const roomTargets = new Map<string, SessionTarget>();
 let replyTail: Promise<void> = Promise.resolve();
 
 function authFor(
-  turn: Pick<TurnIn, "peer_id" | "endpoint_id" | "capabilities" | "source">,
+  turn: Pick<TurnIn, "peer_id" | "endpoint_id" | "capabilities" | "source" | "context">,
 ) {
   return {
     authenticator: "idfon",
@@ -54,6 +60,8 @@ function authFor(
       // Holder-injected turns carry distinct provenance so F10/approval
       // policies can tell them from real client messages.
       ...(turn.source ? { idfon_source: turn.source } : {}),
+      // Caller-pushed per-turn context, surfaced to dynamic instructions.
+      ...(turn.context ? { idfon_context: turn.context.slice(0, MAX_CONTEXT_CHARS) } : {}),
     },
   };
 }

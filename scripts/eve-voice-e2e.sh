@@ -190,8 +190,14 @@ w = wave.open("$reply_blob")
 rate, ch, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
 frames = w.getnframes()
 assert (rate, ch, width) == (24000, 1, 2), (rate, ch, width)
-assert frames > 24000, "reply audio too short"  # at least 1s of audio
-print(f"reply wav: {frames/24000:.1f}s @ 24kHz mono")
+# A short spoken reply is fine (leading silence is trimmed); require that some
+# speech is actually present, not a fixed duration.
+samples = w.readframes(frames)
+peak = max((abs(int.from_bytes(samples[i:i + 2], "little", signed=True))
+            for i in range(0, len(samples) - 1, 2)), default=0)
+assert frames > rate * 0.3, "reply audio too short"
+assert peak > 1000, "reply audio is silent"
+print(f"reply wav: {frames/24000:.1f}s @ 24kHz mono, peak {peak}")
 PY
 
 if grep -q "gpt-live session error\|AI_GATEWAY_API_KEY" "$work/eve.log"; then

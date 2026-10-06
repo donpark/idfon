@@ -1,6 +1,21 @@
 import AVFoundation
 import Foundation
 
+/// Cross-component call feedback: the call singletons post a short line here
+/// when a call cannot start, and the chat surfaces it as a transient status
+/// (iOS `showCallStatus`, macOS `showBanner`).
+extension Notification.Name {
+    static let idfonCallStatus = Notification.Name("idfon.call.status")
+}
+
+enum CallFeedback {
+    static func post(_ text: String) {
+        guard !text.isEmpty else { return }
+        NotificationCenter.default.post(
+            name: .idfonCallStatus, object: nil, userInfo: ["text": text])
+    }
+}
+
 /// In-app call sounds: ringback while dialing, incoming ringtone, and short
 /// answer/end cues.
 ///

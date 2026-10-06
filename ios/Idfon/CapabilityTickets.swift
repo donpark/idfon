@@ -41,6 +41,12 @@ enum CapabilityTickets {
         UserDefaults.standard.set(next, forKey: defaultsKey)
     }
 
+    /// Whether a holder-issued ticket is stored for `peer`. Distinguishes an
+    /// agent/holder contact (even one whose ticket has no `voice` block) from
+    /// an ordinary peer, so the call resolver picks the client cascade instead
+    /// of the silent video-call fallback.
+    static func hasTicket(for peer: String) -> Bool { table()[peer] != nil }
+
     private static func table() -> [String: String] {
         UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
     }

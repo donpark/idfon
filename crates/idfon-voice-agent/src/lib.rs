@@ -144,6 +144,10 @@ pub struct TurnBridge {
     peer_id: String,
     endpoint_id: String,
     source: String,
+    /// Per-turn context attached to every injected transcript: the holder's
+    /// resolved pipeline for this call plus anything the caller pushed on the
+    /// invite. Untrusted data, never instructions.
+    context: Option<String>,
     targets: Targets,
     out_tx: mpsc::Sender<IpcFrame>,
     reply_tx: mpsc::UnboundedSender<(String, String)>,
@@ -156,6 +160,7 @@ impl TurnBridge {
         peer_id: String,
         endpoint_id: String,
         source: String,
+        context: Option<String>,
         targets: Targets,
         out_tx: mpsc::Sender<IpcFrame>,
     ) -> Self {
@@ -164,6 +169,7 @@ impl TurnBridge {
             peer_id,
             endpoint_id,
             source,
+            context,
             targets,
             out_tx,
             reply_tx,
@@ -204,6 +210,7 @@ impl TurnBridge {
                 capabilities: None,
                 source: Some(self.source.clone()),
                 trace: Some(trace),
+                context: self.context.clone(),
             })
             .await;
         turn_id
@@ -365,8 +372,14 @@ impl LiveCallHandler for VoiceAgentHandler {
 /// selection pins that backend and both halves; otherwise the cascade engine's
 /// halves are overridden from the selected options and `voice_route.stt`/`tts`
 /// record which side owns each. Unknown ids fall back to the config defaults.
-fn apply_voice_selection(params: &Value, stt: Option<&str>, tts: Option<&str>) -> Value {
-    if stt.is_none() && tts.is_none() {
+fn apply_voice_selection(
+    params: &Value,
+    stt: Option<&str>,
+    tts: Option<&str>,
+    stt_side: Option<&str>,
+    tts_side: Option<&str>,
+) -> Value {
+    if stt.is_none() && tts.is_none() && stt_side.is_none() && tts_side.is_none() {
         return params.clone();
     }
     let catalog = eve_idfon::voice_options(params);
@@ -376,11 +389,14 @@ fn apply_voice_selection(params: &Value, stt: Option<&str>, tts: Option<&str>) -
             .find(|option| option.get("id").and_then(Value::as_str) == Some(id))
             .cloned()
     };
-    // No selected id is in the catalog: keep the config defaults untouched.
+    // No selected id is in the catalog and no explicit ownership override:
+    // keep the config defaults untouched.
     if ![stt, tts]
         .into_iter()
         .flatten()
         .any(|id| option(id).is_some())
+        && stt_side.is_none()
+        && tts_side.is_none()
     {
         return params.clone();
     }
@@ -427,6 +443,13 @@ fn apply_voice_selection(params: &Value, stt: Option<&str>, tts: Option<&str>) -
                 "stt" => stt_engine = engine,
                 _ => tts_engine = engine,
             }
+        }
+    }
+    // Explicit per-call ownership overrides win (a per-contact hybrid: the
+    // caller runs an on-device half the signed route may still call server).
+    for (kind, side) in [("stt", stt_side), ("tts", tts_side)] {
+        if let Some(side @ ("client" | "server")) = side {
+            route.insert(kind.into(), Value::from(side));
         }
     }
     object.insert("voice_route".into(), Value::Object(route));
@@ -483,6 +506,24 @@ fn override_engine(
     Some(serde_json::json!({ "stt": stt, "tts": tts }))
 }
 
+/// Per-turn context for live-call transcripts: the holder's resolved pipeline
+/// for *this* call (accurate, unlike the startup `/voice/info` snapshot) plus
+/// anything the caller pushed on the invite. Untrusted; injected as data.
+fn live_call_context(pipeline: &Value, caller: Option<&str>) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if !pipeline.is_null() {
+        parts.push(format!("Resolved call pipeline (JSON): {pipeline}"));
+    }
+    if let Some(caller) = caller.filter(|value| !value.is_empty()) {
+        parts.push(format!("Caller-provided context: {caller}"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
 /// Parse a caller-text control: `IDFON-LIVE/1\naction=text\ntext_b64=<base64>`.
 fn caller_text_control(text: &str) -> Option<String> {
     let body = text.strip_prefix("IDFON-LIVE/1\n")?;
@@ -523,7 +564,22 @@ async fn handle_call(
     }
     // Resolve the caller's per-contact selection, then pick the backend it
     // names: a full-duplex selection can switch backends for this call.
-    let params = apply_voice_selection(&ctx.params, invite.stt.as_deref(), invite.tts.as_deref());
+    let mut params = apply_voice_selection(
+        &ctx.params,
+        invite.stt.as_deref(),
+        invite.tts.as_deref(),
+        invite.stt_side.as_deref(),
+        invite.tts_side.as_deref(),
+    );
+    // Resolved for this call, so each injected transcript carries the pipeline
+    // that is actually running (plus the caller's pushed context).
+    let call_context = live_call_context(&eve_idfon::voice_info(&params), invite.context.as_deref());
+    // Backends that build their own session instructions (gpt-live) read this.
+    if let Some(caller) = invite.context.as_deref().filter(|value| !value.is_empty()) {
+        if let Some(object) = params.as_object_mut() {
+            object.insert("caller_context".into(), Value::String(caller.to_string()));
+        }
+    }
     let config = VoiceAgentConfig::from_params(&params);
     let Some(factory) = factories.get(&config.backend).cloned() else {
         tracing::warn!(target: "idfon.voice", backend = %config.backend, "unknown backend; falling through to text");
@@ -585,6 +641,7 @@ async fn handle_call(
         ctx.sender_peer_id.clone(),
         ctx.sender_endpoint_id.clone(),
         config.source.clone(),
+        call_context,
         Arc::clone(&ctx.targets),
         ctx.out_tx.clone(),
     );
@@ -682,6 +739,18 @@ mod tests {
     }
 
     #[test]
+    fn live_call_context_folds_pipeline_and_caller() {
+        let pipeline = serde_json::json!({ "mode": "server-cascade", "voice_model": "x" });
+        let context = live_call_context(&pipeline, Some("Client STT=Apple Built-in")).unwrap();
+        assert!(context.contains("Resolved call pipeline"));
+        assert!(context.contains("server-cascade"));
+        assert!(context.contains("Caller-provided context: Client STT=Apple Built-in"));
+        // Nothing to say when both are empty.
+        assert!(live_call_context(&serde_json::Value::Null, None).is_none());
+        assert!(live_call_context(&serde_json::Value::Null, Some("")).is_none());
+    }
+
+    #[test]
     fn strips_trailing_envelope() {
         assert_eq!(
             strip_envelopes("Sure, here you go.\nIDFON-INVITE/1\nname=x"),
@@ -730,18 +799,24 @@ mod tests {
             ]
         });
         // No selection: unchanged.
-        assert_eq!(apply_voice_selection(&params, None, None), params);
+        assert_eq!(apply_voice_selection(&params, None, None, None, None), params);
         // The explicit STT option overrides that half; the other keeps default.
-        let chosen = apply_voice_selection(&params, Some("groq:whisper"), None);
+        let chosen = apply_voice_selection(&params, Some("groq:whisper"), None, None, None);
         assert_eq!(chosen["engine"]["stt"]["provider"], "openai-compatible");
         assert_eq!(chosen["engine"]["tts"]["provider"], "elevenlabs");
         assert_eq!(chosen["voice_route"]["stt"], "server");
         // A full-duplex selection pins the backend and both halves.
-        let duplex = apply_voice_selection(&params, Some("gpt-live-1"), None);
+        let duplex = apply_voice_selection(&params, Some("gpt-live-1"), None, None, None);
         assert_eq!(duplex["backend"], "gpt-live");
         assert_eq!(duplex["model"], "openai/gpt-live-1");
         assert_eq!(duplex["voice_route"]["mode"], "native-duplex");
+        // A per-call client-side override makes that half caller-owned (hybrid),
+        // even though the selected catalog option is a server one.
+        let hybrid = apply_voice_selection(&params, Some("groq:whisper"), None, Some("client"), None);
+        assert_eq!(hybrid["voice_route"]["stt"], "client");
+        // The unselected TTS half is absent, so it keeps the mode's server default.
+        assert!(hybrid["voice_route"].get("tts").is_none());
         // An unknown id falls back to the config defaults.
-        assert_eq!(apply_voice_selection(&params, Some("nope"), None), params);
+        assert_eq!(apply_voice_selection(&params, Some("nope"), None, None, None), params);
     }
 }

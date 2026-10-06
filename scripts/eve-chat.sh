@@ -16,6 +16,7 @@
 #                   anthropic/claude-haiku-4.5)
 #   --agent-dir DIR Eve app to run (default agents/chat-echo)
 #   --timeout SECS  wait per reply (default 120)
+#   --context TEXT  unsigned per-turn caller context pushed with every turn
 #   --no-build      reuse already-built binaries
 set -eu
 
@@ -27,6 +28,7 @@ agent_src="$root/agents/chat-echo"
 timeout_s=120
 build=1
 prompts=""
+context=""
 
 usage() { sed -n '2,22p' "$0"; }
 
@@ -37,6 +39,7 @@ while [ $# -gt 0 ]; do
     --model) model="$2"; shift 2 ;;
     --agent-dir) agent_src="$2"; shift 2 ;;
     --timeout) timeout_s="$2"; shift 2 ;;
+    --context) context="$2"; shift 2 ;;
     --no-build) build=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -156,6 +159,7 @@ after=""
 send_turn() {
   key="chat-$(python3 -c 'import time;print(time.time_ns())')"
   if ! "$NUF" --socket "$A" send "$HOLDER_PID" --text "$1" \
+      --context "$context" \
       --idempotency-key "$key" --capability-ticket "$HOLDER_TICKET" --retries 2 >/dev/null; then
     echo "agent: <send failed>" >&2
     return 0

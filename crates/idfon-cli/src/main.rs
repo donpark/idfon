@@ -338,6 +338,11 @@ struct SendArgs {
     /// Restrict delivery to a device class, e.g. mobile or desktop
     #[arg(long = "device-class")]
     device_class: Option<String>,
+    /// Optional per-turn caller context (unsigned, untrusted data): the active
+    /// caller-side state the frontend applied, e.g. the speech pipeline.
+    /// Peer text only.
+    #[arg(long, conflicts_with_all = ["file", "stream"])]
+    context: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -1750,7 +1755,7 @@ fn send_payload(
             send_rpc(
                 socket,
                 "message.send",
-                json!({"to": peer, "text": args.text, "idempotency_key": key, "conversation": args.conversation, "capability_ticket": args.capability_ticket, "retries": args.retries, "delivery": {"mode": args.delivery, "endpoint_ids": args.endpoint_ids, "device_class": args.device_class}}),
+                json!({"to": peer, "text": args.text, "idempotency_key": key, "conversation": args.conversation, "context": args.context, "capability_ticket": args.capability_ticket, "retries": args.retries, "delivery": {"mode": args.delivery, "endpoint_ids": args.endpoint_ids, "device_class": args.device_class}}),
                 identity,
                 stdin_json,
             )?,

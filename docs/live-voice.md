@@ -199,8 +199,13 @@ For the `live-voice` peer, the iOS call button uses the audio-only
 `LiveCall` path (other peers retain video-capable calls). Its start invite
 carries `return_addr` (base64 serialized daemon `EndpointAddr`) so the holder
 can dial the phone's advertised addresses, and the holder marks its return leg
-with `return=1`. The app ignores replayed return legs when no outgoing call is
-active; startup recovery sends a versioned stop invite to the holder.
+with `return=1`. It also carries the per-contact `stt=`/`tts=` catalog
+selection, `stt_side=client`/`tts_side=client` overrides for a half the caller
+runs on-device (per-contact hybrid), and an optional `context_b64=` caller
+context, which the holder folds into the agent's resolved pipeline (see
+`docs/voice-agent.md`). The app ignores replayed return legs when
+no outgoing call is active; startup recovery sends a versioned stop invite to
+the holder.
 
 The holder starts GPT-Live only after the return invite is acknowledged. It
 opens a MoQ router for the outgoing audio broadcast, streams caller PCM16 mono

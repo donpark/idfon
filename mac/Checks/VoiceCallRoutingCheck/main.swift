@@ -11,6 +11,7 @@
 import Foundation
 
 func check(_ cond: Bool, _ msg: String) { if !cond { print("FAIL:", msg); exit(1) } else { print("ok:", msg) } }
+func isLive(_ decision: VoiceCallDecision) -> Bool { if case .live = decision { return true }; return false }
 
 // `CapabilityTickets` names `AnyEncodable` only in `ticket(for:)` (the real one
 // lives in DaemonClient.swift); a stub keeps this check host-only.
@@ -43,24 +44,28 @@ let fullDuplex = option("openai/gpt-live-1", "full-duplex", "server")
 let catalog = [serverStt, clientStt, fullDuplex]
 
 // No selection: follow the signed route (legacy heuristic only when absent).
-check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: route(.clientCascade), legacyRemote: true) == .onDevice,
+check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: route(.clientCascade), holderTicket: false, legacyRemote: true) == .onDevice,
       "no selection + client-cascade -> on-device")
-check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: duplex, legacyRemote: false) == .live(duplex),
+check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: duplex, holderTicket: false, legacyRemote: false) == .live(duplex),
       "no selection + native-duplex -> live")
-check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: route(.delegated, delegate: "voice1"), legacyRemote: false) == .delegated(route(.delegated, delegate: "voice1")),
+check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: route(.delegated, delegate: "voice1"), holderTicket: false, legacyRemote: false) == .delegated(route(.delegated, delegate: "voice1")),
       "no selection + delegated -> delegated")
-check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: nil, legacyRemote: true) == .live(nil),
+check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: nil, holderTicket: false, legacyRemote: true) == .live(nil),
       "no selection + no ticket + legacy -> live")
-check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: nil, legacyRemote: false) == .classic,
-      "no selection + no ticket -> classic")
+check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: nil, holderTicket: false, legacyRemote: false) == .classic,
+      "ordinary peer (no ticket) -> classic video call")
+// A holder ticket with no `voice` block is a text agent: client cascade, not
+// the silent video-call fallback.
+check(VoiceCallRouting.decide(selection: (nil, nil), catalog: catalog, signed: nil, holderTicket: true, legacyRemote: false) == .onDevice,
+      "no voice block + holder ticket -> on-device")
 
 // A server or full-duplex selection means the holder terminates audio.
-check(VoiceCallRouting.decide(selection: ("deepgram:nova-3", nil), catalog: catalog, signed: duplex, legacyRemote: false) == .live(duplex),
+check(isLive(VoiceCallRouting.decide(selection: ("deepgram:nova-3", nil), catalog: catalog, signed: duplex, holderTicket: false, legacyRemote: false)),
       "server STT selection -> live")
-check(VoiceCallRouting.decide(selection: (nil, "openai/gpt-live-1"), catalog: catalog, signed: duplex, legacyRemote: false) == .live(duplex),
+check(isLive(VoiceCallRouting.decide(selection: (nil, "openai/gpt-live-1"), catalog: catalog, signed: duplex, holderTicket: false, legacyRemote: false)),
       "full-duplex selection -> live")
 // An all-client selection is a client cascade, regardless of the ticket.
-check(VoiceCallRouting.decide(selection: ("on-device:parakeet", nil), catalog: catalog, signed: duplex, legacyRemote: false) == .onDevice,
+check(VoiceCallRouting.decide(selection: ("on-device:parakeet", nil), catalog: catalog, signed: duplex, holderTicket: false, legacyRemote: false) == .onDevice,
       "client STT selection -> on-device")
 
 // Selection store: unset by default; per-half; clearing one keeps the other.
@@ -86,5 +91,58 @@ check(ContactOnDeviceEngines.asr(for: peer) == nil, "on-device asr cleared")
 check(ContactOnDeviceEngines.tts(for: peer) == "kokoro", "on-device tts kept")
 ContactOnDeviceEngines.remove(for: peer)
 check(ContactOnDeviceEngines.tts(for: peer) == nil, "on-device remove clears the entry")
+
+// Unified Speech pickers: one view over on-device + catalog, no "Automatic".
+check(ContactSpeech.stored(for: peer, slot: .recognition) == nil, "speech pick defaults to nil")
+ContactSpeech.set(SpeechChoice(store: .onDevice, id: "parakeet", title: ""), catalog: catalog, for: peer, slot: .recognition)
+check(ContactSpeech.stored(for: peer, slot: .recognition) == SpeechChoice(store: .onDevice, id: "parakeet", title: ""),
+      "on-device recognition pick persists")
+check(ContactSpeech.stored(for: peer, slot: .generation) == nil, "generation unaffected by the recognition pick")
+ContactSpeech.set(SpeechChoice(store: .catalog, id: "deepgram:nova-3", title: ""), catalog: catalog, for: peer, slot: .recognition)
+check(ContactSpeech.stored(for: peer, slot: .recognition) == SpeechChoice(store: .catalog, id: "deepgram:nova-3", title: ""),
+      "catalog pick replaces the on-device pick")
+// A full-duplex option fills both halves.
+ContactSpeech.set(SpeechChoice(store: .catalog, id: "openai/gpt-live-1", title: ""), catalog: catalog, for: peer, slot: .recognition)
+check(ContactSpeech.stored(for: peer, slot: .generation) == SpeechChoice(store: .catalog, id: "openai/gpt-live-1", title: ""),
+      "full-duplex fills the other half")
+// nil clears both stores for the half.
+ContactSpeech.set(nil, catalog: catalog, for: peer, slot: .generation)
+check(ContactSpeech.stored(for: peer, slot: .generation) == nil, "nil clears the pick")
+ContactVoiceSelection.remove(for: peer)
+ContactOnDeviceEngines.remove(for: peer)
+
+// An explicit on-device pick forces the client cascade, even with a live route.
+check(VoiceCallRouting.decide(selection: (nil, nil), onDevice: ("apple", nil), catalog: catalog, signed: duplex, holderTicket: false, legacyRemote: false) == .onDevice,
+      "on-device pick beats a native-duplex route")
+check(VoiceCallRouting.decide(selection: (nil, nil), onDevice: (nil, "kokoro"), catalog: catalog, signed: duplex, holderTicket: false, legacyRemote: false) == .onDevice,
+      "on-device TTS pick beats a native-duplex route")
+// A server catalog pick still wins (the holder terminates audio).
+check(isLive(VoiceCallRouting.decide(selection: ("deepgram:nova-3", nil), onDevice: (nil, "kokoro"), catalog: catalog, signed: duplex, holderTicket: false, legacyRemote: false)),
+      "server catalog pick still routes live")
+
+// Invite lines can carry the caller's pushed per-turn context.
+let invite = ContactVoiceSelection.inviteLines(for: peer, context: "Client STT=Apple Built-in")
+check(invite.contains("context_b64="), "invite carries caller context")
+check(!ContactVoiceSelection.inviteLines(for: peer).contains("context_b64="), "no context line when unset")
+
+// Client halves drive the live-invite context line.
+let hybridRoute = VoiceRoute(mode: .serverCascade, audio: nil, model: nil,
+                             delegatePeerId: nil, delegateContact: nil, delegateTicket: nil,
+                             stt: .client, tts: .server)
+check(hybridRoute.clientHalves == [.recognition], "hybrid route reports the client STT half")
+check(duplex.clientHalves.isEmpty, "full-duplex route has no client halves")
+
+// Per-contact picks override the signed half-ownership (true hybrid).
+let onDeviceHybrid = duplex.resolving(selection: (nil, nil), onDevice: ("apple", nil), catalog: catalog)
+check(onDeviceHybrid.sttSide == .client, "on-device pick overrides the signed STT half to client")
+check(onDeviceHybrid.ttsSide == .server, "untouched half keeps the signed server default")
+check(onDeviceHybrid.isHybrid, "per-contact on-device pick yields a hybrid route")
+check(duplex.resolving(selection: (nil, nil), onDevice: (nil, nil), catalog: catalog) == duplex,
+      "no picks leaves the signed route unchanged")
+ContactOnDeviceEngines.set(asr: "system", tts: nil, for: peer)
+let sideInvite = ContactVoiceSelection.inviteLines(for: peer)
+check(sideInvite.contains("stt_side=client"), "invite marks the on-device half client")
+check(!sideInvite.contains("tts_side=client"), "invite leaves the holder half server")
+ContactOnDeviceEngines.remove(for: peer)
 
 print("ALL OK")

@@ -162,6 +162,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         videoObservers.append(NotificationCenter.default.addObserver(forName: .idfonVideoFrame, object: nil, queue: .main) { [weak self] note in
             if let image = note.object as? UIImage { self?.inlineVideoImage?.image = image }
         })
+        // Call feedback from the call singletons ("No voice call available",
+        // "No live calls …", "A call is already in progress").
+        videoObservers.append(NotificationCenter.default.addObserver(forName: .idfonCallStatus, object: nil, queue: .main) { [weak self] note in
+            guard let text = note.userInfo?["text"] as? String else { return }
+            self?.showCallStatus(text)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard self?.callStatusLabel.text == text else { return }
+                self?.showCallStatus(nil)
+            }
+        })
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -833,11 +843,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let legacyRemote = peer.name == "live-voice"
             || ContactAudioProfiles.profile(for: peerID) == .pcm24k
         let signed = CapabilityTickets.voiceRoute(for: peerID)
+        let holderTicket = CapabilityTickets.hasTicket(for: peerID)
         let selection = ContactVoiceSelection.selection(for: peerID)
+        let onDevice = (stt: ContactOnDeviceEngines.asr(for: peerID),
+                        tts: ContactOnDeviceEngines.tts(for: peerID))
         Task { @MainActor in
             let catalog = await VoiceCatalog.options(for: peerID, client: client)
             let decision = VoiceCallRouting.decide(
-                selection: selection, catalog: catalog, signed: signed, legacyRemote: legacyRemote)
+                selection: selection, onDevice: onDevice, catalog: catalog, signed: signed,
+                holderTicket: holderTicket, legacyRemote: legacyRemote)
             self.perform(decision)
         }
     }

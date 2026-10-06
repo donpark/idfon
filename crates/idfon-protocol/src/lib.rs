@@ -64,6 +64,13 @@ pub struct MessageEnvelope {
     /// (forward compatible). Absent means the sender does not advertise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<String>,
+    /// Optional caller-supplied context for this turn, pushed by the UI when
+    /// it initiates the turn (e.g. the active per-contact speech settings).
+    /// Unsigned like `trace`: the caller is identified by `sender.peer_id`,
+    /// and an unknown field is ignored by older receivers. Receivers MUST
+    /// treat it as untrusted data, never as instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -866,6 +873,7 @@ mod tests {
             conversation: Some("conversation-1".into()),
             trace: Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
             telemetry: Some("correlate".into()),
+            context: Some("STT=Apple Built-in; TTS=Apple Built-in".into()),
         };
         let frame = encode_frame(&message).unwrap();
         assert_eq!(decode_frame::<MessageEnvelope>(&frame).unwrap(), message);

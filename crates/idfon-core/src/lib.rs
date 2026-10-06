@@ -119,6 +119,7 @@ pub fn sign_message_with_ticket(
         conversation,
         trace: None,
         telemetry: None,
+        context: None,
     };
     let signature = key.sign(&auth_bytes(&unsigned)?);
     Ok(MessageEnvelope {

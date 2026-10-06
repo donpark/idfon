@@ -220,7 +220,10 @@ final class VideoCall: NSObject {
     /// the Bar's camera toggle is switched on — the default for calls started
     /// from the nav bar (mic first).
     func dial(_ peerRef: String, audio: Bool = true, video: Bool = true, cameraOn: Bool = true) {
-        guard state == .idle, audio || video else { return }
+        guard state == .idle, audio || video else {
+            CallFeedback.post("A call is already in progress.")
+            return
+        }
         audioAvailable = true
         videoAvailable = true
         audioEnabled = audio
@@ -466,6 +469,7 @@ final class VideoCall: NSObject {
     private func fail(_ message: String) {
         idfonError("idfon video call failed: \(message)")
         lastError = message
+        CallFeedback.post("No live call available: \(message)")
         // Tell the peer: they were invited (or answered) and would otherwise
         // sit in a one-sided call until they hang up themselves.
         terminate(local: true) // notifies the UI, which surfaces lastError

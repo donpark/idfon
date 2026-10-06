@@ -30,8 +30,8 @@ enum TtsBackend: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .kokoro: return "Kokoro (on-device neural)"
-        case .apple: return "Apple (system voice)"
+        case .kokoro: return "Kokoro (on-device)"
+        case .apple: return "Apple Built-in"
         }
     }
 }
@@ -284,7 +284,7 @@ enum AsrBackend: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .system: return "Apple (SpeechAnalyzer)"
+        case .system: return "Apple Built-in"
         case .parakeet: return "Parakeet Redux (on-device)"
         }
     }
@@ -344,4 +344,26 @@ extension SpeechEngines {
 @available(iOS 26.0, *)
 extension SystemSpeechTranscriber: AsrEngine {
     var name: String { "system" }
+}
+
+@MainActor
+extension SpeechEngines {
+    /// Caller-side context for a live-call invite: the on-device half(s) this
+    /// device runs per the signed route. nil when the holder runs both, so a
+    /// plain live call sends no context line.
+    static func clientHalfContext(for peerID: String, route: VoiceRoute?) -> String? {
+        var parts: [String] = []
+        for half in route?.clientHalves ?? [] {
+            switch half {
+            case .recognition:
+                let asr = ContactOnDeviceEngines.asr(for: peerID).flatMap(AsrBackend.init(rawValue:)) ?? asrBackend
+                parts.append("Recognition: \(asr.title)")
+            case .generation:
+                let tts = ContactOnDeviceEngines.tts(for: peerID).flatMap(TtsBackend.init(rawValue:)) ?? backend
+                parts.append("Generation: \(tts.title)")
+            }
+        }
+        guard !parts.isEmpty else { return nil }
+        return "Live call; the caller's device runs \(parts.joined(separator: "; "))."
+    }
 }
