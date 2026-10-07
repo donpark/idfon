@@ -141,9 +141,10 @@ verified **caller context**, not just `(account, path)`.
   set, so legacy tickets verify); `issue_capability_ticket_scoped`. `Caller`
   carries the raw `ticket`; `Backend::fetch` takes `&Caller`, and `IrohBackend`
   / `EdgeBackend` forward it as `x-idfon-ticket` over H3. The daemon provider
-  accepts the header and authorizes a valid, unexpired ticket **issued by this
-  peer** (bearer) with `resource.read` and a `path_scope` covering the request,
-  falling back to the QUIC-peer grant when absent. The edge no longer requires
+  accepts the header and authorizes a valid, unexpired `resource.read` ticket
+  with a `path_scope` covering the request — issued by this peer (bearer) **or
+  by a peer this peer granted `resource.read`** — falling back to the QUIC-peer
+  grant when absent. The edge no longer requires
   `subject == edge`; it verifies signature/expiry/capability and forwards the
   ticket unchanged. `idfon access ticket --path-scope <prefix>` exposes the
   scoped issue path; the gateway maps a peer's 403 to 403
@@ -234,18 +235,28 @@ value; check items off here as they land.
 
 ### Deviations from the plan text (fix code or doc)
 
-- [ ] P3 authorizes an **owner-issued bearer ticket** (`issuer == self`), not the
-  ticket issuer against grants; ordinary `access allow` grants are not consulted
-  for ticket auth. Decide whether grants should also authorize.
-- [ ] **Path scoping is on the ticket, not the grant** (`CapabilityGrant` has no
-  `path`), so the plan's "per-path scoping follows from the grant" is not
-  realized.
-- [ ] The edge's required capability (`web.fetch`) is **disconnected** from the
-  peer's check (`resource.read`), and the edge no longer binds `subject == edge`;
-  its requester check is weak by design. Revisit or document the trust model.
-- [ ] **Expiry is epoch-seconds only**; `ticket_expired` rejects RFC 3339.
-- [ ] **Rate limit** is a per-`Caller.subject` fixed window, not per-IP;
-  shared-token callers share one bucket.
+- [x] A resource ticket now authorizes **either** the peer itself (bearer,
+  `issuer == self`) **or** an issuer this peer granted `resource.read` (a
+  delegate, e.g. the edge). `ticket_authorizes` consults `has_grant` for a
+  non-self issuer; `resource_ticket_authorizes_issuer_capability_and_path`
+  covers grant and revoke.
+- [x] **Path scoping stays on the ticket, not the grant (deliberate).**
+  `CapabilityGrant` is a coarse per-capability grant; a signed `path_scope` on
+  the ticket bounds one delegation and cannot be widened by the delegate. It is
+  realized end-to-end by `scripts/edge-e2e.sh`.
+- [x] **Edge trust model (documented).** The edge is not an authority: its
+  `--require-ticket <cap>` is a coarse gate that the caller holds *some* valid
+  ticket, and the peer re-checks issuer/grant/capability/path on every request.
+  Run it with `--require-ticket resource.read` so one ticket satisfies both; the
+  edge deliberately does not bind `subject == edge` (P3). See
+  `crates/idfon-edge/README.md`.
+- [x] **Expiry accepts epoch seconds and RFC 3339**
+  (`idfon_core::expiry_passed`); an unparseable value counts as expired. The
+  edge still requires a ticket to carry an expiry.
+- [x] **Rate limit stays per `Caller.subject` (deliberate).** The subject is the
+  authenticated ticket issuer; behind the recommended loopback + TLS-proxy
+  deployment a socket IP is always the proxy, and `--token` is a single shared
+  identity by definition. No per-IP bucket.
 
 ### External / ops (not in the repo)
 

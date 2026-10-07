@@ -1591,9 +1591,10 @@ struct ProviderState {
     root: PathBuf,
 }
 
-/// Authorizes the caller. A caller-presented `x-idfon-ticket` is a bearer
-/// resource ticket issued by this peer (P3); otherwise fall back to the QUIC
-/// peer + `resource.read` grant (P0/P1).
+/// Authorizes the caller. A caller-presented `x-idfon-ticket` is a resource
+/// ticket issued by this peer (bearer) or by a peer this peer granted
+/// `resource.read` (a delegate, e.g. the edge) (P3); otherwise fall back to the
+/// QUIC peer + `resource.read` grant (P0/P1).
 fn authorize_resource_read(
     state: &ProviderState,
     remote: &str,
@@ -1626,8 +1627,9 @@ fn authorize_resource_read(
     Ok(())
 }
 
-/// True when `raw` is a valid, unexpired `resource.read` ticket issued by this
-/// peer whose path prefix covers `path`. Expiry must be epoch seconds.
+/// True when `raw` is a valid, unexpired `resource.read` ticket whose path
+/// prefix covers `path`, issued either by this peer (bearer) or by a peer this
+/// peer granted `resource.read` (a delegate, e.g. the edge).
 fn ticket_authorizes(state: &ProviderState, raw: &str, path: &str) -> bool {
     let Ok(ticket) = serde_json::from_str::<idfon_protocol::CapabilityTicket>(raw) else {
         return false;
@@ -1636,7 +1638,17 @@ fn ticket_authorizes(state: &ProviderState, raw: &str, path: &str) -> bool {
         return false;
     }
     if Some(ticket.issuer.as_str()) != state.peer_id.as_deref() {
-        return false;
+        // Not a self-issued bearer ticket: the issuer must hold the matching
+        // grant. The peer, not the forwarding transport, stays the authority.
+        let store = state.store.lock().expect("store mutex poisoned");
+        if !has_grant(
+            &store,
+            &state.identity,
+            &ticket.issuer,
+            &idfon_protocol::Capability::new(CAPABILITY_RESOURCE_READ),
+        ) {
+            return false;
+        }
     }
     if !ticket
         .capabilities
@@ -1655,16 +1667,13 @@ fn ticket_authorizes(state: &ProviderState, raw: &str, path: &str) -> bool {
     true
 }
 
-/// A missing expiry never expires; epoch seconds past now expire; any other
-/// format is rejected (P3 resource tickets are epoch seconds).
+/// A missing expiry never expires; epoch seconds or RFC 3339 in the past
+/// expire; any unparseable format is rejected.
 fn ticket_expired(expires_at: Option<&str>) -> bool {
     let Some(value) = expires_at else {
         return false;
     };
-    match value.parse::<u64>() {
-        Ok(seconds) => seconds <= now().parse::<u64>().unwrap_or(0),
-        Err(_) => true,
-    }
+    idfon_core::expiry_passed(value, now().parse::<u64>().unwrap_or(0))
 }
 
 /// `<data_dir>/staging/<identity>/<id>` for a validated relative `id`. This is
@@ -6309,16 +6318,44 @@ mod tests {
         assert!(ticket_authorizes(&state, &raw, "/fs/public/x"));
         assert!(!ticket_authorizes(&state, &raw, "/fs/private/x"));
 
-        // A ticket issued by someone else is not this peer's bearer ticket.
-        let other = idfon_core::issue_capability_ticket(
-            &idfon_core::generate_identity(),
+        // A ticket from a peer with no grant is refused...
+        let delegate_key = idfon_core::generate_identity();
+        let delegate_id = idfon_core::peer_id(&delegate_key);
+        let delegated = idfon_core::issue_capability_ticket(
+            &delegate_key,
             None,
             vec![read.clone()],
             Some(expiry.clone()),
-            "t-other",
+            "t-delegate",
         );
-        let other_raw = serde_json::to_string(&other).unwrap();
-        assert!(!ticket_authorizes(&state, &other_raw, "/fs/x"));
+        let delegated_raw = serde_json::to_string(&delegated).unwrap();
+        assert!(!ticket_authorizes(&state, &delegated_raw, "/fs/x"));
+
+        // ...but granting the issuer `resource.read` authorizes it, and revoking
+        // the grant removes that (the peer, not the forwarding transport, is the
+        // authority).
+        state
+            .store
+            .lock()
+            .unwrap()
+            .grants
+            .push(idfon_protocol::CapabilityGrant {
+                capability: read.clone(),
+                identity: "default".into(),
+                subject: delegate_id.clone(),
+                conversation: None,
+                active_at: "0".into(),
+                expires_at: None,
+                revision: 1,
+                revoked_at: None,
+            });
+        assert!(ticket_authorizes(&state, &delegated_raw, "/fs/x"));
+        for grant in &mut state.store.lock().unwrap().grants {
+            if grant.subject == delegate_id {
+                grant.revoked_at = Some(now());
+            }
+        }
+        assert!(!ticket_authorizes(&state, &delegated_raw, "/fs/x"));
 
         // Missing capability and expiry both fail.
         let wrong = idfon_core::issue_capability_ticket(
