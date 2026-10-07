@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
 use idfon_core::{decode_signing_key, encode_signing_key, generate_identity, signing_key_bytes};
-use idfon_edge::{run, EdgeConfig};
+use idfon_edge::{run, EdgeAuth, EdgeConfig};
 
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
@@ -27,11 +27,15 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let mut bind: SocketAddr = DEFAULT_BIND.parse().expect("default bind parses");
-    let mut token = std::env::var("IDFON_EDGE_TOKEN").ok();
+    let mut auth = std::env::var("IDFON_EDGE_TOKEN")
+        .ok()
+        .map(EdgeAuth::Token)
+        .unwrap_or(EdgeAuth::Open);
     let mut key_file = std::env::var("IDFON_EDGE_KEY_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| home_dir().join(".idfon/edge.key"));
     let mut allow = HashSet::new();
+    let mut domain = std::env::var("IDFON_EDGE_DOMAIN").ok();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -42,7 +46,17 @@ async fn main() -> anyhow::Result<()> {
                 i += 2;
             }
             "--token" => {
-                token = Some(args[i + 1].clone());
+                auth = EdgeAuth::Token(args[i + 1].clone());
+                i += 2;
+            }
+            "--require-ticket" => {
+                auth = EdgeAuth::Ticket {
+                    capability: args[i + 1].clone(),
+                };
+                i += 2;
+            }
+            "--domain" => {
+                domain = Some(args[i + 1].clone());
                 i += 2;
             }
             "--key-file" => {
@@ -56,19 +70,20 @@ async fn main() -> anyhow::Result<()> {
             other => return Err(anyhow!("unknown argument {other}")),
         }
     }
-    if !bind.ip().is_loopback() && token.is_none() {
+    if !bind.ip().is_loopback() && matches!(auth, EdgeAuth::Open) {
         return Err(anyhow!(
-            "a bearer token is required for a non-loopback bind (--token or IDFON_EDGE_TOKEN)"
+            "a non-loopback edge needs requester auth (--token, --require-ticket, or IDFON_EDGE_TOKEN)"
         ));
     }
 
     let key = load_or_create_key(&key_file)?;
     let handle = run(EdgeConfig {
         bind,
-        token,
         key,
         allow,
         pins: Default::default(),
+        domain,
+        auth,
     })
     .await?;
 

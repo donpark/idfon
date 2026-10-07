@@ -25,7 +25,8 @@ use idfon_core::transport::{
     room_topic, FakeTransport, IrohTransport, MessageTransport, SideChannelGuard, SYNC_ALPN,
 };
 use idfon_gateway::{
-    AccountResolver, Authorizer, Config as GatewayConfig, GatewayHandle, IrohBackend,
+    AccountResolver, Authorizer, Caller, Config as GatewayConfig, GatewayHandle, IrohBackend,
+    StaticToken,
 };
 use idfon_h3::{serve_router, H3Server, RemoteId};
 use idfon_media::service::MediaService;
@@ -1300,7 +1301,7 @@ impl AccountResolver for PeerStoreResolver {
 struct TokenOnly;
 
 impl Authorizer for TokenOnly {
-    fn authorize(&self, _account: &str, _path: &str) -> bool {
+    fn authorize(&self, _caller: &Caller, _account: &str, _path: &str) -> bool {
         true
     }
 }
@@ -1325,7 +1326,7 @@ async fn start_gateway(
     let token = idfon_core::encode_signing_key(&idfon_core::generate_identity());
     let handle = idfon_gateway::serve(
         GatewayConfig {
-            token: Some(token.clone()),
+            auth: Some(std::sync::Arc::new(StaticToken::new(token.clone()))),
             ..GatewayConfig::default()
         },
         backend,
@@ -6445,7 +6446,7 @@ mod tests {
         .unwrap();
         let handle = idfon_gateway::serve(
             GatewayConfig {
-                token: Some("tok".into()),
+                auth: Some(std::sync::Arc::new(StaticToken::new("tok"))),
                 ..GatewayConfig::default()
             },
             backend,
