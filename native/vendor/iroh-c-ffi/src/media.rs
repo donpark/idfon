@@ -6,7 +6,7 @@
 
 use std::{
     collections::VecDeque,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     sync::{Arc, Mutex},
 };
@@ -87,14 +87,33 @@ struct Playback {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
+pub(crate) fn media_base() -> PathBuf {
+    std::env::var_os("IDFON_MEDIA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("idfon"))
+}
+
 pub(crate) fn media_path(name: &str) -> PathBuf {
     let root = MEDIA_SCOPE
         .lock()
         .ok()
         .and_then(|scope| scope.clone())
-        .or_else(|| std::env::var_os("IDFON_MEDIA_DIR").map(PathBuf::from))
-        .unwrap_or_else(|| std::env::temp_dir().join("idfon"));
+        .unwrap_or_else(media_base);
     root.join(name)
+}
+
+/// Resolve a caller-supplied scope to a directory. A bare conversation id is
+/// not a path: `create_dir_all` on it would drop a directory into the process
+/// cwd, so only an absolute scope is honored as-is and anything else is placed
+/// under the media root.
+fn scoped_media_dir(scope: &Path) -> PathBuf {
+    let relative = scope.is_relative();
+    if relative {
+        let name = scope.file_name().unwrap_or_else(|| scope.as_os_str());
+        media_base().join(name)
+    } else {
+        scope.to_path_buf()
+    }
 }
 
 fn audio_queue() -> Arc<Mutex<VecDeque<f32>>> {
@@ -1298,7 +1317,7 @@ pub fn media_blob_fetch(ticket: char_p::Ref<'_>) -> u8 {
 }
 #[ffi_export]
 pub fn media_set_scope(scope: char_p::Ref<'_>) -> u8 {
-    let path = PathBuf::from(scope.to_str());
+    let path = scoped_media_dir(Path::new(scope.to_str()));
     if std::fs::create_dir_all(&path).is_err() {
         return 1;
     }
@@ -1337,5 +1356,15 @@ mod tests {
     #[test]
     fn media_path_is_stable() {
         assert!(super::media_path("x").ends_with("x"));
+    }
+
+    #[test]
+    fn relative_scope_stays_out_of_cwd() {
+        let dir = super::scoped_media_dir(std::path::Path::new("peer-abc"));
+        assert!(dir.is_absolute(), "bare scope must not be cwd-relative: {dir:?}");
+        assert_eq!(dir.file_name().unwrap(), "peer-abc");
+        // An absolute scope is used verbatim (the mac app passes one).
+        let abs = super::scoped_media_dir(std::path::Path::new("/var/tmp/x"));
+        assert_eq!(abs, std::path::PathBuf::from("/var/tmp/x"));
     }
 }

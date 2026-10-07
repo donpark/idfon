@@ -26,6 +26,19 @@ enum DaemonRuntime {
         return support.path
     }
 
+    /// Per-conversation media directory (recordings, fetched blobs, video
+    /// frames). Must be absolute: the FFI `create_dir_all`s this path directly,
+    /// so a bare peer id would otherwise become a directory in the app's cwd.
+    static func mediaDir(_ key: String) -> String {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Idfon/media", isDirectory: true)
+        let safe = key.replacingOccurrences(of: "/", with: "_")
+        let dir = base.appendingPathComponent(safe, isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.path
+    }
+
     /// One-time move of a legacy `/tmp/idfon` profile into the durable
     /// location, so the daemon keeps its identity and peers instead of
     /// starting from scratch on first run of this build.
