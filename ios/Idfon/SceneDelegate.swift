@@ -108,7 +108,26 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             VideoCall.shared.dial(ref)
         case .answer:
             NotificationCenter.default.post(name: .init("idfon.answer"), object: nil)
-        case .resource(let ref, _):
+        case .resource(let ref, let path):
+            if EdgeClient.shared.isConfigured {
+                presentEdgeResource(ref: ref, path: path)
+            } else {
+                liveActivity?.openThread(peerRef: ref)
+            }
+        }
+    }
+
+    /// Opens a peer resource in a WebView at the edge HTTPS URL (P4). The
+    /// requester ticket rides a cookie the edge reads; an unconfigured edge
+    /// falls back to the peer's thread.
+    private func presentEdgeResource(ref: String, path: [String]) {
+        let resourcePath = "/" + path.joined(separator: "/")
+        let controller = EdgeWebView(account: ref, resourcePath: resourcePath)
+        var presenter = window?.rootViewController
+        while let next = presenter?.presentedViewController { presenter = next }
+        if let presenter {
+            presenter.present(UINavigationController(rootViewController: controller), animated: true)
+        } else {
             liveActivity?.openThread(peerRef: ref)
         }
     }

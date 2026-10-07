@@ -130,9 +130,9 @@ impl CapabilityTicketAuth {
 }
 
 impl Authenticator for CapabilityTicketAuth {
-    fn authenticate(&self, headers: &HeaderMap, _uri: &Uri) -> Option<Caller> {
-        let raw = headers.get("x-idfon-ticket")?.to_str().ok()?;
-        let ticket: CapabilityTicket = serde_json::from_str(raw).ok()?;
+    fn authenticate(&self, headers: &HeaderMap, uri: &Uri) -> Option<Caller> {
+        let raw = ticket_from(headers, uri)?;
+        let ticket: CapabilityTicket = serde_json::from_str(&raw).ok()?;
         idfon_core::verify_capability_ticket(&ticket).ok()?;
         if !ticket.capabilities.contains(&self.capability) {
             return None;
@@ -143,8 +143,80 @@ impl Authenticator for CapabilityTicketAuth {
         }
         Some(Caller {
             subject: ticket.issuer,
-            ticket: Some(raw.to_owned()),
+            ticket: Some(raw),
         })
+    }
+}
+
+const TICKET_HEADER: &str = "x-idfon-ticket";
+const TICKET_COOKIE: &str = "idfon_ticket";
+
+/// The caller's ticket: `x-idfon-ticket` header, else the `idfon_ticket`
+/// cookie (how a `WKWebView` carries it), else `?ticket=`.
+fn ticket_from(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+    if let Some(value) = headers.get(TICKET_HEADER).and_then(|v| v.to_str().ok()) {
+        return Some(value.to_owned());
+    }
+    if let Some(value) = cookie_value(headers, TICKET_COOKIE) {
+        return Some(percent_decode(&value));
+    }
+    query_param(uri, "ticket").map(|value| percent_decode(&value))
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let cookies = headers.get(http::header::COOKIE)?.to_str().ok()?;
+    cookies.split(';').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key.trim() == name).then(|| value.trim().to_owned())
+    })
+}
+
+fn query_param(uri: &Uri, name: &str) -> Option<String> {
+    uri.query()?.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then(|| value.to_owned())
+    })
+}
+
+/// Minimal percent-decoder (`%XX` and `+`), enough for a URL/cookie-encoded
+/// ticket. Invalid escapes pass through.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                match (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi << 4) | lo);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 

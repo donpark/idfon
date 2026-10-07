@@ -156,9 +156,12 @@ verified **caller context**, not just `(account, path)`.
   detail's remote view uses it. `AppDelegate` installs the
   `handleEventsForBackgroundURLSession` handler and reconciles in
   `applicationWillEnterForeground`; `UIBackgroundModes` gains `fetch`.
-- Remaining: route `idfon://<ref>/<path>` (iOS `SceneDelegate` `.resource`) to a
-  WebView/Safari view at the edge HTTPS URL, and let a screen consume the
-  reconciled inbox bytes (today they are logged/notified, not displayed).
+- Also landed: the edge accepts the ticket from an `idfon_ticket` cookie (or
+  `?ticket=`) as well as the header; iOS `EdgeWebView` injects the cookie into a
+  non-persistent `WKWebView`, and `SceneDelegate` routes `.resource` there. The
+  edge percent-decodes cookie/query values.
+- Remaining: a screen to consume the reconciled inbox bytes (today they are
+  logged/notified only).
 
 ### P5 — web layer (optional for this plan)
 
