@@ -28,6 +28,53 @@ Most triage starts by joining one flow across processes. See
 - **OTLP (opt-in).** `IDFON_OTEL_ENDPOINT` on the holder/MCP/CLI exports spans;
   the daemon does not export by design.
 
+**Side-channel variant (2026-10-04; corrected 2026-10-07).** The on-device
+client-cascade voice call (`VoiceAgentSession`) hit the same attenuation: with
+`.voiceChat` its TTS (Kokoro `AVAudioPlayer` / `AVSpeechSynthesizer`) was at
+whisper level. The first fix moved the session to `.default` with AEC from
+`AVAudioInputNode.setVoiceProcessingEnabled(true)` — but `.default` silently
+disables VPIO's echo cancellation, and enabling input voice processing with no
+connected playback bus leaves the AEC reference empty and often drops the
+output level too. The session is back on `.voiceChat` (VPIO's native mode): TTS
+renders on the recognizer's engine (a `TtsPlayer` playback node), a route guard
+re-asserts the loudspeaker, and other-audio ducking is minimized. Verified on
+device (ringback and reply volume normal, no self-bleed).
+
+## iOS voice call aborts (SIGABRT) in setVoiceProcessingEnabled (2026-10-07, FIXED)
+
+**Symptom.** The app crashed during a client-cascade call. Crash report:
+`EXC_CRASH (SIGABRT)`, with `lastExceptionBacktrace` showing
+`-[AVAudioIONode setVoiceProcessingEnabled:error:]` →
+`AVAudioEngineGraph::_Connect` → `_AVAE_CheckAndReturnErr` →
+`ParakeetReduxAsr.start`, `VoiceAgentSession.startAnalyzer`.
+
+**Cause.** `ParakeetReduxAsr` connected its TTS playback node into
+`engine.mainMixerNode` *before* `setVoiceProcessingEnabled(true)`. That
+connection materializes the output graph with the pre-VPIO format, so enabling
+voice processing trips an AVFAudio precondition inside its own graph connect,
+which raises an **Objective-C exception**. Swift's `do/catch` cannot catch an
+ObjC exception, so the process aborted.
+
+**Fix.** Attach the playback node, enable voice processing, *then* connect it
+(`ios/Idfon/ParakeetAsr.swift`) — the order `SystemSpeechTranscriber` already
+uses. Note `setVoiceProcessingEnabled` can raise beyond Swift's reach; if a
+future ordering reintroduces it, use a tiny ObjC `@try/@catch` shim rather than
+relying on `try`.
+
+## Contacts/Recents empty after a cold or crash start (2026-10-07, FIXED)
+
+**Symptom.** After the app relaunched — including right after a crash — the
+Contacts and Recents lists were empty; a later launch showed them again.
+
+**Cause.** The in-process daemon binds its socket on a background thread
+(`DaemonBootstrap.start`). The first `refresh()` called `client.peers()` once;
+on the not-yet-ready socket it threw, and `PeerListViewController` returned
+without populating and without retrying (only `viewWillAppear` or a manual
+pull refreshed).
+
+**Fix.** `DaemonClient.whenReady { … }` polls the read (15 × 400 ms) and both
+Contacts and Recents use it, so the list fills once the daemon is up.
+
 ## Client-cascade voice call: dead air after "answered", dropped while silent, caller turns missing (2026-10-04, FIXED)
 
 **Symptom.** On a `client-cascade` voice call (on-device STT → text turn →

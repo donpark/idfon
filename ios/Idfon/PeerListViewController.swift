@@ -57,9 +57,10 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
     }
 
     @objc private func refresh() {
+        let client = self.client
         Task {
-            async let fetchedPeers = try? client.peers()
-            async let fetchedRooms = try? client.rooms()
+            async let fetchedPeers = client.whenReady { try await client.peers() }
+            async let fetchedRooms = client.whenReady { try await client.rooms() }
             let nextPeers = await fetchedPeers ?? []
             let nextRooms = await fetchedRooms ?? []
             await MainActor.run {
@@ -149,9 +150,12 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     }
 
     @objc private func refresh() {
+        let client = self.client
         Task {
             defer { DispatchQueue.main.async { self.refreshControl?.endRefreshing() } }
-            guard let fetched = try? await client.peers() else { return }
+            // Retry while the daemon finishes coming up, so a cold/crash start
+            // does not leave Contacts empty with no way back but a manual pull.
+            guard let fetched = await client.whenReady({ try await client.peers() }) else { return }
             await MainActor.run { self.peers = fetched }
         }
     }

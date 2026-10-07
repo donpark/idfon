@@ -679,11 +679,13 @@ optional.
   (P5)**: a `.voiceChat` session alone was *not* enough for the side-channel
   listener — echo cancellation only engaged after
   `AVAudioInputNode.setVoiceProcessingEnabled(true)` on the input node.
-- **Side-channel keeps `.default`, not `.voiceChat`** (2026-10-04):
-  `setVoiceProcessingEnabled(true)` engages AEC without VoiceProcessingIO's
-  attenuated output, so `VoiceAgentSession` stays on `.default` +
-  `overrideOutputAudioPort(.speaker)` and its TTS plays at normal volume
-  (`troubleshooting.md`).
+- **Side-channel uses `.voiceChat`** (VPIO's native mode; corrected
+  2026-10-07). `.default` silently disables VPIO's echo cancellation, and
+  enabling input-node voice processing without a connected playback bus leaves
+  the AEC reference empty and often drops the output level. `VoiceAgentSession`
+  runs `.voiceChat` + `overrideOutputAudioPort(.speaker)`, renders TTS on the
+  recognizer's engine (a `TtsPlayer` playback node), and re-asserts the
+  loudspeaker on route changes (`troubleshooting.md`).
 - **macOS has none** — `troubleshooting.md:45` notes it is deliberately left
   without VPIO; `audio-media.md` states there is no echo cancellation.
 - **AEC is a P5 concern.** Full barge-in where AEC exists (iOS); **gated or

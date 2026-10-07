@@ -96,6 +96,24 @@ extension DaemonClient {
         return try JSONDecoder().decode([Peer].self, from: data)
     }
 
+    /// Poll a read until the daemon answers. The in-process daemon binds its
+    /// socket on a background thread (`DaemonBootstrap.start`), so the first
+    /// screen after a cold start — including right after a crash relaunch —
+    /// can otherwise read an empty list and never retry.
+    func whenReady<T>(
+        attempts: Int = 15,
+        intervalMs: UInt64 = 400,
+        _ op: () async throws -> T
+    ) async -> T? {
+        for attempt in 0..<attempts {
+            if let value = try? await op() { return value }
+            if attempt < attempts - 1 {
+                try? await Task.sleep(nanoseconds: intervalMs * 1_000_000)
+            }
+        }
+        return nil
+    }
+
     /// Resolves a peer ref (name/alias/id) to the canonical peer id. Grant
     /// subjects match `peer.id`, and the capability-ticket store is keyed by
     /// it too — sending to a display name skips both.
