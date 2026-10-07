@@ -92,12 +92,20 @@ async fn edge_bridges_and_gates_with_a_token() {
         pins: HashMap::from([(peer_id.clone(), server.endpoint().addr())]),
         domain: None,
         auth: EdgeAuth::Token("s3cret".into()),
+        tls: None,
+        health_path: Some("/healthz".into()),
+        rate_limit_per_minute: 0,
     })
     .await
     .expect("edge runs");
 
     let path = format!("/{peer_id}/fs/readme");
     let auth = ("Authorization", "Bearer s3cret".to_owned());
+
+    // Health bypasses requester auth.
+    let (status, body) = http_get(handle.addr, "/healthz", &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(body, "ok");
 
     let (status, _) = http_get(handle.addr, &path, &[]).await;
     assert_eq!(status, 401, "missing token is rejected");
@@ -128,6 +136,9 @@ async fn edge_accepts_a_capability_ticket() {
         auth: EdgeAuth::Ticket {
             capability: "web.fetch".into(),
         },
+        tls: None,
+        health_path: Some("/healthz".into()),
+        rate_limit_per_minute: 0,
     })
     .await
     .expect("edge runs");
@@ -180,6 +191,38 @@ async fn edge_accepts_a_capability_ticket() {
     let expired_json = serde_json::to_string(&expired).unwrap();
     let (status, _) = http_get(handle.addr, &path, &[("x-idfon-ticket", expired_json)]).await;
     assert_eq!(status, 401, "expired ticket is rejected");
+
+    handle.shutdown().await;
+    accept.abort();
+    drop(h3);
+    server.endpoint().close().await;
+}
+
+#[tokio::test]
+async fn edge_rate_limits_per_caller() {
+    let (server, h3, accept, peer_id) = start_peer([25; 32]).await;
+
+    let handle = run(EdgeConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        key: [26; 32],
+        allow: HashSet::from([peer_id.clone()]),
+        pins: HashMap::from([(peer_id.clone(), server.endpoint().addr())]),
+        domain: None,
+        auth: EdgeAuth::Token("s3cret".into()),
+        tls: None,
+        health_path: None,
+        rate_limit_per_minute: 1,
+    })
+    .await
+    .expect("edge runs");
+
+    let path = format!("/{peer_id}/fs/readme");
+    let auth = ("Authorization", "Bearer s3cret".to_owned());
+
+    let (status, _) = http_get(handle.addr, &path, &[auth.clone()]).await;
+    assert_eq!(status, 200, "first request is admitted");
+    let (status, _) = http_get(handle.addr, &path, &[auth]).await;
+    assert_eq!(status, 403, "second request in the window is rate limited");
 
     handle.shutdown().await;
     accept.abort();

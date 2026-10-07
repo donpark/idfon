@@ -13,9 +13,13 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 idfon-core = { path = "../idfon-core" }
 idfon-h3 = { path = "../idfon-h3" }
 iroh = "1"
+rustls = "0.23"
+rustls-pemfile = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync"] }
+tokio-rustls = "0.26"
 
 [dev-dependencies]
 axum = "0.8"
 idfon-protocol = { path = "../idfon-protocol" }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

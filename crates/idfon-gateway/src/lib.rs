@@ -18,7 +18,9 @@
 //! Safety defaults: loopback bind, a required bearer token for any non-loopback
 //! bind, `Host`/`Origin` validation (DNS-rebinding), and `..` rejection.
 
+use std::io::BufReader;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -33,6 +35,7 @@ use idfon_h3::H3Client;
 use iroh::EndpointAddr;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
+use tokio_rustls::TlsAcceptor;
 
 /// Upper bound on a single fetched resource body.
 pub const MAX_RESOURCE_BYTES: usize = 8 * 1024 * 1024;
@@ -107,6 +110,14 @@ pub enum GatewayError {
     Backend(String),
 }
 
+/// TLS termination for the gateway's HTTP listener (PEM cert chain + private
+/// key). `None` serves plain HTTP.
+#[derive(Debug, Clone)]
+pub struct TlsConfig {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+}
+
 /// Gateway configuration. `auth` is required for a non-loopback bind.
 #[derive(Clone)]
 pub struct Config {
@@ -117,6 +128,12 @@ pub struct Config {
     /// When set, `<ref>.<origin_domain>` is accepted as a virtual host in
     /// addition to loopback and `*.localhost` (e.g. `idfon.net`).
     pub origin_domain: Option<String>,
+    /// Serve HTTPS with this cert/key. `None` serves plain HTTP (the loopback
+    /// case; a public edge should set it or terminate TLS in front).
+    pub tls: Option<TlsConfig>,
+    /// When set, `GET <path>` returns `200 ok` before auth/host checks, for
+    /// health probes.
+    pub health_path: Option<String>,
 }
 
 impl Default for Config {
@@ -125,6 +142,8 @@ impl Default for Config {
             bind: ([127, 0, 0, 1], 0).into(),
             auth: None,
             origin_domain: None,
+            tls: None,
+            health_path: None,
         }
     }
 }
@@ -172,24 +191,34 @@ where
     }
     let listener = TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;
+    let tls = config
+        .tls
+        .as_ref()
+        .map(load_tls)
+        .transpose()?
+        .map(|tls| TlsAcceptor::from(Arc::new(tls)));
     let shared = Arc::new(Shared {
         backend,
         authorizer,
         auth: config.auth,
         origin_domain: config.origin_domain,
+        health_path: config.health_path,
     });
     let task = tokio::spawn(async move {
         while let Ok((stream, _peer)) = listener.accept().await {
             let shared = shared.clone();
+            let tls = tls.clone();
             tokio::spawn(async move {
-                let io = TokioIo::new(stream);
-                let service = service_fn(move |request| {
-                    let shared = shared.clone();
-                    async move { Ok::<_, std::convert::Infallible>(handle(shared, request).await) }
-                });
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await;
+                match tls {
+                    Some(acceptor) => {
+                        if let Ok(stream) = acceptor.accept(stream).await {
+                            let _ = serve_connection(TokioIo::new(stream), shared).await;
+                        }
+                    }
+                    None => {
+                        let _ = serve_connection(TokioIo::new(stream), shared).await;
+                    }
+                }
             });
         }
     });
@@ -201,6 +230,49 @@ struct Shared<B, A> {
     authorizer: A,
     auth: Option<Arc<dyn Authenticator>>,
     origin_domain: Option<String>,
+    health_path: Option<String>,
+}
+
+/// Serves one accepted connection (plain or TLS-wrapped) with HTTP/1.
+async fn serve_connection<I, B, A>(io: I, shared: Arc<Shared<B, A>>) -> Result<(), hyper::Error>
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+    B: Backend,
+    A: Authorizer,
+{
+    let service = service_fn(move |request| {
+        let shared = shared.clone();
+        async move { Ok::<_, std::convert::Infallible>(handle(shared, request).await) }
+    });
+    hyper::server::conn::http1::Builder::new()
+        .serve_connection(io, service)
+        .await
+}
+
+/// Loads a PEM cert chain + private key into a rustls server config.
+fn load_tls(config: &TlsConfig) -> std::io::Result<rustls::ServerConfig> {
+    let mut cert_reader = BufReader::new(std::fs::File::open(&config.cert)?);
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(std::io::Error::other)?;
+    let mut key_reader = BufReader::new(std::fs::File::open(&config.key)?);
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .map_err(std::io::Error::other)?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "no private key in the TLS key file",
+            )
+        })?;
+    // Both `ring` and `aws-lc-rs` end up enabled in this dependency graph, so
+    // rustls cannot pick a process-default provider. Choose one explicitly.
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(std::io::Error::other)?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(std::io::Error::other)
 }
 
 async fn handle<B: Backend, A: Authorizer>(
@@ -212,6 +284,9 @@ async fn handle<B: Backend, A: Authorizer>(
     }
     let uri = request.uri().clone();
     let headers = request.headers();
+    if shared.health_path.as_deref() == Some(uri.path()) {
+        return plain(StatusCode::OK, "ok");
+    }
     if !hosts_allowed(headers, shared.origin_domain.as_deref()) {
         return plain(StatusCode::FORBIDDEN, "host not allowed");
     }
@@ -581,8 +656,7 @@ mod tests {
         let result = serve(
             Config {
                 bind: "0.0.0.0:0".parse().unwrap(),
-                auth: None,
-                origin_domain: None,
+                ..Config::default()
             },
             Static(map),
             PublicOnly,
@@ -702,5 +776,83 @@ mod tests {
             .map(|(_, body)| body.to_owned())
             .unwrap_or_default();
         (status, body)
+    }
+
+    // Throwaway self-signed localhost cert/key for the TLS test only.
+    const TEST_CERT: &str = "-----BEGIN CERTIFICATE-----\nMIIDBjCCAe6gAwIBAgIUJwjjiqFWM9QftAcJGMI/keSP1zAwDQYJKoZIhvcNAQEL\nBQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTAwNzE4NDQxOFoYDzIxMjYw\nOTEzMTg0NDE4WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEB\nAQUAA4IBDwAwggEKAoIBAQCz4P/Pr9In6Gbqt7Xk9GMlEvS9b95bKHjwd2IRydju\nCLXBwiotoOLandPED0iiehLJktnelsClFETszGh40mmsOIoX4DOVin1CqrV6pH5U\nmX8vjhKNoRN2WnVBz7tEGbNGaFQl2qvHwzvLHe6Lif3feB5mirBNOMOb3qHKO83b\nCOyDdTNQ8XFQ1OBgzd36aPBusTRIccPoPbQt4ZmZbAYmZ+vpl3q+2BLFHRPcURjO\n4gZbKT6TWDorl5z3pkTaPbQ2xQ7qxBZzripek61fPaXFScgKxByAD2ilv+qHahiF\nX6Es+JQ49BXzfsFI6cUV1x9SBCnzxeywzMJMBCp3jXYHAgMBAAGjTjBMMB0GA1Ud\nDgQWBBR9vfFbO8cxxGppa9N0GMLAvne/4TAPBgNVHRMBAf8EBTADAQH/MBoGA1Ud\nEQQTMBGCCWxvY2FsaG9zdIcEfwAAATANBgkqhkiG9w0BAQsFAAOCAQEAJJPmLa0F\nsPl5K7QbyQ9LCKe6kw5UkSvHY3wipoZDIykVIhPBoPeGr+uKjtfGS8vKQ+olpeLS\na0zN/MCP83arhSv4186jj39KX7MPFOpDs/i3X3sZWZnKbXjYZPe+xR4nS8xl9Z5V\n/SPFg5eGJeolXV8hUOCxABwFTWw5SDyZCT01dYzJb2PQDMxbt64FVdkBMey8YpG3\nOmgQEmf3eF6cKRMMlTrenWufRajk6iBEpmF1dg+OtGrpYfciEzuGghwxLKCZMY4M\nrdo21Z4idz9R6qNA5qmtBjmtYsPbHkikvQEf6biKIim78TlFjysuTCCGwCvxFndP\n8bpmxClB2xrKUg==\n-----END CERTIFICATE-----\n";
+    const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCz4P/Pr9In6Gbq\nt7Xk9GMlEvS9b95bKHjwd2IRydjuCLXBwiotoOLandPED0iiehLJktnelsClFETs\nzGh40mmsOIoX4DOVin1CqrV6pH5UmX8vjhKNoRN2WnVBz7tEGbNGaFQl2qvHwzvL\nHe6Lif3feB5mirBNOMOb3qHKO83bCOyDdTNQ8XFQ1OBgzd36aPBusTRIccPoPbQt\n4ZmZbAYmZ+vpl3q+2BLFHRPcURjO4gZbKT6TWDorl5z3pkTaPbQ2xQ7qxBZzripe\nk61fPaXFScgKxByAD2ilv+qHahiFX6Es+JQ49BXzfsFI6cUV1x9SBCnzxeywzMJM\nBCp3jXYHAgMBAAECggEAGJ2jVEAa0dRHdTpzvWPGR5YLAPuUocPtnPaxaH7HXXe6\nq8vO6tSYBtPPXYa76WQsOwKKJyBZN54I+qDUcShWRresCi1n0cCUeLGUyTZGhXxF\n//OAzXnsCGfDoSB035Jmyq1PSqjclic9AQRVFypooBK3kk/LZZ3tguCaImtBtgYM\n7T3gH6aR9VlOHAOVMA4gjmuiUClpiIUXLgVwFH8QcLI6E6DR/IIdu9Xlc/SP5Lkq\nTZQMnaiManYAT89MScVn84WNY97u1zgIox9nnmDt8Vr4fBjD5TKphbuwtxc0DSNf\nucVxUYsW69BwLS2EiGdcQVs2aN4X4Y7SXmLmXKtIoQKBgQDy0XLDgItM/fncy3CG\n5gQkkCpe0zpi/TkqKqmR0Jf6VfpbvvhIeUu1jnixnPTkHcC1OhLLPEgFFViMY9Ut\nUFy/FrIpmzUqB+3PuxFY5KeCxk+JXo479mfY2wjlVRPbMJ9dHsbfl+ZCmBUnJnLA\nqiLbzH1Q9F9Ewa3MFLLUS9kO4QKBgQC9pNsxL9/SxlakCVIPM3g0DgThBi/HvJng\noJD1GqWFSp8fZFPDwLp/yDNIZ6LFkyvSCvhUqcte3H09p4JdJFrveb7ruJ7uTO1U\nbQRJGIkGkm0DDk9srWBLX8DP/wfd9GMvxUIv+DsnsbEbH4w/jXX9Xh9H+c5ksYuE\nni8TiC8p5wKBgGz2Qjqq11fgbJyBCmjulRNXQjw1K3E6UsmyRU+yvFBQ/rzm8IGN\nNMUvPsftOBOZql1oxwA+d88YKhktv37LHiN96ssy4+ONlVDvkDREv0q29QAe11Lf\nGvC8Mby/td5ZbloaMoIppuFhX7Sm0z3T2zqpA98tGgc/pl77Nth/hNLhAoGAPpxf\n9aRNrCPpVOzy16vxgpYiTDyjp7j/wKaiVRnADfquAEo6UYWezTNGox/8IGjPbeBL\nToBkcWQwQRu9sYygLTIvs1lXt2tUa6w2Xv+ntbDAJuMhm8q94QSy/ri/WyslWA8z\nI+07coZ6526J+i11B/p8L2ItHxdy7YzgE/3BPH8CgYA1n88J7KuMtvr2E7STB97E\nz2DVuTW6F/4qVL+W20Nq2y9RiYHghKNkkg/o/hIeKe3RIxIr5oz9mkFKDB4kMX0d\nUFVtUDNk38bK5lZpYjD6rofmFtoTOeM7f+T0LOPmLAeX78Fd3U/qJJ3vT4K42MZs\nLM6YOpxFZLwnEmDMr2WEfQ==\n-----END PRIVATE KEY-----\n";
+
+    #[tokio::test]
+    async fn serves_https_and_health_checks() {
+        let dir = std::env::temp_dir().join(format!("idfon-gw-tls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert = dir.join("cert.pem");
+        let key = dir.join("key.pem");
+        std::fs::write(&cert, TEST_CERT).unwrap();
+        std::fs::write(&key, TEST_KEY).unwrap();
+
+        let mut map = HashMap::new();
+        map.insert(
+            ("acct".to_owned(), "/public/readme.txt".to_owned()),
+            b"tls resource".to_vec(),
+        );
+        let handle = serve(
+            Config {
+                auth: Some(Arc::new(StaticToken::new("s3cret"))),
+                tls: Some(TlsConfig { cert, key }),
+                health_path: Some("/healthz".to_owned()),
+                ..Config::default()
+            },
+            Static(map),
+            PublicOnly,
+        )
+        .await
+        .expect("gateway binds");
+        let addr = handle.local_addr();
+
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .expect("client builds");
+
+        // Health bypasses auth over TLS.
+        let response = client
+            .get(format!("https://{addr}/healthz"))
+            .send()
+            .await
+            .expect("health request");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), "ok");
+
+        // A resource needs the token.
+        let response = client
+            .get(format!("https://{addr}/acct/public/readme.txt"))
+            .bearer_auth("s3cret")
+            .send()
+            .await
+            .expect("resource request");
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), "tls resource");
+
+        let response = client
+            .get(format!("https://{addr}/acct/public/readme.txt"))
+            .send()
+            .await
+            .expect("unauthenticated request");
+        assert_eq!(response.status(), 401);
+
+        // Plain HTTP against the TLS port never gets an HTTP response.
+        let (status, _) = get(
+            addr,
+            "/acct/public/readme.txt",
+            "127.0.0.1",
+            Some("s3cret"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 0);
+
+        handle.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

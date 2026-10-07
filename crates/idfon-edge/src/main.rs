@@ -2,10 +2,12 @@
 //!
 //! ```text
 //! idfon-edge [--bind HOST:PORT] [--token VALUE] [--key-file PATH] [--allow ID]...
+//!            [--require-ticket CAP] [--domain DOMAIN] [--tls-cert PATH] [--tls-key PATH]
+//!            [--health-path PATH] [--rate-limit N]
 //! ```
 //!
-//! Env fallbacks: `IDFON_EDGE_TOKEN`, `IDFON_EDGE_KEY_FILE`. The key file holds
-//! 64 hex characters; a missing file is generated (0600).
+//! Env fallbacks: `IDFON_EDGE_TOKEN`, `IDFON_EDGE_KEY_FILE`, `IDFON_EDGE_DOMAIN`.
+//! The key file holds 64 hex characters; a missing file is generated (0600).
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -14,6 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context};
 use idfon_core::{decode_signing_key, encode_signing_key, generate_identity, signing_key_bytes};
 use idfon_edge::{run, EdgeAuth, EdgeConfig};
+use idfon_gateway::TlsConfig;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
@@ -36,6 +39,10 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| home_dir().join(".idfon/edge.key"));
     let mut allow = HashSet::new();
     let mut domain = std::env::var("IDFON_EDGE_DOMAIN").ok();
+    let mut tls_cert: Option<PathBuf> = None;
+    let mut tls_key: Option<PathBuf> = None;
+    let mut health_path: Option<String> = Some("/healthz".to_owned());
+    let mut rate_limit_per_minute: u32 = 0;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -59,6 +66,22 @@ async fn main() -> anyhow::Result<()> {
                 domain = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--tls-cert" => {
+                tls_cert = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--tls-key" => {
+                tls_key = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--health-path" => {
+                health_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--rate-limit" => {
+                rate_limit_per_minute = args[i + 1].parse().context("--rate-limit is a number")?;
+                i += 2;
+            }
             "--key-file" => {
                 key_file = PathBuf::from(&args[i + 1]);
                 i += 2;
@@ -75,6 +98,13 @@ async fn main() -> anyhow::Result<()> {
             "a non-loopback edge needs requester auth (--token, --require-ticket, or IDFON_EDGE_TOKEN)"
         ));
     }
+    let tls = match (tls_cert, tls_key) {
+        (Some(cert), Some(key)) => Some(TlsConfig { cert, key }),
+        (None, None) => None,
+        _ => return Err(anyhow!("--tls-cert and --tls-key must be given together")),
+    };
+    let tls_enabled = tls.is_some();
+    let domain_for_print = domain.clone();
 
     let key = load_or_create_key(&key_file)?;
     let handle = run(EdgeConfig {
@@ -84,17 +114,39 @@ async fn main() -> anyhow::Result<()> {
         pins: Default::default(),
         domain,
         auth,
+        tls,
+        health_path: health_path.clone(),
+        rate_limit_per_minute,
     })
     .await?;
 
+    let scheme = if tls_enabled { "https" } else { "http" };
     println!(
-        "idfon-edge {} listening on http://{}",
+        "idfon-edge {} listening on {scheme}://{}",
         handle.endpoint_id, handle.addr
     );
+    if let Some(path) = &health_path {
+        println!("health: {scheme}://{}{path}", handle.addr);
+    }
+    println!();
+    println!("owner pairing (run on the resource owner's machine):");
     println!(
-        "fetch:  curl -H 'Authorization: Bearer <token>' http://{}/<peer-endpoint-id>/fs/<path>",
-        handle.addr
+        "  idfon peer add {} --name idfon.net --endpoint-id {} --endpoint-addr '{}'",
+        handle.endpoint_id, handle.endpoint_id, handle.addr_ticket
     );
+    println!(
+        "  idfon access allow --subject {} --capability resource.read",
+        handle.endpoint_id
+    );
+    match &domain_for_print {
+        Some(domain) => println!(
+            "\nfetch:  {scheme}://<peer-endpoint-id>.{domain}/fs/<path>  (needs wildcard DNS + TLS)"
+        ),
+        None => println!(
+            "\nfetch:  {scheme}://{}/<peer-endpoint-id>/fs/<path>",
+            handle.addr
+        ),
+    }
 
     tokio::signal::ctrl_c().await.ok();
     handle.shutdown().await;
