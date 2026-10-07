@@ -1,6 +1,6 @@
 # idfon web: hybrid gateway architecture — implementation plan
 
-> **Status:** design (P0–P3 landed in `crates/idfon-*`; P4–P5 not implemented).
+> **Status:** design (P0–P4 landed in `crates/idfon-*` and iOS; P5 not implemented).
 > Companion to `idfon-web.md`, which analyses serving P2P pages in a
 > `WKWebView`; this plans the **hybrid transport** that analysis closes with.
 > Written 2026-10-07.
@@ -44,7 +44,7 @@ sync, authorization verified at **both** ends, and iOS background handoff.
 | Requester identity auth + caller context in `Authorizer`/`Backend` | **P1/P3:** `Authenticator`/`Caller` (with a forwarded `ticket`) landed |
 | Ticket-over-H3 (transparent edge, path-scoped) | **P3:** `CapabilityTicket.path_scope`; provider accepts `x-idfon-ticket`; edge forwards it |
 | Client direct-first → edge fallback | **P2:** `FallbackBackend` + `EdgeBackend` in `idfon-gateway`; daemon `prefer` + `IDFON_EDGE_URL`; `idfon fetch --prefer` |
-| iOS background handoff to the edge | not implemented |
+| iOS background handoff to the edge | **P4:** `EdgeClient` background `URLSession` + inbox/reconcile; `fetchResource` direct→edge; `AppDelegate` handlers |
 | App-owned JSON-render / WebMCP registry | not implemented (artifacts model already anticipates `json-render` metadata + a sandboxed WebView) |
 
 The two hard parts are **edge identity/auth** and **H3 request
@@ -148,12 +148,17 @@ verified **caller context**, not just `(account, path)`.
 
 ### P4 — WebView + background handoff
 
-- Apps' sandboxed WebView loads the edge HTTPS URL (public cert, so no
-  `WKNavigationDelegate` trust bypass) or the local `.localhost` proxy for the
-  offline-only mode.
-- iOS: background `URLSession` to the edge; the edge keeps the iroh session
-  alive past app suspension; reconcile on foreground. This is the part only the
-  edge makes possible.
+- **Landed (iOS):** `EdgeClient` holds the edge config (`-edgeurl` /
+  `-edgeticket`, persisted in `UserDefaults`), fetches through the edge in the
+  foreground, and starts a **background `URLSession`** download whose bytes are
+  staged in `Idfon/edge-inbox` and drained on foreground. `DaemonClient.fetchResource`
+  tries the loopback gateway (direct P2P) first, then the edge; the artifact
+  detail's remote view uses it. `AppDelegate` installs the
+  `handleEventsForBackgroundURLSession` handler and reconciles in
+  `applicationWillEnterForeground`; `UIBackgroundModes` gains `fetch`.
+- Remaining: route `idfon://<ref>/<path>` (iOS `SceneDelegate` `.resource`) to a
+  WebView/Safari view at the edge HTTPS URL, and let a screen consume the
+  reconciled inbox bytes (today they are logged/notified, not displayed).
 
 ### P5 — web layer (optional for this plan)
 

@@ -203,8 +203,8 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
         guard let peerRef else {
             throw DaemonClient.DaemonError.request("artifact content is not available locally")
         }
-        // Live shared-root fetch: never cached.
-        return try await client.fetchRemoteResource(
+        // Live shared-root fetch: direct P2P first, edge fallback (P4).
+        return try await client.fetchResource(
             account: peerRef, path: "/fs/\(artifact.artifactId)")
     }
 

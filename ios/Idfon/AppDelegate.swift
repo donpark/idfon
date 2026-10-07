@@ -112,6 +112,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let i = args.firstIndex(of: "-pair-ticket"), args.count > i + 2 {
             storeCapabilityTicket(peer: args[i + 1], jsonOrPath: args[i + 2])
         }
+        // Public edge endpoint + requester credential (docs/idfon-web-hybrid-plan.md P4).
+        if let i = args.firstIndex(of: "-edgeurl"), args.count > i + 2 {
+            EdgeClient.configure(url: args[i + 1], ticket: args[i + 2])
+        }
         if let i = args.firstIndex(of: "-trust-enroll"), args.count > i + 1 {
             AutoEnroll.trust(args[i + 1])
             idfonLog("idfon trust-enroll: \(args[i + 1])")
@@ -323,6 +327,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         idfonLog("idfon dumplog: \(lines.count) lines total, tail:")
         for line in lines.suffix(40) { idfonLog("| \(line)") }
+    }
+
+    /// Background `URLSession` events (e.g. an edge download finishing while
+    /// the app was suspended) are delivered on relaunch; the completion handler
+    /// must run once the delegate has staged the bytes.
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        EdgeClient.shared.setBackgroundCompletionHandler(completionHandler)
+    }
+
+    func applicationWillEnterForeground(_ application: UIApplication) {
+        // Pick up any edge fetch that completed while suspended.
+        _ = EdgeClient.shared.drainInbox()
     }
 
     func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
