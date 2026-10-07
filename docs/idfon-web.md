@@ -1567,3 +1567,108 @@ class ViewController: UIViewController {
 }
 
 ```
+
+===
+
+Hosting a remote proxy endpoint (like `[https://idfon.net/](https://idfon.net/)<endpoint_id>/<path>`) is generally **much better** than embedding a local HTTP server proxy directly inside an iOS app for the vast majority of consumer-facing architectures.
+
+However, the ideal choice ultimately depends on whether your design priorities favor system stability or decentralization/privacy.
+
+---
+
+### Key Comparison
+
+| Trade-off / Feature | Remote Endpoint Proxy (`[https://idfon.net/](https://idfon.net/)...`) | On-Device Local Proxy (`[http://127.0.0.1](http://127.0.0.1):...`) |
+| --- | --- | --- |
+| **iOS Background Execution** | **Flawless.** Requests succeed in background tasks, app refresh, or push handlers. | **Poor.** iOS kills socket listeners and background threads within seconds of app backgrounding. |
+| **Connection Time & Latency** | **Lower First-Byte Latency.** Server maintains warm connections to the P2P network. | **High Cold-Start Delays.** App must initialize the local HTTP server and bootstrap P2P routing on launch. |
+| **TLS / SSL Management** | **Seamless.** Standard HTTPS over public TLS certificates (`idfon.net`). | **Complex.** Requires raw TCP tunneling (`CONNECT`) or unencrypted local HTTP endpoints. |
+| **Network & Socket Stability** | **High.** Handled by cloud infrastructure; resilient to client IP/Wi-Fi transitions. | **Fragile.** Fails during IP churn (switching Wi-Fi to cellular) or dynamic port conflicts. |
+| **Bandwidth & Battery Usage** | **Low.** Offloads resource-heavy P2P routing, encryption, and DHT maintenance to the cloud. | **High.** Severe battery drain and thermal throttling due to constant P2P node communication. |
+| **Privacy & Infrastructure Costs** | **Centralized.** Requires cloud hosting; central server knows client activity/routing metadata. | **Decentralized.** Zero server infrastructure cost; total client-side privacy. |
+
+---
+
+### Why the Remote Endpoint Approach is Usually Better
+
+1. **Bypasses iOS Limitations:** Apple's OS lifecycle strictly penalizes long-running background socket servers. Moving the proxy gateway to a remote server allows standard web requests (via `URLSession` or `Alamofire`) to route through `idfon.net` cleanly, even during background tasks or push notification executions.
+2. **Standard TLS Integration:** Remote domains (`[https://idfon.net/](https://idfon.net/)`) leverage valid, trusted SSL/TLS certificates. An on-device local proxy serving HTTPS traffic often forces developers to bypass URL loading security or deal with self-signed certificate re-signing issues.
+3. **Optimized P2P Connections:** Server nodes in cloud environments enjoy static IPs, high bandwidth, and zero NAT traversal limitations (STUN/TURN/ICE). They maintain warm routes into the P2P network, ensuring faster Initial Byte Delivery (TTFB) than a mobile device trying to discover peers over cellular NATs.
+
+---
+
+### When an On-Device Proxy is Worth Considering
+
+* **Zero-Trust / Privacy-First Architecture:** If the application cannot trust a centralized gateway like `idfon.net` with request payload metadata or routing intent.
+* **Cost Offloading at Scale:** If running cloud infrastructure for millions of users to bridge P2P traffic is cost-prohibitive compared to letting client devices handle peer routing locally.
+* **Offline / Mesh Scenarios:** If local peer discovery needs to work across local Wi-Fi or ad-hoc Bluetooth networks without relying on WAN access.
+
+---
+
+### Recommended Architecture (Hybrid Approach)
+
+If you must use local on-device P2P routing, avoid setting up a local HTTP listener. Instead, integrate the P2P networking library directly into your native iOS code using C/C++ or Swift bindings (e.g., exposing a native function or asynchronous stream rather than exposing a local loopback `[http://127.0.0.1](http://127.0.0.1)` port).
+
+If standard HTTP request handling is required (such as feeding a `WKWebView` or streaming media player), the **remote proxy endpoint model** (`[https://idfon.net/](https://idfon.net/)<endpoint_id>/<path>`) is significantly easier to build, test, and maintain on iOS.
+
+===
+
+### Why Offering Both Can Be Problematic
+
+1. **Massive Maintenance Burden:** Supporting both architectures requires maintaining two fundamentally different network stacks—a cloud gateway system *and* an on-device P2P daemon. Bug fixes, transport updates, and protocol changes must be implemented and tested twice.
+2. **Confusing User Experience:** Unless your target audience consists strictly of network engineers or security researchers, terms like *"Local P2P Loopback Proxy"* vs. *"Cloud Gateway Relay"* mean nothing to regular users. If they pick the wrong option, they will experience random battery drain or failed requests without understanding why.
+3. **OS-Level Edge Cases:** The on-device proxy mode will still fail under standard iOS backgrounding conditions. If a user selects "Local P2P Mode" and their background fetches or media playback fail, they will perceive the app as broken.
+
+---
+
+### Better Strategic Approaches
+
+#### 1. Dynamic Fallback (Automated Hybrid)
+
+Instead of asking the user, let the app manage this under the hood:
+
+* **Default to Remote Gateway:** Route requests through the remote server (`[https://idfon.net/](https://idfon.net/)...`) for speed, reliability, battery efficiency, and background compatibility.
+* **Fallback / Direct Mode:** If the cloud proxy becomes unreachable, or if the user initiates a specific action that demands local direct routing (e.g., explicit offline file sharing or direct peer-to-peer sync), dynamically switch to native on-device routing.
+
+#### 2. Segment by User Persona
+
+If you do want to offer the choice, abstract the technical details behind clear high-level personas:
+
+* **"Standard / Recommended Mode"** (Remote Proxy Gateway): Fast connection speeds, battery optimized, seamless background activity.
+* **"Max Privacy / Direct P2P Mode"** (On-Device Local Routing): Zero reliance on centralized servers, higher battery consumption, may restrict background features.
+
+---
+
+### The Practical Verdict
+
+Unless privacy or complete decentralization is the **core selling point** of your application, stick exclusively to the **remote proxy approach**. It eliminates the severe iOS background execution, networking, and certificate friction while delivering a much more reliable user experience.
+
+===
+
+They can coexist cleanly because they operate on different network layers and serve complementary roles. Using them together is a common pattern in decentralized systems.
+
+Here is how the two approaches fit together without conflicting:
+
+---
+
+### How They Work Together
+
+1. **Remote Gateway as the Public Ingress:** The remote server (`[https://idfon.net/](https://idfon.net/)...`) acts as a publicly reachable, high-availability HTTPS endpoint on the open internet.
+2. **On-Device Proxy as the Internal Adapter:** The mobile app runs a lightweight local adapter (or local proxy loopback) solely to manage local network state, translate protocol requests, or establish peer connections.
+3. **P2P Swarm as the Transport Backbone:** The actual data payload flows across the P2P network between peers, while the remote gateway acts as a warm bootstrap node, STUN/TURN relay, or HTTPS-to-P2P bridge.
+
+---
+
+### Common Hybrid Patterns
+
+* **Primary + Relay Fallback:** The app attempts direct P2P connections first for speed and bandwidth offloading. If symmetric NATs or mobile firewalls block the P2P connection, the app seamlessly reroutes the request through the remote HTTP gateway (`idfon.net`).
+* **Control Plane vs. Data Plane Split:** The remote server handles heavy lifting like user identity, route discovery, and initial signaling (`[https://idfon.net/endpoint_id/peers](https://idfon.net/endpoint_id/peers)`), while the local app handles direct binary data transfers over P2P once the peer route is negotiated.
+* **Smart Gateway Bridging:** Non-P2P clients (like standard web browsers or webviews) hit `[https://idfon.net/](https://idfon.net/)...`, and the remote gateway—which is itself an always-on peer in the P2P network—fetches the data from the P2P swarm and serves it back over standard HTTPS.
+
+---
+
+### Key Architectural Considerations
+
+* **State Synchronization:** Keep the routing table state synced between the local client and the remote gateway so request state doesn't get orphaned when a mobile device switches networks (e.g., Wi-Fi to 5G).
+* **Security & Auth Tokens:** Ensure request signatures or auth tokens are verified at both the remote gateway and local P2P nodes to prevent open-relay abuse.
+* **OS Lifecycle Management:** When the iOS app is backgrounded, gracefully hand off active transfers to the remote gateway so the transfer isn't dropped when iOS suspends the app's local socket.
