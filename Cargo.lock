@@ -3045,6 +3045,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "idfon-edge"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "idfon-core",
+ "idfon-gateway",
+ "idfon-h3",
+ "idfon-protocol",
+ "iroh",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "idfon-gateway"
 version = "0.8.0"
 dependencies = [

@@ -1,0 +1,19 @@
+[package]
+name = "idfon-edge"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+idfon-core = { path = "../idfon-core" }
+idfon-gateway = { path = "../idfon-gateway" }
+iroh = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+axum = "0.8"
+idfon-h3 = { path = "../idfon-h3" }
+idfon-protocol = { path = "../idfon-protocol" }
