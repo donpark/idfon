@@ -1,6 +1,6 @@
 {
   "name": "eve-idfon-voice",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Shared TypeScript toolkit for idfon voice agents: STT/TTS provider seam, audio helpers, channel glue, turn heuristics, and voice tool factories.",
   "license": "(MIT OR Apache-2.0)",
   "repository": {
