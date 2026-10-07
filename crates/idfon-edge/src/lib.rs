@@ -138,7 +138,7 @@ impl Authenticator for CapabilityTicketAuth {
             return None;
         }
         match ticket.expires_at.as_deref() {
-            Some(value) if !expiry_is_past(value) => {}
+            Some(value) if !idfon_core::expiry_passed(value, now_seconds()) => {}
             _ => return None,
         }
         Some(Caller {
@@ -218,14 +218,6 @@ fn hex_nibble(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
-}
-
-/// Epoch-seconds expiry; anything not a future epoch second is treated as
-/// expired/rejected.
-fn expiry_is_past(value: &str) -> bool {
-    value
-        .parse::<u64>()
-        .map_or(true, |seconds| seconds <= now_seconds())
 }
 
 fn now_seconds() -> u64 {

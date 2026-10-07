@@ -54,6 +54,21 @@ idfon access ticket --subject requester --capability resource.read \
 `scripts/edge-e2e.sh` runs the binary against a real `idfond` provider and
 covers both options, cookie/query auth, virtual hosts, and TLS.
 
+## Trust model
+
+The edge is not an authority. `--require-ticket <cap>` only checks that the
+caller holds *some* valid, unexpired ticket carrying that capability; every
+request is re-authorized by the resource peer, which checks the ticket's issuer
+(a `resource.read` grant, or the owner's own bearer ticket), the capability, and
+the `path_scope`. Run `--require-ticket resource.read` so one ticket satisfies
+both the edge gate and the peer. The edge deliberately does **not** bind the
+ticket subject to its own endpoint id (P3) — the peer, not the ingress, decides
+access.
+
+Rate limiting is per authenticated subject (the ticket issuer, or the shared
+`--token` identity), not per client IP: behind the recommended loopback + TLS
+proxy the socket address is always the proxy.
+
 ## Not in this crate
 
 DNS, certificate issuance, process supervision, and the TLS reverse proxy. Behind

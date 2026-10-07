@@ -234,6 +234,17 @@ pub fn verify_capability_ticket(ticket: &CapabilityTicket) -> Result<(), AuthErr
     .map_err(|_| AuthError::VerificationFailed)
 }
 
+/// True when `expires_at` is at or before `now_epoch`. `expires_at` may be
+/// epoch seconds or RFC 3339; an unparseable value counts as expired.
+pub fn expiry_passed(expires_at: &str, now_epoch: u64) -> bool {
+    if let Ok(seconds) = expires_at.parse::<u64>() {
+        return seconds <= now_epoch;
+    }
+    chrono::DateTime::parse_from_rfc3339(expires_at)
+        .map(|when| when.timestamp() <= now_epoch as i64)
+        .unwrap_or(true)
+}
+
 fn ticket_unsigned(ticket: &CapabilityTicket) -> serde_json::Value {
     let mut value = serde_json::json!({"issuer":ticket.issuer,"subject":ticket.subject,"conversation":ticket.conversation,"capabilities":ticket.capabilities,"expires_at":ticket.expires_at,"ticket_id":ticket.ticket_id});
     if let Some(scope) = &ticket.path_scope {
@@ -407,6 +418,16 @@ mod tests {
             verify_capability_ticket(&ticket),
             Err(AuthError::VerificationFailed)
         );
+    }
+
+    #[test]
+    fn expiry_accepts_epoch_and_rfc3339() {
+        assert!(expiry_passed("1", 100));
+        assert!(!expiry_passed("200", 100));
+        assert!(expiry_passed("1970-01-01T00:00:01Z", 100));
+        assert!(!expiry_passed("2099-01-01T00:00:00Z", 100));
+        // Unparseable is treated as expired.
+        assert!(expiry_passed("soon", 100));
     }
 
     #[test]

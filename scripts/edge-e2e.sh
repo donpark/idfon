@@ -113,6 +113,13 @@ assert_body top-secret "$U1/fs/private/secret.txt" -H "x-idfon-ticket: $UNSCOPED
 assert_body root-level "$U1/fs/top.txt" -H "x-idfon-ticket: $UNSCOPED"
 echo "PASS: path_scope refuses outside the prefix; an unscoped ticket reads it"
 
+# RFC 3339 expiry is accepted alongside epoch seconds.
+RFC_EXP=$(python3 -c 'import datetime;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"))')
+RFC=$("$NUF" --socket "$A" access ticket --subject requester \
+  --capability resource.read --expires-at "$RFC_EXP" --path-scope /fs/public)
+assert_body hello-public "$U1/fs/public/hello.txt" -H "x-idfon-ticket: $RFC"
+echo "PASS: RFC 3339 ticket expiry"
+
 # Virtual-host form: the ref is the host, so the URL path is just the resource.
 assert_body hello-public "http://$E1/fs/public/hello.txt" \
   -H "Host: $OWNER_EP.localhost" -H "x-idfon-ticket: $SCOPED"

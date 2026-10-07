@@ -2940,6 +2940,7 @@ name = "idfon-core"
 version = "0.8.0"
 dependencies = [
  "blake3",
+ "chrono",
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
