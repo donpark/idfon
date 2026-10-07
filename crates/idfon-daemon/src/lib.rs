@@ -1322,11 +1322,16 @@ enum GatewayBackend {
 }
 
 impl Backend for GatewayBackend {
-    async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
+    async fn fetch(
+        &self,
+        caller: &Caller,
+        account: &str,
+        path: &str,
+    ) -> Result<Resource, GatewayError> {
         match self {
-            Self::Direct(backend) => backend.fetch(account, path).await,
-            Self::Edge(backend) => backend.fetch(account, path).await,
-            Self::Auto(backend) => backend.fetch(account, path).await,
+            Self::Direct(backend) => backend.fetch(caller, account, path).await,
+            Self::Edge(backend) => backend.fetch(caller, account, path).await,
+            Self::Auto(backend) => backend.fetch(caller, account, path).await,
         }
     }
 }
@@ -1578,15 +1583,30 @@ fn providers() -> &'static Mutex<HashMap<String, ProviderInstance>> {
 struct ProviderState {
     store: Arc<Mutex<Store>>,
     identity: String,
+    /// This identity's peer id (public key), the issuer of resource tickets.
+    peer_id: Option<String>,
     /// Live, user-visible directory served in place. The daemon keeps no copy
     /// and no inventory: a path is resolved on request, so a rename or delete on
     /// disk is reflected immediately.
     root: PathBuf,
 }
 
-/// Authorizes the caller: the QUIC handshake authenticated its endpoint id, so
-/// map that to a peer of this identity and require the `resource.read` grant.
-fn authorize_resource_read(state: &ProviderState, remote: &str) -> Result<(), AxumResponse> {
+/// Authorizes the caller. A caller-presented `x-idfon-ticket` is a bearer
+/// resource ticket issued by this peer (P3); otherwise fall back to the QUIC
+/// peer + `resource.read` grant (P0/P1).
+fn authorize_resource_read(
+    state: &ProviderState,
+    remote: &str,
+    path: &str,
+    ticket: Option<&str>,
+) -> Result<(), AxumResponse> {
+    if let Some(raw) = ticket {
+        return if ticket_authorizes(state, raw, path) {
+            Ok(())
+        } else {
+            Err((StatusCode::FORBIDDEN, "resource ticket not authorized").into_response())
+        };
+    }
     let store = state.store.lock().expect("store mutex poisoned");
     let Some(peer) = store
         .peers
@@ -1604,6 +1624,47 @@ fn authorize_resource_read(state: &ProviderState, remote: &str) -> Result<(), Ax
         return Err((StatusCode::FORBIDDEN, "resource.read not granted").into_response());
     }
     Ok(())
+}
+
+/// True when `raw` is a valid, unexpired `resource.read` ticket issued by this
+/// peer whose path prefix covers `path`. Expiry must be epoch seconds.
+fn ticket_authorizes(state: &ProviderState, raw: &str, path: &str) -> bool {
+    let Ok(ticket) = serde_json::from_str::<idfon_protocol::CapabilityTicket>(raw) else {
+        return false;
+    };
+    if idfon_core::verify_capability_ticket(&ticket).is_err() {
+        return false;
+    }
+    if Some(ticket.issuer.as_str()) != state.peer_id.as_deref() {
+        return false;
+    }
+    if !ticket
+        .capabilities
+        .contains(&idfon_protocol::Capability::new(CAPABILITY_RESOURCE_READ))
+    {
+        return false;
+    }
+    if ticket_expired(ticket.expires_at.as_deref()) {
+        return false;
+    }
+    if let Some(scope) = &ticket.path_scope {
+        if !path.starts_with(scope.as_str()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A missing expiry never expires; epoch seconds past now expire; any other
+/// format is rejected (P3 resource tickets are epoch seconds).
+fn ticket_expired(expires_at: Option<&str>) -> bool {
+    let Some(value) = expires_at else {
+        return false;
+    };
+    match value.parse::<u64>() {
+        Ok(seconds) => seconds <= now().parse::<u64>().unwrap_or(0),
+        Err(_) => true,
+    }
 }
 
 /// `<data_dir>/staging/<identity>/<id>` for a validated relative `id`. This is
@@ -1651,9 +1712,16 @@ fn prune_staging(root: &Path) {
 async fn provider_resource_get(
     State(state): State<ProviderState>,
     RemoteId(remote): RemoteId,
+    headers: axum::http::HeaderMap,
     AxumPath(path): AxumPath<String>,
 ) -> AxumResponse {
-    if let Err(response) = authorize_resource_read(&state, &remote.to_string()) {
+    let ticket = headers
+        .get("x-idfon-ticket")
+        .and_then(|value| value.to_str().ok());
+    let request_path = format!("/fs/{path}");
+    if let Err(response) =
+        authorize_resource_read(&state, &remote.to_string(), &request_path, ticket)
+    {
         return response;
     }
     let Some(rel) = idfon_core::path::safe_relative_path(&path) else {
@@ -1729,11 +1797,20 @@ async fn provider_start(
         );
     };
     let served = root.display().to_string();
+    let peer_id = {
+        let state = store.lock().expect("store mutex poisoned");
+        state
+            .identities
+            .iter()
+            .find(|candidate| candidate.id == identity || candidate.name == identity)
+            .and_then(|candidate| candidate.public_key.clone())
+    };
     let h3 = serve_router(
         &iroh,
         provider_router(ProviderState {
             store: Arc::clone(store),
             identity: identity.to_owned(),
+            peer_id,
             root,
         }),
     );
@@ -6200,6 +6277,72 @@ mod tests {
         );
         assert!(edge_url(None, "abc", "/x").is_err());
         assert!(edge_url(Some("https://idfon.net".into()), "", "/x").is_err());
+    }
+
+    #[test]
+    fn resource_ticket_authorizes_issuer_capability_and_path() {
+        let dir = temp_dir("resource-ticket");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let owner_key = idfon_core::generate_identity();
+        let owner = idfon_core::peer_id(&owner_key);
+        let state = ProviderState {
+            store,
+            identity: "default".into(),
+            peer_id: Some(owner.clone()),
+            root: dir,
+        };
+        let expiry = (now().parse::<u64>().unwrap() + 3600).to_string();
+        let read = idfon_protocol::Capability::new(CAPABILITY_RESOURCE_READ);
+
+        let scoped = idfon_core::issue_capability_ticket_scoped(
+            &owner_key,
+            None,
+            vec![read.clone()],
+            Some(expiry.clone()),
+            "t-scoped",
+            Some("/fs/public".into()),
+        );
+        let raw = serde_json::to_string(&scoped).unwrap();
+        assert!(ticket_authorizes(&state, &raw, "/fs/public/x"));
+        assert!(!ticket_authorizes(&state, &raw, "/fs/private/x"));
+
+        // A ticket issued by someone else is not this peer's bearer ticket.
+        let other = idfon_core::issue_capability_ticket(
+            &idfon_core::generate_identity(),
+            None,
+            vec![read.clone()],
+            Some(expiry.clone()),
+            "t-other",
+        );
+        let other_raw = serde_json::to_string(&other).unwrap();
+        assert!(!ticket_authorizes(&state, &other_raw, "/fs/x"));
+
+        // Missing capability and expiry both fail.
+        let wrong = idfon_core::issue_capability_ticket(
+            &owner_key,
+            None,
+            vec![idfon_protocol::Capability::new("message.receive")],
+            Some(expiry),
+            "t-wrong",
+        );
+        assert!(!ticket_authorizes(
+            &state,
+            &serde_json::to_string(&wrong).unwrap(),
+            "/fs/x"
+        ));
+
+        let expired = idfon_core::issue_capability_ticket(
+            &owner_key,
+            None,
+            vec![read],
+            Some("1".to_owned()),
+            "t-expired",
+        );
+        assert!(!ticket_authorizes(
+            &state,
+            &serde_json::to_string(&expired).unwrap(),
+            "/fs/x"
+        ));
     }
 
     fn temp_dir(name: &str) -> PathBuf {

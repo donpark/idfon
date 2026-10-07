@@ -53,6 +53,7 @@ pub struct Resource {
 pub trait Backend: Send + Sync + 'static {
     fn fetch(
         &self,
+        caller: &Caller,
         account: &str,
         path: &str,
     ) -> impl std::future::Future<Output = Result<Resource, GatewayError>> + Send;
@@ -69,6 +70,9 @@ pub trait Authorizer: Send + Sync + 'static {
 #[derive(Debug, Clone, Default)]
 pub struct Caller {
     pub subject: String,
+    /// Opaque caller credential (e.g. an `x-idfon-ticket` value) to forward to
+    /// the peer over H3. `None` for bearer-token callers.
+    pub ticket: Option<String>,
 }
 
 impl Caller {
@@ -98,6 +102,7 @@ impl Authenticator for StaticToken {
         let presented = bearer(headers).or_else(|| query_token(uri))?;
         constant_time_eq(presented.as_bytes(), self.0.as_bytes()).then(|| Caller {
             subject: "local".to_owned(),
+            ticket: None,
         })
     }
 }
@@ -308,7 +313,7 @@ async fn handle<B: Backend, A: Authorizer>(
     if !shared.authorizer.authorize(&caller, &account, &path) {
         return plain(StatusCode::FORBIDDEN, "not authorized");
     }
-    match shared.backend.fetch(&account, &path).await {
+    match shared.backend.fetch(&caller, &account, &path).await {
         Ok(resource) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, resource.content_type)
@@ -470,16 +475,25 @@ impl IrohBackend {
 }
 
 impl Backend for IrohBackend {
-    async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
+    async fn fetch(
+        &self,
+        caller: &Caller,
+        account: &str,
+        path: &str,
+    ) -> Result<Resource, GatewayError> {
         let addr = self
             .cache
             .resolve(account, self.resolver.as_ref())
             .ok_or_else(|| GatewayError::UnknownAccount(account.to_owned()))?;
         // Direct addresses change over time; the client refreshes its known set.
         self.client.add_address(&addr);
-        let response = self
-            .client
-            .get(&addr, path)
+        let mut request = self.client.get(&addr, path);
+        // Forward the caller's credential so the peer can authorize the issuer
+        // rather than this transport peer (P3 transparent edge).
+        if let Some(ticket) = &caller.ticket {
+            request = request.header("x-idfon-ticket", ticket.clone());
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| GatewayError::Backend(error.to_string()))?;
@@ -557,15 +571,22 @@ impl<P, S> FallbackBackend<P, S> {
 }
 
 impl<P: Backend, S: Backend> Backend for FallbackBackend<P, S> {
-    async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
-        match self.primary.fetch(account, path).await {
+    async fn fetch(
+        &self,
+        caller: &Caller,
+        account: &str,
+        path: &str,
+    ) -> Result<Resource, GatewayError> {
+        match self.primary.fetch(caller, account, path).await {
             Ok(resource) => Ok(resource),
-            Err(GatewayError::Backend(direct)) => match self.secondary.fetch(account, path).await {
-                Ok(resource) => Ok(resource),
-                Err(secondary) => Err(GatewayError::Backend(format!(
-                    "direct: {direct}; edge: {secondary}"
-                ))),
-            },
+            Err(GatewayError::Backend(direct)) => {
+                match self.secondary.fetch(caller, account, path).await {
+                    Ok(resource) => Ok(resource),
+                    Err(secondary) => Err(GatewayError::Backend(format!(
+                        "direct: {direct}; edge: {secondary}"
+                    ))),
+                }
+            }
             Err(other) => Err(other),
         }
     }
@@ -605,11 +626,19 @@ impl EdgeBackend {
 }
 
 impl Backend for EdgeBackend {
-    async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
+    async fn fetch(
+        &self,
+        caller: &Caller,
+        account: &str,
+        path: &str,
+    ) -> Result<Resource, GatewayError> {
         let url = format!("{}/{}{}", self.base, account, path);
         let mut request = self.client.get(&url);
         for (name, value) in &self.headers {
             request = request.header(name, value);
+        }
+        if let Some(ticket) = &caller.ticket {
+            request = request.header("x-idfon-ticket", ticket.clone());
         }
         let response = request
             .send()
@@ -655,7 +684,12 @@ mod tests {
     struct Static(HashMap<(String, String), Vec<u8>>);
 
     impl Backend for Static {
-        async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
+        async fn fetch(
+            &self,
+            _caller: &Caller,
+            account: &str,
+            path: &str,
+        ) -> Result<Resource, GatewayError> {
             self.0
                 .get(&(account.to_owned(), path.to_owned()))
                 .map(|body| Resource {
@@ -685,6 +719,7 @@ mod tests {
                 .and_then(|value| value.to_str().ok())
                 .map(|subject| Caller {
                     subject: subject.to_owned(),
+                    ticket: None,
                 })
         }
     }
@@ -958,7 +993,12 @@ mod tests {
     struct FailBackend;
 
     impl Backend for FailBackend {
-        async fn fetch(&self, _account: &str, _path: &str) -> Result<Resource, GatewayError> {
+        async fn fetch(
+            &self,
+            _caller: &Caller,
+            _account: &str,
+            _path: &str,
+        ) -> Result<Resource, GatewayError> {
             Err(GatewayError::Backend("direct transport failed".to_owned()))
         }
     }
@@ -972,16 +1012,30 @@ mod tests {
 
         // Primary succeeds: the secondary is never consulted.
         let backend = FallbackBackend::new(Static(primary), Static(HashMap::new()));
-        assert_eq!(backend.fetch("acct", "/x").await.unwrap().body, b"direct");
+        assert_eq!(
+            backend
+                .fetch(&Caller::anonymous(), "acct", "/x")
+                .await
+                .unwrap()
+                .body,
+            b"direct"
+        );
 
         // Primary transport failure: the secondary serves.
         let backend = FallbackBackend::new(FailBackend, Static(secondary));
-        assert_eq!(backend.fetch("acct", "/x").await.unwrap().body, b"edge");
+        assert_eq!(
+            backend
+                .fetch(&Caller::anonymous(), "acct", "/x")
+                .await
+                .unwrap()
+                .body,
+            b"edge"
+        );
 
         // A definitive primary 404 is not retried through the secondary.
         let backend = FallbackBackend::new(Static(HashMap::new()), FailBackend);
         assert!(matches!(
-            backend.fetch("acct", "/x").await,
+            backend.fetch(&Caller::anonymous(), "acct", "/x").await,
             Err(GatewayError::NotFound(_))
         ));
     }
@@ -1010,7 +1064,7 @@ mod tests {
         )
         .expect("backend builds");
         let resource = backend
-            .fetch("acct", "/public/readme.txt")
+            .fetch(&Caller::anonymous(), "acct", "/public/readme.txt")
             .await
             .expect("fetches");
         assert_eq!(resource.body, b"via edge");
@@ -1019,7 +1073,9 @@ mod tests {
         let unauthenticated =
             EdgeBackend::new(format!("http://{}", handle.local_addr()), vec![]).unwrap();
         assert!(matches!(
-            unauthenticated.fetch("acct", "/public/readme.txt").await,
+            unauthenticated
+                .fetch(&Caller::anonymous(), "acct", "/public/readme.txt")
+                .await,
             Err(GatewayError::Backend(_))
         ));
 

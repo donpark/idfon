@@ -16,10 +16,15 @@ use idfon_h3::{serve_router, H3Server, RemoteId};
 use idfon_protocol::{Capability, MessageAck};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Reports the endpoint id the peer saw, so the test can prove the edge (not the
-/// requester) is the caller at the P2P layer.
-async fn readme(RemoteId(remote): RemoteId) -> Response {
-    (axum::http::StatusCode::OK, format!("remote={remote}")).into_response()
+/// Reports the endpoint id the peer saw and whether the edge forwarded a
+/// caller ticket, so the test can prove both the edge identity and transparency.
+async fn readme(RemoteId(remote): RemoteId, headers: axum::http::HeaderMap) -> Response {
+    let ticket = headers.contains_key("x-idfon-ticket");
+    (
+        axum::http::StatusCode::OK,
+        format!("remote={remote} ticket={ticket}"),
+    )
+        .into_response()
 }
 
 /// A peer transport serving `/fs/readme` over H3, its accept loop, and its id.
@@ -112,7 +117,7 @@ async fn edge_bridges_and_gates_with_a_token() {
 
     let (status, body) = http_get(handle.addr, &path, std::slice::from_ref(&auth)).await;
     assert_eq!(status, 200, "token admits the request");
-    assert_eq!(body, format!("remote={}", handle.endpoint_id));
+    assert_eq!(body, format!("remote={} ticket=false", handle.endpoint_id));
 
     let (status, _) = http_get(handle.addr, "/nope/fs/readme", &[auth]).await;
     assert_eq!(status, 404, "unlisted ref is not resolved");
@@ -155,10 +160,11 @@ async fn edge_accepts_a_capability_ticket() {
     let (status, _) = http_get(handle.addr, &path, &[]).await;
     assert_eq!(status, 401, "no ticket is rejected");
 
-    // A ticket bound to the edge, with the required capability -> 200.
+    // A ticket with the required capability -> 200, and the edge forwards it
+    // to the peer (transparent: the peer sees the caller's credential).
     let ticket = idfon_core::issue_capability_ticket(
         &issuer,
-        Some(handle.endpoint_id.clone()),
+        Some(peer_id.clone()),
         vec![Capability::new("web.fetch")],
         Some(expiry.to_string()),
         "edge-test",
@@ -166,24 +172,24 @@ async fn edge_accepts_a_capability_ticket() {
     let ticket_json = serde_json::to_string(&ticket).unwrap();
     let (status, body) = http_get(handle.addr, &path, &[("x-idfon-ticket", ticket_json)]).await;
     assert_eq!(status, 200, "capability ticket admits the request");
-    assert_eq!(body, format!("remote={}", handle.endpoint_id));
+    assert_eq!(body, format!("remote={} ticket=true", handle.endpoint_id));
 
-    // A ticket bound to a different subject is rejected.
-    let other = idfon_core::issue_capability_ticket(
+    // A ticket missing the required capability is rejected.
+    let wrong_cap = idfon_core::issue_capability_ticket(
         &issuer,
-        Some("someone-else".into()),
-        vec![Capability::new("web.fetch")],
+        Some(peer_id.clone()),
+        vec![Capability::new("message.receive")],
         Some(expiry.to_string()),
         "edge-test",
     );
-    let other_json = serde_json::to_string(&other).unwrap();
-    let (status, _) = http_get(handle.addr, &path, &[("x-idfon-ticket", other_json)]).await;
-    assert_eq!(status, 401, "ticket for another subject is rejected");
+    let wrong_json = serde_json::to_string(&wrong_cap).unwrap();
+    let (status, _) = http_get(handle.addr, &path, &[("x-idfon-ticket", wrong_json)]).await;
+    assert_eq!(status, 401, "missing capability is rejected");
 
     // An expired ticket is rejected.
     let expired = idfon_core::issue_capability_ticket(
         &issuer,
-        Some(handle.endpoint_id.clone()),
+        Some(peer_id.clone()),
         vec![Capability::new("web.fetch")],
         Some("1".to_owned()),
         "edge-test",

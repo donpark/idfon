@@ -1,6 +1,6 @@
 # idfon web: hybrid gateway architecture — implementation plan
 
-> **Status:** design (P0–P2 landed in `crates/idfon-*`; P3–P5 not implemented).
+> **Status:** design (P0–P3 landed in `crates/idfon-*`; P4–P5 not implemented).
 > Companion to `idfon-web.md`, which analyses serving P2P pages in a
 > `WKWebView`; this plans the **hybrid transport** that analysis closes with.
 > Written 2026-10-07.
@@ -41,8 +41,8 @@ sync, authorization verified at **both** ends, and iOS background handoff.
 | Standalone provider | landed (`idfon-mcp expose`) |
 | Edge service (`idfon.net`) | **P0+P1** (`crates/idfon-edge`): persistent identity, TLS, `<ref>.<domain>` hosts, requester auth, health, rate limit |
 | Wildcard origin / URL mapping | **P1:** origin-domain virtual hosts + TLS termination landed; wildcard DNS is external |
-| Requester identity auth + caller context in `Authorizer` | **P1:** `Authenticator`/`Caller` + capability-ticket verifier landed; path scoping is P3 |
-| Ticket-over-H3 (transparent edge, path-scoped) | not implemented |
+| Requester identity auth + caller context in `Authorizer`/`Backend` | **P1/P3:** `Authenticator`/`Caller` (with a forwarded `ticket`) landed |
+| Ticket-over-H3 (transparent edge, path-scoped) | **P3:** `CapabilityTicket.path_scope`; provider accepts `x-idfon-ticket`; edge forwards it |
 | Client direct-first → edge fallback | **P2:** `FallbackBackend` + `EdgeBackend` in `idfon-gateway`; daemon `prefer` + `IDFON_EDGE_URL`; `idfon fetch --prefer` |
 | iOS background handoff to the edge | not implemented |
 | App-owned JSON-render / WebMCP registry | not implemented (artifacts model already anticipates `json-render` metadata + a sandboxed WebView) |
@@ -84,10 +84,10 @@ so today an edge cannot carry an end-user's authority across.
 - **C. Edge-minted scoped token:** the edge pairs with the owner and mints
   short-TTL, path-scoped tokens. Middle ground; still edge-trusted.
 
-Recommendation: **A for P0–P1, B for P3**, with the grant extensible to a path
-prefix. Either way `idfon-gateway` needs the same API change:
-`Authorizer`/`Backend` must see a verified **caller context** (token claims),
-not just `(account, path)`.
+Recommendation: **A for P0–P1, B for P3** (both landed; P3 uses owner-issued
+bearer tickets with `path_scope` rather than a grant-side path). Either way
+`idfon-gateway` needed the same API change: `Authorizer`/`Backend` see a
+verified **caller context**, not just `(account, path)`.
 
 ## Phases
 
@@ -136,11 +136,15 @@ not just `(account, path)`.
 
 ### P3 — ticket-over-H3 (transparent edge, path-scoped)
 
-- `crates/idfon-h3`: accept a caller capability ticket on inbound requests.
-- `authorize_resource_read`: accept ticket issuer + subject and a path prefix,
-  not only the QUIC peer.
-- Gateway/edge client attaches the requester ticket; `idfon-protocol` gains the
-  scoped form.
+- **Landed:** `CapabilityTicket.path_scope: Option<String>` (signed only when
+  set, so legacy tickets verify); `issue_capability_ticket_scoped`. `Caller`
+  carries the raw `ticket`; `Backend::fetch` takes `&Caller`, and `IrohBackend`
+  / `EdgeBackend` forward it as `x-idfon-ticket` over H3. The daemon provider
+  accepts the header and authorizes a valid, unexpired ticket **issued by this
+  peer** (bearer) with `resource.read` and a `path_scope` covering the request,
+  falling back to the QUIC-peer grant when absent. The edge no longer requires
+  `subject == edge`; it verifies signature/expiry/capability and forwards the
+  ticket unchanged.
 
 ### P4 — WebView + background handoff
 
