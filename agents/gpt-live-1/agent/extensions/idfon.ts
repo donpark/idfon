@@ -1,8 +1,8 @@
 import idfon from "eve-idfon";
 
 export default idfon({
-  bridgeUrl: "http://127.0.0.1:18766",
-  secret: "m2-test-secret",
+  bridgeUrl: process.env.IDFON_BRIDGE_URL ?? "http://127.0.0.1:18766",
+  secret: process.env.IDFON_BRIDGE_SECRET ?? "m2-test-secret",
   // Agent-specific live-call metadata. Mirrors agents/gpt-live-1/live.json,
   // which the serve script forwards to the holder's live-call handler
   // (`serve --live-config`); the platform never reads these values.

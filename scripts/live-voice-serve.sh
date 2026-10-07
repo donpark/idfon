@@ -124,9 +124,11 @@ if [ "$stale" = 1 ] || [ "${FORCE_BUILD:-}" = 1 ]; then
     "$root/target/release/$holder_bin" "$root/target/release/idfond"
 fi
 
-app="$home/app"
-# Pick the bridge port first: the app's channel wiring must carry it into the
-# build (the compiled .output bakes the URL in).
+# The agent runs where it lives (`agents/<name>`); it is never copied into the
+# instance home. The home holds only the holder's identity, key, tickets and
+# logs. The bridge URL is injected at runtime (the agent's idfon extension
+# reads `IDFON_BRIDGE_URL`), so one build per agent backs every contact.
+agent_dir="$root/agents/$agent"
 bridge_port=$(python3 - <<'PY'
 import socket
 with socket.socket() as s:
@@ -139,34 +141,14 @@ with socket.socket() as s:
     s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])
 PY
 )
-# Reuse the previous bridge port when possible: the compiled .output bakes it
-# in, so a changed port means a full eve rebuild. Keep the port stable across
-# restarts (it is only a loopback port).
-if [ -d "$app/.output" ] && grep -q "bridgeUrl: \"http://127.0.0.1:[0-9]*\"" "$app/agent/extensions/idfon.ts" 2>/dev/null; then
-  prev_bridge=$(sed -n 's|.*bridgeUrl: "http://127.0.0.1:\([0-9]*\)".*|\1|p' "$app/agent/extensions/idfon.ts")
-  if [ -n "$prev_bridge" ] && ! lsof -nP -iTCP:"$prev_bridge" -sTCP:LISTEN >/dev/null 2>&1; then
-    bridge_port=$prev_bridge
-  fi
+# Build in place when missing or stale (`pnpm agent build` does the same).
+if [ ! -d "$agent_dir/.output" ] || [ "${FORCE_BUILD:-}" = 1 ] || \
+   [ "$agent_dir/package.json" -nt "$agent_dir/.output" ] || \
+   [ -n "$(find "$agent_dir/agent" -newer "$agent_dir/.output" -print -quit 2>/dev/null)" ] || \
+   [ -n "$(find "$integration/dist" -newer "$agent_dir/.output" -print -quit 2>/dev/null)" ]; then
+  (cd "$agent_dir" && npx --offline eve build >"$home/eve-build.log" 2>&1)
 fi
-if [ ! -d "$app/.output" ] || [ "${FORCE_BUILD:-}" = 1 ] || \
-   [ "$root/agents/$agent/package.json" -nt "$app/.output" ] || \
-   [ -n "$(find "$root/agents/$agent/agent" -newer "$app/.output" -print -quit 2>/dev/null)" ] || \
-   [ -n "$(find "$integration/dist" -newer "$app/.output" -print -quit 2>/dev/null)" ]; then
-  rm -rf "$app"
-  mkdir -p "$app"
-  cp -R "$root/agents/$agent/agent" "$root/agents/$agent/package.json" \
-    "$root/agents/$agent/package-lock.json" "$app/"
-  cp -R "$root/agents/$agent/node_modules" "$app/node_modules"
-  # eve-idfon is a relative symlink inside the agent's node_modules;
-  # repoint it at the repo checkout.
-  ln -sfn "$integration" "$app/node_modules/eve-idfon"
-fi
-# Patch the app's bridge wiring to the chosen port BEFORE building.
-sed -i '' "s|bridgeUrl: \"http://127.0.0.1:[0-9]*\"|bridgeUrl: \"http://127.0.0.1:$bridge_port\"|" \
-  "$app/agent/extensions/idfon.ts"
-if [ ! -d "$app/.output" ]; then
-  (cd "$app" && npx --offline eve build >"$home/eve-build.log" 2>&1)
-fi
+export IDFON_BRIDGE_URL="http://127.0.0.1:$bridge_port"
 
 # Daemon identity = the holder's ticket subject and the peer the apps add.
 daemon_id=$("$cli" --socket "$socket" status --json | jq -r '.result.identity.endpoint_id // .result.identity.public_key // .result.identity.id')
@@ -236,10 +218,8 @@ for _ in $(seq 1 150); do
   sleep 0.1
 done
 
-# Agent tools reach their own bridge (for A2A card requests) via these.
-export IDFON_BRIDGE_URL="http://127.0.0.1:$bridge_port"
-# Persist the bridge URL so a companion process (e.g. the standalone live
-# relay) can find it without re-deriving the port.
+# Agent tools reach their own bridge (for A2A card requests) via the URL
+# exported above; persist it so a companion process can find it.
 printf '%s' "$IDFON_BRIDGE_URL" > "$home/bridge-url" 2>/dev/null || true
 export IDFON_BRIDGE_SECRET=m2-test-secret
 
@@ -270,7 +250,7 @@ if [ -n "${AGENCY_URL:-}" ]; then
     fi
   fi
 fi
-(cd "$app" && exec "$app/node_modules/.bin/eve" start --host 127.0.0.1 --port "$eve_port") \
+(cd "$agent_dir" && exec "$agent_dir/node_modules/.bin/eve" start --host 127.0.0.1 --port "$eve_port") \
   >"$home/eve.log" 2>&1 &
 echo $! > "$home/eve.pid"
 for _ in $(seq 1 200); do
