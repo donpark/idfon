@@ -800,6 +800,15 @@ async fn serve(
             .await?;
             continue;
         }
+        if request.method == "web.url" {
+            let response = web_url(&request);
+            write_frame(
+                &mut stream,
+                &encode_json(&response).map_err(io::Error::other)?,
+            )
+            .await?;
+            continue;
+        }
         if request.method == "provider.start" {
             let identity = request_text(&request.params, "identity")
                 .unwrap_or_else(|| session_identity.clone());
@@ -1511,6 +1520,43 @@ fn gateway_stop(request: &Request, identity: &str) -> Response {
         request,
         serde_json::json!({"identity": identity, "stopped": stopped}),
     )
+}
+
+/// `web.url { ref, path }` — the public edge URL for a resource, or an error
+/// when no edge is configured (`IDFON_EDGE_URL`).
+fn web_url(request: &Request) -> Response {
+    let reference = request_text(&request.params, "ref").unwrap_or_default();
+    let path = request_text(&request.params, "path").unwrap_or_default();
+    match edge_url(edge_config().0, &reference, &path) {
+        Ok(url) => success(request, serde_json::json!({"url": url})),
+        Err(message) => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            message,
+            false,
+        ),
+    }
+}
+
+/// `<base>/<ref><path>` for the public edge. Errors on a missing base or an
+/// empty ref; the path is normalized to a leading slash.
+fn edge_url(base: Option<String>, reference: &str, path: &str) -> Result<String, String> {
+    let base = base.ok_or("no edge configured (set IDFON_EDGE_URL on the daemon)")?;
+    if reference.trim().is_empty() {
+        return Err("ref is required".to_owned());
+    }
+    let path = if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    };
+    Ok(format!(
+        "{}/{}{}",
+        base.trim_end_matches('/'),
+        reference.trim(),
+        path
+    ))
 }
 
 /// Capability a caller must hold to read this identity's media resources.
@@ -6141,6 +6187,20 @@ impl Drop for SocketCleanup {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn edge_url_composes_the_public_url() {
+        assert_eq!(
+            edge_url(Some("https://idfon.net".into()), "abc", "fs/x").unwrap(),
+            "https://idfon.net/abc/fs/x"
+        );
+        assert_eq!(
+            edge_url(Some("https://idfon.net/".into()), " abc ", "/fs/x").unwrap(),
+            "https://idfon.net/abc/fs/x"
+        );
+        assert!(edge_url(None, "abc", "/x").is_err());
+        assert!(edge_url(Some("https://idfon.net".into()), "", "/x").is_err());
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
