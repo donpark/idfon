@@ -650,7 +650,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         syncMessages()
         // Media artifacts (video-frame.jpg, recordings) for this conversation.
-        let scope = peer.endpointId ?? peer.id
+        let scope = DaemonRuntime.mediaDir(peer.endpointId ?? peer.id)
         Task.detached(priority: .userInitiated) { _ = media_set_scope(scope) }
     }
 
