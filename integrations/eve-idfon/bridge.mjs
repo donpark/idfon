@@ -78,6 +78,17 @@ function processFrames() {
         method: "POST",
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
         body: JSON.stringify(value),
+      }).then(async (response) => {
+        // Boundary wide event: the agent edge's outcome. A non-2xx here is the
+        // usual cause of "the holder got a turn but no reply came back" — the
+        // holder's seam span only records that nothing was returned.
+        if (!response.ok) {
+          log.error("agent rejected turn", {
+            type: value.type, message_id: value.message_id, peer_id: value.peer_id,
+            trace: value.trace, status: response.status,
+            body: (await response.text()).slice(0, 500),
+          });
+        }
       }).catch((error) => log.error("delivery failed", { type: value.type, message_id: value.message_id, peer_id: value.peer_id, trace: value.trace, error: String(error) }));
     } else if (value.type === "audio.frame") {
       const line = `data: ${JSON.stringify(value)}\n\n`;
@@ -448,6 +459,9 @@ const server = createServer(async (request, response) => {
   if (!body.in_reply_to || typeof body.text !== "string") {
     response.writeHead(400); response.end("invalid reply\n"); return;
   }
+  // Boundary wide event: the agent produced a reply for a turn. Absence of
+  // this line after a `forwarding to agent` is "the agent never finished".
+  log.info("agent replied", { in_reply_to: body.in_reply_to, chars: body.text.length });
   const ack = new Promise((resolve, reject) => pending.set(body.in_reply_to, { resolve, reject }));
   try {
     await write({ type: "reply.out", in_reply_to: body.in_reply_to, text: body.text });
