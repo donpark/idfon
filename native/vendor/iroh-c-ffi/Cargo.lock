@@ -2928,7 +2928,7 @@ checksum = "dfdd7caa900436d8f13b2346fe10257e0c05c1f1f9e351f4f5d57c03bd5f45da"
 
 [[package]]
 name = "idfon-client"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "idfon-protocol",
  "serde_json",
@@ -2937,7 +2937,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -2956,7 +2956,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-daemon"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2983,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-gateway"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "bytes",
  "http",
@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-h3"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "axum",
  "http",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-media"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3035,7 +3035,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-protocol"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3044,7 +3044,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-telemetry"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -3052,7 +3052,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-voice"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "idfon-protocol",
