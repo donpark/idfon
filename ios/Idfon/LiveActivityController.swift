@@ -368,12 +368,16 @@ final class LiveActivityController: NSObject {
 
     private func toggleSpeakerphone() {
         let enabled = !speakerOn
-        do {
-            try AVAudioSession.sharedInstance().overrideOutputAudioPort(enabled ? .speaker : .none)
-            speakerOn = enabled
-        } catch {
-            idfonError("idfon audio route change failed: \(error.localizedDescription)")
+        if case .voice(let session)? = ActiveMachine.current {
+            session.setSpeakerphone(enabled)
+        } else {
+            do {
+                try AVAudioSession.sharedInstance().overrideOutputAudioPort(enabled ? .speaker : .none)
+            } catch {
+                idfonError("idfon audio route change failed: \(error.localizedDescription)")
+            }
         }
+        speakerOn = enabled
         render()
     }
 

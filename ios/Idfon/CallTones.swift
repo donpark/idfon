@@ -67,6 +67,9 @@ final class CallTonePlayer {
 
     private func ensureStartedLocked() -> Bool {
         if let engine, engine.isRunning { return true }
+        // Call cues are loudspeaker by default; a VPIO engine starting later
+        // can otherwise leave this engine routed to the receiver.
+        try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.speaker)
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         engine.attach(player)

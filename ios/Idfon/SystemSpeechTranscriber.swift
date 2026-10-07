@@ -121,6 +121,10 @@ final class SystemSpeechTranscriber {
             } catch {
                 Automation.mark("voice: voice-processing unsupported: \(error.localizedDescription)")
             }
+            // Keep the call cue tones (a separate engine) from being ducked as
+            // "other audio" while VPIO runs.
+            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                enableAdvancedDucking: false, duckingLevel: .min)
         }
         let hardware = input.outputFormat(forBus: 0)
         Automation.mark(

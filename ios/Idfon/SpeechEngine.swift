@@ -12,6 +12,9 @@ protocol TtsEngine: AnyObject {
     var name: String { get }
     /// Wall time of the last `speak`, in ms (nil when not measured).
     var lastLatencyMs: Int? { get }
+    /// Shared VPIO playback sink (the recognizer's engine), when present: TTS
+    /// audio must render on the same engine as capture to be the AEC reference.
+    var playback: TtsPlayer? { get set }
     /// Download/load models if needed (no-op for Apple).
     func prepare() async
     /// Speak `text`, returning when playback finishes.
@@ -21,6 +24,17 @@ protocol TtsEngine: AnyObject {
 
 extension TtsEngine {
     var lastLatencyMs: Int? { nil }
+    var playback: TtsPlayer? { get { nil } set {} }
+}
+
+/// Renders synthesized speech on a recognizer's voice-processing engine, so the
+/// playback is the echo-cancellation reference and the mic can stay live
+/// (barge-in) without the agent transcribing its own TTS. See
+/// `docs/voice-side-channel.md`.
+protocol TtsPlayer: AnyObject {
+    /// Play WAV bytes, returning when playback finishes or is stopped.
+    func play(wav: Data) async
+    func stopPlayback()
 }
 
 /// Reply-speech backend choice, persisted across launches.
@@ -170,6 +184,8 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
     private var prepareTask: Task<Void, Never>?
     private var player: AVAudioPlayer?
     private var finish: (() -> Void)?
+    /// Shared recognition-engine playback sink (`VoiceAgentSession` wires it).
+    weak var playback: TtsPlayer?
     /// Set by `stop()` so a cancel during ANE synthesis does not start playback.
     private var stopRequested = false
     private(set) var lastLatencyMs: Int?
@@ -224,10 +240,19 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
         finish?()
         finish = nil
         player = nil
+        playback?.stopPlayback()
         fallback.stop()
     }
 
     private func play(_ wav: Data) async {
+        // Prefer the recognizer's VPIO engine: its output bus is the AEC
+        // reference, so the mic can stay live (barge-in) without the agent
+        // transcribing its own TTS. Fall back to a local player when no
+        // recognizer is wired (text-only mode).
+        if let playback {
+            await playback.play(wav: wav)
+            return
+        }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             do {
                 let player = try AVAudioPlayer(data: wav)
