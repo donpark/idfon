@@ -1,9 +1,10 @@
 # Artifacts and multimodal references
 
 > **Status:** the model, thread UI (iOS + mac), agent emit and resolve,
-> references (text / image region / HTML element), and the sandboxed web view
-> are landed. Remaining: json-render for structured results, time-range
-> selection, and device/vision verification. Direction: 2026-09-29.
+> references (text / image region / HTML element), the sandboxed web view, and
+> the app-owned json-render renderer for structured results are landed.
+> Remaining: time-range selection and device/vision verification. Direction:
+> 2026-09-29.
 
 Voice chat with an idfon agent is **multimodal chat**. A turn is not just text
 or audio: the agent produces **artifacts** (a chart, a document, a JSON result,
@@ -122,8 +123,9 @@ rather than silently degraded.
    coordinates. Remaining: time-range selection and a confirmed vision path
    (the model must be able to see the cropped attachment).
 5. **Rich renderers** — *landed:* a sandboxed web view for HTML/SVG and for
-   image/PDF/audio/video as-is, with element selection. Remaining: json-render
-   for structured results (or a native tree).
+   image/PDF/audio/video as-is, with element selection; structured results
+   render through the app-owned json-render catalog (`JSONRenderModel` /
+   `JSONRenderView`, actions resolved by `RenderToolRegistry`).
 6. **Remote view** — artifacts live in the app-side **session cache** with the
    session log (ephemeral, opt-in persist); opening one fetches by ticket, or
    from the owner's live shared root (`idfon://<peer>/fs/<path>`) when the bytes

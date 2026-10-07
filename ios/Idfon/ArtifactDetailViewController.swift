@@ -56,6 +56,8 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     /// through the gateway if the blob is not held locally.
     private let peerRef: String?
     private let client = DaemonClient()
+    /// App-owned tool catalog a JSON-render artifact may dispatch (P5).
+    private let renderTools = RenderTools.make()
     private let stack = UIStackView()
     private var body: UIView?
     private var sharedURL: URL?
@@ -308,6 +310,16 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
                 multiplier: max(image.size.height / max(image.size.width, 1), 0.2)).isActive = true
             self.imageView = imageView
             self.overlay = overlay
+        } else if let spec = try? JSONRenderSpec.decode(data),
+                  let normalized = try? spec.normalized(),
+                  !normalized.elements.isEmpty {
+            // App-owned json-render: the artifact supplies only data; every
+            // component and action is resolved against this app.
+            let render = JSONRenderView(spec: normalized)
+            render.onAction = { [weak self] action, args in
+                self?.runTool(action: action, args: args)
+            }
+            setBody(render)
         } else if let text = String(data: data, encoding: .utf8),
                   artifact.mime.hasPrefix("text/")
                     || artifact.mime.contains("json")
@@ -341,6 +353,47 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             items.append(shareButton)
             navigationItem.rightBarButtonItems = items
         }
+    }
+
+    /// Runs a JSON-render action against the app-owned tool catalog. Sensitive
+    /// tools need a native confirmation; unknown names never execute.
+    private func runTool(action: String, args: [String: JSONValue]) {
+        renderTools.confirm = { [weak self] tool in
+            guard let self else { return false }
+            return await self.confirmTool(tool)
+        }
+        Task {
+            let result = await renderTools.dispatch(action, args: args)
+            await MainActor.run { self.showResult(result) }
+        }
+    }
+
+    @MainActor private func confirmTool(_ tool: RenderTool) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let alert = UIAlertController(
+                title: tool.name,
+                message: "\(tool.description). Allow?",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "Allow", style: .default) { _ in
+                continuation.resume(returning: true)
+            })
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                continuation.resume(returning: false)
+            })
+            present(alert, animated: true)
+        }
+    }
+
+    @MainActor private func showResult(_ result: Result<String, RenderError>) {
+        let message: String
+        switch result {
+        case .success(let value): message = value
+        case .failure(.unknown(let name)): message = "Unknown action \(name)"
+        case .failure(.denied(let name)): message = "\(name) was not confirmed"
+        }
+        let alert = UIAlertController(title: message, message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     /// Apply the agent's point once the body is laid out: image regions draw on
