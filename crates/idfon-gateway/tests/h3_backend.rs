@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use axum::{http::header, routing::get, Router};
 use idfon_core::transport::{IrohTransport, TransportError};
-use idfon_gateway::{AccountResolver, Backend, GatewayError, IrohBackend};
+use idfon_gateway::{AccountResolver, Backend, Caller, GatewayError, IrohBackend};
 use idfon_h3::serve_router;
 use idfon_protocol::MessageAck;
 use iroh::EndpointAddr;
@@ -59,13 +59,16 @@ async fn fetches_a_resource_from_a_peer_over_h3() {
     let backend =
         IrohBackend::new(&transport, OnePeer(server.endpoint().addr())).expect("backend builds");
 
-    let resource = backend.fetch("acct", "/readme").await.expect("fetches");
+    let resource = backend
+        .fetch(&Caller::anonymous(), "acct", "/readme")
+        .await
+        .expect("fetches");
     assert_eq!(resource.content_type, "text/plain; charset=utf-8");
     assert_eq!(resource.body, b"hello over h3");
 
     // Unknown accounts never reach the peer.
     assert!(matches!(
-        backend.fetch("nope", "/readme").await,
+        backend.fetch(&Caller::anonymous(), "nope", "/readme").await,
         Err(GatewayError::UnknownAccount(_))
     ));
 

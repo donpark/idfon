@@ -115,20 +115,17 @@ impl AccountResolver for EndpointRefResolver {
     }
 }
 
-/// Requester auth for a public edge: a capability ticket whose `subject` is the
-/// edge's own endpoint id. The ticket's `issuer` is the caller. `expires_at`
-/// must be epoch seconds; a missing or non-numeric expiry is rejected.
+/// Requester auth for a public edge: a capability ticket presented in
+/// `x-idfon-ticket`, verified for signature, expiry, and the required
+/// capability. The issuer becomes the caller; the raw ticket is forwarded to
+/// the resource peer, which authorizes the issuer (P3 transparent edge).
 pub struct CapabilityTicketAuth {
-    edge_id: String,
     capability: Capability,
 }
 
 impl CapabilityTicketAuth {
-    pub fn new(edge_id: impl Into<String>, capability: Capability) -> Self {
-        Self {
-            edge_id: edge_id.into(),
-            capability,
-        }
+    pub fn new(capability: Capability) -> Self {
+        Self { capability }
     }
 }
 
@@ -137,9 +134,6 @@ impl Authenticator for CapabilityTicketAuth {
         let raw = headers.get("x-idfon-ticket")?.to_str().ok()?;
         let ticket: CapabilityTicket = serde_json::from_str(raw).ok()?;
         idfon_core::verify_capability_ticket(&ticket).ok()?;
-        if ticket.subject.as_deref() != Some(self.edge_id.as_str()) {
-            return None;
-        }
         if !ticket.capabilities.contains(&self.capability) {
             return None;
         }
@@ -149,6 +143,7 @@ impl Authenticator for CapabilityTicketAuth {
         }
         Some(Caller {
             subject: ticket.issuer,
+            ticket: Some(raw.to_owned()),
         })
     }
 }
@@ -227,7 +222,6 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
         EdgeAuth::Open => None,
         EdgeAuth::Token(token) => Some(Arc::new(StaticToken::new(token))),
         EdgeAuth::Ticket { capability } => Some(Arc::new(CapabilityTicketAuth::new(
-            endpoint_id.clone(),
             Capability::new(capability),
         ))),
     };

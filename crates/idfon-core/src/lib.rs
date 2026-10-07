@@ -1,8 +1,10 @@
 //! Domain security helpers kept independent from transport details.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use idfon_protocol::{Capability, CapabilityTicket, MessageContent, MessageEnvelope, PeerAuth, VoiceRoute};
 use getrandom::{rand_core::UnwrapErr, SysRng};
+use idfon_protocol::{
+    Capability, CapabilityTicket, MessageContent, MessageEnvelope, PeerAuth, VoiceRoute,
+};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -164,6 +166,29 @@ pub fn issue_capability_ticket_for_conversation(
         expires_at,
         ticket_id,
         None,
+        None,
+    )
+}
+
+/// Like [`issue_capability_ticket`], but bounds the ticket to a path prefix
+/// (e.g. `/fs/public`). The prefix is signed, so it cannot be widened.
+pub fn issue_capability_ticket_scoped(
+    key: &SigningKey,
+    subject: Option<String>,
+    capabilities: Vec<Capability>,
+    expires_at: Option<String>,
+    ticket_id: impl Into<String>,
+    path_scope: Option<String>,
+) -> CapabilityTicket {
+    issue_capability_ticket_with_voice(
+        key,
+        subject,
+        None,
+        capabilities,
+        expires_at,
+        ticket_id,
+        None,
+        path_scope,
     )
 }
 
@@ -178,11 +203,13 @@ pub fn issue_capability_ticket_with_voice(
     expires_at: Option<String>,
     ticket_id: impl Into<String>,
     voice: Option<VoiceRoute>,
+    path_scope: Option<String>,
 ) -> CapabilityTicket {
     let mut ticket = CapabilityTicket {
         issuer: peer_id(key),
         subject,
         conversation,
+        path_scope,
         capabilities,
         expires_at,
         ticket_id: ticket_id.into(),
@@ -209,6 +236,14 @@ pub fn verify_capability_ticket(ticket: &CapabilityTicket) -> Result<(), AuthErr
 
 fn ticket_unsigned(ticket: &CapabilityTicket) -> serde_json::Value {
     let mut value = serde_json::json!({"issuer":ticket.issuer,"subject":ticket.subject,"conversation":ticket.conversation,"capabilities":ticket.capabilities,"expires_at":ticket.expires_at,"ticket_id":ticket.ticket_id});
+    if let Some(scope) = &ticket.path_scope {
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "path_scope".into(),
+                serde_json::Value::String(scope.clone()),
+            );
+        }
+    }
     // Only present when set, so legacy tickets (voice = None) keep verifying:
     // the signed bytes must stay byte-identical to what the old code signed.
     if let Some(voice) = &ticket.voice {
@@ -413,6 +448,7 @@ mod tests {
             None,
             "t-voice",
             Some(voice.clone()),
+            None,
         );
         assert!(verify_capability_ticket(&ticket).is_ok());
         assert_eq!(
@@ -438,7 +474,10 @@ mod tests {
             "t-legacy",
         );
         assert!(verify_capability_ticket(&legacy).is_ok());
-        assert!(serde_json::to_value(&legacy).unwrap().get("voice").is_none());
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("voice")
+            .is_none());
     }
 
     #[test]
@@ -447,6 +486,7 @@ mod tests {
             issuer: "not-a-peer-id".into(),
             subject: None,
             conversation: None,
+            path_scope: None,
             capabilities: vec![Capability::MessageReceive],
             expires_at: None,
             ticket_id: "ticket-1".into(),

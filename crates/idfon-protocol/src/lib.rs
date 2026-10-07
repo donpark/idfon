@@ -501,6 +501,10 @@ pub struct CapabilityTicket {
     pub subject: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// Optional path prefix this ticket is limited to (e.g. `/fs/public`).
+    /// Absent on legacy tickets; included in the signed bytes only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_scope: Option<String>,
     pub capabilities: Vec<Capability>,
     pub expires_at: Option<String>,
     pub ticket_id: String,

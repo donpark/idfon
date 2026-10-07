@@ -471,6 +471,7 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
                     expires_at,
                     ticket_id,
                     Some(voice),
+                    None,
                 ))?
             );
             Ok(())
@@ -2235,6 +2236,7 @@ async fn handle_ticket_issue(
         None,
         format!("eve-ticket-{}", now_seconds()),
         Some(voice.clone()),
+        None,
     );
     out_tx
         .send(IpcFrame::TicketIssueResult {
