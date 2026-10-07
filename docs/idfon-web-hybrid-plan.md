@@ -1,9 +1,9 @@
 # idfon web: hybrid gateway architecture — implementation plan
 
-> **Status:** design (P0 + P1 landed in `crates/idfon-edge`/`crates/idfon-gateway`;
-> P2–P5 not implemented). Companion to `idfon-web.md`, which analyses serving
-> P2P pages in a `WKWebView`; this plans the **hybrid transport** that analysis
-> closes with. Written 2026-10-07.
+> **Status:** design (P0–P2 landed in `crates/idfon-*`; P3–P5 not implemented).
+> Companion to `idfon-web.md`, which analyses serving P2P pages in a
+> `WKWebView`; this plans the **hybrid transport** that analysis closes with.
+> Written 2026-10-07.
 
 `idfon-web.md` ends on a three-tier hybrid: a public `https://idfon.net` gateway
 as ingress, an on-device adapter, and the iroh swarm as backbone — with a
@@ -43,7 +43,7 @@ sync, authorization verified at **both** ends, and iOS background handoff.
 | Wildcard origin / URL mapping | **P1:** origin-domain virtual hosts + TLS termination landed; wildcard DNS is external |
 | Requester identity auth + caller context in `Authorizer` | **P1:** `Authenticator`/`Caller` + capability-ticket verifier landed; path scoping is P3 |
 | Ticket-over-H3 (transparent edge, path-scoped) | not implemented |
-| Client direct-first → edge fallback | not implemented |
+| Client direct-first → edge fallback | **P2:** `FallbackBackend` + `EdgeBackend` in `idfon-gateway`; daemon `prefer` + `IDFON_EDGE_URL`; `idfon fetch --prefer` |
 | iOS background handoff to the edge | not implemented |
 | App-owned JSON-render / WebMCP registry | not implemented (artifacts model already anticipates `json-render` metadata + a sandboxed WebView) |
 
@@ -122,14 +122,16 @@ not just `(account, path)`.
   external piece); operators run `idfon-edge --domain idfon.net
   --tls-cert --tls-key` behind that DNS.
 
-### P2 — on-device adapter (mostly exists)
+### P2 — on-device adapter
 
-- No new loopback listener for the app API; the daemon + `idfon-client` are the
-  adapter.
-- Add the **direct-first → edge fallback** selector: try direct H3 to the peer,
-  on timeout/NAT-block retry the edge URL; cache `EndpointAddr` with a TTL.
-- New daemon RPC / CLI: `idfon web open <ref>/<path>` and
-  `idfon fetch --prefer direct|edge`.
+- **Landed:** `idfon-gateway` gained `FallbackBackend` (direct-first; a
+  definitive 404 is not retried) and `EdgeBackend` (`GET <base>/<ref><path>`
+  with an opaque auth header). The daemon's loopback gateway takes a `prefer`
+  param (`auto`|`direct`|`edge`), reads `IDFON_EDGE_URL` / `IDFON_EDGE_TOKEN` /
+  `IDFON_EDGE_TICKET`, and rebuilds the gateway when the preference changes;
+  `idfon fetch --prefer …` passes it through.
+- Remaining: `idfon web open <ref>/<path>`, and a TTL cache for resolved
+  `EndpointAddr`s (the resolver currently re-reads the peer store per request).
 
 ### P3 — ticket-over-H3 (transparent edge, path-scoped)
 

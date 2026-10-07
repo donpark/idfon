@@ -13,7 +13,6 @@ mod blob;
 mod live;
 mod mcp;
 
-use futures_util::StreamExt;
 use axum::{
     extract::{Path as AxumPath, State},
     http::StatusCode,
@@ -21,12 +20,13 @@ use axum::{
     routing::get,
     Router as AxumRouter,
 };
+use futures_util::StreamExt;
 use idfon_core::transport::{
     room_topic, FakeTransport, IrohTransport, MessageTransport, SideChannelGuard, SYNC_ALPN,
 };
 use idfon_gateway::{
-    AccountResolver, Authorizer, Caller, Config as GatewayConfig, GatewayHandle, IrohBackend,
-    StaticToken,
+    AccountResolver, Authorizer, Backend, Caller, Config as GatewayConfig, EdgeBackend,
+    FallbackBackend, GatewayError, GatewayHandle, IrohBackend, Resource, StaticToken,
 };
 use idfon_h3::{serve_router, H3Server, RemoteId};
 use idfon_media::service::MediaService;
@@ -519,10 +519,12 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
     // paired apps do not need re-pairing. Extra identities stay ephemeral
     // (see TransportManager); a taken port falls back to ephemeral too.
     if std::env::var_os("IDFON_ENDPOINT_PORT").is_none() {
-        let hash = data_dir.to_string_lossy().bytes().fold(
-            2_166_136_261u32,
-            |acc, byte| (acc ^ byte as u32).wrapping_mul(16_777_619),
-        );
+        let hash = data_dir
+            .to_string_lossy()
+            .bytes()
+            .fold(2_166_136_261u32, |acc, byte| {
+                (acc ^ byte as u32).wrapping_mul(16_777_619)
+            });
         std::env::set_var("IDFON_ENDPOINT_PORT", (59_000 + (hash % 900)).to_string());
     }
     let store = Arc::new(Mutex::new(Store::load(&data_dir)?));
@@ -1263,6 +1265,8 @@ fn contact_ticket(
 struct GatewayInstance {
     addr: std::net::SocketAddr,
     token: String,
+    /// Routing mode the instance was built with (`direct`/`edge`/`auto`).
+    prefer: String,
     // Dropped (and thus aborted) with the registry entry.
     _handle: GatewayHandle,
 }
@@ -1271,6 +1275,92 @@ static GATEWAYS: OnceLock<Mutex<HashMap<String, GatewayInstance>>> = OnceLock::n
 
 fn gateways() -> &'static Mutex<HashMap<String, GatewayInstance>> {
     GATEWAYS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Direct-vs-edge routing for the loopback gateway. `Auto` is direct-first with
+/// an edge fallback when `IDFON_EDGE_URL` is set (P2 hybrid).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Prefer {
+    Direct,
+    Edge,
+    Auto,
+}
+
+impl Prefer {
+    fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("direct") => Self::Direct,
+            Some("edge") => Self::Edge,
+            _ => Self::Auto,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Edge => "edge",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+/// The gateway's backend, chosen by [`Prefer`]. A concrete enum because
+/// `Backend`'s `async fn` is not object-safe.
+enum GatewayBackend {
+    Direct(IrohBackend),
+    Edge(EdgeBackend),
+    Auto(FallbackBackend<IrohBackend, EdgeBackend>),
+}
+
+impl Backend for GatewayBackend {
+    async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
+        match self {
+            Self::Direct(backend) => backend.fetch(account, path).await,
+            Self::Edge(backend) => backend.fetch(account, path).await,
+            Self::Auto(backend) => backend.fetch(account, path).await,
+        }
+    }
+}
+
+/// Edge base URL + opaque credentials from the environment. An empty URL means
+/// no edge leg.
+fn edge_config() -> (Option<String>, Vec<(String, String)>) {
+    let base = std::env::var("IDFON_EDGE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let mut headers = Vec::new();
+    if let Ok(token) = std::env::var("IDFON_EDGE_TOKEN") {
+        if !token.trim().is_empty() {
+            headers.push(("Authorization".to_owned(), format!("Bearer {token}")));
+        }
+    }
+    if let Ok(ticket) = std::env::var("IDFON_EDGE_TICKET") {
+        if !ticket.trim().is_empty() {
+            headers.push(("x-idfon-ticket".to_owned(), ticket));
+        }
+    }
+    (base, headers)
+}
+
+/// Builds the gateway backend for `prefer`. `Edge` without `IDFON_EDGE_URL` is
+/// an operator error; `Auto` degrades to direct.
+fn gateway_backend(direct: IrohBackend, prefer: Prefer) -> Result<GatewayBackend, String> {
+    let (base, headers) = edge_config();
+    match prefer {
+        Prefer::Direct => Ok(GatewayBackend::Direct(direct)),
+        Prefer::Edge => {
+            let base = base.ok_or("--prefer edge requires IDFON_EDGE_URL")?;
+            let edge = EdgeBackend::new(base, headers).map_err(|error| error.to_string())?;
+            Ok(GatewayBackend::Edge(edge))
+        }
+        Prefer::Auto => match base {
+            Some(base) => {
+                let edge = EdgeBackend::new(base, headers).map_err(|error| error.to_string())?;
+                Ok(GatewayBackend::Auto(FallbackBackend::new(direct, edge)))
+            }
+            None => Ok(GatewayBackend::Direct(direct)),
+        },
+    }
 }
 
 /// Resolves an `idfon://` account ref against the peer store, exactly as
@@ -1314,8 +1404,9 @@ async fn start_gateway(
     store: Arc<Mutex<Store>>,
     identity: &str,
     transport: &Arc<IrohTransport>,
+    prefer: Prefer,
 ) -> io::Result<GatewayInstance> {
-    let backend = IrohBackend::new(
+    let direct = IrohBackend::new(
         transport,
         PeerStoreResolver {
             store,
@@ -1323,6 +1414,7 @@ async fn start_gateway(
         },
     )
     .map_err(io::Error::other)?;
+    let backend = gateway_backend(direct, prefer).map_err(io::Error::other)?;
     let token = idfon_core::encode_signing_key(&idfon_core::generate_identity());
     let handle = idfon_gateway::serve(
         GatewayConfig {
@@ -1336,16 +1428,23 @@ async fn start_gateway(
     Ok(GatewayInstance {
         addr: handle.local_addr(),
         token,
+        prefer: prefer.as_str().to_owned(),
         _handle: handle,
     })
 }
 
-fn gateway_value(identity: &str, addr: std::net::SocketAddr, token: &str) -> serde_json::Value {
+fn gateway_value(
+    identity: &str,
+    addr: std::net::SocketAddr,
+    token: &str,
+    prefer: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "identity": identity,
         "addr": addr.to_string(),
         "url": format!("http://127.0.0.1:{}/", addr.port()),
         "token": token,
+        "prefer": prefer,
     })
 }
 
@@ -1356,16 +1455,24 @@ async fn gateway_start(
     transport: &Arc<TransportMode>,
     identity: &str,
 ) -> Response {
+    let prefer = Prefer::parse(request_text(&request.params, "prefer").as_deref());
     if let Some(instance) = gateways()
         .lock()
         .expect("gateway registry poisoned")
         .get(identity)
     {
-        return success(
-            request,
-            gateway_value(identity, instance.addr, &instance.token),
-        );
+        if instance.prefer == prefer.as_str() {
+            return success(
+                request,
+                gateway_value(identity, instance.addr, &instance.token, &instance.prefer),
+            );
+        }
     }
+    // A different preference rebuilds the backend; drop the stale instance.
+    gateways()
+        .lock()
+        .expect("gateway registry poisoned")
+        .remove(identity);
     let Some(iroh) = transport.current_transport_async(identity).await else {
         return error_response(
             request.id.clone(),
@@ -1375,9 +1482,9 @@ async fn gateway_start(
             false,
         );
     };
-    match start_gateway(Arc::clone(store), identity, &iroh).await {
+    match start_gateway(Arc::clone(store), identity, &iroh, prefer).await {
         Ok(instance) => {
-            let value = gateway_value(identity, instance.addr, &instance.token);
+            let value = gateway_value(identity, instance.addr, &instance.token, &instance.prefer);
             gateways()
                 .lock()
                 .expect("gateway registry poisoned")
@@ -1480,7 +1587,11 @@ fn prune_staging(root: &Path) {
             continue;
         }
         if let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) {
-            if modified.elapsed().map(|age| age.as_secs() > 3600).unwrap_or(false) {
+            if modified
+                .elapsed()
+                .map(|age| age.as_secs() > 3600)
+                .unwrap_or(false)
+            {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -1536,7 +1647,10 @@ async fn provider_start(
         .expect("provider registry poisoned")
         .contains_key(identity)
     {
-        return success(request, serde_json::json!({"identity": identity, "serving": true}));
+        return success(
+            request,
+            serde_json::json!({"identity": identity, "serving": true}),
+        );
     }
     let Some(root) = request_text(&request.params, "root") else {
         return error_response(
@@ -2689,7 +2803,8 @@ fn send_message(
     };
     // Correlation id for the logical send. A caller-supplied `trace` wins;
     // otherwise mint one so every outbound flow is joinable end to end.
-    envelope.trace = Some(request_text(&request.params, "trace").unwrap_or_else(idfon_core::new_traceparent));
+    envelope.trace =
+        Some(request_text(&request.params, "trace").unwrap_or_else(idfon_core::new_traceparent));
     // Advertise this process's telemetry participation alongside the trace.
     envelope.telemetry = Some(idfon_telemetry::mode().to_string());
     // Caller-pushed per-turn context (e.g. the active per-contact speech
@@ -2785,8 +2900,12 @@ fn send_message(
                 Err(error) => Err(io::Error::other(error)),
             };
             match &delivery {
-                Ok(ack) => tracing::info!(target: "idfon.daemon", identity = %worker_identity, operation_id = %operation_id, message_id = %worker_envelope.message_id, status = ?ack.status, "message send delivered"),
-                Err(error) => tracing::error!(target: "idfon.daemon", identity = %worker_identity, operation_id = %operation_id, message_id = %worker_envelope.message_id, error = %error, "message send attempt failed"),
+                Ok(ack) => {
+                    tracing::info!(target: "idfon.daemon", identity = %worker_identity, operation_id = %operation_id, message_id = %worker_envelope.message_id, status = ?ack.status, "message send delivered")
+                }
+                Err(error) => {
+                    tracing::error!(target: "idfon.daemon", identity = %worker_identity, operation_id = %operation_id, message_id = %worker_envelope.message_id, error = %error, "message send attempt failed")
+                }
             }
             if delivery.is_ok() {
                 break;
@@ -6096,11 +6215,22 @@ mod tests {
         {
             let state = store.lock().unwrap();
             let envelope = state.operations.last().unwrap().outbound.as_ref().unwrap();
-            assert_eq!(envelope.context.as_deref(), Some("Client STT=Apple Built-in"));
+            assert_eq!(
+                envelope.context.as_deref(),
+                Some("Client STT=Apple Built-in")
+            );
         }
         assert!(send("k2", &peer_id, None).ok);
         let state = store.lock().unwrap();
-        assert!(state.operations.last().unwrap().outbound.as_ref().unwrap().context.is_none());
+        assert!(state
+            .operations
+            .last()
+            .unwrap()
+            .outbound
+            .as_ref()
+            .unwrap()
+            .context
+            .is_none());
     }
 
     async fn http_get(addr: std::net::SocketAddr, path: &str, token: &str) -> (u16, String) {
@@ -6130,21 +6260,13 @@ mod tests {
     async fn gateway_resolves_account_handle_and_fetches_over_h3() {
         let dir = temp_dir("gateway-h3");
         let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
-        let transport = Arc::new(
-            TransportMode::new("iroh", Some([21; 32]))
-                .await
-                .unwrap(),
-        );
+        let transport = Arc::new(TransportMode::new("iroh", Some([21; 32])).await.unwrap());
 
         // The peer: a real folder provider served over H3.
         let root = temp_dir("gateway-h3-root");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("hello.txt"), "hello from peer").unwrap();
-        let server = Arc::new(
-            IrohTransport::bind_with_key(Some([22; 32]))
-                .await
-                .unwrap(),
-        );
+        let server = Arc::new(IrohTransport::bind_with_key(Some([22; 32])).await.unwrap());
         let _ = tokio::time::timeout(Duration::from_secs(5), server.endpoint().online()).await;
         let router = idfon_mcp::fs::router(&root, "acct-1").unwrap();
         let _h3 = idfon_h3::serve_router(&server, router);
@@ -6153,9 +6275,7 @@ mod tests {
             let _ = accept_transport
                 .serve(|_| async {
                     Err::<idfon_protocol::MessageAck, idfon_core::transport::TransportError>(
-                        idfon_core::transport::TransportError::Failed(
-                            "message path unused".into(),
-                        ),
+                        idfon_core::transport::TransportError::Failed("message path unused".into()),
                     )
                 })
                 .await;
@@ -6191,7 +6311,9 @@ mod tests {
                 result["addr"].as_str().unwrap().parse().unwrap(),
                 result["token"].as_str().unwrap().to_owned(),
             ),
-            ResponseBody::Failure { error, .. } => panic!("gateway.start failed: {}", error.message),
+            ResponseBody::Failure { error, .. } => {
+                panic!("gateway.start failed: {}", error.message)
+            }
         };
 
         let handle = idfon_core::account_alias(account_id);
@@ -6279,12 +6401,20 @@ mod tests {
             method: "provider.start".into(),
             params: serde_json::json!({"identity": "default", "root": shared.display().to_string()}),
         };
-        assert!(provider_start(&request, &store, &transport, "default").await.ok);
+        assert!(
+            provider_start(&request, &store, &transport, "default")
+                .await
+                .ok
+        );
 
         let client = idfon_h3::H3Client::new(&caller).unwrap();
         client.add_address(&server_addr);
 
-        let response = client.get(&server_addr, "/fs/notes.txt").send().await.unwrap();
+        let response = client
+            .get(&server_addr, "/fs/notes.txt")
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.headers.get("content-type").unwrap(), "text/plain");
         assert_eq!(response.bytes().await.unwrap(), &b"secret bytes"[..]);
@@ -6299,7 +6429,11 @@ mod tests {
 
         // Served in place: a delete shows up on the next request...
         std::fs::remove_file(shared.join("notes.txt")).unwrap();
-        let response = client.get(&server_addr, "/fs/notes.txt").send().await.unwrap();
+        let response = client
+            .get(&server_addr, "/fs/notes.txt")
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status, 404);
 
         // ...and so does a rename (old path gone, new path live).
@@ -6344,12 +6478,9 @@ mod tests {
     async fn peer_fetches_a_shared_file_through_the_gateway() {
         let producer_dir = temp_dir("artifact-producer");
         let producer_store = Arc::new(Mutex::new(Store::load(&producer_dir).unwrap()));
-        let producer_transport = Arc::new(
-            TransportMode::new("iroh", Some([41; 32])).await.unwrap(),
-        );
-        let consumer_transport = IrohTransport::bind_with_key(Some([42; 32]))
-            .await
-            .unwrap();
+        let producer_transport =
+            Arc::new(TransportMode::new("iroh", Some([41; 32])).await.unwrap());
+        let consumer_transport = IrohTransport::bind_with_key(Some([42; 32])).await.unwrap();
         let _ = tokio::time::timeout(
             Duration::from_secs(5),
             consumer_transport.endpoint().online(),
@@ -6358,7 +6489,10 @@ mod tests {
 
         // This test gets its own identity so its global PROVIDERS entry cannot
         // collide with the other provider test when the suite runs in parallel.
-        producer_transport.add_identity("e2e", [43; 32]).await.unwrap();
+        producer_transport
+            .add_identity("e2e", [43; 32])
+            .await
+            .unwrap();
         let producer = producer_transport
             .current_transport_async("e2e")
             .await
@@ -6412,9 +6546,11 @@ mod tests {
             method: "provider.start".into(),
             params: serde_json::json!({"identity": "e2e", "root": shared.display().to_string()}),
         };
-        assert!(provider_start(&start, &producer_store, &producer_transport, "e2e")
-            .await
-            .ok);
+        assert!(
+            provider_start(&start, &producer_store, &producer_transport, "e2e")
+                .await
+                .ok
+        );
 
         // The consumer resolves the producer's account handle to its endpoint,
         // then fetches through the local gateway over H3.
@@ -7001,7 +7137,10 @@ mod tests {
                 .unwrap()
                 .active
         );
-        assert!(state.peers[0].aliases.iter().any(|alias| alias == "alice@work"));
+        assert!(state.peers[0]
+            .aliases
+            .iter()
+            .any(|alias| alias == "alice@work"));
         assert!(state.peers[0]
             .aliases
             .contains(&idfon_core::account_alias("peer-1")));

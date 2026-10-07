@@ -503,6 +503,108 @@ impl Backend for IrohBackend {
     }
 }
 
+/// Direct-first routing: try `primary`; on a transport failure, try `secondary`.
+/// Definitive answers (`NotFound`, `UnknownAccount`) are returned as-is, so a
+/// peer's 404 is not retried through the edge.
+pub struct FallbackBackend<P, S> {
+    primary: P,
+    secondary: S,
+}
+
+impl<P, S> FallbackBackend<P, S> {
+    pub fn new(primary: P, secondary: S) -> Self {
+        Self { primary, secondary }
+    }
+}
+
+impl<P: Backend, S: Backend> Backend for FallbackBackend<P, S> {
+    async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
+        match self.primary.fetch(account, path).await {
+            Ok(resource) => Ok(resource),
+            Err(GatewayError::Backend(direct)) => match self.secondary.fetch(account, path).await {
+                Ok(resource) => Ok(resource),
+                Err(secondary) => Err(GatewayError::Backend(format!(
+                    "direct: {direct}; edge: {secondary}"
+                ))),
+            },
+            Err(other) => Err(other),
+        }
+    }
+}
+
+/// Fetches through the public edge: `GET <base>/<ref><path>` with an opaque
+/// auth header (bearer token or capability ticket). The last-resort leg of
+/// direct-first routing.
+pub struct EdgeBackend {
+    base: String,
+    headers: Vec<(String, String)>,
+    client: reqwest::Client,
+}
+
+impl EdgeBackend {
+    pub fn new(
+        base: impl Into<String>,
+        headers: Vec<(String, String)>,
+    ) -> Result<Self, GatewayError> {
+        let client = reqwest::Client::builder()
+            .build()
+            .map_err(|error| GatewayError::Backend(error.to_string()))?;
+        Ok(Self::with_client(base, headers, client))
+    }
+
+    pub fn with_client(
+        base: impl Into<String>,
+        headers: Vec<(String, String)>,
+        client: reqwest::Client,
+    ) -> Self {
+        Self {
+            base: base.into().trim_end_matches('/').to_owned(),
+            headers,
+            client,
+        }
+    }
+}
+
+impl Backend for EdgeBackend {
+    async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
+        let url = format!("{}/{}{}", self.base, account, path);
+        let mut request = self.client.get(&url);
+        for (name, value) in &self.headers {
+            request = request.header(name, value);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| GatewayError::Backend(error.to_string()))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(GatewayError::NotFound(path.to_owned()));
+        }
+        if !response.status().is_success() {
+            return Err(GatewayError::Backend(format!(
+                "edge returned {}",
+                response.status()
+            )));
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| GatewayError::Backend(error.to_string()))?;
+        if body.len() > MAX_RESOURCE_BYTES {
+            return Err(GatewayError::Backend("resource too large".to_owned()));
+        }
+        Ok(Resource {
+            content_type,
+            body: body.to_vec(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -776,6 +878,77 @@ mod tests {
             .map(|(_, body)| body.to_owned())
             .unwrap_or_default();
         (status, body)
+    }
+
+    struct FailBackend;
+
+    impl Backend for FailBackend {
+        async fn fetch(&self, _account: &str, _path: &str) -> Result<Resource, GatewayError> {
+            Err(GatewayError::Backend("direct transport failed".to_owned()))
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_tries_the_secondary_only_on_transport_failure() {
+        let mut primary = HashMap::new();
+        primary.insert(("acct".to_owned(), "/x".to_owned()), b"direct".to_vec());
+        let mut secondary = HashMap::new();
+        secondary.insert(("acct".to_owned(), "/x".to_owned()), b"edge".to_vec());
+
+        // Primary succeeds: the secondary is never consulted.
+        let backend = FallbackBackend::new(Static(primary), Static(HashMap::new()));
+        assert_eq!(backend.fetch("acct", "/x").await.unwrap().body, b"direct");
+
+        // Primary transport failure: the secondary serves.
+        let backend = FallbackBackend::new(FailBackend, Static(secondary));
+        assert_eq!(backend.fetch("acct", "/x").await.unwrap().body, b"edge");
+
+        // A definitive primary 404 is not retried through the secondary.
+        let backend = FallbackBackend::new(Static(HashMap::new()), FailBackend);
+        assert!(matches!(
+            backend.fetch("acct", "/x").await,
+            Err(GatewayError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn edge_backend_fetches_through_a_gateway() {
+        let mut map = HashMap::new();
+        map.insert(
+            ("acct".to_owned(), "/public/readme.txt".to_owned()),
+            b"via edge".to_vec(),
+        );
+        let handle = serve(
+            Config {
+                auth: Some(Arc::new(StaticToken::new("tok"))),
+                ..Config::default()
+            },
+            Static(map),
+            PublicOnly,
+        )
+        .await
+        .expect("gateway binds");
+
+        let backend = EdgeBackend::new(
+            format!("http://{}", handle.local_addr()),
+            vec![("Authorization".to_owned(), "Bearer tok".to_owned())],
+        )
+        .expect("backend builds");
+        let resource = backend
+            .fetch("acct", "/public/readme.txt")
+            .await
+            .expect("fetches");
+        assert_eq!(resource.body, b"via edge");
+
+        // The edge enforces its auth; a missing credential is a backend error.
+        let unauthenticated =
+            EdgeBackend::new(format!("http://{}", handle.local_addr()), vec![]).unwrap();
+        assert!(matches!(
+            unauthenticated.fetch("acct", "/public/readme.txt").await,
+            Err(GatewayError::Backend(_))
+        ));
+
+        handle.shutdown();
     }
 
     // Throwaway self-signed localhost cert/key for the TLS test only.
