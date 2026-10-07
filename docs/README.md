@@ -23,7 +23,8 @@ kept because it records decisions; **design** = not all implemented.
 | `ios-architecture.md` | iOS app structure, scene, daemon-in-process |
 | `mac-architecture.md` | macOS app structure, daemon subprocess |
 | `native-architecture.md` | Native-SDK (web-content) shell |
-| `idfon-browser.md` | viewing P2P pages in `WKWebView` (`idfon:` scheme vs local proxy), TLS/WebMCP/security notes (analysis) |
+| `idfon-web.md` | viewing P2P pages in `WKWebView` (`idfon:` scheme vs local proxy), TLS/WebMCP/security notes (analysis) |
+| `idfon-web-hybrid-plan.md` | public `idfon.net` gateway + on-device adapter + P2P backbone: the hybrid the web analysis closes with (design) |
 | `callkit-integration.md` | CallKit + incoming-call presentation (iOS) |
 | `live-activity-bar-layout.md` | live-call bar UIKit layout |
 | `ui-design-notes.md` | UX/visual system spec |
