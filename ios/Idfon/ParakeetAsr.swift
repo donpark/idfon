@@ -102,12 +102,12 @@ final class ParakeetReduxAsr: AsrEngine, TtsPlayer {
             }
         }
 
-        // Attach the playback graph before enabling voice processing: VPIO
-        // derives its AEC reference from the output bus, so enabling it with no
-        // playback bus attached both skips cancellation and can drop the output
-        // level (docs/voice-side-channel.md).
+        // Attach the playback node now, but connect it only AFTER voice
+        // processing is enabled. Connecting into mainMixer first materializes
+        // the output graph with the pre-VPIO format; setVoiceProcessingEnabled
+        // then trips an AVFAudio precondition inside its own graph connect,
+        // which raises an ObjC exception Swift's `try` cannot catch (SIGABRT).
         engine.attach(playbackPlayer)
-        engine.connect(playbackPlayer, to: engine.mainMixerNode, format: nil)
 
         let input = engine.inputNode
         // AEC: enable voice processing on the input node (parity with
@@ -125,6 +125,9 @@ final class ParakeetReduxAsr: AsrEngine, TtsPlayer {
             input.voiceProcessingOtherAudioDuckingConfiguration = .init(
                 enableAdvancedDucking: false, duckingLevel: .min)
         }
+        // Playback bus after VP: mainMixer→output negotiates the VPIO format,
+        // so the player's connection matches it and feeds the AEC reference.
+        engine.connect(playbackPlayer, to: engine.mainMixerNode, format: nil)
         input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
             guard let self, !self.isGated else { return }
             self.bufferContinuation?.yield(buffer)
