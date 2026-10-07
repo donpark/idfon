@@ -51,6 +51,9 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
     /// Reports the clicked element as a text range over the artifact's source
     /// bytes, so the existing text resolver handles it (no HTML parser needed).
     var onElementSelection: ((ArtifactSelector) -> Void)?
+    /// Gateway origin the source-loaded variant may navigate to, in addition to
+    /// the in-memory artifact scheme. `nil` for byte-injected content.
+    private var allowedOrigin: (scheme: String, host: String)?
 
     init(data: Data, mime: String) {
         let handler = ArtifactSchemeHandler()
@@ -97,6 +100,7 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
         navigationDelegate = self
         allowsLinkPreview = false
         isOpaque = false
+        allowedOrigin = (source.url.scheme ?? "https", source.host)
         addContentRules(allowing: source.host)
         let load = { [weak self] in _ = self?.load(URLRequest(url: source.url)) }
         if let cookie = source.cookie {
@@ -207,7 +211,18 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
-        decisionHandler(navigationAction.request.url?.scheme == ArtifactSchemeHandler.scheme ? .allow : .cancel)
+        let url = navigationAction.request.url
+        if url?.scheme == ArtifactSchemeHandler.scheme {
+            decisionHandler(.allow)
+            return
+        }
+        // The gateway-loaded variant navigates to the gateway origin (loopback
+        // or edge); everything else is cancelled.
+        if let origin = allowedOrigin, url?.scheme == origin.scheme, url?.host == origin.host {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {

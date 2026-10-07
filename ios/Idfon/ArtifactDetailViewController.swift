@@ -68,6 +68,8 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     private var imageView: UIImageView?
     private var overlay: SelectionOverlay?
     private var webView: SandboxedArtifactWebView?
+    /// The metadata/hint/body scroll column; hidden for full-bleed gateway pages.
+    private var scroll: UIScrollView?
     private var selectButton: UIBarButtonItem?
     private var selectMode = false
     private var pendingElement: ArtifactSelector?
@@ -120,6 +122,7 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
         let scroll = UIScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll)
+        self.scroll = scroll
         stack.axis = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -271,23 +274,42 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             || mime.hasPrefix("audio/") || mime.hasPrefix("video/")
     }
 
-    /// Displays a web-ish artifact through the gateway. The gateway may be the
-    /// identity's loopback one (direct, edge fallback) or the public edge.
+    /// Displays a web-ish artifact through the gateway. The page *is* the
+    /// content: hide the metadata/hint scroll column and let the web view fill
+    /// the screen below the nav bar, so it reads as the page itself rather than
+    /// a 420pt card inset in the artifact chrome.
     private func renderGateway(_ source: GatewayArtifactSource) {
-        wireWebView(SandboxedArtifactWebView(source: source))
+        let web = SandboxedArtifactWebView(source: source)
+        wireWebCallbacks(web)
+        scroll?.isHidden = true
+        web.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(web)
+        NSLayoutConstraint.activate([
+            web.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            web.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            web.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            web.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        body = web
+        webView = web
     }
 
-    /// Shared web-view wiring: element selection + the Select toolbar item.
-    private func wireWebView(_ web: SandboxedArtifactWebView) {
+    /// Element selection + the Select toolbar item (shared by both web variants).
+    private func wireWebCallbacks(_ web: SandboxedArtifactWebView) {
         web.onElementSelection = { [weak self] selector in
             self?.pendingElement = selector
             self?.askButton.isEnabled = true
         }
+        selectButton = UIBarButtonItem(title: "Select", style: .plain, target: self, action: #selector(toggleSelectMode))
+        navigationItem.rightBarButtonItems = [askButton, selectButton!]
+    }
+
+    /// Injected (local bytes) web content stays a card inside the scroll column.
+    private func wireWebView(_ web: SandboxedArtifactWebView) {
+        wireWebCallbacks(web)
         setBody(web)
         web.heightAnchor.constraint(greaterThanOrEqualToConstant: 420).isActive = true
         webView = web
-        selectButton = UIBarButtonItem(title: "Select", style: .plain, target: self, action: #selector(toggleSelectMode))
-        navigationItem.rightBarButtonItems = [askButton, selectButton!]
     }
 
     private func render(_ data: Data) {
