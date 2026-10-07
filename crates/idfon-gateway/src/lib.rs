@@ -113,6 +113,8 @@ pub enum GatewayError {
     UnknownAccount(String),
     #[error("resource not found: {0}")]
     NotFound(String),
+    #[error("refused: {0}")]
+    Forbidden(String),
     #[error("backend: {0}")]
     Backend(String),
 }
@@ -364,6 +366,9 @@ async fn handle<B: Backend, A: Authorizer>(
         Err(GatewayError::NotFound(path)) => {
             plain(StatusCode::NOT_FOUND, &format!("peer has no such resource: {path}"))
         }
+        Err(GatewayError::Forbidden(message)) => {
+            plain(StatusCode::FORBIDDEN, &format!("peer refused: {message}"))
+        }
         Err(GatewayError::Backend(message)) => {
             plain(StatusCode::BAD_GATEWAY, &format!("backend: {message}"))
         }
@@ -542,6 +547,9 @@ impl Backend for IrohBackend {
         if response.status == StatusCode::NOT_FOUND {
             return Err(GatewayError::NotFound(path.to_owned()));
         }
+        if response.status == StatusCode::FORBIDDEN {
+            return Err(GatewayError::Forbidden(path.to_owned()));
+        }
         if !response.status.is_success() {
             return Err(GatewayError::Backend(format!(
                 "peer returned {}",
@@ -688,6 +696,9 @@ impl Backend for EdgeBackend {
             .map_err(|error| GatewayError::Backend(error.to_string()))?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(GatewayError::NotFound(path.to_owned()));
+        }
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(GatewayError::Forbidden(path.to_owned()));
         }
         if !response.status().is_success() {
             return Err(GatewayError::Backend(format!(
@@ -1110,6 +1121,15 @@ mod tests {
             .await
             .expect("fetches");
         assert_eq!(resource.body, b"via edge");
+
+        // A peer's explicit refusal stays a Forbidden, not a generic backend
+        // error, so a client can tell "denied" from "transport failed".
+        assert!(matches!(
+            backend
+                .fetch(&Caller::anonymous(), "acct", "/private/x")
+                .await,
+            Err(GatewayError::Forbidden(_))
+        ));
 
         // The edge enforces its auth; a missing credential is a backend error.
         let unauthenticated =

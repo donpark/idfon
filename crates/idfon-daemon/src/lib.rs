@@ -3545,13 +3545,16 @@ fn capability_ticket_issue(request: &Request, store: &Arc<Mutex<Store>>) -> Resp
         );
     };
     let conversation = request_text(&request.params, "conversation");
-    let ticket = idfon_core::issue_capability_ticket_for_conversation(
+    let path_scope = request_text(&request.params, "path_scope");
+    let ticket = idfon_core::issue_capability_ticket_with_voice(
         &key,
         subject,
         conversation,
         capabilities,
         expires_at,
         ticket_id,
+        None,
+        path_scope,
     );
     success(request, serde_json::json!({"ticket": ticket}))
 }
