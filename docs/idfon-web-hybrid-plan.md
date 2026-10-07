@@ -130,8 +130,9 @@ not just `(account, path)`.
   param (`auto`|`direct`|`edge`), reads `IDFON_EDGE_URL` / `IDFON_EDGE_TOKEN` /
   `IDFON_EDGE_TICKET`, and rebuilds the gateway when the preference changes;
   `idfon fetch --prefer …` passes it through.
-- Remaining: `idfon web open <ref>/<path>`, and a TTL cache for resolved
-  `EndpointAddr`s (the resolver currently re-reads the peer store per request).
+- Also landed: `idfon web open <ref>/<path>` (daemon `web.url` composes
+  `<base>/<ref><path>` from `IDFON_EDGE_URL`), and a 30 s TTL cache for resolved
+  `EndpointAddr`s in `IrohBackend`.
 
 ### P3 — ticket-over-H3 (transparent edge, path-scoped)
 

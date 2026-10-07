@@ -129,6 +129,9 @@ enum Command {
     Provider(ProviderCmd),
     /// Fetch an `idfon://<account>/<path>` resource through the gateway
     Fetch(FetchArgs),
+    /// Print the public edge URL for a resource (`<ref>/<path>`)
+    #[command(subcommand)]
+    Web(WebCmd),
 }
 
 #[derive(Subcommand)]
@@ -162,6 +165,15 @@ struct FetchArgs {
     /// `IDFON_EDGE_URL` (and token/ticket) on the daemon.
     #[arg(long, default_value = "auto", value_parser = ["auto", "direct", "edge"])]
     prefer: String,
+}
+
+#[derive(Subcommand)]
+enum WebCmd {
+    /// Print the public edge URL for `<ref>/<path>` (needs IDFON_EDGE_URL on the daemon)
+    Open {
+        /// `<ref>/<path>` (path optional)
+        target: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -631,6 +643,7 @@ fn run() -> io::Result<()> {
         Command::Fetch(args) => {
             cmd_fetch(socket, &args.url, args.out.as_ref(), identity, &args.prefer)
         }
+        Command::Web(WebCmd::Open { target }) => cmd_web_open(socket, &target, identity),
         Command::Recv(args) => {
             if args.stream {
                 cmd_answer(
@@ -1195,6 +1208,31 @@ fn cmd_fetch(
         None => io::stdout().write_all(&body)?,
     }
     Ok(())
+}
+
+/// Prints the public edge URL for `<ref>/<path>` via the daemon.
+fn cmd_web_open(socket: &str, target: &str, identity: Option<&str>) -> io::Result<()> {
+    let (reference, path) = match target.split_once('/') {
+        Some((reference, path)) => (reference.to_owned(), format!("/{path}")),
+        None => (target.to_owned(), "/".to_owned()),
+    };
+    if reference.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "missing ref"));
+    }
+    let response = send_rpc(
+        socket,
+        "web.url",
+        json!({"ref": reference, "path": path}),
+        identity,
+        false,
+    )?;
+    match &response.body {
+        ResponseBody::Success { result, .. } => {
+            println!("{}", result["url"].as_str().unwrap_or_default());
+            Ok(())
+        }
+        _ => finish(response, false),
+    }
 }
 
 /// Splits `idfon://<account>/<path>` into the account and a leading-slash path.

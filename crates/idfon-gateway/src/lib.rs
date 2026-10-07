@@ -18,10 +18,12 @@
 //! Safety defaults: loopback bind, a required bearer token for any non-loopback
 //! bind, `Host`/`Origin` validation (DNS-rebinding), and `..` rejection.
 
+use std::collections::HashMap;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use http::{header, HeaderMap, StatusCode, Uri};
@@ -447,7 +449,11 @@ pub trait AccountResolver: Send + Sync + 'static {
 pub struct IrohBackend {
     client: H3Client,
     resolver: Arc<dyn AccountResolver>,
+    cache: ResolveCache,
 }
+
+/// How long a resolver answer is reused before the peer store is read again.
+const RESOLVE_TTL: Duration = Duration::from_secs(30);
 
 impl IrohBackend {
     pub fn new(
@@ -458,6 +464,7 @@ impl IrohBackend {
             client: H3Client::new(transport)
                 .map_err(|error| GatewayError::Backend(error.to_string()))?,
             resolver: Arc::new(resolver),
+            cache: ResolveCache::new(RESOLVE_TTL),
         })
     }
 }
@@ -465,10 +472,10 @@ impl IrohBackend {
 impl Backend for IrohBackend {
     async fn fetch(&self, account: &str, path: &str) -> Result<Resource, GatewayError> {
         let addr = self
-            .resolver
-            .resolve(account)
+            .cache
+            .resolve(account, self.resolver.as_ref())
             .ok_or_else(|| GatewayError::UnknownAccount(account.to_owned()))?;
-        // A peer's direct addresses change over time; refresh per request.
+        // Direct addresses change over time; the client refreshes its known set.
         self.client.add_address(&addr);
         let response = self
             .client
@@ -500,6 +507,38 @@ impl Backend for IrohBackend {
             return Err(GatewayError::Backend("resource too large".to_owned()));
         }
         Ok(Resource { content_type, body })
+    }
+}
+
+/// Caches a resolver's `EndpointAddr` answers for a short TTL so the peer store
+/// is not re-read on every request. A miss re-resolves; `None` is not cached.
+struct ResolveCache {
+    ttl: Duration,
+    entries: Mutex<HashMap<String, (EndpointAddr, Instant)>>,
+}
+
+impl ResolveCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn resolve(&self, account: &str, resolver: &dyn AccountResolver) -> Option<EndpointAddr> {
+        let now = Instant::now();
+        if let Ok(entries) = self.entries.lock() {
+            if let Some((addr, at)) = entries.get(account) {
+                if now.duration_since(*at) < self.ttl {
+                    return Some(addr.clone());
+                }
+            }
+        }
+        let addr = resolver.resolve(account)?;
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.insert(account.to_owned(), (addr.clone(), now));
+        }
+        Some(addr)
     }
 }
 
@@ -878,6 +917,42 @@ mod tests {
             .map(|(_, body)| body.to_owned())
             .unwrap_or_default();
         (status, body)
+    }
+
+    struct CountingResolver {
+        calls: std::sync::atomic::AtomicUsize,
+        addr: EndpointAddr,
+    }
+
+    impl AccountResolver for CountingResolver {
+        fn resolve(&self, account: &str) -> Option<EndpointAddr> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (account == "acct").then(|| self.addr.clone())
+        }
+    }
+
+    #[test]
+    fn resolve_cache_serves_within_ttl_and_skips_misses() {
+        let addr = EndpointAddr::new(iroh::SecretKey::from_bytes(&[7u8; 32]).public());
+        let resolver = CountingResolver {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            addr,
+        };
+        let cache = ResolveCache::new(Duration::from_secs(60));
+
+        assert!(cache.resolve("acct", &resolver).is_some());
+        assert!(cache.resolve("acct", &resolver).is_some());
+        assert_eq!(
+            resolver.calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the second hit is served from the cache"
+        );
+
+        // Unknown refs are not cached.
+        assert!(cache.resolve("nope", &resolver).is_none());
+        assert!(cache.resolve("nope", &resolver).is_none());
+        assert_eq!(resolver.calls.load(std::sync::atomic::Ordering::Relaxed), 3);
     }
 
     struct FailBackend;
