@@ -1,6 +1,6 @@
 # idfon web: hybrid gateway architecture — implementation plan
 
-> **Status:** design (P0–P4 landed in `crates/idfon-*` and iOS; P5 not implemented).
+> **Status:** design (P0–P5 landed in `crates/idfon-*` and iOS).
 > Companion to `idfon-web.md`, which analyses serving P2P pages in a
 > `WKWebView`; this plans the **hybrid transport** that analysis closes with.
 > Written 2026-10-07.
@@ -45,7 +45,7 @@ sync, authorization verified at **both** ends, and iOS background handoff.
 | Ticket-over-H3 (transparent edge, path-scoped) | **P3:** `CapabilityTicket.path_scope`; provider accepts `x-idfon-ticket`; edge forwards it |
 | Client direct-first → edge fallback | **P2:** `FallbackBackend` + `EdgeBackend` in `idfon-gateway`; daemon `prefer` + `IDFON_EDGE_URL`; `idfon fetch --prefer` |
 | iOS background handoff to the edge | **P4:** `EdgeClient` background `URLSession` + inbox/reconcile; `fetchResource` direct→edge; `AppDelegate` handlers |
-| App-owned JSON-render / WebMCP registry | not implemented (artifacts model already anticipates `json-render` metadata + a sandboxed WebView) |
+| App-owned JSON-render / tool registry | **P5:** `JSONRenderModel`/`JSONRenderView` + `RenderToolRegistry`; structured artifacts render natively |
 
 The two hard parts are **edge identity/auth** and **H3 request
 authorization**: `authorize_resource_read` (`crates/idfon-daemon/src/lib.rs`)
@@ -171,12 +171,21 @@ verified **caller context**, not just `(account, path)`.
   `drainInbox` posts the records with their bytes; a screen that is gone drops
   them (the fetch is live, deliberately not cached).
 
-### P5 — web layer (optional for this plan)
+### P5 — app-owned JSON-render + tool actions
 
-- App-owned `json-render` component catalog + an action dispatcher whose actions
-  are MCP tools; hard limits (size/depth), strict CSP/HSTS from the edge, a
-  human-in-the-loop prompt for destructive tools, and minimal
-  `WKScriptMessageHandler` exposure.
+- **Landed:** `ios/Idfon/JSONRenderModel.swift` holds the spec/`JSONValue`
+  model, the fixed component catalog, size/element/depth limits, and
+  `normalized()` (drops unknown component types with their subtrees, missing
+  child ids, and cycles). `RenderToolRegistry` is the trusted action catalog —
+  an unregistered action never runs and a `sensitive` tool needs a human
+  confirmation. `JSONRenderView` draws the UIKit catalog (Text/Card/Row/Metric/
+  Button/Divider/Spacer); `RenderTools` registers the idfon tools
+  (`status`/`peers`, plus a sensitive `message.send`). A structured artifact is
+  rendered as json-render when it parses as a spec, else the text view. Host
+  check: `ios/Checks/JSONRenderCheck`.
+- No `WKScriptMessageHandler` and no remote scripts by design: the agent
+  supplies data, the app owns every component and action. CSP/HSTS from the edge
+  and a persistent action audit log remain open.
 
 ## Open decisions
 
