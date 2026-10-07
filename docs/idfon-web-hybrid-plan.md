@@ -1,9 +1,9 @@
 # idfon web: hybrid gateway architecture — implementation plan
 
-> **Status:** design (P0 skeleton landed in `crates/idfon-edge`; P1–P5 not
-> implemented). Companion to `idfon-web.md`, which analyses serving P2P pages
-> in a `WKWebView`; this plans the **hybrid transport** that analysis closes
-> with. Written 2026-10-07.
+> **Status:** design (P0 skeleton + the P1 gateway auth API landed in
+> `crates/idfon-edge`/`crates/idfon-gateway`; P2–P5 not implemented). Companion
+> to `idfon-web.md`, which analyses serving P2P pages in a `WKWebView`; this
+> plans the **hybrid transport** that analysis closes with. Written 2026-10-07.
 
 `idfon-web.md` ends on a three-tier hybrid: a public `https://idfon.net` gateway
 as ingress, an on-device adapter, and the iroh swarm as backbone — with a
@@ -40,8 +40,8 @@ sync, authorization verified at **both** ends, and iOS background handoff.
 | Per-identity provider, `resource.read` grant, `gateway.start`/`provider.start` | landed (`crates/idfon-daemon`) |
 | Standalone provider | landed (`idfon-mcp expose`) |
 | Edge service (`idfon.net`) | **P0 skeleton** (`crates/idfon-edge`) |
-| Wildcard origin / TLS / URL mapping | not implemented |
-| Requester identity auth (gateway token is one shared secret; `Authorizer` sees only `account, path`) | not implemented |
+| Wildcard origin / URL mapping | **P1:** origin-domain virtual hosts (`<ref>.<domain>`) landed; TLS termination still external |
+| Requester identity auth + caller context in `Authorizer` | **P1:** `Authenticator`/`Caller` landed; a capability-ticket verifier is in `idfon-edge` |
 | Ticket-over-H3 (transparent edge, path-scoped) | not implemented |
 | Client direct-first → edge fallback | not implemented |
 | iOS background handoff to the edge | not implemented |
@@ -109,14 +109,15 @@ not just `(account, path)`.
 
 ### P1 — URL, TLS, requester auth
 
-- `*.idfon.net` wildcard DNS + certificate; `<ref>.idfon.net` → account
-  (virtual host, matching the gateway's existing form); keep
-  `idfon.net/<ref>/<path>` as the no-wildcard fallback.
-- Replace `Config.token: Option<String>` with a verifier (signed token or
-  capability ticket) and pass claims into `Authorizer` as a caller context.
-- Pairing flow so an owner grants the edge endpoint id `resource.read` (CLI and
-  both apps), plus ops: Dockerfile, systemd unit, `/healthz`, per-IP/per-token
-  rate limit, metrics.
+- **Landed:** `idfon-gateway` now takes an `Authenticator` and hands a verified
+  `Caller` to `Authorizer` (`StaticToken` preserves the loopback behavior);
+  `Config.origin_domain` accepts `<ref>.<domain>` virtual hosts. `idfon-edge`
+  gained `EdgeAuth::{Open,Token,Ticket}` — `CapabilityTicketAuth` verifies a
+  ticket whose subject is the edge endpoint id and whose capability is
+  `web.fetch`, making the issuer the caller.
+- Remaining: `*.idfon.net` wildcard DNS + certificate (TLS termination);
+  replace the CLI/pairing surface so an owner grants the edge endpoint id
+  `resource.read`; ops (Dockerfile, systemd, `/healthz`, rate limits, metrics).
 
 ### P2 — on-device adapter (mostly exists)
 

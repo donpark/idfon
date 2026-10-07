@@ -24,23 +24,36 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use http::{HeaderMap, Uri};
 use idfon_core::transport::IrohTransport;
 use idfon_gateway::{
-    serve, AccountResolver, Authorizer, Config as GatewayConfig, GatewayHandle, IrohBackend,
+    serve, AccountResolver, Authenticator, Authorizer, Caller, Config as GatewayConfig,
+    GatewayHandle, IrohBackend, StaticToken,
 };
+use idfon_protocol::{Capability, CapabilityTicket};
 use iroh::{EndpointAddr, EndpointId};
 
 /// How long to wait for the edge endpoint to come online (relay + discovery)
 /// before serving. Bounded: a host with only pinned peers still serves.
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How the edge authenticates requesters.
+pub enum EdgeAuth {
+    /// No requester auth. Loopback/dev only.
+    Open,
+    /// A shared bearer token (`Authorization: Bearer` or `?token=`).
+    Token(String),
+    /// A capability ticket issued to this edge's endpoint id and carrying
+    /// `capability` (e.g. `web.fetch`), presented in `x-idfon-ticket`. The
+    /// caller is the ticket issuer.
+    Ticket { capability: String },
+}
+
 /// Edge runtime configuration.
 pub struct EdgeConfig {
-    /// HTTP listen address. A non-loopback bind requires `token` (enforced by
-    /// the gateway).
+    /// HTTP listen address. A non-loopback bind requires non-[`EdgeAuth::Open`]
+    /// auth (enforced by the gateway).
     pub bind: SocketAddr,
-    /// Requester bearer token; `None` only for a loopback bind.
-    pub token: Option<String>,
     /// The edge's persistent identity (ed25519 secret bytes). Stable across
     /// restarts so resource owners can grant it `resource.read`.
     pub key: [u8; 32],
@@ -49,6 +62,11 @@ pub struct EdgeConfig {
     /// Static ref -> address pins, checked before discovery. For tests and for
     /// operators who do not want to rely on iroh discovery.
     pub pins: HashMap<String, EndpointAddr>,
+    /// Public origin base domain (`idfon.net`), enabling `<ref>.<domain>`
+    /// virtual hosts. `None` accepts only loopback / `*.localhost`.
+    pub domain: Option<String>,
+    /// Requester authentication.
+    pub auth: EdgeAuth,
 }
 
 /// A running edge. [`shutdown`](Self::shutdown) stops the HTTP listener and
@@ -88,12 +106,65 @@ impl AccountResolver for EndpointRefResolver {
     }
 }
 
-/// P0 policy: the bearer token is the requester boundary, so every resolved
-/// account is admitted. Path/scoped policy lands with ticket-over-H3 (P3).
+/// Requester auth for a public edge: a capability ticket whose `subject` is the
+/// edge's own endpoint id. The ticket's `issuer` is the caller. `expires_at`
+/// must be epoch seconds; a missing or non-numeric expiry is rejected.
+pub struct CapabilityTicketAuth {
+    edge_id: String,
+    capability: Capability,
+}
+
+impl CapabilityTicketAuth {
+    pub fn new(edge_id: impl Into<String>, capability: Capability) -> Self {
+        Self {
+            edge_id: edge_id.into(),
+            capability,
+        }
+    }
+}
+
+impl Authenticator for CapabilityTicketAuth {
+    fn authenticate(&self, headers: &HeaderMap, _uri: &Uri) -> Option<Caller> {
+        let raw = headers.get("x-idfon-ticket")?.to_str().ok()?;
+        let ticket: CapabilityTicket = serde_json::from_str(raw).ok()?;
+        idfon_core::verify_capability_ticket(&ticket).ok()?;
+        if ticket.subject.as_deref() != Some(self.edge_id.as_str()) {
+            return None;
+        }
+        if !ticket.capabilities.contains(&self.capability) {
+            return None;
+        }
+        match ticket.expires_at.as_deref() {
+            Some(value) if !expiry_is_past(value) => {}
+            _ => return None,
+        }
+        Some(Caller {
+            subject: ticket.issuer,
+        })
+    }
+}
+
+/// Epoch-seconds expiry; anything not a future epoch second is treated as
+/// expired/rejected.
+fn expiry_is_past(value: &str) -> bool {
+    value
+        .parse::<u64>()
+        .map_or(true, |seconds| seconds <= now_seconds())
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// P0/P1 policy: the requester is authenticated and resolved accounts are
+/// admitted. Path/scoped policy lands with ticket-over-H3 (P3).
 pub struct EdgeAuthorizer;
 
 impl Authorizer for EdgeAuthorizer {
-    fn authorize(&self, _account: &str, _path: &str) -> bool {
+    fn authorize(&self, _caller: &Caller, _account: &str, _path: &str) -> bool {
         true
     }
 }
@@ -103,16 +174,41 @@ impl Authorizer for EdgeAuthorizer {
 pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
     let EdgeConfig {
         bind,
-        token,
         key,
         allow,
         pins,
+        domain,
+        auth,
     } = config;
     let transport = Arc::new(IrohTransport::bind_with_key(Some(key)).await?);
     let _ = tokio::time::timeout(ONLINE_TIMEOUT, transport.endpoint().online()).await;
     let endpoint_id = transport.endpoint().id().to_string();
+
+    let auth: Option<Arc<dyn Authenticator>> = match auth {
+        EdgeAuth::Open => None,
+        EdgeAuth::Token(token) => Some(Arc::new(StaticToken::new(token))),
+        EdgeAuth::Ticket { capability } => Some(Arc::new(CapabilityTicketAuth::new(
+            endpoint_id.clone(),
+            Capability::new(capability),
+        ))),
+    };
+    if !bind.ip().is_loopback() && auth.is_none() {
+        anyhow::bail!(
+            "a non-loopback edge needs requester auth (EdgeAuth::Token or EdgeAuth::Ticket)"
+        );
+    }
+
     let backend = IrohBackend::new(&transport, EndpointRefResolver { allow, pins })?;
-    let gateway = serve(GatewayConfig { bind, token }, backend, EdgeAuthorizer).await?;
+    let gateway = serve(
+        GatewayConfig {
+            bind,
+            auth,
+            origin_domain: domain,
+        },
+        backend,
+        EdgeAuthorizer,
+    )
+    .await?;
     let addr = gateway.local_addr();
     Ok(EdgeHandle {
         addr,

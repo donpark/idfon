@@ -53,10 +53,48 @@ pub trait Backend: Send + Sync + 'static {
     ) -> impl std::future::Future<Output = Result<Resource, GatewayError>> + Send;
 }
 
-/// Per-request authorization. Caller identity comes from the gateway transport
-/// (loopback + token); `account`/`path` are the request target.
+/// Per-request authorization. The caller is the verified requester from
+/// [`Authenticator`]; `account`/`path` are the request target.
 pub trait Authorizer: Send + Sync + 'static {
-    fn authorize(&self, account: &str, path: &str) -> bool;
+    fn authorize(&self, caller: &Caller, account: &str, path: &str) -> bool;
+}
+
+/// Verified requester identity, produced by an [`Authenticator`]. `subject` is
+/// empty for an unauthenticated (open, loopback-only) gateway.
+#[derive(Debug, Clone, Default)]
+pub struct Caller {
+    pub subject: String,
+}
+
+impl Caller {
+    pub fn anonymous() -> Self {
+        Self::default()
+    }
+}
+
+/// Verifies requester credentials from the HTTP request. Returning `None`
+/// rejects the request (401). The default loopback gateway uses
+/// [`StaticToken`]; a public edge verifies a signed token or capability ticket.
+pub trait Authenticator: Send + Sync + 'static {
+    fn authenticate(&self, headers: &HeaderMap, uri: &Uri) -> Option<Caller>;
+}
+
+/// The loopback gateway's shared-secret bearer token.
+pub struct StaticToken(String);
+
+impl StaticToken {
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+}
+
+impl Authenticator for StaticToken {
+    fn authenticate(&self, headers: &HeaderMap, uri: &Uri) -> Option<Caller> {
+        let presented = bearer(headers).or_else(|| query_token(uri))?;
+        constant_time_eq(presented.as_bytes(), self.0.as_bytes()).then(|| Caller {
+            subject: "local".to_owned(),
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,19 +107,24 @@ pub enum GatewayError {
     Backend(String),
 }
 
-#[derive(Debug, Clone)]
+/// Gateway configuration. `auth` is required for a non-loopback bind.
+#[derive(Clone)]
 pub struct Config {
     pub bind: SocketAddr,
-    /// When set, every request must present it (`Authorization: Bearer` or
-    /// `?token=`). Required for any non-loopback bind.
-    pub token: Option<String>,
+    /// Verifies the requester. `None` is an open gateway, allowed only on
+    /// loopback.
+    pub auth: Option<Arc<dyn Authenticator>>,
+    /// When set, `<ref>.<origin_domain>` is accepted as a virtual host in
+    /// addition to loopback and `*.localhost` (e.g. `idfon.net`).
+    pub origin_domain: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             bind: ([127, 0, 0, 1], 0).into(),
-            token: None,
+            auth: None,
+            origin_domain: None,
         }
     }
 }
@@ -112,15 +155,19 @@ impl Drop for GatewayHandle {
 }
 
 /// Binds the loopback listener and serves until the handle is dropped/aborted.
-pub async fn serve<B, A>(config: Config, backend: B, authorizer: A) -> std::io::Result<GatewayHandle>
+pub async fn serve<B, A>(
+    config: Config,
+    backend: B,
+    authorizer: A,
+) -> std::io::Result<GatewayHandle>
 where
     B: Backend,
     A: Authorizer,
 {
-    if !config.bind.ip().is_loopback() && config.token.is_none() {
+    if !config.bind.ip().is_loopback() && config.auth.is_none() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "a bearer token is required for a non-loopback bind",
+            "an authenticator is required for a non-loopback bind",
         ));
     }
     let listener = TcpListener::bind(config.bind).await?;
@@ -128,7 +175,8 @@ where
     let shared = Arc::new(Shared {
         backend,
         authorizer,
-        token: config.token,
+        auth: config.auth,
+        origin_domain: config.origin_domain,
     });
     let task = tokio::spawn(async move {
         while let Ok((stream, _peer)) = listener.accept().await {
@@ -151,7 +199,8 @@ where
 struct Shared<B, A> {
     backend: B,
     authorizer: A,
-    token: Option<String>,
+    auth: Option<Arc<dyn Authenticator>>,
+    origin_domain: Option<String>,
 }
 
 async fn handle<B: Backend, A: Authorizer>(
@@ -163,19 +212,23 @@ async fn handle<B: Backend, A: Authorizer>(
     }
     let uri = request.uri().clone();
     let headers = request.headers();
-    if !hosts_allowed(headers) {
+    if !hosts_allowed(headers, shared.origin_domain.as_deref()) {
         return plain(StatusCode::FORBIDDEN, "host not allowed");
     }
-    if !token_ok(&shared.token, headers, &uri) {
-        return plain(StatusCode::UNAUTHORIZED, "missing or invalid token");
-    }
-    let Some((account, path)) = target(&uri, headers) else {
+    let caller = match &shared.auth {
+        Some(auth) => match auth.authenticate(headers, &uri) {
+            Some(caller) => caller,
+            None => return plain(StatusCode::UNAUTHORIZED, "missing or invalid credentials"),
+        },
+        None => Caller::anonymous(),
+    };
+    let Some((account, path)) = target(&uri, headers, shared.origin_domain.as_deref()) else {
         return plain(StatusCode::BAD_REQUEST, "missing account");
     };
     if path.split('/').any(|segment| segment == "..") {
         return plain(StatusCode::BAD_REQUEST, "invalid path");
     }
-    if !shared.authorizer.authorize(&account, &path) {
+    if !shared.authorizer.authorize(&caller, &account, &path) {
         return plain(StatusCode::FORBIDDEN, "not authorized");
     }
     match shared.backend.fetch(&account, &path).await {
@@ -201,26 +254,33 @@ fn plain(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
         .expect("static response builds")
 }
 
-/// True when `Host` (and, if present, `Origin`) names a loopback or
-/// `*.localhost` authority. Blocks DNS-rebinding from a foreign web origin.
-fn hosts_allowed(headers: &HeaderMap) -> bool {
+/// True when `Host` (and, if present, `Origin`) names a loopback authority, a
+/// `*.localhost` name, or `*.<origin_domain>`. Blocks DNS-rebinding from a
+/// foreign web origin.
+fn hosts_allowed(headers: &HeaderMap, origin_domain: Option<&str>) -> bool {
     let host_ok = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .map(host_without_port)
-        .is_some_and(allowed_host);
+        .is_some_and(|host| allowed_host(host, origin_domain));
     let origin_ok = match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
         None => true,
         Some(origin) => Uri::try_from(origin)
             .ok()
             .and_then(|uri| uri.host().map(str::to_owned))
-            .is_some_and(|host| allowed_host(&host)),
+            .is_some_and(|host| allowed_host(&host, origin_domain)),
     };
     host_ok && origin_ok
 }
 
-fn allowed_host(host: &str) -> bool {
-    host == "127.0.0.1" || host == "localhost" || host == "::1" || host.ends_with(".localhost")
+fn allowed_host(host: &str, origin_domain: Option<&str>) -> bool {
+    if host == "127.0.0.1" || host == "localhost" || host == "::1" || host.ends_with(".localhost") {
+        return true;
+    }
+    match origin_domain {
+        Some(domain) => host == domain || host.ends_with(&format!(".{domain}")),
+        None => false,
+    }
 }
 
 fn host_without_port(host: &str) -> &str {
@@ -233,14 +293,14 @@ fn host_without_port(host: &str) -> &str {
 }
 
 /// Resolves the request target: `account` + `path`.
-fn target(uri: &Uri, headers: &HeaderMap) -> Option<(String, String)> {
+fn target(uri: &Uri, headers: &HeaderMap, origin_domain: Option<&str>) -> Option<(String, String)> {
     if let Some(host) = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
         .map(host_without_port)
     {
-        if let Some(account) = host.strip_suffix(".localhost").filter(|a| !a.is_empty()) {
-            return Some((account.to_owned(), uri.path().to_owned()));
+        if let Some(account) = virtual_host_account(host, origin_domain) {
+            return Some((account, uri.path().to_owned()));
         }
     }
     let mut segments = uri.path().trim_start_matches('/').splitn(2, '/');
@@ -252,24 +312,38 @@ fn target(uri: &Uri, headers: &HeaderMap) -> Option<(String, String)> {
     Some((account, path))
 }
 
-fn token_ok(token: &Option<String>, headers: &HeaderMap, uri: &Uri) -> bool {
-    let Some(expected) = token else {
-        return true;
-    };
-    let presented = headers
+/// The account named by a virtual host (`<account>.localhost` or
+/// `<account>.<origin_domain>`), if any.
+fn virtual_host_account(host: &str, origin_domain: Option<&str>) -> Option<String> {
+    if let Some(account) = host.strip_suffix(".localhost").filter(|a| !a.is_empty()) {
+        return Some(account.to_owned());
+    }
+    if let Some(domain) = origin_domain {
+        if let Some(account) = host
+            .strip_suffix(&format!(".{domain}"))
+            .filter(|a| !a.is_empty())
+        {
+            return Some(account.to_owned());
+        }
+    }
+    None
+}
+
+fn bearer(headers: &HeaderMap) -> Option<String> {
+    headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::to_owned)
-        .or_else(|| {
-            uri.query().and_then(|query| {
-                query
-                    .split('&')
-                    .find_map(|pair| pair.strip_prefix("token="))
-                    .map(str::to_owned)
-            })
-        });
-    presented.is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
+}
+
+fn query_token(uri: &Uri) -> Option<String> {
+    uri.query().and_then(|query| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("token="))
+            .map(str::to_owned)
+    })
 }
 
 /// Length-independent comparison, so token checks don't leak length/prefix.
@@ -379,8 +453,31 @@ mod tests {
     struct PublicOnly;
 
     impl Authorizer for PublicOnly {
-        fn authorize(&self, account: &str, path: &str) -> bool {
+        fn authorize(&self, _caller: &Caller, account: &str, path: &str) -> bool {
             account == "acct" && path.starts_with("/public")
+        }
+    }
+
+    /// Verifies a plain `x-subject` header, so the caller-context plumbing is
+    /// observable end to end.
+    struct SubjectAuth;
+
+    impl Authenticator for SubjectAuth {
+        fn authenticate(&self, headers: &HeaderMap, _uri: &Uri) -> Option<Caller> {
+            headers
+                .get("x-subject")
+                .and_then(|value| value.to_str().ok())
+                .map(|subject| Caller {
+                    subject: subject.to_owned(),
+                })
+        }
+    }
+
+    struct SubjectAlice;
+
+    impl Authorizer for SubjectAlice {
+        fn authorize(&self, caller: &Caller, _account: &str, _path: &str) -> bool {
+            caller.subject == "alice"
         }
     }
 
@@ -392,7 +489,7 @@ mod tests {
         );
         serve(
             Config {
-                token: Some("s3cret".to_owned()),
+                auth: Some(Arc::new(StaticToken::new("s3cret"))),
                 ..Config::default()
             },
             Static(map),
@@ -484,12 +581,126 @@ mod tests {
         let result = serve(
             Config {
                 bind: "0.0.0.0:0".parse().unwrap(),
-                token: None,
+                auth: None,
+                origin_domain: None,
             },
             Static(map),
             PublicOnly,
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn carries_the_verified_caller_to_the_authorizer() {
+        let mut map = HashMap::new();
+        map.insert(("acct".to_owned(), "/".to_owned()), b"hi".to_vec());
+        let handle = serve(
+            Config {
+                auth: Some(Arc::new(SubjectAuth)),
+                ..Config::default()
+            },
+            Static(map),
+            SubjectAlice,
+        )
+        .await
+        .expect("gateway binds");
+        let addr = handle.local_addr();
+
+        // Authenticator rejects (no subject header).
+        let (status, _) = get(addr, "/acct/", "127.0.0.1", None, None).await;
+        assert_eq!(status, 401);
+
+        // Verified, but not alice.
+        let (status, _) = get_with(addr, "/acct/", "127.0.0.1", &[("x-subject", "bob")]).await;
+        assert_eq!(status, 403);
+
+        // Verified as alice.
+        let (status, body) = get_with(addr, "/acct/", "127.0.0.1", &[("x-subject", "alice")]).await;
+        assert_eq!(status, 200);
+        assert_eq!(body, "hi");
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn accepts_the_edge_origin_domain() {
+        let mut map = HashMap::new();
+        map.insert(
+            ("acct".to_owned(), "/public/readme.txt".to_owned()),
+            b"hi".to_vec(),
+        );
+        let handle = serve(
+            Config {
+                auth: Some(Arc::new(StaticToken::new("s3cret"))),
+                origin_domain: Some("idfon.net".to_owned()),
+                ..Config::default()
+            },
+            Static(map),
+            PublicOnly,
+        )
+        .await
+        .expect("gateway binds");
+        let addr = handle.local_addr();
+        let token = Some("s3cret");
+
+        // <ref>.idfon.net virtual host resolves the account.
+        let (status, body) = get(addr, "/public/readme.txt", "acct.idfon.net", token, None).await;
+        assert_eq!(status, 200);
+        assert_eq!(body, "hi");
+
+        // A matching Origin is accepted; a foreign one is not.
+        let (status, _) = get(
+            addr,
+            "/public/readme.txt",
+            "acct.idfon.net",
+            token,
+            Some("https://acct.idfon.net"),
+        )
+        .await;
+        assert_eq!(status, 200);
+        let (status, _) = get(
+            addr,
+            "/public/readme.txt",
+            "acct.idfon.net",
+            token,
+            Some("https://evil.example"),
+        )
+        .await;
+        assert_eq!(status, 403);
+
+        // A host outside the configured domain is still rejected.
+        let (status, _) = get(addr, "/public/readme.txt", "acct.evil.example", token, None).await;
+        assert_eq!(status, 403);
+
+        handle.shutdown();
+    }
+
+    /// HTTP GET with arbitrary extra headers.
+    async fn get_with(
+        addr: SocketAddr,
+        path: &str,
+        host: &str,
+        extra: &[(&str, &str)],
+    ) -> (u16, String) {
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let mut request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+        for (name, value) in extra {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        request.push_str("\r\n");
+        stream.write_all(request.as_bytes()).await.expect("write");
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await.expect("read");
+        let text = String::from_utf8_lossy(&raw);
+        let status = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        let body = text
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_owned())
+            .unwrap_or_default();
+        (status, body)
     }
 }

@@ -3050,11 +3050,13 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "axum",
+ "http",
  "idfon-core",
  "idfon-gateway",
  "idfon-h3",
  "idfon-protocol",
  "iroh",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
