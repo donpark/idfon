@@ -24,7 +24,7 @@ enum RenderTools {
             sensitive: false,
             run: { _ in
                 guard let peers = try? await client.peers() else { return "could not list peers" }
-                return peers.isEmpty ? "no contacts" : peers.map(\.name).joined(separator: ", ")
+                return peers.isEmpty ? "no contacts" : peers.compactMap(\.name).joined(separator: ", ")
             }))
 
         registry.register(RenderTool(
