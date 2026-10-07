@@ -29,7 +29,7 @@ to with no service in the loop:
 - **app-side (baseline, free)** — the client app runs STT/TTS and exchanges
   text with the peer: a person over iroh, an agent via plain text turns
   (`client-cascade`), or on-device generation when there is no remote agent.
-- **remote (opt-in, provider-pays)** — a voice agent as described here, or a
+- **remote (opt-in, the agent's operator pays)** — a voice agent as described here, or a
   `native-duplex` / `server-cascade` holder, terminates the audio.
 
 Both are the same reference: the ticket's `voice` block (`mode`, `audio`,
