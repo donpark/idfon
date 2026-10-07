@@ -13,10 +13,15 @@ import FluidAudio
 /// Core ML (minutes); failures surface as `start` throwing, and the caller
 /// falls back to the system recognizer.
 @available(iOS 18.0, *)
-final class ParakeetReduxAsr: AsrEngine {
+final class ParakeetReduxAsr: AsrEngine, TtsPlayer {
     let name = "parakeet-redux"
 
     private let engine = AVAudioEngine()
+    /// TTS playback bus. Attached before voice processing is enabled so VPIO has
+    /// an output bus to use as its echo-cancellation reference.
+    private let playbackPlayer = AVAudioPlayerNode()
+    private var playbackFinish: (() -> Void)?
+    private var scheduledBuffer: AVAudioPCMBuffer?
     private let gateLock = NSLock()
     private var gated = false
     private var manager: SlidingWindowAsrManager?
@@ -97,7 +102,29 @@ final class ParakeetReduxAsr: AsrEngine {
             }
         }
 
+        // Attach the playback graph before enabling voice processing: VPIO
+        // derives its AEC reference from the output bus, so enabling it with no
+        // playback bus attached both skips cancellation and can drop the output
+        // level (docs/voice-side-channel.md).
+        engine.attach(playbackPlayer)
+        engine.connect(playbackPlayer, to: engine.mainMixerNode, format: nil)
+
         let input = engine.inputNode
+        // AEC: enable voice processing on the input node (parity with
+        // `SystemSpeechTranscriber`). Without it the live mic hears the agent's
+        // own TTS during barge-in and Parakeet re-sends it as the caller's turn.
+        if enableVoiceProcessing {
+            do {
+                try input.setVoiceProcessingEnabled(true)
+                Automation.mark("voice: voice-processing enabled")
+            } catch {
+                Automation.mark("voice: voice-processing unsupported: \(error.localizedDescription)")
+            }
+            // Keep the call cue tones (a separate engine) from being ducked as
+            // "other audio" while VPIO runs.
+            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                enableAdvancedDucking: false, duckingLevel: .min)
+        }
         input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
             guard let self, !self.isGated else { return }
             self.bufferContinuation?.yield(buffer)
@@ -122,6 +149,7 @@ final class ParakeetReduxAsr: AsrEngine {
     func stop() {
         guard started || manager != nil else { return }
         started = false
+        stopPlayback()
         updatesTask?.cancel()
         updatesTask = nil
         feedTask?.cancel()
@@ -145,6 +173,71 @@ final class ParakeetReduxAsr: AsrEngine {
         gateLock.lock()
         gated = value
         gateLock.unlock()
+    }
+
+    // MARK: - TtsPlayer
+
+    /// Render synthesized WAV on the VPIO engine and return when it has played.
+    func play(wav: Data) async {
+        guard started else { return }
+        let target = playbackPlayer.outputFormat(forBus: 0)
+        guard let buffer = Self.audioBuffer(wav: wav, target: target) else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            scheduledBuffer = buffer
+            playbackFinish = { continuation.resume() }
+            playbackPlayer.scheduleBuffer(
+                buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack
+            ) { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.scheduledBuffer = nil
+                    self?.completePlayback()
+                }
+            }
+            if !playbackPlayer.isPlaying { playbackPlayer.play() }
+        }
+    }
+
+    func stopPlayback() {
+        playbackPlayer.stop()
+        completePlayback()
+    }
+
+    private func completePlayback() {
+        playbackFinish?()
+        playbackFinish = nil
+    }
+
+    /// Decode `wav` and convert it to the player node's output format, since
+    /// `scheduleBuffer` requires an exact format match.
+    private static func audioBuffer(wav: Data, target: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("idfon-parakeet-tts.wav")
+        guard (try? wav.write(to: url)) != nil,
+              let file = try? AVAudioFile(forReading: url),
+              let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                           frameCapacity: AVAudioFrameCount(file.length)),
+              (try? file.read(into: input)) != nil else { return nil }
+        if file.processingFormat.sampleRate == target.sampleRate,
+           file.processingFormat.channelCount == target.channelCount {
+            return input
+        }
+        guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else { return nil }
+        let ratio = target.sampleRate / file.processingFormat.sampleRate
+        // One second of headroom so the converter's output buffer never fills.
+        let capacity = AVAudioFrameCount(Double(input.frameLength) * ratio) + AVAudioFrameCount(target.sampleRate)
+        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
+        var fed = false
+        var conversionError: NSError?
+        let status = converter.convert(to: output, error: &conversionError) { _, outStatus in
+            if fed {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            fed = true
+            outStatus.pointee = .haveData
+            return input
+        }
+        guard status != .error else { return nil }
+        return output
     }
 }
 

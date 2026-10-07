@@ -64,6 +64,13 @@ final class VoiceAgentSession: NSObject {
     private var asrReference: String?
     private var client = DaemonClient()
     private var promptWaiter: CheckedContinuation<String?, Never>?
+    /// The call setup task, cancelled on hang-up so a slow recognizer/TTS load
+    /// cannot keep the call alive.
+    private var setupTask: Task<Void, Never>?
+    /// User's loudspeaker preference for this call; the route guard re-asserts
+    /// it after VPIO or a route change drops the route to the receiver.
+    private var preferSpeaker = true
+    private var routeObserver: NSObjectProtocol?
     /// Last text spoken by TTS, so the agent's own tail can be dropped instead
     /// of re-sent as a user turn (self-bleed).
     private var lastSpoken: String?
@@ -94,8 +101,9 @@ final class VoiceAgentSession: NSObject {
         }
         segmenter.onCommit = { [weak self] text in self?.handleCommit(text) }
         segmenter.start()
-        Task { @MainActor in
+        setupTask = Task { @MainActor in
             let peers = (try? await client.peers()) ?? []
+            guard !stopRequested else { finish(); return }
             guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
                 Automation.mark("voice-agent: FAIL no peer \(peerRef)")
                 CallFeedback.post("No voice call available for this contact.")
@@ -108,6 +116,7 @@ final class VoiceAgentSession: NSObject {
             // Sent early; the engine prep and greeting that follow give the
             // clear time to land.
             try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
+            guard !stopRequested else { finish(); return }
             // Per-contact on-device engines (else the app defaults). Resolved
             // here, once the peer id is known, before the recognizer is built.
             ttsBackend = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.backend
@@ -118,13 +127,22 @@ final class VoiceAgentSession: NSObject {
             // block the turn loop until it is ready so the first listen does
             // not time out against a still-loading model.
             await startAnalyzer()
+            guard !stopRequested else { finish(); return }
+            // Enabling voice processing re-evaluates the output route and can
+            // drop `.voiceChat` back to the receiver; re-assert the loudspeaker.
+            try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.speaker)
+            // TTS must render on the recognizer's VPIO engine to be the echo
+            // cancellation reference (docs/voice-side-channel.md).
+            tts.playback = asr as? TtsPlayer
             // Load the reply voice and fetch the greeting while ringback still
             // plays, so "answered" is followed immediately by speech instead
             // of dead air waiting on the model or the agent.
             await tts.prepare()
+            guard !stopRequested else { finish(); return }
             // Let ChatStore finish hydrating so the reply snapshot excludes
             // pre-existing history.
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !stopRequested else { finish(); return }
             var greeting: (display: String, spoken: String)?
             if !stopRequested {
                 greeting = await sendAndAwait(
@@ -136,7 +154,7 @@ final class VoiceAgentSession: NSObject {
             }
             // The line is answered only once the agent is about to speak, so the
             // cue has no gap after it.
-            CallTonePlayer.shared.start(.answered)
+            if !stopRequested { CallTonePlayer.shared.start(.answered) }
             if let greeting, !greeting.spoken.isEmpty, !stopRequested {
                 setState(.speaking(greeting.spoken))
                 _ = await speak(greeting.spoken)
@@ -152,10 +170,14 @@ final class VoiceAgentSession: NSObject {
 
     func stop() {
         stopRequested = true
-        // Cancel in-flight speech now; otherwise hang-up waits out the whole
-        // utterance while the loop is parked in `speak()`.
+        // Cancel setup and speech now; otherwise hang-up waits out a recognizer
+        // download / TTS load and the ringback keeps playing until the setup
+        // task finally observes `stopRequested`.
+        setupTask?.cancel()
+        setupTask = nil
         tts.stop()
         deliver(nil)
+        finish()
     }
 
     /// One-shot automation (`-voiceagent <ref> [turns]`).
@@ -303,6 +325,9 @@ final class VoiceAgentSession: NSObject {
         isActive = false
         stopRequested = true
         segmenter.stop()
+        if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
+        routeObserver = nil
+        tts.playback = nil
         asr?.stop()
         asr = nil
         deliver(nil)
@@ -370,22 +395,61 @@ final class VoiceAgentSession: NSObject {
     /// reconfigure it mid-session.
     private func configureSession() {
         let session = AVAudioSession.sharedInstance()
-        // `.default` (not `.voiceChat`): voiceChat routes playback through
-        // VoiceProcessingIO, whose output gain is attenuated with no public API
-        // to undo it (docs/troubleshooting.md, "audio too quiet"). AEC still
-        // comes from `setVoiceProcessingEnabled` on the input node.
+        // `.voiceChat` is the mode VPIO's AEC is tuned for; `.default` silently
+        // disables echo cancellation (docs/voice-side-channel.md). Output level
+        // stays usable because the recognizer attaches a playback bus before
+        // enabling voice processing.
         try? session.setCategory(
             .playAndRecord,
-            mode: .default,
+            mode: .voiceChat,
             options: [.defaultToSpeaker, .allowBluetoothHFP]
         )
         try? session.setActive(true, options: .notifyOthersOnDeactivation)
-        // Route to the loudspeaker; must come after setCategory/setActive.
-        try? session.overrideOutputAudioPort(.speaker)
+        // Track route changes: enabling voice processing (and other session
+        // reconfigurations) can drop `.voiceChat` back to the receiver after
+        // the initial override, so the guard re-asserts the caller's choice.
+        if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
+        routeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: session, queue: .main
+        ) { [weak self] note in
+            Task { @MainActor in self?.handleRouteChange(note) }
+        }
+        preferSpeaker = true
+        applySpeakerRoute()
+        logRoute("voice: route")
+    }
+
+    /// Re-assert the loudspeaker (or the caller's earpiece choice) whenever the
+    /// route is not what `preferSpeaker` says it should be.
+    private func applySpeakerRoute() {
+        let session = AVAudioSession.sharedInstance()
+        let outputs = session.currentRoute.outputs.map(\.portType)
+        if preferSpeaker, outputs.contains(.builtInReceiver) {
+            try? session.overrideOutputAudioPort(.speaker)
+        } else if !preferSpeaker, outputs.contains(.builtInSpeaker) {
+            try? session.overrideOutputAudioPort(.none)
+        }
+    }
+
+    private func handleRouteChange(_ note: Notification) {
+        let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+        logRoute("voice: route changed reason=\(raw.map { String($0) } ?? "?")")
+        applySpeakerRoute()
+    }
+
+    private func logRoute(_ prefix: String) {
+        let session = AVAudioSession.sharedInstance()
         let outputs = session.currentRoute.outputs.map(\.portType.rawValue).joined(separator: ",")
         Automation.mark(
-            "voice: route outputs=\(outputs) category=\(session.category.rawValue) mode=\(session.mode.rawValue)"
+            "\(prefix) outputs=\(outputs) category=\(session.category.rawValue) mode=\(session.mode.rawValue) preferSpeaker=\(preferSpeaker)"
         )
+    }
+
+    /// Bar speaker toggle for the client cascade.
+    func setSpeakerphone(_ enabled: Bool) {
+        preferSpeaker = enabled
+        applySpeakerRoute()
+        logRoute("voice: speaker")
     }
 
     private func startAnalyzer() async {
@@ -410,6 +474,11 @@ final class VoiceAgentSession: NSObject {
         } catch {
             Automation.mark("voice-agent: analyzer start failed \(error.localizedDescription)")
             CallFeedback.post("No voice call available: \(error.localizedDescription)")
+        }
+        // A hang-up during the (slow) start must not leave the engine running.
+        if stopRequested {
+            engine.stop()
+            asr = nil
         }
     }
 
@@ -556,11 +625,13 @@ final class VoiceAgentSession: NSObject {
             segmenter.setEnabled(false)
             asr?.pause()
         }
-        // Hold the tap gate closed briefly so the speaker/acoustic tail decays
-        // before the next turn re-arms the mic; skip when stopping or already
+        // Hold the tap gate closed so the speaker's physical flush and VPIO's
+        // residual tail decay before the next turn re-arms the mic; 800 ms
+        // covers output latency + reverb tail, not just the room (
+        // docs/voice-side-channel.md). Skip when stopping or already
         // interrupted (the barge-in text is the next turn).
         if !stopRequested, interrupted == nil {
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            try? await Task.sleep(nanoseconds: 800_000_000)
         }
         return interrupted
     }

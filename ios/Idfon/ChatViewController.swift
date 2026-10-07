@@ -904,9 +904,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             session.stop()
         } else {
             // Same call cues as a live call: ringback while the recognizer
-            // loads, answered once it is listening, stop on hangup.
-            CallTonePlayer.shared.start(.ringback)
+            // loads, answered once it is listening, stop on hangup. Configure
+            // the session first so the tone engine starts on the speaker route.
             session.start(peerRef: peerId)
+            CallTonePlayer.shared.start(.ringback)
         }
     }
 
