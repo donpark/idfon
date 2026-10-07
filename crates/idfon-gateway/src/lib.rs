@@ -358,8 +358,11 @@ async fn handle<B: Backend, A: Authorizer>(
             .header(header::CONTENT_TYPE, resource.content_type)
             .body(Full::new(Bytes::from(resource.body)))
             .unwrap_or_else(|_| plain(StatusCode::INTERNAL_SERVER_ERROR, "response error")),
-        Err(GatewayError::UnknownAccount(_)) | Err(GatewayError::NotFound(_)) => {
-            plain(StatusCode::NOT_FOUND, "not found")
+        Err(GatewayError::UnknownAccount(account)) => {
+            plain(StatusCode::NOT_FOUND, &format!("unknown account: {account}"))
+        }
+        Err(GatewayError::NotFound(path)) => {
+            plain(StatusCode::NOT_FOUND, &format!("peer has no such resource: {path}"))
         }
         Err(GatewayError::Backend(message)) => {
             plain(StatusCode::BAD_GATEWAY, &format!("backend: {message}"))
