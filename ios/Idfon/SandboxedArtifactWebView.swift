@@ -98,10 +98,10 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
         allowsLinkPreview = false
         isOpaque = false
         addContentRules(allowing: source.host)
-        let load = { [weak self] in self?.load(URLRequest(url: source.url)) }
+        let load = { [weak self] in _ = self?.load(URLRequest(url: source.url)) }
         if let cookie = source.cookie {
-            configuration.websiteDataStore.httpCookieStore.setCookie(cookie) { _ in
-                DispatchQueue.main.async(execute: load)
+            configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                DispatchQueue.main.async { load() }
             }
         } else {
             load()
