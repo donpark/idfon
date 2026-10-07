@@ -55,6 +55,28 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         idfonLog("idfon edge: configured \(url)")
     }
 
+    /// The edge URL for a resource (the credential rides a cookie/header, never
+    /// the URL). `nil` when unconfigured.
+    func url(account: String, path: String) -> URL? {
+        request(account: account, path: path)?.url
+    }
+
+    /// The requester ticket as an `HTTPCookie` for the edge domain, so a
+    /// `WKWebView` sends it on every request to the edge (subresources included).
+    /// Percent-encoded: a cookie value cannot carry `,` / `;` / `"` reliably.
+    var sessionCookie: HTTPCookie? {
+        guard let baseURL, let host = baseURL.host, let ticket else { return nil }
+        let domain = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        let encoded = ticket.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ticket
+        return HTTPCookie(properties: [
+            .name: "idfon_ticket",
+            .value: encoded,
+            .domain: "\(domain)",
+            .path: "/",
+            .secure: true,
+        ])
+    }
+
     /// `https://<base>/<account><path>` with the requester ticket attached.
     private func request(account: String, path: String) -> URLRequest? {
         guard let baseURL, let ticket else { return nil }

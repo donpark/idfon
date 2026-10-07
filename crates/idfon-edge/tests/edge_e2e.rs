@@ -170,8 +170,19 @@ async fn edge_accepts_a_capability_ticket() {
         "edge-test",
     );
     let ticket_json = serde_json::to_string(&ticket).unwrap();
-    let (status, body) = http_get(handle.addr, &path, &[("x-idfon-ticket", ticket_json)]).await;
+    let (status, body) = http_get(
+        handle.addr,
+        &path,
+        &[("x-idfon-ticket", ticket_json.clone())],
+    )
+    .await;
     assert_eq!(status, 200, "capability ticket admits the request");
+    assert_eq!(body, format!("remote={} ticket=true", handle.endpoint_id));
+
+    // A WebView carries the ticket in a cookie (percent-encoded), not a header.
+    let cookie = format!("idfon_ticket={}", percent_encode(&ticket_json));
+    let (status, body) = http_get(handle.addr, &path, &[("Cookie", cookie)]).await;
+    assert_eq!(status, 200, "cookie ticket admits the request");
     assert_eq!(body, format!("remote={} ticket=true", handle.endpoint_id));
 
     // A ticket missing the required capability is rejected.
@@ -234,4 +245,18 @@ async fn edge_rate_limits_per_caller() {
     accept.abort();
     drop(h3);
     server.endpoint().close().await;
+}
+
+/// Percent-encodes every non-unreserved byte, matching what a cookie value or
+/// URL query carries.
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            byte => format!("%{byte:02X}"),
+        })
+        .collect()
 }
