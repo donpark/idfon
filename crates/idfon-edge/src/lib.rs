@@ -311,6 +311,7 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
             origin_domain: domain,
             tls,
             health_path,
+            security_headers: true,
         },
         backend,
         EdgeAuthorizer::new(rate_limit_per_minute),
