@@ -21,14 +21,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use http::{HeaderMap, Uri};
 use idfon_core::transport::IrohTransport;
 use idfon_gateway::{
     serve, AccountResolver, Authenticator, Authorizer, Caller, Config as GatewayConfig,
-    GatewayHandle, IrohBackend, StaticToken,
+    GatewayHandle, IrohBackend, StaticToken, TlsConfig,
 };
 use idfon_protocol::{Capability, CapabilityTicket};
 use iroh::{EndpointAddr, EndpointId};
@@ -67,6 +67,13 @@ pub struct EdgeConfig {
     pub domain: Option<String>,
     /// Requester authentication.
     pub auth: EdgeAuth,
+    /// Serve HTTPS with this cert/key. `None` serves plain HTTP (loopback, or
+    /// TLS terminated in front).
+    pub tls: Option<TlsConfig>,
+    /// Health-check path (default `/healthz`); `None` disables it.
+    pub health_path: Option<String>,
+    /// Max requests per caller per minute; `0` is unlimited.
+    pub rate_limit_per_minute: u32,
 }
 
 /// A running edge. [`shutdown`](Self::shutdown) stops the HTTP listener and
@@ -76,6 +83,8 @@ pub struct EdgeHandle {
     pub addr: SocketAddr,
     /// The edge's endpoint id, as resource owners see it.
     pub endpoint_id: String,
+    /// The edge's serialized `EndpointAddr` ticket, for the owner's `peer add`.
+    pub addr_ticket: String,
     transport: Arc<IrohTransport>,
     gateway: GatewayHandle,
 }
@@ -159,13 +168,39 @@ fn now_seconds() -> u64 {
         .unwrap_or(0)
 }
 
-/// P0/P1 policy: the requester is authenticated and resolved accounts are
-/// admitted. Path/scoped policy lands with ticket-over-H3 (P3).
-pub struct EdgeAuthorizer;
+/// Policy: the requester is authenticated (by [`EdgeAuth`]), resolved accounts
+/// are admitted, and each caller is rate-limited to a fixed per-minute window.
+/// Path/scoped policy lands with ticket-over-H3 (P3).
+pub struct EdgeAuthorizer {
+    window: Duration,
+    limit: u32,
+    hits: Mutex<HashMap<String, (Instant, u32)>>,
+}
+
+impl EdgeAuthorizer {
+    /// `limit_per_minute == 0` disables rate limiting.
+    pub fn new(limit_per_minute: u32) -> Self {
+        Self {
+            window: Duration::from_secs(60),
+            limit: limit_per_minute,
+            hits: Mutex::new(HashMap::new()),
+        }
+    }
+}
 
 impl Authorizer for EdgeAuthorizer {
-    fn authorize(&self, _caller: &Caller, _account: &str, _path: &str) -> bool {
-        true
+    fn authorize(&self, caller: &Caller, _account: &str, _path: &str) -> bool {
+        if self.limit == 0 {
+            return true;
+        }
+        let now = Instant::now();
+        let mut hits = self.hits.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = hits.entry(caller.subject.clone()).or_insert((now, 0));
+        if now.duration_since(entry.0) >= self.window {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1 <= self.limit
     }
 }
 
@@ -179,10 +214,14 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
         pins,
         domain,
         auth,
+        tls,
+        health_path,
+        rate_limit_per_minute,
     } = config;
     let transport = Arc::new(IrohTransport::bind_with_key(Some(key)).await?);
     let _ = tokio::time::timeout(ONLINE_TIMEOUT, transport.endpoint().online()).await;
     let endpoint_id = transport.endpoint().id().to_string();
+    let addr_ticket = serde_json::to_string(&transport.endpoint().addr())?;
 
     let auth: Option<Arc<dyn Authenticator>> = match auth {
         EdgeAuth::Open => None,
@@ -204,15 +243,18 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
             bind,
             auth,
             origin_domain: domain,
+            tls,
+            health_path,
         },
         backend,
-        EdgeAuthorizer,
+        EdgeAuthorizer::new(rate_limit_per_minute),
     )
     .await?;
     let addr = gateway.local_addr();
     Ok(EdgeHandle {
         addr,
         endpoint_id,
+        addr_ticket,
         transport,
         gateway,
     })
