@@ -158,6 +158,10 @@ struct FetchArgs {
     /// Write the body to FILE instead of stdout
     #[arg(long)]
     out: Option<String>,
+    /// Routing: `auto` (direct, then edge), `direct`, or `edge`. `edge` needs
+    /// `IDFON_EDGE_URL` (and token/ticket) on the daemon.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "direct", "edge"])]
+    prefer: String,
 }
 
 #[derive(Subcommand)]
@@ -606,9 +610,10 @@ fn run() -> io::Result<()> {
             }
         }
         Command::Gateway(GatewayCmd::Start) => cmd_gateway_start(socket, identity, json),
-        Command::Gateway(GatewayCmd::Stop) => {
-            finish(send_rpc(socket, "gateway.stop", json!({}), identity, false)?, json)
-        }
+        Command::Gateway(GatewayCmd::Stop) => finish(
+            send_rpc(socket, "gateway.stop", json!({}), identity, false)?,
+            json,
+        ),
         Command::Provider(ProviderCmd::Start { root }) => finish(
             send_rpc(
                 socket,
@@ -623,7 +628,9 @@ fn run() -> io::Result<()> {
             send_rpc(socket, "provider.stop", json!({}), identity, false)?,
             json,
         ),
-        Command::Fetch(args) => cmd_fetch(socket, &args.url, args.out.as_ref(), identity),
+        Command::Fetch(args) => {
+            cmd_fetch(socket, &args.url, args.out.as_ref(), identity, &args.prefer)
+        }
         Command::Recv(args) => {
             if args.stream {
                 cmd_answer(
@@ -1158,11 +1165,18 @@ fn cmd_fetch(
     url: &str,
     out: Option<&String>,
     identity: Option<&str>,
+    prefer: &str,
 ) -> io::Result<()> {
     use std::io::Write as _;
 
     let (account, path) = split_idfon_url(url)?;
-    let response = send_rpc(socket, "gateway.start", json!({}), identity, false)?;
+    let response = send_rpc(
+        socket,
+        "gateway.start",
+        json!({"prefer": prefer}),
+        identity,
+        false,
+    )?;
     let result = match &response.body {
         ResponseBody::Success { result, .. } => result,
         _ => return finish(response, false),
@@ -2147,7 +2161,9 @@ mod tests {
             let mut request = [0u8; 1024];
             let _ = stream.read(&mut request);
             stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+                )
                 .unwrap();
         });
         let (status, body) = http_get(&addr, "/x", "tok").unwrap();

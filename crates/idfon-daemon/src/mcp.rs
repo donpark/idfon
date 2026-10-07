@@ -218,7 +218,9 @@ pub fn listen(
                     tracing::warn!(target: "idfon.daemon", error = %error, "mcp outbound ended");
                 }
             }
-            Err(error) => tracing::warn!(target: "idfon.daemon", error = %error, "mcp accept failed"),
+            Err(error) => {
+                tracing::warn!(target: "idfon.daemon", error = %error, "mcp accept failed")
+            }
         }
         let _ = std::fs::remove_file(&cleanup);
     });
