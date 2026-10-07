@@ -2,14 +2,17 @@
 
 > **Status:** implemented through M0–M5; the iOS text-demo follow-up is tracked in [#11](https://github.com/donpark/idfon/issues/11). Companion to
 > `docs/mcp-transport.md` (idfon's tool transport).
-> Written 2026-09-14; revised 2026-09-14 (provider-owns-endpoint framing,
-> replies-over-iroh, Slack mapping, no-public-endpoint property).
+> Written 2026-09-14; revised 2026-09-14 (replies-over-iroh, Slack mapping,
+> no-public-endpoint property); revised 2026-10-07 dropping the borrowed
+> Slack/TLS vocabulary ("channel provider", "terminator", "platform endpoint").
+> idfon is P2P: every participant is a peer and an agent can be hosted anywhere
+> — on-device, a server, the edge.
 
 ## The idea
 
-Make idfon a **first-class Eve ingress channel**, i.e. an idfon channel
-*provider* that any Eve agent can install, exactly as it installs
-`channel/slack` or `channel/discord`.
+Make idfon a **first-class Eve ingress channel**: an idfon channel extension
+that any Eve agent can install, exactly as it installs `channel/slack` or
+`channel/discord`.
 
 An Eve agent is reachable through *channels* — edge adapters that normalize
 input, own the address→session mapping, and decide delivery. Eve ships a base
@@ -18,25 +21,26 @@ HTTP channel plus Slack/Discord/…, an MCP channel, and custom channels
 the **idfon peer identity as the authenticated principal** rather than a bearer
 token, and with **no public endpoint**.
 
-This is the same shape as Slack. The difference is where the "platform" lives:
+This is the same shape as Slack. The difference is that idfon has no platform:
 
 | | Slack channel | idfon channel |
 |---|---|---|
-| platform | remote, always-on Slack servers | the idfon peer network; **the provider holds the endpoint itself** |
-| inbound | Slack pushes a webhook to a public route | the provider accepts inbound iroh connections on its own endpoint |
+| platform | remote, always-on Slack servers | none — every participant is a peer; **the agent's own node holds its endpoint** |
+| inbound | Slack pushes a webhook to a public route | the agent's node accepts inbound iroh connections on its endpoint |
 | outbound | channel calls the Slack Web API | channel calls `message.send` over iroh |
 | identity | platform account / OAuth bearer | cryptographic endpoint key + idfon grants |
 | reachability | public HTTPS URL required | none — endpoint id + discovery + relay |
 
 Slack's platform is a remote broker that holds the event stream for you. idfon
-has no broker, so **the channel provider is also the platform endpoint**: it
-binds an iroh endpoint and listens. That single fact is what removes the public
-website (and what makes the "terminator" question simple — see below).
+has no broker and no platform: **the agent's own node binds an iroh endpoint and
+listens.** That single fact is what removes the public website. There is no
+"terminator" role to resolve either — a peer is the accepting side of its own
+endpoint (see below).
 
-## The provider owns the endpoint
+## The agent's node owns the endpoint
 
 A channel is the edge adapter; for idfon the edge is an iroh endpoint, so the
-provider must hold one. Concretely the idfon channel provider ships as:
+agent's node holds one. Concretely the idfon integration ships as:
 
 1. an **endpoint holder** that owns the agent's iroh key and endpoint, accepts
    inbound connections on `idfon/message/1`, verifies peer signatures and
@@ -46,14 +50,16 @@ provider must hold one. Concretely the idfon channel provider ships as:
    delivery).
 
 These are two roles; whether they are two processes is **packaging, not
-semantics** (see "Packaging" below). Both are part of the provider.
+semantics** (see "Packaging" below). Both belong to the agent's node, wherever
+that node is hosted.
 
 ### "Listening" and "termination", precisely
 
-To *terminate* a connection means to be the endpoint that ends it — accept the
-transport and hand the payload onward (as a TLS terminator does). An **iroh
-terminator** is just the provider's accept side. It is **not** one-way and it
-does **not** separate requests from responses: QUIC is bidirectional, and
+To *terminate* a connection is transport vocabulary: be the endpoint that ends
+it, accept the transport, hand the payload onward. That is just the accepting
+side of a peer's own endpoint — not a role, and not a separate component. It is
+**not** one-way and it does **not** separate requests from responses: QUIC is
+bidirectional, and
 idfon already uses that — `message.send` returns an ack and "auto-establishes
 the local receive side of the reply path" (`docs/protocol.md`).
 
@@ -104,7 +110,7 @@ idfon peer ──message/stream (iroh)──▶ endpoint holder ──▶ idfon 
    └──────────── idfon message ◀────────────┴──── delivery ◀────┘
 ```
 
-- **Endpoint holder** (part of the provider): owns/borrows the agent's idfon
+- **Endpoint holder** (part of the agent's node): owns/borrows the agent's idfon
   endpoint key, accepts `idfon/message/1` (and side-channel ALPNs), verifies
   peer identity + capability tickets, and forwards normalized turns.
 - **idfon channel** (authored in the Eve app / shipped as an extension):
@@ -123,7 +129,7 @@ another agent runtime are indistinguishable at the channel — both send
 `message.send`, both verify to a principal, both start/continue a turn.
 Therefore:
 
-- An Eve agent with the idfon channel provider **is an idfon contact**.
+- An Eve agent with the idfon channel extension **is an idfon contact**.
 - Another idfon-capable peer — a user, or **another agent** — can prompt and
   control it exactly as a user prompts a Slack bot.
 - Agent-to-agent is the same edge, not a new one; it needs its own guards
@@ -244,7 +250,7 @@ callback rather than by treating a peer message as a credential callback.
 
 ## No public endpoint — and what that does and does not buy
 
-The headline property: **an Eve agent with the idfon channel provider needs no
+The headline property: **an Eve agent with the idfon channel extension needs no
 public website, DNS name, TLS certificate, or inbound port.** Its address is
 the endpoint id / ticket; clients dial it.
 
@@ -317,13 +323,13 @@ lifetime does. Three shapes, in order of preference:
    until the semantics are proven.
 
 In all three, the channel contract is the same: routes/events/operations are
-documented `defineChannel` surfaces, and the endpoint is the provider's
-"platform client". The in-process shape is therefore **not** a contract
+documented `defineChannel` surfaces, and the endpoint is the peer-facing side of
+the channel. The in-process shape is therefore **not** a contract
 violation — the real cost is lifecycle, not legitimacy.
 
 ### Live-call handlers and channel metadata
 
-Live-call behavior is **not** part of the platform. The generic holder parses
+Live-call behavior is **not** part of the generic channel. The generic holder parses
 `IDFON-LIVE/1` controls and dispatches them to a handler registered against
 the capability the control needs (`live.audio.publish` / `live.video.publish`)
 via the seam in `crates/eve-idfon/src/live.rs` (`LiveCallHandler` +
@@ -337,11 +343,11 @@ Agent-specific values — provider endpoint, model, credential env name, voice,
 persona/instructions, broadcast id, delegation provenance, turn-taking cap —
 are **channel metadata**, declared by the agent's Eve extension (`live`) and
 forwarded to the holder as opaque JSON (`serve --live-config FILE`). The
-platform never reads them; the handler deserializes what it needs.
+channel never reads them; the handler deserializes what it needs.
 
 ### npm distribution
 
-The provider publishes as the unscoped **`eve-idfon`** package (the
+The channel ships as the unscoped **`eve-idfon`** package (the
 `@idfon` org is not registered), and its version tracks the Cargo workspace
 until 1.0. The extension itself is plain TypeScript built by
 `eve extension build` in `prepare` (run explicitly from the repo root as
@@ -418,15 +424,18 @@ third-party calls, which is unrelated to this ingress.
 
 ## Deployment
 
-Self-hosted only, for both the endpoint holder and the agent runtime.
-Vercel-hosted Eve cannot hold the idfon endpoint; it already exposes its own
-public authenticated HTTP surface, so idfon adds identity/consent there but not
-the no-public-endpoint property.
+The agent can be hosted anywhere — on-device, a server, the edge — as long as
+the endpoint holder runs where the agent runs (or points at it with
+`--target`). What it cannot be is a request-scoped/serverless function: the
+endpoint must stay open, so it needs a long-lived process. Vercel-hosted Eve
+cannot hold the idfon endpoint; it already exposes its own public authenticated
+HTTP surface, so idfon adds identity/consent there but not the
+no-public-endpoint property.
 
 ## Slack mapping (reference)
 
-For readers who know the Slack channel, the provider implements the same
-channel contract with these substitutions:
+For readers who know the Slack channel, the idfon channel implements the same
+contract with these substitutions:
 
 | Slack channel surface | idfon channel surface |
 |---|---|
@@ -440,7 +449,7 @@ channel contract with these substitutions:
 | `slackContinuationToken(...)` | idfon's own token joiner |
 
 Eve's Slack channel is webhook-based (a public `POST` route), not a poller; the
-idfon provider is a different reachability class, not a reproduction of a Slack
+idfon channel is a different reachability class, not a reproduction of a Slack
 pattern.
 
 ## Open questions

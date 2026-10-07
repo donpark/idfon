@@ -513,7 +513,7 @@ a target→agency send carrying the reply ticket is `accepted`.
 
 **Lesson.** `agent.receive` gates *both* directions of an A2A exchange, and
 the reply direction needs an agency-issued ticket on the target's holder. When
-a deployed Eve agent misbehaves, check the compiled `app/.output` freshness
+a deployed Eve agent misbehaves, check the compiled `agents/<agent>/.output` freshness
 before blaming the model — a stale `instructions.md` looks like a model
 refusal. See `docs/agent-agency.md` for the current wiring.
 
