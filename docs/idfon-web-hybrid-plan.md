@@ -114,8 +114,9 @@ verified **caller context**, not just `(account, path)`.
   `Config.origin_domain` accepts `<ref>.<domain>` virtual hosts; `Config.tls`
   terminates HTTPS (rustls, explicit `aws-lc-rs` provider); `Config.health_path`
   answers probes before auth. `idfon-edge` gained `EdgeAuth::{Open,Token,Ticket}`
-  (`CapabilityTicketAuth` verifies a ticket whose subject is the edge endpoint id
-  and whose capability is `web.fetch`, making the issuer the caller), a per-caller
+  (`CapabilityTicketAuth` verifies a ticket's signature/expiry/capability and
+  forwards it; P1 also required `subject == edge`, which **P3 removed** — see
+  Deferred), a per-caller
   fixed-window rate limit, `--tls-cert/--tls-key`, `--health-path`, `--rate-limit`,
   and a printed owner pairing block (`peer add` + `access allow resource.read`).
 - Remaining: `*.idfon.net` wildcard DNS + certificate issuance (the only
@@ -200,6 +201,75 @@ verified **caller context**, not just `(account, path)`.
    the "no directory / no public endpoint" property.
 4. **Auth timeline** — is P3 required for v1, or is the per-owner grant (A)
    acceptable?
+
+## Deferred / follow-ups
+
+Knowingly deferred or only partially verified while landing P0–P5. Ordered by
+value; check items off here as they land.
+
+### Not exercised end-to-end
+
+- [ ] **Run the real `idfon-edge` as the phone's ingress.** The device pass used
+  the loopback gateway → Mac `provider.start`; `idfon-edge` itself (token/ticket
+  auth, TLS, rate limit, `--domain` virtual hosts, cookie/query) is only covered
+  by `cargo test -p idfon-edge` plus a binary smoke. This also covers P2's
+  `--prefer edge` / `EdgeBackend` leg.
+- [ ] **Ticket-over-H3 end-to-end.** The device fetch authorized via the
+  QUIC-peer grant fallback; `DaemonClient.fetchRemoteResource` sends no ticket
+  (`Caller.ticket == None`), so the `x-idfon-ticket` forward-and-authorize path
+  has only the `resource_ticket_authorizes_issuer_capability_and_path` unit test.
+  Exercise issuer auth and `path_scope` against a real provider.
+- [ ] **Background handoff (P4).** Wired and compiled, never triggered:
+  background mid-load → `EdgeClient.fetchInBackground` → `edge-inbox` →
+  `drainInbox` → render, including a cold-start relaunch.
+- [ ] **`EdgeWebView` deep link (`idfon://<ref>/<path>`) and `idfon web open`.**
+  Built, not device-tested.
+- [ ] **Confirm `action-audit.ndjson`** receives the `ok:` line (the alert proved
+  the action ran, not the audit) and add size/rotation bounds.
+
+### Deviations from the plan text (fix code or doc)
+
+- [ ] P3 authorizes an **owner-issued bearer ticket** (`issuer == self`), not the
+  ticket issuer against grants; ordinary `access allow` grants are not consulted
+  for ticket auth. Decide whether grants should also authorize.
+- [ ] **Path scoping is on the ticket, not the grant** (`CapabilityGrant` has no
+  `path`), so the plan's "per-path scoping follows from the grant" is not
+  realized.
+- [ ] The edge's required capability (`web.fetch`) is **disconnected** from the
+  peer's check (`resource.read`), and the edge no longer binds `subject == edge`;
+  its requester check is weak by design. Revisit or document the trust model.
+- [ ] **Expiry is epoch-seconds only**; `ticket_expired` rejects RFC 3339.
+- [ ] **Rate limit** is a per-`Caller.subject` fixed window, not per-IP;
+  shared-token callers share one bucket.
+
+### External / ops (not in the repo)
+
+- [ ] `*.idfon.net` DNS + certificate issuance, host, process supervision, TLS
+  reverse proxy. Only `crates/idfon-edge/README.md` exists.
+- [ ] Edge **metrics + request logging**; no Dockerfile/systemd unit/CI.
+- [ ] **Open decisions** (above): edge runtime (Rust vs Worker), URL form
+  (wildcard vs path), privacy/self-host posture, auth timeline.
+
+### Parity / tests / docs
+
+- [ ] **macOS app parity.** The web layer (`ArtifactGateway`, `EdgeClient`,
+  `EdgeWebView`, `JSONRender*`, `ActionAudit`, gateway-served artifacts) is
+  iOS-only; mac still injects bytes, has no json-render and no edge.
+- [ ] **iOS has no test target.** UI/WebView/network paths are unautomated, and
+  `swiftc -parse` misses type errors — run `pnpm ios build` before trusting a
+  Swift change.
+
+### Small debt
+
+- [ ] `Artifact.metadata` renderer hint is unused (json-render is detected by
+  parsing).
+- [ ] JSON-render catalog is 7 components; no `state:set` / `sequence` / toast
+  actions and no schema-driven validation; actions are a hand-rolled registry,
+  **not MCP** (no MCP host on iOS).
+- [ ] `-edgeurl` / `-edgeticket` have no UI (launch args only).
+- [ ] `EdgeClient` pending-task map and `edge-inbox` have no age cap if a task
+  never completes.
+- [ ] Edge `load_tls` has no certificate reload/rotation.
 
 ## Verification
 
