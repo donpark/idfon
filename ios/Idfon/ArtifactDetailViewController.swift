@@ -173,6 +173,15 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     private func load() {
         message("Loading…")
         Task {
+            // Shared-root artifacts render through the gateway (loopback first,
+            // then the public edge): the web view loads the URL itself, so
+            // relative subresources resolve and no bytes cross the app layer.
+            if usesWebView, let peerRef,
+               let source = await ArtifactGateway.source(
+                   account: peerRef, path: "/fs/\(artifact.artifactId)") {
+                await MainActor.run { self.renderGateway(source) }
+                return
+            }
             do {
                 let data = try await self.loadBytes()
                 await MainActor.run { self.render(data) }
@@ -208,23 +217,38 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             account: peerRef, path: "/fs/\(artifact.artifactId)")
     }
 
+    /// HTML/SVG/PDF/media render in a web view; everything else natively.
+    private var usesWebView: Bool {
+        let mime = artifact.mime.lowercased()
+        return artifact.kind == .html
+            || mime.contains("html") || mime.contains("svg")
+            || mime == "application/pdf"
+            || mime.hasPrefix("audio/") || mime.hasPrefix("video/")
+    }
+
+    /// Displays a web-ish artifact through the gateway. The gateway may be the
+    /// identity's loopback one (direct, edge fallback) or the public edge.
+    private func renderGateway(_ source: GatewayArtifactSource) {
+        wireWebView(SandboxedArtifactWebView(source: source))
+    }
+
+    /// Shared web-view wiring: element selection + the Select toolbar item.
+    private func wireWebView(_ web: SandboxedArtifactWebView) {
+        web.onElementSelection = { [weak self] selector in
+            self?.pendingElement = selector
+            self?.askButton.isEnabled = true
+        }
+        setBody(web)
+        web.heightAnchor.constraint(greaterThanOrEqualToConstant: 420).isActive = true
+        webView = web
+        selectButton = UIBarButtonItem(title: "Select", style: .plain, target: self, action: #selector(toggleSelectMode))
+        navigationItem.rightBarButtonItems = [askButton, selectButton!]
+    }
+
     private func render(_ data: Data) {
-        let webMime = artifact.mime.lowercased()
-        let usesWebView = artifact.kind == .html
-            || webMime.contains("html") || webMime.contains("svg")
-            || webMime == "application/pdf"
-            || webMime.hasPrefix("audio/") || webMime.hasPrefix("video/")
         if usesWebView {
-            let web = SandboxedArtifactWebView(data: data, mime: artifact.mime)
-            web.onElementSelection = { [weak self] selector in
-                self?.pendingElement = selector
-                self?.askButton.isEnabled = true
-            }
-            setBody(web)
-            web.heightAnchor.constraint(greaterThanOrEqualToConstant: 420).isActive = true
-            webView = web
-            selectButton = UIBarButtonItem(title: "Select", style: .plain, target: self, action: #selector(toggleSelectMode))
-            navigationItem.rightBarButtonItems = [askButton, selectButton!]
+            // A local (cached/blob) artifact still renders by injection.
+            wireWebView(SandboxedArtifactWebView(data: data, mime: artifact.mime))
         } else if artifact.mime.hasPrefix("image/"), let image = UIImage(data: data) {
             let imageView = UIImageView(image: image)
             imageView.contentMode = .scaleAspectFit
@@ -328,7 +352,19 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     /// Promotes the fetched artifact into the user-visible shared directory the
     /// daemon serves, so a granted peer can fetch it at `idfon://<account>/fs/…`.
     @objc private func saveToSharedTapped() {
-        guard let data = renderedData else { return }
+        Task {
+            // A gateway-rendered artifact has no local bytes; fetch on demand.
+            var data = self.renderedData
+            if data == nil, let peerRef = self.peerRef {
+                data = try? await self.client.fetchResource(
+                    account: peerRef, path: "/fs/\(self.artifact.artifactId)")
+            }
+            guard let data else { return }
+            await MainActor.run { self.presentSaved(data) }
+        }
+    }
+
+    @MainActor private func presentSaved(_ data: Data) {
         let title: String
         let detail: String?
         if let url = SharedFolder.save(data, name: artifact.title) {

@@ -81,6 +81,33 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Loads the artifact from a **gateway** URL (`idfon://<peer>/fs/<path>`
+    /// served by the loopback gateway or the public edge) instead of injecting
+    /// bytes, so relative subresources resolve and the gateway does the fetch.
+    /// Same sandbox: non-persistent store, no bridge, and only the gateway host
+    /// (plus inline `data:`) may load.
+    init(source: GatewayArtifactSource) {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: Self.selectionScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        super.init(frame: .zero, configuration: configuration)
+        configuration.userContentController.add(self, name: "idfonSelect")
+        navigationDelegate = self
+        allowsLinkPreview = false
+        isOpaque = false
+        addContentRules(allowing: source.host)
+        let load = { [weak self] in self?.load(URLRequest(url: source.url)) }
+        if let cookie = source.cookie {
+            configuration.websiteDataStore.httpCookieStore.setCookie(cookie) { _ in
+                DispatchQueue.main.async(execute: load)
+            }
+        } else {
+            load()
+        }
+    }
+
     /// HTML and SVG render as the document itself; everything else gets a shell.
     private static func rendersAsDocument(_ mime: String) -> Bool {
         mime.contains("html") || mime.contains("svg")
@@ -124,6 +151,24 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
         """
         WKContentRuleListStore.default().compileContentRuleList(
             forIdentifier: "idfon-artifact-block-v2", encodedContentRuleList: json
+        ) { [weak self] list, _ in
+            guard let list else { return }
+            self?.configuration.userContentController.add(list)
+        }
+    }
+
+    /// Allow only one gateway host (and inline data:), block the rest. Used by
+    /// the gateway-loaded variant; the document and its relative subresources
+    /// all live on that host.
+    private func addContentRules(allowing host: String) {
+        let escaped = NSRegularExpression.escapedPattern(for: host)
+        let json = """
+        [{"trigger":{"url-filter":".*"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://\(escaped)[/:]"},"action":{"type":"ignore-previous-rules"}},
+         {"trigger":{"url-filter":"^data:"},"action":{"type":"ignore-previous-rules"}}]
+        """
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "idfon-gateway-block-\(escaped)", encodedContentRuleList: json
         ) { [weak self] list, _ in
             guard let list else { return }
             self?.configuration.userContentController.add(list)

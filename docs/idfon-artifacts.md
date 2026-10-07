@@ -53,8 +53,12 @@ rather than silently degraded.
 - **Detail screen:** full-screen render chosen by `kind` — text/markdown,
   image (zoom/pan), PDF (paged), audio/video (transport), structured data
   (json-render or a tree), HTML (the sandboxed web view). This is where the
-  gateway/WebView work connects: the detail view fetches bytes either from a
-  local blob or through `idfon://<account>/fs/<artifact_id>`.
+  gateway/WebView work connects: HTML/SVG/PDF/media now **load the gateway URL**
+  (`idfon://<account>/fs/<artifact_id>` served by `ArtifactGateway` — the
+  loopback gateway with its direct→edge fallback, or the public edge directly),
+  so relative subresources resolve and no bytes cross the app layer; a local
+  cached/blob artifact still renders by byte injection. Text/images read bytes
+  from the local blob or through the same gateway path.
 - **Sandboxed web view:** untrusted HTML/SVG renders in a `WKWebView` whose only
   source is an in-memory custom scheme — non-persistent data store, no native
   bridge, content rule list blocking every other load, and navigation cancelled
