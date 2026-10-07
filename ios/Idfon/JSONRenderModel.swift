@@ -147,6 +147,15 @@ enum RenderError: Error, Equatable {
     case denied(String)
 }
 
+/// One dispatched action and its outcome, for the durable audit log.
+struct RenderAudit: Codable, Equatable {
+    let at: Date
+    let action: String
+    let args: [String: JSONValue]
+    /// `"unknown"`, `"denied"`, or `"ok: <result>"`.
+    let outcome: String
+}
+
 /// The trusted action catalog. A spec's `action` string is matched here; an
 /// unregistered name never executes.
 final class RenderToolRegistry: @unchecked Sendable {
@@ -156,6 +165,10 @@ final class RenderToolRegistry: @unchecked Sendable {
     /// Human-in-the-loop gate for `sensitive` tools. `nil` denies every
     /// sensitive action.
     var confirm: ((RenderTool) async -> Bool)?
+
+    /// Every dispatch is reported here — the action, its args, and the outcome.
+    /// The app persists it; a denial is the security-relevant event.
+    var audit: ((RenderAudit) -> Void)?
 
     func register(_ tool: RenderTool) {
         lock.lock()
@@ -180,13 +193,17 @@ final class RenderToolRegistry: @unchecked Sendable {
         args: [String: JSONValue] = [:]
     ) async -> Result<String, RenderError> {
         guard let tool = tool(named: action) else {
+            audit?(RenderAudit(at: Date(), action: action, args: args, outcome: "unknown"))
             return .failure(.unknown(action))
         }
         if tool.sensitive {
             guard let confirm, await confirm(tool) else {
+                audit?(RenderAudit(at: Date(), action: action, args: args, outcome: "denied"))
                 return .failure(.denied(action))
             }
         }
-        return .success(await tool.run(args))
+        let result = await tool.run(args)
+        audit?(RenderAudit(at: Date(), action: action, args: args, outcome: "ok: \(result)"))
+        return .success(result)
     }
 }

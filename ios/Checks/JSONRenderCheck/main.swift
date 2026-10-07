@@ -54,6 +54,8 @@ check(throwsError({ try JSONRenderSpec.decode(Data(#"{"root":"x","elements":{"x"
 let registry = RenderToolRegistry()
 registry.register(RenderTool(name: "safe", description: "safe", sensitive: false, run: { _ in "ran" }))
 registry.register(RenderTool(name: "risky", description: "risky", sensitive: true, run: { _ in "ran" }))
+var audits: [RenderAudit] = []
+registry.audit = { audits.append($0) }
 
 func runChecks() async {
     check(await registry.dispatch("nope") == .failure(.unknown("nope")), "unknown action never runs")
@@ -61,6 +63,10 @@ func runChecks() async {
     check(await registry.dispatch("safe") == .success("ran"), "safe action runs")
     registry.confirm = { _ in true }
     check(await registry.dispatch("risky") == .success("ran"), "sensitive action runs once confirmed")
+    check(audits.contains { $0.action == "nope" && $0.outcome == "unknown" }, "unknown action audited")
+    check(audits.contains { $0.action == "risky" && $0.outcome == "denied" }, "denied sensitive action audited")
+    check(audits.contains { $0.action == "risky" && $0.outcome == "ok: ran" }, "confirmed action audited")
+    check(audits.count == 4, "every dispatch audited")
     print("ALL OK")
     exit(0)
 }

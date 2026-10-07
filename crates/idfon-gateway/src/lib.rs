@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use http::{header, HeaderMap, StatusCode, Uri};
+use http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
@@ -141,6 +141,9 @@ pub struct Config {
     /// When set, `GET <path>` returns `200 ok` before auth/host checks, for
     /// health probes.
     pub health_path: Option<String>,
+    /// Add `nosniff`, `Referrer-Policy`, and a framing CSP to every response
+    /// (plus HSTS when `tls` is set). Default on.
+    pub security_headers: bool,
 }
 
 impl Default for Config {
@@ -151,6 +154,7 @@ impl Default for Config {
             origin_domain: None,
             tls: None,
             health_path: None,
+            security_headers: true,
         }
     }
 }
@@ -210,6 +214,8 @@ where
         auth: config.auth,
         origin_domain: config.origin_domain,
         health_path: config.health_path,
+        security_headers: config.security_headers,
+        tls: config.tls.is_some(),
     });
     let task = tokio::spawn(async move {
         while let Ok((stream, _peer)) = listener.accept().await {
@@ -238,6 +244,8 @@ struct Shared<B, A> {
     auth: Option<Arc<dyn Authenticator>>,
     origin_domain: Option<String>,
     health_path: Option<String>,
+    security_headers: bool,
+    tls: bool,
 }
 
 /// Serves one accepted connection (plain or TLS-wrapped) with HTTP/1.
@@ -249,11 +257,42 @@ where
 {
     let service = service_fn(move |request| {
         let shared = shared.clone();
-        async move { Ok::<_, std::convert::Infallible>(handle(shared, request).await) }
+        async move {
+            let mut response = handle(shared.clone(), request).await;
+            if shared.security_headers {
+                add_security_headers(&mut response, shared.tls);
+            }
+            Ok::<_, std::convert::Infallible>(response)
+        }
     });
     hyper::server::conn::http1::Builder::new()
         .serve_connection(io, service)
         .await
+}
+
+/// Defense-in-depth response headers. HSTS only over TLS (browsers ignore it
+/// on plain HTTP); the framing CSP blocks embedding without restricting the
+/// resource's own scripts/styles.
+fn add_security_headers(response: &mut Response<Full<Bytes>>, tls: bool) {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'none'; base-uri 'self'; object-src 'none'"),
+    );
+    if tls {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
 }
 
 /// Loads a PEM cert chain + private key into a rustls server config.
@@ -1136,6 +1175,16 @@ mod tests {
             .await
             .expect("resource request");
         assert_eq!(response.status(), 200);
+        // Security headers ride every response; HSTS only over TLS.
+        let headers = response.headers().clone();
+        assert_eq!(
+            headers
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert!(headers.get("content-security-policy").is_some());
+        assert!(headers.get("strict-transport-security").is_some());
         assert_eq!(response.text().await.unwrap(), "tls resource");
 
         let response = client

@@ -64,7 +64,9 @@ provider's own routes survive.
 
 Safety defaults: loopback bind; a bearer token is **required** for any
 non-loopback bind and compared in constant time; `Host` and `Origin` are
-validated (DNS rebinding); `..` is rejected; GET only.
+validated (DNS rebinding); `..` is rejected; GET only; responses carry
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and a framing
+`Content-Security-Policy` (plus `Strict-Transport-Security` when TLS is on).
 
 `IrohBackend` is the default backend: it resolves the account ref to a dialable
 peer, then issues a `GET <path>` over HTTP/3 over iroh (`idfon/http3/1`, see

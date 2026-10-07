@@ -7,6 +7,7 @@ import Foundation
 enum RenderTools {
     static func make(client: DaemonClient = DaemonClient()) -> RenderToolRegistry {
         let registry = RenderToolRegistry()
+        registry.audit = { ActionAudit.shared.record($0) }
 
         registry.register(RenderTool(
             name: "idfon.status",

@@ -184,8 +184,10 @@ verified **caller context**, not just `(account, path)`.
   rendered as json-render when it parses as a spec, else the text view. Host
   check: `ios/Checks/JSONRenderCheck`.
 - No `WKScriptMessageHandler` and no remote scripts by design: the agent
-  supplies data, the app owns every component and action. CSP/HSTS from the edge
-  and a persistent action audit log remain open.
+  supplies data, the app owns every component and action. The gateway adds
+  `nosniff` / `Referrer-Policy` / a framing CSP to every response and HSTS over
+  TLS; every action dispatch (with its outcome, including denials) is appended
+  to `Idfon/action-audit.ndjson` by `ActionAudit`.
 
 ## Open decisions
 
