@@ -160,6 +160,10 @@ verified **caller context**, not just `(account, path)`.
   `?ticket=`) as well as the header; iOS `EdgeWebView` injects the cookie into a
   non-persistent `WKWebView`, and `SceneDelegate` routes `.resource` there. The
   edge percent-decodes cookie/query values.
+- Also landed: artifacts whose content is a peer shared-root path render by
+  loading the **gateway URL** in the sandboxed web view (`ArtifactGateway` →
+  loopback gateway first, public edge second) instead of injecting bytes, so
+  relative subresources resolve; local cached/blob artifacts still inject.
 - Remaining: a screen to consume the reconciled inbox bytes (today they are
   logged/notified only).
 
