@@ -91,6 +91,10 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
 
     required init?(coder: NSCoder) { fatalError("storyboards are not used") }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         if point != nil, !pointApplied, body != nil, view.bounds.width > 0 {
@@ -107,6 +111,9 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             title: "Done", style: .done, target: self, action: #selector(dismissSelf))
         askButton.isEnabled = false
         navigationItem.rightBarButtonItems = [askButton]
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(edgeReconciled(_:)),
+            name: EdgeClient.reconciledNotification, object: nil)
 
         let scroll = UIScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -182,13 +189,49 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
                 await MainActor.run { self.renderGateway(source) }
                 return
             }
+            // If iOS suspends us mid-fetch, hand the resource to the edge's
+            // background session so it finishes and renders on return.
+            let handoff = NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in self?.handOffToEdge() }
+            defer { NotificationCenter.default.removeObserver(handoff) }
             do {
                 let data = try await self.loadBytes()
                 await MainActor.run { self.render(data) }
             } catch {
-                await MainActor.run { self.message("Could not load artifact: \(error.localizedDescription)") }
+                await MainActor.run { self.loadFailed(error) }
             }
         }
+    }
+
+    /// A failed foreground fetch: hand the shared-root resource to the edge's
+    /// background session (it finishes even if iOS suspends the app), cache the
+    /// result in `SessionStore`, and let the reconcile notification reload.
+    private func loadFailed(_ error: Error) {
+        guard let peerRef, EdgeClient.shared.isConfigured else {
+            message("Could not load artifact: \(error.localizedDescription)")
+            return
+        }
+        handOffToEdge()
+        message("Fetching through the edge; it will appear when you return.")
+    }
+
+    /// Starts the edge background fetch for this artifact, if configured.
+    private func handOffToEdge() {
+        guard let peerRef, EdgeClient.shared.isConfigured else { return }
+        try? EdgeClient.shared.fetchInBackground(
+            account: peerRef, path: "/fs/\(artifact.artifactId)")
+    }
+
+    /// A background edge fetch for this artifact finished; display its bytes.
+    @objc private func edgeReconciled(_ note: Notification) {
+        guard let records = note.object as? [EdgeClient.ReconciledArtifact] else { return }
+        let path = "/fs/\(artifact.artifactId)"
+        guard let record = records.first(where: { $0.account == peerRef && $0.path == path }) else {
+            return
+        }
+        render(record.data)
     }
 
     /// Local blob first; if it is unavailable (or there is no ticket) and the

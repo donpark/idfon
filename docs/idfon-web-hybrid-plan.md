@@ -164,8 +164,12 @@ verified **caller context**, not just `(account, path)`.
   loading the **gateway URL** in the sandboxed web view (`ArtifactGateway` →
   loopback gateway first, public edge second) instead of injecting bytes, so
   relative subresources resolve; local cached/blob artifacts still inject.
-- Remaining: a screen to consume the reconciled inbox bytes (today they are
-  logged/notified only).
+- The artifact screen consumes reconciled bytes: while a remote load is in
+  flight it starts an `EdgeClient.fetchInBackground` on
+  `didEnterBackgroundNotification` (and on a failed fetch), and on
+  `idfonEdgeReconciled` renders the matching `(account, path, Data)` record.
+  `drainInbox` posts the records with their bytes; a screen that is gone drops
+  them (the fetch is live, deliberately not cached).
 
 ### P5 — web layer (optional for this plan)
 

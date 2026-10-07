@@ -15,11 +15,19 @@ import UIKit
 final class EdgeClient: NSObject, @unchecked Sendable {
     static let shared = EdgeClient()
 
-    /// Posted after a foreground reconcile with the number of drained files.
+    /// Posted after a foreground reconcile; `object` is `[ReconciledArtifact]`.
     static let reconciledNotification = Notification.Name("idfonEdgeReconciled")
+
+    /// A completed background fetch: which resource it is for, and its bytes.
+    struct ReconciledArtifact {
+        let account: String
+        let path: String
+        let data: Data
+    }
 
     private static let urlKey = "idfon.edge.url"
     private static let ticketKey = "idfon.edge.ticket"
+    private static let pendingKey = "idfon.edge.pending"
     private static let sessionIdentifier = "app.idfon.edge.background"
 
     private var backgroundSession: URLSession?
@@ -114,6 +122,7 @@ final class EdgeClient: NSObject, @unchecked Sendable {
             throw DaemonClient.DaemonError.request("edge is not configured")
         }
         let task = session().downloadTask(with: request)
+        rememberPending(task.taskIdentifier, account: account, path: path)
         task.resume()
         idfonLog("idfon edge: background fetch \(account)\(path) task=\(task.taskIdentifier)")
         return task.taskIdentifier
@@ -125,27 +134,52 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         completionHandler = handler
     }
 
-    /// Drains staged downloads, returning their bytes and removing the files.
-    /// Called on foreground so a suspended fetch's result is not lost.
+    /// Drains staged downloads and posts the records (with bytes) so a live
+    /// screen can display them. `taskIdentifier → resource` outlives a cold
+    /// start via `UserDefaults`.
     @discardableResult
-    func drainInbox() -> [Data] {
+    func drainInbox() -> [ReconciledArtifact] {
         let manager = FileManager.default
         guard let entries = try? manager.contentsOfDirectory(
             at: Self.inbox, includingPropertiesForKeys: nil) else {
             return []
         }
-        var out: [Data] = []
+        var pending = pendingList()
+        var reconciled: [ReconciledArtifact] = []
         for entry in entries {
-            if let data = try? Data(contentsOf: entry), !data.isEmpty {
-                out.append(data)
-            }
-            try? manager.removeItem(at: entry)
+            defer { try? manager.removeItem(at: entry) }
+            let id = entry.deletingPathExtension().lastPathComponent
+            guard let data = try? Data(contentsOf: entry), !data.isEmpty,
+                  let index = pending.firstIndex(where: { $0["id"] == id }),
+                  let account = pending[index]["account"],
+                  let path = pending[index]["path"] else { continue }
+            reconciled.append(ReconciledArtifact(account: account, path: path, data: data))
+            pending.remove(at: index)
         }
-        if !out.isEmpty {
-            idfonLog("idfon edge: reconciled \(out.count) background fetch(es)")
-            NotificationCenter.default.post(name: Self.reconciledNotification, object: out.count)
+        setPending(pending)
+        if !reconciled.isEmpty {
+            idfonLog("idfon edge: reconciled \(reconciled.count) background fetch(es)")
+            NotificationCenter.default.post(name: Self.reconciledNotification, object: reconciled)
         }
-        return out
+        return reconciled
+    }
+
+    private func pendingList() -> [[String: String]] {
+        UserDefaults.standard.array(forKey: Self.pendingKey) as? [[String: String]] ?? []
+    }
+
+    private func setPending(_ list: [[String: String]]) {
+        UserDefaults.standard.set(list, forKey: Self.pendingKey)
+    }
+
+    private func rememberPending(_ id: Int, account: String, path: String) {
+        var pending = pendingList()
+        pending.append(["id": "\(id)", "account": account, "path": path])
+        setPending(pending)
+    }
+
+    private func removePending(_ id: Int) {
+        setPending(pendingList().filter { $0["id"] != "\(id)" })
     }
 
     private func session() -> URLSession {
@@ -180,5 +214,11 @@ extension EdgeClient: URLSessionDownloadDelegate {
             self?.completionHandler?()
             self?.completionHandler = nil
         }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard error != nil else { return }
+        idfonLog("idfon edge: background fetch \(task.taskIdentifier) failed: \(error?.localizedDescription ?? "")")
+        removePending(task.taskIdentifier)
     }
 }
