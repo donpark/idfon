@@ -517,6 +517,9 @@ struct TicketArgs {
     capability: Option<String>,
     #[arg(long = "expires-at")]
     expires_at: Option<String>,
+    /// Bound the ticket to a resource path prefix (e.g. /fs/public)
+    #[arg(long = "path-scope")]
+    path_scope: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -1111,6 +1114,7 @@ fn run() -> io::Result<()> {
                 "capabilities": [args.capability.clone().unwrap_or_else(|| "message.receive".into())],
                 "expires_at": args.expires_at,
                 "conversation": args.conversation,
+                "path_scope": args.path_scope,
             });
             let response = send_rpc(
                 socket,

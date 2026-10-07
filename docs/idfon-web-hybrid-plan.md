@@ -145,7 +145,9 @@ verified **caller context**, not just `(account, path)`.
   peer** (bearer) with `resource.read` and a `path_scope` covering the request,
   falling back to the QUIC-peer grant when absent. The edge no longer requires
   `subject == edge`; it verifies signature/expiry/capability and forwards the
-  ticket unchanged.
+  ticket unchanged. `idfon access ticket --path-scope <prefix>` exposes the
+  scoped issue path; the gateway maps a peer's 403 to 403
+  (`GatewayError::Forbidden`) so a scope refusal is not flattened into a 502.
 
 ### P4 — WebView + background handoff
 
@@ -209,16 +211,19 @@ value; check items off here as they land.
 
 ### Not exercised end-to-end
 
-- [ ] **Run the real `idfon-edge` as the phone's ingress.** The device pass used
-  the loopback gateway → Mac `provider.start`; `idfon-edge` itself (token/ticket
-  auth, TLS, rate limit, `--domain` virtual hosts, cookie/query) is only covered
-  by `cargo test -p idfon-edge` plus a binary smoke. This also covers P2's
-  `--prefer edge` / `EdgeBackend` leg.
-- [ ] **Ticket-over-H3 end-to-end.** The device fetch authorized via the
-  QUIC-peer grant fallback; `DaemonClient.fetchRemoteResource` sends no ticket
-  (`Caller.ticket == None`), so the `x-idfon-ticket` forward-and-authorize path
-  has only the `resource_ticket_authorizes_issuer_capability_and_path` unit test.
-  Exercise issuer auth and `path_scope` against a real provider.
+- [x] **Run the real `idfon-edge` as the phone's ingress.** `scripts/edge-e2e.sh`
+  runs two real `idfond` daemons plus the `idfon-edge` binary (not the crate's
+  fake H3 router) and asserts: ticket auth via header/cookie/`?ticket=`, the
+  `<ref>.localhost` virtual-host form, health bypass, unknown-ref 404, option A
+  (token auth + `resource.read` grant to the edge endpoint), P2's
+  `idfon fetch --prefer edge` (`EdgeBackend`), and TLS termination. `--domain`
+  wildcard DNS and per-IP rate limiting remain untested here.
+- [x] **Ticket-over-H3 end-to-end.** The script issues an owner ticket with
+  `idfon access ticket --path-scope /fs/public`, presents it to the edge, and the
+  edge forwards it as `x-idfon-ticket`; the provider authorizes the issuer and
+  enforces `path_scope` (a scoped ticket is 403 outside the prefix, an unscoped
+  ticket reads it). `DaemonClient.fetchRemoteResource` still sends no ticket, so
+  the iOS path is not yet covered.
 - [ ] **Background handoff (P4).** Wired and compiled, never triggered:
   background mid-load → `EdgeClient.fetchInBackground` → `edge-inbox` →
   `drainInbox` → render, including a cold-start relaunch.

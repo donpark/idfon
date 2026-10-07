@@ -44,8 +44,15 @@ auth.
 
 The edge prints an owner **pairing** block at startup: either pair with the
 edge endpoint id and grant it `resource.read` (option A), or issue the requester
-a path-scoped `resource.read` ticket with `idfon access`/`capability.ticket`
-(option B; no pairing required).
+a path-scoped `resource.read` ticket (option B; no pairing required):
+
+```sh
+idfon access ticket --subject requester --capability resource.read \
+  --path-scope /fs/public --expires-at $(( $(date +%s) + 3600 ))
+```
+
+`scripts/edge-e2e.sh` runs the binary against a real `idfond` provider and
+covers both options, cookie/query auth, virtual hosts, and TLS.
 
 ## Not in this crate
 
