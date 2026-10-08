@@ -1,0 +1,15 @@
+# Optional co-located iroh relay (enterprise NAT traversal, issue #26).
+# Run together with compose.yaml:
+#   docker compose -f compose.yaml -f compose.relay.yaml up -d
+# The relay reuses the edge's wildcard cert and serves relay.<domain>:8443.
+services:
+  iroh-relay:
+    image: n0computer/iroh-relay:v1.3.0
+    restart: unless-stopped
+    command: ["--config-path", "/config/config.toml"]
+    ports:
+      - "8443:8443/tcp" # WSS relay (the edge owns 443)
+      - "7842:7842/udp" # QUIC address discovery
+    volumes:
+      - ./relay/config.toml:/config/config.toml:ro
+      - /etc/idfon-edge:/etc/idfon-edge:ro

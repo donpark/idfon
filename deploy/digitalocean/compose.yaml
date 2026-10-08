@@ -15,6 +15,9 @@ services:
       RUST_LOG: idfon_edge=info,idfon.edge.access=info
       # Empty means "use the key file"; set a 64-hex value to be stateless.
       IDFON_EDGE_KEY: ${IDFON_EDGE_KEY:-}
+      # Enterprise relay (issue #26); empty keeps the N0 defaults.
+      IDFON_RELAY_URLS: ${IDFON_RELAY_URLS:-}
+      IDFON_RELAY_TOKEN: ${IDFON_RELAY_TOKEN:-}
     command:
       - --bind
       - 0.0.0.0:8443

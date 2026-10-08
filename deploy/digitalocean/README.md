@@ -31,6 +31,29 @@ at Namecheap: set the NS to `ns1/ns2/ns3.digitalocean.com`, then run
 `pnpm deploy:do` again. Everything else is automatic. The rest of this file is
 the equivalent manual path.
 
+## Enterprise: co-located iroh relay (#26)
+
+Relay connectivity is **required** behind enterprise NAT: symmetric/CGNAT
+usually defeats UDP hole-punching, and many networks allow only outbound TCP
+443. `iroh-relay`'s WebSocket transport runs over `wss://…:8443`, so it
+traverses that. Enable the co-located relay:
+
+```sh
+IDFON_DEPLOY_RELAY=1 IDFON_RELAY_TOKEN=<token> pnpm deploy:do
+```
+
+That starts `n0computer/iroh-relay:v1.3.0` beside the edge from
+`relay/config.toml` + `compose.relay.yaml`, reusing the wildcard cert, serving
+`8443/tcp` (WSS) and `7842/udp` (QUIC address discovery), and writes
+`IDFON_RELAY_URLS=https://relay.<domain>:8443` into the edge's env. The firewall
+already allows those two ports.
+
+**Every peer must use the same relay** (a relay is a shared rendezvous): set
+`IDFON_RELAY_URLS` / `IDFON_RELAY_TOKEN` on each daemon too. A peer left on N0
+will not meet one on the enterprise relay. For a closed relay, set
+`access = { shared_token = ["<token>"] }` in `relay/config.toml`; the default is
+an open relay.
+
 ## What you need
 
 - A DigitalOcean account; `doctl` authenticated locally (or use the DO console).
