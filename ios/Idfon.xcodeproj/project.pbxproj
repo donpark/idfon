@@ -12,6 +12,7 @@
 
 /* Begin PBXFileReference section */
 		1A000001000000000000001A /* Idfon.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Idfon.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1B00000100000000000000A1 /* IdfonTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IdfonTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -37,7 +38,26 @@
 			path = Idfon;
 			sourceTree = "<group>";
 		};
+		1B00000200000000000000B2 /* IdfonTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = IdfonTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXContainerItemProxy section */
+		1B00000B00000000000000EB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1A00000A00000000000000A3 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1A000005000000000000005E;
+			remoteInfo = Idfon;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		1A0000080000000000000081 /* Frameworks */ = {
@@ -48,6 +68,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		1B00000400000000000000D4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -55,6 +82,7 @@
 			isa = PBXGroup;
 			children = (
 				1A000002000000000000002B /* Idfon */,
+				1B00000200000000000000B2 /* IdfonTests */,
 				1A000004000000000000004D /* Products */,
 			);
 			sourceTree = "<group>";
@@ -63,6 +91,7 @@
 			isa = PBXGroup;
 			children = (
 				1A000001000000000000001A /* Idfon.app */,
+				1B00000100000000000000A1 /* IdfonTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -93,6 +122,27 @@
 			productReference = 1A000001000000000000001A /* Idfon.app */;
 			productType = "com.apple.product-type.application";
 		};
+		1B00000300000000000000C3 /* IdfonTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1B00000900000000000000C9 /* Build configuration list for PBXNativeTarget "IdfonTests" */;
+			buildPhases = (
+				1B00000500000000000000E5 /* Sources */,
+				1B00000400000000000000D4 /* Frameworks */,
+				1B00000600000000000000F6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1B00000A00000000000000DA /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1B00000200000000000000B2 /* IdfonTests */,
+			);
+			name = IdfonTests;
+			productName = IdfonTests;
+			productReference = 1B00000100000000000000A1 /* IdfonTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -104,6 +154,10 @@
 				TargetAttributes = {
 					1A000005000000000000005E = {
 						CreatedOnToolsVersion = 26.0;
+					};
+					1B00000300000000000000C3 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 1A000005000000000000005E;
 					};
 				};
 			};
@@ -125,12 +179,20 @@
 			projectRoot = "";
 			targets = (
 				1A000005000000000000005E /* Idfon */,
+				1B00000300000000000000C3 /* IdfonTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		1A0000090000000000000092 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1B00000600000000000000F6 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -147,7 +209,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		1B00000500000000000000E5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1B00000A00000000000000DA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1A000005000000000000005E /* Idfon */;
+			targetProxy = 1B00000B00000000000000EB /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1A00000C00000000000000C5 /* Debug */ = {
@@ -187,6 +264,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
+				ENABLE_DEBUG_DYLIB = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RV27HPQNMF;
 				INFOPLIST_FILE = Idfon/Info.plist;
@@ -265,6 +344,42 @@
 			};
 			name = Release;
 		};
+		1B00000700000000000000A7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = RV27HPQNMF;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.8.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.idfon.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Idfon.app/Idfon";
+			};
+			name = Debug;
+		};
+		1B00000800000000000000B8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = RV27HPQNMF;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.8.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.idfon.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Idfon.app/Idfon";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -282,6 +397,15 @@
 			buildConfigurations = (
 				1A00000C00000000000000C5 /* Debug */,
 				1A00000D00000000000000D6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1B00000900000000000000C9 /* Build configuration list for PBXNativeTarget "IdfonTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1B00000700000000000000A7 /* Debug */,
+				1B00000800000000000000B8 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
