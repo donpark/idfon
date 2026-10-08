@@ -48,6 +48,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!-- A self-hosted edge may be a machine on the LAN (e.g. a Mac); the public
+	     idfon.net edge does not need this. iOS 14+ prompts on first use. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Idfon connects to a self-hosted edge on your local network.</string>
 	<!-- Documents shows up in Files / the document picker, so saved and shared
 	     files are user-visible and selectable. -->
 	<key>UIFileSharingEnabled</key>

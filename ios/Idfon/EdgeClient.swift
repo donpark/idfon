@@ -35,6 +35,8 @@ final class EdgeClient: NSObject, @unchecked Sendable {
     private var backgroundSession: URLSession?
     private var completionHandler: (() -> Void)?
     private let lock = NSLock()
+    /// Set by `runBackgroundHandoffProbe`; gates the diagnostic file log.
+    private var probeActive = false
 
     /// Where completed background downloads are staged until the app
     /// foregrounds and reconciles them.
@@ -136,6 +138,74 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         completionHandler = handler
     }
 
+    /// Recreates the background session so iOS delivers pending download events
+    /// to its delegate after a cold-start relaunch. Must be called from
+    /// `handleEventsForBackgroundURLSession`, even when no new fetch is started.
+    func reconnectBackgroundSession() {
+        _ = session()
+    }
+
+    var isProbing: Bool { probeActive }
+
+    /// Appends to `Application Support/Idfon/edge-probe.log`, so a suspend or
+    /// cold-start handoff can be inspected after the fact (`devicectl --console`
+    /// detaches when the app backgrounds). `reset: true` truncates at probe start.
+    func probeLog(_ message: String, reset: Bool = false) {
+        let dir = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Idfon", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("edge-probe.log")
+        let line = "\(Date().timeIntervalSince1970) \(message)\n"
+        let data = Data(line.utf8)
+        if reset {
+            try? data.write(to: url)
+            return
+        }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    /// Device probe for the P4 background handoff (launch arg
+    /// `-edgebghandoff <peer> <artifact> [seconds]`): starts a background fetch
+    /// without the artifact screen, then drains and logs the reconciled bytes.
+    /// `SceneDelegate.sceneWillEnterForeground` drains too, so a real suspend
+    /// shows up as the reconcile log after returning.
+    func runBackgroundHandoffProbe(peer: String, artifactId: String, delay: TimeInterval) {
+        probeActive = true
+        probeLog("start configured=\(isConfigured) peer=\(peer) artifact=\(artifactId)", reset: true)
+        // Clear leftovers from a previous run so the trace only shows this fetch.
+        _ = drainInbox()
+        // Print as well as log: `devicectl --console` captures stdout, not os_log.
+        func report(_ message: String) {
+            idfonLog("idfon edge probe: \(message)")
+            print("idfon-edge-probe: \(message)")
+            probeLog("probe \(message)")
+        }
+        NotificationCenter.default.addObserver(
+            forName: Self.reconciledNotification, object: nil, queue: .main
+        ) { note in
+            let records = note.object as? [ReconciledArtifact] ?? []
+            report("reconciled \(records.count) record(s) bytes=\(records.first?.data.count ?? 0)")
+        }
+        do {
+            let task = try fetchInBackground(account: peer, path: "/fs/\(artifactId)")
+            report("started task=\(task)")
+        } catch {
+            report("start failed: \(error.localizedDescription)")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            let records = self?.drainInbox() ?? []
+            report("drained \(records.count) record(s) bytes=\(records.first?.data.count ?? 0)")
+        }
+    }
+
     /// Drains staged downloads and posts the records (with bytes) so a live
     /// screen can display them. `taskIdentifier → resource` outlives a cold
     /// start via `UserDefaults`.
@@ -165,6 +235,7 @@ final class EdgeClient: NSObject, @unchecked Sendable {
             pending.remove(at: index)
         }
         setPending(pending)
+        if probeActive { probeLog("drain \(reconciled.count) record(s)") }
         if !reconciled.isEmpty {
             idfonLog("idfon edge: reconciled \(reconciled.count) background fetch(es)")
             NotificationCenter.default.post(name: Self.reconciledNotification, object: reconciled)
@@ -212,6 +283,15 @@ extension EdgeClient: URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        // A download task delivers the body even for a 4xx/5xx; without this
+        // check an error page would be staged and rendered as the artifact.
+        let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1
+        if probeActive { probeLog("delegate task=\(downloadTask.taskIdentifier) status=\(status)") }
+        guard status == 200 else {
+            idfonLog("idfon edge: background fetch \(downloadTask.taskIdentifier) HTTP \(status), not staged")
+            removePending(downloadTask.taskIdentifier)
+            return
+        }
         let destination = Self.inbox.appendingPathComponent("\(downloadTask.taskIdentifier).bin")
         try? FileManager.default.removeItem(at: destination)
         do {

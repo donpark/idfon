@@ -113,8 +113,21 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             storeCapabilityTicket(peer: args[i + 1], jsonOrPath: args[i + 2])
         }
         // Public edge endpoint + requester credential (docs/idfon-web-hybrid-plan.md P4).
-        if let i = args.firstIndex(of: "-edgeurl"), args.count > i + 2 {
-            EdgeClient.configure(url: args[i + 1], ticket: args[i + 2])
+        // `-edgeurl <url> <ticket>` (ticket positionally) or
+        // `-edgeurl <url> -edgeticket <ticket>` — both are accepted.
+        if let i = args.firstIndex(of: "-edgeurl"), args.count > i + 1 {
+            var ticket: String?
+            if args.count > i + 2, !args[i + 2].hasPrefix("-") {
+                ticket = args[i + 2]
+            } else if let j = args.firstIndex(of: "-edgeticket"), args.count > j + 1 {
+                ticket = args[j + 1]
+            }
+            if let ticket { EdgeClient.configure(url: args[i + 1], ticket: ticket) }
+        }
+        if let i = args.firstIndex(of: "-edgebghandoff"), args.count > i + 2 {
+            let seconds = args.count > i + 3 ? (Double(args[i + 3]) ?? 10) : 10
+            EdgeClient.shared.runBackgroundHandoffProbe(
+                peer: args[i + 1], artifactId: args[i + 2], delay: seconds)
         }
         if let i = args.firstIndex(of: "-trust-enroll"), args.count > i + 1 {
             AutoEnroll.trust(args[i + 1])
@@ -337,12 +350,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
+        // Recreate the session first: on a cold-start relaunch iOS has pending
+        // download events for the delegate, and without a session they are lost
+        // and this completion handler is never called.
         EdgeClient.shared.setBackgroundCompletionHandler(completionHandler)
-    }
-
-    func applicationWillEnterForeground(_ application: UIApplication) {
-        // Pick up any edge fetch that completed while suspended.
-        _ = EdgeClient.shared.drainInbox()
+        EdgeClient.shared.reconnectBackgroundSession()
     }
 
     func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
