@@ -86,3 +86,21 @@ the same `Authorization`/ticket credential as any caller. Counters:
 
 DNS, certificate issuance, process supervision, and the TLS reverse proxy. Behind
 a proxy, keep `--bind 127.0.0.1:8080` and let the proxy terminate TLS.
+
+## Deploy
+
+Packaging lives in `deploy/idfon-edge/`:
+
+- `Dockerfile` — builds the edge binary into a slim, non-root image:
+
+  ```sh
+  DOCKER_BUILDKIT=1 docker build -f deploy/idfon-edge/Dockerfile -t idfon-edge .
+  docker run --rm -p 8080:8080 -v idfon-edge-key:/var/lib/idfon idfon-edge \
+    --bind 0.0.0.0:8080 --key-file /var/lib/idfon/edge.key --token s3cret
+  ```
+
+- `idfon-edge.service` — systemd unit (TLS on `:8443`, `StateDirectory=idfon-edge`,
+  `ProtectSystem=strict`). Place `cert.pem`/`key.pem` in `/etc/idfon-edge`.
+
+`.github/workflows/edge.yml` runs the gateway/edge crate tests, builds the image
+and smoke-tests `--help`, and pushes it to GHCR on `edge-v*` tags.

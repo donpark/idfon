@@ -1,0 +1,47 @@
+[Unit]
+Description=idfon-edge — public ingress for idfon resources
+Documentation=https://github.com/donpark/idfon/blob/main/crates/idfon-edge/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Create once:  useradd --system --home /var/lib/idfon-edge idfon
+User=idfon
+Group=idfon
+# Place cert.pem/key.pem in /etc/idfon-edge (owned by root, readable by idfon).
+# The key file persists in StateDirectory (below); the first start generates it.
+ExecStart=/usr/local/bin/idfon-edge \
+    --bind 0.0.0.0:8443 \
+    --domain idfon.net \
+    --tls-cert /etc/idfon-edge/cert.pem \
+    --tls-key /etc/idfon-edge/key.pem \
+    --require-ticket resource.read \
+    --rate-limit 120 \
+    --key-file /var/lib/idfon-edge/edge.key
+StateDirectory=idfon-edge
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=2
+
+# Logs: access events use the custom `idfon.edge.access` target; a bare
+# `idfon_edge=info` filter would drop them.
+Environment=RUST_LOG=idfon_edge=info,idfon.edge.access=info
+
+# Hardening. AF_NETLINK is kept for interface discovery (netwatch).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
