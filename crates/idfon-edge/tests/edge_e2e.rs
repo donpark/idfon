@@ -122,6 +122,27 @@ async fn edge_bridges_and_gates_with_a_token() {
     let (status, _) = http_get(handle.addr, "/nope/fs/readme", &[auth]).await;
     assert_eq!(status, 404, "unlisted ref is not resolved");
 
+    // Metrics require the token and report observed requests (health is not
+    // counted; the 401, 200, and 404 above are).
+    let (status, _) = http_get(handle.addr, "/metrics", &[]).await;
+    assert_eq!(status, 401, "metrics requires the token");
+    let (status, body) = http_get(
+        handle.addr,
+        "/metrics",
+        &[("Authorization", "Bearer s3cret".to_owned())],
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("idfon_edge_requests_total"),
+        "metrics body: {body}"
+    );
+    let snapshot = handle.metrics.snapshot();
+    assert_eq!(snapshot.total, 3, "health is not counted");
+    assert_eq!(snapshot.status_2xx, 1);
+    assert_eq!(snapshot.status_4xx, 2);
+    assert_eq!(snapshot.unauthorized, 1);
+
     handle.shutdown().await;
     accept.abort();
     drop(h3);
@@ -238,8 +259,24 @@ async fn edge_rate_limits_per_caller() {
 
     let (status, _) = http_get(handle.addr, &path, &[auth.clone()]).await;
     assert_eq!(status, 200, "first request is admitted");
-    let (status, _) = http_get(handle.addr, &path, &[auth]).await;
+    let (status, _) = http_get(handle.addr, &path, &[auth.clone()]).await;
     assert_eq!(status, 403, "second request in the window is rate limited");
+
+    let snapshot = handle.metrics.snapshot();
+    assert_eq!(snapshot.total, 2);
+    assert_eq!(snapshot.status_2xx, 1);
+    assert_eq!(snapshot.status_4xx, 1);
+    assert_eq!(snapshot.forbidden, 1);
+    assert_eq!(
+        snapshot.rate_limited, 1,
+        "the over-limit request is counted"
+    );
+    let (status, body) = http_get(handle.addr, "/metrics", &[auth]).await;
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("idfon_edge_rate_limited_total 1"),
+        "metrics body: {body}"
+    );
 
     handle.shutdown().await;
     accept.abort();

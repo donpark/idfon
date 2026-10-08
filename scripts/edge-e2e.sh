@@ -12,6 +12,7 @@ set -eu
 #   - option A: the edge as a known QUIC peer (token auth + resource.read grant)
 #   - P2: a daemon with IDFON_EDGE_URL + `idfon fetch --prefer edge`
 #   - TLS termination with a self-signed cert
+#   - auth-gated /metrics counters
 #
 # PASS requires every HTTP status/body to match.
 
@@ -128,6 +129,12 @@ echo "PASS: <ref>.localhost virtual host"
 # Health bypasses requester auth; an unlisted ref is not resolved.
 assert_body ok "http://$E1/healthz"
 assert_code 404 "http://$E1/nope/fs/public/hello.txt" -H "x-idfon-ticket: $SCOPED"
+
+# Metrics are gated by requester auth and report the observed requests.
+assert_code 401 "http://$E1/metrics"
+assert_code 200 "http://$E1/metrics" -H "x-idfon-ticket: $SCOPED"
+grep -q "idfon_edge_requests_total" "$W/body" || fail "metrics body has no counters"
+echo "PASS: /metrics (auth-gated) reports edge counters"
 
 # --- edge 2: option A, the edge as a known QUIC peer -------------------------
 "$EDGE" --bind 127.0.0.1:0 --token s3cret \

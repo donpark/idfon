@@ -90,6 +90,28 @@ pub trait Authenticator: Send + Sync + 'static {
     fn authenticate(&self, headers: &HeaderMap, uri: &Uri) -> Option<Caller>;
 }
 
+/// A completed request, as seen by a [`RequestObserver`].
+pub struct RequestEvent<'a> {
+    pub method: &'a str,
+    pub host: Option<&'a str>,
+    pub path: &'a str,
+    pub status: StatusCode,
+    pub latency: Duration,
+    /// Verified requester (`Caller.subject`); `None` before authentication.
+    pub caller: Option<&'a str>,
+    /// The resolved peer ref; `None` before it is known.
+    pub account: Option<&'a str>,
+}
+
+/// Per-request logging/metrics. Called for every served request except the
+/// health and metrics probes. An implementation lives on the edge; the
+/// loopback gateway ignores it by default.
+pub trait RequestObserver: Send + Sync + 'static {
+    fn observe(&self, event: &RequestEvent<'_>);
+    /// Prometheus text for [`Config::metrics_path`]; `None` disables the probe.
+    fn render_metrics(&self) -> Option<String>;
+}
+
 /// The loopback gateway's shared-secret bearer token.
 pub struct StaticToken(String);
 
@@ -145,6 +167,10 @@ pub struct Config {
     /// When set, `GET <path>` returns `200 ok` before auth/host checks, for
     /// health probes.
     pub health_path: Option<String>,
+    /// When set, `GET <path>` (after auth) returns [`RequestObserver::render_metrics`].
+    pub metrics_path: Option<String>,
+    /// Per-request observer for logging/metrics. `None` disables both.
+    pub observer: Option<Arc<dyn RequestObserver>>,
     /// Add `nosniff`, `Referrer-Policy`, and a framing CSP to every response
     /// (plus HSTS when `tls` is set). Default on.
     pub security_headers: bool,
@@ -158,6 +184,8 @@ impl Default for Config {
             origin_domain: None,
             tls: None,
             health_path: None,
+            metrics_path: None,
+            observer: None,
             security_headers: true,
         }
     }
@@ -218,6 +246,8 @@ where
         auth: config.auth,
         origin_domain: config.origin_domain,
         health_path: config.health_path,
+        metrics_path: config.metrics_path,
+        observer: config.observer,
         security_headers: config.security_headers,
         tls: config.tls.is_some(),
     });
@@ -248,6 +278,8 @@ struct Shared<B, A> {
     auth: Option<Arc<dyn Authenticator>>,
     origin_domain: Option<String>,
     health_path: Option<String>,
+    metrics_path: Option<String>,
+    observer: Option<Arc<dyn RequestObserver>>,
     security_headers: bool,
     tls: bool,
 }
@@ -404,52 +436,138 @@ async fn handle<B: Backend, A: Authorizer>(
     shared: Arc<Shared<B, A>>,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    if request.method() != http::Method::GET {
-        return plain(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
-    }
+    let started = Instant::now();
+    let method = request.method().clone();
     let uri = request.uri().clone();
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let probe = shared.health_path.as_deref() == Some(uri.path())
+        || shared.metrics_path.as_deref() == Some(uri.path());
+    let (response, caller, account) = handle_inner(shared.clone(), request, &uri).await;
+    if !probe {
+        if let Some(observer) = shared.observer.as_deref() {
+            observer.observe(&RequestEvent {
+                method: method.as_str(),
+                host: host.as_deref(),
+                path: uri.path(),
+                status: response.status(),
+                latency: started.elapsed(),
+                caller: caller.as_deref(),
+                account: account.as_deref(),
+            });
+        }
+    }
+    response
+}
+
+/// Returns `(response, caller subject, account)` so the caller can observe the
+/// request with the identity/target it resolved.
+async fn handle_inner<B: Backend, A: Authorizer>(
+    shared: Arc<Shared<B, A>>,
+    request: Request<Incoming>,
+    uri: &Uri,
+) -> (Response<Full<Bytes>>, Option<String>, Option<String>) {
+    if request.method() != http::Method::GET {
+        return (
+            plain(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
+            None,
+            None,
+        );
+    }
     let headers = request.headers();
     if shared.health_path.as_deref() == Some(uri.path()) {
-        return plain(StatusCode::OK, "ok");
+        return (plain(StatusCode::OK, "ok"), None, None);
     }
     if !hosts_allowed(headers, shared.origin_domain.as_deref()) {
-        return plain(StatusCode::FORBIDDEN, "host not allowed");
+        return (plain(StatusCode::FORBIDDEN, "host not allowed"), None, None);
     }
     let caller = match &shared.auth {
-        Some(auth) => match auth.authenticate(headers, &uri) {
+        Some(auth) => match auth.authenticate(headers, uri) {
             Some(caller) => caller,
-            None => return plain(StatusCode::UNAUTHORIZED, "missing or invalid credentials"),
+            None => {
+                return (
+                    plain(StatusCode::UNAUTHORIZED, "missing or invalid credentials"),
+                    None,
+                    None,
+                )
+            }
         },
         None => Caller::anonymous(),
     };
-    let Some((account, path)) = target(&uri, headers, shared.origin_domain.as_deref()) else {
-        return plain(StatusCode::BAD_REQUEST, "missing account");
+    if shared.metrics_path.as_deref() == Some(uri.path()) {
+        let subject = caller.subject.clone();
+        let body = shared
+            .observer
+            .as_deref()
+            .and_then(|observer| observer.render_metrics());
+        return match body {
+            Some(text) => (plain_metrics(&text), Some(subject), None),
+            None => (
+                plain(StatusCode::NOT_FOUND, "not found"),
+                Some(subject),
+                None,
+            ),
+        };
+    }
+    let subject = caller.subject.clone();
+    let Some((account, path)) = target(uri, headers, shared.origin_domain.as_deref()) else {
+        return (
+            plain(StatusCode::BAD_REQUEST, "missing account"),
+            Some(subject),
+            None,
+        );
     };
     if path.split('/').any(|segment| segment == "..") {
-        return plain(StatusCode::BAD_REQUEST, "invalid path");
+        return (
+            plain(StatusCode::BAD_REQUEST, "invalid path"),
+            Some(subject),
+            Some(account),
+        );
     }
     if !shared.authorizer.authorize(&caller, &account, &path) {
-        return plain(StatusCode::FORBIDDEN, "not authorized");
+        return (
+            plain(StatusCode::FORBIDDEN, "not authorized"),
+            Some(subject),
+            Some(account),
+        );
     }
-    match shared.backend.fetch(&caller, &account, &path).await {
+    let response = match shared.backend.fetch(&caller, &account, &path).await {
         Ok(resource) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, resource.content_type)
             .body(Full::new(Bytes::from(resource.body)))
             .unwrap_or_else(|_| plain(StatusCode::INTERNAL_SERVER_ERROR, "response error")),
-        Err(GatewayError::UnknownAccount(account)) => {
-            plain(StatusCode::NOT_FOUND, &format!("unknown account: {account}"))
-        }
-        Err(GatewayError::NotFound(path)) => {
-            plain(StatusCode::NOT_FOUND, &format!("peer has no such resource: {path}"))
-        }
+        Err(GatewayError::UnknownAccount(account)) => plain(
+            StatusCode::NOT_FOUND,
+            &format!("unknown account: {account}"),
+        ),
+        Err(GatewayError::NotFound(path)) => plain(
+            StatusCode::NOT_FOUND,
+            &format!("peer has no such resource: {path}"),
+        ),
         Err(GatewayError::Forbidden(message)) => {
             plain(StatusCode::FORBIDDEN, &format!("peer refused: {message}"))
         }
         Err(GatewayError::Backend(message)) => {
             plain(StatusCode::BAD_GATEWAY, &format!("backend: {message}"))
         }
-    }
+    };
+    (response, Some(subject), Some(account))
+}
+
+/// Prometheus text exposition (the probe body, not an app response).
+fn plain_metrics(body: &str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )
+        .body(Full::new(Bytes::from(body.to_owned())))
+        .expect("static response builds")
 }
 
 fn plain(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
@@ -862,6 +980,26 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct TestObserver {
+        events: Mutex<Vec<(String, u16, Option<String>, Option<String>)>>,
+    }
+
+    impl RequestObserver for TestObserver {
+        fn observe(&self, event: &RequestEvent<'_>) {
+            self.events.lock().unwrap().push((
+                event.path.to_owned(),
+                event.status.as_u16(),
+                event.caller.map(str::to_owned),
+                event.account.map(str::to_owned),
+            ));
+        }
+
+        fn render_metrics(&self) -> Option<String> {
+            Some("idfon_test_total 1\n".to_owned())
+        }
+    }
+
     async fn gateway() -> GatewayHandle {
         let mut map = HashMap::new();
         map.insert(
@@ -999,6 +1137,69 @@ mod tests {
         let (status, body) = get_with(addr, "/acct/", "127.0.0.1", &[("x-subject", "alice")]).await;
         assert_eq!(status, 200);
         assert_eq!(body, "hi");
+        handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn observes_requests_and_serves_authenticated_metrics() {
+        let mut map = HashMap::new();
+        map.insert(
+            ("acct".to_owned(), "/public/readme.txt".to_owned()),
+            b"hi".to_vec(),
+        );
+        let observer = Arc::new(TestObserver::default());
+        let handle = serve(
+            Config {
+                auth: Some(Arc::new(StaticToken::new("s3cret"))),
+                health_path: Some("/healthz".to_owned()),
+                metrics_path: Some("/metrics".to_owned()),
+                observer: Some(observer.clone()),
+                ..Config::default()
+            },
+            Static(map),
+            PublicOnly,
+        )
+        .await
+        .expect("gateway binds");
+        let addr = handle.local_addr();
+
+        let (status, body) = get(
+            addr,
+            "/acct/public/readme.txt",
+            "127.0.0.1",
+            Some("s3cret"),
+            None,
+        )
+        .await;
+        assert_eq!((status, body.as_str()), (200, "hi"));
+        let (status, _) = get(addr, "/acct/private/x", "127.0.0.1", Some("s3cret"), None).await;
+        assert_eq!(status, 403);
+        // Health is a probe: served before auth and not observed.
+        let (status, _) = get(addr, "/healthz", "127.0.0.1", None, None).await;
+        assert_eq!(status, 200);
+
+        {
+            let events = observer.events.lock().unwrap();
+            assert_eq!(events.len(), 2, "resource + denied observed, health not");
+            assert_eq!(events[0].0, "/acct/public/readme.txt");
+            assert_eq!(events[0].1, 200);
+            assert_eq!(events[0].2.as_deref(), Some("local"));
+            assert_eq!(events[0].3.as_deref(), Some("acct"));
+            assert_eq!(events[1].1, 403);
+        }
+
+        // Metrics is gated by auth and is itself a probe (not counted).
+        let (status, _) = get(addr, "/metrics", "127.0.0.1", None, None).await;
+        assert_eq!(status, 401);
+        let (status, body) = get(addr, "/metrics", "127.0.0.1", Some("s3cret"), None).await;
+        assert_eq!(status, 200);
+        assert!(body.starts_with("idfon_test_total 1"));
+        assert_eq!(
+            observer.events.lock().unwrap().len(),
+            2,
+            "metrics not observed"
+        );
+
         handle.shutdown();
     }
 

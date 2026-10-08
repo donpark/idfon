@@ -265,7 +265,11 @@ value; check items off here as they land.
 
 - [ ] `*.idfon.net` DNS + certificate issuance, host, process supervision, TLS
   reverse proxy. Only `crates/idfon-edge/README.md` exists.
-- [ ] Edge **metrics + request logging**; no Dockerfile/systemd unit/CI.
+- [x] Edge **request logging + metrics**: one structured `idfon.edge.access`
+  event per served request (method/host/path/status/latency/caller/account) and
+  Prometheus counters at `GET /metrics` (after requester auth).
+  `EdgeMetrics`/`EdgeHandle.metrics` in `crates/idfon-edge`.
+- [ ] Edge **packaging**: no Dockerfile, systemd unit, or CI deploy job.
 - [ ] **Open decisions** (above): edge runtime (Rust vs Worker), URL form
   (wildcard vs path), privacy/self-host posture, auth timeline.
 
