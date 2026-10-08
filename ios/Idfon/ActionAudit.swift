@@ -6,6 +6,10 @@ import Foundation
 final class ActionAudit: @unchecked Sendable {
     static let shared = ActionAudit()
 
+    /// Rotate once the log passes this; keeps exactly one prior file (`*.1`),
+    /// so the audit trail cannot grow without bound.
+    static let maxBytes = 1 << 20
+
     private let queue = DispatchQueue(label: "idfon.action-audit")
     private let encoder = JSONEncoder()
 
@@ -22,6 +26,7 @@ final class ActionAudit: @unchecked Sendable {
             guard let self, var line = try? self.encoder.encode(event) else { return }
             line.append(0x0A)
             let url = self.url
+            Self.rotateIfNeeded(at: url, maxBytes: Self.maxBytes)
             if let handle = try? FileHandle(forWritingTo: url) {
                 defer { try? handle.close() }
                 _ = try? handle.seekToEnd()
@@ -30,5 +35,16 @@ final class ActionAudit: @unchecked Sendable {
                 try? line.write(to: url)
             }
         }
+    }
+
+    /// Moves the log to `<name>.1` when it reaches `maxBytes`. Foundation-only
+    /// and side-effect-explicit so a host check can exercise it.
+    static func rotateIfNeeded(at url: URL, maxBytes: Int) {
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int,
+              size >= maxBytes else { return }
+        let rotated = url.deletingLastPathComponent()
+            .appendingPathComponent(url.lastPathComponent + ".1")
+        try? FileManager.default.removeItem(at: rotated)
+        try? FileManager.default.moveItem(at: url, to: rotated)
     }
 }

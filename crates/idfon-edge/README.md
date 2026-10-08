@@ -25,7 +25,9 @@ The code is ready; the deployment is external. You need:
 
 1. A public host and **wildcard DNS** `*.idfon.net` (plus `idfon.net`).
 2. A **TLS certificate** covering both (`*.idfon.net`), or TLS terminated by a
-   reverse proxy (Caddy/Cloudflare) in front of a loopback bind.
+   reverse proxy (Caddy/Cloudflare) in front of a loopback bind. The edge
+   re-reads `--tls-cert`/`--tls-key` when either file changes, so a rotated
+   certificate is served without a restart.
 3. A requester credential and a rate limit:
 
 ```sh

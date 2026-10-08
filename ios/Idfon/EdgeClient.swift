@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 
 /// Public-edge fetches (`docs/idfon-web-hybrid-plan.md`, P4).
 ///
@@ -29,6 +28,9 @@ final class EdgeClient: NSObject, @unchecked Sendable {
     private static let ticketKey = "idfon.edge.ticket"
     private static let pendingKey = "idfon.edge.pending"
     private static let sessionIdentifier = "app.idfon.edge.background"
+    /// A background fetch that never completes is abandoned after this, along
+    /// with any file it staged.
+    private static let pendingTTL: TimeInterval = 60 * 60 * 24
 
     private var backgroundSession: URLSession?
     private var completionHandler: (() -> Void)?
@@ -146,8 +148,14 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         }
         var pending = pendingList()
         var reconciled: [ReconciledArtifact] = []
+        let now = Date()
+        pending = BackgroundFetch.pruned(pending, now: now, ttl: Self.pendingTTL)
         for entry in entries {
             defer { try? manager.removeItem(at: entry) }
+            let modified = (try? manager.attributesOfItem(atPath: entry.path)[.modificationDate]) as? Date
+            if BackgroundFetch.isStale(modified: modified, now: now, ttl: Self.pendingTTL) {
+                continue
+            }
             let id = entry.deletingPathExtension().lastPathComponent
             guard let data = try? Data(contentsOf: entry), !data.isEmpty,
                   let index = pending.firstIndex(where: { $0["id"] == id }),
@@ -174,7 +182,12 @@ final class EdgeClient: NSObject, @unchecked Sendable {
 
     private func rememberPending(_ id: Int, account: String, path: String) {
         var pending = pendingList()
-        pending.append(["id": "\(id)", "account": account, "path": path])
+        pending.append([
+            "id": "\(id)",
+            "account": account,
+            "path": path,
+            "at": "\(Date().timeIntervalSince1970)",
+        ])
         setPending(pending)
     }
 
