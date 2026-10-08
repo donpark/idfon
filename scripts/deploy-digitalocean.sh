@@ -109,16 +109,17 @@ say "firewall"
 ADMIN_IP="${IDFON_ADMIN_IP:-$(curl -fsS https://api.ipify.org || true)}"
 [ -n "$ADMIN_IP" ] || die "could not detect your IP; set IDFON_ADMIN_IP"
 FW_NAME="${NAME}-fw"
+INBOUND="protocol:tcp,ports:22,address:${ADMIN_IP}/32 protocol:tcp,ports:80,address:0.0.0.0/0 protocol:tcp,ports:443,address:0.0.0.0/0 protocol:tcp,ports:8443,address:0.0.0.0/0 protocol:udp,ports:7842,address:0.0.0.0/0"
+OUTBOUND="protocol:tcp,ports:all,address:0.0.0.0/0 protocol:udp,ports:all,address:0.0.0.0/0 protocol:icmp,address:0.0.0.0/0"
 FW_ID="$(d compute firewall list --format ID,Name --no-header | awk -v n="$FW_NAME" '$2==n{print $1; exit}')"
 if [ -z "$FW_ID" ]; then
-  info "creating $FW_NAME (22 from $ADMIN_IP, 80+443 public)"
+  info "creating $FW_NAME (ssh from $ADMIN_IP; 80/443/8443 tcp + 7842 udp public)"
   d compute firewall create --name "$FW_NAME" \
-    --inbound-rules "protocol:tcp,ports:22,address:${ADMIN_IP}/32 protocol:tcp,ports:80,address:0.0.0.0/0 protocol:tcp,ports:443,address:0.0.0.0/0 protocol:tcp,ports:8443,address:0.0.0.0/0 protocol:udp,ports:7842,address:0.0.0.0/0" \
-    --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0 protocol:udp,ports:all,address:0.0.0.0/0 protocol:icmp,address:0.0.0.0/0" \
-    --droplet-ids "$DROPLET_ID" >/dev/null
+    --inbound-rules "$INBOUND" --outbound-rules "$OUTBOUND" --droplet-ids "$DROPLET_ID" >/dev/null
 else
-  info "attaching droplet to $FW_NAME"
-  d compute firewall add-droplets "$FW_ID" --droplet-ids "$DROPLET_ID" >/dev/null 2>&1 || true
+  info "syncing rules + droplet on $FW_NAME"
+  d compute firewall update "$FW_ID" --name "$FW_NAME" \
+    --inbound-rules "$INBOUND" --outbound-rules "$OUTBOUND" --droplet-ids "$DROPLET_ID" >/dev/null
 fi
 
 # --- DNS zone + records ----------------------------------------------------
