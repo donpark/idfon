@@ -17,10 +17,37 @@ use idfon_protocol::{
 use iroh::{
     endpoint::{presets, Connection, RecvStream, SendStream},
     protocol::ProtocolHandler,
-    Endpoint, EndpointAddr, EndpointId, SecretKey,
+    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, SecretKey,
 };
 use iroh_gossip::{api::GossipTopic, Gossip, TopicId};
 use thiserror::Error;
+
+/// `IDFON_RELAY_URLS` (comma-separated `https://…`) overrides the default N0
+/// relay map; `IDFON_RELAY_TOKEN` (optional) adds a shared bearer token. Unset
+/// keeps the N0 public relays. Enterprises set this on every peer so they meet
+/// on a relay their NAT permits.
+fn relay_mode_from_env() -> Option<RelayMode> {
+    let urls = std::env::var("IDFON_RELAY_URLS").ok()?;
+    let token = std::env::var("IDFON_RELAY_TOKEN").ok();
+    relay_mode_from(&urls, token.as_deref())
+}
+
+fn relay_mode_from(urls: &str, token: Option<&str>) -> Option<RelayMode> {
+    let list: Vec<&str> = urls
+        .split(',')
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .collect();
+    if list.is_empty() {
+        return None;
+    }
+    let map = RelayMap::try_from_iter(list).ok()?;
+    let map = match token {
+        Some(token) if !token.is_empty() => map.with_auth_token(token),
+        _ => map,
+    };
+    Some(RelayMode::Custom(map))
+}
 
 pub const MESSAGE_ALPN: &[u8] = b"idfon/message/1";
 pub const SYNC_ALPN: &[u8] = b"idfon/sync/1";
@@ -201,6 +228,12 @@ impl IrohTransport {
 
     async fn try_bind(key: Option<[u8; 32]>, port: Option<u16>) -> Result<Self, TransportError> {
         let mut builder = Endpoint::builder(presets::N0).alpns(vec![MESSAGE_ALPN.to_vec()]);
+        // A self-hosted/enterprise relay overrides N0. A relay is the fallback
+        // when direct UDP is impossible (enterprise NAT); its WebSocket
+        // transport uses TCP 443, which such networks allow.
+        if let Some(relay) = relay_mode_from_env() {
+            builder = builder.relay_mode(relay);
+        }
         if let Some(key) = key {
             builder = builder.secret_key(SecretKey::from_bytes(&key));
         }
@@ -533,6 +566,21 @@ impl MessageTransport for IrohTransport {
 mod tests {
     use super::*;
     use idfon_protocol::{MessageContent, PeerAuth};
+
+    #[test]
+    fn relay_mode_from_parses_urls_and_token() {
+        assert!(relay_mode_from("", None).is_none());
+        assert!(relay_mode_from("  ,  ", None).is_none());
+        let mode = relay_mode_from(
+            "https://relay.example.com, https://relay2.example.com:8443",
+            Some("tok"),
+        )
+        .expect("two relays");
+        match mode {
+            RelayMode::Custom(map) => assert_eq!(map.len(), 2),
+            _ => panic!("expected RelayMode::Custom"),
+        }
+    }
 
     #[test]
     fn transport_manager_rebinds_to_a_new_endpoint() {
