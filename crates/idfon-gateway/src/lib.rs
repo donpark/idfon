@@ -23,7 +23,7 @@ use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
@@ -35,6 +35,8 @@ use hyper_util::rt::TokioIo;
 use idfon_core::transport::IrohTransport;
 use idfon_h3::H3Client;
 use iroh::EndpointAddr;
+use rustls::server::{ClientHello, ResolvesServerCert};
+use rustls::sign::CertifiedKey;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
@@ -297,8 +299,24 @@ fn add_security_headers(response: &mut Response<Full<Bytes>>, tls: bool) {
     }
 }
 
-/// Loads a PEM cert chain + private key into a rustls server config.
+/// Loads the PEM cert chain + private key into a rustls server config that
+/// re-reads the files when either changes, so a rotated certificate is served
+/// without restarting the edge.
 fn load_tls(config: &TlsConfig) -> std::io::Result<rustls::ServerConfig> {
+    // Fail fast on an unusable cert/key, then hand handshakes to the resolver.
+    // Both `ring` and `aws-lc-rs` end up enabled in this dependency graph, so
+    // rustls cannot pick a process-default provider. Choose one explicitly.
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let resolver = Arc::new(ReloadingCert::new(config.clone())?);
+    Ok(rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(std::io::Error::other)?
+        .with_no_client_auth()
+        .with_cert_resolver(resolver))
+}
+
+/// Parses the cert/key pair from disk (the startup and reload path).
+fn certified_key(config: &TlsConfig) -> std::io::Result<CertifiedKey> {
     let mut cert_reader = BufReader::new(std::fs::File::open(&config.cert)?);
     let certs = rustls_pemfile::certs(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
@@ -312,15 +330,74 @@ fn load_tls(config: &TlsConfig) -> std::io::Result<rustls::ServerConfig> {
                 "no private key in the TLS key file",
             )
         })?;
-    // Both `ring` and `aws-lc-rs` end up enabled in this dependency graph, so
-    // rustls cannot pick a process-default provider. Choose one explicitly.
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    rustls::ServerConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(std::io::Error::other)?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(std::io::Error::other)
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    CertifiedKey::from_der(certs, key, &provider).map_err(std::io::Error::other)
+}
+
+/// The newest mtime of the cert/key files; the reload trigger.
+fn cert_modified_at(config: &TlsConfig) -> Option<SystemTime> {
+    let cert = std::fs::metadata(&config.cert)
+        .and_then(|m| m.modified())
+        .ok()?;
+    let key = std::fs::metadata(&config.key)
+        .and_then(|m| m.modified())
+        .ok()?;
+    Some(cert.max(key))
+}
+
+/// A rustls cert resolver that re-reads the cert/key from disk when either file
+/// changes. A reload that fails keeps serving the last good key, so a
+/// half-written rotated certificate never breaks TLS.
+struct ReloadingCert {
+    config: TlsConfig,
+    cached: Mutex<Option<(SystemTime, Arc<CertifiedKey>)>>,
+}
+
+impl ReloadingCert {
+    fn new(config: TlsConfig) -> std::io::Result<Self> {
+        let key = Arc::new(certified_key(&config)?);
+        let at = cert_modified_at(&config).unwrap_or(SystemTime::UNIX_EPOCH);
+        Ok(Self {
+            config,
+            cached: Mutex::new(Some((at, key))),
+        })
+    }
+
+    fn load(&self) -> Option<Arc<CertifiedKey>> {
+        let cached = self.cached.lock().ok()?.clone();
+        let newest = cert_modified_at(&self.config);
+        if let (Some((at, key)), Some(newest)) = (&cached, newest) {
+            if *at == newest {
+                return Some(key.clone());
+            }
+        }
+        match certified_key(&self.config) {
+            Ok(key) => {
+                let key = Arc::new(key);
+                let at = newest.unwrap_or_else(SystemTime::now);
+                if let Ok(mut cache) = self.cached.lock() {
+                    *cache = Some((at, key.clone()));
+                }
+                Some(key)
+            }
+            Err(_) => cached.map(|(_, key)| key),
+        }
+    }
+}
+
+impl std::fmt::Debug for ReloadingCert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReloadingCert")
+            .field("cert", &self.config.cert)
+            .field("key", &self.config.key)
+            .finish()
+    }
+}
+
+impl ResolvesServerCert for ReloadingCert {
+    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        self.load()
+    }
 }
 
 async fn handle<B: Backend, A: Authorizer>(
@@ -1229,6 +1306,56 @@ mod tests {
         assert_eq!(status, 0);
 
         handle.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reloading_cert_reloads_on_change_and_keeps_the_last_good_key() {
+        let dir = std::env::temp_dir().join(format!("idfon-gw-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cert = dir.join("cert.pem");
+        let key = dir.join("key.pem");
+        std::fs::write(&cert, TEST_CERT).unwrap();
+        std::fs::write(&key, TEST_KEY).unwrap();
+
+        let resolver = ReloadingCert::new(TlsConfig {
+            cert: cert.clone(),
+            key: key.clone(),
+        })
+        .expect("initial cert loads");
+        let first = resolver.load().expect("initial key");
+        // Unchanged files are served from the cache.
+        let again = resolver.load().expect("cached key");
+        assert!(Arc::ptr_eq(&first, &again), "unchanged files stay cached");
+
+        // A newer mtime invalidates the cache and re-reads from disk.
+        let later = SystemTime::now() + Duration::from_secs(30);
+        std::fs::File::options()
+            .write(true)
+            .open(&key)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let reloaded = resolver.load().expect("reloaded key");
+        assert!(
+            !Arc::ptr_eq(&first, &reloaded),
+            "mtime change invalidates the cache"
+        );
+
+        // A half-written rotated key must not drop TLS: keep the last good key.
+        std::fs::write(&key, "-----BEGIN PRIVATE KEY-----\nnot a key\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&key)
+            .unwrap()
+            .set_modified(later + Duration::from_secs(30))
+            .unwrap();
+        let fallback = resolver.load().expect("fallback key");
+        assert!(
+            Arc::ptr_eq(&reloaded, &fallback),
+            "a failed reload keeps the last good key"
+        );
+
         let _ = std::fs::remove_dir_all(dir);
     }
 }

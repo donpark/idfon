@@ -112,7 +112,8 @@ verified **caller context**, not just `(account, path)`.
 - **Landed:** `idfon-gateway` takes an `Authenticator` and hands a verified
   `Caller` to `Authorizer` (`StaticToken` preserves the loopback behavior);
   `Config.origin_domain` accepts `<ref>.<domain>` virtual hosts; `Config.tls`
-  terminates HTTPS (rustls, explicit `aws-lc-rs` provider); `Config.health_path`
+  terminates HTTPS (rustls, explicit `aws-lc-rs` provider; cert/key are
+  re-read on mtime change, so a rotation needs no restart); `Config.health_path`
   answers probes before auth. `idfon-edge` gained `EdgeAuth::{Open,Token,Ticket}`
   (`CapabilityTicketAuth` verifies a ticket's signature/expiry/capability and
   forwards it; P1 also required `subject == edge`, which **P3 removed** — see
@@ -191,7 +192,8 @@ verified **caller context**, not just `(account, path)`.
   supplies data, the app owns every component and action. The gateway adds
   `nosniff` / `Referrer-Policy` / a framing CSP to every response and HSTS over
   TLS; every action dispatch (with its outcome, including denials) is appended
-  to `Idfon/action-audit.ndjson` by `ActionAudit`.
+  to `Idfon/action-audit.ndjson` by `ActionAudit` (rotated to a single `*.1`
+  file at 1 MiB).
 
 ## Open decisions
 
@@ -230,8 +232,9 @@ value; check items off here as they land.
   `drainInbox` → render, including a cold-start relaunch.
 - [ ] **`EdgeWebView` deep link (`idfon://<ref>/<path>`) and `idfon web open`.**
   Built, not device-tested.
-- [ ] **Confirm `action-audit.ndjson`** receives the `ok:` line (the alert proved
-  the action ran, not the audit) and add size/rotation bounds.
+- [ ] **Confirm `action-audit.ndjson`** receives the `ok:` line on device (the
+  alert proved the action ran, not the audit). Size/rotation bounds are
+  implemented (`ActionAudit.rotateIfNeeded`, one `*.1` prior file).
 
 ### Deviations from the plan text (fix code or doc)
 
@@ -283,9 +286,16 @@ value; check items off here as they land.
   actions and no schema-driven validation; actions are a hand-rolled registry,
   **not MCP** (no MCP host on iOS).
 - [ ] `-edgeurl` / `-edgeticket` have no UI (launch args only).
-- [ ] `EdgeClient` pending-task map and `edge-inbox` have no age cap if a task
-  never completes.
-- [ ] Edge `load_tls` has no certificate reload/rotation.
+- [x] **`EdgeClient` pending-task map and `edge-inbox` age cap.** Pending
+  entries carry an `at` epoch and are pruned past a 24 h TTL on drain; a staged
+  file older than the TTL is dropped instead of reconciled.
+  `BackgroundFetch.pruned`/`isStale` are Foundation-only and covered by
+  `ios/Checks/JSONRenderCheck`.
+- [x] **Edge `load_tls` certificate reload/rotation.** `idfon-gateway` now
+  serves through a `ReloadingCert` resolver that re-reads the cert/key when
+  either file's mtime changes; a failed reload keeps the last good key so a
+  half-written rotation never breaks TLS. Test:
+  `reloading_cert_reloads_on_change_and_keeps_the_last_good_key`.
 
 ## Verification
 
