@@ -46,6 +46,8 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
     /// Reports the clicked element as a text range over the artifact's source
     /// bytes, so the existing text resolver handles it (no HTML parser needed).
     var onElementSelection: ((ArtifactSelector) -> Void)?
+    /// When the document is gateway-loaded, the only non-artifact origin allowed.
+    private var allowedOrigin: (scheme: String, host: String)?
 
     init(data: Data, mime: String, frame: NSRect = NSRect(x: 0, y: 0, width: 660, height: 460)) {
         let handler = ArtifactSchemeHandler()
@@ -70,6 +72,32 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Loads the artifact from a **gateway** URL (the loopback gateway or the
+    /// public edge) instead of injecting bytes, so relative subresources
+    /// resolve and the gateway does the fetch. Same sandbox: non-persistent
+    /// store, no bridge, and only the gateway host (plus inline `data:`) loads.
+    init(source: GatewayArtifactSource, frame: NSRect = NSRect(x: 0, y: 0, width: 660, height: 460)) {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: Self.selectionScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        super.init(frame: frame, configuration: configuration)
+        configuration.userContentController.add(self, name: "idfonSelect")
+        navigationDelegate = self
+        allowsLinkPreview = false
+        autoresizingMask = [.width, .height]
+        allowedOrigin = (source.url.scheme ?? "https", source.host)
+        addContentRules(allowing: source.host)
+        let load = { [weak self] in _ = self?.load(URLRequest(url: source.url)) }
+        if let cookie = source.cookie {
+            configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
+                DispatchQueue.main.async { load() }
+            }
+        } else {
+            load()
+        }
+    }
 
     private static func rendersAsDocument(_ mime: String) -> Bool {
         mime.contains("html") || mime.contains("svg")
@@ -98,6 +126,22 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
         </style>
         \(body)
         """
+    }
+
+    /// Allow only one gateway host (and inline data:), block the rest.
+    private func addContentRules(allowing host: String) {
+        let escaped = NSRegularExpression.escapedPattern(for: host)
+        let json = """
+        [{"trigger":{"url-filter":".*"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^https?://\(escaped)[/:]"},"action":{"type":"ignore-previous-rules"}},
+         {"trigger":{"url-filter":"^data:"},"action":{"type":"ignore-previous-rules"}}]
+        """
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "idfon-gateway-block-\(escaped)", encodedContentRuleList: json
+        ) { [weak self] list, _ in
+            guard let list else { return }
+            self?.configuration.userContentController.add(list)
+        }
     }
 
     private func addContentRules() {
@@ -148,7 +192,16 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
-        decisionHandler(navigationAction.request.url?.scheme == ArtifactSchemeHandler.scheme ? .allow : .cancel)
+        guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
+        if url.scheme == ArtifactSchemeHandler.scheme {
+            decisionHandler(.allow)
+            return
+        }
+        if let origin = allowedOrigin, url.scheme == origin.scheme, url.host == origin.host {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {

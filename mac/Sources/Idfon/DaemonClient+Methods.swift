@@ -223,4 +223,25 @@ extension DaemonClient {
         }
         return data
     }
+
+    /// Fetches a peer resource, preferring a direct P2P fetch through the
+    /// loopback gateway and falling back to the public edge when it fails
+    /// (best-effort; `docs/idfon-web-hybrid-plan.md` P4).
+    func fetchResource(account: String, path: String) async throws -> Data {
+        do {
+            return try await fetchRemoteResource(account: account, path: path)
+        } catch let directError {
+            guard EdgeClient.shared.isConfigured else { throw directError }
+            idfonLog("idfon gateway: direct fetch failed; trying edge")
+            do {
+                return try await EdgeClient.shared.fetch(account: account, path: path)
+            } catch {
+                let direct = (directError as? LocalizedError)?.errorDescription
+                    ?? String(describing: directError)
+                let edge = (error as? LocalizedError)?.errorDescription
+                    ?? String(describing: error)
+                throw DaemonError.request("direct: \(direct); edge: \(edge)")
+            }
+        }
+    }
 }
