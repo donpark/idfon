@@ -38,10 +38,20 @@ final class EdgeWebView: UIViewController {
             webView.loadHTMLString("<p>Edge is not configured.</p>", baseURL: nil)
             return
         }
+        // A WebView cannot set request headers, so the edge credential rides the
+        // `idfon_ticket` cookie. Over plain HTTP (a self-hosted/LAN edge) WebKit
+        // does not send a cookie to an IP-literal host, so also carry the ticket
+        // as `?ticket=` (the edge accepts it). HTTPS keeps it cookie-only.
+        var loadURL = url
+        if url.scheme?.lowercased() != "https",
+           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.queryItems = [URLQueryItem(name: "ticket", value: EdgeClient.shared.ticket)]
+            loadURL = components.url ?? url
+        }
         // Set the cookie first: the load must carry it.
         config.websiteDataStore.httpCookieStore.setCookie(cookie) { [weak webView] in
             DispatchQueue.main.async {
-                webView?.load(URLRequest(url: url))
+                webView?.load(URLRequest(url: loadURL))
             }
         }
     }

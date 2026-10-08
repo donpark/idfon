@@ -241,8 +241,16 @@ value; check items off here as they land.
   session gaps. Residual: the download completed before the app was suspended,
   so "completes *during* suspension" and a system cold-start relaunch were not
   separately observed.
-- [ ] **`EdgeWebView` deep link (`idfon://<ref>/<path>`) and `idfon web open`.**
-  Built, not device-tested.
+- [x] **`EdgeWebView` deep link (`idfon://<ref>/<path>`) and `idfon web open`.**
+  `idfon web open <ref>/<path>` composes the edge URL (verified against a real
+  daemon + edge). On device, `idfon://<ref>/fs/index.html` routed to
+  `EdgeWebView` and rendered the edge-served HTML (edge `200`). Fixed on the way:
+  the `idfon_ticket` cookie was always `Secure`, so WebKit dropped it over a
+  plain-HTTP self-hosted edge; it is now `Secure` only for HTTPS, and a
+  non-HTTPS edge also carries `?ticket=` (which the edge accepts). Residual: a
+  non-endpoint-id ref (name/alias) is not resolved to an endpoint id before the
+  edge URL is built, so a configured-edge deep link only works with the 64-hex
+  ref.
 - [ ] **Confirm `action-audit.ndjson`** receives the `ok:` line on device (the
   alert proved the action ran, not the audit). Size/rotation bounds are
   implemented (`ActionAudit.rotateIfNeeded`, one `*.1` prior file).
