@@ -38,6 +38,8 @@ NAME="${IDFON_DO_NAME:-idfon-edge}"
 SSH_KEY="${IDFON_DO_SSH_KEY:-}"
 USE_RESERVED_IP="${IDFON_DO_RESERVED_IP:-1}"
 EDGE_IMAGE="${IDFON_EDGE_IMAGE:-ghcr.io/donpark/idfon-edge:latest}"
+DEPLOY_RELAY="${IDFON_DEPLOY_RELAY:-0}"
+RELAY_TOKEN="${IDFON_RELAY_TOKEN:-}"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -111,7 +113,7 @@ FW_ID="$(d compute firewall list --format ID,Name --no-header | awk -v n="$FW_NA
 if [ -z "$FW_ID" ]; then
   info "creating $FW_NAME (22 from $ADMIN_IP, 80+443 public)"
   d compute firewall create --name "$FW_NAME" \
-    --inbound-rules "protocol:tcp,ports:22,address:${ADMIN_IP}/32 protocol:tcp,ports:80,address:0.0.0.0/0 protocol:tcp,ports:443,address:0.0.0.0/0" \
+    --inbound-rules "protocol:tcp,ports:22,address:${ADMIN_IP}/32 protocol:tcp,ports:80,address:0.0.0.0/0 protocol:tcp,ports:443,address:0.0.0.0/0 protocol:tcp,ports:8443,address:0.0.0.0/0 protocol:udp,ports:7842,address:0.0.0.0/0" \
     --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0 protocol:udp,ports:all,address:0.0.0.0/0 protocol:icmp,address:0.0.0.0/0" \
     --droplet-ids "$DROPLET_ID" >/dev/null
 else
@@ -165,14 +167,29 @@ ssh $SSH_OPTS "root@$PUBLIC_IP" "mkdir -p /srv/idfon-edge /etc/idfon-edge"
 scp $SSH_OPTS "$DEPLOY/acme-issue.sh" "root@$PUBLIC_IP:/root/acme-issue.sh" >/dev/null
 scp $SSH_OPTS "$DEPLOY/compose.yaml" "root@$PUBLIC_IP:/srv/idfon-edge/compose.yaml" >/dev/null
 
+# Optional co-located iroh relay (issue #26).
+COMPOSE_FILES="-f compose.yaml"
+RELAY_ENV=""
+if [ "$DEPLOY_RELAY" = "1" ]; then
+  info "provisioning the co-located iroh relay"
+  ssh $SSH_OPTS "root@$PUBLIC_IP" "mkdir -p /srv/idfon-edge/relay"
+  scp $SSH_OPTS "$DEPLOY/relay/config.toml" "root@$PUBLIC_IP:/srv/idfon-edge/relay/config.toml" >/dev/null
+  scp $SSH_OPTS "$DEPLOY/compose.relay.yaml" "root@$PUBLIC_IP:/srv/idfon-edge/compose.relay.yaml" >/dev/null
+  COMPOSE_FILES="-f compose.yaml -f compose.relay.yaml"
+  RELAY_ENV="IDFON_RELAY_URLS=https://relay.$DOMAIN:8443\n"
+  if [ -n "$RELAY_TOKEN" ]; then
+    RELAY_ENV="${RELAY_ENV}IDFON_RELAY_TOKEN=$RELAY_TOKEN\n"
+  fi
+fi
+
 info "issuing wildcard certificate (DNS-01)"
 ssh $SSH_OPTS "root@$PUBLIC_IP" \
   "DIGITALOCEAN_API_KEY='$TOKEN' sh /root/acme-issue.sh '$DOMAIN' '$EMAIL'"
 
 info "starting idfon-edge"
 ssh $SSH_OPTS "root@$PUBLIC_IP" \
-  "printf 'IDFON_EDGE_IMAGE=%s\nIDFON_EDGE_DOMAIN=%s\n' '$EDGE_IMAGE' '$DOMAIN' > /srv/idfon-edge/.env
-   cd /srv/idfon-edge && docker compose pull -q && docker compose up -d"
+  "printf 'IDFON_EDGE_IMAGE=%s\nIDFON_EDGE_DOMAIN=%s\n${RELAY_ENV}' '$EDGE_IMAGE' '$DOMAIN' > /srv/idfon-edge/.env
+   cd /srv/idfon-edge && docker compose $COMPOSE_FILES pull -q && docker compose $COMPOSE_FILES up -d"
 
 # --- verify ----------------------------------------------------------------
 say "verify"

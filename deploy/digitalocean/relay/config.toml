@@ -1,0 +1,27 @@
+# iroh-relay config for the co-located enterprise relay (issue #26).
+# Mounted at /config/config.toml. The wildcard cert covers relay.<domain>.
+#
+# Why: enterprise NAT is usually symmetric/CGNAT, so direct UDP hole-punching
+# fails, and many networks allow only outbound TCP 443. The relay's WebSocket
+# transport (wss://…:8443) traverses that; QUIC address discovery (udp/7842)
+# only helps when UDP is permitted.
+
+enable_relay = true
+enable_quic_addr_discovery = true
+# Captive-portal HTTP; keep it off 80/443 (the edge owns those), unpublished.
+http_bind_addr = "[::]:8080"
+metrics_bind_addr = "[::]:9090"
+
+# Access control. "everyone" is an open relay (dev/small); for an enterprise,
+# restrict it and give the edge the same token:
+#   access = { shared_token = ["<token>"] }   # edge: IDFON_RELAY_TOKEN=<token>
+access = "everyone"
+
+[tls]
+# 443 belongs to the edge, so the relay URL carries its port:
+#   https://relay.<domain>:8443
+https_bind_addr = "[::]:8443"
+quic_bind_addr = "[::]:7842"
+cert_mode = "Manual"
+manual_cert_path = "/etc/idfon-edge/cert.pem"
+manual_key_path = "/etc/idfon-edge/key.pem"
