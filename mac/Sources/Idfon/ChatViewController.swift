@@ -1233,7 +1233,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         }.last ?? Artifact(
             artifactId: artifactId, kind: .document, mime: "text/plain",
             title: artifactId, sizeBytes: 0, blobTicket: blobTicket,
-            sourceMessageId: nil, conversation: nil, createdAt: "")
+            sourceMessageId: nil, conversation: nil, metadata: nil, createdAt: "")
     }
 
     private func handlePoint(_ point: PointEnvelope) {

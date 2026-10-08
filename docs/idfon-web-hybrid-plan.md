@@ -191,8 +191,10 @@ verified **caller context**, not just `(account, path)`.
   confirmation. `JSONRenderView` draws the UIKit catalog (Text/Card/Row/Metric/
   Button/Divider/Spacer); `RenderTools` registers the idfon tools
   (`status`/`peers`, plus a sensitive `message.send`). A structured artifact is
-  rendered as json-render when it parses as a spec, else the text view. Host
-  check: `ios/Checks/JSONRenderCheck`.
+  rendered as json-render when `metadata.renderer == "json-render"` or (legacy)
+  when it parses as a spec, else the text view. The mac AppKit port shares the
+  model and `RenderTools`; `JSONRenderView` is NSStackView-based. Host check:
+  `ios/Checks/JSONRenderCheck`.
 - No `WKScriptMessageHandler` and no remote scripts by design: the agent
   supplies data, the app owns every component and action. The gateway adds
   `nosniff` / `Referrer-Policy` / a framing CSP to every response and HSTS over
@@ -322,12 +324,18 @@ value; check items off here as they land.
 
 ### Small debt
 
-- [ ] `Artifact.metadata` renderer hint is unused (json-render is detected by
-  parsing).
-- [ ] JSON-render catalog is 7 components; no `state:set` / `sequence` / toast
-  actions and no schema-driven validation; actions are a hand-rolled registry,
-  **not MCP** (no MCP host on iOS).
-- [ ] `-edgeurl` / `-edgeticket` have no UI (launch args only).
+- [x] **`Artifact.metadata` renderer hint is used.** Both apps decode the
+  protocol `metadata` and honor `metadata.renderer`: `"json-render"` forces the
+  native renderer, any other value forces the fallback, and an absent hint keeps
+  parse-detection for legacy artifacts (`ArtifactDetailViewController.wantsJSONRender`).
+- [x] **JSON-render catalog stays deliberately minimal** (7 components). This is
+  a decision, not a gap: the agent supplies data only, and `state:set` /
+  `sequence` / toast plus an MCP host are deferred until a producer needs them
+  (YAGNI). Revisit with a state machine + MCP tools only then.
+- [x] **`-edgeurl` / `-edgeticket` have a UI.** iOS: an **Edge** button on the
+  Contacts screen; macOS: **Settings → Edge…**. Both edit the URL + ticket,
+  persist through `EdgeClient.configure`, and offer Clear
+  (`EdgeClient.clear()`); launch args still work and prefill the form.
 - [x] **`EdgeClient` pending-task map and `edge-inbox` age cap.** Pending
   entries carry an `at` epoch and are pruned past a 24 h TTL on drain; a staged
   file older than the TTL is dropped instead of reconciled.

@@ -60,6 +60,12 @@ enum JSONValue: Codable, Equatable {
         if case .object(let value) = self { return value }
         return nil
     }
+
+    /// `object` member access, e.g. `props["action"]`.
+    subscript(key: String) -> JSONValue? {
+        if case .object(let value) = self { return value[key] }
+        return nil
+    }
 }
 
 enum JSONRenderError: Error, Equatable {

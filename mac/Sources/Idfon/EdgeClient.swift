@@ -67,6 +67,13 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         idfonLog("idfon edge: configured \(url)")
     }
 
+    /// Removes the configured edge; fetches fall back to direct-only.
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: urlKey)
+        UserDefaults.standard.removeObject(forKey: ticketKey)
+        idfonLog("idfon edge: cleared")
+    }
+
     /// The edge URL for a resource (the credential rides a cookie/header, never
     /// the URL). `nil` when unconfigured.
     func url(account: String, path: String) -> URL? {

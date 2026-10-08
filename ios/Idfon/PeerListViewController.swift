@@ -122,8 +122,11 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Contacts"
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
+        let identity = UIBarButtonItem(
             title: "Identity", style: .plain, target: self, action: #selector(showIdentityPicker))
+        let edge = UIBarButtonItem(
+            title: "Edge", style: .plain, target: self, action: #selector(showEdgeSettings))
+        navigationItem.rightBarButtonItems = [identity, edge]
         navigationItem.backButtonDisplayMode = .generic // show "Back", not the callee's name
         navigationController?.navigationBar.prefersLargeTitles = true
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "peer")
@@ -141,6 +144,40 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         refresh()
+    }
+
+    /// Edge URL + requester ticket, persisted through `EdgeClient` (P4).
+    @objc private func showEdgeSettings() {
+        let alert = UIAlertController(
+            title: "Edge",
+            message: "Public edge URL and requester ticket, persisted on this device.",
+            preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "https://idfon.net"
+            field.text = EdgeClient.shared.baseURL?.absoluteString
+            field.keyboardType = .URL
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+        }
+        alert.addTextField { field in
+            field.placeholder = "requester ticket"
+            field.text = EdgeClient.shared.ticket
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Clear", style: .destructive) { _ in
+            EdgeClient.clear()
+        })
+        alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak alert] _ in
+            let url = alert?.textFields?.first?.text?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let ticket = alert?.textFields?.last?.text?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !url.isEmpty, !ticket.isEmpty else { return }
+            EdgeClient.configure(url: url, ticket: ticket)
+        })
+        present(alert, animated: true)
     }
 
     @objc private func showIdentityPicker() {
