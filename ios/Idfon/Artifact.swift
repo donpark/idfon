@@ -29,10 +29,12 @@ struct Artifact: Codable, Equatable {
     let blobTicket: String?
     let sourceMessageId: String?
     let conversation: String?
+    /// Producer renderer hints (`renderer`, catalog id, dimensions, …).
+    let metadata: JSONValue?
     let createdAt: String
 
     enum CodingKeys: String, CodingKey {
-        case kind, mime, title, conversation
+        case kind, mime, title, conversation, metadata
         case artifactId = "artifact_id"
         case sizeBytes = "size_bytes"
         case blobTicket = "blob_ticket"

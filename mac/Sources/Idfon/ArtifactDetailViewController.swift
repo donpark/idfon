@@ -241,6 +241,16 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
             || mime.hasPrefix("audio/") || mime.hasPrefix("video/")
     }
 
+    /// The producer's `metadata.renderer` hint decides json-render; when it is
+    /// absent, detection by parsing keeps legacy artifacts working.
+    private func wantsJSONRender(_ data: Data) -> Bool {
+        switch artifact.metadata?["renderer"]?.string {
+        case "json-render": return true
+        case nil: return (try? JSONRenderSpec.decode(data)) != nil
+        default: return false
+        }
+    }
+
     /// Displays a web-ish artifact through the gateway (loopback or edge).
     private func renderGateway(_ source: GatewayArtifactSource) {
         let web = SandboxedArtifactWebView(source: source)
@@ -348,7 +358,8 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
             setDocument(imageView)
             self.imageView = imageView
             self.selectionView = overlay
-        } else if let spec = try? JSONRenderSpec.decode(data),
+        } else if wantsJSONRender(data),
+                  let spec = try? JSONRenderSpec.decode(data),
                   let normalized = try? spec.normalized(),
                   !normalized.elements.isEmpty {
             // App-owned json-render: the artifact supplies only data; every

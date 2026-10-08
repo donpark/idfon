@@ -377,6 +377,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appItem.submenu = appMenu
         main.addItem(appItem)
 
+        // Edge (public ingress) settings: URL + requester ticket.
+        let settingsMenu = NSMenu(title: "Settings")
+        settingsMenu.addItem(NSMenuItem(
+            title: "Edge…", action: #selector(showEdgeSettings), keyEquivalent: ""))
+        let settingsItem = NSMenuItem()
+        settingsItem.title = "Settings"
+        settingsItem.submenu = settingsMenu
+        main.addItem(settingsItem)
+
         let mediaMenu = NSMenu(title: "Media")
         let stop = NSMenuItem(title: "Emergency Stop", action: #selector(emergencyStop), keyEquivalent: "")
         stop.keyEquivalentModifierMask = [.command, .shift]
@@ -434,6 +443,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item)
         }
         return menu
+    }
+
+    /// Edge URL + requester ticket, persisted through `EdgeClient` (P4).
+    @objc private func showEdgeSettings() {
+        let alert = NSAlert()
+        alert.messageText = "Edge"
+        alert.informativeText = "Public edge URL and requester ticket, persisted on this Mac."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Clear")
+        let urlField = NSTextField(string: EdgeClient.shared.baseURL?.absoluteString ?? "")
+        urlField.placeholderString = "https://idfon.net"
+        let ticketField = NSTextField(string: EdgeClient.shared.ticket ?? "")
+        ticketField.placeholderString = "requester ticket"
+        urlField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        ticketField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        let stack = NSStackView(views: [
+            NSTextField(labelWithString: "URL"), urlField,
+            NSTextField(labelWithString: "Ticket"), ticketField,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.frame = NSRect(x: 0, y: 0, width: 380, height: 120)
+        alert.accessoryView = stack
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            let url = urlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ticket = ticketField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !url.isEmpty, !ticket.isEmpty { EdgeClient.configure(url: url, ticket: ticket) }
+        case .alertThirdButtonReturn:
+            EdgeClient.clear()
+        default:
+            break
+        }
     }
 
     @objc private func selectTtsBackend(_ sender: NSMenuItem) {

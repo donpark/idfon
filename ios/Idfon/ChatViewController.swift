@@ -204,7 +204,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }.last ?? Artifact(
             artifactId: artifactId, kind: .document, mime: "text/plain",
             title: artifactId, sizeBytes: 0, blobTicket: blobTicket,
-            sourceMessageId: nil, conversation: nil, createdAt: "")
+            sourceMessageId: nil, conversation: nil, metadata: nil, createdAt: "")
     }
 
     /// Open the artifact an agent pointed at, with the highlight applied.
