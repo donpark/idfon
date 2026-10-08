@@ -1,6 +1,7 @@
 # idfon web: hybrid gateway architecture — implementation plan
 
-> **Status:** design (P0–P5 landed in `crates/idfon-*` and iOS).
+> **Status:** design (P0–P5 landed in `crates/idfon-*` and iOS; P6 is the
+> Cloudflare Worker edge in `deploy/cloudflare`, source-landed, deploy pending).
 > Companion to `idfon-web.md`, which analyses serving P2P pages in a
 > `WKWebView`; this plans the **hybrid transport** that analysis closes with.
 > Written 2026-10-07.
@@ -40,6 +41,7 @@ sync, authorization verified at **both** ends, and iOS background handoff.
 | Per-identity provider, `resource.read` grant, `gateway.start`/`provider.start` | landed (`crates/idfon-daemon`) |
 | Standalone provider | landed (`idfon-mcp expose`) |
 | Edge service (`idfon.net`) | **P0+P1** (`crates/idfon-edge`): persistent identity, TLS, `<ref>.<domain>` hosts, requester auth, health, rate limit |
+| Edge on Cloudflare Workers | **P6** (`deploy/cloudflare`): the same ingress compiled to `wasm32-unknown-unknown` for `workerd`; relay-only, per-request endpoint |
 | Wildcard origin / URL mapping | **P1:** origin-domain virtual hosts + TLS termination landed; wildcard DNS is external |
 | Requester identity auth + caller context in `Authorizer`/`Backend` | **P1/P3:** `Authenticator`/`Caller` (with a forwarded `ticket`) landed |
 | Ticket-over-H3 (transparent edge, path-scoped) | **P3:** `CapabilityTicket.path_scope`; provider accepts `x-idfon-ticket`; edge forwards it |
@@ -202,18 +204,40 @@ verified **caller context**, not just `(account, path)`.
   to `Idfon/action-audit.ndjson` by `ActionAudit` (rotated to a single `*.1`
   file at 1 MiB).
 
+### P6 — Cloudflare Worker edge (source landed; deploy pending)
+
+- `deploy/cloudflare`: the P0–P3 ingress as a `workers-rs`/`wasm-bindgen`
+  Worker. Cloudflare terminates TLS and owns the wildcard origin; the Worker
+  verifies the ticket (header/cookie/query), forwards it, and GETs the peer
+  over `idfon/http3/1` via iroh's wasm relay transport. Same trust model as
+  `crates/idfon-edge`; `idfon-core` gained a wasm build (its `transport` module
+  is native-only, tokio `rt-multi-thread` is target-gated).
+- Two `workerd`-specific workarounds, both in `deploy/cloudflare/README.md`:
+  **trailing-dot relay hostnames** must be normalized (workerd rejects them in
+  `fetch`/WebSocket, so iroh's default relay URLs and resolved peer addresses
+  are rewritten), and `ring` must be archived with LLVM `ar` when building on
+  macOS.
+- Verified against a real native `iroh-h3-axum` peer under `wrangler dev`:
+  ticket auth via header and cookie, forwarded ticket echoed by the peer,
+  401 on missing/invalid tickets, `/healthz`, and the `/<ref>/<path>` route.
+  The endpoint is built per request (stateless Workers drop isolate sockets;
+  a cached endpoint hangs on a dead relay WebSocket). Not yet deployed to the
+  `idfon.net` zone.
+
 ## Open decisions — recommendations
 
 Proposed 2026-10-07, grounded in what P0–P5 landed plus the device/edge E2E.
 Confirm to close.
 
-1. **Edge runtime → Rust (already the de facto answer).** `crates/idfon-edge`
-   reuses `idfon-gateway`/`idfon-h3` directly and now has a Dockerfile, systemd
-   unit, CI job, request metrics, and a real-`idfond` E2E
-   (`scripts/edge-e2e.sh`). A Cloudflare Worker would need a JS iroh binding
-   that does not exist here and would re-implement H3 + capability-ticket
-   verification. Keep Rust; revisit a Worker only if the edge must run with no
-   host at CDN scale.
+1. **Edge runtime → Rust, with two deploy shapes (updated after P6).** The
+   native `crates/idfon-edge` (Dockerfile, systemd unit, CI job, request metrics,
+   real-`idfond` E2E in `scripts/edge-e2e.sh`) stays the self-host path and the
+   direct/UDP-capable edge. For the public `idfon.net` zone, the P6
+   `deploy/cloudflare` Worker is now viable: **no JS port is needed** — iroh 1.3
+   and `iroh-h3-client` build for `wasm32-unknown-unknown` and run on `workerd`,
+   reusing `idfon-core`'s ticket verification. It is relay-only and needs the
+   trailing-dot normalization; pick it when running with no host/CDN ingress is
+   wanted, and the native binary otherwise.
 2. **URL form → wildcard `<ref>.<domain>` primary, `/<ref>/<path>` fallback.**
    Both are implemented (`Config.origin_domain`, `target()`). Wildcard gives
    each peer a clean origin: the path passes through untouched, cookies scope
@@ -305,9 +329,28 @@ value; check items off here as they land.
 
 ### External / ops (not in the repo)
 
-- [ ] `*.idfon.net` **DNS + certificate issuance + a host**. Process
-  supervision and the container/reverse-proxy path are packaged
-  (`deploy/idfon-edge/`); the edge can also terminate TLS itself.
+- [ ] **Cloudflare policy sign-off for the public edge.** Checked 2026-10-08:
+  Self-Serve Subscription Agreement §2.2.1(j) forbids "provid[ing] a virtual
+  private network or other similar proxy services", and an ingress relaying
+  third-party peer traffic plausibly falls under it — this applies to the
+  Services generally, so it gates the native edge behind Cloudflare's proxy
+  too, not just the Worker. The old §2.8 non-HTML restriction is gone; the
+  remaining video/large-file rule points at the paid Developer Platform, which
+  Workers is. Before mapping `idfon.net`: get written confirmation from
+  Cloudflare, or keep the edge DNS-only (grey-cloud) on a self-TLS host, or
+  scope the edge to the owner's own resources. A paid Workers plan is also
+  required (Free's 10 ms CPU is below an iroh handshake). Details:
+  `deploy/cloudflare/README.md`.
+
+- [ ] `*.idfon.net` **DNS + certificate issuance + a host**. **Chosen path:
+  a DigitalOcean droplet** running the native edge, with a Let's Encrypt
+  wildcard cert via DO DNS (DNS-01). Everything is prepared in
+  `deploy/digitalocean/` (runbook, `compose.yaml`, `acme-issue.sh`,
+  `cloud-init.yaml`); `idfon-edge` gained an `IDFON_EDGE_KEY` env fallback so
+  the identity need not be a host volume. Remaining work is owner-only: create
+  the droplet/zone/token, run the runbook. The **Cloudflare Worker**
+  (`deploy/cloudflare/`) stays as a source-landed experiment, gated by the
+  ToS §2.2.1(j) sign-off above and a paid plan.
 - [x] Edge **request logging + metrics**: one structured `idfon.edge.access`
   event per served request (method/host/path/status/latency/caller/account) and
   Prometheus counters at `GET /metrics` (after requester auth).
@@ -372,6 +415,9 @@ value; check items off here as they land.
 
 - `cargo test -p idfon-edge` (edge e2e), `cargo test -p idfon-gateway`
   (H3 backend), `cargo check --workspace --all-targets`.
+- `deploy/cloudflare`: `./build.sh` (wasm bundle) and `cargo check --target
+  wasm32-unknown-unknown` from that directory; `wrangler dev` against a native
+  H3 peer for the runtime path (see its README).
 - Manual: start a provider (`idfon-mcp expose --root DIR`), pair the edge, and
   fetch `https://<peer>.idfon.net/fs/<path>` from a browser and from a `WKWebView`
   on device (background the app mid-fetch in P4).

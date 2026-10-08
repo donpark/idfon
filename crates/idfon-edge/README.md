@@ -44,6 +44,11 @@ authorizes the ticket's **issuer** (P3). `--token VALUE` is the simpler shared
 bearer alternative. `--health-path` (default `/healthz`) answers probes before
 auth.
 
+The persistent identity can come from `IDFON_EDGE_KEY` (64 hex) instead of
+`--key-file`, which keeps container deploys stateless. For a concrete public
+deploy (DigitalOcean droplet, wildcard Let's Encrypt cert, `compose.yaml`), see
+`deploy/digitalocean/README.md`.
+
 The edge prints an owner **pairing** block at startup: either pair with the
 edge endpoint id and grant it `resource.read` (option A), or issue the requester
 a path-scoped `resource.read` ticket (option B; no pairing required):

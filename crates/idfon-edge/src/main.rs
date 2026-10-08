@@ -6,7 +6,8 @@
 //!            [--health-path PATH] [--rate-limit N]
 //! ```
 //!
-//! Env fallbacks: `IDFON_EDGE_TOKEN`, `IDFON_EDGE_KEY_FILE`, `IDFON_EDGE_DOMAIN`.
+//! Env fallbacks: `IDFON_EDGE_TOKEN`, `IDFON_EDGE_KEY` (64 hex, takes
+//! precedence over the key file), `IDFON_EDGE_KEY_FILE`, `IDFON_EDGE_DOMAIN`.
 //! The key file holds 64 hex characters; a missing file is generated (0600).
 
 use std::collections::HashSet;
@@ -39,7 +40,7 @@ OPTIONS:
   --rate-limit N          Max requests per caller per minute (0 = unlimited)
   --help, -h              Print this help
 
-ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
+ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
 ";
 
 #[tokio::main]
@@ -193,6 +194,14 @@ fn home_dir() -> PathBuf {
 }
 
 fn load_or_create_key(path: &Path) -> anyhow::Result<[u8; 32]> {
+    // An env-supplied identity keeps container deploys stateless (no volume).
+    // An empty value counts as unset, so compose can pass it through generically.
+    if let Ok(value) = std::env::var("IDFON_EDGE_KEY") {
+        if !value.trim().is_empty() {
+            return parse_key(&value)
+                .ok_or_else(|| anyhow!("IDFON_EDGE_KEY must be 64 hex characters"));
+        }
+    }
     if let Ok(text) = std::fs::read_to_string(path) {
         let key = decode_signing_key(text.trim()).ok_or_else(|| {
             anyhow!(
@@ -214,4 +223,21 @@ fn load_or_create_key(path: &Path) -> anyhow::Result<[u8; 32]> {
     }
     eprintln!("generated a new edge identity at {}", path.display());
     Ok(signing_key_bytes(&key))
+}
+
+fn parse_key(value: &str) -> Option<[u8; 32]> {
+    decode_signing_key(value.trim()).map(|key| signing_key_bytes(&key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_key;
+
+    #[test]
+    fn parse_key_accepts_hex_and_rejects_junk() {
+        assert!(parse_key(&"ab".repeat(32)).is_some());
+        assert!(parse_key(&format!("  {}  \n", "cd".repeat(32))).is_some());
+        assert!(parse_key("not-hex").is_none());
+        assert!(parse_key(&"ab".repeat(31)).is_none());
+    }
 }

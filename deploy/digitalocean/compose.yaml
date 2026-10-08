@@ -1,0 +1,32 @@
+# idfon-edge on a DigitalOcean droplet. Run from this directory:
+#   cp .env.example .env && docker compose up -d
+# The edge terminates TLS itself with the wildcard cert in /etc/idfon-edge.
+services:
+  idfon-edge:
+    image: ${IDFON_EDGE_IMAGE:-ghcr.io/donpark/idfon-edge:latest}
+    restart: unless-stopped
+    # Host 443 -> container 8443 (non-root can bind >1024).
+    ports:
+      - "443:8443"
+    volumes:
+      - ${IDFON_EDGE_STATE:-/srv/idfon-edge}:/var/lib/idfon
+      - /etc/idfon-edge:/etc/idfon-edge:ro
+    environment:
+      RUST_LOG: idfon_edge=info,idfon.edge.access=info
+      # Empty means "use the key file"; set a 64-hex value to be stateless.
+      IDFON_EDGE_KEY: ${IDFON_EDGE_KEY:-}
+    command:
+      - --bind
+      - 0.0.0.0:8443
+      - --domain
+      - ${IDFON_EDGE_DOMAIN:-idfon.net}
+      - --tls-cert
+      - /etc/idfon-edge/cert.pem
+      - --tls-key
+      - /etc/idfon-edge/key.pem
+      - --require-ticket
+      - ${IDFON_EDGE_REQUIRE_TICKET:-resource.read}
+      - --rate-limit
+      - ${IDFON_EDGE_RATE_LIMIT:-120}
+      - --key-file
+      - /var/lib/idfon/edge.key
