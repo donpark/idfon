@@ -85,7 +85,9 @@ final class EdgeClient: NSObject, @unchecked Sendable {
             .value: encoded,
             .domain: "\(domain)",
             .path: "/",
-            .secure: true,
+            // A Secure cookie is not sent over `http://`, so a self-hosted/LAN
+            // edge (TLS optional) needs `false`; the public edge is HTTPS.
+            .secure: baseURL.scheme?.lowercased() == "https",
         ])
     }
 

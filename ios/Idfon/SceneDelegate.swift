@@ -109,7 +109,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///   idfon://dial/<peer-ref>    — dial a peer (streams the bundled WAV)
     ///   idfon://videodial/<ref>    — start a video call
     ///   idfon://answer             — arm auto-answer
-    /// The resource path is parsed but not yet routed to a screen.
+    /// `idfon://<ref>/<path>` opens an `EdgeWebView` when the edge is
+    /// configured, else the peer's thread.
     private func handleURL(_ context: UIOpenURLContext) {
         guard let link = IdfonURL(context.url) else { return }
         idfonLog("idfon openURL: \(context.url)")
