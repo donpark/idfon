@@ -202,17 +202,37 @@ verified **caller context**, not just `(account, path)`.
   to `Idfon/action-audit.ndjson` by `ActionAudit` (rotated to a single `*.1`
   file at 1 MiB).
 
-## Open decisions
+## Open decisions — recommendations
 
-1. **Edge runtime** — new Rust crate in this repo, or a Cloudflare Worker (iroh
-   JS)? The repo has no `idfon.net` code and no JS iroh binding here; Rust reuses
-   `idfon-gateway`/`idfon-h3` directly.
-2. **URL form** — wildcard subdomain (clean origins, needs wildcard TLS) vs
-   path.
-3. **Privacy posture** — self-hostable edge? opt-in? The edge inherently breaks
-   the "no directory / no public endpoint" property.
-4. **Auth timeline** — is P3 required for v1, or is the per-owner grant (A)
-   acceptable?
+Proposed 2026-10-07, grounded in what P0–P5 landed plus the device/edge E2E.
+Confirm to close.
+
+1. **Edge runtime → Rust (already the de facto answer).** `crates/idfon-edge`
+   reuses `idfon-gateway`/`idfon-h3` directly and now has a Dockerfile, systemd
+   unit, CI job, request metrics, and a real-`idfond` E2E
+   (`scripts/edge-e2e.sh`). A Cloudflare Worker would need a JS iroh binding
+   that does not exist here and would re-implement H3 + capability-ticket
+   verification. Keep Rust; revisit a Worker only if the edge must run with no
+   host at CDN scale.
+2. **URL form → wildcard `<ref>.<domain>` primary, `/<ref>/<path>` fallback.**
+   Both are implemented (`Config.origin_domain`, `target()`). Wildcard gives
+   each peer a clean origin: the path passes through untouched, cookies scope
+   per peer, and no `/<ref>` prefix confuses relative subresources. It needs
+   wildcard DNS + a wildcard cert. Keep the path form for raw-IP / no-wildcard
+   hosts — a self-hosted edge on an IP needs `--domain <host-or-ip>` so the
+   `Host` check passes.
+3. **Privacy posture → self-hostable and opt-in, no directory.** The edge is a
+   relay, not an authority: it resolves a 64-hex ref to an iroh endpoint id (no
+   directory), re-authorizes at the peer, and stores nothing. Joining is
+   opt-in per owner (pair the edge + grant `resource.read`, or issue a
+   path-scoped ticket). Ship one public edge for convenience *and* the
+   Docker/systemd self-host path; do not make the public edge mandatory.
+   Document that the edge sees request metadata/traffic.
+4. **Auth timeline → P3 (owner-issued, path-scoped tickets) is v1.** P3 is
+   landed and E2E-tested, authorizes the ticket *issuer* at the peer, and
+   avoids option A's root-wide, edge-trusted grant. Option A (edge as a known
+   peer) stays as the dev/simple mode. The edge's `--require-ticket` is a
+   coarse gate; the peer re-checks issuer/grant/capability/path per request.
 
 ## Deferred / follow-ups
 
@@ -295,8 +315,9 @@ value; check items off here as they land.
 - [x] Edge **packaging**: `deploy/idfon-edge/{Dockerfile,idfon-edge.service}`
   and `.github/workflows/edge.yml` (gateway/edge crate tests, image build +
   `--help` smoke test, GHCR push on `edge-v*` tags).
-- [ ] **Open decisions** (above): edge runtime (Rust vs Worker), URL form
-  (wildcard vs path), privacy/self-host posture, auth timeline.
+- [ ] **Open decisions** — recommendations written (Rust edge; wildcard primary
+  with path fallback; self-hostable/opt-in with no directory; P3 tickets for
+  v1). Awaiting the owner's confirmation before the section closes.
 
 ### Parity / tests / docs
 
