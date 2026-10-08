@@ -1544,8 +1544,10 @@ fn web_url(request: &Request) -> Response {
     }
 }
 
-/// `<base>/<ref><path>` for the public edge. Errors on a missing base or an
-/// empty ref; the path is normalized to a leading slash.
+/// The public edge URL for a resource. A real endpoint id on an `https://`
+/// domain uses the wildcard host form `<z-base-32>.<domain><path>` (the 64-hex
+/// id exceeds the 63-octet DNS label limit); aliases and IP/port bases use
+/// `<base>/<ref><path>`. Errors on a missing base or an empty ref.
 fn edge_url(base: Option<String>, reference: &str, path: &str) -> Result<String, String> {
     let base = base.ok_or("no edge configured (set IDFON_EDGE_URL on the daemon)")?;
     if reference.trim().is_empty() {
@@ -1556,12 +1558,38 @@ fn edge_url(base: Option<String>, reference: &str, path: &str) -> Result<String,
     } else {
         format!("/{path}")
     };
+    let reference = reference.trim();
+
+    if let Some(id) = idfon_core::parse_endpoint_ref(reference) {
+        if let Some(host) = wildcard_host(&base) {
+            return Ok(format!(
+                "https://{}.{}{}",
+                idfon_core::endpoint_ref(&id),
+                host,
+                path
+            ));
+        }
+    }
     Ok(format!(
         "{}/{}{}",
         base.trim_end_matches('/'),
-        reference.trim(),
+        reference,
         path
     ))
+}
+
+/// The host of an `https://` base that can take a wildcard subdomain
+/// (`*.<host>`), or `None` for an IP / `localhost` / explicit-port base.
+fn wildcard_host(base: &str) -> Option<&str> {
+    let host = base.strip_prefix("https://")?.split('/').next()?;
+    if host.is_empty() || host.contains(':') || host == "localhost" || !host.contains('.') {
+        return None;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() == 4 && labels.iter().all(|label| label.parse::<u8>().is_ok()) {
+        return None;
+    }
+    Some(host)
 }
 
 /// Capability a caller must hold to read this identity's media resources.
@@ -6289,6 +6317,23 @@ mod tests {
         );
         assert!(edge_url(None, "abc", "/x").is_err());
         assert!(edge_url(Some("https://idfon.net".into()), "", "/x").is_err());
+    }
+
+    #[test]
+    fn edge_url_uses_z32_host_form_for_endpoint_ids() {
+        let key = idfon_core::generate_identity();
+        let id: iroh::EndpointId = idfon_core::peer_id(&key).parse().unwrap();
+        let z = idfon_core::endpoint_ref(&id);
+        assert_eq!(z.len(), 52);
+        assert_eq!(
+            edge_url(Some("https://idfon.net".into()), &id.to_string(), "fs/x").unwrap(),
+            format!("https://{z}.idfon.net/fs/x")
+        );
+        // An IP/port base cannot take a wildcard subdomain: path form.
+        assert_eq!(
+            edge_url(Some("http://127.0.0.1:8080".into()), &id.to_string(), "fs/x").unwrap(),
+            format!("http://127.0.0.1:8080/{}/fs/x", id)
+        );
     }
 
     #[test]

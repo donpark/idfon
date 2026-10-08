@@ -35,6 +35,27 @@ final class IdfonWebTests: XCTestCase {
         XCTAssertEqual(url.absoluteString, "https://idfon.net/acct/fs/a.html")
     }
 
+    func testEdgeURLUsesZ32HostForEndpointIds() throws {
+        // 64-hex endpoint id -> 52-char z-base-32 host (fits a DNS label).
+        let hex = "ceb9651243ed51ae5504f830a41b1cc0d93d4e9ac7a776a41d4ecf004be6168f"
+        let z32 = "34hskr1d7ie4hier9yakegahadcu4uw4a6uzpjy7j58oy19gn48o"
+        XCTAssertEqual(EdgeClient.EndpointRefShort.fromHex(hex), z32)
+        XCTAssertEqual(EdgeClient.EndpointRefShort.fromHex("acct"), nil)
+
+        EdgeClient.configure(url: "https://idfon.net", ticket: "tok")
+        let url = try XCTUnwrap(EdgeClient.shared.url(account: hex, path: "/fs/a.html"))
+        XCTAssertEqual(url.absoluteString, "https://\(z32).idfon.net/fs/a.html")
+
+        // An alias stays on the path form.
+        let alias = try XCTUnwrap(EdgeClient.shared.url(account: "acct", path: "/fs/a.html"))
+        XCTAssertEqual(alias.absoluteString, "https://idfon.net/acct/fs/a.html")
+
+        // An IP base cannot take a wildcard subdomain: path form.
+        EdgeClient.configure(url: "http://192.168.1.2:8791", ticket: "tok")
+        let ip = try XCTUnwrap(EdgeClient.shared.url(account: hex, path: "/fs/a.html"))
+        XCTAssertEqual(ip.absoluteString, "http://192.168.1.2:8791/\(hex)/fs/a.html")
+    }
+
     func testSessionCookieIsSecureOnlyForHTTPS() throws {
         EdgeClient.configure(url: "https://idfon.net", ticket: "a,b")
         let secure = try XCTUnwrap(EdgeClient.shared.sessionCookie)

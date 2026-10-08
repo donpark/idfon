@@ -103,18 +103,91 @@ final class EdgeClient: NSObject, @unchecked Sendable {
     }
 
     /// `https://<base>/<account><path>` with the requester ticket attached.
+    /// A hex endpoint id on an `https://` domain uses the wildcard host form
+    /// `<z-base-32>.<domain><path>` (the 64-char hex id does not fit a DNS
+    /// label); aliases and IP/localhost bases use `<base>/<account><path>`.
     private func request(account: String, path: String) -> URLRequest? {
         guard let baseURL, let ticket else { return nil }
+        let url = Self.resourceURL(baseURL: baseURL, account: account, path: path)
+        var request = URLRequest(url: url)
+        request.setValue(ticket, forHTTPHeaderField: "x-idfon-ticket")
+        request.timeoutInterval = 60
+        return request
+    }
+
+    static func resourceURL(baseURL: URL, account: String, path: String) -> URL {
+        if let host = wildcardHost(baseURL), let short = EndpointRefShort.fromHex(account) {
+            var components = URLComponents()
+            components.scheme = "https"
+            components.host = "\(short).\(host)"
+            components.path = path.hasPrefix("/") ? path : "/\(path)"
+            if let url = components.url { return url }
+        }
         var url = baseURL
         url.appendPathComponent(account)
         // `path` starts with `/`; split so no empty component is appended.
         for component in path.split(separator: "/") {
             url.appendPathComponent(String(component))
         }
-        var request = URLRequest(url: url)
-        request.setValue(ticket, forHTTPHeaderField: "x-idfon-ticket")
-        request.timeoutInterval = 60
-        return request
+        return url
+    }
+
+    /// The host of an `https://` base that can take a wildcard subdomain, or
+    /// `nil` for an IP / `localhost` / explicit-port base.
+    private static func wildcardHost(_ baseURL: URL) -> String? {
+        guard baseURL.scheme?.lowercased() == "https",
+              baseURL.port == nil,
+              let host = baseURL.host, !host.isEmpty,
+              host != "localhost", host.contains(".")
+        else { return nil }
+        let labels = host.split(separator: ".")
+        if labels.count == 4, labels.allSatisfy({ UInt8($0) != nil }) { return nil }
+        return host
+    }
+
+    /// z-base-32 of an endpoint id: 52 chars, the DNS-label-safe form iroh and
+    /// pkarr use. The 64-char hex form exceeds the 63-octet DNS label limit.
+    enum EndpointRefShort {
+        private static let alphabet = Array("ybndrfg8ejkmcpqxot1uwisza345h769")
+
+        /// The 52-char z-base-32 form of a 64-hex endpoint id; `nil` for
+        /// anything that is not a hex endpoint id (e.g. an alias).
+        static func fromHex(_ hex: String) -> String? {
+            guard hex.count == 64, let bytes = bytes(fromHex: hex) else { return nil }
+            return encode(bytes)
+        }
+
+        static func encode(_ bytes: [UInt8]) -> String {
+            var out = ""
+            out.reserveCapacity((bytes.count * 8 + 4) / 5)
+            var buffer = 0
+            var bits = 0
+            for byte in bytes {
+                buffer = (buffer << 8) | Int(byte)
+                bits += 8
+                while bits >= 5 {
+                    bits -= 5
+                    out.append(alphabet[(buffer >> bits) & 0x1f])
+                }
+            }
+            if bits > 0 {
+                out.append(alphabet[(buffer << (5 - bits)) & 0x1f])
+            }
+            return out
+        }
+
+        private static func bytes(fromHex hex: String) -> [UInt8]? {
+            var bytes: [UInt8] = []
+            bytes.reserveCapacity(hex.count / 2)
+            var index = hex.startIndex
+            while index < hex.endIndex {
+                let next = hex.index(index, offsetBy: 2)
+                guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+                bytes.append(byte)
+                index = next
+            }
+            return bytes
+        }
     }
 
     /// Foreground fetch through the edge. Uses the shared session: the edge

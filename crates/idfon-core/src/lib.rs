@@ -68,6 +68,25 @@ pub fn account_alias(account_id: &str) -> String {
     encode_hex(blake3::hash(account_id.as_bytes()).as_bytes())
 }
 
+/// The short, DNS-safe host form of an endpoint id: z-base-32 (52 chars), the
+/// encoding pkarr/iroh use for endpoint ids in DNS names. The 64-char hex form
+/// exceeds the 63-octet DNS label limit, so `<ref>` hostnames use this.
+pub fn endpoint_ref(id: &iroh::EndpointId) -> String {
+    id.to_z32()
+}
+
+/// Parses an endpoint reference: 64-char hex, or 52-char z-base-32
+/// (case-insensitive, since DNS is). Length disambiguates the alphabets; other
+/// forms (aliases) return `None`.
+pub fn parse_endpoint_ref(value: &str) -> Option<iroh::EndpointId> {
+    let value = value.trim();
+    match value.len() {
+        64 => value.parse::<iroh::EndpointId>().ok(),
+        52 => iroh::EndpointId::from_z32(&value.to_ascii_lowercase()).ok(),
+        _ => value.parse::<iroh::EndpointId>().ok(),
+    }
+}
+
 pub fn encode_signing_key(key: &SigningKey) -> String {
     encode_hex(&key.to_bytes())
 }
@@ -383,6 +402,23 @@ fn hex_digit(value: u8) -> Option<u8> {
 mod tests {
     use super::*;
     use idfon_protocol::VoiceMode;
+
+    #[test]
+    fn endpoint_ref_round_trips_hex_and_z32() {
+        let key = generate_identity();
+        let id: iroh::EndpointId = peer_id(&key).parse().unwrap();
+        let hex = id.to_string();
+        assert_eq!(hex.len(), 64);
+        assert_eq!(parse_endpoint_ref(&hex), Some(id));
+
+        let short = endpoint_ref(&id);
+        assert_eq!(short.len(), 52, "z-base-32 of a 32-byte id is 52 chars");
+        assert!(short.len() < 63, "must fit a DNS label");
+        assert_eq!(parse_endpoint_ref(&short), Some(id));
+        // DNS is case-insensitive; z-base-32 decoding is not.
+        assert_eq!(parse_endpoint_ref(&short.to_uppercase()), Some(id));
+        assert_eq!(parse_endpoint_ref("not-a-ref"), None);
+    }
 
     #[test]
     fn signed_message_verifies_and_tampering_fails() {

@@ -108,13 +108,20 @@ pub struct EndpointRefResolver {
 
 impl AccountResolver for EndpointRefResolver {
     fn resolve(&self, account: &str) -> Option<EndpointAddr> {
-        if !self.allow.is_empty() && !self.allow.contains(account) {
-            return None;
-        }
+        // Pins may name an alias; an endpoint ref may be hex (64) or z-base-32
+        // (52, the DNS-label-safe form).
         if let Some(addr) = self.pins.get(account) {
             return Some(addr.clone());
         }
-        account.parse::<EndpointId>().ok().map(EndpointAddr::new)
+        let id: EndpointId = idfon_core::parse_endpoint_ref(account)?;
+        let hex = id.to_string();
+        if !self.allow.is_empty() && !self.allow.contains(&hex) {
+            return None;
+        }
+        if let Some(addr) = self.pins.get(&hex) {
+            return Some(addr.clone());
+        }
+        Some(EndpointAddr::new(id))
     }
 }
 
