@@ -1,0 +1,26 @@
+name = "idfon-edge"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+# iroh's wasm build uses WebSocket/fetch/crypto, all present in workerd.
+
+# Wildcard ingress: `<ref>.idfon.net` and the `/ref/...` fallback on the apex.
+# Requires the `idfon.net` zone to be active in this Cloudflare account. Remove
+# these while developing (routes need a deployed zone).
+routes = [
+  { pattern = "*.idfon.net/*", zone_name = "idfon.net" },
+  { pattern = "idfon.net/*", zone_name = "idfon.net" },
+]
+
+[vars]
+# Virtual-host base domain. The Worker serves `<ref>.<EDGE_DOMAIN>` plus
+# `<EDGE_DOMAIN>/<ref>/...`.
+EDGE_DOMAIN = "idfon.net"
+# Default: require a capability ticket (header/cookie/query) and forward it.
+# Set EDGE_TOKEN instead to use a shared bearer token.
+EDGE_REQUIRE_TICKET = "resource.read"
+# Requests per authenticated subject per minute; 0 disables.
+RATE_LIMIT = "120"
+
+# Secrets (not here): `wrangler secret put EDGE_KEY` (64 hex ed25519), and
+# `wrangler secret put EDGE_TOKEN` when using token auth.

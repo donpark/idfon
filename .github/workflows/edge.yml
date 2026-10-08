@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    # Tag pushes publish the image (the push step below is gated on
+    # refs/tags/edge-v*). Without `tags:` here the workflow never ran on tags.
+    tags: ["edge-v*"]
     paths:
       - "crates/idfon-edge/**"
       - "crates/idfon-gateway/**"

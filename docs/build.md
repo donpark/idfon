@@ -7,12 +7,13 @@ entrypoint, and cargo/SwiftPM/Xcode cache per target dir — so a change only
 needs the subprojects that actually link it. **When you change something shared,
 say which subprojects must be rebuilt.**
 
-## The two Rust target dirs
+## The three Rust target dirs
 
 | Dir | Holds | Built by |
 | --- | --- | --- |
 | `target/` | the workspace (`crates/*`) | `cargo build`/`cargo test` at the repo root |
 | `native/vendor/iroh-c-ffi/target/` | the vendored c-ffi crate (excluded from the workspace) | `cargo build --manifest-path native/vendor/iroh-c-ffi/Cargo.toml` |
+| `deploy/cloudflare/target/` | the Cloudflare Worker (standalone wasm workspace) | `deploy/cloudflare/build.sh` |
 
 The vendored crate produces `libiroh_c_ffi.{dylib,so}` (macOS/Linux) or
 `.a` (iOS).
@@ -31,6 +32,10 @@ fingerprint and recompiles the whole ~550-crate graph — see
 | You changed | Rebuild |
 | --- | --- |
 | `crates/*` library logic | `cargo test -p <crate>`; add the consumer build below only if you need its artifact |
+| `crates/idfon-core` | the workspace, plus `deploy/cloudflare/build.sh` (the Worker only uses the wasm-gated security helpers) |
+| `deploy/cloudflare/*` | `deploy/cloudflare/build.sh`, then `wrangler dev`/`deploy` |
+| `deploy/idfon-edge/Dockerfile` | rebuild/push the `idfon-edge` image (`edge-v*` tag or local build) |
+| `deploy/digitalocean/*` | nothing to build; follows the image (runbook in its README) |
 | `native/vendor/iroh-c-ffi/src/*` | the c-ffi artifact, then every consumer that links it: cli, mac, native, ios (staticlib) |
 | `crates/idfond` (daemon) | `pnpm cli build`, `pnpm mac build`, `pnpm native build` (all bundle `idfond`) |
 | `crates/idfon-cli` (CLI binary) | `pnpm cli build` |

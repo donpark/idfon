@@ -29,6 +29,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home --home-dir /var/lib/idfon idfon
 COPY --from=build /usr/local/bin/idfon-edge /usr/local/bin/idfon-edge
+# Links the GHCR package to this repo (Packages sidebar, permissions).
+LABEL org.opencontainers.image.source="https://github.com/donpark/idfon"
+LABEL org.opencontainers.image.title="idfon-edge"
+LABEL org.opencontainers.image.description="Public idfon ingress: HTTPS to idfon/http3/1 over iroh"
+LABEL org.opencontainers.image.licenses="MIT OR Apache-2.0"
 ENV HOME=/var/lib/idfon
 USER idfon
 WORKDIR /var/lib/idfon

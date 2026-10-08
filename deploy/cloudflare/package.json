@@ -1,0 +1,12 @@
+{
+  "name": "idfon-edge-worker",
+  "private": true,
+  "scripts": {
+    "build": "./build.sh",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}
