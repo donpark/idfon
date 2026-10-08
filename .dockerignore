@@ -1,0 +1,29 @@
+# The edge image builds the workspace `idfon-edge` crate only; it does not link
+# the vendored iroh-c-ffi dylib (that is `idfond`). Keep the context to the
+# workspace manifests + crates, and drop everything else (especially target/).
+.git
+.github
+.zig-cache
+.agents
+.pi
+target
+**/target
+node_modules
+**/node_modules
+dist
+blobs
+cli
+cli-*
+ios
+mac
+native
+agents
+integrations
+docs
+*.app
+*.wav
+*.json
+*.log
+.DS_Store
+PONYTAIL-DEBT.md
+skills-lock.json

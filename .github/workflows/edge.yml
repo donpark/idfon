@@ -1,0 +1,72 @@
+# Run the edge crate tests, build the idfon-edge image, and publish it to GHCR
+# on `edge-v*` tags.
+name: edge
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/idfon-edge/**"
+      - "crates/idfon-gateway/**"
+      - "crates/idfon-h3/**"
+      - "crates/idfon-core/**"
+      - "scripts/edge-e2e.sh"
+      - "deploy/idfon-edge/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/edge.yml"
+  pull_request:
+    paths:
+      - "crates/idfon-edge/**"
+      - "crates/idfon-gateway/**"
+      - "crates/idfon-h3/**"
+      - "crates/idfon-core/**"
+      - "scripts/edge-e2e.sh"
+      - "deploy/idfon-edge/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/edge.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The crate tests use the in-process gateway/edge; the full real-ingress
+      # scripts/edge-e2e.sh is macOS-only (rubber-stamped dylib + codesign).
+      - run: cargo test --locked -p idfon-gateway -p idfon-edge
+
+  image:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/idfon-edge/Dockerfile
+          load: true
+          tags: idfon-edge:ci
+      - name: Smoke test the image
+        run: docker run --rm idfon-edge:ci --help | grep -q "idfon-edge"
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/edge-v')
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Push image
+        if: startsWith(github.ref, 'refs/tags/edge-v')
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/idfon-edge"
+          docker tag idfon-edge:ci "$image:${GITHUB_REF_NAME}"
+          docker tag idfon-edge:ci "$image:latest"
+          docker push "$image:${GITHUB_REF_NAME}"
+          docker push "$image:latest"

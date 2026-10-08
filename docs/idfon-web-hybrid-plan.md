@@ -263,13 +263,16 @@ value; check items off here as they land.
 
 ### External / ops (not in the repo)
 
-- [ ] `*.idfon.net` DNS + certificate issuance, host, process supervision, TLS
-  reverse proxy. Only `crates/idfon-edge/README.md` exists.
+- [ ] `*.idfon.net` **DNS + certificate issuance + a host**. Process
+  supervision and the container/reverse-proxy path are packaged
+  (`deploy/idfon-edge/`); the edge can also terminate TLS itself.
 - [x] Edge **request logging + metrics**: one structured `idfon.edge.access`
   event per served request (method/host/path/status/latency/caller/account) and
   Prometheus counters at `GET /metrics` (after requester auth).
   `EdgeMetrics`/`EdgeHandle.metrics` in `crates/idfon-edge`.
-- [ ] Edge **packaging**: no Dockerfile, systemd unit, or CI deploy job.
+- [x] Edge **packaging**: `deploy/idfon-edge/{Dockerfile,idfon-edge.service}`
+  and `.github/workflows/edge.yml` (gateway/edge crate tests, image build +
+  `--help` smoke test, GHCR push on `edge-v*` tags).
 - [ ] **Open decisions** (above): edge runtime (Rust vs Worker), URL form
   (wildcard vs path), privacy/self-host posture, auth timeline.
 

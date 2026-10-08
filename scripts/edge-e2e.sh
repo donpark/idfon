@@ -13,6 +13,7 @@ set -eu
 #   - P2: a daemon with IDFON_EDGE_URL + `idfon fetch --prefer edge`
 #   - TLS termination with a self-signed cert
 #   - auth-gated /metrics counters
+#   - idfon.edge.access request logging (under the default log filter)
 #
 # PASS requires every HTTP status/body to match.
 
@@ -135,6 +136,10 @@ assert_code 401 "http://$E1/metrics"
 assert_code 200 "http://$E1/metrics" -H "x-idfon-ticket: $SCOPED"
 grep -q "idfon_edge_requests_total" "$W/body" || fail "metrics body has no counters"
 echo "PASS: /metrics (auth-gated) reports edge counters"
+
+# Per-request logging uses the custom idfon.edge.access target.
+grep -q "idfon.edge.access" "$W/edge-ticket.log" || fail "no idfon.edge.access request log"
+echo "PASS: request logging (idfon.edge.access)"
 
 # --- edge 2: option A, the edge as a known QUIC peer -------------------------
 "$EDGE" --bind 127.0.0.1:0 --token s3cret \

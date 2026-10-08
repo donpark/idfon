@@ -20,12 +20,37 @@ use idfon_gateway::TlsConfig;
 
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
+const USAGE: &str = "\
+idfon-edge — public ingress for idfon resources
+
+USAGE:
+  idfon-edge [OPTIONS]
+
+OPTIONS:
+  --bind HOST:PORT        Listen address (default 127.0.0.1:8080)
+  --token VALUE           Shared requester bearer token
+  --require-ticket CAP    Require a capability ticket with CAP instead
+  --key-file PATH         Persistent identity key (default ~/.idfon/edge.key)
+  --allow ID              Restrict refs to this endpoint id (repeatable)
+  --domain DOMAIN         Enable <ref>.DOMAIN virtual hosts (e.g. idfon.net)
+  --tls-cert PATH         PEM certificate chain
+  --tls-key PATH          PEM private key
+  --health-path PATH      Health probe path (default /healthz)
+  --rate-limit N          Max requests per caller per minute (0 = unlimited)
+  --help, -h              Print this help
+
+ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
+";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "idfon_edge=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // The access target is custom (dotted), so it needs its own
+                // directive; `idfon_edge=info` alone would filter it out.
+                "idfon_edge=info,idfon.edge.access=info".into()
+            }),
         )
         .init();
 
@@ -48,6 +73,10 @@ async fn main() -> anyhow::Result<()> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--help" | "-h" => {
+                print!("{USAGE}");
+                return Ok(());
+            }
             "--bind" => {
                 bind = args[i + 1].parse().context("--bind must be HOST:PORT")?;
                 i += 2;
