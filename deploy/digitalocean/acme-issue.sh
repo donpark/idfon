@@ -26,7 +26,16 @@ if [ ! -x "$ACME" ]; then
   curl -fsSL https://get.acme.sh | sh -s "email=$EMAIL"
 fi
 
+# acme.sh returns 2 when the existing cert is still valid ("Skipping");
+# that is success for our purposes, so do not treat it as an error.
+set +e
 "$ACME" --issue --dns dns_dgon -d "$DOMAIN" -d "*.$DOMAIN" --keylength ec-256
+status=$?
+set -e
+if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+  echo "acme.sh --issue failed (exit $status)" >&2
+  exit "$status"
+fi
 
 install -d -m 0755 "$CERT_DIR"
 "$ACME" --install-cert -d "$DOMAIN" --ecc \
