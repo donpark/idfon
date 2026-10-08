@@ -5,6 +5,8 @@ import CIdfon
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let app = AppModel()
+    /// Retains deep-linked edge resource windows.
+    private var edgeWindows: [NSWindow] = []
 
     /// The @main-synthesized NSApplicationMain did not wire this delegate in
     /// this SPM executable (no callbacks fired); run NSApplication by hand.
@@ -17,6 +19,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DaemonRuntime.configure()
+        // Public edge endpoint + requester credential (P4 parity):
+        // `-edgeurl <url> <ticket>` or `-edgeurl <url> -edgeticket <ticket>`.
+        let launchArgs = ProcessInfo.processInfo.arguments
+        if let i = launchArgs.firstIndex(of: "-edgeurl"), launchArgs.count > i + 1 {
+            var ticket: String?
+            if launchArgs.count > i + 2, !launchArgs[i + 2].hasPrefix("-") {
+                ticket = launchArgs[i + 2]
+            } else if let j = launchArgs.firstIndex(of: "-edgeticket"), launchArgs.count > j + 1 {
+                ticket = launchArgs[j + 1]
+            }
+            if let ticket { EdgeClient.configure(url: launchArgs[i + 1], ticket: ticket) }
+        }
         ChatStore.shared.start()
         Task { await DaemonClient().startSharedProvider() }
         // Warm the selected reply voice early, so the first call's greeting is
@@ -59,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runCallAutomationIfRequested()
     }
 
+    /// Pick up any edge fetch that completed while the app was inactive.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        _ = EdgeClient.shared.drainInbox()
+    }
+
     private func surfaceIncoming(peerID: String, label: String) {
         Task { @MainActor in
             if app.selectedPeer?.id != peerID,
@@ -81,8 +100,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let link = IdfonURL(url) else { continue }
             idfonLog("idfon openURL: \(url)")
             switch link {
-            case .resource(let ref, _):
-                openPeerThread(ref: ref)
+            case .resource(let ref, let path):
+                if EdgeClient.shared.isConfigured, !path.isEmpty {
+                    openEdgeResource(ref: ref, path: path)
+                } else {
+                    openPeerThread(ref: ref)
+                }
             case .dial(let ref):
                 LiveCall.shared.dial(ref)
             case .videoDial(let ref):
@@ -101,6 +124,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.select(match)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Opens a peer resource (`idfon://<ref>/<path>`) in a sandboxed web view
+    /// at the gateway/edge URL (`docs/idfon-web-hybrid-plan.md`, P4 parity).
+    private func openEdgeResource(ref: String, path: [String]) {
+        let resourcePath = "/" + path.joined(separator: "/")
+        Task { @MainActor in
+            // The deep link targets the public edge (parity with the iOS
+            // EdgeWebView); the artifact screen is what uses loopback-first.
+            guard let url = EdgeClient.shared.url(account: ref, path: resourcePath) else {
+                openPeerThread(ref: ref)
+                return
+            }
+            let source = GatewayArtifactSource(
+                route: .edge, url: url,
+                cookie: EdgeClient.shared.sessionCookie, host: url.host ?? "")
+            let web = SandboxedArtifactWebView(
+                source: source, frame: NSRect(x: 0, y: 0, width: 720, height: 560))
+            let controller = NSViewController()
+            controller.view = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 560))
+            web.translatesAutoresizingMaskIntoConstraints = false
+            controller.view.addSubview(web)
+            NSLayoutConstraint.activate([
+                web.topAnchor.constraint(equalTo: controller.view.topAnchor),
+                web.leadingAnchor.constraint(equalTo: controller.view.leadingAnchor),
+                web.trailingAnchor.constraint(equalTo: controller.view.trailingAnchor),
+                web.bottomAnchor.constraint(equalTo: controller.view.bottomAnchor),
+            ])
+            controller.preferredContentSize = NSSize(width: 720, height: 560)
+            let window = NSWindow(contentViewController: controller)
+            window.title = ref
+            window.setContentSize(NSSize(width: 720, height: 560))
+            window.makeKeyAndOrderFront(nil)
+            edgeWindows.append(window)
+        }
     }
 
     private func buildWindow() {

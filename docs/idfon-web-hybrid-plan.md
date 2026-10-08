@@ -298,9 +298,18 @@ value; check items off here as they land.
 
 ### Parity / tests / docs
 
-- [ ] **macOS app parity.** The web layer (`ArtifactGateway`, `EdgeClient`,
-  `EdgeWebView`, `JSONRender*`, `ActionAudit`, gateway-served artifacts) is
-  iOS-only; mac still injects bytes, has no json-render and no edge.
+- [x] **macOS app parity.** The mac app now shares the Foundation-only web
+  layer verbatim (`EdgeClient`, `BackgroundFetch`, `ActionAudit`,
+  `JSONRenderModel`, `ArtifactGateway`, `RenderTools`) and ports the UI to
+  AppKit: `JSONRenderView` (NSStackView/NSButton), `SandboxedArtifactWebView`
+  gains the loopback/edge `source:` variant, and `ArtifactDetailViewController`
+  renders shared-root artifacts through the gateway, json-render artifacts with
+  the app-owned tool registry, and hands a suspended fetch to the edge
+  (`fetchResource` direct→edge, reconcile on `applicationDidBecomeActive`).
+  `-edgeurl <url> <ticket>` and `idfon://<ref>/<path>` are wired in the mac
+  `AppDelegate` (deep link verified on the Mac: edge `200`, HTML rendered).
+  Note: the shared files are now duplicated between `ios/Idfon` and
+  `mac/Sources/Idfon` (the two build systems have no common target).
 - [x] **iOS test target.** `ios/IdfonTests` is an app-hosted XCTest bundle
   (`@testable import Idfon`) covering the web layer: `IdfonURL` deep-link
   parsing, edge URL/cookie construction, `BackgroundFetch` bookkeeping,

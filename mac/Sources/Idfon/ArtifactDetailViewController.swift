@@ -51,6 +51,7 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     /// through the gateway if the blob is not held locally.
     private let peerRef: String?
     private let client = DaemonClient()
+    private let renderTools = RenderTools.make()
     private let scroll = NSScrollView()
     private var rendered: NSView?
     private var textView: NSTextView?
@@ -137,6 +138,9 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(edgeReconciled(_:)),
+            name: EdgeClient.reconciledNotification, object: nil)
         load()
     }
 
@@ -203,13 +207,89 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     private func load() {
         message("Loading…")
         Task {
+            // Shared-root artifacts render through the gateway (loopback first,
+            // then the public edge): the web view loads the URL itself, so
+            // relative subresources resolve and no bytes cross the app layer.
+            if usesWebView, let peerRef,
+               let source = await ArtifactGateway.source(
+                   account: peerRef, path: "/fs/\(artifact.artifactId)") {
+                await MainActor.run { self.renderGateway(source) }
+                return
+            }
+            // If the app resigns active mid-fetch, hand the resource to the
+            // edge's background session so it finishes and renders on return.
+            let handoff = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in self?.handOffToEdge() }
+            defer { NotificationCenter.default.removeObserver(handoff) }
             do {
                 let data = try await self.loadBytes()
                 await MainActor.run { self.render(data) }
             } catch {
-                await MainActor.run { self.message("Could not load artifact: \(error.localizedDescription)") }
+                await MainActor.run { self.loadFailed(error) }
             }
         }
+    }
+
+    /// HTML/SVG/PDF/media render in a web view; everything else natively.
+    private var usesWebView: Bool {
+        let mime = artifact.mime.lowercased()
+        return artifact.kind == .html
+            || mime.contains("html") || mime.contains("svg")
+            || mime == "application/pdf"
+            || mime.hasPrefix("audio/") || mime.hasPrefix("video/")
+    }
+
+    /// Displays a web-ish artifact through the gateway (loopback or edge).
+    private func renderGateway(_ source: GatewayArtifactSource) {
+        let web = SandboxedArtifactWebView(source: source)
+        wireWebCallbacks(web)
+        setDocument(web)
+        webView = web
+    }
+
+    /// Element selection + the Select toolbar item (shared by both web variants).
+    private func wireWebCallbacks(_ web: SandboxedArtifactWebView) {
+        web.onElementSelection = { [weak self] selector in
+            self?.pendingElement = selector
+            self?.askButton.isEnabled = true
+        }
+        selectButton?.isHidden = false
+    }
+
+    /// A failed foreground fetch: hand the shared-root resource to the edge's
+    /// background session and let the reconcile notification render it.
+    private func loadFailed(_ error: Error) {
+        guard let peerRef, EdgeClient.shared.isConfigured else {
+            message("Could not load artifact: \(error.localizedDescription)")
+            return
+        }
+        handOffToEdge()
+        message("Fetching through the edge; it will appear when you return.")
+    }
+
+    /// Starts the edge background fetch for this artifact, if configured.
+    private func handOffToEdge() {
+        guard let peerRef, EdgeClient.shared.isConfigured else {
+            idfonLog("idfon edge: handoff skipped (peer=\(peerRef ?? "-") configured=\(EdgeClient.shared.isConfigured))")
+            return
+        }
+        do {
+            let task = try EdgeClient.shared.fetchInBackground(
+                account: peerRef, path: "/fs/\(artifact.artifactId)")
+            idfonLog("idfon edge: handed artifact to background fetch task=\(task)")
+        } catch {
+            idfonLog("idfon edge: handoff failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// A background edge fetch for this artifact finished; display its bytes.
+    @objc private func edgeReconciled(_ note: Notification) {
+        guard let records = note.object as? [EdgeClient.ReconciledArtifact] else { return }
+        let path = "/fs/\(artifact.artifactId)"
+        guard let record = records.first(where: { $0.account == peerRef && $0.path == path }) else { return }
+        render(record.data)
     }
 
     /// Local blob first; if it is unavailable (or there is no ticket) and the
@@ -268,6 +348,18 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
             setDocument(imageView)
             self.imageView = imageView
             self.selectionView = overlay
+        } else if let spec = try? JSONRenderSpec.decode(data),
+                  let normalized = try? spec.normalized(),
+                  !normalized.elements.isEmpty {
+            // App-owned json-render: the artifact supplies only data; every
+            // component and action resolves against this app.
+            let render = JSONRenderView(spec: normalized)
+            render.onAction = { [weak self] action, args in
+                self?.runTool(action: action, args: args)
+            }
+            render.frame = NSRect(x: 0, y: 0, width: 660, height: max(render.fittingSize.height, 160))
+            render.autoresizingMask = [.width]
+            setDocument(render)
         } else if let text = String(data: data, encoding: .utf8),
                   artifact.mime.hasPrefix("text/")
                     || artifact.mime.contains("json")
@@ -290,6 +382,40 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
         } else {
             message("No preview for \(artifact.mime) yet.")
         }
+    }
+
+    /// Runs a JSON-render action against the app-owned tool catalog. Sensitive
+    /// tools need a native confirmation; unknown names never execute.
+    private func runTool(action: String, args: [String: JSONValue]) {
+        renderTools.confirm = { [weak self] tool in
+            guard let self else { return false }
+            return await self.confirmTool(tool)
+        }
+        Task {
+            let result = await renderTools.dispatch(action, args: args)
+            await MainActor.run { self.showResult(result) }
+        }
+    }
+
+    @MainActor private func confirmTool(_ tool: RenderTool) async -> Bool {
+        let alert = NSAlert()
+        alert.messageText = tool.name
+        alert.informativeText = "\(tool.description). Allow?"
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    @MainActor private func showResult(_ result: Result<String, RenderError>) {
+        let message: String
+        switch result {
+        case .success(let value): message = value
+        case .failure(.unknown(let name)): message = "Unknown action \(name)"
+        case .failure(.denied(let name)): message = "\(name) was not confirmed"
+        }
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.runModal()
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
@@ -360,10 +486,28 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     /// Promotes the fetched artifact into the user-visible shared directory the
     /// daemon serves, so a granted peer can fetch it at `idfon://<account>/fs/…`.
     @objc private func saveToSharedTapped() {
-        guard let data = renderedData else {
+        if let data = renderedData {
+            finishSave(data)
+            return
+        }
+        // Gateway-rendered artifacts hold no bytes; fetch them on demand.
+        guard let peerRef else {
             message("Still loading…")
             return
         }
+        message("Fetching…")
+        Task {
+            do {
+                let data = try await self.client.fetchResource(
+                    account: peerRef, path: "/fs/\(artifact.artifactId)")
+                await MainActor.run { self.finishSave(data) }
+            } catch {
+                await MainActor.run { self.message("Could not fetch: \(error.localizedDescription)") }
+            }
+        }
+    }
+
+    private func finishSave(_ data: Data) {
         guard let url = SharedFolder.save(data, name: artifact.title) else {
             message("Could not save to Shared")
             return
