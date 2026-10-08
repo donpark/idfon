@@ -39,7 +39,9 @@ and structured seam events.
   `idfon.holder` / `idfon.mcp` / `idfon.core` / `idfon.voice` /
   `idfon.voice.metrics`. The one shared subscriber lives in
   `crates/idfon-telemetry` and is installed by the daemon, CLI, holder, MCP
-  bridge/server, and the FFI app entry point. Residual `println!` are
+  bridge/server, and the FFI app entry point. `idfon-edge` runs its own
+  subscriber and tags per-request logs `idfon.edge.access` (its counters are
+  also served at `GET /metrics`). Residual `println!` are
   user-facing output contracts (CLI results, endpoint tickets), not logs.
 - **Agent-side logs are structured too.** The node bridge scripts emit
   single-line JSON on stderr tagged `idfon.bridge` / `idfon.managed` /

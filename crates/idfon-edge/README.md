@@ -71,6 +71,17 @@ Rate limiting is per authenticated subject (the ticket issuer, or the shared
 `--token` identity), not per client IP: behind the recommended loopback + TLS
 proxy the socket address is always the proxy.
 
+## Observability
+
+Every served request except the health and metrics probes emits one structured
+`tracing` event on target `idfon.edge.access` (`method`, `host`, `path`,
+`status`, `latency_ms`, `caller`, `account`). The same counters are served as
+Prometheus text at `GET /metrics`, **after requester auth** — a scraper presents
+the same `Authorization`/ticket credential as any caller. Counters:
+`idfon_edge_requests_total`, `idfon_edge_responses_total{class}`,
+`idfon_edge_unauthorized_total`, `idfon_edge_forbidden_total`,
+`idfon_edge_rate_limited_total`.
+
 ## Not in this crate
 
 DNS, certificate issuance, process supervision, and the TLS reverse proxy. Behind

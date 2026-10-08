@@ -21,6 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -28,7 +29,7 @@ use http::{HeaderMap, Uri};
 use idfon_core::transport::IrohTransport;
 use idfon_gateway::{
     serve, AccountResolver, Authenticator, Authorizer, Caller, Config as GatewayConfig,
-    GatewayHandle, IrohBackend, StaticToken, TlsConfig,
+    GatewayHandle, IrohBackend, RequestEvent, RequestObserver, StaticToken, TlsConfig,
 };
 use idfon_protocol::{Capability, CapabilityTicket};
 use iroh::{EndpointAddr, EndpointId};
@@ -85,6 +86,8 @@ pub struct EdgeHandle {
     pub endpoint_id: String,
     /// The edge's serialized `EndpointAddr` ticket, for the owner's `peer add`.
     pub addr_ticket: String,
+    /// Live request counters, also served at `/metrics` (after auth).
+    pub metrics: Arc<EdgeMetrics>,
     transport: Arc<IrohTransport>,
     gateway: GatewayHandle,
 }
@@ -227,6 +230,119 @@ fn now_seconds() -> u64 {
         .unwrap_or(0)
 }
 
+/// Edge request counters. Doubles as the gateway's [`RequestObserver`]: every
+/// served request is logged as a structured `idfon.edge.access` event and
+/// counted; the counters render as Prometheus text at `/metrics` (after auth).
+#[derive(Default)]
+pub struct EdgeMetrics {
+    total: AtomicU64,
+    status_2xx: AtomicU64,
+    status_3xx: AtomicU64,
+    status_4xx: AtomicU64,
+    status_5xx: AtomicU64,
+    unauthorized: AtomicU64,
+    forbidden: AtomicU64,
+    rate_limited: AtomicU64,
+}
+
+/// Point-in-time view of [`EdgeMetrics`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EdgeMetricsSnapshot {
+    pub total: u64,
+    pub status_2xx: u64,
+    pub status_3xx: u64,
+    pub status_4xx: u64,
+    pub status_5xx: u64,
+    pub unauthorized: u64,
+    pub forbidden: u64,
+    pub rate_limited: u64,
+}
+
+impl EdgeMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> EdgeMetricsSnapshot {
+        EdgeMetricsSnapshot {
+            total: self.total.load(Ordering::Relaxed),
+            status_2xx: self.status_2xx.load(Ordering::Relaxed),
+            status_3xx: self.status_3xx.load(Ordering::Relaxed),
+            status_4xx: self.status_4xx.load(Ordering::Relaxed),
+            status_5xx: self.status_5xx.load(Ordering::Relaxed),
+            unauthorized: self.unauthorized.load(Ordering::Relaxed),
+            forbidden: self.forbidden.load(Ordering::Relaxed),
+            rate_limited: self.rate_limited.load(Ordering::Relaxed),
+        }
+    }
+
+    fn count_rate_limited(&self) {
+        self.rate_limited.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl RequestObserver for EdgeMetrics {
+    fn observe(&self, event: &RequestEvent<'_>) {
+        self.total.fetch_add(1, Ordering::Relaxed);
+        match event.status.as_u16() / 100 {
+            2 => self.status_2xx.fetch_add(1, Ordering::Relaxed),
+            3 => self.status_3xx.fetch_add(1, Ordering::Relaxed),
+            4 => self.status_4xx.fetch_add(1, Ordering::Relaxed),
+            5 => self.status_5xx.fetch_add(1, Ordering::Relaxed),
+            _ => 0,
+        };
+        if event.status == http::StatusCode::UNAUTHORIZED {
+            self.unauthorized.fetch_add(1, Ordering::Relaxed);
+        }
+        if event.status == http::StatusCode::FORBIDDEN {
+            self.forbidden.fetch_add(1, Ordering::Relaxed);
+        }
+        tracing::info!(
+            target: "idfon.edge.access",
+            method = event.method,
+            host = event.host.unwrap_or("-"),
+            path = event.path,
+            status = event.status.as_u16(),
+            latency_ms = event.latency.as_millis() as u64,
+            caller = event.caller.unwrap_or("-"),
+            account = event.account.unwrap_or("-"),
+            "request"
+        );
+    }
+
+    fn render_metrics(&self) -> Option<String> {
+        let s = self.snapshot();
+        Some(format!(
+            "# HELP idfon_edge_requests_total Requests served by the edge.\n\
+# TYPE idfon_edge_requests_total counter\n\
+idfon_edge_requests_total {total}\n\
+# HELP idfon_edge_responses_total Responses by status class.\n\
+# TYPE idfon_edge_responses_total counter\n\
+idfon_edge_responses_total{{class=\"2xx\"}} {s2}\n\
+idfon_edge_responses_total{{class=\"3xx\"}} {s3}\n\
+idfon_edge_responses_total{{class=\"4xx\"}} {s4}\n\
+idfon_edge_responses_total{{class=\"5xx\"}} {s5}\n\
+# HELP idfon_edge_unauthorized_total 401 responses.\n\
+# TYPE idfon_edge_unauthorized_total counter\n\
+idfon_edge_unauthorized_total {unauthorized}\n\
+# HELP idfon_edge_forbidden_total 403 responses.\n\
+# TYPE idfon_edge_forbidden_total counter\n\
+idfon_edge_forbidden_total {forbidden}\n\
+# HELP idfon_edge_rate_limited_total Requests refused by the rate limit.\n\
+# TYPE idfon_edge_rate_limited_total counter\n\
+idfon_edge_rate_limited_total {rate_limited}\n",
+            total = s.total,
+            s2 = s.status_2xx,
+            s3 = s.status_3xx,
+            s4 = s.status_4xx,
+            s5 = s.status_5xx,
+            unauthorized = s.unauthorized,
+            forbidden = s.forbidden,
+            rate_limited = s.rate_limited,
+        ))
+    }
+}
+
 /// Policy: the requester is authenticated (by [`EdgeAuth`]), resolved accounts
 /// are admitted, and each caller is rate-limited to a fixed per-minute window.
 /// Path/scoped policy lands with ticket-over-H3 (P3).
@@ -234,15 +350,17 @@ pub struct EdgeAuthorizer {
     window: Duration,
     limit: u32,
     hits: Mutex<HashMap<String, (Instant, u32)>>,
+    metrics: Arc<EdgeMetrics>,
 }
 
 impl EdgeAuthorizer {
     /// `limit_per_minute == 0` disables rate limiting.
-    pub fn new(limit_per_minute: u32) -> Self {
+    pub fn new(limit_per_minute: u32, metrics: Arc<EdgeMetrics>) -> Self {
         Self {
             window: Duration::from_secs(60),
             limit: limit_per_minute,
             hits: Mutex::new(HashMap::new()),
+            metrics,
         }
     }
 }
@@ -259,7 +377,11 @@ impl Authorizer for EdgeAuthorizer {
             *entry = (now, 0);
         }
         entry.1 += 1;
-        entry.1 <= self.limit
+        let over = entry.1 > self.limit;
+        if over {
+            self.metrics.count_rate_limited();
+        }
+        !over
     }
 }
 
@@ -296,6 +418,7 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
     }
 
     let backend = IrohBackend::new(&transport, EndpointRefResolver { allow, pins })?;
+    let metrics = Arc::new(EdgeMetrics::new());
     let gateway = serve(
         GatewayConfig {
             bind,
@@ -303,10 +426,12 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
             origin_domain: domain,
             tls,
             health_path,
+            metrics_path: Some("/metrics".to_owned()),
+            observer: Some(metrics.clone()),
             security_headers: true,
         },
         backend,
-        EdgeAuthorizer::new(rate_limit_per_minute),
+        EdgeAuthorizer::new(rate_limit_per_minute, metrics.clone()),
     )
     .await?;
     let addr = gateway.local_addr();
@@ -314,6 +439,7 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
         addr,
         endpoint_id,
         addr_ticket,
+        metrics,
         transport,
         gateway,
     })

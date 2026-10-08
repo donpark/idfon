@@ -128,6 +128,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(path) = &health_path {
         println!("health: {scheme}://{}{path}", handle.addr);
     }
+    println!(
+        "metrics: {scheme}://{}/metrics (requester auth required)",
+        handle.addr
+    );
     println!();
     println!("owner pairing (run on the resource owner's machine):");
     println!(
