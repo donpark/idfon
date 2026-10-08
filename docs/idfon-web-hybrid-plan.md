@@ -251,9 +251,10 @@ value; check items off here as they land.
   non-endpoint-id ref (name/alias) is not resolved to an endpoint id before the
   edge URL is built, so a configured-edge deep link only works with the 64-hex
   ref.
-- [ ] **Confirm `action-audit.ndjson`** receives the `ok:` line on device (the
-  alert proved the action ran, not the audit). Size/rotation bounds are
-  implemented (`ActionAudit.rotateIfNeeded`, one `*.1` prior file).
+- [x] **`action-audit.ndjson` receives the `ok:` line.** Confirmed on device:
+  the app container holds `{"action":"idfon.peers",...,"outcome":"ok: Agency,
+  GPT-6-Luna, ..."}` lines from the JSON-render button taps. Rotation to a
+  single `*.1` at 1 MiB (`ActionAudit.rotateIfNeeded`) is host-checked.
 
 ### Deviations from the plan text (fix code or doc)
 
