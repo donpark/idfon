@@ -38,6 +38,7 @@ ios/
 │   ├── DaemonBootstrap.swift # spawns idfond on background thread, socket paths
 │   └── Idfon-Bridging.h      # C ABI surface (daemon_run, client_request, media_*)
 ├── Checks/                   # host-run checks (not in the Xcode target)
+├── IdfonTests/               # app-hosted XCTest target (`pnpm ios test`)
 └── Vendor/                   # libiroh_c_ffi.a static lib (Rust, gitignored)
 ```
 
@@ -144,6 +145,9 @@ swiftc -o /tmp/ctcheck ios/Idfon/AnyEncodable.swift \
   ios/Idfon/CapabilityTickets.swift ios/Checks/CapabilityTicketCheck/main.swift \
 && /tmp/ctcheck
 ```
+
+`ios/IdfonTests` is the app-hosted XCTest target (`@testable import Idfon`) for
+the hybrid web layer; run it on a connected iPhone with `pnpm ios test`.
 
 Voice agent integration (STT/TTS and live conversational audio) is separate
 from the peer-to-peer calls implemented here.

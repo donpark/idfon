@@ -301,9 +301,15 @@ value; check items off here as they land.
 - [ ] **macOS app parity.** The web layer (`ArtifactGateway`, `EdgeClient`,
   `EdgeWebView`, `JSONRender*`, `ActionAudit`, gateway-served artifacts) is
   iOS-only; mac still injects bytes, has no json-render and no edge.
-- [ ] **iOS has no test target.** UI/WebView/network paths are unautomated, and
-  `swiftc -parse` misses type errors — run `pnpm ios build` before trusting a
-  Swift change.
+- [x] **iOS test target.** `ios/IdfonTests` is an app-hosted XCTest bundle
+  (`@testable import Idfon`) covering the web layer: `IdfonURL` deep-link
+  parsing, edge URL/cookie construction, `BackgroundFetch` bookkeeping,
+  `ActionAudit` rotation, and json-render normalization. Run on a connected
+  iPhone with `pnpm ios test`. It already caught a real bug (a
+  `HTTPCookie(properties:)` Secure flag that a `false` value does not clear).
+  Debug builds needed `SWIFT_COMPILATION_MODE = wholemodule` because the
+  `@_cdecl` voice bridges duplicate their C thunks across incremental objects.
+  UI/WebView/XCTest *UI* automation is still not covered.
 
 ### Small debt
 

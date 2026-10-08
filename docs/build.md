@@ -53,6 +53,7 @@ with `vendored dylib ... missing`.
 | `pnpm mac build` | `mac/build.sh` → `mac/build-deps.sh` + `swift build` | `mac/build/Idfon.app` |
 | `pnpm native build` | `native/build-mac.sh` → `zig build` | `native/zig-out/bin/Idfon` + `Idfon.app` |
 | `pnpm ios build` | `ios/build.sh` → `ios/build-deps.sh` + `xcodebuild` | device `.app` in `ios/.derived/` (device only, no simulator) |
+| `pnpm ios test` | `ios/test.sh` → `xcodebuild test` | runs `ios/IdfonTests` on a connected iPhone (Debug) |
 | `pnpm eve build` | `scripts/eve.sh` | eve extension + every installed agent |
 | `pnpm agent build <name>` | `scripts/agent.sh` | one agent |
 | `pnpm all build` | every `@idfon/*` package | all of the host-buildable above |

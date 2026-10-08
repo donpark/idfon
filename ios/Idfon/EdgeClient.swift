@@ -80,15 +80,19 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         guard let baseURL, let host = baseURL.host, let ticket else { return nil }
         let domain = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         let encoded = ticket.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ticket
-        return HTTPCookie(properties: [
+        var properties: [HTTPCookiePropertyKey: Any] = [
             .name: "idfon_ticket",
             .value: encoded,
             .domain: "\(domain)",
             .path: "/",
-            // A Secure cookie is not sent over `http://`, so a self-hosted/LAN
-            // edge (TLS optional) needs `false`; the public edge is HTTPS.
-            .secure: baseURL.scheme?.lowercased() == "https",
-        ])
+        ]
+        // Mark Secure only for HTTPS. `HTTPCookie(properties:)` treats the key's
+        // presence as Secure regardless of the value, so it must be omitted for
+        // a self-hosted/LAN HTTP edge (WebKit drops a Secure cookie over http).
+        if baseURL.scheme?.lowercased() == "https" {
+            properties[.secure] = "TRUE"
+        }
+        return HTTPCookie(properties: properties)
     }
 
     /// `https://<base>/<account><path>` with the requester ticket attached.
