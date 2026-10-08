@@ -238,13 +238,17 @@ Confirm to close.
    reusing `idfon-core`'s ticket verification. It is relay-only and needs the
    trailing-dot normalization; pick it when running with no host/CDN ingress is
    wanted, and the native binary otherwise.
-2. **URL form → wildcard `<ref>.<domain>` primary, `/<ref>/<path>` fallback.**
-   Both are implemented (`Config.origin_domain`, `target()`). Wildcard gives
-   each peer a clean origin: the path passes through untouched, cookies scope
-   per peer, and no `/<ref>` prefix confuses relative subresources. It needs
-   wildcard DNS + a wildcard cert. Keep the path form for raw-IP / no-wildcard
-   hosts — a self-hosted edge on an IP needs `--domain <host-or-ip>` so the
-   `Host` check passes.
+2. **URL form → `/<ref>/<path>` for 64-hex refs; wildcard only with a short
+   ref.** Both are implemented (`Config.origin_domain`, `target()`), and the
+   wildcard gives each peer a clean origin (path untouched, per-peer cookie
+   scope). But a DNS label is capped at **63 octets** and an endpoint id (or
+   `account_alias`) is **64 hex chars**, so `<ref>.<domain>` is unresolvable by
+   any normal client — confirmed: `dig` rejects it (`label too long`); a
+   `Host:`-header request (DNS bypass) works. Until a short host encoding lands
+   (e.g. base32 of the 32-byte id = 52 chars, decoded by the edge), the
+   **path form is the working public URL**; the wildcard cert/DNS stay for
+   short handles and future encoding. A self-hosted edge on an IP still needs
+   `--domain <host-or-ip>` so the `Host` check passes.
 3. **Privacy posture → self-hostable and opt-in, no directory.** The edge is a
    relay, not an authority: it resolves a 64-hex ref to an iroh endpoint id (no
    directory), re-authorizes at the peer, and stores nothing. Joining is

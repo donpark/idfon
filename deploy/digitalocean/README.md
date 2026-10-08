@@ -15,6 +15,22 @@ https://idfon.net/<ref>/<path>   (fallback)
 the host's job; the edge only needs outbound network (iroh relay + QUIC) and
 inbound 443.
 
+## Quick deploy (`pnpm deploy:do`)
+
+`scripts/deploy-digitalocean.sh` provisions everything and is safe to re-run:
+DNS zone, droplet + reserved IP, firewall, `@`/`*` A records, the wildcard
+cert, and `docker compose up`.
+
+```sh
+cp deploy/digitalocean/.env.example deploy/digitalocean/.env   # set DIGITALOCEAN_API_KEY
+pnpm deploy:do
+```
+
+It stops once at the **nameserver delegation** step if `idfon.net` still points
+at Namecheap: set the NS to `ns1/ns2/ns3.digitalocean.com`, then run
+`pnpm deploy:do` again. Everything else is automatic. The rest of this file is
+the equivalent manual path.
+
 ## What you need
 
 - A DigitalOcean account; `doctl` authenticated locally (or use the DO console).
@@ -96,6 +112,19 @@ doctl compute domain records create idfon.net --record-type A --record-name '*' 
 
 Add the `AAAA` records too if the droplet has IPv6. Point Namecheap at the DO
 nameservers reported by `doctl compute domain records list idfon.net`.
+
+**Copy existing records first.** Moving nameservers transfers authority for
+*all* records, so recreate any mail records in the DO zone before switching NS
+or email stops. Namecheap free email forwarding, for example:
+
+```sh
+# MX @ -> eforward1/2/3.registrar-servers.com (10), eforward4 (15), eforward5 (20)
+#   (DO requires MX data to end with a dot)
+# TXT @ -> v=spf1 include:spf.efwd.registrar-servers.com ~all
+doctl compute domain records create idfon.net --record-type MX --record-name @ \
+  --record-data eforward1.registrar-servers.com. --record-priority 10
+# ...and the SPF TXT.
+```
 
 ## 4. Wildcard TLS (DNS-01)
 
