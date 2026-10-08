@@ -153,14 +153,19 @@ verified **caller context**, not just `(account, path)`.
 
 ### P4 — WebView + background handoff
 
-- **Landed (iOS):** `EdgeClient` holds the edge config (`-edgeurl` /
-  `-edgeticket`, persisted in `UserDefaults`), fetches through the edge in the
-  foreground, and starts a **background `URLSession`** download whose bytes are
-  staged in `Idfon/edge-inbox` and drained on foreground. `DaemonClient.fetchResource`
+- **Landed (iOS):** `EdgeClient` holds the edge config (`-edgeurl <url>
+  <ticket>`, or `-edgeurl <url> -edgeticket <ticket>`, persisted in
+  `UserDefaults`), fetches through the edge in the foreground, and starts a
+  **background `URLSession`** download whose bytes are staged in
+  `Idfon/edge-inbox` and drained on foreground. `DaemonClient.fetchResource`
   tries the loopback gateway (direct P2P) first, then the edge; the artifact
   detail's remote view uses it. `AppDelegate` installs the
-  `handleEventsForBackgroundURLSession` handler and reconciles in
-  `applicationWillEnterForeground`; `UIBackgroundModes` gains `fetch`.
+  `handleEventsForBackgroundURLSession` handler (recreating the session so a
+  cold-start relaunch can receive the finished download), and
+  `SceneDelegate.sceneWillEnterForeground` drains the inbox — the app is
+  scene-based, so `AppDelegate.applicationWillEnterForeground` never fires.
+  `UIBackgroundModes` gains `fetch`; the download delegate stages only a `200`
+  (an error body is not an artifact).
 - Also landed: the edge accepts the ticket from an `idfon_ticket` cookie (or
   `?ticket=`) as well as the header; iOS `EdgeWebView` injects the cookie into a
   non-persistent `WKWebView`, and `SceneDelegate` routes `.resource` there. The
@@ -227,9 +232,15 @@ value; check items off here as they land.
   enforces `path_scope` (a scoped ticket is 403 outside the prefix, an unscoped
   ticket reads it). `DaemonClient.fetchRemoteResource` still sends no ticket, so
   the iOS path is not yet covered.
-- [ ] **Background handoff (P4).** Wired and compiled, never triggered:
-  background mid-load → `EdgeClient.fetchInBackground` → `edge-inbox` →
-  `drainInbox` → render, including a cold-start relaunch.
+- [x] **Background handoff (P4).** Triggered on device via the
+  `-edgebghandoff` probe: a background `URLSession` download staged its bytes,
+  survived a `sceneDidEnterBackground` → `sceneWillEnterForeground` cycle, and
+  reconciled with the exact byte count. This found and fixed a **dead drain**
+  (the reconcile hung off `AppDelegate.applicationWillEnterForeground`, which a
+  scene-based app never calls) plus the error-body staging and cold-start
+  session gaps. Residual: the download completed before the app was suspended,
+  so "completes *during* suspension" and a system cold-start relaunch were not
+  separately observed.
 - [ ] **`EdgeWebView` deep link (`idfon://<ref>/<path>`) and `idfon web open`.**
   Built, not device-tested.
 - [ ] **Confirm `action-audit.ndjson`** receives the `ok:` line on device (the

@@ -224,9 +224,17 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
 
     /// Starts the edge background fetch for this artifact, if configured.
     private func handOffToEdge() {
-        guard let peerRef, EdgeClient.shared.isConfigured else { return }
-        try? EdgeClient.shared.fetchInBackground(
-            account: peerRef, path: "/fs/\(artifact.artifactId)")
+        guard let peerRef, EdgeClient.shared.isConfigured else {
+            idfonLog("idfon edge: handoff skipped (peer=\(peerRef ?? "-") configured=\(EdgeClient.shared.isConfigured))")
+            return
+        }
+        do {
+            let task = try EdgeClient.shared.fetchInBackground(
+                account: peerRef, path: "/fs/\(artifact.artifactId)")
+            idfonLog("idfon edge: handed artifact to background fetch task=\(task)")
+        } catch {
+            idfonLog("idfon edge: handoff failed: \(error.localizedDescription)")
+        }
     }
 
     /// A background edge fetch for this artifact finished; display its bytes.
