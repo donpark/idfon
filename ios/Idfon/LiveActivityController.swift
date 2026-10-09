@@ -56,10 +56,13 @@ final class LiveActivityController: NSObject {
     private var peerNames: [String: String] = [:]
 
     private var phase: LiveActivityBarModel.Phase = .idle
-    /// Peer of a call tapped from the Bar's idle chrome, shown as `.calling`
-    /// until the machine picks it up. Gives immediate feedback (and hides the
-    /// Call button), so a slow start cannot be double-tapped.
+    /// Peer of a call tapped from the nav-bar `Call` item, shown as `.calling`
+    /// until the machine picks it up. Gives immediate feedback (the item
+    /// becomes the in-call controls), so a slow start cannot be double-tapped.
     private var pendingCall: String?
+    /// Last nav-bar chrome key per peer, so right bar items are only rebuilt
+    /// when the call state they show actually changes.
+    private var navChromeKeys: [String: String] = [:]
     /// The in-call Bar's toggle state. Mirrored from the active machine on
     /// phase entry and after each toggle, so the Bar always shows what the
     /// call is really sending (and hides toggles for absent tracks).
@@ -305,6 +308,7 @@ final class LiveActivityController: NSObject {
         let callPeer = ((machine?.peer ?? nil) ?? pendingCall).flatMap { $0.isEmpty ? nil : $0 }
 
         let transfers = TransferCenter.shared
+        let visibleIsCallPeer = visiblePeer != nil && visiblePeer == callPeer
         var models: [LiveActivityBarModel] = []
         if phase != .idle, let callPeer {
             var model = LiveActivityBarModel(peerId: callPeer, handle: barHandle(for: callPeer))
@@ -320,15 +324,10 @@ final class LiveActivityController: NSObject {
             model.rows = transfers.rows(for: callPeer)
             // Expanded only while the visible thread is the call peer's —
             // that thread owns the call; every other screen shows the pill.
-            model.density = visiblePeer == callPeer ? .expanded : .compact
-            models.append(model)
-        } else if phase == .idle, let visibleChat, visibleChat.allowsCall {
-            // Idle chrome (§3 State 1): the visible thread's panel shows the
-            // handle plus the one Call action, so the nav bar needs no button.
-            var model = LiveActivityBarModel(peerId: visibleChat.peer.id,
-                                             handle: barHandle(for: visibleChat.peer.id))
-            model.density = .expanded
-            model.rows = transfers.rows(for: visibleChat.peer.id)
+            model.density = visibleIsCallPeer ? .expanded : .compact
+            // The visible thread's own call carries identity + controls in the
+            // nav bar, so the panel drops them and keeps only stats/activity.
+            model.statusOnly = visibleIsCallPeer && (phase == .calling || phase == .inCall)
             models.append(model)
         }
         // §4/§6: a transaction whose peer has no Bar renders as a compact pill,
@@ -340,8 +339,77 @@ final class LiveActivityController: NSObject {
             model.rows = transfers.rows(for: peerId)
             models.append(model)
         }
+        syncNavChrome()
         overlay.render(models)
     }
+
+    /// The visible thread's nav bar carries the call identity and controls
+    /// (§3): title = peer name, right items = Call when idle, else the live
+    /// call's Mic / Cam / Speaker / End. The Bar overlay keeps the stats,
+    /// activity rows, incoming rings, and other screens' pills.
+    private func syncNavChrome() {
+        guard let chat = visibleNavigationController?.visibleViewController as? ChatViewController,
+              chat.allowsCall else { return }
+        let peer = chat.peer.id
+        let callPeer = (ActiveMachine.current?.peer ?? nil) ?? pendingCall
+        let isThisPeer = callPeer == peer
+        let videoAvailable = ActiveMachine.current?.videoAvailable ?? false
+
+        var key = "idle"
+        var items: [UIBarButtonItem] = []
+        switch (isThisPeer, phase) {
+        case (true, .incoming):
+            key = "incoming"
+            items = [navItem("phone.down.fill", #selector(navDeclineTapped), red: true),
+                     navItem("phone.fill", #selector(navAnswerTapped))]
+        case (true, .calling), (true, .inCall):
+            key = "active-\(micOn)-\(camOn)-\(speakerOn)-\(videoAvailable)"
+            // Order is right-to-left: End is rightmost, then Speaker, Cam, Mic.
+            items = [navItem("phone.down.fill", #selector(navEndTapped), red: true),
+                     navItem(speakerOn ? "speaker.wave.2.fill" : "ear", #selector(navSpeakerTapped))]
+            if videoAvailable {
+                items.append(navItem(camOn ? "video.fill" : "video.slash.fill", #selector(navCamTapped)))
+            }
+            items.append(navItem(micOn ? "mic.fill" : "mic.slash.fill", #selector(navMicTapped)))
+        case (_, .idle):
+            key = "idle"
+            items = [navItem("phone.arrow.up.right", #selector(navCallTapped))]
+        default:
+            // A call is in flight with another peer: no action here.
+            key = "blocked"
+            items = []
+        }
+        guard navChromeKeys[peer] != key else { return }
+        navChromeKeys[peer] = key
+        chat.navigationItem.rightBarButtonItems = items
+    }
+
+    private func navItem(_ symbol: String, _ action: Selector, red: Bool = false) -> UIBarButtonItem {
+        let item = UIBarButtonItem(image: UIImage(systemName: symbol), style: .plain, target: self, action: action)
+        if red { item.tintColor = .systemRed }
+        return item
+    }
+
+    private func visiblePeerRef() -> String? {
+        (visibleNavigationController?.visibleViewController as? ChatViewController)?.peer.id
+    }
+
+    @objc private func navCallTapped() {
+        guard let peer = visiblePeerRef() else { return }
+        requestCall(peer)
+    }
+    @objc private func navMicTapped() {
+        guard let peer = visiblePeerRef() else { return }
+        toggleSendState(peerId: peer, mic: true)
+    }
+    @objc private func navCamTapped() {
+        guard let peer = visiblePeerRef() else { return }
+        toggleSendState(peerId: peer, mic: false)
+    }
+    @objc private func navSpeakerTapped() { toggleSpeakerphone() }
+    @objc private func navEndTapped() { ActiveMachine.current?.hangUp() }
+    @objc private func navDeclineTapped() { ActiveMachine.current?.decline() }
+    @objc private func navAnswerTapped() { ActiveMachine.current?.answer() }
 
     // MARK: - Elapsed timer
 
@@ -371,7 +439,6 @@ final class LiveActivityController: NSObject {
         case .decline: ActiveMachine.current?.decline()
         case .end: ActiveMachine.current?.hangUp()
         case .open: openPeerThread(peerId)
-        case .call: requestCall(peerId)
         case .toggleMic: toggleSendState(peerId: peerId, mic: true)
         case .toggleCam: toggleSendState(peerId: peerId, mic: false)
         case .toggleSpeaker: toggleSpeakerphone()
@@ -382,8 +449,9 @@ final class LiveActivityController: NSObject {
         }
     }
 
-    /// Idle chrome tapped: show `.calling` immediately (feedback, and the Call
-    /// button disappears), then hand off to the visible thread's call routing.
+    /// Nav-bar `Call` tapped: show `.calling` immediately (feedback, and the
+    /// item becomes the in-call controls), then hand off to the visible
+    /// thread's call routing.
     /// The machine's first state change clears the placeholder; a start that
     /// never produces a call times out.
     private func requestCall(_ peerId: String) {

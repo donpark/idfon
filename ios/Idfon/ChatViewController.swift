@@ -113,10 +113,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // A 1:1 thread's name lives in the Bar (idle chrome and in-call), so the
-        // large nav title would be a second copy — drop it and keep only the
-        // back button. Rooms have no Bar, so they keep their title.
-        title = conversation.isRoom ? conversation.title : nil
+        // The nav bar is the thread's identity and call chrome: inline title =
+        // contact name, and the call controls are set by LiveActivityController
+        // as right bar items. Rooms set their own items and keep the title as-is.
+        title = conversation.title
         if !conversation.isRoom { navigationItem.largeTitleDisplayMode = .never }
         view.backgroundColor = .systemBackground
 
