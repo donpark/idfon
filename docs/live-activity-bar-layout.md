@@ -76,6 +76,11 @@ header 60 tall. In-call header budget: margins 20 + controls 44·8·44·8·≈44
 spacing 12 → identity ≈197 → **handle budget ≈179pt** (`@janedoe` = 78pt), timer 41pt on its
 own line. Compact pill for `03:42 @janedoe — 1 transfer, 1 stream` + End = 319×52.
 
+These are the **full-chrome** measurements (incoming rings and the Mac bar). On iOS the
+visible thread's own call renders `statusOnly`: the header is the status line alone
+(`Calling…` / `timer · stats`) plus any tray rows, because the nav bar owns identity and
+controls.
+
 End is **icon only** (`showsTitle: false`): the label wrapped and broke the control row, and
 the icon alone is unambiguous next to the red fill. The Bar shows a callee *name* when the
 peer-id → name map has one, else a shortened id — never the raw public key.
@@ -119,7 +124,7 @@ true, so every call publishes them. The host fills them from the active machine'
   `UIFontMetrics(.subheadline)`-scaled monospaced digits. `UIButton.Configuration` scales
   titles automatically. Nothing has a fixed height except the dot.
 - Accessibility categories (expanded only): `headerStack.axis → .vertical`, alignment
-  `.leading` — identity on one line, four controls on the next. Observed via
+  `.leading` — identity on one line, the controls on the next (`statusOnly` has none). Observed via
   `registerForTraitChanges([UITraitPreferredContentSizeCategory.self])` (iOS 17).
 - Safe area: the host pins to its own root view's `safeAreaLayoutGuide` = scene insets, as
   the floor under `topClearance`. Bar-to-content coordination is one number in one place
@@ -152,11 +157,11 @@ true, so every call publishes them. The host fills them from the active machine'
    The `.incoming` fullscreen
    present was retired when the Bar was integrated; `CallViewController` now exists only as
    the expanded video surface, presented from the chat's inline video bar.
-2. **Outgoing-pending = `Calling…` status + red End (cancels).** Smallest possible state:
-   same chrome as in-call minus the timer; no extra screen.
-3. **Idle-state tray = identical rows under the Idle chrome.** Rows are state-independent
-   in the model; nothing to design separately. Idle *pill* (rows but no call) shows the
-   summary text with no End button.
+2. **Outgoing-pending: the nav-bar Call item flips to the in-call controls (End cancels)
+   and the panel shows `Calling…`.** Smallest possible state; no extra screen.
+3. **Idle-state tray: rows are state-independent in the model.** With no idle chrome on
+   iOS, an idle thread's transfers show as a compact pill (summary text, no End); an
+   expanded idle tray remains open.
 4. **DECIDED (owner): dock = top, below the navigation bar, content shifts down.**
    WhatsApp/Telegram "return to call" style; never floats over nav chrome (§6 Dock
    position). Mechanism: `OverlayWindow.topClearance` (nav bar bottom, host-set) anchors
@@ -207,7 +212,8 @@ already render with `phase == .idle`, so "transfer continues" needs no layout wo
     full-screen presentation (e.g. `CallViewController`) has no nav bar; the host either
     hides the overlay (`render([])`) or sets `topClearance = 0` (Bar falls back to
     `safeArea.top + 8`). Still undecided; both are one line.
-- Density rule: `.expanded` for the currently visible thread's peer, `.compact` otherwise.
+- Density rule: `.expanded` for the currently visible thread's peer (rendered
+  `statusOnly` when it is that thread's own call), `.compact` otherwise.
 - The `.incoming` fullscreen present was retired (see §7.1). `ChatViewController.videoBar`
   is **retained** — the inline video bar is the intended design (tap to expand) — so the
   earlier "retire it" line is superseded.
@@ -217,8 +223,9 @@ already render with `phase == .idle`, so "transfer continues" needs no layout wo
 `ios/Checks/LiveActivityBarCheck/main.swift` — runs natively via **Mac Catalyst, no
 simulator** (exact command in the file header): model formatting, expanded fill width,
 handle/timer untruncated and stacked with the header held at 60pt, pill hugging + capsule
-radius, per-state button visibility (idle and incoming hide Mic/Cam; calling/in-call show
-them), that the in-call toggles emit `.toggleMic`/`.toggleCam`, and intent routing.
+radius, per-state button visibility (idle has no call controls; incoming hides Mic/Cam;
+calling/in-call show them; `statusOnly` hides all controls), that the in-call toggles emit
+`.toggleMic`/`.toggleCam`, and intent routing.
 
 Typecheck the sources against the device SDK (`xcrun --sdk iphoneos --show-sdk-path`,
 `-target arm64-apple-ios17.0`).
