@@ -113,7 +113,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = conversation.title
+        // A 1:1 thread's name lives in the Bar (idle chrome and in-call), so the
+        // large nav title would be a second copy — drop it and keep only the
+        // back button. Rooms have no Bar, so they keep their title.
+        title = conversation.isRoom ? conversation.title : nil
+        if !conversation.isRoom { navigationItem.largeTitleDisplayMode = .never }
         view.backgroundColor = .systemBackground
 
         // Rooms use the same chat surface but do not expose 1:1 call controls.
