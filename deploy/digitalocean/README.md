@@ -7,9 +7,13 @@ obtained through DigitalOcean DNS (DNS-01), so `<ref>.idfon.net` gives every
 peer a clean origin.
 
 ```
-https://<ref>.idfon.net/<path>   ->   idfon/http3/1 over iroh to peer <ref>
-https://idfon.net/<ref>/<path>   (fallback)
+https://<z32-ref>.<domain>/<path>   (a --domain edge is subdomain-only)
+https://<domain>/<ref>/<path>      (IP/localhost edges only)
 ```
+
+`<z32-ref>` is the peer's endpoint id in z-base-32 (52 chars; hex is 64 and
+overflows a DNS label). A `--domain` edge rejects the path form: it would give
+every peer the same origin (`idfon.net`), leaking cookies/storage across peers.
 
 `<ref>` is the peer's 64-hex endpoint id; there is no directory. TLS/DNS are
 the host's job; the edge only needs outbound network (iroh relay + QUIC) and

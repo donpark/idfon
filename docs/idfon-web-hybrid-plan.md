@@ -238,17 +238,17 @@ Confirm to close.
    reusing `idfon-core`'s ticket verification. It is relay-only and needs the
    trailing-dot normalization; pick it when running with no host/CDN ingress is
    wanted, and the native binary otherwise.
-2. **URL form → `/<ref>/<path>` for 64-hex refs; wildcard only with a short
-   ref.** Both are implemented (`Config.origin_domain`, `target()`), and the
-   wildcard gives each peer a clean origin (path untouched, per-peer cookie
-   scope). But a DNS label is capped at **63 octets** and an endpoint id (or
-   `account_alias`) is **64 hex chars**, so `<ref>.<domain>` is unresolvable by
-   any normal client — confirmed: `dig` rejects it (`label too long`); a
-   `Host:`-header request (DNS bypass) works. Until a short host encoding lands
-   (e.g. base32 of the 32-byte id = 52 chars, decoded by the edge), the
-   **path form is the working public URL**; the wildcard cert/DNS stay for
-   short handles and future encoding. A self-hosted edge on an IP still needs
-   `--domain <host-or-ip>` so the `Host` check passes.
+2. **URL form → `<z-base-32>.<domain>` on a domain edge; `/<ref>/<path>` only
+   for IP/localhost.** The wildcard gives each peer a clean, isolated origin
+   (path untouched, per-peer cookies). A DNS label caps at **63 octets** and hex
+   is 64, so the host is the **z-base-32** form (52 chars, `IDFON`/pkarr's
+   endpoint-id encoding); the edge and clients accept hex or z32, and the apps
+   build the host form for endpoint ids. A `--domain` edge is therefore
+   **subdomain-only**: the path form gives every peer one origin
+   (`idfon.net`), so cookies and web storage leak across peers — `target()`
+   rejects it (400) and the requester cookie is scoped to the peer host. The
+   path form remains for IP/localhost self-hosted edges (no wildcard DNS/TLS),
+   where a single origin is unavoidable.
 3. **Privacy posture → self-hostable and opt-in, no directory.** The edge is a
    relay, not an authority: it resolves a 64-hex ref to an iroh endpoint id (no
    directory), re-authorizes at the peer, and stores nothing. Joining is
