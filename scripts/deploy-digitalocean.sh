@@ -173,8 +173,18 @@ COMPOSE_FILES="-f compose.yaml"
 RELAY_ENV=""
 if [ "$DEPLOY_RELAY" = "1" ]; then
   info "provisioning the co-located iroh relay"
+  # With IDFON_RELAY_TOKEN set, lock the relay (and the edge presents it).
+  # Unset leaves the relay open, like N0's public relays.
+  RELAY_CONFIG="$DEPLOY/relay/config.toml"
+  if [ -n "$RELAY_TOKEN" ]; then
+    RELAY_CONFIG="$(mktemp)"
+    awk -v tok="$RELAY_TOKEN" \
+      '{ if ($0 ~ /^access = /) print "access = { shared_token = [\"" tok "\"] }"; else print }' \
+      "$DEPLOY/relay/config.toml" > "$RELAY_CONFIG"
+  fi
   ssh $SSH_OPTS "root@$PUBLIC_IP" "mkdir -p /srv/idfon-edge/relay"
-  scp $SSH_OPTS "$DEPLOY/relay/config.toml" "root@$PUBLIC_IP:/srv/idfon-edge/relay/config.toml" >/dev/null
+  scp $SSH_OPTS "$RELAY_CONFIG" "root@$PUBLIC_IP:/srv/idfon-edge/relay/config.toml" >/dev/null
+  [ "$RELAY_CONFIG" != "$DEPLOY/relay/config.toml" ] && rm -f "$RELAY_CONFIG"
   scp $SSH_OPTS "$DEPLOY/compose.relay.yaml" "root@$PUBLIC_IP:/srv/idfon-edge/compose.relay.yaml" >/dev/null
   COMPOSE_FILES="-f compose.yaml -f compose.relay.yaml"
   RELAY_ENV="IDFON_RELAY_URLS=https://relay.$DOMAIN:8443\n"
