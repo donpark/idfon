@@ -32,7 +32,7 @@ fingerprint and recompiles the whole ~550-crate graph — see
 | You changed | Rebuild |
 | --- | --- |
 | `crates/*` library logic | `cargo test -p <crate>`; add the consumer build below only if you need its artifact |
-| `crates/idfon-core` | the workspace, plus `deploy/cloudflare/build.sh` (the Worker only uses the wasm-gated security helpers) |
+| `crates/idfon-core` | the workspace, plus `deploy/cloudflare/build.sh` (the Worker uses only the wasm-gated security helpers). A change to `transport` (e.g. the `IDFON_RELAY_*` knob) also needs the vendored libs rebuilt — `ios/build-deps.sh` (device staticlib) and the `iroh-c-ffi` dylib, then `idfond` — or the apps won't pick it up. |
 | `deploy/cloudflare/*` | `deploy/cloudflare/build.sh`, then `wrangler dev`/`deploy` |
 | `deploy/idfon-edge/Dockerfile` | rebuild/push the `idfon-edge` image (`edge-v*` tag or local build) |
 | `deploy/digitalocean/*` | nothing to build; follows the image (runbook in its README) |
