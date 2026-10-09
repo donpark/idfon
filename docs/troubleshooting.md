@@ -569,7 +569,7 @@ refusal. See `docs/agent-agency.md` for the current wiring.
 **Symptom.** Ask the `agency` agent (in a live call) for a new contact. It says
 it sent the invite, but the Add / Add and Always Trust prompt never appears —
 repeated attempts fail the same way. The invite *is* in the caller's daemon
-store (`tmp/idfond/state.json` on iOS) and in the event stream
+store (`Application Support/Idfon/daemon/state.json` on iOS) and in the event stream
 (`message.received`), but not in the app's rendered chat
 (`Library/Caches/idfon/sessions/<identity>/messages.json`).
 
