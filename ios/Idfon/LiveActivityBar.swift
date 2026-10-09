@@ -42,6 +42,10 @@ struct LiveActivityBarModel: Equatable {
     /// True for the client-cascade voice call: shows a subtle on-device
     /// provenance glyph that explains where the audio is processed.
     var onDevice = false
+    /// The visible thread's own call carries its identity and controls in the
+    /// nav bar, so the panel drops them and keeps only the call stats and the
+    /// activity (tray) rows.
+    var statusOnly = false
     var rows: [Row] = []
     var density: Density = .expanded
 
@@ -70,8 +74,6 @@ enum LiveActivityBarIntent: Equatable {
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill tapped: navigate to the owning thread.
     case open
-    /// Idle expanded chrome: start a call (§3 State 1).
-    case call
 }
 
 /// The Live Activity Bar surface. Renders both §6 densities from one model;
@@ -97,7 +99,6 @@ final class LiveActivityBar: UIView {
     private let declineButton = UIButton(configuration: .filled())
     private let answerButton = UIButton(configuration: .filled())
     private let verbButton = UIButton(configuration: .filled())
-    private let callButton = UIButton(configuration: .filled())
     private let onDeviceButton = UIButton(configuration: .plain())
     private let textStack = UIStackView()
     private let identityStack = UIStackView()
@@ -179,17 +180,12 @@ final class LiveActivityBar: UIView {
         control(declineButton, "phone.down.fill", "Decline", #selector(declineTapped))
         control(answerButton, "phone.fill", "Answer", #selector(answerTapped))
         control(verbButton, "phone.down.fill", "End", #selector(verbTapped))
-        // Idle chrome's one action: the call entry (§3 State 1). Hidden once a
-        // call exists, so it cannot be pressed twice.
-        control(callButton, "phone.arrow.up.right", "Call", #selector(callTapped))
-        callButton.configuration?.title = "Call"
-        callButton.configuration?.imagePadding = 6
         declineButton.configuration?.baseBackgroundColor = .systemRed
         answerButton.configuration?.baseBackgroundColor = .systemGreen
         controlsStack.axis = .horizontal
         controlsStack.spacing = 8
         controlsStack.alignment = .center
-        [callButton, micButton, camButton, speakerButton, declineButton, answerButton, verbButton]
+        [micButton, camButton, speakerButton, declineButton, answerButton, verbButton]
             .forEach(controlsStack.addArrangedSubview)
 
         headerStack.axis = .horizontal
@@ -229,6 +225,7 @@ final class LiveActivityBar: UIView {
         let previous = self.model
         self.model = model
         let compact = model.density == .compact
+        let statusOnly = model.statusOnly && !compact
 
         // Identity
         switch model.phase {
@@ -236,12 +233,13 @@ final class LiveActivityBar: UIView {
         case .calling, .incoming: dot.backgroundColor = .systemOrange
         case .idle: dot.backgroundColor = .systemGray
         }
-        dot.isHidden = model.phase == .idle && !compact
+        dot.isHidden = statusOnly || (model.phase == .idle && !compact)
         if compact {
             titleLabel.text = model.compactText
             statusLabel.isHidden = true
         } else {
             titleLabel.text = model.handle
+            titleLabel.isHidden = statusOnly
             switch model.phase {
             case .idle: statusLabel.text = nil
             case .calling: statusLabel.text = "Calling…"
@@ -253,7 +251,7 @@ final class LiveActivityBar: UIView {
             }
             statusLabel.isHidden = statusLabel.text == nil
         }
-        onDeviceButton.isHidden = compact || !model.onDevice
+        onDeviceButton.isHidden = compact || statusOnly || !model.onDevice
         headerStack.directionalLayoutMargins = compact
             ? NSDirectionalEdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 4)
             : NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 8)
@@ -265,7 +263,7 @@ final class LiveActivityBar: UIView {
         // nothing to answer with — calls always begin mic-only. A toggle for
         // an absent track is hidden too (compact hides both anyway).
         let togglesActive = model.phase == .calling || model.phase == .inCall
-        callButton.isHidden = compact || model.phase != .idle
+        controlsStack.isHidden = statusOnly
         micButton.isHidden = compact || !togglesActive || !model.audioAvailable
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
         speakerButton.isHidden = compact || model.phase != .inCall || !model.audioAvailable
@@ -329,7 +327,6 @@ final class LiveActivityBar: UIView {
 
     // MARK: - Intents
 
-    @objc private func callTapped() { onIntent?(.call) }
     @objc private func micTapped() { onIntent?(.toggleMic) }
     @objc private func camTapped() { onIntent?(.toggleCam) }
     @objc private func speakerTapped() { onIntent?(.toggleSpeaker) }

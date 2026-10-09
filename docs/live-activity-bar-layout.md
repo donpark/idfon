@@ -14,8 +14,10 @@ struct LiveActivityBarModel: Equatable {
     let peerId: String; var handle: String                  // "@janedoe"
     var phase; var micOn; var camOn; var elapsed: TimeInterval; var rows: [Row]; var density
     var audioAvailable: Bool; var videoAvailable: Bool      // tracks the session carries (§3 State 3)
+    var onDevice: Bool; var statusOnly: Bool                // statusOnly = nav bar owns identity+controls
 }
-enum LiveActivityBarIntent { toggleMic, toggleCam, ping, end, answer, decline,
+// The call entry is a nav-bar item, not a Bar intent.
+enum LiveActivityBarIntent { toggleMic, toggleCam, end, answer, decline,
                              cancelRow(id), togglePauseRow(id), open }
 ```
 
@@ -82,15 +84,19 @@ peer-id → name map has one, else a shortened id — never the raw public key.
 
 | Phase / density | dot | title / status | mic · cam | verb slot | tray |
 | --- | --- | --- | --- | --- | --- |
-| idle, expanded | hidden | `@janedoe` / — | hidden | **Call** (phone, tint) | rows if any |
-| calling, expanded | orange | `@janedoe` / `Calling…` | shown | **End** (red) | rows if any |
+| calling, status¹ | hidden | — / `Calling…` | hidden | hidden | rows if any |
+| inCall, status¹ | hidden | — / `03:42 · stats` | hidden | hidden | rows if any |
 | incoming, expanded | orange | `@janedoe` / `Incoming call` | hidden | **Decline** (red) **Answer** (green); verb hidden | rows if any |
-| inCall, expanded | red | `@janedoe` / `03:42` | shown, live toggles | **End** (red) | rows if any |
 | any, compact | phase color | `● 03:42 @janedoe — 1 transfer` (one label; tap → `.open`) | hidden | End (icon only) or Decline/Answer; hidden when idle | hidden (summarised in label) |
 
-Verb tap: idle → `.call` (start the call; the panel then shows `.calling`);
-calling/inCall → `.end` (one tap, compact and expanded
-alike). Tray rows: transfer → `Cancel` → `.cancelRow(id)`;
+¹ The visible thread's own call carries identity (nav title) and controls
+(nav-bar right items: Mic/Cam/Speaker/End), so the Bar renders `statusOnly` —
+stats plus tray rows, no identity or controls. An idle visible thread with no
+activity renders no Bar; idle transfers stay compact pills.
+
+Verb tap: calling/inCall → `.end` (one tap, compact and status
+alike); incoming → `.decline` / `.answer`. The call entry is a nav-bar item,
+not a Bar intent. Tray rows: transfer → `Cancel` → `.cancelRow(id)`;
 stream → play/pause → `.togglePauseRow(id)`, `Stop` → `.cancelRow(id)`.
 
 Row text: `Transferring "Archive.zip" (42%) - 12 MB/s` (ByteCountFormatter),
@@ -120,7 +126,7 @@ true, so every call publishes them. The host fills them from the active machine'
   (`contentInset` → nav-controller subclass, §8), not per-screen.
 - Size classes: only the 560pt cap + centering; the same hierarchy serves compact and
   regular. Landscape iPhone: safe-area leading/trailing widen the gutters automatically.
-- Accessibility labels/values: Microphone on/off, Camera on/off, Call/End, Answer,
+- Accessibility labels/values: Microphone on/off, Camera on/off, End, Answer,
   Decline, Play/Pause; compact title carries `.button` trait.
 
 ## 6. Window layering & hit-testing
