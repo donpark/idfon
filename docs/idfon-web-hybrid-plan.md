@@ -1,15 +1,17 @@
-# idfon web: hybrid gateway architecture — implementation plan
+# idfon web: hybrid gateway architecture — as-built
 
-> **Status:** design (P0–P5 landed in `crates/idfon-*` and iOS; P6 is the
-> Cloudflare Worker edge in `deploy/cloudflare`, source-landed, deploy pending).
-> Companion to `idfon-web.md`, which analyses serving P2P pages in a
-> `WKWebView`; this plans the **hybrid transport** that analysis closes with.
-> Written 2026-10-07.
+> **Status:** as-built (P0–P6 landed). The public `idfon.net` edge runs on a
+> DigitalOcean droplet (`deploy/digitalocean`, edge + optional co-located
+> `iroh-relay`); the Cloudflare Worker (`deploy/cloudflare`) is a source-landed,
+> policy-gated experiment. Companion to `idfon-web.md`; this records the
+> **hybrid transport** that analysis closes with. Residual security items are
+> tracked as issues (#27 cookie tossing, #28 `?ticket=` in URLs, #29 rebuild the
+> vendored libs for the relay knob). Written 2026-10-07; as-built 2026-10-09.
 
 `idfon-web.md` ends on a three-tier hybrid: a public `https://idfon.net` gateway
 as ingress, an on-device adapter, and the iroh swarm as backbone — with a
 direct-first/relay-fallback policy, a control/data-plane split, and iOS
-background handoff. This document plans that transport. The WebMCP /
+background handoff. This document records that transport as built. The WebMCP /
 app-owned-JSON-render layer in the earlier sections is the *consumer* of it, not
 part of the transport.
 
@@ -204,7 +206,7 @@ verified **caller context**, not just `(account, path)`.
   to `Idfon/action-audit.ndjson` by `ActionAudit` (rotated to a single `*.1`
   file at 1 MiB).
 
-### P6 — Cloudflare Worker edge (source landed; deploy pending)
+### P6 — Cloudflare Worker edge (experiment, policy-gated)
 
 - `deploy/cloudflare`: the P0–P3 ingress as a `workers-rs`/`wasm-bindgen`
   Worker. Cloudflare terminates TLS and owns the wildcard origin; the Worker
@@ -221,13 +223,14 @@ verified **caller context**, not just `(account, path)`.
   ticket auth via header and cookie, forwarded ticket echoed by the peer,
   401 on missing/invalid tickets, `/healthz`, and the `/<ref>/<path>` route.
   The endpoint is built per request (stateless Workers drop isolate sockets;
-  a cached endpoint hangs on a dead relay WebSocket). Not yet deployed to the
-  `idfon.net` zone.
+  a cached endpoint hangs on a dead relay WebSocket). Deploying to the
+  `idfon.net` zone is blocked on Cloudflare's ToS §2.2.1(j) proxy sign-off (see
+  External / ops); the public zone uses the DigitalOcean edge instead.
 
-## Open decisions — recommendations
+## Decisions
 
-Proposed 2026-10-07, grounded in what P0–P5 landed plus the device/edge E2E.
-Confirm to close.
+Settled 2026-10-09, grounded in what P0–P6 landed plus the live device/edge E2E
+(originally proposed 2026-10-07).
 
 1. **Edge runtime → Rust, with two deploy shapes (updated after P6).** The
    native `crates/idfon-edge` (Dockerfile, systemd unit, CI job, request metrics,
@@ -262,10 +265,20 @@ Confirm to close.
    peer) stays as the dev/simple mode. The edge's `--require-ticket` is a
    coarse gate; the peer re-checks issuer/grant/capability/path per request.
 
-## Deferred / follow-ups
+## Residuals / follow-ups
 
-Knowingly deferred or only partially verified while landing P0–P5. Ordered by
-value; check items off here as they land.
+Deferred or not yet exercised. Ordered by value; check items off here as they
+land. Security residuals are filed as issues.
+
+### Security residuals (filed as issues)
+
+- [ ] #27 — peer content can set a parent-domain cookie (cookie tossing) on
+  `<ref>.<domain>`; needs a `__Host-` host-only credential or peer content on a
+  distinct registrable domain.
+- [ ] #28 — `?ticket=` exposes the requester ticket in URLs; restrict it to
+  loopback/plain-HTTP binds or exchange it for a cookie.
+- [ ] #29 — rebuild the vendored libs so `IDFON_RELAY_*` takes effect in the
+  apps (the transport knob post-dates `libiroh_c_ffi.a`/`idfond`).
 
 ### Not exercised end-to-end
 
@@ -378,9 +391,9 @@ value; check items off here as they land.
 - [x] Edge **packaging**: `deploy/idfon-edge/{Dockerfile,idfon-edge.service}`
   and `.github/workflows/edge.yml` (gateway/edge crate tests, image build +
   `--help` smoke test, GHCR push on `edge-v*` tags).
-- [ ] **Open decisions** — recommendations written (Rust edge; wildcard primary
-  with path fallback; self-hostable/opt-in with no directory; P3 tickets for
-  v1). Awaiting the owner's confirmation before the section closes.
+- [x] **Decisions** — settled (Rust edge; z32 wildcard, subdomain-only on a
+  domain edge; self-hostable/opt-in with no directory; P3 tickets for v1). See
+  "## Decisions".
 
 ### Parity / tests / docs
 
