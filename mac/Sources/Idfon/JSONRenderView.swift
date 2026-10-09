@@ -1,7 +1,7 @@
 import AppKit
 
 /// Draws a normalized [`JSONRenderSpec`] with native AppKit views from the
-/// app-owned catalog (`docs/idfon-web-hybrid-plan.md`, P5). Every interactive
+/// app-owned catalog (`docs/idfon-edge.md`, P5). Every interactive
 /// node fires `onAction`; the remote agent never supplies code.
 final class JSONRenderView: NSView {
     private let spec: JSONRenderSpec

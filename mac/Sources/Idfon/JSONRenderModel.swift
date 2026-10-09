@@ -1,6 +1,6 @@
 import Foundation
 
-/// App-owned JSON-render model (`docs/idfon-web-hybrid-plan.md`, P5).
+/// App-owned JSON-render model (`docs/idfon-edge.md`, P5).
 ///
 /// The remote agent sends **data only**: a declarative tree that names existing
 /// components from this fixed catalog and carries no code. Unknown component

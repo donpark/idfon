@@ -1,5 +1,5 @@
 //! `idfon-edge` — the public-ingress half of the hybrid web architecture
-//! (`docs/idfon-web-hybrid-plan.md`).
+//! (`docs/idfon-edge.md`).
 //!
 //! A long-running, always-on idfon peer that terminates HTTP for a consumer
 //! (a `WKWebView`, a browser, `curl`) and bridges each request to a

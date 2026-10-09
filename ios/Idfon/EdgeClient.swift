@@ -1,6 +1,6 @@
 import Foundation
 
-/// Public-edge fetches (`docs/idfon-web-hybrid-plan.md`, P4).
+/// Public-edge fetches (`docs/idfon-edge.md`, P4).
 ///
 /// The edge is an always-on peer that terminates HTTPS and bridges to
 /// `idfon/http3/1`, so a resource fetch can keep running in a **background

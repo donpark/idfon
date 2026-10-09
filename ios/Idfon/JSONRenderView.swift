@@ -2,7 +2,7 @@ import UIKit
 
 /// Draws a normalized [`JSONRenderSpec`] with native views from the app-owned
 /// catalog. Every interactive node fires `onAction` with a declarative action
-/// name; the remote agent never supplies code (`docs/idfon-web-hybrid-plan.md`,
+/// name; the remote agent never supplies code (`docs/idfon-edge.md`,
 /// P5).
 final class JSONRenderView: UIView {
     private let spec: JSONRenderSpec

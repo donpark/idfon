@@ -2,7 +2,7 @@ import UIKit
 import WebKit
 
 /// A `WKWebView` pointed at the public edge for one peer resource
-/// (`docs/idfon-web-hybrid-plan.md`, P4). A WebView cannot set request headers,
+/// (`docs/idfon-edge.md`, P4). A WebView cannot set request headers,
 /// so the requester ticket is injected as a cookie for the edge domain before
 /// the first load; the edge reads `idfon_ticket`. Uses a **non-persistent**
 /// store so the credential is never written to disk.

@@ -1,6 +1,6 @@
 # idfon-edge on DigitalOcean (droplet)
 
-The public `idfon.net` ingress (`docs/idfon-web-hybrid-plan.md`) as a single
+The public `idfon.net` ingress (`docs/idfon-edge.md`) as a single
 DigitalOcean droplet running the existing `crates/idfon-edge` container. The
 edge terminates TLS itself with a Let's Encrypt **wildcard** certificate
 obtained through DigitalOcean DNS (DNS-01), so `<ref>.idfon.net` gives every

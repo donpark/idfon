@@ -68,7 +68,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Scene-based apps do not receive `AppDelegate.applicationWillEnterForeground`,
     /// so this is where the P4 edge handoff is reconciled: pick up any background
-    /// fetch that completed while suspended (docs/idfon-web-hybrid-plan.md).
+    /// fetch that completed while suspended (docs/idfon-edge.md).
     func sceneWillEnterForeground(_ scene: UIScene) {
         _ = EdgeClient.shared.drainInbox()
         if EdgeClient.shared.isProbing { EdgeClient.shared.probeLog("scene willEnterForeground") }

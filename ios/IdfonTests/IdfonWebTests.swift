@@ -3,7 +3,7 @@ import XCTest
 @testable import Idfon
 
 /// App-hosted unit tests for the hybrid web layer
-/// (`docs/idfon-web-hybrid-plan.md`): deep-link parsing, edge URL/cookie
+/// (`docs/idfon-edge.md`): deep-link parsing, edge URL/cookie
 /// construction, background-fetch bookkeeping, audit rotation, and json-render
 /// normalization. Runs on a device with `xcodebuild test -scheme Idfon`.
 final class IdfonWebTests: XCTestCase {
