@@ -56,6 +56,31 @@ final class IdfonWebTests: XCTestCase {
         XCTAssertEqual(ip.absoluteString, "http://192.168.1.2:8791/\(hex)/fs/a.html")
     }
 
+    func testRelaySettingsRoundTripAndEnvironment() {
+        RelaySettings.clear()
+        XCTAssertFalse(RelaySettings.isConfigured)
+        XCTAssertTrue(RelaySettings.environment().isEmpty)
+
+        RelaySettings.configure(urls: "https://relay.idfon.net:8443", token: "tok", relayOnly: true)
+        XCTAssertTrue(RelaySettings.isConfigured)
+        XCTAssertEqual(RelaySettings.urls, "https://relay.idfon.net:8443")
+        XCTAssertEqual(RelaySettings.token, "tok")
+        XCTAssertTrue(RelaySettings.isRelayOnly)
+        let env = RelaySettings.environment()
+        XCTAssertEqual(env["IDFON_RELAY_URLS"], "https://relay.idfon.net:8443")
+        XCTAssertEqual(env["IDFON_RELAY_TOKEN"], "tok")
+        XCTAssertEqual(env["IDFON_RELAY_ONLY"], "1")
+
+        // No token (allowlist / HTTP-callout relay): the env omits it.
+        RelaySettings.configure(urls: "https://relay.example:8443", token: "", relayOnly: false)
+        let plain = RelaySettings.environment()
+        XCTAssertNil(plain["IDFON_RELAY_TOKEN"])
+        XCTAssertNil(plain["IDFON_RELAY_ONLY"])
+
+        RelaySettings.clear()
+        XCTAssertFalse(RelaySettings.isConfigured)
+    }
+
     func testSessionCookieIsSecureOnlyForHTTPS() throws {
         EdgeClient.configure(url: "https://idfon.net", ticket: "a,b")
         let secure = try XCTUnwrap(EdgeClient.shared.sessionCookie)
