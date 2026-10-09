@@ -56,6 +56,10 @@ final class LiveActivityController: NSObject {
     private var peerNames: [String: String] = [:]
 
     private var phase: LiveActivityBarModel.Phase = .idle
+    /// Peer of a call tapped from the Bar's idle chrome, shown as `.calling`
+    /// until the machine picks it up. Gives immediate feedback (and hides the
+    /// Call button), so a slow start cannot be double-tapped.
+    private var pendingCall: String?
     /// The in-call Bar's toggle state. Mirrored from the active machine on
     /// phase entry and after each toggle, so the Bar always shows what the
     /// call is really sending (and hides toggles for absent tracks).
@@ -242,14 +246,16 @@ final class LiveActivityController: NSObject {
     private func sync() {
         let previous = phase
         let machine = ActiveMachine.current
-        let next = machine?.phase ?? .idle
+        if machine != nil { pendingCall = nil }
+        let next = machine?.phase ?? (pendingCall != nil ? .calling : .idle)
 
         // Entering a phase (re)initialises the toggles from the machine's
         // real send state. A call only publishes its staged tracks (dial) or
         // both (answer), and an unanswered incoming call is not sending yet,
         // so the Bar reads the truth instead of assuming mic-on/cam-on.
         if next != previous, next != .idle {
-            micOn = machine?.audioEnabled ?? false
+            // A pending call has no machine yet; it begins mic-only, like a dial.
+            micOn = machine?.audioEnabled ?? (pendingCall != nil)
             camOn = machine?.videoEnabled ?? false
             // LiveCall.activateAudioSession() starts on the loudspeaker; keep
             // the button in sync so the first tap switches to the earpiece.
@@ -293,9 +299,10 @@ final class LiveActivityController: NSObject {
     /// - A transfer to/from a peer with no Bar becomes its own compact pill, so
     ///   leaving the thread never hides in-flight work.
     private func render() {
-        let visiblePeer = (visibleNavigationController?.visibleViewController as? ChatViewController)?.peer.id
+        let visibleChat = visibleNavigationController?.visibleViewController as? ChatViewController
+        let visiblePeer = visibleChat?.peer.id
         let machine = ActiveMachine.current
-        let callPeer = (machine?.peer ?? nil).flatMap { $0.isEmpty ? nil : $0 }
+        let callPeer = ((machine?.peer ?? nil) ?? pendingCall).flatMap { $0.isEmpty ? nil : $0 }
 
         let transfers = TransferCenter.shared
         var models: [LiveActivityBarModel] = []
@@ -314,6 +321,14 @@ final class LiveActivityController: NSObject {
             // Expanded only while the visible thread is the call peer's —
             // that thread owns the call; every other screen shows the pill.
             model.density = visiblePeer == callPeer ? .expanded : .compact
+            models.append(model)
+        } else if phase == .idle, let visibleChat, visibleChat.allowsCall {
+            // Idle chrome (§3 State 1): the visible thread's panel shows the
+            // handle plus the one Call action, so the nav bar needs no button.
+            var model = LiveActivityBarModel(peerId: visibleChat.peer.id,
+                                             handle: barHandle(for: visibleChat.peer.id))
+            model.density = .expanded
+            model.rows = transfers.rows(for: visibleChat.peer.id)
             models.append(model)
         }
         // §4/§6: a transaction whose peer has no Bar renders as a compact pill,
@@ -356,6 +371,7 @@ final class LiveActivityController: NSObject {
         case .decline: ActiveMachine.current?.decline()
         case .end: ActiveMachine.current?.hangUp()
         case .open: openPeerThread(peerId)
+        case .call: requestCall(peerId)
         case .toggleMic: toggleSendState(peerId: peerId, mic: true)
         case .toggleCam: toggleSendState(peerId: peerId, mic: false)
         case .toggleSpeaker: toggleSpeakerphone()
@@ -363,6 +379,24 @@ final class LiveActivityController: NSObject {
         // for media streams, which have no producer yet.
         case .cancelRow(let id): TransferCenter.shared.cancel(id: id)
         case .togglePauseRow: break
+        }
+    }
+
+    /// Idle chrome tapped: show `.calling` immediately (feedback, and the Call
+    /// button disappears), then hand off to the visible thread's call routing.
+    /// The machine's first state change clears the placeholder; a start that
+    /// never produces a call times out.
+    private func requestCall(_ peerId: String) {
+        guard ActiveMachine.current == nil else { return }
+        guard let chat = visibleNavigationController?.visibleViewController as? ChatViewController,
+              chat.peer.id == peerId, chat.allowsCall else { return }
+        pendingCall = peerId
+        sync()
+        chat.startCall()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            guard let self, self.pendingCall == peerId, ActiveMachine.current == nil else { return }
+            self.pendingCall = nil
+            self.sync()
         }
     }
 

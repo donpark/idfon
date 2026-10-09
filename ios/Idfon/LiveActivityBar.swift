@@ -5,8 +5,8 @@ import UIKit
 /// state into it and re-renders on every change; the view holds no other state.
 struct LiveActivityBarModel: Equatable {
     /// §3 phases. There is no staging phase: a call is started from the
-    /// thread's nav bar and always begins mic-only, so idle has no stream
-    /// toggles to derive a staging state from.
+    /// idle chrome's `Call` button and always begins mic-only, so idle has no
+    /// stream toggles to derive a staging state from.
     /// `.incoming` is only ever set on the Bar path — when CallKit owns the
     /// ring the host never produces it (§6 "must not double-present").
     enum Phase: Equatable { case idle, calling, incoming, inCall }
@@ -70,6 +70,8 @@ enum LiveActivityBarIntent: Equatable {
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill tapped: navigate to the owning thread.
     case open
+    /// Idle expanded chrome: start a call (§3 State 1).
+    case call
 }
 
 /// The Live Activity Bar surface. Renders both §6 densities from one model;
@@ -95,6 +97,7 @@ final class LiveActivityBar: UIView {
     private let declineButton = UIButton(configuration: .filled())
     private let answerButton = UIButton(configuration: .filled())
     private let verbButton = UIButton(configuration: .filled())
+    private let callButton = UIButton(configuration: .filled())
     private let onDeviceButton = UIButton(configuration: .plain())
     private let textStack = UIStackView()
     private let identityStack = UIStackView()
@@ -176,12 +179,18 @@ final class LiveActivityBar: UIView {
         control(declineButton, "phone.down.fill", "Decline", #selector(declineTapped))
         control(answerButton, "phone.fill", "Answer", #selector(answerTapped))
         control(verbButton, "phone.down.fill", "End", #selector(verbTapped))
+        // Idle chrome's one action: the call entry (§3 State 1). Hidden once a
+        // call exists, so it cannot be pressed twice.
+        control(callButton, "phone.arrow.up.right", "Call", #selector(callTapped))
+        callButton.configuration?.title = "Call"
+        callButton.configuration?.imagePadding = 6
         declineButton.configuration?.baseBackgroundColor = .systemRed
         answerButton.configuration?.baseBackgroundColor = .systemGreen
         controlsStack.axis = .horizontal
         controlsStack.spacing = 8
         controlsStack.alignment = .center
-        [micButton, camButton, speakerButton, declineButton, answerButton, verbButton].forEach(controlsStack.addArrangedSubview)
+        [callButton, micButton, camButton, speakerButton, declineButton, answerButton, verbButton]
+            .forEach(controlsStack.addArrangedSubview)
 
         headerStack.axis = .horizontal
         headerStack.spacing = 12
@@ -256,6 +265,7 @@ final class LiveActivityBar: UIView {
         // nothing to answer with — calls always begin mic-only. A toggle for
         // an absent track is hidden too (compact hides both anyway).
         let togglesActive = model.phase == .calling || model.phase == .inCall
+        callButton.isHidden = compact || model.phase != .idle
         micButton.isHidden = compact || !togglesActive || !model.audioAvailable
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
         speakerButton.isHidden = compact || model.phase != .inCall || !model.audioAvailable
@@ -319,6 +329,7 @@ final class LiveActivityBar: UIView {
 
     // MARK: - Intents
 
+    @objc private func callTapped() { onIntent?(.call) }
     @objc private func micTapped() { onIntent?(.toggleMic) }
     @objc private func camTapped() { onIntent?(.toggleCam) }
     @objc private func speakerTapped() { onIntent?(.toggleSpeaker) }

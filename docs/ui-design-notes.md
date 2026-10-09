@@ -59,22 +59,22 @@ The Bar replaces standard dialer screens with an inline control bar that evolves
 
 ```
 +-----------------------------------------------------------------------+
-|  [<] @janedoe                                                 [ Ping ]|
+|  [<] @janedoe                                                 [ Call ]|
 +-----------------------------------------------------------------------+
 
 ```
 
 * **Default Condition:** No stream toggles. A call always begins mic-only, so there is
   nothing to stage before dialing — see State 2.
-* **Primary Action:** `[Ping]`. Tapping sends an ephemeral, low-priority "Free to talk?" notification to the recipient’s chat thread without causing the receiving device to ring loudly.
+* **Primary Action:** `[Call]` — **the one call entry** (the nav-bar button was removed). Tapping starts the call through the same routing as before: the contact's signed voice mode / catalog decides on-device client-cascade vs live. The panel switches to `Calling…` immediately, so it cannot be pressed twice.
 
 ### State 2: Pre-Call Staging — removed
 
 The Bar no longer carries pre-call `Mic`/`Cam` toggles. Staging let a caller open a session
 camera-on, so a callee could answer into a video call (and a live microphone) they were not
-ready for. A call is now started from the thread's nav-bar `Call` button and **always begins
-mic-only**: both tracks are published, the camera stays off until the Bar's `Cam` toggle.
-Idle chrome is the handle plus `[Ping]`. Stream toggles appear only once a call exists, so
+ready for. A call is now started from the thread's Bar `Call` button (idle chrome) and
+**always begins mic-only**: both tracks are published, the camera stays off until the Bar's
+`Cam` toggle. Idle chrome is the handle plus `[Call]`. Stream toggles appear only once a call exists, so
 the ringing Bar is the handle, "Incoming call", `[Decline]` and `[Answer]` — nothing to
 stage. State 1 and State 3 keep their numbers because other sections reference them.
 
@@ -90,7 +90,7 @@ stage. State 1 and State 3 keep their numbers because other sections reference t
 * **Active Elements:** Displays live call timer, active audio/video toggles, and a prominent red `[End]` button.
 * **Live In-Call Toggling:** `Mic` and `Cam` independently gate whether each outgoing stream is **sent** or **withheld** — mute/unmute and camera on/off — without tearing down the VoIP session. This is send/no-send gating, **not** track attach/detach: the session and its negotiation stay intact. A muted mic sends silence (capture stays open, unmute is instant); a disabled camera sends no frames (the peer holds the last frame). A call can only toggle streams it was started with: turning the camera on during an audio-only call, or vice versa, would require renegotiation and is out of scope.
 
-**Voice-first entry:** the thread's nav-bar `Call` button is the one call entry — it publishes
+**Voice-first entry:** the Bar's idle `Call` button is the one call entry — it publishes
 both tracks with **mic on and camera off**, so the Bar's `Cam` toggle turns video on when
 wanted. There is no separate video-call button (it duplicated the Bar's camera control), and
 answering an incoming call also starts mic-only.
