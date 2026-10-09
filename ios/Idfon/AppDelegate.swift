@@ -112,7 +112,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let i = args.firstIndex(of: "-pair-ticket"), args.count > i + 2 {
             storeCapabilityTicket(peer: args[i + 1], jsonOrPath: args[i + 2])
         }
-        // Public edge endpoint + requester credential (docs/idfon-web-hybrid-plan.md P4).
+        // Public edge endpoint + requester credential (docs/idfon-edge.md P4).
         // `-edgeurl <url> <ticket>` (ticket positionally) or
         // `-edgeurl <url> -edgeticket <ticket>` — both are accepted.
         if let i = args.firstIndex(of: "-edgeurl"), args.count > i + 1 {

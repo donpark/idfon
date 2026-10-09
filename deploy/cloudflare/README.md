@@ -1,6 +1,6 @@
 # idfon.net edge on Cloudflare Workers
 
-The public `idfon.net` ingress (`docs/idfon-web-hybrid-plan.md`) as a
+The public `idfon.net` ingress (`docs/idfon-edge.md`) as a
 Cloudflare Worker. It replaces the native `crates/idfon-edge` process for the
 public edge: Cloudflare terminates TLS and owns the wildcard origin, the Worker
 authenticates the requester, and fetches the resource from the owner peer over

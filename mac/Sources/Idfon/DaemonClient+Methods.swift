@@ -226,7 +226,7 @@ extension DaemonClient {
 
     /// Fetches a peer resource, preferring a direct P2P fetch through the
     /// loopback gateway and falling back to the public edge when it fails
-    /// (best-effort; `docs/idfon-web-hybrid-plan.md` P4).
+    /// (best-effort; `docs/idfon-edge.md` P4).
     func fetchResource(account: String, path: String) async throws -> Data {
         do {
             return try await fetchRemoteResource(account: account, path: path)

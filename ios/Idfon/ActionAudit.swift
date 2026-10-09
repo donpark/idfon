@@ -2,7 +2,7 @@ import Foundation
 
 /// Durable action audit: one JSON object per line under Application Support, so
 /// a review of what a JSON-render artifact asked the app to do survives
-/// relaunch (`docs/idfon-web-hybrid-plan.md`, P5).
+/// relaunch (`docs/idfon-edge.md`, P5).
 final class ActionAudit: @unchecked Sendable {
     static let shared = ActionAudit()
 

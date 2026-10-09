@@ -1,7 +1,7 @@
 import Foundation
 
 /// The app-owned tool catalog a JSON-render artifact may invoke
-/// (`docs/idfon-web-hybrid-plan.md`, P5). Only names registered here can run;
+/// (`docs/idfon-edge.md`, P5). Only names registered here can run;
 /// anything else is `RenderError.unknown`. This is the same shape an MCP tool
 /// registry takes — the idfon operations double as the action set.
 enum RenderTools {

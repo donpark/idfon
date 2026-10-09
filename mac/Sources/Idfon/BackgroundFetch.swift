@@ -1,7 +1,7 @@
 import Foundation
 
 /// Pure bookkeeping helpers for `EdgeClient`'s background edge fetches
-/// (`docs/idfon-web-hybrid-plan.md`, P4). Foundation-only so the host check
+/// (`docs/idfon-edge.md`, P4). Foundation-only so the host check
 /// `ios/Checks/JSONRenderCheck` can exercise them.
 enum BackgroundFetch {
     /// Drops pending-task entries older than `ttl`, so a task that never

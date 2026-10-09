@@ -6,7 +6,7 @@ import Foundation
 ///
 /// A `WKWebView` cannot set request headers, so the loopback bearer token rides
 /// as `?token=` and the edge requester ticket as a cookie. See
-/// `docs/idfon-web-hybrid-plan.md` (P2/P4).
+/// `docs/idfon-edge.md` (P2/P4).
 struct GatewayArtifactSource {
     enum Route {
         case loopback

@@ -1,14 +1,14 @@
-# idfon web: hybrid gateway architecture — as-built
+# idfon edge: hybrid gateway architecture — as-built
 
 > **Status:** as-built (P0–P6 landed). The public `idfon.net` edge runs on a
 > DigitalOcean droplet (`deploy/digitalocean`, edge + optional co-located
 > `iroh-relay`); the Cloudflare Worker (`deploy/cloudflare`) is a source-landed,
-> policy-gated experiment. Companion to `idfon-web.md`; this records the
+> policy-gated experiment. Companion to `idfon-web-analysis.md`; this records the
 > **hybrid transport** that analysis closes with. Residual security items are
 > tracked as issues (#27 cookie tossing, #28 `?ticket=` in URLs, #29 rebuild the
 > vendored libs for the relay knob). Written 2026-10-07; as-built 2026-10-09.
 
-`idfon-web.md` ends on a three-tier hybrid: a public `https://idfon.net` gateway
+`idfon-web-analysis.md` ends on a three-tier hybrid: a public `https://idfon.net` gateway
 as ingress, an on-device adapter, and the iroh swarm as backbone — with a
 direct-first/relay-fallback policy, a control/data-plane split, and iOS
 background handoff. This document records that transport as built. The WebMCP /

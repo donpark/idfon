@@ -5,7 +5,7 @@ Q: Could WebView on iOS be used to view webpage tunnelled through P2P via custom
 **Yes, this can be done on iOS using `WKWebView`, but there are significant WebKit constraints and security pitfalls to consider.**
 
 > **Outcome (as-built, 2026-10-09):** resolved by the hybrid transport in
-> `idfon-web-hybrid-plan.md`. Adopted: a loopback gateway plus a public
+> `idfon-edge.md`. Adopted: a loopback gateway plus a public
 > `idfon.net` edge, and app-owned JSON-render instead of WebMCP. Not adopted:
 > serving public pages through a `WKURLSchemeHandler` (the `idfon:` scheme).
 > Everything below is retained as the reasoning behind those choices, not as

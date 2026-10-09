@@ -127,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Opens a peer resource (`idfon://<ref>/<path>`) in a sandboxed web view
-    /// at the gateway/edge URL (`docs/idfon-web-hybrid-plan.md`, P4 parity).
+    /// at the gateway/edge URL (`docs/idfon-edge.md`, P4 parity).
     private func openEdgeResource(ref: String, path: [String]) {
         let resourcePath = "/" + path.joined(separator: "/")
         Task { @MainActor in

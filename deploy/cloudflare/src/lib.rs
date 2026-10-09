@@ -1,7 +1,7 @@
 //! `idfon.net` ingress as a Cloudflare Worker.
 //!
 //! This is the same hybrid-gateway edge as the native `crates/idfon-edge`
-//! (`docs/idfon-web-hybrid-plan.md`), running on `workerd`: Cloudflare
+//! (`docs/idfon-edge.md`), running on `workerd`: Cloudflare
 //! terminates TLS and provides the wildcard origin, the Worker authenticates
 //! the requester, and fetches the resource from the owner peer over
 //! `idfon/http3/1` via iroh. There is no certificate file and no host.
