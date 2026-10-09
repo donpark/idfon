@@ -343,7 +343,10 @@ value; check items off here as they land.
   7842/udp), and points the edge at it. Validated: a relay-only peer (its
   published address has no IP addrs) was fetched by the live edge through
   `relay.idfon.net:8443`. Every peer must share the relay; a peer left on N0
-  will not rendezvous.
+  will not rendezvous. Clients configure it at runtime (iOS/mac **Relay**
+  settings, applied at daemon start; CLI/native/eve via env) — never compiled
+  in. Prefer an endpoint allowlist or HTTP callout (no client secret); a shared
+  token is runtime-only.
 
 - [ ] **Cloudflare policy sign-off for the public edge.** Checked 2026-10-08:
   Self-Serve Subscription Agreement §2.2.1(j) forbids "provid[ing] a virtual
