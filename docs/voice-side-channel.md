@@ -571,22 +571,33 @@ script; the daemon's is derived from its data dir. See `idfon-eve.md`.
 
 The A1 cascade's on-device neural engines sit behind seams in
 `ios/Idfon/SpeechEngine.swift` and `mac/Sources/Idfon/SpeechEngine.swift`.
-Both apps offer the same choices: **Apple** (default, on-device) and
-**Parakeet** (FluidAudio, ANE) for recognition, and **Kokoro** (FluidAudio ANE)
-vs **Apple** for reply speech. iOS picks them in the Recents "Voice engine"
-sheet; mac in the **Voice** menu. mac needs macOS 14 (FluidAudio).
+Both apps offer the same choices: **Apple** and **Parakeet** (FluidAudio, ANE)
+for recognition, and **Kokoro** (FluidAudio ANE) vs **Apple** for reply speech.
+Neither app has a global picker — the language rule above sets the default and
+Contact Detail picks per contact. mac needs macOS 14 (FluidAudio).
+
+**Defaults follow the system language.** Parakeet Redux and the Kokoro ANE
+pipeline are English-only, so an English `Locale.preferredLanguages.first`
+defaults to Parakeet + Kokoro, and every other language defaults to the Apple
+built-ins, whose voices/recognizers follow the system locale
+(`SpeechVoice.callLanguage`, `Locale.current`). The two halves fall back
+independently: recognition, reply speech, or both can be on-device. A persisted
+explicit choice still wins; the language gate only sets the default.
 
 - **TTS** — `KokoroTtsEngine` (FluidAudio's Kokoro-82M ANE pipeline, 24 kHz
-  WAV) is the default; `AppleTtsEngine` (`AVSpeechSynthesizer`, honoring
-  `SpeechVoice.best` and setting `prefersAssistiveTechnologySettings = false`)
-  is the fallback and the explicit alternative. The first run downloads +
+  WAV) is the English default; `AppleTtsEngine` (`AVSpeechSynthesizer`, honoring
+  `SpeechVoice.best` for the system language and setting
+  `prefersAssistiveTechnologySettings = false`) is the default for other
+  languages, the fallback, and the explicit alternative. The first run downloads +
   CoreML-compiles the model (≈34 s on an iPhone 16); short-sentence synthesis
   is ≈0.7 s. Prewarmed at launch and at call start. Known ceiling: FluidAudio
   documents an uncatchable iOS 27 Core ML crash after ≈1 h cumulative
   synthesis (short calls are fine); the escape hatch is Chatterbox Nano or
   Kokoro ONNX.
-- **ASR** — `SystemSpeechTranscriber` (SpeechAnalyzer, iOS 26+) is the
-  default; `ParakeetAsr` (moondream/parakeet-redux, ANE) is opt-in. A first-run
+- **ASR** — `ParakeetAsr` (moondream/parakeet-redux, ANE) is the English
+  default; `SystemSpeechTranscriber` (SpeechAnalyzer, iOS 26+, system locale)
+  is the default for other languages and the runtime fallback when Parakeet
+  fails to start. A first-run
   Parakeet download + compile takes minutes (cached afterwards: ≈8 s to
   `parakeet ready`), so the loop waits for `parakeet ready`. It also prewarms
   at launch / when selected (`SpeechEngines.prewarm`), so the first call no
@@ -596,9 +607,9 @@ sheet; mac in the **Voice** menu. mac needs macOS 14 (FluidAudio).
   Cactus Compute's Whistle (16.9 MB CPU whole-clip model) was integrated and
   evaluated (2026-10-04) but **removed**: in real use the quality ranked
   **Parakeet > Apple ≫ Whistle**, and its batch (no-partials) shape felt worse.
-- **Selection** — persisted per device; the iOS Recents "Voice engine" sheet
-  and the mac **Voice** menu toggle them. `IDFON_TTS`/`-ttsbackend`
-  and `IDFON_ASR`/`-asrbackend` override for testing.
+- **Selection** — persisted per device; Contact Detail picks per contact on
+  both apps, and the language rule sets the default when there is no pick.
+  `IDFON_TTS`/`-ttsbackend` and `IDFON_ASR`/`-asrbackend` override for testing.
 - **Provisioning** — `SpeechProvisioning.directory(for:)` resolves the Kokoro
   model directory in priority order: an Apple-managed `BAAssetPackManager` pack
   (`IDFON_KOKORO_PACK`, iOS 26+; that path needs a managed downloader extension

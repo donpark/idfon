@@ -16,6 +16,10 @@ import Speech
 /// > Spoken Content > System Voice > Manage Voices), so ranking only helps once
 /// one is present; it never regresses to a lower tier than the default.
 enum SpeechVoice {
+    /// BCP-47 tag of the system's preferred language, for built-in voice
+    /// selection when an on-device neural engine is unavailable/unsupported.
+    static var callLanguage: String { Locale.preferredLanguages.first ?? "en-US" }
+
     static func best(language: String = "en-US") -> AVSpeechSynthesisVoice? {
         let all = AVSpeechSynthesisVoice.speechVoices()
         let exact = all.filter {
@@ -237,7 +241,7 @@ final class OnDeviceVoice: NSObject {
         try? FileManager.default.removeItem(at: url)
 
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = SpeechVoice.best(language: "en-US")
+        utterance.voice = SpeechVoice.best(language: SpeechVoice.callLanguage)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         // VoiceOver's selected voice/rate must not override ours.
         utterance.prefersAssistiveTechnologySettings = false
