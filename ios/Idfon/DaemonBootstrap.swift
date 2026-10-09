@@ -32,6 +32,8 @@ enum DaemonBootstrap {
         // Bind only the active identity's endpoint; idle ones die on
         // background anyway, and `identity.use` binds on demand.
         setenv("IDFON_LAZY_IDENTITIES", "1", 1)
+        // Enterprise relay config from settings, applied before the daemon binds.
+        RelaySettings.applyToProcess()
         iroh_enable_tracing()
         let thread = Thread {
             let result = idfon_daemon_run(socket, dataDir, nil)

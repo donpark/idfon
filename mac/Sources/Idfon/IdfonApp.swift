@@ -381,6 +381,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsMenu = NSMenu(title: "Settings")
         settingsMenu.addItem(NSMenuItem(
             title: "Edge…", action: #selector(showEdgeSettings), keyEquivalent: ""))
+        settingsMenu.addItem(NSMenuItem(
+            title: "Relay…", action: #selector(showRelaySettings), keyEquivalent: ""))
         let settingsItem = NSMenuItem()
         settingsItem.title = "Settings"
         settingsItem.submenu = settingsMenu
@@ -475,6 +477,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !url.isEmpty, !ticket.isEmpty { EdgeClient.configure(url: url, ticket: ticket) }
         case .alertThirdButtonReturn:
             EdgeClient.clear()
+        default:
+            break
+        }
+    }
+
+    /// Enterprise relay URL(s) + optional token, persisted and applied when the
+    /// daemon subprocess starts (`RelaySettings`).
+    @objc private func showRelaySettings() {
+        let alert = NSAlert()
+        alert.messageText = "Relay"
+        alert.informativeText = "Enterprise iroh relay URL(s), comma-separated. Token is optional — prefer a relay that authorizes endpoint ids."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Clear")
+        let urlsField = NSTextField(string: RelaySettings.urls ?? "")
+        urlsField.placeholderString = "https://relay.idfon.net:8443"
+        let tokenField = NSTextField(string: RelaySettings.token ?? "")
+        tokenField.placeholderString = "relay token (optional)"
+        urlsField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        tokenField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        let stack = NSStackView(views: [
+            NSTextField(labelWithString: "URL(s)"), urlsField,
+            NSTextField(labelWithString: "Token"), tokenField,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.frame = NSRect(x: 0, y: 0, width: 380, height: 120)
+        alert.accessoryView = stack
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            RelaySettings.configure(
+                urls: urlsField.stringValue,
+                token: tokenField.stringValue,
+                relayOnly: RelaySettings.isRelayOnly)
+        case .alertThirdButtonReturn:
+            RelaySettings.clear()
         default:
             break
         }
