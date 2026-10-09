@@ -99,7 +99,7 @@ answering an incoming call also starts mic-only.
 
 ## 4. Session Tray (File Transfers & Streaming)
 
-The Session Tray is the Live Activity Bar's expanded content: collapsible rows that appear directly beneath the main Bar when data transactions occur. Transfers do not require an active call (the blob layer is ticket-based), so tray rows are valid in every Bar state — an Idle-state tray design is still open.
+The Session Tray is the Live Activity Bar's expanded content: collapsible rows that appear directly beneath the main Bar when data transactions occur. Transfers do not require an active call (the blob layer is ticket-based), so rows are state-independent — in the visible thread they ride the call's status panel, elsewhere a transfer shows as a compact pill. An expanded idle tray is still open.
 
 > **Prior art note:** urgent activities (calls) get overlays nothing covers (system call banner, WhatsApp/Telegram call bubbles); passive activities (media, transfers) get docked surfaces modals may cover (Spotify mini-player). idfon uses one overlay: guaranteed visibility exists for the call; tray rows ride along for free.
 
@@ -195,12 +195,12 @@ Both modes funnel into the **same call state machine** — the mode only selects
 * **An unreachable or disabled CallKit mode must not affect the Bar path.** The two are independent; the Bar is fully functional without PushKit, APNs, or VoIP entitlements.
 
 Incoming surface is **inline Answer/Decline in the Bar** (decided, implemented — no fullscreen
-ringing screen on the Bar path). Outgoing-pending presentation remains open (currently
-`Calling…` + End).
+ringing screen on the Bar path). Outgoing-pending: the nav-bar Call item flips to the
+in-call controls (End cancels) and the panel shows `Calling…`.
 
 ### Two visual densities, one state machine
 
-* **Expanded (owning thread):** contact header, in-call toggles, tray rows — as specified in §2–§4.
+* **Expanded (owning thread):** the full header + controls for incoming rings and the Mac bar; on iOS the visible thread's own call is `statusOnly` (stats + tray), because the nav bar owns identity and controls — §2–§4.
 * **Compact pill (any other screen):** e.g. `● 03:42 @janedoe — 1 transfer` — tap jumps to the owning thread.
-* Activities from other contacts render as compact pills while the current thread's own Bar state renders inline (e.g., in a call with Jane, Bob's thread shows its Idle chrome plus Jane's pill).
+* Activities from other contacts render as compact pills while the visible thread's own call state renders inline (e.g., in a call with Jane, Bob's thread shows no Bar of its own — his call entry is his nav bar — plus Jane's pill).
 * **End from the compact pill is one tap** — the red End button ends the call immediately, matching the expanded bar and full-screen call button. (Draggable-bubble physics à la WhatsApp/FaceTime is optional polish; a docked pill ships fine.)

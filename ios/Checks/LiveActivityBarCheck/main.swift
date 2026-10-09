@@ -8,7 +8,7 @@
 //     -I "$SDK/System/iOSSupport/usr/lib/swift" -o /tmp/labcheck \
 //     ios/Idfon/LiveActivityBar.swift ios/Idfon/OverlayWindow.swift \
 //     ios/Idfon/LiveWaveformView.swift ios/Idfon/TransferCenter.swift \
-//     ios/Checks/LiveActivityBarCheck/main.swift
+//     ios/Idfon/IdfonLog.swift ios/Checks/LiveActivityBarCheck/main.swift
 //   /tmp/labcheck
 //
 // (Historically it ran through `simctl`; the Catalyst binary exercises the same
@@ -58,7 +58,7 @@ bar.onIntent = { intents.append($0) }
 func buttons(_ v: UIView) -> [UIButton] { v.subviews.flatMap { ($0 as? UIButton).map { [$0] } ?? buttons($0) } }
 let visible = buttons(bar).filter { !$0.isHidden && $0.window == nil ? !$0.isHidden : true }.filter { b in var v: UIView? = b; while let x = v { if x.isHidden { return false }; v = x.superview }; return true }
 print("visible buttons:", visible.map { $0.accessibilityLabel ?? $0.configuration?.title ?? "?" })
-check(visible.count == 6, "mic cam end + cancel + pause stop") // 3 header, transfer: cancel, stream: pause+stop
+check(visible.count == 7, "mic cam speaker end + cancel + pause stop") // 4 header, transfer: cancel, stream: pause+stop
 func fire(_ b: UIButton) { for t in b.allTargets { for a in b.actions(forTarget: t, forControlEvent: .touchUpInside) ?? [] { _ = (t as AnyObject).perform(NSSelectorFromString(a)) } } }
 fire(visible.first { $0.accessibilityLabel == "End" }!)
 fire(visible.first { $0.configuration?.title == "Cancel" }!)
@@ -83,8 +83,9 @@ check(!inc.contains("Microphone") && !inc.contains("Camera"), "incoming hides mi
 m.phase = .idle; m.micOn = false; m.camOn = false; bar.apply(m)
 check(bar.subviews.count > 0, "idle ok")
 
-// Idle has no stream toggles and the Ping verb: a call starts from the thread's
-// nav bar and always begins mic-only, so there is nothing to stage.
+// Idle expanded has no stream toggles and no Bar verb: a call starts from the
+// thread's nav-bar Call item and always begins mic-only, so there is nothing to
+// stage. (Tray rows, if present, are state-independent.)
 func visibleButtons() -> [UIButton] {
     buttons(bar).filter { b in var v: UIView? = b; while let x = v { if x.isHidden { return false }; v = x.superview }; return true }
 }
@@ -94,13 +95,23 @@ func visibleLabels() -> [String] {
 m.phase = .idle; m.micOn = false; m.camOn = false; m.density = .expanded; bar.apply(m); host.layoutIfNeeded()
 let idleButtons = visibleLabels()
 print("idle buttons:", idleButtons)
-check(idleButtons.contains("Ping") && !idleButtons.contains("Call"), "idle verb is Ping: \(idleButtons)")
-check(!idleButtons.contains("Microphone") && !idleButtons.contains("Camera"), "idle hides mic/cam: \(idleButtons)")
+check(!idleButtons.contains("Microphone") && !idleButtons.contains("Camera")
+      && !idleButtons.contains("End") && !idleButtons.contains("Answer")
+      && !idleButtons.contains("Decline"),
+      "idle expanded has no call controls: \(idleButtons)")
 // In a call the toggles are present (both tracks published).
 m.phase = .inCall; bar.apply(m); host.layoutIfNeeded()
 let callButtons = visibleLabels()
 print("in-call buttons:", callButtons)
 check(callButtons.contains("Microphone") && callButtons.contains("Camera"), "in-call shows mic/cam: \(callButtons)")
+// The visible thread's own call carries identity + controls in the nav bar, so
+// the Bar renders statusOnly: no controls, stats/tray only.
+m.phase = .inCall; m.statusOnly = true; m.audioAvailable = true; m.videoAvailable = true
+m.rows = []; bar.apply(m); host.layoutIfNeeded()
+let statusButtons = visibleLabels()
+print("statusOnly buttons:", statusButtons)
+check(statusButtons.isEmpty, "statusOnly hides Bar controls: \(statusButtons)")
+m.statusOnly = false
 
 // §3 State 3: a call only carries the tracks it was published with, so a
 // toggle for an absent track is hidden (both tracks shown otherwise).
