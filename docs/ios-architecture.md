@@ -108,6 +108,13 @@ Key facts:
   *sent*.
 - **Socket path**: the app is device-only and uses a flat tmp path for the Unix
   socket (sandbox paths would otherwise exceed the 104-byte `SUN_LEN`).
+- **Daemon profile is durable**: `DaemonPaths.dataDir` is
+  `Application Support/Idfon/daemon` (identity keys, peers, state), migrating a
+  legacy `tmp/idfond` profile on first run. iOS may purge `tmp` while the app is
+  not running; losing the identity key changes the endpoint id and invalidates
+  every subject-bound capability ticket (the holders then reject with
+  `sender is not allowed`). Only the socket lives in `tmp`. The Mac app keeps
+  its profile durable for the same reason (`DaemonRuntime`).
 - **On-device automation**: `ios/device.sh` builds/installs/launches on a physical
   iPhone via `devicectl`; launch arguments drive no-tap flows (`-dial`, `-answer`,
   `-videodial`, `-memo`, `-pair`, `-pair-ticket`). `-sendfile <peer> <fileName>`
