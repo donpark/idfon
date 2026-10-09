@@ -221,7 +221,7 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
             let handoff = NotificationCenter.default.addObserver(
                 forName: NSApplication.didResignActiveNotification,
                 object: nil, queue: .main
-            ) { [weak self] _ in self?.handOffToEdge() }
+            ) { _ in self.handOffToEdge() }
             defer { NotificationCenter.default.removeObserver(handoff) }
             do {
                 let data = try await self.loadBytes()
@@ -271,7 +271,7 @@ final class ArtifactDetailViewController: NSViewController, NSTextViewDelegate {
     /// A failed foreground fetch: hand the shared-root resource to the edge's
     /// background session and let the reconcile notification render it.
     private func loadFailed(_ error: Error) {
-        guard let peerRef, EdgeClient.shared.isConfigured else {
+        guard peerRef != nil, EdgeClient.shared.isConfigured else {
             message("Could not load artifact: \(error.localizedDescription)")
             return
         }
