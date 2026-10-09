@@ -50,9 +50,19 @@ already allows those two ports.
 
 **Every peer must use the same relay** (a relay is a shared rendezvous): set
 `IDFON_RELAY_URLS` / `IDFON_RELAY_TOKEN` on each daemon too. A peer left on N0
-will not meet one on the enterprise relay. For a closed relay, set
-`access = { shared_token = ["<token>"] }` in `relay/config.toml`; the default is
-an open relay.
+will not meet one on the enterprise relay.
+
+Relay access — prefer a mode that needs **no client secret**:
+
+- `IDFON_RELAY_ALLOWLIST=<id>,<id>` → the relay admits only those endpoint ids.
+- `IDFON_RELAY_AUTH_URL=<url>` (+ optional `IDFON_RELAY_AUTH_TOKEN`) → the relay
+  asks your auth service per connecting endpoint.
+- `IDFON_RELAY_TOKEN=<token>` → shared bearer. Clients present it at **runtime**
+  (app Relay settings / env), never compiled in; it cannot be revoked per device.
+
+Clients are configured the same way: the iOS/mac apps have a **Relay** setting
+(applied via `setenv`/subprocess env when the daemon starts), and CLI/native/eve
+use the env vars.
 
 ## What you need
 

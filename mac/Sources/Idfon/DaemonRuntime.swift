@@ -95,6 +95,12 @@ enum DaemonRuntime {
         process.arguments = ["--socket", socket, "--data-dir", data]
         process.standardOutput = log
         process.standardError = log
+        // Enterprise relay config from settings (runtime, not compiled in).
+        let relayEnv = RelaySettings.environment()
+        if !relayEnv.isEmpty {
+            process.environment = ProcessInfo.processInfo.environment
+                .merging(relayEnv) { _, new in new }
+        }
         do {
             try process.run()
             idfonLog("idfon: launched idfond pid=\(process.processIdentifier) socket=\(socket)")

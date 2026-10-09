@@ -126,7 +126,9 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
             title: "Identity", style: .plain, target: self, action: #selector(showIdentityPicker))
         let edge = UIBarButtonItem(
             title: "Edge", style: .plain, target: self, action: #selector(showEdgeSettings))
-        navigationItem.rightBarButtonItems = [identity, edge]
+        let relay = UIBarButtonItem(
+            title: "Relay", style: .plain, target: self, action: #selector(showRelaySettings))
+        navigationItem.rightBarButtonItems = [identity, edge, relay]
         navigationItem.backButtonDisplayMode = .generic // show "Back", not the callee's name
         navigationController?.navigationBar.prefersLargeTitles = true
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "peer")
@@ -176,6 +178,38 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !url.isEmpty, !ticket.isEmpty else { return }
             EdgeClient.configure(url: url, ticket: ticket)
+        })
+        present(alert, animated: true)
+    }
+
+    /// Enterprise relay URL(s) + optional token, persisted and applied when the
+    /// daemon starts (`RelaySettings`).
+    @objc private func showRelaySettings() {
+        let alert = UIAlertController(
+            title: "Relay",
+            message: "Enterprise iroh relay URL(s), comma-separated. Token is optional — prefer a relay that authorizes endpoint ids. Applied when the daemon starts.",
+            preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "https://relay.idfon.net:8443"
+            field.text = RelaySettings.urls
+            field.keyboardType = .URL
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+        }
+        alert.addTextField { field in
+            field.placeholder = "relay token (optional)"
+            field.text = RelaySettings.token
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Clear", style: .destructive) { _ in
+            RelaySettings.clear()
+        })
+        alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak alert] _ in
+            let urls = alert?.textFields?.first?.text ?? ""
+            let token = alert?.textFields?.last?.text ?? ""
+            RelaySettings.configure(urls: urls, token: token, relayOnly: RelaySettings.isRelayOnly)
         })
         present(alert, animated: true)
     }

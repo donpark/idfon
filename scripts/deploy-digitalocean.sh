@@ -15,6 +15,11 @@
 #                          generated passphrase-free if missing)
 #   IDFON_DO_RESERVED_IP   1 (default) create/assign a reserved IP, 0 = use ephemeral
 #   IDFON_ADMIN_IP         /32 allowed to SSH (default: auto-detected)
+#   IDFON_RELAY_URLS      set on the edge when the relay is deployed
+#   IDFON_RELAY_TOKEN     shared-token relay access (optional)
+#   IDFON_RELAY_ALLOWLIST comma-separated endpoint ids the relay admits
+#   IDFON_RELAY_AUTH_URL  relay HTTP-callout auth endpoint (optional)
+#   IDFON_RELAY_AUTH_TOKEN bearer for the relay's callout (optional)
 #   IDFON_EDGE_IMAGE       default ghcr.io/donpark/idfon-edge:latest
 set -euo pipefail
 
@@ -40,6 +45,9 @@ USE_RESERVED_IP="${IDFON_DO_RESERVED_IP:-1}"
 EDGE_IMAGE="${IDFON_EDGE_IMAGE:-ghcr.io/donpark/idfon-edge:latest}"
 DEPLOY_RELAY="${IDFON_DEPLOY_RELAY:-0}"
 RELAY_TOKEN="${IDFON_RELAY_TOKEN:-}"
+RELAY_ALLOWLIST="${IDFON_RELAY_ALLOWLIST:-}"
+RELAY_AUTH_URL="${IDFON_RELAY_AUTH_URL:-}"
+RELAY_AUTH_TOKEN="${IDFON_RELAY_AUTH_TOKEN:-}"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -173,13 +181,29 @@ COMPOSE_FILES="-f compose.yaml"
 RELAY_ENV=""
 if [ "$DEPLOY_RELAY" = "1" ]; then
   info "provisioning the co-located iroh relay"
-  # With IDFON_RELAY_TOKEN set, lock the relay (and the edge presents it).
-  # Unset leaves the relay open, like N0's public relays.
+  # Relay access. Prefer the endpoint allowlist or an HTTP callout: neither
+  # needs a secret on the client. Fall back to a shared token, else open
+  # (like N0's public relays).
   RELAY_CONFIG="$DEPLOY/relay/config.toml"
-  if [ -n "$RELAY_TOKEN" ]; then
+  ACCESS_LINE=""
+  if [ -n "$RELAY_ALLOWLIST" ]; then
+    ids="$(printf '%s' "$RELAY_ALLOWLIST" | tr ',' '\n' \
+      | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' -e 's/.*/"&"/' \
+      | paste -sd ', ' -)"
+    ACCESS_LINE="access = { allowlist = [$ids] }"
+  elif [ -n "$RELAY_AUTH_URL" ]; then
+    if [ -n "$RELAY_AUTH_TOKEN" ]; then
+      ACCESS_LINE="access = { http = { url = \"$RELAY_AUTH_URL\", bearer_token = \"$RELAY_AUTH_TOKEN\" } }"
+    else
+      ACCESS_LINE="access = { http = { url = \"$RELAY_AUTH_URL\" } }"
+    fi
+  elif [ -n "$RELAY_TOKEN" ]; then
+    ACCESS_LINE="access = { shared_token = [\"$RELAY_TOKEN\"] }"
+  fi
+  if [ -n "$ACCESS_LINE" ]; then
     RELAY_CONFIG="$(mktemp)"
-    awk -v tok="$RELAY_TOKEN" \
-      '{ if ($0 ~ /^access = /) print "access = { shared_token = [\"" tok "\"] }"; else print }' \
+    awk -v line="$ACCESS_LINE" \
+      '{ if ($0 ~ /^access = /) print line; else print }' \
       "$DEPLOY/relay/config.toml" > "$RELAY_CONFIG"
   fi
   ssh $SSH_OPTS "root@$PUBLIC_IP" "mkdir -p /srv/idfon-edge/relay"
