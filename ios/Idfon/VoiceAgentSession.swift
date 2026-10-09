@@ -453,33 +453,46 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func startAnalyzer() async {
-        let engine = SpeechEngines.makeAsr(asrBackend)
-        asr = engine
-        guard let engine else {
-            CallFeedback.post("No voice call available: no recognizer for this contact.")
+        // Parakeet is English-only and downloads/compiles on first use, so a
+        // failure falls back to the built-in recognizer (system language)
+        // rather than dropping the call.
+        let backends: [AsrBackend] = asrBackend == .parakeet ? [.parakeet, .system] : [asrBackend]
+        var lastError: Error?
+        for backend in backends {
+            guard let engine = SpeechEngines.makeAsr(backend) else { continue }
+            asr = engine
+            do {
+                try await engine.start(
+                    // AEC so the mic can stay live while TTS plays (barge-in).
+                    enableVoiceProcessing: true,
+                    onText: { [weak self] text, isFinal in
+                        DispatchQueue.main.async { self?.segmenter.handle(text, isFinal: isFinal) }
+                    },
+                    onError: { [weak self] message in
+                        Automation.mark("voice-agent: analyzer error \(message)")
+                        DispatchQueue.main.async { self?.restartAnalyzer() }
+                    }
+                )
+            } catch {
+                lastError = error
+                Automation.mark(
+                    "voice-agent: analyzer start failed backend=\(backend.rawValue) \(error.localizedDescription)"
+                )
+                engine.stop()
+                asr = nil
+                continue
+            }
+            // A hang-up during the (slow) start must not leave the engine running.
+            if stopRequested {
+                engine.stop()
+                asr = nil
+            }
             return
         }
-        do {
-            try await engine.start(
-                // AEC so the mic can stay live while TTS plays (barge-in).
-                enableVoiceProcessing: true,
-                onText: { [weak self] text, isFinal in
-                    DispatchQueue.main.async { self?.segmenter.handle(text, isFinal: isFinal) }
-                },
-                onError: { [weak self] message in
-                    Automation.mark("voice-agent: analyzer error \(message)")
-                    DispatchQueue.main.async { self?.restartAnalyzer() }
-                }
-            )
-        } catch {
-            Automation.mark("voice-agent: analyzer start failed \(error.localizedDescription)")
-            CallFeedback.post("No voice call available: \(error.localizedDescription)")
-        }
-        // A hang-up during the (slow) start must not leave the engine running.
-        if stopRequested {
-            engine.stop()
-            asr = nil
-        }
+        asr = nil
+        CallFeedback.post(
+            "No voice call available: \(lastError?.localizedDescription ?? "no recognizer for this contact")"
+        )
     }
 
     /// LiveSub's lesson: a failed recognizer stays dead until reset. Rebuild it.

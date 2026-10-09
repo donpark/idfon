@@ -4,8 +4,9 @@ import FluidAudio
 
 /// Reply-speech backend for the on-device voice loop.
 ///
-/// Kokoro (FluidAudio, ANE) is the default; Apple's `AVSpeechSynthesizer` is
-/// both the offline fallback and the explicit alternative. Selection:
+/// Kokoro (FluidAudio, ANE) is the default for English and Apple's
+/// `AVSpeechSynthesizer` is the default for every other system language (and
+/// the offline fallback, and the explicit alternative). Selection:
 /// `IDFON_TTS=kokoro|apple` (env) or `-ttsbackend <name>` (launch arg).
 @MainActor
 protocol TtsEngine: AnyObject {
@@ -52,26 +53,15 @@ enum TtsBackend: String, CaseIterable {
 
 @MainActor
 enum SpeechEngines {
-    private static let defaultsKey = "idfon.tts-backend"
-
-    /// Persisted choice; `IDFON_TTS`/`-ttsbackend` override for testing.
+    /// System-language default; `IDFON_TTS`/`-ttsbackend` override for testing.
+    /// Per-contact picks live in Contact Detail.
     static var backend: TtsBackend {
         if let override = overrideBackend() { return override }
-        if let raw = UserDefaults.standard.string(forKey: defaultsKey),
-           let value = TtsBackend(rawValue: raw) {
-            return value
-        }
-        return .kokoro
+        return OnDeviceSpeechLanguage.isEnglish ? .kokoro : .apple
     }
 
     /// The active engine; read by `VoiceAgentSession` at call time.
     static var tts: TtsEngine = makeTts(backend)
-
-    static func setBackend(_ backend: TtsBackend) {
-        UserDefaults.standard.set(backend.rawValue, forKey: defaultsKey)
-        tts = makeTts(backend)
-        prewarm()
-    }
 
     /// Warm the selected engine in the background so the first call's reply is
     /// not blocked by a cold model download/compile.
@@ -122,7 +112,7 @@ final class AppleTtsEngine: NSObject, TtsEngine {
     func speak(_ text: String) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = SpeechVoice.best(language: "en-US")
+            utterance.voice = SpeechVoice.best(language: SpeechVoice.callLanguage)
             utterance.prefersAssistiveTechnologySettings = false
             Automation.mark("voice: speak id=\(utterance.voice?.identifier ?? "nil") assistive=false")
             completion.reset { continuation.resume() }
@@ -315,25 +305,30 @@ enum AsrBackend: String, CaseIterable {
     }
 }
 
-extension SpeechEngines {
-    private static let asrDefaultsKey = "idfon.asr-backend"
+/// The on-device neural engines are English-only: Parakeet Redux and the
+/// Kokoro ANE pipeline are built with English weights and a text frontend.
+/// Other system languages get the Apple built-ins, which follow the system
+/// locale. (Kokoro's zh/ja/es/fr ANE variants exist in FluidAudio but are not
+/// wired up here.)
+///
+/// Assumes the spoken language matches the system language; a caller who
+/// wants to override can pick an engine explicitly per contact in Contact
+/// Detail.
+enum OnDeviceSpeechLanguage {
+    static var isEnglish: Bool {
+        Locale.preferredLanguages.first?.hasPrefix("en") ?? true
+    }
+}
 
-    /// Persisted recognizer choice; `IDFON_ASR`/`-asrbackend` override.
+extension SpeechEngines {
+    /// System-language default; `IDFON_ASR`/`-asrbackend` override.
+    /// Per-contact picks live in Contact Detail.
     static var asrBackend: AsrBackend {
         let override = ProcessInfo.processInfo.environment["IDFON_ASR"] ?? asrLaunchArg()
         if let override, !override.isEmpty {
             return AsrBackend(rawValue: override.lowercased()) ?? .system
         }
-        if let raw = UserDefaults.standard.string(forKey: asrDefaultsKey),
-           let value = AsrBackend(rawValue: raw) {
-            return value
-        }
-        return .system
-    }
-
-    static func setAsrBackend(_ backend: AsrBackend) {
-        UserDefaults.standard.set(backend.rawValue, forKey: asrDefaultsKey)
-        prewarm()
+        return OnDeviceSpeechLanguage.isEnglish ? .parakeet : .system
     }
 
     /// The configured recognizer, or nil to use the SFSpeech fallback (system

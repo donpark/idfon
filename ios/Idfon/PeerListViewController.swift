@@ -10,45 +10,11 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Recents"
-        let voice = UIBarButtonItem(
-            image: UIImage(systemName: "waveform"),
-            style: .plain,
-            target: self,
-            action: #selector(voiceEngineTapped)
-        )
-        voice.accessibilityLabel = "Voice engine"
-        navigationItem.rightBarButtonItem = voice
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "conversation")
         refreshControl = UIRefreshControl()
         refreshControl?.addTarget(self, action: #selector(refresh), for: .valueChanged)
         ChatStore.shared.addObserver(self)
         refresh()
-    }
-
-    /// Global reply-voice backend: Kokoro (on-device) or Apple Built-in.
-    @objc private func voiceEngineTapped() {
-        let current = SpeechEngines.backend
-        let alert = UIAlertController(
-            title: "Voice engine",
-            message: "Reply speech for on-device voice calls",
-            preferredStyle: .actionSheet
-        )
-        for backend in TtsBackend.allCases {
-            let title = backend == current ? "✓ \(backend.title)" : backend.title
-            alert.addAction(UIAlertAction(title: title, style: .default) { _ in
-                SpeechEngines.setBackend(backend)
-            })
-        }
-        let asr = SpeechEngines.asrBackend
-        for backend in AsrBackend.allCases {
-            let title = backend == asr ? "✓ Recognition: \(backend.title)" : "Recognition: \(backend.title)"
-            alert.addAction(UIAlertAction(title: title, style: .default) { _ in
-                SpeechEngines.setAsrBackend(backend)
-            })
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
-        present(alert, animated: true)
     }
 
     override func viewWillAppear(_ animated: Bool) {
