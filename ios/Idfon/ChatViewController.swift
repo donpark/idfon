@@ -44,6 +44,9 @@ private final class MessageCell: UITableViewCell {
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UITextViewDelegate {
     /// Read by the Live Activity Bar coordinator (density + `.open` routing).
     let peer: Peer
+    /// Rooms share the chat surface but expose no 1:1 call controls, so the
+    /// Bar shows no idle Call button for them.
+    var allowsCall: Bool { !conversation.isRoom }
     private let conversation: Conversation
     private let client = DaemonClient()
 
@@ -121,21 +124,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             ]
         }
 
-        // One call entry (#4 feedback): the Bar owns mute / camera / End, so the
-        // nav bar no longer duplicates them with separate audio/video buttons.
-        // `.generic` keeps the back button reading "Back" instead of the
-        // callee's name when a thread is stacked on another.
+        // The call entry is the Bar's idle chrome (docs/ui-design-notes.md §3
+        // State 1): the floating panel shows a Call button when idle and the
+        // in-call controls while a call is active, so there is no nav-bar
+        // button left to press twice. `.generic` keeps the back button
+        // reading "Back" instead of the callee's name when a thread is
+        // stacked on another.
         navigationItem.backButtonDisplayMode = .generic
-        if !conversation.isRoom {
-            // One call entry. `callTapped` routes by the ticket's voice mode:
-            // client-cascade starts the on-device voice call, which uses the
-            // same call Bar/End UI as a live call. No separate voice button;
-            // the codec is the holder's signed `voice.audio`, and the engines
-            // live in Contact Info.
-            navigationItem.rightBarButtonItem = UIBarButtonItem(
-                image: UIImage(systemName: "phone.arrow.up.right"), style: .plain,
-                target: self, action: #selector(callTapped))
-        }
 
         buildViews()
         ChatStore.shared.addObserver(self)
@@ -911,7 +906,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    @objc private func callTapped() {
+    /// Call entry (Bar's idle chrome). Routes by the ticket's voice mode:
+    /// client-cascade starts the on-device voice call, which uses the same
+    /// call Bar/End UI as a live call.
+    func startCall() {
         // The per-contact STT/TTS selection (option ids from the agent's
         // `idfon.json` catalog) rides the invite; the holder resolves it. The
         // catalog is a fetched resource, cached after the contact screen.

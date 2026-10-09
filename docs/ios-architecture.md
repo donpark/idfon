@@ -103,7 +103,7 @@ Key facts:
 - **Calls are two machines, one Bar model**: `LiveCall` (audio) and `VideoCall`
   (video/video-only) are disjoint — separated by the invite's `media` value — and
   `LiveActivityController` renders whichever is non-idle. A call starts from the thread's
-  nav-bar `Call` button, publishes both tracks, and begins **mic-only** (camera off until
+  Bar's idle `Call` button, publishes both tracks, and begins **mic-only** (camera off until
   the Bar's `Cam` toggle); in-call Mic/Cam buttons gate whether each published stream is
   *sent*.
 - **Socket path**: the app is device-only and uses a flat tmp path for the Unix
