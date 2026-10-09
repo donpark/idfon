@@ -333,6 +333,18 @@ value; check items off here as they land.
 
 ### External / ops (not in the repo)
 
+- [x] **Co-located enterprise relay (#26).** Relays are the guaranteed path
+  behind enterprise NAT (symmetric/CGNAT defeats hole-punching; often only TCP
+  443 egress is allowed, which the relay's WebSocket transport traverses).
+  `idfon-core` honors `IDFON_RELAY_URLS` / `IDFON_RELAY_TOKEN` (override N0) and
+  `IDFON_RELAY_ONLY` (drop IP transports). `deploy/digitalocean/` ships
+  `relay/config.toml` + `compose.relay.yaml`; `IDFON_DEPLOY_RELAY=1 pnpm
+  deploy:do` provisions the relay, syncs the firewall ports (8443/tcp,
+  7842/udp), and points the edge at it. Validated: a relay-only peer (its
+  published address has no IP addrs) was fetched by the live edge through
+  `relay.idfon.net:8443`. Every peer must share the relay; a peer left on N0
+  will not rendezvous.
+
 - [ ] **Cloudflare policy sign-off for the public edge.** Checked 2026-10-08:
   Self-Serve Subscription Agreement §2.2.1(j) forbids "provid[ing] a virtual
   private network or other similar proxy services", and an ingress relaying
@@ -346,13 +358,14 @@ value; check items off here as they land.
   required (Free's 10 ms CPU is below an iroh handshake). Details:
   `deploy/cloudflare/README.md`.
 
-- [ ] `*.idfon.net` **DNS + certificate issuance + a host**. **Chosen path:
+- [x] `*.idfon.net` **DNS + certificate issuance + a host**. **Chosen path:
   a DigitalOcean droplet** running the native edge, with a Let's Encrypt
   wildcard cert via DO DNS (DNS-01). Everything is prepared in
   `deploy/digitalocean/` (runbook, `compose.yaml`, `acme-issue.sh`,
   `cloud-init.yaml`); `idfon-edge` gained an `IDFON_EDGE_KEY` env fallback so
-  the identity need not be a host volume. Remaining work is owner-only: create
-  the droplet/zone/token, run the runbook. The **Cloudflare Worker**
+  the identity need not be a host volume. **Deployed 2026-10-09** via
+  `pnpm deploy:do` (droplet + reserved IP + firewall + DO DNS + wildcard cert);
+  `https://idfon.net` is live. The **Cloudflare Worker**
   (`deploy/cloudflare/`) stays as a source-landed experiment, gated by the
   ToS §2.2.1(j) sign-off above and a paid plan.
 - [x] Edge **request logging + metrics**: one structured `idfon.edge.access`

@@ -32,6 +32,14 @@ fn relay_mode_from_env() -> Option<RelayMode> {
     relay_mode_from(&urls, token.as_deref())
 }
 
+fn env_truthy(name: &str) -> bool {
+    is_truthy(&std::env::var(name).unwrap_or_default())
+}
+
+fn is_truthy(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+}
+
 fn relay_mode_from(urls: &str, token: Option<&str>) -> Option<RelayMode> {
     let list: Vec<&str> = urls
         .split(',')
@@ -244,6 +252,12 @@ impl IrohTransport {
                 .map_err(|error| TransportError::Failed(error.to_string()))?
                 .bind_addr(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)))
                 .map_err(|error| TransportError::Failed(error.to_string()))?;
+        }
+        // Relay-only (enterprise NAT: direct UDP unavailable). Last, so it also
+        // drops the pinned-port IP transports above; the endpoint then
+        // publishes no IP addrs, forcing peers onto the relay.
+        if env_truthy("IDFON_RELAY_ONLY") {
+            builder = builder.clear_ip_transports();
         }
         let endpoint = builder
             .bind()
@@ -566,6 +580,12 @@ impl MessageTransport for IrohTransport {
 mod tests {
     use super::*;
     use idfon_protocol::{MessageContent, PeerAuth};
+
+    #[test]
+    fn is_truthy_accepts_common_flags() {
+        assert!(is_truthy("1") && is_truthy("true") && is_truthy(" YES "));
+        assert!(!is_truthy("0") && !is_truthy("") && !is_truthy("no"));
+    }
 
     #[test]
     fn relay_mode_from_parses_urls_and_token() {
