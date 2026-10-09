@@ -34,7 +34,7 @@ final class EdgeWebView: UIViewController {
         view.addSubview(webView)
 
         guard let url = EdgeClient.shared.url(account: account, path: resourcePath),
-              let cookie = EdgeClient.shared.sessionCookie else {
+              let cookie = EdgeClient.shared.cookie(for: url) else {
             webView.loadHTMLString("<p>Edge is not configured.</p>", baseURL: nil)
             return
         }

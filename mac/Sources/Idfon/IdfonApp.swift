@@ -139,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let source = GatewayArtifactSource(
                 route: .edge, url: url,
-                cookie: EdgeClient.shared.sessionCookie, host: url.host ?? "")
+                cookie: EdgeClient.shared.cookie(for: url), host: url.host ?? "")
             let web = SandboxedArtifactWebView(
                 source: source, frame: NSRect(x: 0, y: 0, width: 720, height: 560))
             let controller = NSViewController()

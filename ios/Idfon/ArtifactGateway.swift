@@ -48,7 +48,7 @@ enum ArtifactGateway {
         return GatewayArtifactSource(
             route: .edge,
             url: url,
-            cookie: EdgeClient.shared.sessionCookie,
+            cookie: EdgeClient.shared.cookie(for: url),
             host: url.host ?? "")
     }
 }

@@ -81,15 +81,19 @@ final class IdfonWebTests: XCTestCase {
         XCTAssertFalse(RelaySettings.isConfigured)
     }
 
-    func testSessionCookieIsSecureOnlyForHTTPS() throws {
+    func testTicketCookieIsScopedToThePeerHostAndSecureOnlyForHTTPS() throws {
         EdgeClient.configure(url: "https://idfon.net", ticket: "a,b")
-        let secure = try XCTUnwrap(EdgeClient.shared.sessionCookie)
+        // Scoped to the peer host, not the edge domain: a domain cookie would be
+        // sent to every `<ref>.idfon.net`, leaking across endpoints.
+        let secure = try XCTUnwrap(EdgeClient.shared.cookie(
+            for: URL(string: "https://acct.idfon.net/fs/a.html")!))
         XCTAssertTrue(secure.isSecure)
-        XCTAssertEqual(secure.domain, "idfon.net")
+        XCTAssertEqual(secure.domain, "acct.idfon.net")
         XCTAssertEqual(secure.value, "a%2Cb", "the ticket is percent-encoded for the cookie value")
 
         EdgeClient.configure(url: "http://192.168.1.2:8791", ticket: "tok")
-        let plain = try XCTUnwrap(EdgeClient.shared.sessionCookie)
+        let plain = try XCTUnwrap(EdgeClient.shared.cookie(
+            for: URL(string: "http://192.168.1.2:8791/acct/fs/a.html")!))
         XCTAssertFalse(plain.isSecure, "a Secure cookie is dropped over plain HTTP")
         XCTAssertEqual(plain.domain, "192.168.1.2")
     }
