@@ -80,23 +80,24 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         request(account: account, path: path)?.url
     }
 
-    /// The requester ticket as an `HTTPCookie` for the edge domain, so a
-    /// `WKWebView` sends it on every request to the edge (subresources included).
+    /// The requester ticket as an `HTTPCookie` scoped to **this resource's
+    /// host**, so a `WKWebView` sends it only to that peer. Scoping to the bare
+    /// edge domain would send it to every `<ref>.<domain>` (and the path form's
+    /// single origin), leaking one endpoint's credential to another.
     /// Percent-encoded: a cookie value cannot carry `,` / `;` / `"` reliably.
-    var sessionCookie: HTTPCookie? {
-        guard let baseURL, let host = baseURL.host, let ticket else { return nil }
-        let domain = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    func cookie(for url: URL) -> HTTPCookie? {
+        guard let ticket, let host = url.host, !host.isEmpty else { return nil }
         let encoded = ticket.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ticket
         var properties: [HTTPCookiePropertyKey: Any] = [
             .name: "idfon_ticket",
             .value: encoded,
-            .domain: "\(domain)",
+            .domain: host,
             .path: "/",
         ]
         // Mark Secure only for HTTPS. `HTTPCookie(properties:)` treats the key's
         // presence as Secure regardless of the value, so it must be omitted for
         // a self-hosted/LAN HTTP edge (WebKit drops a Secure cookie over http).
-        if baseURL.scheme?.lowercased() == "https" {
+        if url.scheme?.lowercased() == "https" {
             properties[.secure] = "TRUE"
         }
         return HTTPCookie(properties: properties)

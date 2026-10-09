@@ -617,6 +617,11 @@ fn host_without_port(host: &str) -> &str {
 }
 
 /// Resolves the request target: `account` + `path`.
+///
+/// A domain edge is **subdomain-only**: the path form (`/<ref>/<path>`) gives
+/// every peer the same origin, so cookies and web storage leak across peers.
+/// The path form is accepted only when no `origin_domain` is configured (raw-IP
+/// / localhost / dev edges, where wildcard DNS/TLS is unavailable).
 fn target(uri: &Uri, headers: &HeaderMap, origin_domain: Option<&str>) -> Option<(String, String)> {
     if let Some(host) = headers
         .get(header::HOST)
@@ -626,6 +631,9 @@ fn target(uri: &Uri, headers: &HeaderMap, origin_domain: Option<&str>) -> Option
         if let Some(account) = virtual_host_account(host, origin_domain) {
             return Some((account, uri.path().to_owned()));
         }
+    }
+    if origin_domain.is_some() {
+        return None;
     }
     let mut segments = uri.path().trim_start_matches('/').splitn(2, '/');
     let account = segments.next().filter(|s| !s.is_empty())?.to_owned();
@@ -1201,6 +1209,37 @@ mod tests {
         );
 
         handle.shutdown();
+    }
+
+    #[tokio::test]
+    async fn domain_edge_rejects_the_path_form() {
+        let mut map = HashMap::new();
+        map.insert(
+            ("acct".to_owned(), "/public/readme.txt".to_owned()),
+            b"hi".to_vec(),
+        );
+        let handle = serve(
+            Config {
+                auth: Some(Arc::new(StaticToken::new("s3cret"))),
+                origin_domain: Some("idfon.net".to_owned()),
+                ..Config::default()
+            },
+            Static(map),
+            PublicOnly,
+        )
+        .await
+        .expect("gateway binds");
+        let addr = handle.local_addr();
+        let token = Some("s3cret");
+
+        // The subdomain form works.
+        let (status, body) = get(addr, "/public/readme.txt", "acct.idfon.net", token, None).await;
+        assert_eq!((status, body.as_str()), (200, "hi"));
+
+        // The path form must not: it would give every peer one origin, leaking
+        // cookies/storage across peers.
+        let (status, _) = get(addr, "/acct/public/readme.txt", "idfon.net", token, None).await;
+        assert_ne!(status, 200, "path form must be rejected on a domain edge");
     }
 
     #[tokio::test]
