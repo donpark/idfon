@@ -224,7 +224,7 @@ ssh $SSH_OPTS "root@$PUBLIC_IP" \
 info "starting idfon-edge"
 ssh $SSH_OPTS "root@$PUBLIC_IP" \
   "printf 'IDFON_EDGE_IMAGE=%s\nIDFON_EDGE_DOMAIN=%s\n${RELAY_ENV}' '$EDGE_IMAGE' '$DOMAIN' > /srv/idfon-edge/.env
-   cd /srv/idfon-edge && docker compose $COMPOSE_FILES pull -q && docker compose $COMPOSE_FILES up -d"
+   cd /srv/idfon-edge && docker compose $COMPOSE_FILES pull -q && docker compose $COMPOSE_FILES up -d --remove-orphans"
 
 # --- verify ----------------------------------------------------------------
 say "verify"

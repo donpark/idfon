@@ -13,7 +13,8 @@
     "eve": "bash ./scripts/eve.sh",
     "pair": "bash ./scripts/pair-apple-channels.sh",
     "agent": "bash ./scripts/agent.sh",
-    "deploy:do": "bash ./scripts/deploy-digitalocean.sh"
+    "deploy:do": "bash ./scripts/deploy-digitalocean.sh",
+    "deploy:do:relay": "IDFON_DEPLOY_RELAY=1 bash ./scripts/deploy-digitalocean.sh"
   },
   "author": "Don Park",
   "license": "(MIT OR Apache-2.0)",

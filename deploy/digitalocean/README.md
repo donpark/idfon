@@ -39,8 +39,17 @@ usually defeats UDP hole-punching, and many networks allow only outbound TCP
 traverses that. Enable the co-located relay:
 
 ```sh
-IDFON_DEPLOY_RELAY=1 IDFON_RELAY_TOKEN=<token> pnpm deploy:do
+IDFON_RELAY_ALLOWLIST=<endpoint-id>,<endpoint-id> pnpm deploy:do:relay
 ```
+
+Toggle (for benchmarking against the public/N0 relays):
+
+- **on** — `pnpm deploy:do:relay` (or `IDFON_DEPLOY_RELAY=1 pnpm deploy:do`): starts the
+  relay, writes `IDFON_RELAY_URLS` into the edge env.
+- **off** — `pnpm deploy:do`: `--remove-orphans` drops the relay container and the
+  edge env loses `IDFON_RELAY_URLS`, so the edge reverts to the N0 relays.
+
+Switch between the two and compare; no config edits needed.
 
 That starts `n0computer/iroh-relay:v1.3.0` beside the edge from
 `relay/config.toml` + `compose.relay.yaml`, reusing the wildcard cert, serving
