@@ -45,6 +45,11 @@ turn can then carry speech, a press, and a live camera frame together; the
 prompt treats them as one question (`docs/voice-agent-prompting.md` §13.4).
 Frames from a caller device are untrusted data.
 
+The director implements the turn as one joined prompt (`crates/idfon-director/src/turn_input.rs`,
+#39): the transcript, the `IDFON-REF/1` references, and the attachments render
+into one question. The model resolves a reference with `read_reference` over a
+`ReferenceResolver` seam. A camera frame renders only under the `camera` grant.
+
 ## Client-facing tools
 
 The multimodal surface is a set of tools in `eve-idfon`, so any idfon-aware
