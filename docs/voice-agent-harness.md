@@ -284,6 +284,24 @@ matches the ~1.3 s tool-round-trip estimate, not the ~0.25 s plain reply. The
 prewarm is higher than the earlier ~1.2 s figure, so hide it behind call setup
 and do not add a second model pass per turn.
 
+**On a live call (measured 2026-10-11, iPhone 16 / iOS 27.0.1).** Launching with
+`-directorcall` and calling an agent contact routes the call through the
+director: it speaks short turns locally and delegates the rest with
+`voice_forward` over the existing message path. Measured:
+
+| Step | Measured |
+| --- | --- |
+| Create + prewarm at call setup | 4.76 s |
+| Greeting turn (local `speak`) | 2.48 s |
+| Delegated turns (`voice_forward` + agent round trip) | 3.9 / 4.7 / 5.0 s |
+
+Every turn was `status: ok`, and no authority denial occurred. A delegated turn
+is a full remote round trip, so it is the budget for a workflow step, not a
+per-turn decision. Observed in the run: the ASR merged the director's own
+greeting into the caller's first transcript, and the remote agent answered the
+forwarded text with a clarification question — both are agent/ASR behaviour, not
+the loop, and are the next things to look at.
+
 **OS floor (idfon, 2026-10-11).** AFM3 needs **iOS/macOS 27+**. A device below the
 floor cannot run the on-device director, so it uses the **remote voice agent**. The
 two-tier design already allows this per contact (the ticket names the provider).
