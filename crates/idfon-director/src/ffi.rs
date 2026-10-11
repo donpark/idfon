@@ -2,6 +2,8 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
+#[cfg(feature = "afm")]
+use std::sync::Arc;
 
 use crate::Director;
 
@@ -111,6 +113,39 @@ pub unsafe extern "C" fn idfon_director_new_afm_config(
         Ok(options) => options,
         Err(_) => return std::ptr::null_mut(),
     };
+    match crate::Director::afm_with_options(&text, options) {
+        Ok(director) => Box::into_raw(Box::new(director)).cast(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Create an on-device director whose `voice_forward` tool delegates to a
+/// host callback (the app forwards to the called idfon peer). `forward` blocks
+/// while the host waits for the reply, so the loop must run off the main
+/// thread. Returns null when AFM is unavailable or the config is invalid.
+///
+/// # Safety
+/// `instructions`/`config_json` must be valid NUL-terminated C strings or null.
+/// `ctx` must stay valid for the director's life. `free` must release the
+/// pointer `forward` returns.
+#[cfg(feature = "afm")]
+#[no_mangle]
+pub unsafe extern "C" fn idfon_director_new_afm_wrapped(
+    instructions: *const c_char,
+    config_json: *const c_char,
+    ctx: *mut c_void,
+    forward: Option<crate::wrapped::ForwardFn>,
+    free: Option<crate::wrapped::FreeReplyFn>,
+) -> *mut c_void {
+    let text = unsafe { read_cstr(instructions) };
+    let mut options = match options_from_json(config_json) {
+        Ok(options) => options,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    if let (Some(forward), Some(free)) = (forward, free) {
+        let wrapped = unsafe { crate::wrapped::CallbackWrapped::new(ctx, forward, free) };
+        options.wrapped = Some(Arc::new(wrapped));
+    }
     match crate::Director::afm_with_options(&text, options) {
         Ok(director) => Box::into_raw(Box::new(director)).cast(),
         Err(_) => std::ptr::null_mut(),

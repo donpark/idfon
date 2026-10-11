@@ -10,7 +10,9 @@
 //! provider ends the turn after a tool result and cannot narrate afterwards.
 
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
+use std::os::raw::{c_char, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -33,6 +35,69 @@ pub trait WrappedAgent: Send + Sync {
     /// make the write idempotent: keep the reply for a `delegation_id` it has
     /// already sent, return that stored reply, and do not repeat the work.
     async fn forward(&self, text: &str, delegation_id: &str) -> Result<String, String>;
+}
+
+/// A host callback that forwards one turn and returns the reply.
+///
+/// On success it sets `out_reply` to a heap string the host owns and returns 0;
+/// `free_reply` releases it. A non-zero return is an error.
+///
+/// # Safety
+/// `ctx`, `text`, and `delegation_id` are valid for the call. The reply pointer
+/// must come from the host allocator that `free_reply` releases.
+pub type ForwardFn = unsafe extern "C" fn(
+    ctx: *mut c_void,
+    text: *const c_char,
+    delegation_id: *const c_char,
+    out_reply: *mut *mut c_char,
+) -> i32;
+
+/// Releases a reply string the [`ForwardFn`] returned.
+pub type FreeReplyFn = unsafe extern "C" fn(*mut c_char);
+
+/// A raw host pointer, shared with the loop thread. The host guarantees it is
+/// safe to use from the director's background thread.
+struct Ctx(*mut c_void);
+unsafe impl Send for Ctx {}
+unsafe impl Sync for Ctx {}
+
+/// A [`WrappedAgent`] over host callbacks (the Swift app forwards to the called
+/// idfon peer). The callback blocks the loop thread while the host waits for the
+/// reply, which is why the director runs off the main thread.
+pub struct CallbackWrapped {
+    ctx: Ctx,
+    forward: ForwardFn,
+    free: FreeReplyFn,
+}
+
+impl CallbackWrapped {
+    /// # Safety
+    /// `ctx` must stay valid for the director's life, `forward` must be safe to
+    /// call from the loop thread, and `free` must accept the pointer `forward`
+    /// returns.
+    pub unsafe fn new(ctx: *mut c_void, forward: ForwardFn, free: FreeReplyFn) -> Self {
+        Self {
+            ctx: Ctx(ctx),
+            forward,
+            free,
+        }
+    }
+}
+
+#[async_trait]
+impl WrappedAgent for CallbackWrapped {
+    async fn forward(&self, text: &str, delegation_id: &str) -> Result<String, String> {
+        let text = CString::new(text).map_err(|_| "text contains NUL".to_string())?;
+        let id = CString::new(delegation_id).map_err(|_| "id contains NUL".to_string())?;
+        let mut out: *mut c_char = std::ptr::null_mut();
+        let code = unsafe { (self.forward)(self.ctx.0, text.as_ptr(), id.as_ptr(), &mut out) };
+        if code != 0 || out.is_null() {
+            return Err(format!("wrapped forward failed (code {code})"));
+        }
+        let reply = unsafe { CStr::from_ptr(out) }.to_string_lossy().into_owned();
+        unsafe { (self.free)(out) };
+        Ok(reply)
+    }
 }
 
 /// Built-in `voice_forward` tool: delegate a turn to the wrapped agent and

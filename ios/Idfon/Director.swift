@@ -27,6 +27,27 @@ final class Director {
         return Director(handle: pointer)
     }
 
+    /// Create the on-device director with a wrapped-agent callback: its
+    /// `voice_forward` tool delegates each turn to `forward` (the app forwards
+    /// to the called idfon peer and blocks for the reply). The caller must run
+    /// the director off the main thread.
+    static func createAFMWrapped(
+        instructions: String,
+        config: [String: Any] = [:],
+        forward: idfon_director_forward_fn?,
+        freeReply: idfon_director_free_fn?
+    ) -> Director? {
+        let json = (try? JSONSerialization.data(withJSONObject: config))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let pointer = instructions.withCString { text in
+            json.withCString { config in
+                idfon_director_new_afm_wrapped(text, config, nil, forward, freeReply)
+            }
+        }
+        guard let pointer else { return nil }
+        return Director(handle: pointer)
+    }
+
     func prewarm() {
         _ = idfon_director_prewarm(handle)
     }
@@ -74,6 +95,29 @@ extension Director: @unchecked Sendable {
         result["record"] as? [String: Any] ?? [:]
     }
 
+    /// The C callback behind `voice_forward`: forward to the called peer and
+    /// block until the reply arrives, then hand the host-allocated string to
+    /// Rust (freed by `directorFreeReply`).
+    static let forwardCallback: idfon_director_forward_fn = {
+        _, textPointer, _, outReply in
+        guard let textPointer, let outReply else { return 1 }
+        let text = String(cString: textPointer)
+        let semaphore = DispatchSemaphore(value: 0)
+        var reply: String?
+        Task { @MainActor in
+            reply = await VoiceAgentSession.shared.forwardToActiveAgent(text)
+            semaphore.signal()
+        }
+        guard semaphore.wait(timeout: .now() + 30) == .success else { return 2 }
+        guard let reply, !reply.isEmpty, let pointer = strdup(reply) else { return 3 }
+        outReply.pointee = pointer
+        return 0
+    }
+
+    static let freeReplyCallback: idfon_director_free_fn = { pointer in
+        free(pointer)
+    }
+
     /// The spoken text of a turn: the first `IDFON-SPEAK/1` envelope.
     static func spokenText(_ result: [String: Any]) -> String {
         let prefix = "IDFON-SPEAK/1\n"
@@ -100,11 +144,14 @@ final class DirectorRuntime {
 
     static let instructions = """
     # Identity
-    You are the on-device director for a voice call on this device. Answer the caller briefly.
+    You are the on-device voice director for a call with an idfon agent. Speak to the caller briefly; the agent does real work.
     # Output rules
     Plain spoken text only. One short sentence.
     # Tools
     speak: say the short spoken reply.
+    voice_forward: send the caller's request to the agent and speak its reply.
+    # Routing
+    A greeting, an acknowledgement, or a short answer you know: speak it. Anything else: voice_forward.
     """
 
     /// Prepare the director for a call (load + warm the session), off the main
@@ -113,10 +160,18 @@ final class DirectorRuntime {
     func startCall() async {
         guard !enabled, ProcessInfo.processInfo.arguments.contains("-directorcall") else { return }
         let created: Director? = await Task.detached(priority: .userInitiated) { () -> Director? in
-            guard let director = Director.createAFM(instructions: Self.instructions, config: [
-                "grant": ["speak", "decide"],
-                "trace": ["tier": "on-device", "provider": "afm", "model": "apple-foundation-models"],
-            ]) else { return nil }
+            guard let director = Director.createAFMWrapped(
+                instructions: Self.instructions,
+                config: [
+                    "grant": ["speak", "voice_forward"],
+                    "budget": 32,
+                    "trace": [
+                        "tier": "on-device", "provider": "afm", "model": "apple-foundation-models",
+                    ],
+                ],
+                forward: Director.forwardCallback,
+                freeReply: Director.freeReplyCallback
+            ) else { return nil }
             let started = Date()
             director.prewarm()
             Automation.mark("director: call prewarm_ms=\(Int(Date().timeIntervalSince(started) * 1000))")
@@ -128,6 +183,7 @@ final class DirectorRuntime {
         }
         director = created
         enabled = true
+        Automation.mark("director: call ready (voice_forward enabled)")
     }
 
     func endCall() {

@@ -37,6 +37,8 @@ final class VoiceAgentSession: NSObject {
     private(set) var isActive = false
     /// Peer this voice call is with, so the shared call UI can title it.
     private(set) var activePeerId: String?
+    /// The resolved peer id of the called agent, for director forwarding.
+    private var agentPeerId: String?
     /// Latest state, readable by the call UI (the `onState` callback is single-
     /// owner, so the LiveActivityController owns it).
     private(set) var state: State = .idle
@@ -110,6 +112,7 @@ final class VoiceAgentSession: NSObject {
                 finish()
                 return
             }
+            agentPeerId = peer.id
             Automation.mark("voice-agent: start peer=\(peer.id)")
             // Reset the model history before a new call: the session log is
             // the medium, never the model's context (docs/session-context.md).
@@ -291,6 +294,32 @@ final class VoiceAgentSession: NSObject {
         "Client cascade (on-device speech). Recognition: \(asrBackend.title); Generation: \(ttsBackend.title). The holder only produces text."
     }
 
+    /// Forward one turn to the called agent and return its reply text (the
+    /// director's `voice_forward`). No chat bookkeeping; the director speaks
+    /// the reply. Called from the director's background thread via a callback.
+    func forwardToActiveAgent(_ text: String) async -> String? {
+        guard let peerId = agentPeerId else {
+            Automation.mark("director: forward FAIL no peer")
+            return nil
+        }
+        let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
+        do {
+            try await client.sendText(to: peerId, text, context: callContext)
+        } catch {
+            Automation.mark("director: forward FAIL send \(error.localizedDescription)")
+            return nil
+        }
+        guard let message = await waitForReply(peerId: peerId, excluding: before),
+              case .text(let raw) = message.kind else {
+            Automation.mark("director: forward FAIL no reply")
+            return nil
+        }
+        let spoken = Self.spokenText(from: raw)
+        let reply = spoken.isEmpty ? Self.stripEnvelopes(raw) : spoken
+        Automation.mark("director: forward reply=\(reply)")
+        return reply.isEmpty ? nil : reply
+    }
+
     /// One agent turn: the on-device director when enabled, else the remote
     /// agent. A director turn that fails falls back to the remote path.
     private func reply(
@@ -359,6 +388,7 @@ final class VoiceAgentSession: NSObject {
         asr = nil
         deliver(nil)
         activePeerId = nil
+        agentPeerId = nil
         micMuted = false
         turnsDone = 0
         turnLimit = Int.max

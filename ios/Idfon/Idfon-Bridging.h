@@ -82,8 +82,19 @@ uint8_t idfon_voice_is_echo(const char *spoken, const char *heard);
 // idfon_director_free_string.
 void *idfon_director_new_afm_config(const char *instructions, const char *config_json);
 void *idfon_director_new_afm(const char *instructions);
+// With a wrapped-agent callback: `voice_forward` delegates each turn to
+// `forward` (the app forwards to the called idfon peer and blocks for the
+// reply); `free_reply` releases the reply pointer. Run the director off the
+// main thread: the callback blocks.
+typedef int32_t (*idfon_director_forward_fn)(void *ctx, const char *text,
+                                             const char *delegation_id, char **out_reply);
+typedef void (*idfon_director_free_fn)(char *reply);
+void *idfon_director_new_afm_wrapped(const char *instructions, const char *config_json,
+                                     void *ctx, idfon_director_forward_fn forward,
+                                     idfon_director_free_fn free_reply);
 int32_t idfon_director_prewarm(void *director);
-char *idfon_director_turn(void *director, const char *text);
+char *idfon_director_turn(void *director, const char *text); // (kept for the probe)
+
 char *idfon_director_turn_input(void *director, const char *input_json);
 void idfon_director_free(void *director);
 void idfon_director_free_string(char *ptr);
