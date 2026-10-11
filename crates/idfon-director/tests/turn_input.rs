@@ -88,11 +88,11 @@ fn a_reference_and_crop_resolve_via_read_reference() {
     drop(calls);
 
     assert!(
-        turn.trace
+        turn.trace()
             .iter()
             .any(|t| t.kind == "tool_result" && t.name.as_deref() == Some("read_reference")),
         "the reference resolution is in the trace: {:?}",
-        turn.trace
+        turn.trace()
     );
     assert!(turn
         .envelopes

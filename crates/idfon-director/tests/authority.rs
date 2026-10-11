@@ -27,7 +27,7 @@ fn a_granted_tool_runs() {
         Director::with_authority(provider, "test", Authority::grant(["speak"]), None, None);
     let turn = director.turn("say hi");
     assert_eq!(turn.envelopes.len(), 1);
-    assert!(turn.trace.iter().all(|t| t.kind != "denied"));
+    assert!(turn.trace().iter().all(|t| t.kind != "denied"));
 }
 
 /// No grant: the call is denied, does not execute, and the loop continues.
@@ -41,7 +41,7 @@ fn an_ungranted_tool_fails_closed() {
         turn.envelopes.is_empty(),
         "the denied tool must not execute"
     );
-    let denied: Vec<_> = turn.trace.iter().filter(|t| t.kind == "denied").collect();
+    let denied: Vec<_> = turn.trace().iter().filter(|t| t.kind == "denied").collect();
     assert_eq!(denied.len(), 1);
     assert_eq!(denied[0].name.as_deref(), Some("speak"));
     assert!(
@@ -50,9 +50,9 @@ fn an_ungranted_tool_fails_closed() {
         denied[0].detail
     );
     assert!(
-        turn.trace.iter().any(|t| t.kind == "model"),
+        turn.trace().iter().any(|t| t.kind == "model"),
         "the loop must not stall: {:?}",
-        turn.trace
+        turn.trace()
     );
 }
 
@@ -78,7 +78,7 @@ fn a_spent_budget_fails_closed() {
         "only the first call fits the budget"
     );
     assert!(turn
-        .trace
+        .trace()
         .iter()
         .any(|t| t.kind == "denied" && t.detail.as_deref().unwrap_or("").contains("budget")));
 }
@@ -100,7 +100,7 @@ fn a_failing_decider_fails_open() {
     );
     let turn = director.turn("say hi");
     assert_eq!(turn.envelopes.len(), 1);
-    assert!(turn.trace.iter().all(|t| t.kind != "denied"));
+    assert!(turn.trace().iter().all(|t| t.kind != "denied"));
 }
 
 /// A decider may propose a veto; code honors it (fail-closed).
@@ -118,7 +118,7 @@ fn a_decider_veto_fails_closed() {
     let turn = director.turn("say hi");
     assert!(turn.envelopes.is_empty());
     assert!(turn
-        .trace
+        .trace()
         .iter()
         .any(|t| t.kind == "denied" && t.detail.as_deref().unwrap_or("").contains("decider")));
 }

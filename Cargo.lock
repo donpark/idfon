@@ -3113,6 +3113,7 @@ name = "idfon-director"
 version = "0.8.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "fm-rs",
  "idfon-protocol",
  "serde",

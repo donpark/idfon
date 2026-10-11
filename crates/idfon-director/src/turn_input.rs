@@ -18,6 +18,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::trace::TraceInput;
+
 use idfon_protocol::artifacts::{ArtifactRef, ArtifactSelector};
 use yoagent::provider::ToolDefinition;
 use yoagent::types::{AgentTool, Content, ToolContext, ToolError, ToolResult};
@@ -81,6 +83,32 @@ impl TurnInput {
         prompt.push('\n');
         prompt.push_str(&data.join("\n"));
         prompt
+    }
+
+    /// The trace input for this turn: what the run saw (#40).
+    pub fn trace_input(&self) -> TraceInput {
+        let mut parts = vec!["transcript".to_string()];
+        for attachment in &self.attachments {
+            parts.push(
+                match attachment {
+                    Attachment::Crop { .. } => "crop",
+                    Attachment::CameraFrame { .. } => "camera",
+                }
+                .to_string(),
+            );
+        }
+        if !self.references.is_empty() {
+            parts.push("reference".to_string());
+        }
+        TraceInput {
+            text: self.text.clone(),
+            parts,
+            refs: self
+                .references
+                .iter()
+                .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+                .collect(),
+        }
     }
 }
 
