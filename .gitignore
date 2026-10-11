@@ -2,7 +2,6 @@
 .zig-cache/
 *.app
 /target/
-.agents/
 audio-source.wav
 audio-decoded.wav
 audio-aligned.wav
@@ -19,9 +18,8 @@ cli/idfon-*/LICENSE-*
 # eve channel platform packages: built by scripts/build-eve.sh
 integrations/eve-idfon-*/bin/
 integrations/eve-idfon-*/LICENSE-*
-# local agent/tooling state — not repo content
+# local tooling state — not repo content (.agents/ skills ARE tracked)
 .pi/
-.agents/
 PONYTAIL-DEBT.md
 skills-lock.json
 *.wav
