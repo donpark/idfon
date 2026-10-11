@@ -26,6 +26,7 @@ use yoagent::types::{AgentTool, Content, ToolContext, ToolError, ToolResult};
 use yoagent::{AgentEvent, StreamDelta};
 
 use crate::authority::Authority;
+use crate::turn_input::{ReadReferenceTool, ReferenceResolver, TurnInput};
 use crate::wrapped::{ForwardTool, WrappedAgent};
 
 /// A session outbox of `IDFON-*/1` envelopes. Tools push; the app drains.
@@ -173,6 +174,21 @@ pub struct DecisionOptions {
     pub guard: Option<InputGuard>,
 }
 
+/// Everything a director can be built with. All fields are optional.
+#[derive(Default)]
+pub struct DirectorOptions {
+    /// The `decide` tool plus its gate and guard (`docs/voice-decisions.md`).
+    pub decision: DecisionOptions,
+    /// The capability grant and budget for every tool call (#37).
+    pub authority: Option<Authority>,
+    /// The wrapped remote agent, exposed as `voice_forward` (#38).
+    pub wrapped: Option<Arc<dyn WrappedAgent>>,
+    /// Resolves artifact references for `read_reference` (#39).
+    pub resolver: Option<Arc<dyn ReferenceResolver>>,
+    /// Loads and warms the model at call setup.
+    pub prewarm: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
 /// The director: one persistent loop for one session (one call).
 ///
 /// Owns a current-thread runtime, so the public API is synchronous and the FFI
@@ -189,81 +205,19 @@ pub struct Director {
 }
 
 impl Director {
-    /// Build a director on a provider. The provider is the tier seam.
-    pub fn with_provider(provider: impl StreamProvider + 'static, instructions: &str) -> Self {
-        Self::build(provider, instructions, None, None, None, None)
-    }
-
-    /// Build a director with an optional prewarm hook (load + warm the session).
-    pub fn with_provider_and_prewarm(
+    /// Build a director from [`DirectorOptions`]. The provider is the tier seam.
+    pub fn new(
         provider: impl StreamProvider + 'static,
         instructions: &str,
-        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
+        options: DirectorOptions,
     ) -> Self {
-        Self::build(provider, instructions, None, None, None, prewarm)
-    }
-
-    /// Build a director with decision models: a `decide` tool, and optional tool
-    /// gate and input guard (`docs/voice-decisions.md`).
-    pub fn with_decision(
-        provider: impl StreamProvider + 'static,
-        instructions: &str,
-        decision: DecisionOptions,
-        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
-    ) -> Self {
-        Self::build(provider, instructions, Some(decision), None, None, prewarm)
-    }
-
-    /// Build a director whose every tool call is checked against a capability
-    /// grant (fail-closed), an optional budget, and an optional advisory
-    /// decider that fails open (`docs/voice-decisions.md`). An optional
-    /// [`DecisionOptions`] adds the `decide` tool and its gate/guard.
-    pub fn with_authority(
-        provider: impl StreamProvider + 'static,
-        instructions: &str,
-        authority: Authority,
-        decision: Option<DecisionOptions>,
-        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
-    ) -> Self {
-        Self::build(
-            provider,
-            instructions,
-            decision,
-            Some(authority),
-            None,
-            prewarm,
-        )
-    }
-
-    /// Build a director that can delegate to a wrapped remote agent
-    /// (`voice_forward`, #38). The wrapped agent is a normal tool over the
-    /// [`WrappedAgent`] seam, not a local child loop.
-    pub fn with_wrapped_agent(
-        provider: impl StreamProvider + 'static,
-        instructions: &str,
-        wrapped: Arc<dyn WrappedAgent>,
-        decision: Option<DecisionOptions>,
-        authority: Option<Authority>,
-        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
-    ) -> Self {
-        Self::build(
-            provider,
-            instructions,
+        let DirectorOptions {
             decision,
             authority,
-            Some(wrapped),
+            wrapped,
+            resolver,
             prewarm,
-        )
-    }
-
-    fn build(
-        provider: impl StreamProvider + 'static,
-        instructions: &str,
-        decision: Option<DecisionOptions>,
-        authority: Option<Authority>,
-        wrapped: Option<Arc<dyn WrappedAgent>>,
-        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
-    ) -> Self {
+        } = options;
         let outbox = Outbox::default();
         let turn = Arc::new(AtomicU64::new(0));
         let mut tools: Vec<Box<dyn AgentTool>> = vec![Box::new(SpeakTool::new(outbox.clone()))];
@@ -274,18 +228,19 @@ impl Director {
                 outbox.clone(),
             )));
         }
+        if let Some(resolver) = resolver {
+            tools.push(Box::new(ReadReferenceTool::new(resolver)));
+        }
         let mut agent =
             Agent::from_provider(provider, ModelConfig::mock()).with_system_prompt(instructions);
-        if let Some(options) = decision {
-            if let Some(model) = options.model {
-                tools.push(Box::new(crate::decide::DecideTool::new(model.clone())));
-            }
-            if let Some(gate) = options.gate {
-                agent = agent.with_tool_gate(gate);
-            }
-            if let Some(guard) = options.guard {
-                agent = agent.with_input_guard(guard);
-            }
+        if let Some(model) = decision.model {
+            tools.push(Box::new(crate::decide::DecideTool::new(model.clone())));
+        }
+        if let Some(gate) = decision.gate {
+            agent = agent.with_tool_gate(gate);
+        }
+        if let Some(guard) = decision.guard {
+            agent = agent.with_input_guard(guard);
         }
         // Tree extension: child loops inherit the grant and cannot remove it.
         if let Some(authority) = &authority {
@@ -304,6 +259,93 @@ impl Director {
             authority,
             turn,
         }
+    }
+
+    /// Build a director on a provider. The provider is the tier seam.
+    pub fn with_provider(provider: impl StreamProvider + 'static, instructions: &str) -> Self {
+        Self::new(provider, instructions, DirectorOptions::default())
+    }
+
+    /// Build a director with an optional prewarm hook (load + warm the session).
+    pub fn with_provider_and_prewarm(
+        provider: impl StreamProvider + 'static,
+        instructions: &str,
+        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        Self::new(
+            provider,
+            instructions,
+            DirectorOptions {
+                prewarm,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Build a director with decision models: a `decide` tool, and optional tool
+    /// gate and input guard (`docs/voice-decisions.md`).
+    pub fn with_decision(
+        provider: impl StreamProvider + 'static,
+        instructions: &str,
+        decision: DecisionOptions,
+        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        Self::new(
+            provider,
+            instructions,
+            DirectorOptions {
+                decision,
+                prewarm,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Build a director whose every tool call is checked against a capability
+    /// grant (fail-closed), an optional budget, and an optional advisory
+    /// decider that fails open (`docs/voice-decisions.md`). An optional
+    /// [`DecisionOptions`] adds the `decide` tool and its gate/guard.
+    pub fn with_authority(
+        provider: impl StreamProvider + 'static,
+        instructions: &str,
+        authority: Authority,
+        decision: Option<DecisionOptions>,
+        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        Self::new(
+            provider,
+            instructions,
+            DirectorOptions {
+                decision: decision.unwrap_or_default(),
+                authority: Some(authority),
+                prewarm,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Build a director that can delegate to a wrapped remote agent
+    /// (`voice_forward`, #38). The wrapped agent is a normal tool over the
+    /// [`WrappedAgent`] seam, not a local child loop.
+    pub fn with_wrapped_agent(
+        provider: impl StreamProvider + 'static,
+        instructions: &str,
+        wrapped: Arc<dyn WrappedAgent>,
+        decision: Option<DecisionOptions>,
+        authority: Option<Authority>,
+        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        Self::new(
+            provider,
+            instructions,
+            DirectorOptions {
+                decision: decision.unwrap_or_default(),
+                authority,
+                wrapped: Some(wrapped),
+                prewarm,
+                ..Default::default()
+            },
+        )
     }
 
     /// Prewarm the model before the first turn (load + warm session).
@@ -338,6 +380,14 @@ impl Director {
             trace,
             elapsed_ms: started.elapsed().as_millis() as u64,
         }
+    }
+
+    /// Run one turn from its parts: text, references, and attachments, joined
+    /// into one question (`docs/voice-multimodal.md`). A camera frame is
+    /// included only under the `camera` grant.
+    pub fn turn_input(&mut self, input: &TurnInput) -> TurnResult {
+        let camera = self.authority.as_ref().is_some_and(|a| a.permits("camera"));
+        self.turn(&input.render(camera))
     }
 }
 
@@ -421,5 +471,7 @@ pub mod authority;
 pub mod decide;
 
 pub mod ffi;
+
+pub mod turn_input;
 
 pub mod wrapped;

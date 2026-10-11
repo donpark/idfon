@@ -90,6 +90,13 @@ impl Authority {
         }
     }
 
+    /// Whether the grant permits `tool` at all, ignoring the budget. Used to
+    /// gate capabilities the loop folds in itself (for example a camera frame
+    /// turn part, `docs/voice-multimodal.md`).
+    pub fn permits(&self, tool: &str) -> bool {
+        self.allow.iter().any(|t| t == tool)
+    }
+
     /// Tool calls left under the cap, or `None` when uncapped.
     pub fn remaining(&self) -> Option<u32> {
         self.cap
