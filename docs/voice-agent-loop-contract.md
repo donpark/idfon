@@ -110,7 +110,7 @@ Two tool shapes:
 | `read_reference` | `{ ticket: string, selector: Selector }` | `{ kind: "text"\|"json"\|"region", content?, coordinates? }` |
 | `voice_transcribe` | `{ path?: string }` | `{ transcript: string }` |
 | `voice_speak` | `{ text: string }` | `{ ticket, size_bytes, envelope, seconds }` |
-| `voice_forward` | `{ text: string, wrappedPeerId?, wrappedEndpointId?, wrappedTicket?, timeoutMs? }` | `{ reply: string }` |
+| `voice_forward` | `{ text: string, wrappedPeerId?, wrappedEndpointId?, wrappedTicket?, timeoutMs? }` | `{ reply: string }` (the reply is spoken) |
 | `voice_relay` | `{ path?, wrappedPeerId?, wrappedEndpointId?, wrappedTicket?, timeoutMs? }` | `{ transcript, reply, ticket, size_bytes, envelope, reply_seconds }` |
 | `voice_play` | `{ text: string }` | `{ accepted, seconds }` |
 
@@ -189,6 +189,23 @@ and the turn records a `denied` step (name + reason) in the trace.
 ```json
 { "kind": "denied", "name": "send", "detail": "no capability grant for `send`", "latency_ms": 0 }
 ```
+
+### Wrapped agent (implemented, #38)
+
+The wrapped agent is a remote idfon peer, so it is a **normal tool**, not a
+local child loop (`yoagent::SubAgentTool` runs a local loop and does not fit).
+`crates/idfon-director/src/wrapped.rs` defines:
+
+- `WrappedAgent` — the seam the shell implements over the idfon A2A relay
+  (`forward(text, delegation_id)`);
+- `ForwardTool` — the `voice_forward` tool over that seam. It speaks the reply
+  itself (`IDFON-SPEAK/1`), because the on-device provider ends the turn after a
+  tool result and cannot narrate afterwards.
+
+**Idempotency.** `delegation_id` is derived from the turn counter and the
+request text, so every retry of the same turn's request reuses one key. The
+remote side dedupes by that key, so a lost reply does not repeat the work
+(`docs/voice-agent.md` wrapping).
 
 ## 4. Trace contract
 
