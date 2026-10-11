@@ -203,8 +203,8 @@ actor agent (content, tools)
 ```
 
 Placement is logical, not physical: under A1 the policy director would run
-client-side, not inside the voice service box (AFM director deferred — see
-Policy director).
+client-side, not inside the voice service box (AFM director adopted 2026-10-11 as the
+on-device conversation director — see Policy director).
 
 | Layer | Owns | Does not |
 | --- | --- | --- |
@@ -485,7 +485,8 @@ to the cascade.
 - **Decision recorded**: no optional full-duplex engine is adopted now — the
   cascade stays STT/TTS behind the seam (per the "Front-end resolved to cascade"
   decision); the LLM/AFM director stays deferred until voice-in-rooms is
-  designed. There is no content-ownership change: the seam still only converts
+  designed (superseded 2026-10-11: on-device conversation director adopted — see
+  Policy director). There is no content-ownership change: the seam still only converts
   text↔audio and never authors the actor's answer.
 - **Listening-test gate** (`idfon-voice/src/listening.rs`): `ListeningTest`
   records HF deficit and intelligibility; `PassBar` is the recorded threshold
@@ -782,6 +783,14 @@ calling, sessions/profiles, gated on Apple Intelligence hardware; treat
 **Private Cloud Compute as unverified**; the engine is a provider seam with a
 deterministic fallback.
 
+**Update (2026-10-11, decision).** Adopt the **on-device conversation director**. This
+supersedes the shorter deferral above for the new voice features. The director runs the
+voice-agent loop on the device: it drives the workflow with tool calls, manages the turn
+and the modality, and decides what stays local versus what goes to the remote LLM. The
+deterministic director stays the fallback on hardware without Apple Intelligence and on
+a missed deadline. The director proposes; code and capability grants still authorize.
+See `docs/voice-agent-prompting.md` §13.
+
 ## Candidate libraries
 
 Verified 2026-10-01 against upstream docs/repos; re-check licenses at adoption.
@@ -891,7 +900,8 @@ Tracked on GitHub: epic **#17**, phases **#18–#25** (`donpark/idfon`).
   engines and remote fallback remain optional/deferred.
 - **P7 — optional engines.** **Done** (2026-10-01): stay on cascade STT/TTS
   (no full-duplex engine now); the LLM/AFM director stays deferred until
-  voice-in-rooms is designed. The listening test ran via
+  voice-in-rooms is designed (superseded 2026-10-11: on-device conversation director
+  adopted — see Policy director). The listening test ran via
   `scripts/mac-listening-test.sh` — intelligibility 1.000 vs the 0.95 bar — so
   `ListeningTest`/`PassBar`/`bwe_justified` report **BWE not justified** for the
   full-band Apple OS voice.

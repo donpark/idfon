@@ -1,0 +1,22 @@
+[package]
+name = "idfon-director"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+description = "Thin voice-agent loop boundary: turns, tools, and trace. yoagent is the implementation."
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = []
+afm = ["dep:fm-rs"]
+
+[dependencies]
+yoagent = { version = "0.25", features = ["decision"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "time", "net", "sync", "macros"] }
+async-trait = "0.1"
+tokio-util = "0.7"
+fm-rs = { version = "0.3", optional = true }
