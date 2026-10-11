@@ -14,6 +14,9 @@ default = []
 # cascade/relay deployment does not link the vendored realtime stack.
 gpt-live = ["dep:tokio-websockets", "dep:rustls", "dep:futures-util"]
 
+[dev-dependencies]
+idfon-director = { path = "../idfon-director" }
+
 [dependencies]
 anyhow = "1"
 base64 = "0.23"

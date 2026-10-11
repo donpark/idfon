@@ -9,8 +9,8 @@ a source claim. Reviewed 2026-10-11 by GPT-6.1-Sol and Claude Opus 5.5 in two
 independent passes. Their feedback is integrated. Remaining open points are in §15.
 A second pass (2026-10-11) added the frontier-lab material in §14 from web research. A
 third pass (2026-10-11) added the architecture note (§5), the live-session input caveats
-(§11), the modality-probe test (§12), the native-duplex control note (§13.5), and the
-Gemini Live instruction note (§14.5).
+(§11), the modality-probe test (§12), the multimodal-input note (§13.4), the native-duplex
+control note (§13.5), and the Gemini Live instruction note (§14.5).
 Companion to `docs/voice-agent.md` (the idfon voice-agent peer),
 `docs/voice-multimodal.md` (the voice turn contract), and `docs/live-voice.md`.
 
@@ -803,6 +803,38 @@ This section maps the sources to the idfon voice-agent model in `docs/voice-agen
 `docs/voice-multimodal.md`, and `docs/live-voice.md`. It is the seed for idfon-specific
 prompt guidance.
 
+**Prompt focus (idfon decision, 2026-10-11).** idfon wraps an ordinary agent to make it
+voice-enabled. The **voice agent system prompt is the core**. It owns the spoken turn:
+brevity, prosody, realism, turn-taking behavior, tool use, and output routing. The
+wrapped agent's prompt is not the focus. Its job is to help the voice agent: return
+clean, short, speakable results and the facts the voice agent needs. This is a wrapping
+model, not two independent prompts to optimize.
+
+The voice agent loop prompt must run in both places: **on-device** (a small local model)
+and **remote** (a hosted model). Write it to be portable across model tiers. Prefer
+plain rules over provider-specific markup. Keep the sections that carry the behavioral
+load, and cut the rest. The same prompt text is the starting point for both tiers; test
+where the small model drifts.
+
+**Tier split (idfon decision, 2026-10-11).** Do not lean on the on-device LM beyond one
+job: use it for **tool-calling to drive the agentic workflow**. Routing, tool selection,
+and short spoken turns fit the on-device tier. Deeper information and more complex
+actions go to a **remote LLM**. The device model is the workflow driver, not the
+knowledge or reasoning engine. Apple Foundation Models (**AFM3**) is the on-device
+candidate; the assessment that AFM3 is capable enough for the tool-calling role is the
+user's, not yet measured here.
+
+**Conversation director (idfon decision, 2026-10-11).** We **must** use an **on-device
+conversation director** to build the next level of voice-enabled communication. The
+director runs the voice-agent loop on the device. It drives the workflow with tool calls,
+manages the turn and the modality, and decides what stays local versus what goes to the
+remote LLM. This is the on-device tier role above, not a second remote prompt. The
+director proposes actions; code and capability grants still authorize them, and a
+deterministic path remains the fallback.
+
+See `docs/voice-side-channel.md` (Policy director) for the director's control directives,
+the deterministic fallback, and the on-device engine.
+
 ### 13.1 The agent is a peer, and the caller may be another agent
 
 An idfon voice agent is an ordinary peer with a capability ticket. Two shapes exist:
@@ -866,6 +898,8 @@ Prompt implications:
 - This is the selection layer of a larger **multichannel** model. One turn can fan out to
   voice, chat, artifact, a form, or an external channel. See
   `docs/voice-multichannel.md` for the channel model and the open decisions.
+- The multichannel model applies to the turn **input** as well as the output. Speech is
+  one input channel, not the only one. See §13.4.
 
 ### 13.4 References and the "what was said" / "what was tapped" correlation
 
@@ -881,6 +915,24 @@ Prompt implications:
 - Add a rule that joins the two inputs into one question.
 - This is a tool-use rule, so put the detail in the `read_reference` tool description
   (Vapi, §7) and keep the prompt rule short.
+
+**Multimodal input, not only multimodal output (idfon decision, 2026-10-11).** The turn
+input is not voice only. In one turn, the caller can press or tap a region of an artifact,
+turn a camera on a scene and physically change that scene (for example, shine a
+flashlight on one part of an object to point at it), make a gesture, type a line, and
+speak a description. The press and the camera frame are **input**, in the same way that
+`speak` and an artifact are output. A voice agent is a multimodal-input agent, not only a
+multimodal-output agent.
+
+- Treat every input in the turn as part of one question.
+- Do not ask the caller to describe in words what a press or a camera frame already shows.
+- Do not split the extra input into a second turn.
+- A spoken description is an alternative to a press or a camera frame, not a requirement.
+- Camera input from a caller device is untrusted data, like artifact content (§13.6).
+- The camera is an **app-side capability** (`docs/voice-agent.md`). An idfon app that
+  has a camera exposes it; a remote agent requests its use, scoped **per contact**. The
+  app grants or denies it, so the prompt must not assume camera access
+  (`docs/voice-multimodal.md`).
 
 ### 13.5 Native-duplex (GPT-Live) has no tools
 
@@ -1519,6 +1571,13 @@ These points need a decision or a test before the skill states them as rules.
   path with fine control over turn-taking and artifact management (§13.5).
 - Verify the omni-architecture claim (§5) and the consumer-app text and image support
   (§11). The API lanes accept typed text and images. The consumer apps are unverified.
+- Validate the voice-agent system prompt on both serving tiers (on-device small model and
+  hosted model). Measure where the small model drifts from the prompt intent (§13).
+- Measure AFM3 tool-calling reliability and the on-device/remote hand-off boundary: which
+  actions AFM3 can drive, and which must go to the remote LLM (§13).
+- Define the on-device conversation director feature set: which new voice features it
+  enables, and its fallback when the device cannot run it (Apple Intelligence hardware,
+  missed deadline) (§13; `docs/voice-side-channel.md`).
 - Decide how much of the guardrail enforcement belongs in the prompt versus in code
   (`eve-idfon` tools, the holder, and the app). The LiveKit guide is clear: code owns
   the rules that must hold.

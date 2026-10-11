@@ -21,7 +21,7 @@ separates a preamble from trailing `IDFON-*/1` envelopes).
 | Spoken input | turn text | the ASR transcript of what the user said |
 | Thin context | `message.send context` / live `context_b64` | on-device engines, app-supplied prior session |
 | Reference | `IDFON-REF/1` envelope | artifact + `blob_ticket` + selector (text/region/time) |
-| Visual input | turn attachment | the app's crop of the tapped region |
+| Visual input | turn attachment | the app's crop of the tapped region, or a live camera frame the agent requested |
 | Other payloads | `IDFON-*/1` envelopes | recordings, files, artifacts |
 
 ### References and multi-input correlation
@@ -33,6 +33,17 @@ resolve the reference with `read_reference`
 (`agents/gpt-live-1/agent/tools/read-reference.ts`) before answering, and to
 correlate "what was said" with "what was tapped" — the tap is not a separate
 question.
+
+### Camera as input (planned, 2026-10-11)
+
+An idfon app that has a camera exposes it as a device capability. A remote agent
+requests camera use; the app captures frames with the same `CameraPusher` path
+as a video call ([`video-media.md`](video-media.md)) and returns them as a
+follow-up turn. The request is scoped **per contact**. The app grants or denies
+it, so camera use is a capability/authorization decision, not a prompt rule. A
+turn can then carry speech, a press, and a live camera frame together; the
+prompt treats them as one question (`docs/voice-agent-prompting.md` §13.4).
+Frames from a caller device are untrusted data.
 
 ## Client-facing tools
 
@@ -50,6 +61,7 @@ the effects ordered.
 | `show` | `IDFON-SHOW/1` | App opens the artifact. |
 | `add_artifact` | `IDFON-ARTIFACT/1` | Publishes bytes as a durable artifact the user opens. |
 | `screenshot` | `IDFON-SCREENSHOT/1` | Requests a screenshot; the app captures its window and sends it back as a follow-up turn. |
+| camera tool (planned, name not fixed) | — | Requests live camera use on a capable app; the app captures frames and sends them back as a follow-up turn, scoped to the per-contact grant. |
 | `context_edit` | — | Edits the host-owned virtual context ([`session-context.md`](session-context.md)). |
 
 A cancelled or failed turn drains (discards) its outbox so effects never leak
@@ -111,6 +123,7 @@ testing), tracked here rather than left as an open question.
 - The crop is the turn attachment, not an artifact.
 - The reference turn uses the normal session message path, so the wire already
   carries everything (`MessageEnvelope` text + envelopes + attachment).
+- Camera is an app-side capability. A remote agent requests it; the app grants or denies per contact. A live frame is a visual input, like the crop attachment.
 - No recalled prior session (removed with [`session-context.md`](session-context.md)).
 - Prompt wording for multimodal routing is out of scope; this doc fixes the
   contract and ownership.
