@@ -506,11 +506,22 @@ fn override_engine(
     Some(serde_json::json!({ "stt": stt, "tts": tts }))
 }
 
-/// Per-turn context for live-call transcripts: the holder's resolved pipeline
-/// for *this* call (accurate, unlike the startup `/voice/info` snapshot) plus
-/// anything the caller pushed on the invite. Untrusted; injected as data.
-fn live_call_context(pipeline: &Value, caller: Option<&str>) -> Option<String> {
+/// Per-turn context for live-call transcripts: the voice agent's own prompt
+/// additions (the live config's `instructions`; the passive voice persona), the
+/// holder's resolved pipeline for *this* call (accurate, unlike the startup
+/// `/voice/info` snapshot), and anything the caller pushed on the invite.
+/// Injected into the agent's turn as freeform text.
+fn live_call_context(
+    pipeline: &Value,
+    caller: Option<&str>,
+    instructions: Option<&str>,
+) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
+    // The voice agent's prompt additions. It connects to the wrapped agent and
+    // passes these so a plain text agent answers as a voice agent would.
+    if let Some(instructions) = instructions.filter(|value| !value.trim().is_empty()) {
+        parts.push(format!("Voice agent instructions: {instructions}"));
+    }
     if !pipeline.is_null() {
         parts.push(format!("Resolved call pipeline (JSON): {pipeline}"));
     }
@@ -573,7 +584,12 @@ async fn handle_call(
     );
     // Resolved for this call, so each injected transcript carries the pipeline
     // that is actually running (plus the caller's pushed context).
-    let call_context = live_call_context(&eve_idfon::voice_info(&params), invite.context.as_deref());
+    let instructions = params.get("instructions").and_then(Value::as_str);
+    let call_context = live_call_context(
+        &eve_idfon::voice_info(&params),
+        invite.context.as_deref(),
+        instructions,
+    );
     // Backends that build their own session instructions (gpt-live) read this.
     if let Some(caller) = invite.context.as_deref().filter(|value| !value.is_empty()) {
         if let Some(object) = params.as_object_mut() {
@@ -783,15 +799,21 @@ mod tests {
     }
 
     #[test]
-    fn live_call_context_folds_pipeline_and_caller() {
+    fn live_call_context_folds_instructions_pipeline_and_caller() {
         let pipeline = serde_json::json!({ "mode": "server-cascade", "voice_model": "x" });
-        let context = live_call_context(&pipeline, Some("Client STT=Apple Built-in")).unwrap();
+        let context = live_call_context(
+            &pipeline,
+            Some("Client STT=Apple Built-in"),
+            Some("Be brief and spoken."),
+        )
+        .unwrap();
+        assert!(context.contains("Voice agent instructions: Be brief and spoken."));
         assert!(context.contains("Resolved call pipeline"));
         assert!(context.contains("server-cascade"));
         assert!(context.contains("Caller-provided context: Client STT=Apple Built-in"));
-        // Nothing to say when both are empty.
-        assert!(live_call_context(&serde_json::Value::Null, None).is_none());
-        assert!(live_call_context(&serde_json::Value::Null, Some("")).is_none());
+        // Nothing to say when all three are empty.
+        assert!(live_call_context(&serde_json::Value::Null, None, None).is_none());
+        assert!(live_call_context(&serde_json::Value::Null, Some(""), Some("  ")).is_none());
     }
 
     #[test]
