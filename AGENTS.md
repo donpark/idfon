@@ -21,5 +21,7 @@ add or materially change a doc, update the index.
 - macOS app: `swift build` in `mac/`.
 - iOS: source files can be syntax-checked with `swiftc -parse <file>`; a full
   build needs the Xcode project and a physical iPhone (device-only, no simulator).
-- Native shells use the `native-sdk` skill; iroh work uses the `iroh-protocols`
-  skill (see `.pi/skills/`).
+- Native shells use the `native-sdk` skill (vendored, installer-managed — do not
+  edit it) plus the project-local `native-sdk-idfon` addendum holding our
+  hard-won rules; iroh work uses the `iroh-protocols` skill (see
+  `.agents/skills/` — shared by all harnesses; no per-harness skill folders).
