@@ -324,8 +324,10 @@ data, and export run traces for the optimizer.
 - **Decision tool granularity.** One `decide` tool, or one tool per decision. The
   batching rule in `docs/voice-decisions.md` says decisions that share a moment
   batch into one call.
-- **Optimization loop.** Define the trace format that a GEPA prompt optimizer or
-  an RL loop consumes, and keep the prompt and the tool schemas as data (§6).
+- **Optimization loop.** Done (#40): `crates/idfon-director/src/trace.rs`
+  implements the contract record; the prompt and tool schemas are
+  content-addressed by `blake3` hash, and ids are deterministic. The exporter
+  and any optimizer stay out of scope.
 - **License review.** Confirm every candidate license before adoption. Several
   projects in §4 show no detected license.
 - **Sub-agent authority.** R9 applies to child loops too: a child proposes, code

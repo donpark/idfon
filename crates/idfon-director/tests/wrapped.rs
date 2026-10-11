@@ -58,18 +58,18 @@ fn a_wrapped_turn_is_delegated_and_spoken() {
         turn.envelopes
     );
     assert!(
-        turn.trace
+        turn.trace()
             .iter()
             .any(|t| t.kind == "tool_call" && t.name.as_deref() == Some("voice_forward")),
         "the trace records the delegation: {:?}",
-        turn.trace
+        turn.trace()
     );
     assert!(
-        turn.trace
+        turn.trace()
             .iter()
             .any(|t| t.kind == "tool_result" && t.name.as_deref() == Some("voice_forward")),
         "the trace records the returned result: {:?}",
-        turn.trace
+        turn.trace()
     );
 }
 

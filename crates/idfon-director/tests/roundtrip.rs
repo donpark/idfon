@@ -17,9 +17,16 @@ fn one_turn_emits_speak_envelope() {
         "envelope must carry the spoken text"
     );
 
-    let kinds: Vec<&str> = result.trace.iter().map(|t: &TraceStep| t.kind.as_str()).collect();
+    let kinds: Vec<&str> = result
+        .trace()
+        .iter()
+        .map(|t: &TraceStep| t.kind.as_str())
+        .collect();
     assert!(kinds.contains(&"tool_call"), "trace records the tool call");
-    assert!(kinds.contains(&"tool_result"), "trace records the tool result");
+    assert!(
+        kinds.contains(&"tool_result"),
+        "trace records the tool result"
+    );
 }
 
 #[test]

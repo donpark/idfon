@@ -267,6 +267,21 @@ Rules:
 - **Determinism.** The same input and the same prompt version must replay the
   same steps, except for the model sample. Record the sampling parameters.
 
+**Implemented** in `crates/idfon-director/src/trace.rs` (#40):
+
+- `TraceRecord` is the record above. `TurnResult.record` carries one per turn;
+  `TurnResult::trace()` is the step list.
+- The prompt and tool schemas are **content-addressed**: `prompt.version` is
+  `blake3:<hex>` of the instruction text, `tools.hash` is `blake3:<hex>` of the
+  sorted tool schemas. `prompt.sections` is parsed from the prompt headings.
+- `trace_id` and `turn_id` are content hashes, so the same turn replays the
+  same ids (the `ts` is the wall clock).
+- `tier`/`provider`/`model` come from `DirectorOptions::trace`; the privacy
+  policy from `DirectorOptions::redaction` (default `local_only`).
+- Output `speak` is read from the emitted `IDFON-SPEAK/1` envelope; a denial is
+  a `denied` step. This is data only; the exporter and the optimizer are out of
+  scope (#40).
+
 ## 5. Tier mapping
 
 | Contract part | On-device (AFM) | Remote (hosted) |

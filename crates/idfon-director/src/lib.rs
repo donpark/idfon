@@ -11,9 +11,10 @@
 //! Apple Foundation Models (`fm-rs`, #34); remotely a hosted provider. The
 //! scaffold in [`Director::mock`] is for tests and the FFI probe only.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -26,8 +27,14 @@ use yoagent::types::{AgentTool, Content, ToolContext, ToolError, ToolResult};
 use yoagent::{AgentEvent, StreamDelta};
 
 use crate::authority::Authority;
+use crate::trace::{
+    content_hash, sections, short_hash, PromptRef, Redaction, ToolsRef, TraceInfo, TraceInput,
+    TraceOutcome, TraceOutput, TraceRecord, SCHEMA_VERSION,
+};
 use crate::turn_input::{ReadReferenceTool, ReferenceResolver, TurnInput};
 use crate::wrapped::{ForwardTool, WrappedAgent};
+
+pub use crate::trace::TraceStep;
 
 /// A session outbox of `IDFON-*/1` envelopes. Tools push; the app drains.
 ///
@@ -129,27 +136,22 @@ impl AgentTool for SpeakTool {
     }
 }
 
-/// One traced step in a turn.
+/// The result of one turn: envelopes emitted and the full trace record (#40).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TraceStep {
-    pub kind: String,
-    pub name: Option<String>,
-    pub latency_ms: u128,
-    /// Why a step was refused, or other step detail.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
-
-/// The result of one turn: envelopes emitted, spoken text seen, trace steps.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TurnResult {
     pub envelopes: Vec<String>,
-    pub trace: Vec<TraceStep>,
+    /// The contract trace record (`docs/voice-agent-loop-contract.md` §4).
+    pub record: TraceRecord,
     /// Wall-clock time for the whole turn.
     pub elapsed_ms: u64,
 }
 
 impl TurnResult {
+    /// The traced steps of the turn.
+    pub fn trace(&self) -> &[TraceStep] {
+        &self.record.steps
+    }
+
     /// Compose the wire reply: the preamble text, then the envelopes in
     /// tool-call order. This mirrors the `eve-idfon` outbox append
     /// (`event.message + "\n" + envelopes.join("\n")`), so the app parses the
@@ -185,6 +187,10 @@ pub struct DirectorOptions {
     pub wrapped: Option<Arc<dyn WrappedAgent>>,
     /// Resolves artifact references for `read_reference` (#39).
     pub resolver: Option<Arc<dyn ReferenceResolver>>,
+    /// The tier/provider/model recorded in the trace (#40).
+    pub trace: TraceInfo,
+    /// The trace privacy policy (#40).
+    pub redaction: Redaction,
     /// Loads and warms the model at call setup.
     pub prewarm: Option<Box<dyn Fn() + Send + Sync>>,
 }
@@ -200,8 +206,13 @@ pub struct Director {
     outbox: Outbox,
     prewarm: Option<Box<dyn Fn() + Send + Sync>>,
     authority: Option<Authority>,
-    /// Monotonic turn counter; a delegating tool keys its idempotency on it.
+    /// Monotonic turn counter; a delegating tool keys its idempotency on it,
+    /// and the trace records it as the step index.
     turn: Arc<AtomicU64>,
+    prompt: PromptRef,
+    tools: ToolsRef,
+    trace_info: TraceInfo,
+    redaction: Redaction,
 }
 
 impl Director {
@@ -216,6 +227,8 @@ impl Director {
             authority,
             wrapped,
             resolver,
+            trace: trace_info,
+            redaction,
             prewarm,
         } = options;
         let outbox = Outbox::default();
@@ -246,6 +259,22 @@ impl Director {
         if let Some(authority) = &authority {
             agent = agent.with_tree_extension(authority.clone());
         }
+        // Version the prompt and the tool schemas by content, so a trace names
+        // the exact pair it ran against (#40).
+        let prompt = PromptRef {
+            id: "idfon-director".into(),
+            version: content_hash(instructions.as_bytes()),
+            sections: sections(instructions),
+        };
+        let mut schemas: Vec<Value> = tools
+            .iter()
+            .map(|tool| json!({ "name": tool.name(), "parameters": tool.parameters_schema() }))
+            .collect();
+        schemas.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        let tools_ref = ToolsRef {
+            schema_version: SCHEMA_VERSION.into(),
+            hash: content_hash(&serde_json::to_vec(&schemas).unwrap_or_default()),
+        };
         agent = agent.with_tools(tools);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -258,6 +287,10 @@ impl Director {
             prewarm,
             authority,
             turn,
+            prompt,
+            tools: tools_ref,
+            trace_info,
+            redaction,
         }
     }
 
@@ -358,28 +391,15 @@ impl Director {
         }
     }
 
-    /// Run one turn to completion and return the emitted envelopes and trace.
+    /// Run one typed turn to completion and return the emitted envelopes and
+    /// the full trace record.
     pub fn turn(&mut self, text: &str) -> TurnResult {
-        let started = Instant::now();
-        let mut trace: Vec<TraceStep> = Vec::new();
-        self.turn.fetch_add(1, Ordering::SeqCst);
-        let rt = &self.rt;
-        rt.block_on(run_turn(&mut self.agent, text, &mut trace));
-        if let Some(authority) = &self.authority {
-            for refusal in authority.drain_refusals() {
-                trace.push(TraceStep {
-                    kind: "denied".into(),
-                    name: Some(refusal.tool),
-                    latency_ms: 0,
-                    detail: Some(refusal.reason),
-                });
-            }
-        }
-        TurnResult {
-            envelopes: self.outbox.drain(),
-            trace,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-        }
+        let input = TraceInput {
+            text: text.to_string(),
+            parts: vec!["text".into()],
+            refs: Vec::new(),
+        };
+        self.run(text, input)
     }
 
     /// Run one turn from its parts: text, references, and attachments, joined
@@ -387,30 +407,119 @@ impl Director {
     /// included only under the `camera` grant.
     pub fn turn_input(&mut self, input: &TurnInput) -> TurnResult {
         let camera = self.authority.as_ref().is_some_and(|a| a.permits("camera"));
-        self.turn(&input.render(camera))
+        let rendered = input.render(camera);
+        self.run(&rendered, input.trace_input())
+    }
+
+    fn run(&mut self, prompt: &str, input: TraceInput) -> TurnResult {
+        let started = Instant::now();
+        let step = self.turn.fetch_add(1, Ordering::SeqCst) as u32;
+        let mut steps: Vec<TraceStep> = Vec::new();
+        let ended = self
+            .rt
+            .block_on(run_turn(&mut self.agent, prompt, &mut steps));
+        if let Some(authority) = &self.authority {
+            for refusal in authority.drain_refusals() {
+                steps.push(TraceStep {
+                    kind: "denied".into(),
+                    name: Some(refusal.tool),
+                    latency_ms: 0,
+                    args: None,
+                    ok: None,
+                    detail: Some(refusal.reason),
+                });
+            }
+        }
+        let envelopes = self.outbox.drain();
+        let output = TraceOutput {
+            speak: speak_output(&envelopes),
+            artifacts: Vec::new(),
+        };
+        let turn_id = format!(
+            "turn-{step}-{}",
+            short_hash(&format!(
+                "{}|{}|{}",
+                self.prompt.version, self.tools.hash, input.text
+            ))
+        );
+        let trace_id = content_hash(
+            format!(
+                "{}|{}|{}|{}",
+                self.prompt.version, self.tools.hash, turn_id, input.text
+            )
+            .as_bytes(),
+        );
+        let record = TraceRecord {
+            trace_id,
+            parent_id: None,
+            turn_id,
+            step,
+            ts: crate::trace::rfc3339(SystemTime::now()),
+            tier: self.trace_info.tier.clone(),
+            provider: self.trace_info.provider.clone(),
+            model: self.trace_info.model.clone(),
+            prompt: self.prompt.clone(),
+            tools: self.tools.clone(),
+            input,
+            steps,
+            output,
+            outcome: TraceOutcome {
+                status: if ended { "ok" } else { "error" }.into(),
+                reason: None,
+            },
+            redaction: self.redaction.clone(),
+            labels: BTreeMap::new(),
+        };
+        TurnResult {
+            envelopes,
+            record,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        }
     }
 }
 
-async fn run_turn(agent: &mut Agent, text: &str, trace: &mut Vec<TraceStep>) {
+/// The text of the first `IDFON-SPEAK/1` envelope, for the trace output.
+fn speak_output(envelopes: &[String]) -> Option<String> {
+    envelopes.iter().find_map(|envelope| {
+        let body = envelope.strip_prefix("IDFON-SPEAK/1\n")?;
+        let value: Value = serde_json::from_str(body).ok()?;
+        value.get("text")?.as_str().map(str::to_string)
+    })
+}
+
+/// Run the loop and record one step per event. Returns whether the turn ended
+/// normally (`AgentEnd`), for the trace outcome.
+async fn run_turn(agent: &mut Agent, text: &str, trace: &mut Vec<TraceStep>) -> bool {
     let mut tool_start: Option<Instant> = None;
+    let mut ended = false;
     let mut rx = agent.prompt(text).await;
     while let Some(event) = rx.recv().await {
         match event {
-            AgentEvent::ToolExecutionStart { tool_name, .. } => {
+            AgentEvent::ToolExecutionStart {
+                tool_name, args, ..
+            } => {
                 tool_start = Some(Instant::now());
                 trace.push(TraceStep {
                     kind: "tool_call".into(),
                     name: Some(tool_name),
                     latency_ms: 0,
+                    args: Some(args),
+                    ok: None,
                     detail: None,
                 });
             }
-            AgentEvent::ToolExecutionEnd { tool_name, .. } => {
+            AgentEvent::ToolExecutionEnd {
+                tool_name,
+                is_error,
+                ..
+            } => {
                 let latency_ms = tool_start.take().map_or(0, |t| t.elapsed().as_millis());
                 trace.push(TraceStep {
                     kind: "tool_result".into(),
                     name: Some(tool_name),
                     latency_ms,
+                    args: None,
+                    ok: Some(!is_error),
                     detail: None,
                 });
             }
@@ -419,16 +528,20 @@ async fn run_turn(agent: &mut Agent, text: &str, trace: &mut Vec<TraceStep>) {
                 ..
             } => {}
             AgentEvent::AgentEnd { .. } => {
+                ended = true;
                 trace.push(TraceStep {
                     kind: "model".into(),
                     name: None,
                     latency_ms: 0,
+                    args: None,
+                    ok: None,
                     detail: None,
                 });
             }
             _ => {}
         }
     }
+    ended
 }
 
 /// Scaffold provider for tests and the FFI probe: one `speak` call, then done.
@@ -471,6 +584,8 @@ pub mod authority;
 pub mod decide;
 
 pub mod ffi;
+
+pub mod trace;
 
 pub mod turn_input;
 
