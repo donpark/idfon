@@ -209,6 +209,9 @@ pub struct Director {
     /// Monotonic turn counter; a delegating tool keys its idempotency on it,
     /// and the trace records it as the step index.
     turn: Arc<AtomicU64>,
+    /// The caller's exact words for the current turn, forwarded verbatim by
+    /// `voice_forward`.
+    turn_text: Arc<Mutex<String>>,
     prompt: PromptRef,
     tools: ToolsRef,
     trace_info: TraceInfo,
@@ -258,11 +261,13 @@ impl Director {
         } = options;
         let outbox = Outbox::default();
         let turn = Arc::new(AtomicU64::new(0));
+        let turn_text = Arc::new(Mutex::new(String::new()));
         let mut tools: Vec<Box<dyn AgentTool>> = vec![Box::new(SpeakTool::new(outbox.clone()))];
         if let Some(wrapped) = wrapped {
             tools.push(Box::new(ForwardTool::new(
                 wrapped,
                 Arc::clone(&turn),
+                Arc::clone(&turn_text),
                 outbox.clone(),
             )));
         }
@@ -312,6 +317,7 @@ impl Director {
             prewarm,
             authority,
             turn,
+            turn_text,
             prompt,
             tools: tools_ref,
             trace_info,
@@ -439,6 +445,9 @@ impl Director {
     fn run(&mut self, prompt: &str, input: TraceInput) -> TurnResult {
         let started = Instant::now();
         let step = self.turn.fetch_add(1, Ordering::SeqCst) as u32;
+        if let Ok(mut current) = self.turn_text.lock() {
+            *current = input.text.clone();
+        }
         let mut steps: Vec<TraceStep> = Vec::new();
         let ended = self
             .rt

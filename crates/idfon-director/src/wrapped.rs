@@ -14,7 +14,7 @@ use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -105,14 +105,23 @@ impl WrappedAgent for CallbackWrapped {
 pub struct ForwardTool {
     agent: Arc<dyn WrappedAgent>,
     turn: Arc<AtomicU64>,
+    /// The caller's exact words for the current turn. Forwarded verbatim, so
+    /// the on-device model cannot paraphrase the question away.
+    turn_text: Arc<Mutex<String>>,
     outbox: Outbox,
 }
 
 impl ForwardTool {
-    pub fn new(agent: Arc<dyn WrappedAgent>, turn: Arc<AtomicU64>, outbox: Outbox) -> Self {
+    pub fn new(
+        agent: Arc<dyn WrappedAgent>,
+        turn: Arc<AtomicU64>,
+        turn_text: Arc<Mutex<String>>,
+        outbox: Outbox,
+    ) -> Self {
         Self {
             agent,
             turn,
+            turn_text,
             outbox,
         }
     }
@@ -123,15 +132,15 @@ impl ForwardTool {
         ToolDefinition {
             name: "voice_forward".into(),
             description:
-                "Delegate a request to the wrapped agent and speak its reply. Use this for \
-                 anything that needs the wrapped agent's knowledge or tools."
+                "Delegate the caller's turn to the wrapped agent and speak its reply. Use this \
+                 for anything that needs the wrapped agent's knowledge or tools. The caller's \
+                 exact words are forwarded; the `text` argument is only a fallback."
                     .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "text": { "type": "string", "description": "What to ask the wrapped agent." }
-                },
-                "required": ["text"]
+                    "text": { "type": "string", "description": "Fallback only: the caller's exact words are forwarded when known." }
+                }
             }),
         }
     }
@@ -140,9 +149,8 @@ impl ForwardTool {
         json!({
             "type": "object",
             "properties": {
-                "text": { "type": "string", "description": "What to ask the wrapped agent." }
-            },
-            "required": ["text"]
+                "text": { "type": "string", "description": "Fallback only: the caller's exact words are forwarded when known." }
+            }
         })
     }
 }
@@ -156,22 +164,34 @@ impl AgentTool for ForwardTool {
         "Forward"
     }
     fn description(&self) -> &str {
-        "Delegate a request to the wrapped agent and speak its reply."
+        "Delegate the caller's turn to the wrapped agent and speak its reply."
     }
     fn parameters_schema(&self) -> Value {
         Self::parameters()
     }
     async fn execute(&self, params: Value, _ctx: ToolContext) -> Result<ToolResult, ToolError> {
-        let text = params
+        // Prefer the caller's exact words for this turn; the model's argument is
+        // only a fallback. This keeps a passive voice agent from paraphrasing
+        // the question into something the wrapped agent cannot answer.
+        let caller = self
+            .turn_text
+            .lock()
+            .map(|text| text.trim().to_string())
+            .unwrap_or_default();
+        let model_text = params
             .get("text")
             .and_then(Value::as_str)
             .unwrap_or("")
-            .trim();
+            .trim()
+            .to_string();
+        let text = if caller.is_empty() { model_text } else { caller };
         if text.is_empty() {
-            return Err(ToolError::InvalidArgs("voice_forward needs text".into()));
+            return Err(ToolError::InvalidArgs(
+                "voice_forward has nothing to forward".into(),
+            ));
         }
-        let id = delegation_id(self.turn.load(Ordering::SeqCst), text);
-        match self.agent.forward(text, &id).await {
+        let id = delegation_id(self.turn.load(Ordering::SeqCst), &text);
+        match self.agent.forward(&text, &id).await {
             Ok(reply) => {
                 self.outbox.push(speak_envelope(&reply, "normal"));
                 Ok(ToolResult {
