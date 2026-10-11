@@ -27,12 +27,14 @@ fn forward(text: &str) -> MockResponse {
 #[derive(Default)]
 struct MockWrapped {
     seen: Mutex<Vec<String>>,
+    texts: Mutex<Vec<String>>,
     work: AtomicUsize,
 }
 
 #[async_trait]
 impl WrappedAgent for MockWrapped {
     async fn forward(&self, text: &str, delegation_id: &str) -> Result<String, String> {
+        self.texts.lock().unwrap().push(text.to_string());
         let mut seen = self.seen.lock().unwrap();
         if !seen.iter().any(|id| id == delegation_id) {
             seen.push(delegation_id.to_string());
@@ -40,6 +42,31 @@ impl WrappedAgent for MockWrapped {
         }
         Ok(format!("reply to {text}"))
     }
+}
+
+/// The caller's exact words are forwarded, not the model's paraphrase.
+#[test]
+fn voice_forward_sends_the_callers_words_verbatim() {
+    let wrapped = Arc::new(MockWrapped::default());
+    let provider = MockProvider::new(vec![
+        call(
+            "voice_forward",
+            json!({ "text": "the caller greeted you" }),
+        ),
+        MockResponse::Text("done".into()),
+    ]);
+    let mut director =
+        Director::with_wrapped_agent(provider, "test", wrapped.clone(), None, None, None);
+    let turn = director.turn("what is the weather in Tokyo?");
+
+    assert_eq!(
+        wrapped.texts.lock().unwrap().last().unwrap(),
+        "what is the weather in Tokyo?"
+    );
+    assert!(turn
+        .envelopes
+        .iter()
+        .any(|e| e.contains("reply to what is the weather in Tokyo?")));
 }
 
 /// The director delegates a turn and speaks the wrapped agent's reply.
@@ -53,7 +80,8 @@ fn a_wrapped_turn_is_delegated_and_spoken() {
     assert!(
         turn.envelopes
             .iter()
-            .any(|e| { e.starts_with("IDFON-SPEAK/1") && e.contains("reply to status") }),
+            .any(|e| { e.starts_with("IDFON-SPEAK/1")
+                && e.contains("reply to what is the status") }),
         "the reply must be spoken: {:?}",
         turn.envelopes
     );
