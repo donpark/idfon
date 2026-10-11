@@ -316,9 +316,11 @@ data, and export run traces for the optimizer.
 - **Tool-call latency.** A warm tool round trip is ~1.3 s. Decide which director
   actions can wait that long, and check `fm-rs` `ToolCallingMode` and prompt size
   for a cheaper path.
-- **Wrapped agent as a subagent.** `yoagent`'s `SubAgentTool` runs a local child
-  loop; the wrapped agent is a remote idfon peer. Confirm that a child loop can be
-  replaced by a remote call over the channel, or model it as a normal tool.
+- **Wrapped agent as a subagent.** Decided (#38): the wrapped agent is a remote
+  idfon peer, so it is a **normal tool** (`voice_forward`) over a `WrappedAgent`
+  seam, not `yoagent::SubAgentTool` (which runs a local child loop). The tool
+  speaks the reply; the delegation key makes a lost reply retry-safe. See
+  `docs/voice-agent-loop-contract.md` §3.
 - **Decision tool granularity.** One `decide` tool, or one tool per decision. The
   batching rule in `docs/voice-decisions.md` says decisions that share a moment
   batch into one call.

@@ -11,6 +11,7 @@
 //! Apple Foundation Models (`fm-rs`, #34); remotely a hosted provider. The
 //! scaffold in [`Director::mock`] is for tests and the FFI probe only.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -25,6 +26,7 @@ use yoagent::types::{AgentTool, Content, ToolContext, ToolError, ToolResult};
 use yoagent::{AgentEvent, StreamDelta};
 
 use crate::authority::Authority;
+use crate::wrapped::{ForwardTool, WrappedAgent};
 
 /// A session outbox of `IDFON-*/1` envelopes. Tools push; the app drains.
 ///
@@ -41,6 +43,20 @@ impl Outbox {
     pub fn drain(&self) -> Vec<String> {
         std::mem::take(&mut *self.0.lock().unwrap())
     }
+}
+
+/// The `IDFON-SPEAK/1` envelope for `text`. Shared by `speak` and
+/// `voice_forward`.
+pub(crate) fn speak_envelope(text: &str, priority: &str) -> String {
+    let body = json!({
+        "text": text,
+        "voice": null,
+        "language": null,
+        "rate": null,
+        "priority": priority,
+        "correlation_id": null
+    });
+    format!("IDFON-SPEAK/1\n{body}")
 }
 
 /// Built-in `speak` tool: emits `IDFON-SPEAK/1`.
@@ -102,15 +118,7 @@ impl AgentTool for SpeakTool {
             .get("priority")
             .and_then(Value::as_str)
             .unwrap_or("normal");
-        let body = json!({
-            "text": text,
-            "voice": null,
-            "language": null,
-            "rate": null,
-            "priority": priority,
-            "correlation_id": null
-        });
-        self.outbox.push(format!("IDFON-SPEAK/1\n{body}"));
+        self.outbox.push(speak_envelope(text, priority));
         Ok(ToolResult {
             content: vec![Content::Text {
                 text: "spoken".into(),
@@ -176,12 +184,14 @@ pub struct Director {
     outbox: Outbox,
     prewarm: Option<Box<dyn Fn() + Send + Sync>>,
     authority: Option<Authority>,
+    /// Monotonic turn counter; a delegating tool keys its idempotency on it.
+    turn: Arc<AtomicU64>,
 }
 
 impl Director {
     /// Build a director on a provider. The provider is the tier seam.
     pub fn with_provider(provider: impl StreamProvider + 'static, instructions: &str) -> Self {
-        Self::build(provider, instructions, None, None, None)
+        Self::build(provider, instructions, None, None, None, None)
     }
 
     /// Build a director with an optional prewarm hook (load + warm the session).
@@ -190,7 +200,7 @@ impl Director {
         instructions: &str,
         prewarm: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Self {
-        Self::build(provider, instructions, None, None, prewarm)
+        Self::build(provider, instructions, None, None, None, prewarm)
     }
 
     /// Build a director with decision models: a `decide` tool, and optional tool
@@ -201,7 +211,7 @@ impl Director {
         decision: DecisionOptions,
         prewarm: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Self {
-        Self::build(provider, instructions, Some(decision), None, prewarm)
+        Self::build(provider, instructions, Some(decision), None, None, prewarm)
     }
 
     /// Build a director whose every tool call is checked against a capability
@@ -215,7 +225,35 @@ impl Director {
         decision: Option<DecisionOptions>,
         prewarm: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Self {
-        Self::build(provider, instructions, decision, Some(authority), prewarm)
+        Self::build(
+            provider,
+            instructions,
+            decision,
+            Some(authority),
+            None,
+            prewarm,
+        )
+    }
+
+    /// Build a director that can delegate to a wrapped remote agent
+    /// (`voice_forward`, #38). The wrapped agent is a normal tool over the
+    /// [`WrappedAgent`] seam, not a local child loop.
+    pub fn with_wrapped_agent(
+        provider: impl StreamProvider + 'static,
+        instructions: &str,
+        wrapped: Arc<dyn WrappedAgent>,
+        decision: Option<DecisionOptions>,
+        authority: Option<Authority>,
+        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        Self::build(
+            provider,
+            instructions,
+            decision,
+            authority,
+            Some(wrapped),
+            prewarm,
+        )
     }
 
     fn build(
@@ -223,10 +261,19 @@ impl Director {
         instructions: &str,
         decision: Option<DecisionOptions>,
         authority: Option<Authority>,
+        wrapped: Option<Arc<dyn WrappedAgent>>,
         prewarm: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Self {
         let outbox = Outbox::default();
+        let turn = Arc::new(AtomicU64::new(0));
         let mut tools: Vec<Box<dyn AgentTool>> = vec![Box::new(SpeakTool::new(outbox.clone()))];
+        if let Some(wrapped) = wrapped {
+            tools.push(Box::new(ForwardTool::new(
+                wrapped,
+                Arc::clone(&turn),
+                outbox.clone(),
+            )));
+        }
         let mut agent =
             Agent::from_provider(provider, ModelConfig::mock()).with_system_prompt(instructions);
         if let Some(options) = decision {
@@ -255,6 +302,7 @@ impl Director {
             outbox,
             prewarm,
             authority,
+            turn,
         }
     }
 
@@ -272,6 +320,7 @@ impl Director {
     pub fn turn(&mut self, text: &str) -> TurnResult {
         let started = Instant::now();
         let mut trace: Vec<TraceStep> = Vec::new();
+        self.turn.fetch_add(1, Ordering::SeqCst);
         let rt = &self.rt;
         rt.block_on(run_turn(&mut self.agent, text, &mut trace));
         if let Some(authority) = &self.authority {
@@ -372,3 +421,5 @@ pub mod authority;
 pub mod decide;
 
 pub mod ffi;
+
+pub mod wrapped;
