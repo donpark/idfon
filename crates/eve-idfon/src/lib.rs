@@ -1523,7 +1523,7 @@ async fn handle_message(
             ),
             source: None,
             trace: message.trace.clone(),
-            context: message.context.clone(),
+            context: holder_turn_context(message.context.as_deref(), &live_params),
         })
         .await
         .map_err(|_| TransportError::Failed("IPC client disconnected".into()))?;
@@ -1531,6 +1531,29 @@ async fn handle_message(
         message_id: message.message_id,
         status: AckStatus::Accepted,
     })
+}
+
+/// The per-turn context a holder sends to the agent: the voice agent's own
+/// prompt additions (the live config's `instructions`; the passive voice
+/// persona), then anything the caller pushed. Injected into the agent's turn
+/// as freeform text.
+fn holder_turn_context(
+    caller_context: Option<&str>,
+    live_params: &serde_json::Value,
+) -> Option<String> {
+    let caller = caller_context.filter(|value| !value.is_empty());
+    let instructions = live_params
+        .get("instructions")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    match (instructions, caller) {
+        (None, None) => None,
+        (Some(instructions), None) => Some(format!("Voice agent instructions: {instructions}")),
+        (None, Some(caller)) => Some(caller.to_string()),
+        (Some(instructions), Some(caller)) => Some(format!(
+            "Voice agent instructions: {instructions}\nCaller-provided context: {caller}"
+        )),
+    }
 }
 
 async fn admit_message(rate_limits: &RateLimits, peer_id: &str) -> bool {
@@ -2513,6 +2536,28 @@ mod tests {
         let client = voice_info(&serde_json::Value::Null);
         assert_eq!(client["mode"], "client-cascade");
         assert!(client.get("engine").is_none());
+    }
+
+    #[test]
+    fn holder_turn_context_folds_the_voice_instructions() {
+        let live = serde_json::json!({ "instructions": "Be brief and spoken." });
+        assert_eq!(
+            holder_turn_context(None, &live).as_deref(),
+            Some("Voice agent instructions: Be brief and spoken.")
+        );
+        assert_eq!(
+            holder_turn_context(Some("Client STT=Apple"), &live).as_deref(),
+            Some(
+                "Voice agent instructions: Be brief and spoken.\nCaller-provided context: Client STT=Apple"
+            )
+        );
+        let none = serde_json::Value::Null;
+        assert_eq!(holder_turn_context(Some("x"), &none).as_deref(), Some("x"));
+        assert_eq!(holder_turn_context(None, &none), None);
+        assert_eq!(
+            holder_turn_context(Some(""), &serde_json::json!({ "instructions": "  " })),
+            None
+        );
     }
 
     #[test]
