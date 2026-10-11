@@ -1,25 +1,35 @@
 #!/bin/sh
-# Headless voice-agent prompt lab.
+# Headless voice-agent prompt lab with scoring.
 #
 # Brings up the real stack in a throwaway instance — a temp daemon, the holder
 # (with a chosen live config), the eve agent, and the bridge — then sends
-# scripted caller turns and prints the replies. No iPhone, no call, no audio:
-# this exercises the holder -> agent path and the `instructions`/prompt
-# surfaces, so prompt changes iterate in seconds.
+# scripted caller turns and prints the replies. No iPhone, no call, no audio.
+# This exercises the holder -> agent path and the prompt surfaces
+# (`live.json`'s `instructions`, the agent's `instructions.md`), so prompt
+# changes iterate in seconds.
+#
+# Scoring: a turn can carry an expectation. A turn passes when the reply
+# contains `expect` and contains none of `forbid`. A scored config prints
+# `passed/scored` and a mean; several configs print a ranked table. Unscored
+# turns are printed but do not affect the mean.
 #
 #   scripts/voice-prompt-lab.sh --turn "what is the capital of France?"
-#   scripts/voice-prompt-lab.sh --config agents/llm/live.json --turns turns.txt
-#   scripts/voice-prompt-lab.sh --config a.json --config b.json --turn "..."
+#   scripts/voice-prompt-lab.sh --turns turns.jsonl --score
+#   scripts/voice-prompt-lab.sh --variants prompts/voices --turns turns.jsonl
 #
-#   --turn TEXT        one caller turn (repeatable)
-#   --turns FILE       one caller turn per line ('#' comments ignored)
+#   --turn TEXT        one plain (unscored) caller turn (repeatable)
+#   --turns FILE       turns, one per line: plain text, or a JSON object
+#                      {"text": "...", "expect": "...", "forbid": ["..."]}
+#                      ('#' comments ignored)
 #   --config FILE      live config to serve (repeatable; default
-#                      agents/llm/live.json); one full run per config
+#                      agents/<agent>/live.json)
+#   --variants DIR     run every *.json in DIR as a config and rank them
 #   --agent NAME       agent under agents/ (default llm)
 #   --model ID         model id (default $EVE_IDFON_MODEL)
 #   --context TEXT     per-turn caller context (default the app's client-cascade line)
 #   --timeout SECS     per-reply timeout (default 120)
-#   --keep             leave the stack running and print the instance home
+#   --score            print the per-config score line and the ranked table
+#   --keep             leave the last stack running and print its home
 #
 # Requires AI_GATEWAY_API_KEY in the environment (the agent's model gateway).
 set -eu
@@ -29,13 +39,15 @@ cd "$root"
 
 agent=llm
 configs=""
+variants=""
 turns=""
 model="${EVE_IDFON_MODEL:-}"
 context="Client cascade (on-device speech). Recognition: Apple Built-in; Generation: Apple Built-in. The holder only produces text."
 timeout_s=120
 keep=0
+score=0
 
-usage() { sed -n '2,26p' "$0"; }
+usage() { sed -n '2,36p' "$0"; }
 
 add_turn() {
   turns="$turns$1
@@ -51,10 +63,12 @@ while [ $# -gt 0 ]; do
       done < "$2"; shift 2 ;;
     --config) configs="$configs$2
 "; shift 2 ;;
+    --variants) variants="$2"; shift 2 ;;
     --agent) agent="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
     --context) context="$2"; shift 2 ;;
     --timeout) timeout_s="$2"; shift 2 ;;
+    --score) score=1; shift ;;
     --keep) keep=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -66,31 +80,39 @@ if [ -z "$turns" ]; then
   exit 2
 fi
 
-# Default config: the agent's own live.json when it exists.
-configs_trimmed=$(printf '%s' "$configs" | sed '/^$/d')
-if [ -z "$configs_trimmed" ]; then
-  configs_trimmed="agents/$agent/live.json"
+if [ -n "$variants" ]; then
+  [ -d "$variants" ] || { echo "no such variants dir: $variants" >&2; exit 2; }
+  for f in "$variants"/*.json; do
+    [ -e "$f" ] || continue
+    configs="$configs$f
+"
+  done
 fi
 
 cli="$root/target/release/idfon"
 serve="$root/scripts/live-voice-serve.sh"
+results="$(mktemp /tmp/idfon-lab-scores.XXXXXX)"
 
+work=""
+serve_pid=""
+daemon_pid=""
+cleanup() {
+  [ -n "$serve_pid" ] && kill "$serve_pid" 2>/dev/null || true
+  [ -n "$daemon_pid" ] && kill "$daemon_pid" 2>/dev/null || true
+  wait 2>/dev/null || true
+  [ "$keep" = 1 ] || [ -z "$work" ] || rm -rf "$work"
+  serve_pid=""; daemon_pid=""
+}
+trap cleanup EXIT INT TERM
+
+# Run one config and append "mean<TAB>passed<TAB>scored<TAB>config" to $results.
+# Unscored turns record an empty mean.
 run_config() {
   config=$1
   work=$(mktemp -d /tmp/idfon-voice-lab.XXXXXX)
   socket="$work/idfond.sock"
   home="$work/home"
   mkdir -p "$work/daemon" "$home"
-
-  serve_pid=""
-  daemon_pid=""
-  cleanup() {
-    [ -n "$serve_pid" ] && kill "$serve_pid" 2>/dev/null || true
-    [ -n "$daemon_pid" ] && kill "$daemon_pid" 2>/dev/null || true
-    wait 2>/dev/null || true
-    [ "$keep" = 1 ] || rm -rf "$work"
-  }
-  trap cleanup EXIT INT TERM
 
   "$root/target/release/idfond" --socket "$socket" --data-dir "$work/daemon" \
     >"$work/daemon.log" 2>&1 &
@@ -106,15 +128,19 @@ run_config() {
     "$serve" >"$work/serve.log" 2>&1 &
   serve_pid=$!
 
+  ready=0
   for _ in $(seq 1 600); do
-    [ -s "$home/holder.ticket" ] && [ -s "$home/capability-ticket.json" ] && break
+    if [ -s "$home/holder.ticket" ] && [ -s "$home/capability-ticket.json" ]; then
+      ready=1; break
+    fi
     if ! kill -0 "$serve_pid" 2>/dev/null; then
       echo "serve failed; log:" >&2; tail -20 "$work/serve.log" >&2; exit 1
     fi
     sleep 0.1
   done
+  [ "$ready" = 1 ] || { echo "serve did not become ready; log:" >&2; tail -20 "$work/serve.log" >&2; exit 1; }
 
-  pid=$(head -1 "$home/holder.ticket" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+  pid=$(head -1 "$home/holder.ticket" | jq -r .id)
   addr=$(head -1 "$home/holder.ticket")
   ticket=$(cat "$home/capability-ticket.json")
   "$cli" --socket "$socket" peer add "$pid" --name "lab" --endpoint-id "$pid" \
@@ -124,51 +150,99 @@ run_config() {
 
   echo "=== config: $config (agent $agent, model ${model:-default}) ==="
   after=""
-  # A here-doc (not a pipe) so `after` survives across turns.
-  while IFS= read -r text; do
+  cfg_scored=0
+  cfg_passed=0
+  # A here-doc (not a pipe) so `after` and the counters survive across turns.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      \{*)
+        text=$(printf '%s' "$line" | jq -r '.text // empty')
+        expect=$(printf '%s' "$line" | jq -r '.expect // empty')
+        forbid=$(printf '%s' "$line" | jq -r '(.forbid // [])[]' 2>/dev/null || true)
+        ;;
+      *) text="$line"; expect=""; forbid="" ;;
+    esac
     [ -n "$text" ] || continue
+
     echo "caller> $text"
     key="lab-$(date +%s)-${RANDOM}"
-    if ! "$cli" --socket "$socket" send "$pid" --text "$text" --context "$context" \
+    reply="<send failed>"
+    if "$cli" --socket "$socket" send "$pid" --text "$text" --context "$context" \
         --idempotency-key "$key" --capability-ticket "$ticket" --retries 2 >/dev/null 2>&1; then
-      echo "agent> <send failed>" >&2
-      continue
+      if [ -n "$after" ]; then
+        response=$("$cli" --socket "$socket" wait --type message.received --after "$after" \
+          --timeout-ms $((timeout_s * 1000)) --json 2>/dev/null || true)
+      else
+        response=$("$cli" --socket "$socket" wait --type message.received \
+          --timeout-ms $((timeout_s * 1000)) --json 2>/dev/null || true)
+      fi
+      reply=$(printf '%s' "$response" | jq -r \
+        '(.result.events[0] // .result.event // {}).data.text // "<no reply>"' 2>/dev/null || true)
+      after=$(printf '%s' "$response" | jq -r \
+        '(.result.events[0] // .result.event // {}).cursor // empty' 2>/dev/null || true)
+      [ -n "$reply" ] || reply="<no reply>"
     fi
-    if [ -n "$after" ]; then
-      response=$("$cli" --socket "$socket" wait --type message.received --after "$after" \
-        --timeout-ms $((timeout_s * 1000)) --json 2>/dev/null || true)
+
+    # Score only when the turn carries an expectation.
+    if [ -n "$expect" ] || [ -n "$forbid" ]; then
+      cfg_scored=$((cfg_scored + 1))
+      turn_score=1
+      if [ -n "$expect" ] && ! printf '%s' "$reply" | grep -qiF -- "$expect"; then
+        turn_score=0
+      fi
+      if [ -n "$forbid" ]; then
+        # A hit exits 7; a clean run must end status 0, so use `if`. A
+        # trailing `grep && exit` would leak grep's non-match status (1).
+        printf '%s' "$forbid" | while IFS= read -r bad; do
+          [ -n "$bad" ] || continue
+          if printf '%s' "$reply" | grep -qiF -- "$bad"; then exit 7; fi
+        done && : || turn_score=0
+      fi
+      cfg_passed=$((cfg_passed + turn_score))
+      echo "agent> $reply  [score=$turn_score]"
     else
-      response=$("$cli" --socket "$socket" wait --type message.received \
-        --timeout-ms $((timeout_s * 1000)) --json 2>/dev/null || true)
+      echo "agent> $reply"
     fi
-    printf '%s' "$response" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-r = d.get('result') or {}
-evs = r.get('events') or ([r.get('event')] if r.get('event') else [])
-e = evs[0] if evs else {}
-print('agent> ' + str((e.get('data') or {}).get('text') or '<no reply>'))
-print('after=' + str(e.get('cursor') or ''))
-" > "$work/reply.txt" 2>/dev/null || echo "agent> <no reply>" > "$work/reply.txt"
-    grep -v '^after=' "$work/reply.txt"
-    after=$(sed -n 's/^after=//p' "$work/reply.txt")
   done <<TURNS
 $turns
 TURNS
 
-  if [ "$keep" = 1 ]; then
-    echo "instance home: $home (socket $socket)"
-    trap - EXIT INT TERM
-    return 0
+  if [ "$cfg_scored" -gt 0 ]; then
+    mean=$(awk "BEGIN{printf \"%.3f\", $cfg_passed/$cfg_scored}")
+    printf '%s\t%s\t%s\t%s\n' "$mean" "$cfg_passed" "$cfg_scored" "$config" >>"$results"
+    [ "$score" = 1 ] && echo "score: $cfg_passed/$cfg_scored = $mean"
+  else
+    printf '\t\t\t%s\n' "$config" >>"$results"
   fi
 
   trap - EXIT INT TERM
   kill "$serve_pid" "$daemon_pid" 2>/dev/null || true
+  serve_pid=""; daemon_pid=""
   wait 2>/dev/null || true
-  rm -rf "$work"
+  [ "$keep" = 1 ] || rm -rf "$work"
+  work=""
+  trap cleanup EXIT INT TERM
 }
 
-printf '%s\n' "$configs_trimmed" | while IFS= read -r config; do
+printf '%s' "$configs" | sed '/^$/d' >"$results.configs"
+config_count=$(wc -l <"$results.configs" | tr -d ' ')
+if [ "$config_count" = 0 ]; then
+  echo "agents/$agent/live.json" >"$results.configs"
+  config_count=1
+fi
+while IFS= read -r config; do
   [ -n "$config" ] || continue
   run_config "$config"
-done
+done <"$results.configs"
+
+if [ "$config_count" -gt 1 ]; then
+  echo
+  echo "=== ranked ==="
+  sort -t"$(printf '\t')" -k1,1r "$results" | awk -F'\t' '
+    BEGIN { printf "%-7s %-8s %-10s %s\n", "rank", "mean", "passed", "config" }
+    { printf "%-7d %-8s %-10s %s\n", NR, ($1 == "" ? "-" : $1), $2 "/" $3, $4 }'
+fi
+
+rm -f "$results" "$results.configs"
+trap cleanup EXIT INT TERM
