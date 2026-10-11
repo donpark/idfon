@@ -24,6 +24,8 @@ use yoagent::provider::{ModelConfig, StreamProvider, ToolDefinition};
 use yoagent::types::{AgentTool, Content, ToolContext, ToolError, ToolResult};
 use yoagent::{AgentEvent, StreamDelta};
 
+use crate::authority::Authority;
+
 /// A session outbox of `IDFON-*/1` envelopes. Tools push; the app drains.
 ///
 /// This mirrors the Eve extension outbox: the model emits envelopes through
@@ -57,8 +59,7 @@ impl SpeakTool {
         ToolDefinition {
             name: "speak".into(),
             description:
-                "Speak a short response aloud. Long text and visuals belong in an artifact."
-                    .into(),
+                "Speak a short response aloud. Long text and visuals belong in an artifact.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -125,6 +126,9 @@ pub struct TraceStep {
     pub kind: String,
     pub name: Option<String>,
     pub latency_ms: u128,
+    /// Why a step was refused, or other step detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// The result of one turn: envelopes emitted, spoken text seen, trace steps.
@@ -171,12 +175,13 @@ pub struct Director {
     agent: Agent,
     outbox: Outbox,
     prewarm: Option<Box<dyn Fn() + Send + Sync>>,
+    authority: Option<Authority>,
 }
 
 impl Director {
     /// Build a director on a provider. The provider is the tier seam.
     pub fn with_provider(provider: impl StreamProvider + 'static, instructions: &str) -> Self {
-        Self::build(provider, instructions, None, None)
+        Self::build(provider, instructions, None, None, None)
     }
 
     /// Build a director with an optional prewarm hook (load + warm the session).
@@ -185,7 +190,7 @@ impl Director {
         instructions: &str,
         prewarm: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Self {
-        Self::build(provider, instructions, None, prewarm)
+        Self::build(provider, instructions, None, None, prewarm)
     }
 
     /// Build a director with decision models: a `decide` tool, and optional tool
@@ -196,13 +201,28 @@ impl Director {
         decision: DecisionOptions,
         prewarm: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Self {
-        Self::build(provider, instructions, Some(decision), prewarm)
+        Self::build(provider, instructions, Some(decision), None, prewarm)
+    }
+
+    /// Build a director whose every tool call is checked against a capability
+    /// grant (fail-closed), an optional budget, and an optional advisory
+    /// decider that fails open (`docs/voice-decisions.md`). An optional
+    /// [`DecisionOptions`] adds the `decide` tool and its gate/guard.
+    pub fn with_authority(
+        provider: impl StreamProvider + 'static,
+        instructions: &str,
+        authority: Authority,
+        decision: Option<DecisionOptions>,
+        prewarm: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        Self::build(provider, instructions, decision, Some(authority), prewarm)
     }
 
     fn build(
         provider: impl StreamProvider + 'static,
         instructions: &str,
         decision: Option<DecisionOptions>,
+        authority: Option<Authority>,
         prewarm: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Self {
         let outbox = Outbox::default();
@@ -220,6 +240,10 @@ impl Director {
                 agent = agent.with_input_guard(guard);
             }
         }
+        // Tree extension: child loops inherit the grant and cannot remove it.
+        if let Some(authority) = &authority {
+            agent = agent.with_tree_extension(authority.clone());
+        }
         agent = agent.with_tools(tools);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -230,6 +254,7 @@ impl Director {
             agent,
             outbox,
             prewarm,
+            authority,
         }
     }
 
@@ -249,6 +274,16 @@ impl Director {
         let mut trace: Vec<TraceStep> = Vec::new();
         let rt = &self.rt;
         rt.block_on(run_turn(&mut self.agent, text, &mut trace));
+        if let Some(authority) = &self.authority {
+            for refusal in authority.drain_refusals() {
+                trace.push(TraceStep {
+                    kind: "denied".into(),
+                    name: Some(refusal.tool),
+                    latency_ms: 0,
+                    detail: Some(refusal.reason),
+                });
+            }
+        }
         TurnResult {
             envelopes: self.outbox.drain(),
             trace,
@@ -268,6 +303,7 @@ async fn run_turn(agent: &mut Agent, text: &str, trace: &mut Vec<TraceStep>) {
                     kind: "tool_call".into(),
                     name: Some(tool_name),
                     latency_ms: 0,
+                    detail: None,
                 });
             }
             AgentEvent::ToolExecutionEnd { tool_name, .. } => {
@@ -276,6 +312,7 @@ async fn run_turn(agent: &mut Agent, text: &str, trace: &mut Vec<TraceStep>) {
                     kind: "tool_result".into(),
                     name: Some(tool_name),
                     latency_ms,
+                    detail: None,
                 });
             }
             AgentEvent::MessageUpdate {
@@ -287,6 +324,7 @@ async fn run_turn(agent: &mut Agent, text: &str, trace: &mut Vec<TraceStep>) {
                     kind: "model".into(),
                     name: None,
                     latency_ms: 0,
+                    detail: None,
                 });
             }
             _ => {}
@@ -328,6 +366,8 @@ impl Director {
 
 #[cfg(feature = "afm")]
 pub mod afm;
+
+pub mod authority;
 
 pub mod decide;
 

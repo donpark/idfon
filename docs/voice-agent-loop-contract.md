@@ -170,6 +170,26 @@ path (loop-side, no model round trip). A model-invoked `decide` on AFM is not
 reliable yet: the AFM tool-argument emulation fills a per-tool schema only when
 there is exactly one tool (§5).
 
+### Authority (implemented, #37)
+
+The director proposes; code and capability grants authorize
+(`docs/voice-decisions.md`). `Director::with_authority` installs
+`crates/idfon-director/src/authority.rs` as a **tree** extension, so every tool
+call in the session — and in any child loop — is checked before it runs:
+
+- A tool with no grant is denied. The check is code, so it **fails closed**.
+- A budget-capped session denies once its call budget is spent. `delegate`
+  clamps a child's budget to the parent's remaining, so a child cannot raise it.
+- An optional decider may propose a veto. A failing decider **fails open**: the
+  call is allowed and no call depends on a decider.
+
+A refusal does not stall the loop: it reaches the model as an error tool result,
+and the turn records a `denied` step (name + reason) in the trace.
+
+```json
+{ "kind": "denied", "name": "send", "detail": "no capability grant for `send`", "latency_ms": 0 }
+```
+
 ## 4. Trace contract
 
 One **JSON object per line**. A call writes one trace. A turn writes one trace
