@@ -53,6 +53,12 @@ final class Director {
     deinit {
         idfon_director_free(handle)
     }
+}
+
+// The handle is used from one background queue per turn (DirectorRuntime), one
+// turn at a time, so sharing it across the detached setup task is safe.
+extension Director: @unchecked Sendable {
+    // (nothing to add)
 
     private static func object(_ json: String) -> [String: Any]? {
         (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
@@ -106,7 +112,7 @@ final class DirectorRuntime {
     /// unavailable. Await it before the first turn so the model is warm.
     func startCall() async {
         guard !enabled, ProcessInfo.processInfo.arguments.contains("-directorcall") else { return }
-        let created = await Task.detached(priority: .userInitiated) {
+        let created: Director? = await Task.detached(priority: .userInitiated) { () -> Director? in
             guard let director = Director.createAFM(instructions: Self.instructions, config: [
                 "grant": ["speak", "decide"],
                 "trace": ["tier": "on-device", "provider": "afm", "model": "apple-foundation-models"],
