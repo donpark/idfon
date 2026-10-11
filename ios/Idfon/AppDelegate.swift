@@ -153,6 +153,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             let turns = args.count > i + 2 ? (Int(args[i + 2]) ?? 1) : 1
             VoiceAgentSession.shared.run(peerRef: ref, turns: turns)
         }
+        // On-device director probe (#41): one real AFM turn + the trace.
+        if let i = args.firstIndex(of: "-directortext"), args.count > i + 1 {
+            DirectorProbe.run(text: args[i + 1])
+        }
         if args.contains("-voices") {
             SpeechVoice.dump()
         }

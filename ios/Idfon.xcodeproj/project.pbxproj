@@ -276,6 +276,7 @@
 				MARKETING_VERSION = 0.8.0;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(SRCROOT)/Vendor/device/libiroh_c_ffi.a",
+					"$(SRCROOT)/Vendor/device/libidfon_director.a",
 					"-ObjC",
 					"-lc++",
 					"-framework",
@@ -317,6 +318,7 @@
 				MARKETING_VERSION = 0.8.0;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(SRCROOT)/Vendor/device/libiroh_c_ffi.a",
+					"$(SRCROOT)/Vendor/device/libidfon_director.a",
 					"-ObjC",
 					"-lc++",
 					"-framework",

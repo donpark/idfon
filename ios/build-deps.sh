@@ -19,3 +19,14 @@ RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-miphoneos-version-min=17.0" CARGO_PROFILE
 cp target/aarch64-apple-ios/release/libiroh_c_ffi.a "$ios_dir/Vendor/device/"
 
 echo "staged $ios_dir/Vendor/device/libiroh_c_ffi.a"
+
+# The voice-agent harness (docs/build.md). `--features afm` links Apple
+# Foundation Models via fm-rs; it is Apple-only. The app links the staticlib.
+echo "== idfon-director (afm) aarch64-apple-ios"
+cd "$root"
+SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path) IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-miphoneos-version-min=17.0" CARGO_PROFILE_RELEASE_LTO=off \
+  cargo build --release -p idfon-director --features afm --target aarch64-apple-ios
+cp target/aarch64-apple-ios/release/libidfon_director.a "$ios_dir/Vendor/device/"
+
+echo "staged $ios_dir/Vendor/device/libidfon_director.a"
