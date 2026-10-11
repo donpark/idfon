@@ -191,20 +191,24 @@ enum DirectorProbe {
             director.prewarm()
             Automation.mark("director: prewarm_ms=\(Self.ms(since: warmStart))")
 
-            let started = Date()
-            guard let result = director.turn(text) else {
-                Automation.mark("director: FAIL turn")
-                return
+            // Three turns on one warm session: the first is cold, the rest
+            // are the steady-state latency the call pays.
+            for index in 1...3 {
+                let started = Date()
+                guard let result = director.turn(text) else {
+                    Automation.mark("director: FAIL turn\(index)")
+                    return
+                }
+                Automation.mark("director: turn\(index)_ms=\(Self.ms(since: started))")
+                for envelope in Director.envelopes(result) {
+                    let oneLine = envelope.replacingOccurrences(of: "\n", with: " ")
+                    Automation.mark("director: envelope=\(oneLine)")
+                }
+                let record = Director.record(result)
+                let prompt = record["prompt"] as? [String: Any]
+                Automation.mark("director: status=\(record["outcome"] as? [String: Any] ?? [:])")
+                Automation.mark("director: prompt_version=\(prompt?["version"] as? String ?? "?")")
             }
-            Automation.mark("director: turn_ms=\(Self.ms(since: started))")
-            for envelope in Director.envelopes(result) {
-                let oneLine = envelope.replacingOccurrences(of: "\n", with: " ")
-                Automation.mark("director: envelope=\(oneLine)")
-            }
-            let record = Director.record(result)
-            let prompt = record["prompt"] as? [String: Any]
-            Automation.mark("director: status=\(record["outcome"] as? [String: Any] ?? [:])")
-            Automation.mark("director: prompt_version=\(prompt?["version"] as? String ?? "?")")
             Automation.mark("director: done")
         }
     }
