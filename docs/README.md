@@ -59,13 +59,16 @@ kept because it records decisions; **design** = not all implemented.
 
 | Doc | Covers |
 | --- | --- |
-| `idfon-artifacts.md` | artifact model, references, remote view |
+| `idfon-artifacts.md` | artifact model, references, remote view, voice/spoken projection, accessibility |
 | `idfon-artifacts-testing.md` | manual artifact/reference test runbook |
 | `idfon-eve.md` | idfon as an Eve ingress channel (implemented) |
 | `live-voice.md` | the voice agent built on the Eve channel; transport + front-end decision |
 | `voice-agent.md` | voice agents that speak/listen for other agents (wrapped / injected) |
 | `voice-multimodal.md` | the voice turn contract: text + `IDFON-*/1` envelopes + attachment; references, client-facing tools (`speak`/`point`/`show`) via the outbox, output split, full-duplex gap (design) |
 | `voice-side-channel.md` | shared voice service: requirements, STT/TTS candidates, plan (P0–P7 implemented; A1 client cascade integrated on iOS/macOS — iOS Kokoro/Parakeet seams, call cues, greet-on-connect, `· spoken` chat turns); the text-only `llm` agent and per-run model selection for agency contacts |
+| `voice-agent-prompting.md` | source notes on voice-agent prompt engineering: prompt structure, output rules, guardrails, tools, voice realism, testing; idfon use-case implications; frontier-lab voice prompting (research for a future skill) |
+| `voice-multichannel.md` | one result, many channels: modality vs channel, emotes (texturized non-verbal events), call-assist agents, hybrid fan-out, layered authorization, idfon primitives, open decisions (design) |
+| `voice-decisions.md` | decision points in the voice setup, fine-tuned decision models (on-device + remote), per-user training data, authority and guardrails (design) |
 | `agent-agency.md` | the `agency` go-between that introduces registered agents (A2A card relay, `IDFON-INVITE/1`; cards are target-signed, only the reply credential is agency-signed) |
 | `session-context.md` | session as the medium for a shared virtual context edited by user, voice agent, and target agents; no chat-as-context, no recall (design) |
 

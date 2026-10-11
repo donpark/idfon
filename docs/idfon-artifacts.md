@@ -90,6 +90,89 @@ rather than silently degraded.
   still receives the selector and the `quote`/`metadata` so it can ask rather
   than hallucinate.
 
+## Voice and artifacts
+
+The artifact model is visual-first: it assumes a detail screen and a pointer. A
+voice agent needs three things the visual model does not provide: a **spoken
+projection**, a way to **select and navigate by voice**, and a **no-screen
+fallback**. The two directions are complementary. Artifacts give voice something
+durable and structured to point at. Voice gives artifacts an operational surface
+that does not depend on a touchscreen.
+
+### Spoken projection
+
+An artifact needs a short, safe description a voice model can say without reading
+the content. Add a convention on `metadata`:
+
+- `metadata.spoken` — one to two sentences, speakable, set by the issuer
+  (`add_artifact` or the app). It is a summary, not a truncation.
+- `metadata.alt` — a text alternative for `Image`, `Data`, and `Html` artifacts.
+
+The model speaks `metadata.spoken`, or falls back to `title` and `kind`. It never
+reads the artifact body aloud. The app renders `metadata.alt` for assistive
+technology. The same fields make an artifact usable on a voice-only channel and
+usable to a blind user.
+
+### Selection and navigation by voice
+
+Selection is currently touch or mouse only. Voice needs a natural-language path
+to the same selectors:
+
+- Map a spoken phrase to a selector. "the second column" maps to a `Text` or
+  `Region` selector, "the part about revenue" resolves to a `Text` selection,
+  "skip to the error" maps to a `TimeRange` or `Text` selection.
+- Confirm the resolved selector before the agent acts on it. A wrong selection is
+  worse than a question.
+- A voice-only channel has no tap to define "this". The app should send a
+  **focus** signal (the artifact and revision the user is looking at), or the
+  agent must ask.
+
+### No-screen fallback
+
+A recipient on a voice-only channel (a phone call, SMS) has no card to open. The
+agent degrades the artifact by channel:
+
+- speak `metadata.spoken` and offer to read a selected part aloud;
+- send a rendered snapshot (image or PDF) to a channel that can show one;
+- hold the artifact for later, and say so.
+
+### Live artifacts
+
+A `Live` artifact changes over time. Voice needs a narration policy: the model
+announces a change only when it matters to the turn, never as a continuous feed,
+and the user can mute the narration.
+
+### Revisions
+
+Artifacts are immutable, so a call can produce several revisions. The turn
+contract should carry the revision the user is looking at, and the agent should
+name the revision when it matters ("the version on screen now").
+
+### Forms as artifacts
+
+`IDFON-HITL/1` is a structured ask. It is close to an interactive artifact: it
+has a schema, a renderer, a response, and a correlation id. Unifying the two
+would let one renderer, one selector model, and one correlation path serve forms
+and artifacts.
+
+### Across channels
+
+An artifact is idfon-native: bytes, a blob ticket, a gateway URL, selectors.
+Exported to email, Slack, or SMS it loses the selectors, the interactivity, and
+the idfon trust boundary. Each channel needs a representation it can carry (a
+link, a rendered PDF, a static image) and a portable artifact reference so a
+reply from another channel can correlate back.
+
+### Accessibility
+
+Charts, tables, and images need a spoken or structural form: alt text by default,
+a table-to-speech path, a description for a chart, and structural navigation.
+This is an accessibility requirement and the same machinery voice agents need.
+
+Open questions: who sets `metadata.spoken` (issuer, blueprint/app, or the model);
+whether `metadata` is the right home or a first-class `spoken` field; and how far
+voice-to-selector resolution belongs in the agent versus the app.
+
 ## Storage and transport
 
 - Bytes live in `iroh-blobs`, content-addressed; the artifact record is the
