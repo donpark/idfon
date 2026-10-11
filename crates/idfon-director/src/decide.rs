@@ -32,25 +32,26 @@ pub struct DecideTool {
     model: DecisionModel,
 }
 
+/// The `decide` tool's description.
+const DESCRIPTION: &str =
+    "Answer typed questions about a state. Returns calibrated probabilities, not prose. \
+     Use it for the small judgments an LLM is slow at: backchannel, urgency, intent.";
+
 impl DecideTool {
     pub fn new(model: DecisionModel) -> Self {
         Self { model }
     }
-}
 
-#[async_trait]
-impl AgentTool for DecideTool {
-    fn name(&self) -> &str {
-        "decide"
+    /// The tool definition, for a provider that advertises tools as text (AFM).
+    pub fn definition() -> yoagent::provider::ToolDefinition {
+        yoagent::provider::ToolDefinition {
+            name: "decide".into(),
+            description: DESCRIPTION.into(),
+            parameters: Self::schema(),
+        }
     }
-    fn label(&self) -> &str {
-        "Decide"
-    }
-    fn description(&self) -> &str {
-        "Answer typed questions about a state. Returns calibrated probabilities, not prose. \
-         Use it for the small judgments an LLM is slow at: backchannel, urgency, intent."
-    }
-    fn parameters_schema(&self) -> Value {
+
+    fn schema() -> Value {
         json!({
             "type": "object",
             "properties": {
@@ -74,6 +75,22 @@ impl AgentTool for DecideTool {
             },
             "required": ["state", "questions"]
         })
+    }
+}
+
+#[async_trait]
+impl AgentTool for DecideTool {
+    fn name(&self) -> &str {
+        "decide"
+    }
+    fn label(&self) -> &str {
+        "Decide"
+    }
+    fn description(&self) -> &str {
+        DESCRIPTION
+    }
+    fn parameters_schema(&self) -> Value {
+        Self::schema()
     }
     async fn execute(&self, params: Value, _ctx: ToolContext) -> Result<ToolResult, ToolError> {
         let state = params

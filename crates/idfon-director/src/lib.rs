@@ -215,9 +215,34 @@ pub struct Director {
     redaction: Redaction,
 }
 
+/// The tool definitions for a set of options. Used to advertise the tools to a
+/// provider that needs them up front (AFM).
+#[cfg(feature = "afm")]
+fn option_definitions(options: &DirectorOptions) -> Vec<ToolDefinition> {
+    let mut definitions = vec![SpeakTool::definition()];
+    if options.wrapped.is_some() {
+        definitions.push(ForwardTool::definition());
+    }
+    if options.resolver.is_some() {
+        definitions.push(ReadReferenceTool::definition());
+    }
+    if options.decision.model.is_some() {
+        definitions.push(crate::decide::DecideTool::definition());
+    }
+    definitions
+}
+
 impl Director {
     /// Build a director from [`DirectorOptions`]. The provider is the tier seam.
     pub fn new(
+        provider: impl StreamProvider + 'static,
+        instructions: &str,
+        options: DirectorOptions,
+    ) -> Self {
+        Self::assemble(provider, instructions, options)
+    }
+
+    fn assemble(
         provider: impl StreamProvider + 'static,
         instructions: &str,
         options: DirectorOptions,
@@ -565,14 +590,19 @@ impl Director {
     /// Fails when AFM is unavailable (below the OS floor, or Apple Intelligence
     /// off). The caller falls back to the remote tier.
     pub fn afm(instructions: &str) -> Result<Self, String> {
-        let tools = vec![SpeakTool::definition()];
-        let provider = crate::afm::AfmProvider::new(instructions, tools)?;
+        Self::afm_with_options(instructions, DirectorOptions::default())
+    }
+
+    /// Build the on-device AFM director with policy options (authority, trace,
+    /// tools). The provider advertises exactly `option_definitions(options)`.
+    pub fn afm_with_options(
+        instructions: &str,
+        mut options: DirectorOptions,
+    ) -> Result<Self, String> {
+        let provider = crate::afm::AfmProvider::new(instructions, option_definitions(&options))?;
         let warm = provider.clone();
-        Ok(Self::with_provider_and_prewarm(
-            provider,
-            instructions,
-            Some(Box::new(move || warm.prewarm())),
-        ))
+        options.prewarm = Some(Box::new(move || warm.prewarm()));
+        Ok(Self::assemble(provider, instructions, options))
     }
 }
 
