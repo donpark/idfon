@@ -18,7 +18,14 @@ cli/idfon-*/LICENSE-*
 # eve channel platform packages: built by scripts/build-eve.sh
 integrations/eve-idfon-*/bin/
 integrations/eve-idfon-*/LICENSE-*
-# local tooling state — not repo content (.agents/ skills ARE tracked)
+# third-party skills are per-machine installs, not repo content:
+#   npx skills add vercel-labs/native        -> native-sdk
+#   npx skills add jakubkrehel/make-interfaces-feel-better
+#   npx skills add humanlayer/skills --skill show-me
+.agents/skills/make-interfaces-feel-better/
+.agents/skills/native-sdk/
+.agents/skills/show-me/
+# local tooling state — not repo content (our own .agents/skills/ ARE tracked)
 .pi/
 PONYTAIL-DEBT.md
 skills-lock.json

@@ -25,3 +25,5 @@ add or materially change a doc, update the index.
   edit it) plus the project-local `native-sdk-idfon` addendum holding our
   hard-won rules; iroh work uses the `iroh-protocols` skill (see
   `.agents/skills/` — shared by all harnesses; no per-harness skill folders).
+  The vendored `native-sdk` is per-machine, not committed: install it with
+  `npx skills add vercel-labs/native`.
