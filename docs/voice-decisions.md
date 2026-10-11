@@ -215,6 +215,9 @@ them as prompt rules or shared models until the volume justifies a per-user head
 
 - **Propose, do not authorize.** A decider proposes. Code and capability grants still
   authorize. A classifier never authorizes an external send or a destructive action.
+  Implemented in `crates/idfon-director/src/authority.rs` (#37): the grant and budget
+  fail closed; a decider may veto, but a failing decider falls back to the grant
+  (fail-open).
 - **One authoritative decider per topology.** Matching F3, client-cascade and
   holder-cascade each have exactly one authoritative decider for a point. The other only
   advises.
