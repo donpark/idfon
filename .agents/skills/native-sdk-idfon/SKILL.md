@@ -1,6 +1,7 @@
 ---
 name: native-sdk-idfon
-description: idfon-specific addendum to the native-sdk skill. The checker/compiler/runtime failures actually hit while building this repo's ~1000-line Elm-style native/src/core.ts. Load alongside native-sdk when changing idfon's native app (native/src/core.ts, .native markup, app.json): NS1017 Cmd-only-in-update, SC1090 computed spreads, the SC4013 Partial spread trap, determinism in update, keyed effects, viewUnbound, stale model contract, all-digits attribute values, blank-window bisect, and the Elm-style derive pattern that works.
+description: >-
+  idfon-specific addendum to the native-sdk skill. The checker/compiler/runtime failures actually hit while building this repo's ~1000-line Elm-style native/src/core.ts. Load alongside native-sdk when changing idfon's native app (native/src/core.ts, .native markup, app.json): NS1017 Cmd-only-in-update, SC1090 computed spreads, the SC4013 Partial spread trap, determinism in update, keyed effects, viewUnbound, stale model contract, all-digits attribute values, blank-window bisect, and the Elm-style derive pattern that works.
 ---
 
 # idfon Native SDK addendum
