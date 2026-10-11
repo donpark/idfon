@@ -74,6 +74,20 @@ uint8_t idfon_voice_is_cancellable(const char *text, uint8_t playing, uint8_t in
 // Text-layer echo check (P5): nonzero when `heard` is our own `spoken` text.
 uint8_t idfon_voice_is_echo(const char *spoken, const char *heard);
 
+// Voice-agent harness (crates/idfon-director): the on-device conversation
+// director over yoagent + Apple Foundation Models (#34, docs/voice-agent-loop-contract.md).
+// A null director means AFM is unavailable (OS floor / Apple Intelligence
+// off) or the config is invalid; the caller falls back to the remote agent.
+// Turn results are JSON (envelopes + trace record); free with
+// idfon_director_free_string.
+void *idfon_director_new_afm_config(const char *instructions, const char *config_json);
+void *idfon_director_new_afm(const char *instructions);
+int32_t idfon_director_prewarm(void *director);
+char *idfon_director_turn(void *director, const char *text);
+char *idfon_director_turn_input(void *director, const char *input_json);
+void idfon_director_free(void *director);
+void idfon_director_free_string(char *ptr);
+
 #define IDFON_OK 0
 #define IDFON_EARG -1
 #define IDFON_EREQUEST -2
