@@ -152,7 +152,11 @@ final class VoiceAgentSession: NSObject {
             guard !stopRequested else { finish(); return }
             var greeting: (display: String, spoken: String)?
             if !stopRequested {
-                greeting = await reply(
+                // The greeting goes to the agent, not the on-device director:
+                // the agent greets as itself, so the caller never hears a
+                // "voice director" persona (and the ASR echo has no name to
+                // mangle into a fake one).
+                greeting = await sendAndAwait(
                     peerId: peer.id,
                     text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
                     logPrefix: "voice-agent-greet",
