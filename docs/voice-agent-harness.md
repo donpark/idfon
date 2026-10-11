@@ -268,6 +268,22 @@ setup behind a delay the caller already experiences. Prewarm only for the contac
 that need a voice agent. A human contact does not need a voice agent until in-call
 assistant agents exist.
 
+**The director on a real device (measured 2026-10-11, iPhone 16 / iOS 27.0.1).**
+`ios/device.sh -directortext "say hello to the caller"` runs three turns on one
+warm AFM session through the real director (`ios/Idfon/Director.swift`):
+
+| Step | Measured |
+| --- | --- |
+| Create + prewarm (cold model load + session) | 3.4–3.8 s |
+| Turn 1 (first, cold) | 1.36 s |
+| Turn 2–3 (warm) | 1.50 s, 1.51 s |
+
+Every turn returned `status: ok` with one `IDFON-SPEAK/1` envelope, and the
+prompt hash was stable. The turn is a `say` → `speak` tool round trip, so it
+matches the ~1.3 s tool-round-trip estimate, not the ~0.25 s plain reply. The
+prewarm is higher than the earlier ~1.2 s figure, so hide it behind call setup
+and do not add a second model pass per turn.
+
 **OS floor (idfon, 2026-10-11).** AFM3 needs **iOS/macOS 27+**. A device below the
 floor cannot run the on-device director, so it uses the **remote voice agent**. The
 two-tier design already allows this per contact (the ticket names the provider).
