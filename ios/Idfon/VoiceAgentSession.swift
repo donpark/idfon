@@ -143,9 +143,13 @@ final class VoiceAgentSession: NSObject {
             // pre-existing history.
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard !stopRequested else { finish(); return }
+            // On-device director (#41): load + warm the AFM session during call
+            // setup, hidden behind the ringback. No-op without `-directorcall`.
+            await DirectorRuntime.shared.startCall()
+            guard !stopRequested else { finish(); return }
             var greeting: (display: String, spoken: String)?
             if !stopRequested {
-                greeting = await sendAndAwait(
+                greeting = await reply(
                     peerId: peer.id,
                     text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
                     logPrefix: "voice-agent-greet",
@@ -260,7 +264,7 @@ final class VoiceAgentSession: NSObject {
             turnId: "\(callId)-\(turnsDone)-user", role: "caller", text: heard
         )
         setState(.thinking)
-        guard let result = await sendAndAwait(
+        guard let result = await reply(
             peerId: peerId, text: heard, logPrefix: "voice-agent",
             spokenTurnId: "\(callId)-\(turnsDone)-agent"
         )
@@ -285,6 +289,28 @@ final class VoiceAgentSession: NSObject {
     /// holder route). Injected as untrusted data, never instructions.
     private var callContext: String {
         "Client cascade (on-device speech). Recognition: \(asrBackend.title); Generation: \(ttsBackend.title). The holder only produces text."
+    }
+
+    /// One agent turn: the on-device director when enabled, else the remote
+    /// agent. A director turn that fails falls back to the remote path.
+    private func reply(
+        peerId: String,
+        text: String,
+        logPrefix: String,
+        spokenTurnId: String? = nil
+    ) async -> (display: String, spoken: String)? {
+        if DirectorRuntime.shared.enabled, let spoken = await DirectorRuntime.shared.turn(text) {
+            if let spokenTurnId {
+                ChatStore.shared.recordSpokenTurn(
+                    peerId: peerId, callId: callId, turnId: spokenTurnId,
+                    role: "agent", text: spoken
+                )
+            }
+            return (display: spoken, spoken: spoken)
+        }
+        return await sendAndAwait(
+            peerId: peerId, text: text, logPrefix: logPrefix, spokenTurnId: spokenTurnId
+        )
     }
 
     private func sendAndAwait(
@@ -324,6 +350,7 @@ final class VoiceAgentSession: NSObject {
         guard isActive else { return }
         isActive = false
         stopRequested = true
+        DirectorRuntime.shared.endCall()
         segmenter.stop()
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
         routeObserver = nil

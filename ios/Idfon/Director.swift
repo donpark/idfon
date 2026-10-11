@@ -67,6 +67,90 @@ final class Director {
     static func record(_ result: [String: Any]) -> [String: Any] {
         result["record"] as? [String: Any] ?? [:]
     }
+
+    /// The spoken text of a turn: the first `IDFON-SPEAK/1` envelope.
+    static func spokenText(_ result: [String: Any]) -> String {
+        let prefix = "IDFON-SPEAK/1\n"
+        for envelope in envelopes(result) where envelope.hasPrefix(prefix) {
+            let body = String(envelope.dropFirst(prefix.count))
+            if let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
+               let text = object["text"] as? String, !text.isEmpty {
+                return text
+            }
+        }
+        return ""
+    }
+}
+
+/// The live-call director: one AFM director per call, prewarmed at call setup
+/// and run per caller turn. Enabled with `-directorcall`; without it the app
+/// keeps the remote agent path. A turn that fails falls back to the remote
+/// agent (`VoiceAgentSession.reply`).
+final class DirectorRuntime {
+    static let shared = DirectorRuntime()
+
+    private var director: Director?
+    private(set) var enabled = false
+
+    static let instructions = """
+    # Identity
+    You are the on-device director for a voice call on this device. Answer the caller briefly.
+    # Output rules
+    Plain spoken text only. One short sentence.
+    # Tools
+    speak: say the short spoken reply.
+    """
+
+    /// Prepare the director for a call (load + warm the session), off the main
+    /// thread. No-op unless `-directorcall` is set, and when AFM is
+    /// unavailable. Await it before the first turn so the model is warm.
+    func startCall() async {
+        guard !enabled, ProcessInfo.processInfo.arguments.contains("-directorcall") else { return }
+        let created = await Task.detached(priority: .userInitiated) {
+            guard let director = Director.createAFM(instructions: Self.instructions, config: [
+                "grant": ["speak", "decide"],
+                "trace": ["tier": "on-device", "provider": "afm", "model": "apple-foundation-models"],
+            ]) else { return nil }
+            let started = Date()
+            director.prewarm()
+            Automation.mark("director: call prewarm_ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+            return director
+        }.value
+        guard let created else {
+            Automation.mark("director: call unavailable (AFM off?)")
+            return
+        }
+        director = created
+        enabled = true
+    }
+
+    func endCall() {
+        director = nil
+        enabled = false
+    }
+
+    /// Run one caller turn on the director, off the main thread. Returns the
+    /// spoken reply, or nil to fall back to the remote agent.
+    func turn(_ text: String) async -> String? {
+        guard let director else { return nil }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let started = Date()
+                guard let result = director.turn(text) else {
+                    Automation.mark("director: call FAIL turn")
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let spoken = Director.spokenText(result)
+                let outcome = Director.record(result)["outcome"] as? [String: Any]
+                Automation.mark(
+                    "director: call turn_ms=\(Int(Date().timeIntervalSince(started) * 1000)) spoken=\(spoken)"
+                )
+                Automation.mark("director: call status=\(outcome?["status"] as? String ?? "?")")
+                continuation.resume(returning: spoken.isEmpty ? nil : spoken)
+            }
+        }
+    }
 }
 
 /// Device automation for the on-device director (`-directortext <text>`): run
