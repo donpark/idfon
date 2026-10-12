@@ -15,10 +15,14 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   mp3: "audio/mpeg", ogg: "audio/ogg", mp4: "video/mp4",
 };
 
-/// Media type for a blob attachment, from its envelope's `name=` line, so an
-/// image (e.g. a screenshot) reaches the model as an image, not a blob.
-function attachmentMediaType(text: string): string {
-  const name = /(?:^|\n)name=([^\n]+)/.exec(text)?.[1]?.trim() ?? "";
+/// The attachment's file name, from its envelope's `name=` line.
+function attachmentName(text: string): string {
+  return /(?:^|\n)name=([^\n]+)/.exec(text)?.[1]?.trim() ?? "";
+}
+
+/// Media type from a file name, so an image (e.g. a screenshot) reaches the
+/// model as an image, a text file as text, and neither as an opaque blob.
+function mediaTypeForName(name: string): string {
   const ext = name.toLowerCase().split(".").pop() ?? "";
   return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
 }
@@ -148,15 +152,19 @@ export default defineChannel({
       // A room is one Eve session shared by all senders. Keep 1:1 sessions
       // keyed by peer id, while a room session is keyed by conversation.
       const address = completeTurn.conversation || completeTurn.peer_id;
+      const name = attachmentName(completeTurn.text);
       const message = completeTurn.blob_ticket
         ? [
             { type: "text" as const, text: completeTurn.text },
             {
               type: "file" as const,
-              data: new URL(`idfon-blob:${encodeURIComponent(completeTurn.blob_ticket)}`),
-              // Derive the media type from the attachment's `name=` so an image
-              // (e.g. a screenshot) reaches the model as an image, not a blob.
-              mediaType: attachmentMediaType(completeTurn.text),
+              // The name rides the URL: `fetchFile` only sees the URL, and it
+              // must return the same media type this part declares, or the
+              // model gets an opaque blob instead of an image or text file.
+              data: new URL(
+                `idfon-blob:${encodeURIComponent(completeTurn.blob_ticket)}?name=${encodeURIComponent(name)}`,
+              ),
+              mediaType: mediaTypeForName(name),
             },
           ]
         : completeTurn.text;
@@ -262,12 +270,13 @@ export default defineChannel({
   ],
   async fetchFile(url) {
     if (!url.startsWith("idfon-blob:")) return null;
-    const ticket = decodeURIComponent(url.slice("idfon-blob:".length));
+    const parsed = new URL(url);
+    const ticket = decodeURIComponent(parsed.pathname);
     const response = await bridge("/blob", { ticket });
     const result = (await response.json()) as { bytes_base64: string };
     return {
       bytes: Buffer.from(result.bytes_base64, "base64"),
-      mediaType: "application/octet-stream",
+      mediaType: mediaTypeForName(parsed.searchParams.get("name") ?? ""),
     };
   },
   events: {
