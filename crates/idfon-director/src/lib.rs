@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use yoagent::agent::Agent;
 use yoagent::decision::{DecisionModel, InputGuard, ToolGate};
 use yoagent::provider::{ModelConfig, StreamProvider, ToolDefinition};
-use yoagent::types::{AgentTool, Content, ToolContext, ToolError, ToolResult};
+use yoagent::types::{AgentMessage, AgentTool, Content, Message, ToolContext, ToolError, ToolResult};
 use yoagent::{AgentEvent, StreamDelta};
 
 use crate::authority::Authority;
@@ -435,14 +435,23 @@ impl Director {
 
     /// Run one turn from its parts: text, references, and attachments, joined
     /// into one question (`docs/voice-multimodal.md`). A camera frame is
-    /// included only under the `camera` grant.
+    /// included only under the `camera` grant; an image the model API accepts
+    /// travels as a content part beside the prompt.
     pub fn turn_input(&mut self, input: &TurnInput) -> TurnResult {
         let camera = self.authority.as_ref().is_some_and(|a| a.permits("camera"));
-        let rendered = input.render(camera);
-        self.run(&rendered, input.trace_input())
+        self.run_content(input.content(camera), input.trace_input())
     }
 
     fn run(&mut self, prompt: &str, input: TraceInput) -> TurnResult {
+        self.run_content(
+            vec![Content::Text {
+                text: prompt.to_string(),
+            }],
+            input,
+        )
+    }
+
+    fn run_content(&mut self, content: Vec<Content>, input: TraceInput) -> TurnResult {
         let started = Instant::now();
         let step = self.turn.fetch_add(1, Ordering::SeqCst) as u32;
         if let Ok(mut current) = self.turn_text.lock() {
@@ -451,7 +460,7 @@ impl Director {
         let mut steps: Vec<TraceStep> = Vec::new();
         let ended = self
             .rt
-            .block_on(run_turn(&mut self.agent, prompt, &mut steps));
+            .block_on(run_turn(&mut self.agent, content, &mut steps));
         if let Some(authority) = &self.authority {
             for refusal in authority.drain_refusals() {
                 steps.push(TraceStep {
@@ -523,10 +532,16 @@ fn speak_output(envelopes: &[String]) -> Option<String> {
 
 /// Run the loop and record one step per event. Returns whether the turn ended
 /// normally (`AgentEnd`), for the trace outcome.
-async fn run_turn(agent: &mut Agent, text: &str, trace: &mut Vec<TraceStep>) -> bool {
+async fn run_turn(agent: &mut Agent, content: Vec<Content>, trace: &mut Vec<TraceStep>) -> bool {
     let mut tool_start: Option<Instant> = None;
     let mut ended = false;
-    let mut rx = agent.prompt(text).await;
+    // A literal timestamp: the loop does not use message times, and yoagent's
+    // own tests construct messages the same way.
+    let message = AgentMessage::Llm(Message::User {
+        content,
+        timestamp: 0,
+    });
+    let mut rx = agent.prompt_messages(vec![message]).await;
     while let Some(event) = rx.recv().await {
         match event {
             AgentEvent::ToolExecutionStart {

@@ -1016,8 +1016,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                                           selector: pending.selector,
                                           blobTicket: pending.artifact.blobTicket,
                                           note: nil)
+                    let crop = pending.preview.map {
+                        (name: "\(pending.artifact.title) region", png: $0)
+                    }
                     await replyLocally(agent: agent, text: text, peerId: peer.id,
-                                       messageID: id, reference: ref)
+                                       messageID: id, reference: ref, crop: crop)
                     return
                 }
                 if let room = conversation.room {
@@ -1035,11 +1038,12 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// Answer a turn for an on-device agent and record it in the thread.
     private func replyLocally(agent: OnDeviceAgent, text: String, peerId: String,
-                              messageID: String, reference: ArtifactRef? = nil) async {
+                              messageID: String, reference: ArtifactRef? = nil,
+                              crop: (name: String, png: Data)? = nil) async {
         let spoken: String?
         if let reference {
             spoken = await OnDeviceAgentRunner.shared.reply(
-                agent: agent, input: Self.turnInput(text: text, reference: reference))
+                agent: agent, input: Self.turnInput(text: text, reference: reference, crop: crop))
         } else {
             spoken = await OnDeviceAgentRunner.shared.reply(agent: agent, text: text)
         }
@@ -1056,13 +1060,18 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// The director's `TurnInput` JSON for a turn that points at an artifact
     /// (`docs/voice-multimodal.md`): the question in `text`, the reference in
-    /// `references`, so the loop renders both into one prompt and marks the
-    /// reference as untrusted data.
-    private static func turnInput(text: String, reference: ArtifactRef) -> [String: Any] {
+    /// `references`, and — when the selection has pixels — the app's crop as an
+    /// image part, so a model that takes images sees what was pointed at rather
+    /// than only which region it was.
+    private static func turnInput(text: String, reference: ArtifactRef,
+                                  crop: (name: String, png: Data)? = nil) -> [String: Any] {
         var input: [String: Any] = ["text": text]
         if let data = try? JSONEncoder().encode(reference),
            let json = try? JSONSerialization.jsonObject(with: data) {
             input["references"] = [json]
+        }
+        if let crop, let attachment = OnDeviceAttachments.imageAttachment(name: crop.name, png: crop.png) {
+            input["attachments"] = [attachment]
         }
         return input
     }
