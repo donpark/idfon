@@ -11,6 +11,7 @@ use idfon_director::{Director, DirectorOptions};
 use idfon_protocol::artifacts::{ArtifactRef, ArtifactSelector};
 use serde_json::{json, Value};
 use yoagent::provider::mock::{MockResponse, MockToolCall};
+use yoagent::types::Content;
 use yoagent::provider::MockProvider;
 
 fn call(name: &str, args: serde_json::Value) -> MockResponse {
@@ -125,6 +126,69 @@ fn a_camera_frame_requires_the_grant() {
     let granted = Authority::grant(["speak", "camera"]);
     assert!(granted.permits("camera"));
     assert!(input.render(granted.permits("camera")).contains("cam-1"));
+}
+
+/// An image the model API can take travels as a content part beside the prompt,
+/// and is still described in the prompt's data block — so a model that cannot
+/// take it (older OS, no image capability) still knows what was pointed at.
+#[test]
+fn an_accepted_image_travels_as_a_content_part() {
+    // The 4-byte PNG signature, base64.
+    let png = "iVBORw==";
+    let input = TurnInput {
+        text: "what is in this image?".into(),
+        references: Vec::new(),
+        attachments: vec![Attachment::Image {
+            name: "chart.png region".into(),
+            mime: "image/png".into(),
+            data: png.into(),
+        }],
+    };
+    let content = input.content(false);
+    assert_eq!(content.len(), 2, "prompt + one image part");
+    match &content[1] {
+        Content::Image { data, mime_type } => {
+            assert_eq!(data, png);
+            assert_eq!(mime_type, "image/png");
+        }
+        other => panic!("the second part is the image: {other:?}"),
+    }
+    let prompt = input.render(false);
+    let marker = prompt.find(UNTRUSTED_MARKER).expect("the data marker");
+    assert!(
+        prompt.find("chart.png region").unwrap() >= marker,
+        "the description stays in the data block: {prompt}"
+    );
+    assert!(prompt.contains("4 bytes"), "the description carries the size: {prompt}");
+}
+
+/// An image the API cannot take (unknown type, oversized, undecodable) is
+/// described in the prompt and left out of the content parts: an image must
+/// never cost the turn.
+#[test]
+fn an_unusable_image_is_only_described() {
+    let oversized = "A".repeat(6 * 1024 * 1024);
+    for (mime, data) in [
+        ("image/bmp", "iVBORw=="),
+        ("image/png", "not base64!!"),
+        ("image/png", oversized.as_str()),
+    ] {
+        let input = TurnInput {
+            text: "what is this?".into(),
+            references: Vec::new(),
+            attachments: vec![Attachment::Image {
+                name: "crop.png".into(),
+                mime: mime.into(),
+                data: data.into(),
+            }],
+        };
+        assert_eq!(input.content(false).len(), 1, "{mime} is not handed over");
+        let prompt = input.render(false);
+        assert!(
+            prompt.contains("not passed to the model"),
+            "the model is told instead: {prompt}"
+        );
+    }
 }
 
 /// A text file is the one attachment whose content reaches a model that cannot

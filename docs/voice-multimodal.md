@@ -78,13 +78,30 @@ itself; the shell or the agent does):
 | Kind | Remote agent | App-local agent |
 | --- | --- | --- |
 | Text (reference quote, text file) | ticket + `quote`; the agent resolves | inlined in the prompt |
-| Image (region crop, camera frame) | blob ticket staged for the agent's own tools — whether a given model sees the pixels is unverified | not wired: tickets only, no image path into the model |
+| Image (region crop, camera frame) | blob ticket staged for the agent's own tools — whether a given model sees the pixels is unverified | region crop rides as an image content part |
 | Audio (voice memo) | blob ticket, the agent's speech path handles it | not wired: no audio path |
 
-Images are reachable in principle — `fm-rs` takes image attachments
-(`AttachmentSource::ImageBytes`/`File`) — but nothing passes them into the
-session yet, and the loop has no per-model capability gate to decide which
-turns may carry one.
+**Images travel as content parts.** `Attachment::Image { name, mime, data }`
+(base64, `Content::Image`'s encoding) becomes a `yoagent` `Content::Image` part
+beside the prompt, so any provider that takes images can use it — not just AFM.
+The prompt additionally describes every image (`[image] <name> (<mime>, N
+bytes)`) inside the data block, so a model that cannot take one still knows
+what was pointed at. An image the API cannot take — unknown type, over
+`MAX_IMAGE_ATTACHMENT_BYTES` (4 MiB), or undecodable — is left out of the parts
+and only described: an image must never fail the turn.
+
+On Apple that path is exact: the AFM provider answers image turns with
+`Session::respond_with_attachments`, and falls back to the text-only structured
+call when the OS or model reports no image capability
+(`UnsupportedPlatform`/`UnsupportedCapability`). The attachment call is not
+schema-forced, so the provider ignores a tool call whose name is not one the
+loop registered — the model improvises tool names from what it sees in the
+prompt, and dispatching one would kill the turn.
+
+Verified on the host (`cargo run -p idfon-director --features afm --example
+afm_probe -- <image.png>`, macOS 27): a 128×128 PNG with a red circle attached
+to an otherwise image-free prompt came back as *"It contains a red circle"* in
+1.55 s — pixels, not just metadata.
 
 ## Client-facing tools
 

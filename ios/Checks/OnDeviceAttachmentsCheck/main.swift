@@ -43,6 +43,25 @@ let capped = OnDeviceAttachments.text(at: big, maxBytes: 101)
 check(capped?.utf8.count == 100, "cap bounds the read: \(capped?.utf8.count ?? -1)")
 check(capped?.allSatisfy { $0 == "a" } == true, "the partial multi-byte tail is dropped")
 
+// A crop rides as an image part, base64, so a model that takes images sees the
+// pixels; the mime is what the app produces.
+let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+let image = OnDeviceAttachments.imageAttachment(name: "chart.png region", png: png)
+check(image?["kind"] as? String == "image", "image attachment kind")
+check(image?["mime"] as? String == "image/png", "image attachment mime")
+check(image?["name"] as? String == "chart.png region", "image attachment name")
+if let encoded = image?["data"] as? String, let decoded = Data(base64Encoded: encoded) {
+    check(decoded == png, "image attachment round-trips through base64")
+} else {
+    check(false, "image attachment carries base64 data")
+}
+
+// An empty or oversized image is left out: the reference still names the
+// selection, so the turn is worth sending without the pixels.
+check(OnDeviceAttachments.imageAttachment(name: "x", png: Data()) == nil, "empty image is left out")
+let huge = Data(repeating: 0, count: OnDeviceAttachments.maxImageBytes + 1)
+check(OnDeviceAttachments.imageAttachment(name: "x", png: huge) == nil, "oversized image is left out")
+
 // The turn input is the shape the loop's `TurnInput` decodes.
 let input = OnDeviceAttachments.turnInput(text: "what is this?", name: "notes\n.txt", content: "body")
 let attachments = input["attachments"] as? [[String: String]]

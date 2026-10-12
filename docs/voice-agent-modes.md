@@ -11,6 +11,10 @@ iPhone 16 / iOS 27.0.1 (`docs/voice-agent-harness.md` §5).
 | **Passive remote** | STT → wrapped agent (LLM) → TTS | remote round trip (~1.5–3 s) | The wrapped agent's knowledge/tools matter |
 | **Proxy** | STT → AFM decides → wrapped agent → TTS | on-device turn **+** remote round trip (~3–5 s) | Per contact, when the voice layer has its own agency |
 
+A turn can also carry parts: an artifact selection, a text file, or a region
+crop as an image. Only AFM reads them locally; a remote agent gets a ticket and
+its own tools decide (`docs/voice-multimodal.md`).
+
 **Default is passive remote.** The holder (`live-voice-agent`) injects the live
 config's `instructions` into the turn, so a plain text agent answers as a voice
 agent without editing its own prompt. No LLM sits in front of the content.
@@ -22,10 +26,11 @@ re-paraphrased a question, and its greeting echoed into the transcript). Set it
 in the contact's detail screen ("Voice turns › Mode"); `-directorcall` forces a
 proxy call on any contact, as the device probe for this path.
 
-**On-device is opt-in** (`-directorondevice`). The AFM3 loop answers directly,
-so there is no network. AFM3 has no tools and no live data; it chats and knows
-what it was trained on. Use it for a private/offline assistant, not for a
-knowledge agent.
+**On-device is per contact.** The AFM3 loop answers directly, so there is no
+network. AFM3 has no tools and no live data; it chats and knows what it was
+trained on (and can see an attached image on 27). Use it for a private/offline
+assistant, not for a knowledge agent. Added as a contact in the app
+(`OnDeviceAgents`); the launch flags below are probes only.
 
 ## On-device agents are app-local contacts
 
@@ -37,8 +42,9 @@ locally (`ios/Idfon/OnDeviceAgents.swift`, the mac twin under
 `mac/Sources/Idfon/`); text and voice both run through `OnDeviceAgentRunner`.
 AFM 3 cannot be deleted. Both shells merge them into the contact list and
 title their threads and calls by name (`LiveActivityController`). A turn can
-point at an artifact selection and can carry a text file, both inlined into the
-prompt; image and audio attachments are not wired for a local model yet
+point at an artifact selection, carry a text file (inlined into the prompt),
+and carry a region crop as an image — AFM 27 takes images, so the local model
+sees the pixels. Audio still has no path into a local model
 (`docs/voice-multimodal.md`).
 
 This is distinct from the per-process `-directorondevice`/`-directorcall`

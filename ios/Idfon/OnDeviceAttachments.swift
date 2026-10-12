@@ -13,6 +13,10 @@ enum OnDeviceAttachments {
     /// (`MAX_TEXT_ATTACHMENT_BYTES` in `crates/idfon-director`).
     static let maxTextBytes = 32 * 1024
 
+    /// Image cap, matching the loop's (`MAX_IMAGE_ATTACHMENT_BYTES`). A crop is
+    /// a few hundred KiB; anything much larger is sent as a description only.
+    static let maxImageBytes = 4 * 1024 * 1024
+
     /// Read `url` as UTF-8 text, capped at `maxBytes`. Nil when the file is
     /// binary, empty, or unreadable — the caller reports that instead of
     /// sending a turn with nothing in it.
@@ -38,6 +42,19 @@ enum OnDeviceAttachments {
             "attachments": [
                 ["kind": "text", "name": promptName(name), "content": content],
             ],
+        ]
+    }
+
+    /// One image attachment: a crop the app already holds as PNG. Nil when the
+    /// image is empty or over the cap — the reference still names the selection,
+    /// so the turn is worth sending without the pixels.
+    static func imageAttachment(name: String, png: Data) -> [String: Any]? {
+        guard !png.isEmpty, png.count <= maxImageBytes else { return nil }
+        return [
+            "kind": "image",
+            "name": promptName(name),
+            "mime": "image/png",
+            "data": png.base64EncodedString(),
         ]
     }
 

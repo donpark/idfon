@@ -246,6 +246,16 @@ Apple Foundation Models was driven **from Rust** on the same device, through
 | Model availability | `Available` (Apple Intelligence on) | |
 | Native tool call to a Rust `Tool` impl | called on every request (4/4) | |
 
+**Image turns (host probe, macOS 27.0.1, 2026-10-11).** `afm_probe <image.png>`
+attaches one image through the turn input: a generated 128×128 PNG with a red
+circle, attached to an otherwise image-free prompt, came back as *"It contains
+a red circle"* in 1.55 s. Pixels reach the model, not just metadata — the same
+prompt without the attachment cannot say what is in the image. The attachment
+call answers in plain text (no schema), so the envelope is parsed out of the
+reply and a tool call whose name the loop did not register is ignored: the model
+improvised a tool named `image` from the prompt's `[image] …` line, and
+dispatching it produced no `IDFON-SPEAK/1` at all.
+
 Reading:
 
 - **The cold cost is one-time and load-shaped.** Model construction is lazy. The
