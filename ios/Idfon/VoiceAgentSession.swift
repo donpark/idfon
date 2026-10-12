@@ -109,6 +109,11 @@ final class VoiceAgentSession: NSObject {
         segmenter.onPartial = { [weak self] text in
             guard let self, !self.bargeInArmed else { return }
             self.setState(.listening(text))
+            // Live bubble: the caller's own words appear in the chat as the
+            // recognizer produces them, then are replaced on commit.
+            if let peerId = self.agentPeerId, !text.isEmpty {
+                self.recordCallerTurn(peerId: peerId, text: text, final: false)
+            }
         }
         segmenter.onCommit = { [weak self] text in self?.handleCommit(text) }
         segmenter.start()
@@ -249,6 +254,21 @@ final class VoiceAgentSession: NSObject {
 
     // MARK: - turn
 
+    /// The caller's own turn in the chat: written live from the recognizer's
+    /// partials ("speaking…"), then again when the turn commits with the final,
+    /// possibly corrected, text.
+    private func recordCallerTurn(peerId: String, text: String, final: Bool) {
+        ChatStore.shared.recordSpokenTurn(
+            peerId: peerId, callId: callId, turnId: "\(callId)-\(turnsDone)-user",
+            role: "caller", text: text, final: final
+        )
+    }
+
+    /// Drop the live caller bubble for a turn that produced nothing to send.
+    private func dropCallerTurn(peerId: String) {
+        ChatStore.shared.removeSpokenTurn(peerId: peerId, turnId: "\(callId)-\(turnsDone)-user")
+    }
+
     private func performTurn(peerId: String) async -> Bool {
         turnsDone += 1
         var heard: String? = pendingHeard
@@ -265,6 +285,7 @@ final class VoiceAgentSession: NSObject {
                 if let spoken = lastSpoken, !spoken.isEmpty,
                    voice.isEcho(spoken: spoken, heard: text) {
                     Automation.mark("voice-agent: dropped echo heard=\(text)")
+                    dropCallerTurn(peerId: peerId)
                     continue
                 }
                 // Optional on-device LM cleanup (fail-open to the raw transcript).
@@ -277,6 +298,7 @@ final class VoiceAgentSession: NSObject {
             }
         }
         guard var heard, !heard.isEmpty else {
+            dropCallerTurn(peerId: peerId)
             noSpeechTurns += 1
             Automation.mark("voice-agent: no transcript turn=\(turnsDone) streak=\(noSpeechTurns)")
             // Check in once before ending: silence is not a hangup. Then give
@@ -306,6 +328,7 @@ final class VoiceAgentSession: NSObject {
             heard = withoutEcho
         }
         if heard.isEmpty {
+            dropCallerTurn(peerId: peerId)
             setState(.listening(""))
             return true
         }
@@ -315,14 +338,12 @@ final class VoiceAgentSession: NSObject {
         if ProcessInfo.processInfo.arguments.contains("-turncontroller"),
            TurnController.decide(transcript: heard) == .ignoreBackchannel {
             Automation.mark("voice-agent: backchannel ignored heard=\(heard)")
+            dropCallerTurn(peerId: peerId)
             setState(.listening(""))
             return true
         }
         // Show the caller's spoken turn in the chat, not just the agent's reply.
-        ChatStore.shared.recordSpokenTurn(
-            peerId: peerId, callId: callId,
-            turnId: "\(callId)-\(turnsDone)-user", role: "caller", text: heard
-        )
+        recordCallerTurn(peerId: peerId, text: heard, final: true)
         setState(.thinking)
         guard let result = await reply(
             peerId: peerId, text: heard, logPrefix: "voice-agent",

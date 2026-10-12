@@ -898,7 +898,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             tv.isEditable = false
             tv.isSelectable = true
             tv.drawsBackground = false
-            tv.textColor = transcript.role == "agent" ? .labelColor : .secondaryLabelColor
+            tv.textColor = .labelColor
             tv.textContainerInset = .zero
             tv.textContainer?.lineFragmentPadding = 0
             let who = transcript.role == "agent" ? "Agent" : "You"

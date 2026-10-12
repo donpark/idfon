@@ -268,33 +268,57 @@ final class ChatStore {
     }
 
     /// Record a voice-call turn as a "spoken" bubble. The client-side cascade
-    /// owns the transcript (there is no holder snapshot to ingest); pass
-    /// `replacing` to relabel the agent's already-received reply message.
+    /// owns the transcript (there is no holder snapshot to ingest).
+    ///
+    /// Pass `final: false` for a live partial: the bubble is kept in memory
+    /// only (no disk churn while the caller speaks) and the later final call
+    /// updates that same bubble in place. Pass `replacing` to relabel the
+    /// agent's already-received reply message.
     func recordSpokenTurn(
         peerId: String,
         callId: String,
         turnId: String,
         role: String,
         text: String,
+        final: Bool = true,
         replacing messageID: String? = nil
     ) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
                 self?.recordSpokenTurn(peerId: peerId, callId: callId, turnId: turnId,
-                                       role: role, text: text, replacing: messageID)
+                                       role: role, text: text, final: final, replacing: messageID)
             }
             return
         }
-        let transcript = CallTranscript(callId: callId, turnId: turnId, role: role, text: text, final: true)
+        let transcript = CallTranscript(callId: callId, turnId: turnId, role: role, text: text, final: final)
         let kind = MessageKind.callTranscript(transcript)
         if let messageID, let index = messages.firstIndex(where: { $0.peerId == peerId && $0.id == messageID }) {
             messages[index].kind = kind
         } else {
             let id = "spoken-\(turnId)"
-            guard !messages.contains(where: { $0.peerId == peerId && $0.id == id }) else { return }
-            messages.append(ChatMessage(id: id, peerId: peerId, kind: kind,
-                                        outgoing: role != "agent", timestamp: Date()))
+            if let index = messages.firstIndex(where: { $0.peerId == peerId && $0.id == id }) {
+                messages[index].kind = kind
+            } else {
+                messages.append(ChatMessage(id: id, peerId: peerId, kind: kind,
+                                            outgoing: role != "agent", timestamp: Date()))
+            }
         }
+        if final { persistMessages() }
+        notifyObservers()
+    }
+
+    /// Remove a live spoken bubble for a turn that produced nothing to send
+    /// (echo, backchannel, or silence).
+    func removeSpokenTurn(peerId: String, turnId: String) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.removeSpokenTurn(peerId: peerId, turnId: turnId)
+            }
+            return
+        }
+        let id = "spoken-\(turnId)"
+        guard let index = messages.firstIndex(where: { $0.peerId == peerId && $0.id == id }) else { return }
+        messages.remove(at: index)
         persistMessages()
         notifyObservers()
     }
