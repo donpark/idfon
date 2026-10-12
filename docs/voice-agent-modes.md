@@ -36,7 +36,10 @@ local model, a different role per contact. No daemon peer, no network. Stored
 locally (`ios/Idfon/OnDeviceAgents.swift`, the mac twin under
 `mac/Sources/Idfon/`); text and voice both run through `OnDeviceAgentRunner`.
 AFM 3 cannot be deleted. Both shells merge them into the contact list and
-title their threads and calls by name (`LiveActivityController`).
+title their threads and calls by name (`LiveActivityController`). A turn can
+point at an artifact selection and can carry a text file, both inlined into the
+prompt; image and audio attachments are not wired for a local model yet
+(`docs/voice-multimodal.md`).
 
 This is distinct from the per-process `-directorondevice`/`-directorcall`
 launch flags, which are device probes: they must not change how a real contact

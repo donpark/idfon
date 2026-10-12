@@ -62,6 +62,30 @@ reference this way (`ChatViewController.turnInput`). An image `region` or a
 `time` range has no text to carry and needs an image/audio path into the
 model; until that exists an app-local agent sees the selector, not the pixels.
 
+**Text files are the one attachment kind that can reach such a model**, because
+the shell reads them and the loop inlines the content: the app reads the file
+(`OnDeviceAttachments`, capped at 32 KiB) and sends it as
+`Attachment::Text { name, content }`, which renders as `[file] <name>` inside
+the data block. The loop bounds it again at `MAX_TEXT_ATTACHMENT_BYTES` (64 KiB)
+and marks the cut, so a shell that forgets to cap cannot blow the context. A
+binary file is refused with a message rather than sent as mojibake, and a file
+turn is recorded as words in the thread, not as a downloadable bubble: a local
+agent has no blob to download.
+
+**What "attachment" means per kind today** (the model never fetches bytes
+itself; the shell or the agent does):
+
+| Kind | Remote agent | App-local agent |
+| --- | --- | --- |
+| Text (reference quote, text file) | ticket + `quote`; the agent resolves | inlined in the prompt |
+| Image (region crop, camera frame) | blob ticket staged for the agent's own tools — whether a given model sees the pixels is unverified | not wired: tickets only, no image path into the model |
+| Audio (voice memo) | blob ticket, the agent's speech path handles it | not wired: no audio path |
+
+Images are reachable in principle — `fm-rs` takes image attachments
+(`AttachmentSource::ImageBytes`/`File`) — but nothing passes them into the
+session yet, and the loop has no per-model capability gate to decide which
+turns may carry one.
+
 ## Client-facing tools
 
 The multimodal surface is a set of tools in `eve-idfon`, so any idfon-aware
