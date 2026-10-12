@@ -13,9 +13,10 @@ protocol TtsEngine: AnyObject {
     var name: String { get }
     /// Wall time of the last `speak`, in ms (nil when not measured).
     var lastLatencyMs: Int? { get }
-    /// Shared VPIO playback sink (the recognizer's engine), when present: TTS
-    /// audio must render on the same engine as capture to be the AEC reference.
-    var playback: TtsPlayer? { get set }
+    /// The call's single playback sink (the recognizer's output bus), so TTS
+    /// audio is the echo-cancellation reference. See `AudioIO`/
+    /// `docs/voice-side-channel.md`.
+    var playback: AudioSink? { get set }
     /// Download/load models if needed (no-op for Apple).
     func prepare() async
     /// Speak `text`, returning when playback finishes.
@@ -25,17 +26,7 @@ protocol TtsEngine: AnyObject {
 
 extension TtsEngine {
     var lastLatencyMs: Int? { nil }
-    var playback: TtsPlayer? { get { nil } set {} }
-}
-
-/// Renders synthesized speech on a recognizer's voice-processing engine, so the
-/// playback is the echo-cancellation reference and the mic can stay live
-/// (barge-in) without the agent transcribing its own TTS. See
-/// `docs/voice-side-channel.md`.
-protocol TtsPlayer: AnyObject {
-    /// Play WAV bytes, returning when playback finishes or is stopped.
-    func play(wav: Data) async
-    func stopPlayback()
+    var playback: AudioSink? { get { nil } set {} }
 }
 
 /// Reply-speech backend choice, persisted across launches.
@@ -110,11 +101,20 @@ final class AppleTtsEngine: NSObject, TtsEngine {
     func prepare() async {}
 
     func speak(_ text: String) async {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = SpeechVoice.best(language: SpeechVoice.callLanguage)
+        utterance.prefersAssistiveTechnologySettings = false
+        Automation.mark("voice: speak id=\(utterance.voice?.identifier ?? "nil") assistive=false")
+        // Render through the call's single playback sink when one is wired, so
+        // Apple TTS plays on the echo-cancellation reference instead of the
+        // synthesizer's private output (docs/voice-side-channel.md).
+        if let sink = playback {
+            for chunk in await Self.render(utterance, with: synthesizer) {
+                await sink.play(chunk)
+            }
+            return
+        }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = SpeechVoice.best(language: SpeechVoice.callLanguage)
-            utterance.prefersAssistiveTechnologySettings = false
-            Automation.mark("voice: speak id=\(utterance.voice?.identifier ?? "nil") assistive=false")
             completion.reset { continuation.resume() }
             synthesizer.delegate = completion
             synthesizer.speak(utterance)
@@ -126,6 +126,67 @@ final class AppleTtsEngine: NSObject, TtsEngine {
         // stopSpeaking cancels via `didCancel`, but resume here too so a hangup
         // can never leave `speak()` awaiting.
         completion.complete()
+    }
+
+    /// Render an utterance to PCM via `write(_:toBufferCallback:)` (iOS 13+).
+    /// The callback delivers a zero-length buffer at end of stream.
+    private static func render(
+        _ utterance: AVSpeechUtterance, with synthesizer: AVSpeechSynthesizer
+    ) async -> [AVAudioPCMBuffer] {
+        let collector = SpeechBufferCollector()
+        synthesizer.write(utterance) { buffer in
+            guard let pcm = buffer as? AVAudioPCMBuffer, pcm.frameLength > 0 else {
+                collector.finish()
+                return
+            }
+            collector.add(pcm)
+        }
+        return await collector.wait(timeout: 15)
+    }
+}
+
+/// Collects the PCM chunks `AVSpeechSynthesizer.write` streams, completing once
+/// (on the end-of-stream marker or a timeout) so `speak()` can never hang.
+private final class SpeechBufferCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var chunks: [AVAudioPCMBuffer] = []
+    private var continuation: CheckedContinuation<[AVAudioPCMBuffer], Never>?
+    private var finished = false
+
+    func add(_ buffer: AVAudioPCMBuffer) {
+        lock.lock()
+        if !finished { chunks.append(buffer) }
+        lock.unlock()
+    }
+
+    func finish() {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let continuation = self.continuation
+        let result = chunks
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: result)
+    }
+
+    func wait(timeout: TimeInterval) async -> [AVAudioPCMBuffer] {
+        let timeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            self?.finish()
+        }
+        defer { timeoutTask.cancel() }
+        return await withCheckedContinuation { continuation in
+            lock.lock()
+            if finished {
+                let result = chunks
+                lock.unlock()
+                continuation.resume(returning: result)
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
     }
 }
 
@@ -174,8 +235,12 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
     private var prepareTask: Task<Void, Never>?
     private var player: AVAudioPlayer?
     private var finish: (() -> Void)?
-    /// Shared recognition-engine playback sink (`VoiceAgentSession` wires it).
-    weak var playback: TtsPlayer?
+    /// The call's single playback sink (`VoiceAgentSession` wires `AudioIO`).
+    /// Mirrored onto the Apple fallback so a Kokoro failure still renders on
+    /// the same bus (and its AEC reference).
+    weak var playback: AudioSink? {
+        didSet { fallback.playback = playback }
+    }
     /// Set by `stop()` so a cancel during ANE synthesis does not start playback.
     private var stopRequested = false
     private(set) var lastLatencyMs: Int?
@@ -269,7 +334,7 @@ extension KokoroTtsEngine: AVAudioPlayerDelegate {
 // MARK: - Speech recognition
 
 /// On-device recognizer behind the voice loop. Mirrors
-/// `SystemSpeechTranscriber`'s surface so the loop is engine-agnostic.
+/// `AppleSpeechTranscriber`'s surface so the loop is engine-agnostic.
 protocol AsrEngine: AnyObject {
     var name: String { get }
     /// Pure transcription time for the last final, in ms (nil when the engine
@@ -346,7 +411,7 @@ extension SpeechEngines {
         case .system:
             if #available(iOS 26.0, *) {
                 Automation.mark("voice: asr backend=system")
-                return SystemSpeechTranscriber()
+                return AppleSpeechTranscriber()
             }
             return nil
         }
@@ -362,7 +427,7 @@ extension SpeechEngines {
 }
 
 @available(iOS 26.0, *)
-extension SystemSpeechTranscriber: AsrEngine {
+extension AppleSpeechTranscriber: AsrEngine {
     var name: String { "system" }
 }
 

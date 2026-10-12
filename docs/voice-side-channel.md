@@ -431,7 +431,7 @@ to the cascade.
   — `.voiceChat` mode alone left the mic hearing the agent (all partials were
   correctly dropped as echo, which is how the missing AEC surfaced).
 - **SpeechAnalyzer on 26+, SFSpeechRecognizer below (both platforms)**:
-  `SystemSpeechTranscriber` (iOS 26+, `ios/Idfon/SystemSpeechTranscriber.swift`)
+  `AppleSpeechTranscriber` (iOS 26+, `ios/Idfon/AppleSpeechTranscriber.swift`)
   and `MacSpeechTranscriber` (macOS 26+) use `SpeechAnalyzer` +
   `SpeechTranscriber` with `.volatileResults`/`.fastResults` and
   `AnalyzerInputConverter` for live partials; below 26 both apps fall back to
@@ -520,12 +520,13 @@ half ("…capital of France…" → "the capital of France is Paris."). This is 
 client-owned audio path the design calls A1.
 
 **Continuous endpointing (2026-10-02).** The loop now keeps one `SpeechAnalyzer`
-alive for the whole session — `SystemSpeechTranscriber` on iOS 26+,
+alive for the whole session — `AppleSpeechTranscriber` on iOS 26+,
 `MacSpeechTranscriber` on macOS 26+ (SFSpeech remains the pre-26 fallback). The
 mic tap stays live while the agent speaks so the caller can barge in: iOS
-enables AEC (`setVoiceProcessingEnabled(true)` on a `.playAndRecord`/`.default`
-session — *not* `.voiceChat`, whose VoiceProcessingIO output is attenuated),
-macOS uses the gated peak threshold, and each committed utterance is filtered
+enables AEC in the single audio owner (`AudioIO`, voice-agent profile:
+`.playAndRecord`/`.voiceChat` + `setVoiceProcessingEnabled(true)`), with TTS
+rendered as PCM on the owner's playback bus so it is the AEC reference —
+macOS uses the gated peak threshold. Each committed utterance is filtered
 through `is_cancellable` and `EchoSuppressor`; a cancellable non-echo utterance
 stops playback (`tts.stop()`) and becomes the next turn. Hang-up also cancels
 in-flight TTS, so End is immediate even on a long reply.
@@ -596,7 +597,7 @@ explicit choice still wins; the language gate only sets the default.
   synthesis (short calls are fine); the escape hatch is Chatterbox Nano or
   Kokoro ONNX.
 - **ASR** — `ParakeetAsr` (moondream/parakeet-redux, ANE) is the English
-  default; `SystemSpeechTranscriber` (SpeechAnalyzer, iOS 26+, system locale)
+  default; `AppleSpeechTranscriber` (SpeechAnalyzer, iOS 26+, system locale)
   is the default for other languages and the runtime fallback when Parakeet
   fails to start. A first-run
   Parakeet download + compile takes minutes (cached afterwards: ≈8 s to
@@ -694,10 +695,11 @@ optional.
 - **Side-channel uses `.voiceChat`** (VPIO's native mode; corrected
   2026-10-07). `.default` silently disables VPIO's echo cancellation, and
   enabling input-node voice processing without a connected playback bus leaves
-  the AEC reference empty and often drops the output level. `VoiceAgentSession`
-  runs `.voiceChat` + `overrideOutputAudioPort(.speaker)`, renders TTS on the
-  recognizer's engine (a `TtsPlayer` playback node), and re-asserts the
-  loudspeaker on route changes (`troubleshooting.md`).
+  the AEC reference empty and often drops the output level. The single audio
+  owner (`AudioIO`, `ios/Idfon/AudioIO.swift`) runs `.voiceChat` +
+  `overrideOutputAudioPort(.speaker)`, renders TTS and cues as PCM on its one
+  playback bus (the AEC reference), and re-asserts the loudspeaker on route
+  changes (`troubleshooting.md`, `audio-media.md`).
 - **macOS has none** — `troubleshooting.md:45` notes it is deliberately left
   without VPIO; `audio-media.md` states there is no echo cancellation.
 - **AEC is a P5 concern.** Full barge-in where AEC exists (iOS); **gated or

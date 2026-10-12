@@ -1,20 +1,29 @@
 import Foundation
 import AVFAudio
 
-/// Shell-side voice-message recorder (AVAudioRecorder). Call audio stays
-/// daemon-side; voice messages in the composer are recorded here, then handed
-/// to the daemon as a blob + IDFON-RECORDING/1 envelope.
-final class VoiceMemo: NSObject, AVAudioRecorderDelegate {
-    private var recorder: AVAudioRecorder?
-    private var interruptionObserver: NSObjectProtocol?
-    private var routeObserver: NSObjectProtocol?
+/// Shell-side voice-message recorder: consumes the single microphone source
+/// (`AudioIO`) and writes the contact-profile format (16 kHz mono s16 WAV),
+/// then hands the file to the daemon as a blob + `IDFON-RECORDING/1` envelope.
+///
+/// It owns no `AVAudioEngine` or `AVAudioRecorder` and never configures the
+/// session — `AudioIO` does. It is just an `AudioCaptureObserver` that writes
+/// the buffers it receives.
+final class VoiceMemo: AudioCaptureObserver {
+    private var file: AVAudioFile?
     private(set) var fileURL: URL?
     private(set) var duration: TimeInterval = 0
+    private var framesWritten: AVAudioFramePosition = 0
 
-    /// Live amplitude 0...1 while recording (recorder metering; no engine tap
-    /// needed — the recorder is the only input client during a memo).
+    /// Live amplitude 0...1 while recording, computed from the captured buffers.
     var onAmplitude: ((Float) -> Void)?
-    private var meterTimer: Timer?
+    /// Injected for tests; the app uses the single real microphone source.
+    private let source: AudioSource
+
+    private static let sampleRate = 16_000.0
+
+    init(source: AudioSource = AudioIO.shared) {
+        self.source = source
+    }
 
     static func requestPermission(_ completion: @escaping (Bool) -> Void) {
         AVAudioApplication.requestRecordPermission { granted in
@@ -23,86 +32,35 @@ final class VoiceMemo: NSObject, AVAudioRecorderDelegate {
     }
 
     func start() throws -> URL {
-        if recorder != nil { _ = stop() }
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
-        try session.setActive(true)
-
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("memo-\(Int(Date().timeIntervalSince1970 * 1000)).wav")
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 16_000,
+            AVSampleRateKey: Self.sampleRate,
             AVNumberOfChannelsKey: 1,
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false,
             AVLinearPCMIsBigEndianKey: false,
         ]
-        let recorder = try AVAudioRecorder(url: url, settings: settings)
-        recorder.isMeteringEnabled = true
-        recorder.record()
-        self.recorder = recorder
-        fileURL = url
-        interruptionObserver = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification,
-            object: session,
-            queue: .main
-        ) { [weak self] notification in
-            guard let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  type == AVAudioSession.InterruptionType.began.rawValue else { return }
-            _ = self?.stop()
-        }
-        routeObserver = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: session,
-            queue: .main
-        ) { [weak self] notification in
-            guard let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-                  reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
-            _ = self?.stop()
-        }
-
-        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self, weak recorder] _ in
-            guard let recorder else { return }
-            recorder.updateMeters()
-            // averagePower is dBFS (-160...0); map -35dB..0dB onto 0...1
-            let db = recorder.averagePower(forChannel: 0)
-            self?.onAmplitude?(Float(pow(10, db / 35)))
-        }
+        let file = try AVAudioFile(forWriting: url, settings: settings)
+        self.file = file
+        self.fileURL = url
+        self.framesWritten = 0
+        AudioIO.shared.start(profile: .recording)
+        source.addCaptureObserver(self)
         return url
     }
 
     /// Stops and returns (fileURL, duration seconds).
     func stop() -> (url: URL, duration: TimeInterval)? {
-        meterTimer?.invalidate()
-        meterTimer = nil
-        guard let recorder, let url = fileURL else { return nil }
-        duration = recorder.currentTime
-        recorder.stop()
-        self.recorder = nil
-        self.onAmplitude?(0)
+        guard file != nil, let url = fileURL else { return nil }
+        source.removeCaptureObserver(self)
+        AudioIO.shared.stop()
+        duration = Double(framesWritten) / Self.sampleRate
+        self.file = nil   // releases AVAudioFile, flushing the WAV to disk
         self.fileURL = nil
-        if let interruptionObserver {
-            NotificationCenter.default.removeObserver(interruptionObserver)
-            self.interruptionObserver = nil
-        }
-        if let routeObserver {
-            NotificationCenter.default.removeObserver(routeObserver)
-            self.routeObserver = nil
-        }
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        onAmplitude?(0)
         return (url, duration)
-    }
-
-    deinit {
-        meterTimer?.invalidate()
-        recorder?.stop()
-        if let interruptionObserver {
-            NotificationCenter.default.removeObserver(interruptionObserver)
-        }
-        if let routeObserver {
-            NotificationCenter.default.removeObserver(routeObserver)
-        }
     }
 
     func discard() {
@@ -111,6 +69,34 @@ final class VoiceMemo: NSObject, AVAudioRecorderDelegate {
         if let url { try? FileManager.default.removeItem(at: url) }
         fileURL = nil
         duration = 0
+    }
+
+    deinit {
+        source.removeCaptureObserver(self)
+    }
+
+    // MARK: - AudioCaptureObserver
+
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        reportAmplitude(buffer)
+        guard let file,
+              let output = AudioIO.convert(buffer, to: file.processingFormat)
+        else { return }
+        try? file.write(from: output)
+        framesWritten += AVAudioFramePosition(output.frameLength)
+    }
+
+    private func reportAmplitude(_ buffer: AVAudioPCMBuffer) {
+        guard let channel = buffer.floatChannelData?[0] else { return }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return }
+        var sum = 0.0
+        for index in 0..<frames {
+            let sample = Double(channel[index])
+            sum += sample * sample
+        }
+        let rms = (sum / Double(frames)).squareRoot()
+        onAmplitude?(Float(min(rms * 12, 1)))
     }
 
     /// Downsamples a wav file into normalized amplitudes for a static waveform.

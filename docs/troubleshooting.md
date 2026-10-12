@@ -36,9 +36,10 @@ whisper level. The first fix moved the session to `.default` with AEC from
 disables VPIO's echo cancellation, and enabling input voice processing with no
 connected playback bus leaves the AEC reference empty and often drops the
 output level too. The session is back on `.voiceChat` (VPIO's native mode): TTS
-renders on the recognizer's engine (a `TtsPlayer` playback node), a route guard
-re-asserts the loudspeaker, and other-audio ducking is minimized. Verified on
-device (ringback and reply volume normal, no self-bleed).
+renders on the app's single playback bus (`AudioIO`, see
+[audio-media.md](audio-media.md)), a route guard re-asserts the loudspeaker, and
+other-audio ducking is minimized. Verified on device (ringback and reply volume
+normal, no self-bleed).
 
 ## iOS voice call aborts (SIGABRT) in setVoiceProcessingEnabled (2026-10-07, FIXED)
 
@@ -56,7 +57,7 @@ which raises an **Objective-C exception**. Swift's `do/catch` cannot catch an
 ObjC exception, so the process aborted.
 
 **Fix.** Attach the playback node, enable voice processing, *then* connect it
-(`ios/Idfon/ParakeetAsr.swift`) — the order `SystemSpeechTranscriber` already
+(`ios/Idfon/ParakeetAsr.swift`) — the order `AppleSpeechTranscriber` already
 uses. Note `setVoiceProcessingEnabled` can raise beyond Swift's reach; if a
 future ordering reintroduces it, use a tiny ObjC `@try/@catch` shim rather than
 relying on `try`.
@@ -197,14 +198,15 @@ console plus the holder log in one command; note that
 `xcrun devicectl device process launch --console` ignores SIGINT, so the
 script runs it as a child and kills it on Ctrl-C.
 
-**Side-channel variant (2026-10-04).** The on-device client-cascade voice call
-(`VoiceAgentSession`, `ios/Idfon/VoiceAgentSession.swift`) hit the same
-attenuation: with `.voiceChat` its TTS (Kokoro `AVAudioPlayer` /
-`AVSpeechSynthesizer`) was at whisper level. It does **not** need `.voiceChat` —
-AEC comes from `AVAudioInputNode.setVoiceProcessingEnabled(true)`, which works
-on a plain `.playAndRecord`/`.default` session. The session now stays `.default`
-+ `overrideOutputAudioPort(.speaker)`, so playback skips VoiceProcessingIO
-entirely and barge-in still works (verified on an iPhone 16).
+**Side-channel variant (2026-10-04; superseded by the single-owner design).**
+The on-device client-cascade voice call (`VoiceAgentSession`,
+`ios/Idfon/VoiceAgentSession.swift`) hit the same attenuation: with
+`.voiceChat` its TTS (Kokoro `AVAudioPlayer` / `AVSpeechSynthesizer`) was at
+whisper level. The session mode and playback bus now live in the one audio owner
+(`AudioIO`, `ios/Idfon/AudioIO.swift`): the voice-agent profile uses
+`.playAndRecord`/`.voiceChat` (VPIO's native AEC mode) and TTS renders as PCM on
+the owner's playback bus, i.e. the AEC reference. See
+[audio-media.md](audio-media.md).
 
 ## Live-call playback crackles / breaks up (2026-09-26, FIXED; re-verified 2026-09-29)
 

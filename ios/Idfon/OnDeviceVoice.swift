@@ -182,7 +182,7 @@ enum SpeechVoice {
 ///
 /// The provider mirrors the Rust `idfon-voice` seam conceptually; this is the
 /// client-side (A1) implementation that can run where memory allows.
-final class OnDeviceVoice: NSObject {
+final class OnDeviceVoice: NSObject, AudioCaptureObserver {
     static let shared = OnDeviceVoice()
 
     private let queue = DispatchQueue(label: "app.idfon.ondevicevoice")
@@ -299,21 +299,20 @@ final class OnDeviceVoice: NSObject {
 
     // MARK: - Live microphone → on-device STT
 
-    private var audioEngine: AVAudioEngine?
     private var listenTask: SFSpeechRecognitionTask?
     private var listenRequest: SFSpeechAudioBufferRecognitionRequest?
     private var listenDone: ((Result<String, Error>) -> Void)?
     private var latestPartial = ""
-    /// Retained during the barge-in exercise.
-    var bargeInPlayer: AVAudioPlayer?
+    /// Injected for tests; the app uses the single real microphone source.
+    private let source: AudioSource = AudioIO.shared
     /// iOS 26+ SpeechAnalyzer transcriber, retained while barge-in listens.
-    var systemTranscriber: Any?
+    var appleTranscriber: Any?
 
     func stopSystemTranscriber() {
-        if #available(iOS 26.0, *), let transcriber = systemTranscriber as? SystemSpeechTranscriber {
+        if #available(iOS 26.0, *), let transcriber = appleTranscriber as? AppleSpeechTranscriber {
             transcriber.stop()
         }
-        systemTranscriber = nil
+        appleTranscriber = nil
     }
 
     /// P5 text-layer echo rule over the C ABI: true when `heard` is the agent's
@@ -330,9 +329,10 @@ final class OnDeviceVoice: NSObject {
 
     /// Start listening on the microphone and transcribe entirely on device.
     /// Partials are logged as they arrive; the first final result completes.
+    ///
+    /// Capture comes from the single source (`AudioIO`); the caller owns the
+    /// session/engine lifecycle (this method only subscribes to buffers).
     func startListening(
-        configureSession: Bool = true,
-        enableVoiceProcessing: Bool = true,
         onPartial: ((String) -> Void)? = nil,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
@@ -353,41 +353,14 @@ final class OnDeviceVoice: NSObject {
                     return
                 }
 
-                if configureSession {
-                    let session = AVAudioSession.sharedInstance()
-                    try? session.setCategory(.record, mode: .measurement, options: [.duckOthers])
-                    try? session.setActive(true, options: .notifyOthersOnDeactivation)
-                }
-
                 let request = SFSpeechAudioBufferRecognitionRequest()
                 request.requiresOnDeviceRecognition = true
                 request.shouldReportPartialResults = true
                 self.listenRequest = request
                 self.listenDone = completion
 
-                let engine = AVAudioEngine()
-                let input = engine.inputNode
-                // A caller-owned play-and-record session (barge-in) needs voice
-                // processing for echo cancellation; query the format after
-                // enabling it, since the input node reconfigures.
-                // Voice processing needs an active output reference; in a
-                // listen-only phase (no playback yet) it silences the mic, so
-                // the caller can opt out.
-                if !configureSession && enableVoiceProcessing {
-                    try? input.setVoiceProcessingEnabled(true)
-                }
-                let format = input.outputFormat(forBus: 0)
-                input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                    request.append(buffer)
-                }
-                engine.prepare()
-                do {
-                    try engine.start()
-                } catch {
-                    completion(.failure(error))
-                    return
-                }
-                self.audioEngine = engine
+                AudioIO.shared.start(profile: .voiceAgent)
+                self.source.addCaptureObserver(self)
 
                 self.listenTask = recognizer.recognitionTask(with: request) { result, error in
                     if let result {
@@ -408,16 +381,19 @@ final class OnDeviceVoice: NSObject {
         }
     }
 
-    /// Stop the microphone and recognition.
+    /// Stop listening (does not stop the shared source; the caller does).
     func stopListening() {
-        audioEngine?.stop()
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine = nil
+        source.removeCaptureObserver(self)
         listenRequest?.endAudio()
         listenRequest = nil
         listenTask?.cancel()
         listenTask = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    // MARK: - AudioCaptureObserver
+
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        listenRequest?.append(buffer)
     }
 
     func finishListening(_ result: Result<String, Error>) {
