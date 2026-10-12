@@ -27,7 +27,8 @@ check(TurnController.decide(transcript: "remind me at noon") == .forward, "imper
 check(TurnController.decide(transcript: "") == .forward, "empty forwards (fail-open)")
 check(TurnController.decide(transcript: "yeah what time is it") == .forward, "noise plus a request")
 
-// EchoTrim: the agent's whole last utterance re-heard at the start is dropped.
+// EchoTrim: the agent's speech re-heard at the start of a turn is dropped,
+// whether the whole utterance or only its tail bled in.
 check(
     EchoTrim.trim(
         heard: "Hello, please speak. Hi, this is Don.",
@@ -50,6 +51,13 @@ check(
     EchoTrim.trim(heard: "what is the weather", lastSpoken: "Sure thing.")
         == "what is the weather",
     "no overlap leaves the transcript alone"
+)
+check(
+    EchoTrim.trim(
+        heard: "Please speak. Is this Apple Foundation model?",
+        lastSpoken: "Hello, please speak."
+    ) == "Is this Apple Foundation model?",
+    "drops only the tail of the greeting that bled in"
 )
 check(
     EchoTrim.trim(heard: "Hello, please speak.", lastSpoken: "Hello, please speak.")
