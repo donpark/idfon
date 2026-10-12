@@ -19,7 +19,10 @@ scripts/voice-prompt-lab.sh --variants prompts/voices --turns turns.jsonl
 - `--turns FILE` — one turn per line: plain text, or a JSON object
   `{"text": "...", "expect": "...", "forbid": ["..."]}`. Keep a corpus with the
   agent it tests (`agents/<agent>/turns.jsonl`); `expect`/`forbid` are the whole
-  specification a scorer or optimizer sees.
+  specification a scorer or optimizer sees. Promote a real failure into it with
+  `scripts/voice-corpus-add.sh --text "..." --forbid "..." [--expect "..."]`,
+  which writes the line, refuses an unlabelled one (it could never fail, so it
+  could never teach anything), and skips a turn already in the corpus.
 - `--json-out FILE` — append one JSON object per scored turn (`config`, `text`,
   `reply`, `expect`, `forbid`, `score`) for a tool to consume.
 
