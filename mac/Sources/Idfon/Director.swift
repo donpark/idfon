@@ -32,6 +32,28 @@ final class Director {
         return Director(handle: pointer)
     }
 
+    /// Create the on-device director with a wrapped-agent callback: its
+    /// `voice_forward` tool delegates each turn to `forward` (the app forwards
+    /// to the called idfon peer and blocks for the reply), so a proxy call can
+    /// answer a small thing itself and hand the rest over. The caller must run
+    /// the director off the main thread.
+    static func createAFMWrapped(
+        instructions: String,
+        config: [String: Any] = [:],
+        forward: idfon_director_forward_fn?,
+        freeReply: idfon_director_free_fn?
+    ) -> Director? {
+        let json = (try? JSONSerialization.data(withJSONObject: config))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let pointer = instructions.withCString { text in
+            json.withCString { config in
+                idfon_director_new_afm_wrapped(text, config, nil, forward, freeReply)
+            }
+        }
+        guard let pointer else { return nil }
+        return Director(handle: pointer)
+    }
+
     func prewarm() {
         _ = idfon_director_prewarm(handle)
     }
@@ -85,6 +107,34 @@ extension Director: @unchecked Sendable {
         result["envelopes"] as? [String] ?? []
     }
 
+    /// The trace record of a turn.
+    static func record(_ result: [String: Any]) -> [String: Any] {
+        result["record"] as? [String: Any] ?? [:]
+    }
+
+    /// The C callback behind `voice_forward`: forward to the called peer and
+    /// block until the reply arrives, then hand the host-allocated string to
+    /// Rust (freed by `freeReplyCallback`).
+    static let forwardCallback: idfon_director_forward_fn = {
+        _, textPointer, _, outReply in
+        guard let textPointer, let outReply else { return 1 }
+        let text = String(cString: textPointer)
+        let semaphore = DispatchSemaphore(value: 0)
+        var reply: String?
+        Task { @MainActor in
+            reply = await VoiceAgentSession.shared.forwardToActiveAgent(text)
+            semaphore.signal()
+        }
+        guard semaphore.wait(timeout: .now() + 30) == .success else { return 2 }
+        guard let reply, !reply.isEmpty, let pointer = strdup(reply) else { return 3 }
+        outReply.pointee = pointer
+        return 0
+    }
+
+    static let freeReplyCallback: idfon_director_free_fn = { pointer in
+        free(pointer)
+    }
+
     /// The spoken text of a turn: the first `IDFON-SPEAK/1` envelope.
     static func spokenText(_ result: [String: Any]) -> String {
         let prefix = "IDFON-SPEAK/1\n"
@@ -96,5 +146,86 @@ extension Director: @unchecked Sendable {
             }
         }
         return ""
+    }
+}
+
+/// The live-call director: one AFM director per proxy call, prewarmed at call
+/// setup and run per caller turn. Enabled per contact (`VoiceTurnMode.proxy`);
+/// `-directorcall` forces it on any contact as the device probe for this path.
+/// A turn that fails falls back to the remote agent
+/// (`VoiceAgentSession.reply`).
+final class DirectorRuntime {
+    static let shared = DirectorRuntime()
+
+    private var director: Director?
+    private(set) var enabled = false
+
+    static let instructions = """
+    # Identity
+    You are the voice of the agent the caller reached. Never introduce yourself or say you are a voice agent, director, assistant, or middleware; never mention the pipeline, the model, or the tools. The caller believes they are talking to the agent.
+    # Output rules
+    Plain spoken text only. One short sentence. Never ask the caller to repeat or clarify a name they did not give.
+    # Tools
+    speak: say the short spoken reply.
+    voice_forward: send the caller's exact words to the agent and speak its reply.
+    # Routing
+    A greeting, an acknowledgement, or a short answer you know: speak it. Anything else: voice_forward.
+    """
+
+    /// Prepare the director for this call (load + warm the session), off the
+    /// main thread. No-op unless the contact is set to proxy mode, and when AFM
+    /// is unavailable. Await it before the first turn so the model is warm.
+    func startCall(proxy: Bool) async {
+        guard !enabled else { return }
+        let probe = ProcessInfo.processInfo.arguments.contains("-directorcall")
+        guard proxy || probe else { return }
+        let trace: [String: Any] = [
+            "tier": "on-device", "provider": "afm", "model": "apple-foundation-models",
+        ]
+        let created: Director? = await Task.detached(priority: .userInitiated) { () -> Director? in
+            guard let director = Director.createAFMWrapped(
+                instructions: Self.instructions,
+                config: ["grant": ["speak", "voice_forward"], "budget": 32, "trace": trace],
+                forward: Director.forwardCallback,
+                freeReply: Director.freeReplyCallback
+            ) else { return nil }
+            let started = Date()
+            director.prewarm()
+            Automation.mark("director: call prewarm_ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+            return director
+        }.value
+        guard let created else {
+            Automation.mark("director: call unavailable (AFM off?)")
+            return
+        }
+        director = created
+        enabled = true
+        Automation.mark("director: call ready (voice_forward enabled) proxy=\(proxy) probe=\(probe)")
+    }
+
+    func endCall() {
+        director = nil
+        enabled = false
+    }
+
+    /// Run one caller turn on the director, off the main thread. Returns the
+    /// spoken reply, or nil to fall back to the remote agent.
+    func turn(_ text: String) async -> String? {
+        guard let director else { return nil }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let started = Date()
+                guard let result = director.turn(text) else {
+                    Automation.mark("director: call FAIL turn")
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let spoken = Director.spokenText(result)
+                let outcome = Director.record(result)["outcome"] as? [String: Any]
+                Automation.mark("director: call turn_ms=\(Int(Date().timeIntervalSince(started) * 1000)) spoken=\(spoken)")
+                Automation.mark("director: call status=\(outcome?["status"] as? String ?? "?")")
+                continuation.resume(returning: spoken.isEmpty ? nil : spoken)
+            }
+        }
     }
 }

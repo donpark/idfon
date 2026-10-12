@@ -37,6 +37,9 @@ final class VoiceAgentSession: NSObject {
     /// The on-device agent this call is with, if any: turns run locally on AFM
     /// with no peer and no network (`docs/voice-agent-modes.md`).
     private var localAgent: OnDeviceAgent?
+    /// The resolved peer id of this call: the proxy's `voice_forward` forwards
+    /// to it (`Director.forwardCallback`).
+    private var agentPeerId: String?
     /// Latest state, readable by the call UI (the `onState` callback is single-
     /// owner, so the LiveActivityController owns it).
     private(set) var state: State = .idle
@@ -109,6 +112,7 @@ final class VoiceAgentSession: NSObject {
                 }
                 peer = resolved
             }
+            agentPeerId = peer.id
             Automation.mark("voice-agent: start peer=\(peer.id)")
             // Reset the model history before a new call: the session log is
             // the medium, never the model's context (docs/session-context.md).
@@ -122,6 +126,13 @@ final class VoiceAgentSession: NSObject {
             ttsBackend = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.ttsBackend
             tts = SpeechEngines.makeTts(ttsBackend)
             asrBackend = ContactOnDeviceEngines.asr(for: peer.id).flatMap(AsrBackend.init(rawValue:)) ?? SpeechEngines.asrBackend
+            // Proxy mode: load and warm the AFM director behind the ringback.
+            // No-op unless this contact is set to proxy (or `-directorcall`
+            // forces it); an app-local agent uses `OnDeviceAgentRunner` instead.
+            if localAgent == nil {
+                await DirectorRuntime.shared.startCall(
+                    proxy: ContactVoiceTurnModes.mode(for: peer.id) == .proxy)
+            }
             // Wait for the recognizer before the turn loop (first-run model).
             await startAnalyzer()
             setState(.listening(""))
@@ -132,12 +143,24 @@ final class VoiceAgentSession: NSObject {
             // followed immediately by speech instead of dead air.
             var greeting: (display: String, spoken: String)?
             if !stopRequested {
-                greeting = await reply(
-                    peerId: peer.id,
-                    text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
-                    logPrefix: "voice-agent-greet",
-                    spokenTurnId: "\(callId)-greet"
-                )
+                let greetTurn =
+                    "The caller just connected on a voice call. Greet them briefly and invite them to speak."
+                // An app-local agent greets locally. A proxy or passive call
+                // greets through the agent, so the caller never hears the
+                // director's persona (`docs/voice-agent-modes.md`).
+                if localAgent != nil {
+                    greeting = await reply(
+                        peerId: peer.id, text: greetTurn,
+                        logPrefix: "voice-agent-greet",
+                        spokenTurnId: "\(callId)-greet"
+                    )
+                } else {
+                    greeting = await sendAndAwait(
+                        peerId: peer.id, text: greetTurn,
+                        logPrefix: "voice-agent-greet",
+                        spokenTurnId: "\(callId)-greet"
+                    )
+                }
             }
             CallTonePlayer.shared.start(.answered)
             if let greeting, !greeting.spoken.isEmpty, !stopRequested {
@@ -297,6 +320,32 @@ final class VoiceAgentSession: NSObject {
     /// speech engines actually in use, so the agent answers from the live state
     /// instead of its own configured pipeline (which can name a different
     /// holder route). Injected as untrusted data, never instructions.
+    /// Forward one turn to the called agent and return its reply text (the
+    /// director's `voice_forward`). No chat bookkeeping; the director speaks the
+    /// reply. Called from the director's background thread via a callback.
+    func forwardToActiveAgent(_ text: String) async -> String? {
+        guard let peerId = agentPeerId else {
+            Automation.mark("director: forward FAIL no peer")
+            return nil
+        }
+        let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
+        do {
+            try await client.sendText(to: peerId, text, context: callContext)
+        } catch {
+            Automation.mark("director: forward FAIL send \(error.localizedDescription)")
+            return nil
+        }
+        guard let message = await waitForReply(peerId: peerId, excluding: before),
+              case .text(let raw) = message.kind else {
+            Automation.mark("director: forward FAIL no reply")
+            return nil
+        }
+        let spoken = Self.spokenText(from: raw)
+        let reply = spoken.isEmpty ? Self.stripEnvelopes(raw) : spoken
+        Automation.mark("director: forward reply=\(reply)")
+        return reply.isEmpty ? nil : reply
+    }
+
     private var callContext: String {
         "Client cascade (on-device speech). Recognition: \(asrBackend.title); Generation: \(ttsBackend.title). The holder only produces text."
     }
@@ -310,6 +359,15 @@ final class VoiceAgentSession: NSObject {
         spokenTurnId: String? = nil
     ) async -> (display: String, spoken: String)? {
         guard let localAgent else {
+            if DirectorRuntime.shared.enabled, let spoken = await DirectorRuntime.shared.turn(text) {
+                if let spokenTurnId {
+                    ChatStore.shared.recordSpokenTurn(
+                        peerId: peerId, callId: callId, turnId: spokenTurnId,
+                        role: "agent", text: spoken
+                    )
+                }
+                return (display: spoken, spoken: spoken)
+            }
             return await sendAndAwait(
                 peerId: peerId, text: text, logPrefix: logPrefix, spokenTurnId: spokenTurnId
             )
@@ -369,6 +427,8 @@ final class VoiceAgentSession: NSObject {
         asr = nil
         deliver(nil)
         activePeerId = nil
+        agentPeerId = nil
+        DirectorRuntime.shared.endCall()
         localAgent = nil
         micMuted = false
         turnsDone = 0
