@@ -13,7 +13,11 @@ echo "== libiroh_c_ffi.dylib"
 echo "== idfond"
 (cd "$ROOT" && cargo build --release -p idfond)
 
+echo "== libidfon_director.a (on-device AFM voice-agent loop)"
+(cd "$ROOT" && cargo build --release -p idfon-director --features afm --target aarch64-apple-darwin)
+
 mkdir -p Vendor
 cp "$ROOT/native/vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib" Vendor/
+cp "$ROOT/target/aarch64-apple-darwin/release/libidfon_director.a" Vendor/
 
-echo "staged $PWD/Vendor/libiroh_c_ffi.dylib (+ $ROOT/target/release/idfond)"
+echo "staged $PWD/Vendor/libiroh_c_ffi.dylib + libidfon_director.a (+ $ROOT/target/release/idfond)"

@@ -39,8 +39,9 @@ blobs/
 ios/Vendor/
 ios/.derived/
 mac/.build/
-# mac app links this dylib from Vendor/; built by pnpm cli/mac build, not repo content
-mac/Vendor/*.dylib
+# mac app links these from Vendor/ (the dylib) or bakes it in (the AFM static
+# lib); both are built by pnpm mac build / build-deps.sh, not repo content
+mac/Vendor/
 
 # eve agent build artifacts
 agents/*/.output/

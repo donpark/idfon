@@ -302,11 +302,12 @@ greeting into the caller's first transcript, and the remote agent answered the
 forwarded text with a clarification question — both are agent/ASR behaviour, not
 the loop, and are the next things to look at.
 
-**OS floor (idfon, 2026-10-11).** AFM3 needs **iOS/macOS 27+**. A device below the
-floor cannot run the on-device director, so it uses the **remote voice agent**. The
-two-tier design already allows this per contact (the ticket names the provider).
-Note: `fm-rs` declares iOS/iPadOS 26+; verify the exact floor before the skill
-states it.
+**OS floor (idfon, 2026-10-11).** AFM3 needs **iOS/macOS 27+**; iOS/macOS 26 ship
+the FoundationModels *framework* with an earlier, smaller model, so the 26 API
+floor `fm-rs` declares is not an AFM3 floor. A device below the floor cannot run
+the on-device director, so it uses the **remote voice agent**. The two-tier
+design already allows this per contact (the ticket names the provider), and the
+app only offers `AFM 3` as a contact from 27 up.
 
 ## 6. Recommendation
 

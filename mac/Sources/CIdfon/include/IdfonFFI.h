@@ -94,6 +94,20 @@ void media_shutdown(void);
 void iroh_enable_tracing(void);              // tracing -> /tmp/idfon-<pid>.log (IROH_C_LOG filter)
 void rust_free_string(char *ptr);
 
+// On-device conversation director (crates/idfon-director): the voice-agent
+// loop over yoagent + Apple Foundation Models (#34,
+// docs/voice-agent-loop-contract.md). A null director means AFM is
+// unavailable (OS floor / Apple Intelligence off) or the config is invalid.
+// Turn results are JSON (envelopes + trace record); free with
+// idfon_director_free_string.
+void *idfon_director_new_afm_config(const char *instructions, const char *config_json);
+void *idfon_director_new_afm(const char *instructions);
+int32_t idfon_director_prewarm(void *director);
+char *idfon_director_turn(void *director, const char *text);
+char *idfon_director_turn_input(void *director, const char *input_json);
+void idfon_director_free(void *director);
+void idfon_director_free_string(char *ptr);
+
 // P5 barge-in/echo filters (native/vendor/iroh-c-ffi src/voice.rs) so the mac
 // shell reuses the Rust rules instead of reimplementing them.
 uint8_t idfon_voice_is_cancellable(const char *text, uint8_t playing, uint8_t in_tool_window);
