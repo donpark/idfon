@@ -284,6 +284,7 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
                     CapabilityTickets.remove(for: peer.id)
                     ContactVoiceSelection.remove(for: peer.id)
                     ContactOnDeviceEngines.remove(for: peer.id)
+                    ContactVoiceTurnModes.remove(for: peer.id)
                     await MainActor.run { self.refresh() }
                     done(true)
                 } catch {

@@ -167,14 +167,16 @@ final class DirectorRuntime {
     Answer the caller directly. When you do not know, or it needs live data or an action you cannot take, say so in one short sentence.
     """
 
-    /// Prepare the director for a call (load + warm the session), off the main
-    /// thread. No-op unless `-directorcall` is set, and when AFM is
-    /// unavailable. Await it before the first turn so the model is warm.
-    func startCall() async {
-        // Proxy mode only (`-directorcall`, a device probe). On-device agents
-        // are real contacts and use `OnDeviceAgentRunner`; regular contacts are
-        // passive remote.
-        guard !enabled, ProcessInfo.processInfo.arguments.contains("-directorcall") else { return }
+    /// Prepare the director for this call (load + warm the session), off the
+    /// main thread. No-op unless the contact is set to proxy mode, and when AFM
+    /// is unavailable. Await it before the first turn so the model is warm.
+    ///
+    /// `-directorcall` still forces a proxy call on any contact: it is the
+    /// device probe for this path (`docs/voice-agent-modes.md`).
+    func startCall(proxy: Bool) async {
+        guard !enabled else { return }
+        let probe = ProcessInfo.processInfo.arguments.contains("-directorcall")
+        guard proxy || probe else { return }
         let trace: [String: Any] = [
             "tier": "on-device", "provider": "afm", "model": "apple-foundation-models",
         ]
@@ -196,7 +198,7 @@ final class DirectorRuntime {
         }
         director = created
         enabled = true
-        Automation.mark("director: call ready (voice_forward enabled)")
+        Automation.mark("director: call ready (voice_forward enabled) proxy=\(proxy) probe=\(probe)")
     }
 
     func endCall() {

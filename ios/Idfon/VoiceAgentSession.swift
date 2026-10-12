@@ -168,11 +168,13 @@ final class VoiceAgentSession: NSObject {
             // pre-existing history.
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard !stopRequested else { finish(); return }
-            // On-device director (#41): load + warm the AFM session during call
-            // setup, hidden behind the ringback. No-op without `-directorcall`.
-            // An on-device agent uses `OnDeviceAgentRunner` instead.
+            // On-device director: load + warm the AFM session during call setup,
+            // hidden behind the ringback. Runs when this contact is set to proxy
+            // mode (`-directorcall` forces it for a probe). An on-device agent
+            // uses `OnDeviceAgentRunner` instead.
             if localAgent == nil {
-                await DirectorRuntime.shared.startCall()
+                await DirectorRuntime.shared.startCall(
+                    proxy: ContactVoiceTurnModes.mode(for: peer.id) == .proxy)
             }
             guard !stopRequested else { finish(); return }
             var greeting: (display: String, spoken: String)?

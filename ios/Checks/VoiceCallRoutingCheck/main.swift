@@ -139,4 +139,15 @@ check(sideInvite.contains("stt_side=client"), "invite marks the on-device half c
 check(!sideInvite.contains("tts_side=client"), "invite leaves the holder half server")
 ContactOnDeviceEngines.remove(for: peer)
 
+// Turn mode: passive by default, stored only when it differs, cleared on delete.
+check(ContactVoiceTurnModes.mode(for: peer) == .passive, "voice turn mode defaults to passive")
+check(VoiceTurnMode(rawValue: "passive")?.title == "Passive", "passive title")
+ContactVoiceTurnModes.set(.proxy, for: peer)
+check(ContactVoiceTurnModes.mode(for: peer) == .proxy, "proxy mode round-trips")
+ContactVoiceTurnModes.set(.passive, for: peer)
+check(ContactVoiceTurnModes.mode(for: peer) == .passive, "passive is stored as absence")
+ContactVoiceTurnModes.set(.proxy, for: peer)
+ContactVoiceTurnModes.remove(for: peer)
+check(ContactVoiceTurnModes.mode(for: peer) == .passive, "delete clears the mode")
+
 print("ALL OK")
