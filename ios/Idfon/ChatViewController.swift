@@ -759,16 +759,47 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         present(picker, animated: true)
     }
 
+    /// Send a file to an app-local agent: read it as text and inline it into the
+    /// turn. Not uploaded and not recorded as a file bubble — there is no peer
+    /// to fetch a blob from, and the model cannot resolve one — so the thread
+    /// says what was read instead of offering a download that cannot work.
+    private func sendFileLocally(agent: OnDeviceAgent, at url: URL, name: String) async {
+        let safeName = OnDeviceAttachments.promptName(name)
+        guard let content = OnDeviceAttachments.text(at: url) else {
+            showCallStatus("\(peer.displayName) can read text files only")
+            return
+        }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        let sizeText = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        showCallStatus("Reading \(safeName)…")
+        ChatStore.shared.appendOutgoing(ChatMessage(
+            id: UUID().uuidString, peerId: peer.id, kind: .text("📄 \(safeName) (\(sizeText))"),
+            outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
+        let spoken = await OnDeviceAgentRunner.shared.reply(
+            agent: agent,
+            input: OnDeviceAttachments.turnInput(
+                text: "Attached file (\(size) bytes)", name: safeName, content: content))
+        guard let spoken else {
+            showCallStatus("\(peer.displayName) did not answer (Apple Intelligence off?)")
+            return
+        }
+        ChatStore.shared.appendOutgoing(
+            ChatMessage(id: UUID().uuidString, peerId: peer.id, kind: .text(spoken),
+                        outgoing: false, timestamp: Date()))
+        idfonLog("idfon file: read locally name=\(safeName) size=\(size)")
+        showCallStatus(nil)
+    }
+
     private static let streamableExtensions: Set<String> = ["mp4", "mkv", "mp3", "flac"]
 
     /// Starts a P2P file transfer (§5 "Send File"): chunked upload + ticket
     /// envelope, tracked in the Session Tray. The blob streams from disk, so
     /// large files never sit in memory.
     private func sendFile(at url: URL, name: String) {
-        // An app-local agent cannot read a blob yet (the local model has no
-        // resolver), so a file would upload to a peer that does not exist.
-        guard OnDeviceAgents.shared.agent(forPeerId: peer.id) == nil else {
-            showCallStatus("\(peer.displayName) is an on-device agent: no file attachments yet")
+        // An app-local agent has no sandbox and no resolver, so the file is read
+        // here and inlined into the turn instead of uploaded.
+        if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
+            Task { await sendFileLocally(agent: agent, at: url, name: name) }
             return
         }
         showCallStatus("Sending \(name)…")

@@ -1209,10 +1209,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     /// ticket envelope, tracked in the Session Tray. The blob streams from disk,
     /// so large files never sit in memory.
     private func sendFile(at url: URL, name: String) {
-        // An app-local agent cannot read a blob yet (the local model has no
-        // resolver), so a file would upload to a peer that does not exist.
-        guard OnDeviceAgents.shared.agent(forPeerId: peer.id) == nil else {
-            showBanner("\(peer.displayName) is an on-device agent: no file attachments yet")
+        // An app-local agent has no sandbox and no resolver, so the file is read
+        // here and inlined into the turn instead of uploaded.
+        if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
+            Task { await sendFileLocally(agent: agent, at: url, name: name) }
             return
         }
         let transferId = UUID().uuidString
@@ -1259,6 +1259,35 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// Automation entry (`Automation.swift`): sends through the same path the
     /// attachment panel reaches, so the harness exercises the real wiring.
+    /// Send a file to an app-local agent: read it as text and inline it into the
+    /// turn. Not uploaded and not recorded as a file bubble — there is no peer
+    /// to fetch a blob from, and the model cannot resolve one — so the thread
+    /// says what was read instead of offering a download that cannot work.
+    private func sendFileLocally(agent: OnDeviceAgent, at url: URL, name: String) async {
+        let safeName = OnDeviceAttachments.promptName(name)
+        guard let content = OnDeviceAttachments.text(at: url) else {
+            showBanner("\(peer.displayName) can read text files only")
+            return
+        }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        let sizeText = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+        let peerId = conversation.isRoom ? store.selfPeerId : peer.id
+        store.appendOutgoing(ChatMessage(
+            id: UUID().uuidString, peerId: peerId, kind: .text("📄 \(safeName) (\(sizeText))"),
+            outgoing: true, status: "Sent", conversation: conversation.room?.id))
+        let spoken = await OnDeviceAgentRunner.shared.reply(
+            agent: agent,
+            input: OnDeviceAttachments.turnInput(
+                text: "Attached file (\(size) bytes)", name: safeName, content: content))
+        guard let spoken else {
+            showBanner("\(peer.displayName) did not answer (Apple Intelligence off?)")
+            return
+        }
+        store.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .text(spoken),
+                                         outgoing: false, conversation: conversation.room?.id))
+        idfonLog("idfon file: read locally name=\(safeName) size=\(size)")
+    }
+
     func automateSendFile(at url: URL) { sendFile(at: url, name: url.lastPathComponent) }
 
     /// Reveals a received file in Finder, fetching it first if the eager ingest
