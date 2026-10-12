@@ -27,4 +27,35 @@ check(TurnController.decide(transcript: "remind me at noon") == .forward, "imper
 check(TurnController.decide(transcript: "") == .forward, "empty forwards (fail-open)")
 check(TurnController.decide(transcript: "yeah what time is it") == .forward, "noise plus a request")
 
+// EchoTrim: the agent's whole last utterance re-heard at the start is dropped.
+check(
+    EchoTrim.trim(
+        heard: "Hello, please speak. Hi, this is Don.",
+        lastSpoken: "Hello, please speak."
+    ) == "Hi, this is Don.",
+    "drops the whole echoed greeting"
+)
+check(
+    EchoTrim.trim(heard: "of course. What time is it?", lastSpoken: "Of course.")
+        == "What time is it?",
+    "drops echo case-insensitively"
+)
+// A caller who repeats one word is not clipped (fail-open).
+check(
+    EchoTrim.trim(heard: "Tokyo is where I live", lastSpoken: "Tokyo")
+        == "Tokyo is where I live",
+    "does not clip a single repeated word"
+)
+check(
+    EchoTrim.trim(heard: "what is the weather", lastSpoken: "Sure thing.")
+        == "what is the weather",
+    "no overlap leaves the transcript alone"
+)
+check(
+    EchoTrim.trim(heard: "Hello, please speak.", lastSpoken: "Hello, please speak.")
+        == "",
+    "all-echo transcript becomes empty"
+)
+check(EchoTrim.trim(heard: "hello", lastSpoken: nil) == "hello", "no last spoken")
+
 print("ALL OK")

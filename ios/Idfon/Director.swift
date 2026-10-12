@@ -141,8 +141,6 @@ final class DirectorRuntime {
 
     private var director: Director?
     private(set) var enabled = false
-    /// True when the AFM loop answers directly (no wrapped agent, no network).
-    private(set) var onDevice = false
 
     static let instructions = """
     # Identity
@@ -173,30 +171,20 @@ final class DirectorRuntime {
     /// thread. No-op unless `-directorcall` is set, and when AFM is
     /// unavailable. Await it before the first turn so the model is warm.
     func startCall() async {
-        let args = ProcessInfo.processInfo.arguments
-        let proxy = args.contains("-directorcall")
-        let local = args.contains("-directorondevice")
-        guard !enabled, proxy || local else { return }
+        // Proxy mode only (`-directorcall`, a device probe). On-device agents
+        // are real contacts and use `OnDeviceAgentRunner`; regular contacts are
+        // passive remote.
+        guard !enabled, ProcessInfo.processInfo.arguments.contains("-directorcall") else { return }
         let trace: [String: Any] = [
             "tier": "on-device", "provider": "afm", "model": "apple-foundation-models",
         ]
         let created: Director? = await Task.detached(priority: .userInitiated) { () -> Director? in
-            let director: Director?
-            if local {
-                // Fully on-device: the loop is the assistant, no wrapped agent.
-                director = Director.createAFM(instructions: Self.onDeviceInstructions, config: [
-                    "grant": ["speak"],
-                    "trace": trace,
-                ])
-            } else {
-                director = Director.createAFMWrapped(
-                    instructions: Self.instructions,
-                    config: ["grant": ["speak", "voice_forward"], "budget": 32, "trace": trace],
-                    forward: Director.forwardCallback,
-                    freeReply: Director.freeReplyCallback
-                )
-            }
-            guard let director else { return nil }
+            guard let director = Director.createAFMWrapped(
+                instructions: Self.instructions,
+                config: ["grant": ["speak", "voice_forward"], "budget": 32, "trace": trace],
+                forward: Director.forwardCallback,
+                freeReply: Director.freeReplyCallback
+            ) else { return nil }
             let started = Date()
             director.prewarm()
             Automation.mark("director: call prewarm_ms=\(Int(Date().timeIntervalSince(started) * 1000))")
@@ -208,14 +196,12 @@ final class DirectorRuntime {
         }
         director = created
         enabled = true
-        onDevice = local
-        Automation.mark(local ? "director: call ready (on-device)" : "director: call ready (voice_forward enabled)")
+        Automation.mark("director: call ready (voice_forward enabled)")
     }
 
     func endCall() {
         director = nil
         enabled = false
-        onDevice = false
     }
 
     /// Run one caller turn on the director, off the main thread. Returns the

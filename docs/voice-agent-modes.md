@@ -25,6 +25,19 @@ so there is no network. AFM3 has no tools and no live data; it chats and knows
 what it was trained on. Use it for a private/offline assistant, not for a
 knowledge agent.
 
+## On-device agents are app-local contacts
+
+The built-in **AFM 3** is seeded when the device can run Apple Foundation
+Models (iOS 26+). Users add more on-device agents as ordinary contacts, each a
+**name plus a prompt** (`instructions`) — used like `llm` agent instances: the
+same local model, a different role per contact. No daemon peer, no network.
+Stored locally (`ios/Idfon/OnDeviceAgents.swift`); text and voice both run
+through `OnDeviceAgentRunner`. AFM 3 cannot be deleted.
+
+This is distinct from the per-process `-directorondevice`/`-directorcall`
+launch flags, which are device probes only: they must not change how a real
+contact (a named remote agent) behaves.
+
 ## Fast judgments are not an agent
 
 Turn-taking, barge-in, echo suppression, and prompt injection are **code**.

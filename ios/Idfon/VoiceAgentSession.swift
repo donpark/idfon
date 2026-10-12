@@ -39,6 +39,9 @@ final class VoiceAgentSession: NSObject {
     private(set) var activePeerId: String?
     /// The resolved peer id of the called agent, for director forwarding.
     private var agentPeerId: String?
+    /// Set when the call is to an on-device agent: answers come from AFM, not a
+    /// peer, and no dial happens.
+    private var localAgent: OnDeviceAgent?
     /// Latest state, readable by the call UI (the `onState` callback is single-
     /// owner, so the LiveActivityController owns it).
     private(set) var state: State = .idle
@@ -85,9 +88,15 @@ final class VoiceAgentSession: NSObject {
     private var pendingHeard: String?
 
     /// Continuous conversation until `stop()`.
-    func start(peerRef: String, turns: Int = Int.max) {
+    /// Talk to an on-device agent: no peer, no dial; turns run on AFM.
+    func runOnDevice(agent: OnDeviceAgent, turns: Int = Int.max) {
+        start(peerRef: agent.peerId, turns: turns, agent: agent)
+    }
+
+    func start(peerRef: String, turns: Int = Int.max, agent: OnDeviceAgent? = nil) {
         guard !isActive else { return }
         isActive = true
+        localAgent = agent
         stopRequested = false
         callId = UUID().uuidString
         turnLimit = turns
@@ -104,21 +113,29 @@ final class VoiceAgentSession: NSObject {
         segmenter.onCommit = { [weak self] text in self?.handleCommit(text) }
         segmenter.start()
         setupTask = Task { @MainActor in
-            let peers = (try? await client.peers()) ?? []
-            guard !stopRequested else { finish(); return }
-            guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
-                Automation.mark("voice-agent: FAIL no peer \(peerRef)")
-                CallFeedback.post("No voice call available for this contact.")
-                finish()
-                return
+            let peer: Peer
+            if let localAgent {
+                peer = localAgent.peer
+            } else {
+                let peers = (try? await client.peers()) ?? []
+                guard !stopRequested else { finish(); return }
+                guard let resolved = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
+                    Automation.mark("voice-agent: FAIL no peer \(peerRef)")
+                    CallFeedback.post("No voice call available for this contact.")
+                    finish()
+                    return
+                }
+                peer = resolved
             }
             agentPeerId = peer.id
             Automation.mark("voice-agent: start peer=\(peer.id)")
-            // Reset the model history before a new call: the session log is
-            // the medium, never the model's context (docs/session-context.md).
-            // Sent early; the engine prep and greeting that follow give the
-            // clear time to land.
-            try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
+            if localAgent == nil {
+                // Reset the model history before a new call: the session log is
+                // the medium, never the model's context (docs/session-context.md).
+                // Sent early; the engine prep and greeting that follow give the
+                // clear time to land.
+                try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
+            }
             guard !stopRequested else { finish(); return }
             // Per-contact on-device engines (else the app defaults). Resolved
             // here, once the peer id is known, before the recognizer is built.
@@ -148,7 +165,10 @@ final class VoiceAgentSession: NSObject {
             guard !stopRequested else { finish(); return }
             // On-device director (#41): load + warm the AFM session during call
             // setup, hidden behind the ringback. No-op without `-directorcall`.
-            await DirectorRuntime.shared.startCall()
+            // An on-device agent uses `OnDeviceAgentRunner` instead.
+            if localAgent == nil {
+                await DirectorRuntime.shared.startCall()
+            }
             guard !stopRequested else { finish(); return }
             var greeting: (display: String, spoken: String)?
             if !stopRequested {
@@ -157,7 +177,9 @@ final class VoiceAgentSession: NSObject {
                 // Proxy mode greets through the agent (so the caller never
                 // hears a "voice director" persona). On-device mode greets
                 // locally, and passive mode has no director at all.
-                if DirectorRuntime.shared.onDevice {
+                if localAgent != nil {
+                    // On-device agent: greet locally. Proxy and passive greet
+                    // through the agent.
                     greeting = await reply(
                         peerId: peer.id,
                         text: greetTurn,
@@ -254,7 +276,7 @@ final class VoiceAgentSession: NSObject {
                 break
             }
         }
-        guard let heard, !heard.isEmpty else {
+        guard var heard, !heard.isEmpty else {
             noSpeechTurns += 1
             Automation.mark("voice-agent: no transcript turn=\(turnsDone) streak=\(noSpeechTurns)")
             // Check in once before ending: silence is not a hangup. Then give
@@ -274,6 +296,18 @@ final class VoiceAgentSession: NSObject {
         if let asrReference, !asrReference.isEmpty {
             let wer = AsrScore.wer(reference: asrReference, hypothesis: heard)
             Automation.mark("voice-agent: wer=\(String(format: "%.3f", wer)) backend=\(asr?.name ?? "sfspeech") ref=\"\(asrReference)\" heard=\"\(heard)\"")
+        }
+        // Self-bleed: the recognizer may re-hear the tail of the agent's own
+        // speech at the start of this turn. Drop it so the agent is not
+        // addressed by, or asked about, its own words.
+        let withoutEcho = EchoTrim.trim(heard: heard, lastSpoken: lastSpoken)
+        if withoutEcho != heard {
+            Automation.mark("voice-agent: echo trimmed heard=\(heard) -> \(withoutEcho.isEmpty ? "<empty>" : withoutEcho)")
+            heard = withoutEcho
+        }
+        if heard.isEmpty {
+            setState(.listening(""))
+            return true
         }
         // Deterministic turn policy (prototype): a pure backchannel is not a
         // request, so do not spend an agent turn on it. Fail-open: anything
@@ -351,6 +385,21 @@ final class VoiceAgentSession: NSObject {
         logPrefix: String,
         spokenTurnId: String? = nil
     ) async -> (display: String, spoken: String)? {
+        if let localAgent {
+            guard let spoken = await OnDeviceAgentRunner.shared.reply(
+                agent: localAgent, text: text
+            ) else {
+                Automation.mark("\(logPrefix): FAIL on-device reply")
+                return nil
+            }
+            if let spokenTurnId {
+                ChatStore.shared.recordSpokenTurn(
+                    peerId: peerId, callId: callId, turnId: spokenTurnId,
+                    role: "agent", text: spoken
+                )
+            }
+            return (display: spoken, spoken: spoken)
+        }
         if DirectorRuntime.shared.enabled, let spoken = await DirectorRuntime.shared.turn(text) {
             if let spokenTurnId {
                 ChatStore.shared.recordSpokenTurn(
@@ -412,6 +461,7 @@ final class VoiceAgentSession: NSObject {
         deliver(nil)
         activePeerId = nil
         agentPeerId = nil
+        localAgent = nil
         micMuted = false
         turnsDone = 0
         turnLimit = Int.max

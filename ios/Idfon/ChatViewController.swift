@@ -538,7 +538,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                    let ticket = try? await client.putData(preview, resourceId: "crop-\(UUID().uuidString)") {
                     envelope = "IDFON-DATA/1\nticket=\(ticket)\nsize=\(preview.count)\n" + refEnvelope
                 }
-                if let room = conversation.room {
+                if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
+                    // On-device agents have no artifacts yet: send the words.
+                    await replyLocally(agent: agent, text: text, peerId: peerId)
+                } else if let room = conversation.room {
                     try? await client.sendRoom(room.id, text: envelope)
                 } else {
                     try? await client.sendText(to: peer.id, envelope)
@@ -548,12 +551,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         ChatStore.shared.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .text(text), outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
         Task {
-            if let room = conversation.room {
+            if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
+                await replyLocally(agent: agent, text: text, peerId: peerId)
+            } else if let room = conversation.room {
                 try? await client.sendRoom(room.id, text: text)
             } else {
                 try? await client.sendText(to: peer.id, text)
             }
         }
+    }
+
+    /// Answer a turn for an on-device agent and record it in the thread.
+    private func replyLocally(agent: OnDeviceAgent, text: String, peerId: String) async {
+        guard let spoken = await OnDeviceAgentRunner.shared.reply(agent: agent, text: text) else {
+            return
+        }
+        ChatStore.shared.appendOutgoing(
+            ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .text(spoken),
+                        outgoing: false, timestamp: Date()))
     }
 
     private func sendConversationText(_ text: String) async throws {
@@ -914,6 +929,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// client-cascade starts the on-device voice call, which uses the same
     /// call Bar/End UI as a live call.
     func startCall() {
+        // On-device agents run entirely in-app: no dial, no peer, no network.
+        if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
+            VoiceAgentSession.shared.runOnDevice(agent: agent)
+            return
+        }
         // The per-contact STT/TTS selection (option ids from the agent's
         // `idfon.json` catalog) rides the invite; the holder resolves it. The
         // catalog is a fetched resource, cached after the contact screen.
