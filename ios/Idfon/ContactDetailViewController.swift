@@ -2,8 +2,9 @@ import UIKit
 
 /// Contact detail: rename the contact, choose its per-contact speech engines
 /// (on-device backends plus the agent's fetched `idfon.json` options) from one
-/// "Speech" section, and remove it. Pushed from the contact list's ⓘ accessory
-/// so tapping the row still opens the chat.
+/// "Speech" section, set how its voice turns are handled, and remove it.
+/// Pushed from the contact list's ⓘ accessory so tapping the row still opens
+/// the chat.
 final class ContactDetailViewController: UIViewController {
     private let client = DaemonClient()
     private let peer: Peer
@@ -13,6 +14,8 @@ final class ContactDetailViewController: UIViewController {
     private let nameField = UITextField()
     private let recognitionButton = UIButton(type: .system)
     private let generationButton = UIButton(type: .system)
+    private let turnModeButton = UIButton(type: .system)
+    private let turnModeCaption = UILabel()
     private var catalog: [VoiceOption] = []
 
     init(peer: Peer) {
@@ -44,6 +47,14 @@ final class ContactDetailViewController: UIViewController {
         idLabel.numberOfLines = 0
 
         configureSpeech()
+        turnModeCaption.font = .preferredFont(forTextStyle: .caption1)
+        turnModeCaption.textColor = .secondaryLabel
+        turnModeCaption.numberOfLines = 0
+        rebuildTurnMode()
+        turnModeButton.showsMenuAsPrimaryAction = true
+        turnModeButton.contentHorizontalAlignment = .leading
+        turnModeButton.titleLabel?.font = .preferredFont(forTextStyle: .body)
+        turnModeButton.setTitleColor(.label, for: .normal)
 
         let delete = UIButton(type: .system)
         delete.setTitle("Delete Contact", for: .normal)
@@ -57,6 +68,9 @@ final class ContactDetailViewController: UIViewController {
             sectionLabel("Speech"),
             voiceRow("Recognition", recognitionButton),
             voiceRow("Generation", generationButton),
+            sectionLabel("Voice turns"),
+            voiceRow("Mode", turnModeButton),
+            turnModeCaption,
             delete,
         ])
         stack.axis = .vertical
@@ -150,6 +164,37 @@ final class ContactDetailViewController: UIViewController {
         rebuildSpeech()
     }
 
+    // MARK: - Voice turns
+
+    /// Per-contact turn mode: who answers the caller (`docs/voice-agent-modes.md`).
+    /// Passive is the default and costs nothing extra; proxy runs the on-device
+    /// director in front of the agent, which can answer, delegate, or hold a tool.
+    private func rebuildTurnMode() {
+        let mode = ContactVoiceTurnModes.mode(for: peer.id)
+        turnModeButton.setTitle(mode.title, for: .normal)
+        turnModeButton.menu = UIMenu(title: "Voice turns", children: VoiceTurnMode.allCases.map { option in
+            UIAction(title: option.title,
+                     subtitle: option == .proxy ? "On-device director in front" : "The agent answers",
+                     state: option == mode ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                ContactVoiceTurnModes.set(option, for: self.peer.id)
+                self.rebuildTurnMode()
+            }
+        })
+        turnModeCaption.text = Self.caption(for: mode)
+    }
+
+    /// What the mode means for the call, in one line. Says what it costs, since
+    /// proxy is the only per-contact setting that adds a model turn.
+    private static func caption(for mode: VoiceTurnMode) -> String {
+        switch mode {
+        case .passive:
+            return "The agent hears your words and answers. Nothing runs in front of it."
+        case .proxy:
+            return "The on-device director hears the turn first and either answers or forwards it. Adds an on-device turn to every remote one."
+        }
+    }
+
     private func voiceRow(_ title: String, _ button: UIButton) -> UIStackView {
         let label = UILabel()
         label.text = title
@@ -208,6 +253,7 @@ final class ContactDetailViewController: UIViewController {
                 CapabilityTickets.remove(for: peer.id)
                 ContactVoiceSelection.remove(for: peer.id)
                 ContactOnDeviceEngines.remove(for: peer.id)
+                ContactVoiceTurnModes.remove(for: peer.id)
                 await MainActor.run {
                     self.onChanged?()
                     self.navigationController?.popViewController(animated: true)

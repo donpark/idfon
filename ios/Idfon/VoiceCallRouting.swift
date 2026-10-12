@@ -176,6 +176,50 @@ enum ContactOnDeviceEngines {
 /// Which half of the speech pipeline a picker controls.
 enum SpeechSlot { case recognition, generation }
 
+/// How the voice layer treats the turns of a client-cascade call
+/// (`docs/voice-agent-modes.md`). Passive puts nothing in front of the wrapped
+/// agent: the turn is the caller's own words. Proxy runs the on-device
+/// director first, so it can answer itself, delegate with `voice_forward`, or
+/// hold a tool — it costs an on-device turn plus the remote round trip.
+///
+/// Only client-cascade calls have a caller-side director to put in front (a
+/// holder-side/live call terminates audio on the holder), so this setting is
+/// read where the call session starts, not where the route is resolved.
+enum VoiceTurnMode: String, CaseIterable, Equatable {
+    case passive
+    case proxy
+
+    var title: String { self == .proxy ? "Proxy" : "Passive" }
+}
+
+/// Per-contact turn mode. Stored like the other per-contact voice settings:
+/// UserDefaults keyed by peer id, no server state. Absent = passive, the
+/// documented default.
+enum ContactVoiceTurnModes {
+    private static let key = "idfon.voice-turn-mode"
+
+    static func mode(for peerID: String) -> VoiceTurnMode {
+        table()[peerID].flatMap(VoiceTurnMode.init(rawValue:)) ?? .passive
+    }
+
+    static func set(_ mode: VoiceTurnMode, for peerID: String) {
+        var next = table()
+        // Passive is the default, so it is stored as absence.
+        if mode == .passive { next.removeValue(forKey: peerID) } else { next[peerID] = mode.rawValue }
+        UserDefaults.standard.set(next, forKey: key)
+    }
+
+    static func remove(for peerID: String) {
+        var next = table()
+        next.removeValue(forKey: peerID)
+        UserDefaults.standard.set(next, forKey: key)
+    }
+
+    private static func table() -> [String: String] {
+        UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+    }
+}
+
 /// One entry in a contact's unified Speech picker: an on-device backend or an
 /// agent-catalog option. `id` is the store key (backend raw value or option id).
 struct SpeechChoice: Equatable {
