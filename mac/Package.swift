@@ -23,7 +23,16 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedLibrary("iroh_c_ffi"),
+                .linkedLibrary("idfon_director"),
                 .linkedLibrary("c++"),
+                // hyper-util's system-proxy matcher (pulled in with the director)
+                // needs the SystemConfiguration C API.
+                .linkedFramework("SystemConfiguration"),
+                // The director's AFM shim references FoundationModels, which
+                // only exists from macOS 26. Weak-link it so the app still
+                // *launches* below that floor (no agent contact is seeded
+                // there, so no director is ever created).
+                .unsafeFlags(["-Xlinker", "-weak_framework", "-Xlinker", "FoundationModels"]),
                 .unsafeFlags(["-L\(packageDir)/Vendor"]),
             ]
         ),

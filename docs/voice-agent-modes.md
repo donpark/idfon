@@ -27,12 +27,14 @@ knowledge agent.
 
 ## On-device agents are app-local contacts
 
-The built-in **AFM 3** is seeded when the device can run Apple Foundation
-Models (iOS 26+). Users add more on-device agents as ordinary contacts, each a
-**name plus a prompt** (`instructions`) — used like `llm` agent instances: the
-same local model, a different role per contact. No daemon peer, no network.
-Stored locally (`ios/Idfon/OnDeviceAgents.swift`); text and voice both run
-through `OnDeviceAgentRunner`. AFM 3 cannot be deleted.
+The built-in **AFM 3** is seeded when the OS ships that model (**iOS/macOS
+27+**). Users add more on-device agents as ordinary contacts, each a **name
+plus a prompt** (`instructions`) — used like `llm` agent instances: the same
+local model, a different role per contact. No daemon peer, no network. Stored
+locally (`ios/Idfon/OnDeviceAgents.swift`, the mac twin under
+`mac/Sources/Idfon/`); text and voice both run through `OnDeviceAgentRunner`.
+AFM 3 cannot be deleted. Both shells merge them into the contact list and
+title their threads and calls by name (`LiveActivityController`).
 
 This is distinct from the per-process `-directorondevice`/`-directorcall`
 launch flags, which are device probes only: they must not change how a real

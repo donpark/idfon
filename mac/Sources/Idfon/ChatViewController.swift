@@ -247,6 +247,12 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     /// Start/stop the on-device (client-cascade) voice call. The shared call
     /// Bar shows the state and owns End/mute, so there is no header control.
     @objc private func voiceAgentTapped() {
+        voiceAgentTapped(agent: nil)
+    }
+
+    /// Start (or stop) the client-cascade voice call: on-device when `agent`
+    /// names a local agent, remote otherwise.
+    private func voiceAgentTapped(agent: OnDeviceAgent?) {
         let session = VoiceAgentSession.shared
         if session.isActive {
             session.stop()
@@ -254,7 +260,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         // Ringback while the recognizer loads; the session plays answered/ended.
         CallTonePlayer.shared.start(.ringback)
-        session.start(peerRef: peer.id)
+        if let agent {
+            session.runOnDevice(agent: agent)
+        } else {
+            session.start(peerRef: peer.id)
+        }
     }
 
     // MARK: - Banner
@@ -964,6 +974,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         guard let pending else {
             store.appendOutgoing(ChatMessage(id: id, peerId: peerId, kind: .text(text), outgoing: true, status: "Sending", conversation: conversation.room?.id))
             Task {
+                // An on-device agent is answered locally, never sent to a peer.
+                if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
+                    await replyLocally(agent: agent, text: text, peerId: peer.id, messageID: id)
+                    return
+                }
                 do {
                     if let room = conversation.room {
                         try await client.sendRoom(room.id, text: text)
@@ -992,6 +1007,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                    let ticket = try? await client.putData(preview, resourceId: "crop-\(UUID().uuidString)") {
                     envelope = "IDFON-DATA/1\nticket=\(ticket)\nsize=\(preview.count)\n" + refEnvelope
                 }
+                if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
+                    // On-device agents have no artifacts yet: send the words.
+                    await replyLocally(agent: agent, text: text, peerId: peer.id, messageID: id)
+                    return
+                }
                 if let room = conversation.room {
                     try await client.sendRoom(room.id, text: envelope)
                 } else {
@@ -1003,6 +1023,19 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 showBanner(error.localizedDescription)
             }
         }
+    }
+
+    /// Answer a turn for an on-device agent and record it in the thread.
+    private func replyLocally(agent: OnDeviceAgent, text: String, peerId: String, messageID: String) async {
+        guard let spoken = await OnDeviceAgentRunner.shared.reply(agent: agent, text: text) else {
+            store.updateMessage(id: messageID) { $0.status = "Failed" }
+            showBanner("The on-device agent did not answer (Apple Intelligence off?)")
+            return
+        }
+        store.updateMessage(id: messageID) { $0.status = "Sent" }
+        store.appendOutgoing(
+            ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .text(spoken),
+                        outgoing: false, timestamp: Date()))
     }
 
     private func sendConversationText(_ text: String) async throws {
@@ -1031,6 +1064,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     // MARK: - Calls
 
     @objc private func callTapped() {
+        // On-device agents run entirely in-app: no dial, no peer, no network.
+        if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
+            voiceAgentTapped(agent: agent)
+            return
+        }
         // The per-contact STT/TTS selection (option ids from the agent's
         // `idfon.json` catalog) rides the invite; the holder resolves it. The
         // catalog is a fetched resource, cached after the contact screen.

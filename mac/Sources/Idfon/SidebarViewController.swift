@@ -60,6 +60,7 @@ final class SidebarViewController: NSViewController {
         roomRow.translatesAutoresizingMaskIntoConstraints = false
         let actions = NSStackView(views: [
             button("Add Channel…", #selector(addChannelTapped)),
+            button("Add Agent…", #selector(addAgentTapped)),
             button("Create Identity…", #selector(createIdentityTapped)),
             button("Share Identity…", #selector(shareIdentityTapped)),
             button("Issue Receive Ticket…", #selector(issueTicketTapped)),
@@ -199,6 +200,12 @@ final class SidebarViewController: NSViewController {
                 let error = await self.app.addChannel(name: name.stringValue, ticketJSON: ticket.string)
                 if let error { await MainActor.run { self.plainSheet(title: "Add Channel Failed", message: error) } }
             }
+        }
+    }
+
+    @objc private func addAgentTapped() {
+        OnDeviceAgentEditor.present(agent: nil, in: view.window) { [weak app] in
+            Task { await app?.refresh() }
         }
     }
 

@@ -34,6 +34,9 @@ final class VoiceAgentSession: NSObject {
     private(set) var isActive = false
     /// Peer this voice call is with, so the shared call UI can title it.
     private(set) var activePeerId: String?
+    /// The on-device agent this call is with, if any: turns run locally on AFM
+    /// with no peer and no network (`docs/voice-agent-modes.md`).
+    private var localAgent: OnDeviceAgent?
     /// Latest state, readable by the call UI (the `onState` callback is single-
     /// owner, so the LiveActivityController owns it).
     private(set) var state: State = .idle
@@ -69,9 +72,16 @@ final class VoiceAgentSession: NSObject {
     /// Barge-in text handed to the next turn instead of listening again.
     private var pendingHeard: String?
 
-    func start(peerRef: String, turns: Int = Int.max) {
+    /// Continuous conversation until `stop()`.
+    /// Talk to an on-device agent: no peer, no dial; turns run on AFM.
+    func runOnDevice(agent: OnDeviceAgent, turns: Int = Int.max) {
+        start(peerRef: agent.peerId, turns: turns, agent: agent)
+    }
+
+    func start(peerRef: String, turns: Int = Int.max, agent: OnDeviceAgent? = nil) {
         guard !isActive else { return }
         isActive = true
+        localAgent = agent
         stopRequested = false
         callId = UUID().uuidString
         turnLimit = turns
@@ -86,19 +96,27 @@ final class VoiceAgentSession: NSObject {
         SpeechEngines.prewarm()
         segmenter.start()
         Task { @MainActor in
-            let peers = (try? await client.peers()) ?? []
-            guard let peer = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
-                Automation.mark("voice-agent: FAIL no peer \(peerRef)")
-                CallFeedback.post("No voice call available for this contact.")
-                finish()
-                return
+            let peer: Peer
+            if let localAgent {
+                peer = localAgent.peer
+            } else {
+                let peers = (try? await client.peers()) ?? []
+                guard let resolved = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
+                    Automation.mark("voice-agent: FAIL no peer \(peerRef)")
+                    CallFeedback.post("No voice call available for this contact.")
+                    finish()
+                    return
+                }
+                peer = resolved
             }
             Automation.mark("voice-agent: start peer=\(peer.id)")
             // Reset the model history before a new call: the session log is
             // the medium, never the model's context (docs/session-context.md).
             // Sent early; the engine prep and greeting that follow give the
-            // clear time to land.
-            try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
+            // clear time to land. An on-device agent has no peer to tell.
+            if localAgent == nil {
+                try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
+            }
             // Per-contact on-device engines (else the app defaults). Resolved
             // here, once the peer id is known, before the recognizer is built.
             ttsBackend = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.ttsBackend
@@ -114,7 +132,7 @@ final class VoiceAgentSession: NSObject {
             // followed immediately by speech instead of dead air.
             var greeting: (display: String, spoken: String)?
             if !stopRequested {
-                greeting = await sendAndAwait(
+                greeting = await reply(
                     peerId: peer.id,
                     text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
                     logPrefix: "voice-agent-greet",
@@ -256,7 +274,7 @@ final class VoiceAgentSession: NSObject {
             turnId: "\(callId)-\(turnsDone)-user", role: "caller", text: heard
         )
         setState(.thinking)
-        guard let result = await sendAndAwait(
+        guard let result = await reply(
             peerId: peerId, text: heard, logPrefix: "voice-agent",
             spokenTurnId: "\(callId)-\(turnsDone)-agent"
         )
@@ -281,6 +299,32 @@ final class VoiceAgentSession: NSObject {
     /// holder route). Injected as untrusted data, never instructions.
     private var callContext: String {
         "Client cascade (on-device speech). Recognition: \(asrBackend.title); Generation: \(ttsBackend.title). The holder only produces text."
+    }
+
+    /// One agent turn. An on-device agent answers locally on AFM; every other
+    /// contact is a remote (passive) turn.
+    private func reply(
+        peerId: String,
+        text: String,
+        logPrefix: String,
+        spokenTurnId: String? = nil
+    ) async -> (display: String, spoken: String)? {
+        guard let localAgent else {
+            return await sendAndAwait(
+                peerId: peerId, text: text, logPrefix: logPrefix, spokenTurnId: spokenTurnId
+            )
+        }
+        guard let spoken = await OnDeviceAgentRunner.shared.reply(agent: localAgent, text: text) else {
+            Automation.mark("\(logPrefix): FAIL on-device reply")
+            return nil
+        }
+        if let spokenTurnId {
+            ChatStore.shared.recordSpokenTurn(
+                peerId: peerId, callId: callId, turnId: spokenTurnId,
+                role: "agent", text: spoken
+            )
+        }
+        return (display: spoken, spoken: spoken)
     }
 
     private func sendAndAwait(
@@ -325,6 +369,7 @@ final class VoiceAgentSession: NSObject {
         asr = nil
         deliver(nil)
         activePeerId = nil
+        localAgent = nil
         micMuted = false
         turnsDone = 0
         turnLimit = Int.max

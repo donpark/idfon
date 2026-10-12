@@ -212,11 +212,35 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
     func menuNeedsUpdate(_ menu: NSMenu) {
         let row = table.clickedRow
         menuPeer = (row >= 0 && row < shown.count) ? shown[row].peer : nil
-        for item in menu.items { item.isEnabled = menuPeer != nil }
+        let isAgent = menuPeer.flatMap { OnDeviceAgent.id(fromPeerId: $0.id) } != nil
+        let isBuiltInAgent = menuPeer?.id == "local:\(OnDeviceAgents.builtInId)"
+        for item in menu.items {
+            item.isEnabled = menuPeer != nil
+            if item.action == #selector(renameContact) {
+                item.title = isAgent ? "Edit Agent…" : "Rename…"
+            }
+            if item.action == #selector(deleteContact), isBuiltInAgent {
+                item.isEnabled = false
+            }
+        }
+    }
+
+    /// The row's second line: on-device agents have no endpoint to show, so
+    /// they say what they are instead.
+    private static func subtitle(for peer: Peer) -> String {
+        OnDeviceAgent.id(fromPeerId: peer.id) != nil ? "on-device" : (peer.endpointId ?? peer.id)
     }
 
     @objc private func renameContact() {
         guard let peer = menuPeer, let window = view.window else { return }
+        // An on-device agent's name is its prompt config, edited as one unit.
+        if let id = OnDeviceAgent.id(fromPeerId: peer.id) {
+            OnDeviceAgentEditor.present(agent: OnDeviceAgents.shared.agent(id: id), in: window) { [weak self] in
+                self?.onMutate?()
+                self?.reload()
+            }
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Rename Contact"
         alert.informativeText = "Enter a new name for \(peer.displayName)."
@@ -245,6 +269,25 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
 
     @objc private func deleteContact() {
         guard let peer = menuPeer, let window = view.window else { return }
+        // On-device agents: user ones can be deleted locally; the built-in
+        // AFM 3 cannot (there is nothing to restore it from).
+        if let id = OnDeviceAgent.id(fromPeerId: peer.id) {
+            guard id != OnDeviceAgents.builtInId else { return }
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Delete \(peer.displayName)?"
+            alert.informativeText = "This removes the on-device agent from this Mac."
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard response == .alertFirstButtonReturn else { return }
+                OnDeviceAgents.shared.remove(id: id)
+                OnDeviceAgentRunner.shared.forget(agentId: id)
+                self?.onMutate?()
+                self?.reload()
+            }
+            return
+        }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete \(peer.displayName)?"
@@ -316,7 +359,7 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         labels[0].stringValue = unread > 0 ? "\(chat.title) · \(unread)" : chat.title
         labels[0].font = NSFont.systemFont(ofSize: 13, weight: .medium)
         labels[0].lineBreakMode = .byTruncatingTail
-        labels[1].stringValue = chat.peer?.endpointId ?? (chat.isRoom ? "Room · \(chat.id)" : chat.id)
+        labels[1].stringValue = chat.peer.map(Self.subtitle(for:)) ?? (chat.isRoom ? "Room · \(chat.id)" : chat.id)
         labels[1].font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         labels[1].textColor = .secondaryLabelColor
         labels[1].lineBreakMode = .byTruncatingMiddle

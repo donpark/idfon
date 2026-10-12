@@ -34,10 +34,12 @@ final class OnDeviceAgents {
     static let builtInName = "AFM 3"
     private static let defaultsKey = "idfon.on-device-agents"
 
-    /// Apple Foundation Models need iOS 26. (Apple Intelligence being off is a
-    /// runtime condition; a turn then fails and the UI reports it.)
+    /// Apple Foundation Models 3 need iOS 27+. The framework API exists from
+    /// iOS 26 (that OS ships an earlier, smaller model), and Apple
+    /// Intelligence being off is a separate runtime condition — a turn then
+    /// fails and the UI reports it (docs/voice-agent-harness.md §5).
     static var available: Bool {
-        if #available(iOS 26.0, *) { return true }
+        if #available(iOS 27.0, *) { return true }
         return false
     }
 

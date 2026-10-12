@@ -321,10 +321,13 @@ final class LiveActivityController {
 
     // MARK: - Peer names
 
-    /// Refreshes the peer-id → display-name map the Bar renders with.
+    /// Refreshes the peer-id → display-name map the Bar renders with, on-device
+    /// agents included: they have no daemon peer, so a local agent's call and
+    /// thread would otherwise be titled with a synthetic id.
     private func refreshPeerNames() async {
-        guard let peers = try? await client.peers() else { return }
-        peerNames = peers.reduce(into: [:]) { names, peer in
+        let local = OnDeviceAgents.shared.peers
+        let remote = (try? await client.peers()) ?? []
+        peerNames = (local + remote).reduce(into: [:]) { names, peer in
             if let name = peer.name, !name.isEmpty { names[peer.id] = name }
         }
         render()

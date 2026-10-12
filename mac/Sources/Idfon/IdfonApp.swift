@@ -547,7 +547,15 @@ final class AppModel: NSObject {
         } catch {
             statusText = error.localizedDescription
         }
+        applyOnDeviceAgents()
         onUpdate?()
+    }
+
+    /// On-device agents are local contacts with no daemon peer, so they are
+    /// merged on every refresh and survive a daemon that is down
+    /// (`docs/voice-agent-modes.md`).
+    private func applyOnDeviceAgents() {
+        peers = OnDeviceAgents.shared.peers + peers.filter { OnDeviceAgent.id(fromPeerId: $0.id) == nil }
     }
 
     func useIdentity(_ name: String) async {
@@ -606,6 +614,7 @@ final class AppModel: NSObject {
             let identity = try await client.identityId()
             try await client.addChannel(name: name, ticketJSON: ticketJSON, identity: identity)
             peers = try await client.peers()
+            applyOnDeviceAgents()
         } catch {
             addError = error.localizedDescription
         }

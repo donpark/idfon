@@ -3,8 +3,10 @@
 // builds and runs on the host with plain swiftc:
 //
 //   swiftc -o /tmp/mac-tabscheck mac/Sources/Idfon/Artifact.swift \
-//     mac/Sources/Idfon/CapabilityTickets.swift mac/Sources/Idfon/VoiceCallRouting.swift \
-//     mac/Sources/Idfon/Models.swift mac/Sources/Idfon/PeerTabsViewController.swift \
+//     mac/Sources/Idfon/JSONRenderModel.swift mac/Sources/Idfon/CapabilityTickets.swift \
+//     mac/Sources/Idfon/VoiceCallRouting.swift mac/Sources/Idfon/Models.swift \
+//     mac/Sources/Idfon/OnDeviceAgents.swift mac/Sources/Idfon/OnDeviceAgentEditor.swift \
+//     mac/Sources/Idfon/PeerTabsViewController.swift \
 //     mac/Checks/PeerTabsCheck/main.swift
 //   /tmp/mac-tabscheck
 //
@@ -16,6 +18,16 @@ func check(_ cond: Bool, _ msg: String) { if !cond { print("FAIL:", msg); exit(1
 // Models.swift's `Event` needs the type/conformance; the check never decodes one.
 struct AnyEncodable: Decodable { let value: Any
     init(from decoder: Decoder) throws { value = NSNull() }
+}
+
+// OnDeviceAgents seeds its built-in prompt from Director, which links the AFM
+// static lib; the check compiles list rendering, not AFM.
+enum Director { static let onDeviceInstructions = "# Identity\n" }
+
+// Deleting an agent drops its warm director; the check never runs one.
+final class OnDeviceAgentRunner {
+    static let shared = OnDeviceAgentRunner()
+    func forget(agentId: String) {}
 }
 
 // The view talks to the daemon only for rename/remove; this check exercises list
@@ -38,6 +50,7 @@ MainActor.assumeIsolated {
         Peer(id: "p1", name: "Ada", endpointId: "ep1", aliases: nil),
         Peer(id: "p2", name: "Bob", endpointId: "ep2", aliases: nil),
         Peer(id: "p3", name: nil, endpointId: nil, aliases: nil),
+        Peer(id: "local:afm-3", name: "AFM 3", endpointId: nil, aliases: nil),
     ]
     var selected: [String] = []
     let tabs = PeerTabsViewController(
@@ -56,7 +69,7 @@ MainActor.assumeIsolated {
 
     // Contacts holds everything; Favorites is still a placeholder.
     contacts.reload()
-    check(contacts.displayedPeers.map(\.id) == ["p1", "p2", "p3"], "contacts lists all: \(contacts.displayedPeers.map(\.id))")
+    check(contacts.displayedPeers.map(\.id) == ["p1", "p2", "p3", "local:afm-3"], "contacts lists all: \(contacts.displayedPeers.map(\.id))")
     favorites.reload()
     check(favorites.displayedPeers.isEmpty, "favorites is a placeholder: \(favorites.displayedPeers.map(\.id))")
 
@@ -81,7 +94,14 @@ MainActor.assumeIsolated {
     recents.search("ada") // Ada is in Recents
     check(recents.displayedPeers.map(\.id) == ["p1"], "recents filters within itself: \(recents.displayedPeers.map(\.id))")
     contacts.reload()
-    check(contacts.displayedPeers.count == 3, "contacts unaffected by the recents query: \(contacts.displayedPeers.count)")
+    check(contacts.displayedPeers.count == 4, "contacts unaffected by the recents query: \(contacts.displayedPeers.count)")
+
+    // An on-device agent has no endpoint, so the row's second line says what it
+    // is instead of leaving a synthetic id on screen.
+    let agentRow = contacts.tableView(NSTableView(), viewFor: nil, row: 3)
+    let agentLabels = agentRow?.subviews.compactMap { $0 as? NSTextField } ?? []
+    check(agentLabels.first?.stringValue == "AFM 3", "agent row name: \(agentLabels.first?.stringValue ?? "nil")")
+    check(agentLabels.last?.stringValue == "on-device", "agent row subtitle: \(agentLabels.last?.stringValue ?? "nil")")
 
     print("ALL OK")
 }
