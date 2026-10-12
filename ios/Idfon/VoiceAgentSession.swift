@@ -152,16 +152,26 @@ final class VoiceAgentSession: NSObject {
             guard !stopRequested else { finish(); return }
             var greeting: (display: String, spoken: String)?
             if !stopRequested {
-                // The greeting goes to the agent, not the on-device director:
-                // the agent greets as itself, so the caller never hears a
-                // "voice director" persona (and the ASR echo has no name to
-                // mangle into a fake one).
-                greeting = await sendAndAwait(
-                    peerId: peer.id,
-                    text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
-                    logPrefix: "voice-agent-greet",
-                    spokenTurnId: "\(callId)-greet"
-                )
+                let greetTurn =
+                    "The caller just connected on a voice call. Greet them briefly and invite them to speak."
+                // Proxy mode greets through the agent (so the caller never
+                // hears a "voice director" persona). On-device mode greets
+                // locally, and passive mode has no director at all.
+                if DirectorRuntime.shared.onDevice {
+                    greeting = await reply(
+                        peerId: peer.id,
+                        text: greetTurn,
+                        logPrefix: "voice-agent-greet",
+                        spokenTurnId: "\(callId)-greet"
+                    )
+                } else {
+                    greeting = await sendAndAwait(
+                        peerId: peer.id,
+                        text: greetTurn,
+                        logPrefix: "voice-agent-greet",
+                        spokenTurnId: "\(callId)-greet"
+                    )
+                }
             }
             // The line is answered only once the agent is about to speak, so the
             // cue has no gap after it.
@@ -264,6 +274,15 @@ final class VoiceAgentSession: NSObject {
         if let asrReference, !asrReference.isEmpty {
             let wer = AsrScore.wer(reference: asrReference, hypothesis: heard)
             Automation.mark("voice-agent: wer=\(String(format: "%.3f", wer)) backend=\(asr?.name ?? "sfspeech") ref=\"\(asrReference)\" heard=\"\(heard)\"")
+        }
+        // Deterministic turn policy (prototype): a pure backchannel is not a
+        // request, so do not spend an agent turn on it. Fail-open: anything
+        // unclear is forwarded. Enabled with `-turncontroller`.
+        if ProcessInfo.processInfo.arguments.contains("-turncontroller"),
+           TurnController.decide(transcript: heard) == .ignoreBackchannel {
+            Automation.mark("voice-agent: backchannel ignored heard=\(heard)")
+            setState(.listening(""))
+            return true
         }
         // Show the caller's spoken turn in the chat, not just the agent's reply.
         ChatStore.shared.recordSpokenTurn(
