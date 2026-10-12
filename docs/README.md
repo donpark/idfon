@@ -27,7 +27,8 @@ kept because it records decisions; **design** = not all implemented.
 | `idfon-edge.md` | public `idfon.net` gateway + on-device adapter + P2P backbone (as-built; P0–P6 landed; public edge on a DigitalOcean droplet + co-located relay; residual issues #27–#29) |
 | `callkit-integration.md` | CallKit + incoming-call presentation (iOS) |
 | `live-activity-bar-layout.md` | live-call bar UIKit layout |
-| `ui-design-notes.md` | UX/visual system spec |
+| `ios-ui-design.md` | structural UX design for the iOS app (tabs, rows, chat timeline, sessions, identity) — design, for implementation |
+| `ui-design-notes.md` | UX/visual system spec (live activity bar, session tray) |
 | `custom-app-launch.md` | launching a custom idfon app |
 
 ## Networking, addressing, transport

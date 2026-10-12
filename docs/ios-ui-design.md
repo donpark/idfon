@@ -1,0 +1,523 @@
+# iOS UI design (structural)
+
+Status: **design** — captured for implementation; only fragments exist in code today.
+Scope: the iOS app's screen structure, navigation, list/chat anatomy, sessions, and
+identity UX. Visual system and the Live Activity Bar state machine remain in
+`ui-design-notes.md` (that doc wins on bar/overlay visuals; this doc wins on
+structure). The macOS adaptation is §13 (single-window, decided).
+
+## 1. What the app is
+
+idfon is a phone and a messenger fused into one app — and more: contacts can be
+agents (coding agents, assistants), rooms hold realtime sessions, and the app is
+usable both "phone-like" (start from who you want to reach) and "messenger-like"
+(start from what arrived). The design must integrate two stock UX philosophies
+without siloing them:
+
+- **Phone app**: contact-centric. The people list is the substrate; tabs are
+  lenses over it. The item's primary action is the call.
+- **Messages app**: conversation-centric. Entry is recents; a row previews the
+  last message; tap opens the chat.
+
+idfon resolves this with three tabs (perspectives) that all converge on the chat
+screen.
+
+## 2. Principles
+
+| # | Principle |
+| --- | --- |
+| P1 | One shell, three perspectives (Contacts / Messages / Projects). Every path converges on Chat. |
+| P2 | Inline-first. Anything that can appear inline without conflict does; only payloads that earn their own space get a detail screen. |
+| P3 | Activity intervals ("sessions" in the loose sense) are display grouping, not data objects. Live calls are the one crisp boundary hint. |
+| P4 | Semantic zoom on the timeline: live → day → week → month → year. Drill expands; zoom collapses. Clutter is the enemy. |
+| P5 | Agents are peers with a call button, not a settings feature. |
+| P6 | A project is a typed chatroom (custom icon + metadata such as repo address), with users and agents as members. |
+| P7 | Presentation derives from context: size × density × tool-needs → inline \| thread \| detail. |
+| P8 | Each lens defines its rows' primary verb (Contacts → call-first, Messages/Projects → open). |
+| P9 | Identity is implicit in normal flow but continuously legible and reachable from the symptom. Never the invisible-and-consequential buried setting. |
+| P10 | Chrome is minimal and minimizable: long lists get the screen; the tab bar yields to scrolling. |
+| P11 | Shape behavior through actions, never help text or warning copy. Gates, defaults, and constrained choices instead of prose. |
+| P12 | When lost, follow iOS Phone, Messages, and Slack — the most commonly used phone/messaging apps on the platform, hence the most familiar patterns to users. Where this doc is silent, copy their behavior. Tie-breaker: equally good options → pick the one matching those apps. |
+
+## 3. Object model (what the UI assumes)
+
+```
+Identity (Work/Personal/Private presets, user-created up to a cap)
+  └── Contact relationship (one identity per contact; never linked across identities)
+        ├── human contact
+        └── agent contact (permissions granted at add time; may delegate to sub-agents)
+
+Room  (typed: chat | project; project carries icon + metadata, e.g. repo)
+  ├── membership: users, agents, temporary guests ("deputies", bound to granter's lifecycle)
+  ├── async session: messages, artifacts (the room's baseline)
+  ├── live session: realtime call streams (audio/video; runs in parallel)
+  ├── agent session: pi-pocket chat / ACP / terminal-driven TUI (runs in parallel)
+  └── display grouping: bursts → threads, activity intervals → buckets (derived, not stored)
+```
+
+- A live call is a **session inside the room**, not a parallel universe: the room
+  is where messages and artifacts flow asynchronously; the call is the realtime
+  session within the same context.
+- "Sessions" in the derived sense need no derivation engine: explicit events
+  (calls) mark boundaries; everything else is a display concern (P3).
+- **Tasks** (Codex-style active tasks under a project) are a future, deferred
+  concept. See §13.
+
+## 4. Shell
+
+Three tabs, launch into the last used one:
+
+```
+[ Contacts ] [ Messages ] [ Projects ]
+```
+
+- **Tab bar**: minimal and auto-minimizable on scroll so long lists stay
+  uncluttered (P10).
+- **Filters**: a segmented toggle strip on list screens where useful — initial
+  set `All | Favorites | Recents`, extensible with more segments. Favorites and
+  Recents are filters, not tabs or sections (D7).
+- Favorites = pinned contacts; Recents = interacted-with, most recent first.
+
+## 5. List screens
+
+### 5.1 Contacts tab
+
+Row anatomy: avatar · name · **identity label** (which identity this relationship
+uses — always visible, A8) · optional status.
+
+- **Tap (default)**: opens the **person screen** (§6). One extra tap to call, but
+  the person screen is the relationship hub (D1: default (b)).
+- **Tap (instant-call contacts)**: contact metadata can mark a contact as
+  instantly callable (e.g. emergency contacts). Tap then **navigates to the chat
+  screen and auto-starts the call** — the user sees navigation, then the call
+  begins as the room's live session. No confirmation, no warning copy (P11).
+- **Edit mode**: delete; drag to reorder pinned. Nothing else (stock-app
+  restraint).
+- No cross-identity anything: the same human under two identities is two
+  contacts; the UI never suggests they are one (A9).
+
+### 5.2 Messages tab
+
+Row anatomy: room identity (avatar/name) · **last-message preview** · timestamp ·
+session indicators (e.g. a live-call badge when the room has an active session).
+
+- **Tap**: opens the chat screen (lens verb = open, P8).
+- **Edit mode**: select → mark unread / delete. That is the whole verb set.
+
+### 5.3 Projects tab
+
+Row anatomy: project icon · project name · **latest-message preview** ·
+timestamp. Same row vocabulary as Messages (one row template app-wide).
+
+- **Tap**: opens the project's chat screen — a project **is** its chatroom (D6);
+  there is no channel list, no extra level.
+- **Deferred (D5)**: a project row expands **in place** to show active tasks;
+  selecting a task navigates to that task's chat log. Non-blocking constraints on
+  today's UI: row layout must tolerate growing an expansion region later, and
+  "task" must not be baked into the room model.
+
+## 6. Person screen (contact hub)
+
+Derived from the ledger (marked for review at implementation):
+
+- Header: avatar, name, **identity label** (tap → identity detail, P9 "reachable
+  from the symptom").
+- **Primary action: Call** (big, thumb-reach). Secondary: **Message** → chat,
+  **New session**.
+- Agent contacts: permission scope shown here — decided at contact-add time
+  (A7). Sub-agent delegation visibility lives here.
+- Deputy grants (temporary guests this contact brought in) are managed here;
+  they die with the granter's lifecycle (A6).
+- Shared artifacts/transfers with this contact: reachable from here.
+
+## 7. Chat screen
+
+The primary surface of the app (P2). Same screen for chats and projects; a
+project's nav-bar title shows the project icon + name instead of a person.
+
+### 7.1 Nav bar
+
+```
+Idle:     ‹ Back   [avatar] Name                       [call] [☰]
+Calling:  ‹ Back   [avatar] Name                 [call•active] [☰]
+In call:  ‹ Back   [avatar] Name                  [hang-up] [☰]
+```
+
+- **Back** → the list you came from.
+- **Title = avatar + name, tappable → person screen** (the title is navigation,
+  and identity is visible where you are — P9). The compact trailing cluster
+  gives the title area more room.
+- **One call button, three states (D8)**: idle `call` → `calling` (highlighted,
+  shows the call went out) → `hang-up` once established. **Audio-first by
+  design (D14)** — it relieves the stress of being seen unprepared; the user
+  turns video on when ready (the live-call bar's camera toggle).
+- **Burger menu (☰)** at the far right: **New Session** (starts a new thread in
+  the chat — top-level, never nested in the current thread), **Share Screen**
+  (starts a screenshare stream; while sharing, it appears in the live-activity
+  panel as a bar with a stop button — D18), **Chat Settings**. The burger is
+  the stable right-edge anchor — it never changes appearance — while the
+  state-changing call button sits to its left and visually protrudes. Stable
+  edge, changing button.
+- **Live-call bar controls (D2)**: an **audio button that cycles** through
+  `Built-in → Earphone → Speaker → Mute` (each tap advances the route/state), a
+  **camera button that simply toggles the video stream on/off**, and a **gear
+  button** for advanced audio/video settings. Same row as the call stats, above
+  the active live-activity (tray) rows. `ui-design-notes.md` §3 is superseded on
+  this point: nav = start/stop the call, the bar = operate it.
+- No "request screenshare" verb anywhere — a text message does that job (D3).
+
+### 7.2 Vertical anatomy
+
+```
+┌──────────────────────────────────────┐
+│ ‹ Back   [avatar] Name               │ nav bar (§7.1)
+│ [● Live call ··· 03:42 · audio]  [􀊰][􀠂] │ session bar: stats + mic/video
+│                                        │ toggles (D2) + tray rows below
+│ ┌──────────────────────────────────┐ │
+│ │ [Mar 3 – Mar 9 · 42 msgs, 1 call,│ │ bucket cards — older ranges (P4)
+│ │  2 files]                        │ │
+│ │ [Feb 24 – Mar 2 · …]             │ │
+│ ├──────────────────────────────────┤ │
+│ │ simple msg      simple msg       │ │ inline items (A5: a handful)
+│ │ ▸ thread (7 msgs · 2m)           │ │ burst → thread item (P7)
+│ │ ▸ agent session (3 turns · 4m)   │ │ agent work collapses to a thread
+│ │ [artifact card]                  │ │ inline if simple, else detail
+│ │ simple msg                       │ │ newest at the bottom
+│ └──────────────────────────────────┘ │
+│ [ + ]  Type a message…      [􀊫][ send]│ composer (audio msg + send)
+└──────────────────────────────────────┘
+  (tab bar hidden while in chat — D12)
+```
+
+- Newest at the bottom; agent threads append turn-by-turn at the end (user
+  prompt → agent response, Codex style).
+- Live/agent session bars sit under the nav bar while active. The live-call bar
+  row carries **call stats + mic/video toggles** (D2), with the transfer tray
+  rows below it; starting and ending the call stays in the nav bar.
+- **Passive minimize (D19)**: when the user scrolls up into older messages, the
+  whole live-activity panel (call stats + activity items) minimizes to the right
+  — a compact pill with a green dot and a **Live** label. Tapping the pill
+  expands it; it never auto-re-expands on scroll (iOS convention).
+
+### 7.2a Timeline visual grammar (D11)
+
+The prototype's variant A won as the base (`docs/mockups/ios-ui-prototype.html`,
+kept on the throwaway branch `prototype/ios-ui-chat-timeline`, not on the main
+line),
+with extensions:
+
+- **Alignment shows the side, not the sender.** Our side right, their side left.
+  This generalizes from 1:1 to **split chats** — two or more parties per side
+  (e.g. us + our agent vs. them + their agent).
+- **Sender identity is hidden in 1:1 chats.** When a side holds multiple
+  identities, every message from that side shows **avatar + nick**.
+- **Detail level sits between the prototype's A and B**: each message carries a
+  small provenance caption (role + modality — e.g. `Agent · spoken`,
+  `You · typed`) and a timestamp. Variant C's nested container detail is
+  rejected: it becomes noise over the main text.
+- **Color-coded card edges** (adopted from B): non-message cards carry a 3px
+  left edge coding their kind at a glance — thread = blue, agent session =
+  orange, artifact = green. The card body stays light and quiet.
+- **Ambient datelines**: slim, low-contrast date separators between days so the
+  timeline's dates are scannable without relying on bucket cards.
+- Non-message items (threads, agent sessions, artifacts, buckets) keep the
+  light-card rhythm of A.
+
+### 7.3 Timeline density rules (P7)
+
+| Condition | Treatment |
+| --- | --- |
+| Small simple message, sparse traffic | Inline |
+| Burst: several messages within a short window | Thread item → thread detail |
+| Today / currently active range | Expanded inline |
+| Older | Day → week → month → year bucket cards |
+| Large payload, or needs special tools (web content, big images, terminal) | Detail screen |
+| Live call / agent session active | Session bar inline, collapsible |
+
+Starting heuristic values (A3: keep it dumb and tunable):
+
+- **Burst** ≈ 5+ messages within 10 minutes → collapses to a thread item showing
+  count + duration + last line. **Recency guard**: the collapse only fires on
+  the older part of an exchange — the burst the user is currently reading stays
+  expanded.
+- **Retroactive regrouping (D17)**: a message that stands alone inline can be
+  pulled into a thread later, once concentrated activity warrants classifying
+  it as part of that thread. Grouping is derived and can change over time; the
+  underlying messages never move (P3) — only their presentation does.
+- **Buckets**: today expanded; up to a week back → day cards; up to a year →
+  week/month cards; older → year cards.
+- Bucket card = **date-range label + short summary** (message count, calls,
+  files, key events) — enough to recognize "when we talked about X" (A2).
+- Do not inline unbounded history: cut for available room and probable intent;
+  the user drills in when a bucket matters (P4).
+
+### 7.3a Tuning the heuristics (minimal pass now, data-driven tuning deferred)
+
+Do the cheap, high-value part now; the empirical pass waits for usage data:
+
+1. **Conservative defaults — show over hide.** Under-collapse beats over-collapse:
+   users tolerate clutter more than hidden content (matches P12 stock behavior —
+   Messages collapses almost nothing). Buckets only bite well in the past.
+2. **Recency guard** (§7.3) — the one rule that prevents the worst failure
+   (content collapsing under the reader). Cheap and already specified.
+3. **All knobs as named constants in one place** — no config UI (P11), but
+   retuning later is a one-line change, not a hunt.
+
+Deferred until there is data and in-use analysis: per-room adaptation,
+telemetry, and any movement of the actual numbers.
+
+Three knobs for that later pass; one global set first:
+
+| Knob | Default | Too low / too aggressive | Too high / too passive |
+| --- | --- | --- | --- |
+| **Burst window** (N msgs / M min → thread item) | 5 / 10 min | a lively conversation hides behind one card | the timeline clutters with every exchange |
+| **Bucket ages** (day/week/month/year thresholds) | today inline; ≤7d → day; ≤1y → week/month; older → year | drilling in constantly | scrolling past walls of text |
+| **Inline budget** (A5) | a handful of simple items | content escalates to detail screens too eagerly | screens get crowded |
+
+Target state: per glance, a handful of simple items and at most one card per
+date range. Tuning signals: drill-in rate (too much collapse), scroll-past rate
+(too little), and A4 zoom/navigation events as opt-in telemetry.
+
+### 7.4 Drill and expansion (A1)
+
+- Drill down **expands in place** when the detail is small enough to not earn a
+  screen. Full screen only when the payload's type/size demands it.
+- The same size × density × tools test applies at every zoom level (it is one
+  heuristic family).
+- Zoom is user-driven most of the time; the app or an agent may drive it **with
+  permission** — which makes the view (scroll position, zoom level, focus)
+  addressable state, the same way a call can pull the screen to fullscreen (A4).
+
+### 7.5 Composer
+
+`[ + ]` attach (files/artifacts, photos, voice memo, invite agent) · text field ·
+**speech button** (record an audio message — hold/tap to record, send as a voice
+memo) · send (D13). Keep the verb surface small (P11): what the room can accept
+is offered, nothing more.
+
+**Text-first semantics (D15)**: sending a text message just sends — it requires
+no call and starts no call. Recorded audio messages are messages (artifacts).
+Live voice/video is the **call side channel** — like live streams and file
+transfers — a parallel session in the room (A1), not a mode the composer
+enters.
+
+The **tab bar is hidden while the chat screen is open** (D12): even minimized it
+would float over the composer, which owns the bottom edge. Back returns to the
+list and the tabs.
+
+## 8. Thread detail
+
+A burst-derived or session-derived thread opens as a **thread detail view**:
+the alternating turns (user prompt → agent response, or chat messages), full
+size, newest appended at the end. Small threads expand in place (§7.4); long
+agent/terminal logs get the detail screen. ACP panels and terminal-driven TUIs
+are special agent-session renderings on this surface. **Threads never nest** —
+every thread is top-level in the room timeline, and "New Session" starts
+another top-level thread (D8).
+
+## 9. Detail screens
+
+Earned, never chosen: web content (`EdgeWebView`/`SandboxedArtifactWebView`),
+large images/media, terminal/ACP sessions, artifact detail. Every detail screen
+returns to the exact timeline position it came from.
+
+## 10. Sessions in the room
+
+| Session | Modality | UI |
+| --- | --- | --- |
+| Baseline chat | async | the timeline itself |
+| Live call | realtime streams | session bar inline; CallKit/fullscreen on answer; controls per D2 (this doc supersedes `ui-design-notes.md` §3) |
+| Agent session (pi-pocket) | async/turn-based | thread item → thread detail |
+| Coding agent (ACP / terminal TUI) | streaming | thread item → detail screen |
+| Transfer | streaming | inline progress row (`Session Tray`, `ui-design-notes.md` §4) |
+| Screenshare | streaming | starts from the burger's Share Screen (D18); while active, a live-activity bar with a stop button |
+
+Concurrent sessions are normal (a call runs alongside messages and agent work);
+inline budget ≈ a handful of simple items at once — anything needing lots of room
+escalates (A5).
+
+## 11. Identity
+
+- **First launch creates three preset identities**: **Work** (work activities),
+  **Personal** (family and friends), **Private** (everything else, including
+  public things the user does not want tied to work or personal life). Renamable
+  (D4).
+- Identity is chosen **when adding a contact** (relationship time), never
+  switched mid-flow (fragment: identity does not change in normal use).
+- **Every contact shows its identity** (A8).
+- **No cross-identity linking** — hard invariant (A9). No contact merging, no
+  cross-identity suggestions; agents carry only the context of the identity they
+  act under.
+- Users may create identities **up to a cap** (possibly permission- or
+  payment-gated) — no minting hundreds of identities (A10).
+- Management UI (rename, create, delete) lives in settings — rare activity —
+  but every identity-affecting surface links to it locally ("reachable from the
+  symptom", P9). No help text; the links are the affordance (P11).
+
+## 12. Incoming calls
+
+Full-screen ringing screen on `.incoming` (existing CallKit/`IncomingCallRouter`
+behavior). Answer → navigate to the room; the call appears as the room's live
+session (inline bar in chat, expandable to fullscreen `CallViewController`).
+The ring→chat transition is settled by the existing seam (`callkit-integration.md`):
+incoming calls route per-channel via `IncomingCallRouter` (`call_mode`:
+`bar` | `call_kit`), and **both** presentation paths land in the room's live
+session on answer — the Bar path already does; the CallKit path (still gated on
+`CallKitIncomingPresenter.isAvailable`) opens the room from
+`CXAnswerCallAction`.
+
+**Schedule**: CallKit integration comes **after the UI refactor and TestFlight
+approval** — though the code can be added at any time. Until then the Bar path
+presents incoming calls.
+
+## 13. macOS adaptation (D10)
+
+**Single window.** One main window; it will be a while, if ever, before there are
+enough users to complain about that. What matters is that surfaces stay
+detachable *in design* so multi-window is cheap if it ever earns its keep.
+
+- **Layout**: two-pane — a sidebar (Contacts / Messages / Projects + the same
+  segmented filters as iOS) and the chat surface on the right. P10 becomes
+  "sidebar collapsible".
+- **Window-host-agnostic chat surface**: the room surface (nav row + session bars
+  + timeline + composer) is self-contained and assumes nothing about being the
+  only visible surface. It hosts in the sidebar stack today, in its own window
+  later without rework.
+- **App-level, not window-level**: the live activity overlay (cf.
+  `ui-design-notes.md` §6), notifications, and A4's view-addressability must not
+  be owned by any chat surface. The existing window-docked `OverlayPanel`
+  (borderless `NSPanel`, sized to the bars, top spacer) satisfies this in a
+  single window; only a true multi-window future would demand app-level
+  adoption.
+- **If multi-window ever arrives**: rooms in their own windows, detachable
+terminal/ACP panels (they want width), and windows as identity compartments
+  (a Private window beside a Work one — A9's wall becomes spatial).
+
+### Mapping to the existing mac app (per `mac-architecture.md`)
+
+The current shell is already single-window, so this is adaptation, not rebuild:
+
+| Existing | New design |
+| --- | --- |
+| `SidebarViewController` (identity/status + actions) | stays; the three perspectives (Contacts / Messages / Projects) become its sections, identity stays visible here (A8) |
+| `PeerTabsViewController` (Favorites/Recents/Contacts tabs) | tabs **dissolve into the D7 segmented filters** inside the Contacts section — same data, filter strip instead of tab bar |
+| `DetailContainerViewController` → `ChatViewController` | this pair is the **window-host-agnostic chat surface** and the future detach unit; it assumes nothing about being the only visible surface |
+| chat header idle actions (`Call`, share video, peer details) | becomes the nav-bar equivalent of §7.1: title (tap → person screen) + `[chat settings] [new session] [call]`; `.watching` remains mac-only |
+| `OverlayPanel` → `LiveActivityBar` | unchanged mechanics (docked under the title bar, height → top spacer); `ui-design-notes.md` wins on visuals; no End verb in compact pill stays mac behavior |
+| right-click Rename…/Delete… on peer rows | stays — the tiny edit surface of P11 restraint, matching stock patterns |
+
+mac has no navigation stack today; the sidebar → detail split is the one
+navigation move, which is exactly the Phone/Messages/Slack layout family (P12:
+Slack is a sidebar + surface app on the mac).
+
+## 14. Artifacts at scale
+
+Voice use makes artifacts the **primary payload**, not an occasional card: voice
+can carry neither large text nor images, so agents answer with artifacts and the
+timeline fills with them. `idfon-artifacts.md` is authoritative for the artifact
+model (cards, detail-by-kind, sandboxed web view, annotate→ask selectors,
+immutable revisions, `metadata.spoken`/`alt`); this section is the UI
+consequences of volume:
+
+- **Artifact-aware timeline**: the segmented filter strip extends into chats
+  (e.g. All | Files | Images | Links). Bucket summaries already count artifacts
+  ("2 files", A2).
+- **Revision grouping**: revisions (`metadata.revision_of`) collapse into one
+  card with a revision count — no card per revision.
+- **Gallery entry**: a per-room / per-person artifact view (on the person screen
+  and in chat settings) so "that image from last week" is findable without
+  scrolling the timeline.
+- **One interaction model for humans and agents**: humans annotate→ask (reference
+  chip in the composer), agents resolve the same selectors (`read_reference`).
+  Seamless yet robust means both sides share the interaction surface, not that
+  each gets its own.
+- Cards stay compact (A5): an artifact card is a "simple" inline item — title,
+  kind icon, small preview when local. Anything needing real room escalates per
+  A1.
+
+## 15. UI production: UI-specialty agents (v0)
+
+Models differ in UI savviness, so UI generation is a **benchmarked pipeline**,
+not a trusted reputation:
+
+- **v0 (verified working)**: `POST https://api.v0.dev/v2/chats` with
+  `V0_API_KEY` (server-side only). Models `v0-mini | v0-pro | v0-max |
+  v0-max-fast`; streaming via `chats.createStream()`; attachments for design-doc
+  snippets or screenshots; docs index at `v0.app/docs/llms.txt`. It generates
+  web apps — a fit for idfon's web-content surfaces (`EdgeWebView`, sandboxed
+  views); UIKit/SwiftUI screens remain hand-built.
+- **Vercel AI Gateway** (`AI_GATEWAY_API_KEY`, 408 models) for candidate
+  comparison — note v0 models are *not* exposed on the gateway for this account.
+- **Benchmark**: fixed task set ("render the person screen of §6", …) run
+  through identical prompts per candidate; screenshot-capable models
+  (e.g. `gemini-2.5-flash-image`, `gemini-3-pro-image`) critique the rendered
+  output. The pipeline is the asset; models are swappable.
+
+## 16. Deferred: project tasks (D5)
+
+Codex-style: a project row expands in place to show **active tasks**; selecting a
+task opens its chat log. Deferred while the agentic side is being designed. The
+design leaves no blockers:
+
+- Project rows keep layout tolerance for an expansion region.
+- "Task" is not part of the room model; when it lands it likely derives as a
+  thread/session grouping (P3/P7) with its own chat log.
+
+## 17. Decision ledger
+
+| ID | Decision |
+| --- | --- |
+| D1 | Person-row tap: default opens the person screen; contact metadata may make a contact instantly callable (tap → chat + auto-call). |
+| D2 | Call state lives in one nav button (call → calling/hang-up) beside a stable burger; the live-call bar row carries call stats + an audio button cycling Built-in→Earphone→Speaker→Mute, a video on/off toggle, and a gear for advanced A/V settings, above the tray rows. Nav starts/stops the call; the bar operates it. |
+| D3 | No "request screenshare" feature — a text message does it. |
+| D4 | Three preset identities (Work / Personal / Private) at first launch, renamable. |
+| D5 | Project rows expand in place → active tasks → task chat log. Deferred; no blockers allowed. |
+| D6 | A project is one chatroom screen; threads/sessions are the "chats" inside it. |
+| D7 | Favorites/Recents are segmented filter toggles on list screens (room for more). |
+| D8 | Nav bar trailing cluster: [Call/Calling/Hang-up] [burger menu]; burger items: New Session (= new top-level thread in the chat; threads never nest), Share Screen (or Share → modal sheet), Chat Settings. Burger is the stable right-edge anchor; the changing call button sits left of it. |
+| D9 | Inline budget: a handful of simple messages; anything needing lots of room is not simple (A5 restated as a rule). |
+| D10 | macOS: single window, two-pane sidebar layout; chat surface stays window-host-agnostic and overlays app-level so multi-window remains cheap later. |
+| D11 | Timeline visual grammar (variant A, **approved**): side-aligned bubbles (ours right / theirs left, extends to split chats); identity hidden in 1:1, avatar + nick when a side has multiple identities; message detail = provenance caption + timestamp (between prototype variants A and B); C's nested containers rejected as noise; non-message cards get color-coded left edges (thread=blue, agent=orange, artifact=green) and the timeline gets ambient datelines. |
+| D12 | Tab bar hidden while the chat screen is open — even minimized it floats over the composer. |
+| D13 | Composer carries a speech button for recorded audio messages. |
+| D14 | Call modality is audio-first (kept): relieves the stress of being seen unprepared; video turns on when the user is ready. |
+| D15 | Text-first composer semantics: a text message just sends (no call needed, none started); audio messages are artifacts; live voice/video is the call side channel, like streams and transfers. |
+| D16 | Threads are top-level only — no nesting; "New Session" starts a new top-level thread. |
+| D17 | Display grouping is derived and retroactive: a standalone message can later fold into a thread when activity concentrates; messages never move, only their presentation. |
+| D18 | Screenshare lifecycle: start from the burger's Share Screen item; while streaming it shows as a bar in the live-activity panel with a stop button. |
+| D19 | Live-activity panel passively minimizes when scrolling up into history: collapses to a right-edge pill (green dot + "Live"), expands **on tap only** — no auto-re-expand on scrolling back down (iOS convention, P12). |
+
+Supporting answers: A1 escalate by detail type/size by expanding in place first;
+A2 bucket = label + short summary; A3 dumb, tunable heuristics; A4 zoom/view is
+agent-addressable with permission; A6 deputies bound to the granter's lifecycle;
+A7 agent permissions at contact-add (scope + moderation, no warning copy); A8
+identity visible on contacts; A9 no cross-identity linking (invariant); A10
+identity creation capped.
+
+## 18. Open points
+
+- Burst/bucket heuristic values: **minimal pass now** (conservative defaults,
+  recency guard, named constants — §7.3a); data-driven tuning deferred until
+  in-use analysis exists.
+- CallKit integration is sequenced **after the UI refactor and TestFlight
+  approval** (code may land earlier); the Bar path serves incoming calls until
+  then.
+
+## 19. Implementation mapping (current code)
+
+The delta between the shipped iOS app and this design (from reading
+`ChatViewController` and friends; for mac see §13's table):
+
+| Existing (`ios/Idfon/`) | Design target |
+| --- | --- |
+| `ChatViewController` — one flat table + composer + memo/file/artifact/reference-chip + dial paths + remote-control envelopes (point/show/screenshot) | keep as the room surface; its flat table becomes the §7 timeline (thread items, bucket cards, density derivation). Reference chip, artifact open, and the envelope handlers already match the design. |
+| `PeerListViewController` | Contacts tab base; add identity labels (A8), D7 filters, tap → person screen (D1) |
+| `RoomsViewController` | Projects + Messages tabs base; rows gain latest-message previews and session badges |
+| `CallViewController` + `LiveActivityBar`/`Controller` | already the hybrid inline/fullscreen split (P2); nav gains the D2/D8 call-state button + burger (New Session / Share Screen / Chat Settings); the bar row gains the audio-cycle, video toggle, and gear controls (D2) |
+| `ArtifactDetailViewController`, `SandboxedArtifactWebView`, `JSONRenderView` | already the §9 detail-screen machinery and inline render blocks |
+| `IdentityPickerViewController` | grows the D4 first-launch presets and the capped creation flow |
+| `VoiceCallRouting` / `IncomingCallRouter` | unchanged; §12's transition is their seam |
+
+New surfaces not in code: person screen (§6), timeline grouping engine (§7.3–7.4),
+segmented filters (§4), the nav burger + call-state button and its menu items
+(§7.1), artifact gallery/revision grouping (§14).
