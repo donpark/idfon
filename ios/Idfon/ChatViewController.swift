@@ -1104,7 +1104,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         case .callTranscript(let transcript):
             cell.setAlignment(outgoing: transcript.role != "agent")
             cell.messageLabel.text = transcript.text
-            cell.messageLabel.textColor = transcript.role == "agent" ? .label : .secondaryLabel
+            cell.messageLabel.textColor = .label
             let who = transcript.role == "agent" ? "Agent" : "You"
             cell.detailLabel.text = transcript.final ? "\(who) · spoken" : "\(who) · speaking…"
             cell.accessoryView = nil
