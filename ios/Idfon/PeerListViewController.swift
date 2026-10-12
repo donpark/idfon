@@ -95,6 +95,10 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         let relay = UIBarButtonItem(
             title: "Relay", style: .plain, target: self, action: #selector(showRelaySettings))
         navigationItem.rightBarButtonItems = [identity, edge, relay]
+        if OnDeviceAgents.available {
+            navigationItem.leftBarButtonItem = UIBarButtonItem(
+                barButtonSystemItem: .add, target: self, action: #selector(addOnDeviceAgent))
+        }
         navigationItem.backButtonDisplayMode = .generic // show "Back", not the callee's name
         navigationController?.navigationBar.prefersLargeTitles = true
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "peer")
@@ -192,9 +196,16 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
             defer { DispatchQueue.main.async { self.refreshControl?.endRefreshing() } }
             // Retry while the daemon finishes coming up, so a cold/crash start
             // does not leave Contacts empty with no way back but a manual pull.
-            guard let fetched = await client.whenReady({ try await client.peers() }) else { return }
-            await MainActor.run { self.peers = fetched }
+            let fetched = await client.whenReady({ try await client.peers() }) ?? []
+            // On-device agents are local contacts (no daemon peer), so they are
+            // added here whether or not the daemon answered.
+            await MainActor.run { self.peers = OnDeviceAgents.shared.peers + fetched }
         }
+    }
+
+    @objc private func addOnDeviceAgent() {
+        let editor = OnDeviceAgentEditorViewController(agent: nil) { [weak self] in self?.refresh() }
+        navigationController?.pushViewController(editor, animated: true)
     }
 
     func updateSearchResults(for searchController: UISearchController) {
@@ -223,7 +234,9 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         var config = cell.defaultContentConfiguration()
         let peer = shownPeers[indexPath.row]
         config.text = peer.displayName
-        config.secondaryText = peer.endpointId.map { String($0.prefix(16)) + "…" }
+        config.secondaryText = OnDeviceAgent.id(fromPeerId: peer.id) != nil
+            ? "on-device"
+            : peer.endpointId.map { String($0.prefix(16)) + "…" }
         cell.contentConfiguration = config
         // ⓘ opens the detail screen; the row itself still opens the chat.
         cell.accessoryType = .detailButton
@@ -236,7 +249,14 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     }
 
     override func tableView(_ tableView: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath) {
-        let detail = ContactDetailViewController(peer: shownPeers[indexPath.row])
+        let peer = shownPeers[indexPath.row]
+        if let id = OnDeviceAgent.id(fromPeerId: peer.id) {
+            let editor = OnDeviceAgentEditorViewController(
+                agent: OnDeviceAgents.shared.agent(id: id)) { [weak self] in self?.refresh() }
+            navigationController?.pushViewController(editor, animated: true)
+            return
+        }
+        let detail = ContactDetailViewController(peer: peer)
         detail.onChanged = { [weak self] in self?.refresh() }
         navigationController?.pushViewController(detail, animated: true)
     }
@@ -245,6 +265,17 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath)
         -> UISwipeActionsConfiguration? {
         let peer = shownPeers[indexPath.row]
+        // On-device agents: user ones can be deleted locally; the built-in AFM 3
+        // cannot.
+        if let id = OnDeviceAgent.id(fromPeerId: peer.id) {
+            guard id != OnDeviceAgents.builtInId else { return nil }
+            let delete = UIContextualAction(style: .destructive, title: "Delete") { [weak self] _, _, done in
+                OnDeviceAgents.shared.remove(id: id)
+                self?.refresh()
+                done(true)
+            }
+            return UISwipeActionsConfiguration(actions: [delete])
+        }
         let delete = UIContextualAction(style: .destructive, title: "Delete") { [weak self] _, _, done in
             guard let self else { return done(false) }
             Task {

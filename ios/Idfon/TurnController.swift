@@ -57,3 +57,35 @@ enum TurnController {
         return .forward
     }
 }
+
+/// Strip the agent's own speech that the recognizer re-heard at the start of a
+/// transcript (self-bleed). The mic picks up the tail of the agent's TTS, so a
+/// turn arrives as "<agent words> <caller words>".
+///
+/// Conservative: only trims when the agent's *whole* last utterance is a
+/// prefix of the transcript, so a caller who happens to repeat one word is not
+/// clipped. Deterministic and fail-open (returns the input unchanged).
+enum EchoTrim {
+    static func trim(heard: String, lastSpoken: String?) -> String {
+        guard let lastSpoken, !lastSpoken.isEmpty else { return heard }
+        let spoken = words(lastSpoken)
+        let heardWords = words(heard)
+        // At least two words: a one-word utterance ("Tokyo.") is too weak a
+        // signal to clip a caller who repeats it.
+        guard spoken.count >= 2, !heardWords.isEmpty else { return heard }
+        if heardWords == spoken { return "" }
+        guard heardWords.count > spoken.count,
+              Array(heardWords.prefix(spoken.count)) == spoken else { return heard }
+        return rawWords(heard).dropFirst(spoken.count).joined(separator: " ")
+    }
+
+    private static func words(_ text: String) -> [String] {
+        rawWords(text).map { word in
+            String(word.lowercased().filter { $0.isLetter || $0.isNumber })
+        }.filter { !$0.isEmpty }
+    }
+
+    private static func rawWords(_ text: String) -> [String] {
+        text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    }
+}
