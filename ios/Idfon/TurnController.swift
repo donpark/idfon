@@ -62,9 +62,14 @@ enum TurnController {
 /// transcript (self-bleed). The mic picks up the tail of the agent's TTS, so a
 /// turn arrives as "<agent words> <caller words>".
 ///
-/// Conservative: only trims when the agent's *whole* last utterance is a
-/// prefix of the transcript, so a caller who happens to repeat one word is not
-/// clipped. Deterministic and fail-open (returns the input unchanged).
+/// Conservative: only trims on a two-word-or-longer overlap between the end of
+/// the agent's last utterance and the start of the transcript, so a caller who
+/// happens to repeat one word is not clipped. Deterministic and fail-open
+/// (returns the input unchanged).
+///
+/// shortcut: only whole-word overlaps are detected; a clipped half-word or a
+/// one-word tail ("...anything else?") still gets through — upgrade to a
+/// time/energy gate on the capture side if that shows up in real calls.
 enum EchoTrim {
     static func trim(heard: String, lastSpoken: String?) -> String {
         guard let lastSpoken, !lastSpoken.isEmpty else { return heard }
@@ -73,10 +78,14 @@ enum EchoTrim {
         // At least two words: a one-word utterance ("Tokyo.") is too weak a
         // signal to clip a caller who repeats it.
         guard spoken.count >= 2, !heardWords.isEmpty else { return heard }
-        if heardWords == spoken { return "" }
-        guard heardWords.count > spoken.count,
-              Array(heardWords.prefix(spoken.count)) == spoken else { return heard }
-        return rawWords(heard).dropFirst(spoken.count).joined(separator: " ")
+        // The mic hears the *tail* of the agent's speech, so the longest match
+        // is a suffix of the agent's utterance against the head of the
+        // transcript ("please speak" from "Hello, please speak.").
+        for count in stride(from: min(spoken.count, heardWords.count), through: 2, by: -1)
+        where spoken.suffix(count).elementsEqual(heardWords.prefix(count)) {
+            return rawWords(heard).dropFirst(count).joined(separator: " ")
+        }
+        return heard
     }
 
     private static func words(_ text: String) -> [String] {
