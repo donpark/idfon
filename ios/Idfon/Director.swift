@@ -141,6 +141,8 @@ final class DirectorRuntime {
 
     private var director: Director?
     private(set) var enabled = false
+    /// True when the AFM loop answers directly (no wrapped agent, no network).
+    private(set) var onDevice = false
 
     static let instructions = """
     # Identity
@@ -154,24 +156,47 @@ final class DirectorRuntime {
     A greeting, an acknowledgement, or a short answer you know: speak it. Anything else: voice_forward.
     """
 
+    /// Fully on-device persona: the AFM loop IS the assistant. No tools, no
+    /// network; it answers from what it knows (`docs/voice-agent-modes.md`).
+    static let onDeviceInstructions = """
+    # Identity
+    You are the voice assistant the caller is talking to, running fully on this device. Never introduce yourself as a voice agent, director, model, or assistant; never mention the pipeline or the device.
+    # Output rules
+    Plain spoken text only. One or two short sentences. No markdown, lists, headings, emoji, or digits. Answer first.
+    # Tools
+    speak: say the short spoken reply.
+    # Routing
+    Answer the caller directly. When you do not know, or it needs live data or an action you cannot take, say so in one short sentence.
+    """
+
     /// Prepare the director for a call (load + warm the session), off the main
     /// thread. No-op unless `-directorcall` is set, and when AFM is
     /// unavailable. Await it before the first turn so the model is warm.
     func startCall() async {
-        guard !enabled, ProcessInfo.processInfo.arguments.contains("-directorcall") else { return }
+        let args = ProcessInfo.processInfo.arguments
+        let proxy = args.contains("-directorcall")
+        let local = args.contains("-directorondevice")
+        guard !enabled, proxy || local else { return }
+        let trace: [String: Any] = [
+            "tier": "on-device", "provider": "afm", "model": "apple-foundation-models",
+        ]
         let created: Director? = await Task.detached(priority: .userInitiated) { () -> Director? in
-            guard let director = Director.createAFMWrapped(
-                instructions: Self.instructions,
-                config: [
-                    "grant": ["speak", "voice_forward"],
-                    "budget": 32,
-                    "trace": [
-                        "tier": "on-device", "provider": "afm", "model": "apple-foundation-models",
-                    ],
-                ],
-                forward: Director.forwardCallback,
-                freeReply: Director.freeReplyCallback
-            ) else { return nil }
+            let director: Director?
+            if local {
+                // Fully on-device: the loop is the assistant, no wrapped agent.
+                director = Director.createAFM(instructions: Self.onDeviceInstructions, config: [
+                    "grant": ["speak"],
+                    "trace": trace,
+                ])
+            } else {
+                director = Director.createAFMWrapped(
+                    instructions: Self.instructions,
+                    config: ["grant": ["speak", "voice_forward"], "budget": 32, "trace": trace],
+                    forward: Director.forwardCallback,
+                    freeReply: Director.freeReplyCallback
+                )
+            }
+            guard let director else { return nil }
             let started = Date()
             director.prewarm()
             Automation.mark("director: call prewarm_ms=\(Int(Date().timeIntervalSince(started) * 1000))")
@@ -183,12 +208,14 @@ final class DirectorRuntime {
         }
         director = created
         enabled = true
-        Automation.mark("director: call ready (voice_forward enabled)")
+        onDevice = local
+        Automation.mark(local ? "director: call ready (on-device)" : "director: call ready (voice_forward enabled)")
     }
 
     func endCall() {
         director = nil
         enabled = false
+        onDevice = false
     }
 
     /// Run one caller turn on the director, off the main thread. Returns the
