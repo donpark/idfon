@@ -209,6 +209,58 @@ caller-linked source), **not** as a `capture` feature in
 `idfon-media`/`idfond`. Pipeline placement may vary; the daemon receives a
 session handle or ticket, never a device.
 
+### One in-app audio owner (iOS shell)
+
+On iOS the same rule is enforced *inside* the app: there is exactly one
+microphone capture and one playback bus, owned by `AudioIO`
+(`ios/Idfon/AudioIO.swift`). One `AVAudioEngine`, one `installTap`, one
+`AVAudioSession` configuration, and one voice-processing (AEC) input/output
+graph exist per process; everything else subscribes or plays through it.
+
+The seam is three protocols:
+
+- `AudioCaptureObserver` — `audioCapture(_:at:)`, a raw mic buffer plus its tap
+  timestamp.
+- `AudioSource` — `addCaptureObserver`/`removeCaptureObserver`. Capture is a
+  fan-out: **one tap, N consumers** (`AVAudioEngine` allows a single tap per
+  input bus, so the owner taps and hands out buffers).
+- `AudioSink` — `play(wav:)`, `play(_:)`, `playLooping(_:)`, `stopPlayback`.
+
+Consumers (no `AVAudioEngine`, tap, or session of their own): `AudioPusher`
+(live-call `push` to the daemon), `AudioMeter` (waveform), `ParakeetReduxAsr`,
+`AppleSpeechTranscriber`, `OnDeviceVoice` (SFSpeech), and `VoiceMemo` (writes
+the captured buffers to an `AVAudioFile`). Producers on the sink:
+`KokoroTtsEngine`, `AppleTtsEngine` (rendered to PCM via
+`write(_:toBufferCallback:)` rather than the synthesizer's private output), and
+`CallTonePlayer` (ringback/answered/ended cues).
+
+`AudioIO.Profile` picks the session/routing per call type:
+
+| profile | category / mode | used by |
+|---|---|---|
+| `.liveCall` | `.playAndRecord` / `.default` (+ speaker) | daemon-streamed live/video calls |
+| `.voiceAgent` | `.playAndRecord` / `.voiceChat` | on-device cascade |
+| `.recording` | `.playAndRecord` / `.default` (+ speaker) | voice memos |
+
+Two reasons this is load-bearing, not tidiness:
+
+- **AEC needs one graph.** Voice processing cancels only audio played on the
+  *same* `AVAudioEngine` that captures. TTS or cues on a second engine are
+  outside the AEC reference — the self-bleed documented in
+  [troubleshooting.md](troubleshooting.md). A second engine (or a mid-call
+  `setCategory`) also re-negotiates the shared VoiceProcessingIO unit and can
+  silently drop AEC. Playback therefore renders on the capture engine's bus.
+- **Testability.** With one source and one sink behind protocols, a test
+  injects a fake source (synthetic buffers) and a fake sink (records playback)
+  instead of the hardware. Every consumer takes its source/sink with
+  `AudioIO.shared` as the default.
+
+Invariant, checked by inspection (`grep`): `AVAudioEngine()`, `installTap`, and
+`setCategory` appear only in `AudioIO.swift`. `AVAudioRecorder` is no longer
+used. Not yet ported: the macOS shell still owns its own pipeline, and the
+memo *review* player stays an `AVAudioPlayer` because it needs transport
+(pause/seek/progress) that `AudioSink` does not model.
+
 ### Sources are pluggable
 
 The pipeline takes a **source**, not a device. `iroh-live` already models this:

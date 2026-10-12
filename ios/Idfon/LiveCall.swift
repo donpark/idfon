@@ -20,21 +20,10 @@ enum LiveCallHarness {
 
     /// Configure the audio session before any daemon audio starts.
     static func activateAudioSession() {
-        let session = AVAudioSession.sharedInstance()
-        // Set the mode in the category call, then move the route last: calling
-        // setMode(.voiceChat) after overrideOutputAudioPort() re-evaluates the
-        // route and drops back to the receiver. `.default` (not `.voiceChat`):
-        // voiceChat routes playback through VoiceProcessingIO, whose output
-        // gain is attenuated with no public API to undo it. AEC comes from
-        // `setVoiceProcessingEnabled` on the capture input node instead
-        // (docs/troubleshooting.md, "audio too quiet").
-        try? session.setCategory(
-            .playAndRecord,
-            mode: .default,
-            options: [.allowBluetoothHFP, .defaultToSpeaker]
-        )
-        try? session.setActive(true)
-        try? session.overrideOutputAudioPort(.speaker)
+        // The single audio owner configures the session (`liveCall` profile:
+        // `.default` + speaker, AEC from `setVoiceProcessingEnabled`;
+        // docs/troubleshooting.md, "audio too quiet").
+        AudioIO.shared.start(profile: .liveCall)
     }
 
     /// Dial a peer and stream the bundled WAV. Blocks until the callee hangs

@@ -9,19 +9,17 @@ import FluidAudio
 /// stream: we push mic buffers and it emits volatile/confirmed
 /// `transcriptionUpdates`, which map onto the loop's partial/final model.
 ///
+/// It is a *consumer* of the single microphone source (`AudioIO`): it owns no
+/// `AVAudioEngine`, tap, or playback bus. Voice processing (AEC) is the
+/// source's responsibility.
+///
 /// iOS 18+, ANE. First run downloads the ~183 MB encoder and compiles it for
 /// Core ML (minutes); failures surface as `start` throwing, and the caller
 /// falls back to the system recognizer.
 @available(iOS 18.0, *)
-final class ParakeetReduxAsr: AsrEngine, TtsPlayer {
+final class ParakeetReduxAsr: AsrEngine, AudioCaptureObserver {
     let name = "parakeet-redux"
 
-    private let engine = AVAudioEngine()
-    /// TTS playback bus. Attached before voice processing is enabled so VPIO has
-    /// an output bus to use as its echo-cancellation reference.
-    private let playbackPlayer = AVAudioPlayerNode()
-    private var playbackFinish: (() -> Void)?
-    private var scheduledBuffer: AVAudioPCMBuffer?
     private let gateLock = NSLock()
     private var gated = false
     private var manager: SlidingWindowAsrManager?
@@ -30,6 +28,12 @@ final class ParakeetReduxAsr: AsrEngine, TtsPlayer {
     private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var onText: ((String, Bool) -> Void)?
     private var started = false
+    /// Injected for tests; the app uses the single real microphone source.
+    private let source: AudioSource
+
+    init(source: AudioSource = AudioIO.shared) {
+        self.source = source
+    }
 
     // Single-flight warm task: download + CoreML-compile ahead of the first
     // turn so `start` doesn't pay for it. The loaded instance is dropped;
@@ -82,7 +86,7 @@ final class ParakeetReduxAsr: AsrEngine, TtsPlayer {
         self.manager = manager
 
         // Feed the actor one ordered buffer stream (its `streamAudio` is
-        // actor-isolated, so the tap can't call it directly).
+        // actor-isolated, so the audio thread can't call it directly).
         let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
             bufferingPolicy: .unbounded
         )
@@ -102,68 +106,38 @@ final class ParakeetReduxAsr: AsrEngine, TtsPlayer {
             }
         }
 
-        // Attach the playback node now, but connect it only AFTER voice
-        // processing is enabled. Connecting into mainMixer first materializes
-        // the output graph with the pre-VPIO format; setVoiceProcessingEnabled
-        // then trips an AVFAudio precondition inside its own graph connect,
-        // which raises an ObjC exception Swift's `try` cannot catch (SIGABRT).
-        engine.attach(playbackPlayer)
-
-        let input = engine.inputNode
-        // AEC: enable voice processing on the input node (parity with
-        // `SystemSpeechTranscriber`). Without it the live mic hears the agent's
-        // own TTS during barge-in and Parakeet re-sends it as the caller's turn.
-        if enableVoiceProcessing {
-            do {
-                try input.setVoiceProcessingEnabled(true)
-                Automation.mark("voice: voice-processing enabled")
-            } catch {
-                Automation.mark("voice: voice-processing unsupported: \(error.localizedDescription)")
-            }
-            // Keep the call cue tones (a separate engine) from being ducked as
-            // "other audio" while VPIO runs.
-            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
-                enableAdvancedDucking: false, duckingLevel: .min)
-        }
-        // Playback bus after VP: mainMixer→output negotiates the VPIO format,
-        // so the player's connection matches it and feeds the AEC reference.
-        engine.connect(playbackPlayer, to: engine.mainMixerNode, format: nil)
-        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
-            guard let self, !self.isGated else { return }
-            self.bufferContinuation?.yield(buffer)
-        }
-        engine.prepare()
-        try engine.start()
+        // Capture is the single source's job; AEC is enabled there.
+        source.addCaptureObserver(self)
         started = true
         Automation.mark("voice: parakeet ready")
         _ = onError  // streaming errors are recovered inside the manager
+        _ = enableVoiceProcessing
     }
 
     func pause() { setGated(true) }
 
-    func resume() {
-        setGated(false)
-        if started, !engine.isRunning {
-            engine.prepare()
-            try? engine.start()
-        }
-    }
+    func resume() { setGated(false) }
 
     func stop() {
         guard started || manager != nil else { return }
         started = false
-        stopPlayback()
+        source.removeCaptureObserver(self)
         updatesTask?.cancel()
         updatesTask = nil
         feedTask?.cancel()
         feedTask = nil
         bufferContinuation?.finish()
         bufferContinuation = nil
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
         let manager = self.manager
         self.manager = nil
         Task { await manager?.cleanup() }
+    }
+
+    // MARK: - AudioCaptureObserver
+
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        guard !isGated else { return }
+        bufferContinuation?.yield(buffer)
     }
 
     private var isGated: Bool {
@@ -176,71 +150,6 @@ final class ParakeetReduxAsr: AsrEngine, TtsPlayer {
         gateLock.lock()
         gated = value
         gateLock.unlock()
-    }
-
-    // MARK: - TtsPlayer
-
-    /// Render synthesized WAV on the VPIO engine and return when it has played.
-    func play(wav: Data) async {
-        guard started else { return }
-        let target = playbackPlayer.outputFormat(forBus: 0)
-        guard let buffer = Self.audioBuffer(wav: wav, target: target) else { return }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            scheduledBuffer = buffer
-            playbackFinish = { continuation.resume() }
-            playbackPlayer.scheduleBuffer(
-                buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack
-            ) { [weak self] _ in
-                DispatchQueue.main.async {
-                    self?.scheduledBuffer = nil
-                    self?.completePlayback()
-                }
-            }
-            if !playbackPlayer.isPlaying { playbackPlayer.play() }
-        }
-    }
-
-    func stopPlayback() {
-        playbackPlayer.stop()
-        completePlayback()
-    }
-
-    private func completePlayback() {
-        playbackFinish?()
-        playbackFinish = nil
-    }
-
-    /// Decode `wav` and convert it to the player node's output format, since
-    /// `scheduleBuffer` requires an exact format match.
-    private static func audioBuffer(wav: Data, target: AVAudioFormat) -> AVAudioPCMBuffer? {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("idfon-parakeet-tts.wav")
-        guard (try? wav.write(to: url)) != nil,
-              let file = try? AVAudioFile(forReading: url),
-              let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
-                                           frameCapacity: AVAudioFrameCount(file.length)),
-              (try? file.read(into: input)) != nil else { return nil }
-        if file.processingFormat.sampleRate == target.sampleRate,
-           file.processingFormat.channelCount == target.channelCount {
-            return input
-        }
-        guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else { return nil }
-        let ratio = target.sampleRate / file.processingFormat.sampleRate
-        // One second of headroom so the converter's output buffer never fills.
-        let capacity = AVAudioFrameCount(Double(input.frameLength) * ratio) + AVAudioFrameCount(target.sampleRate)
-        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
-        var fed = false
-        var conversionError: NSError?
-        let status = converter.convert(to: output, error: &conversionError) { _, outStatus in
-            if fed {
-                outStatus.pointee = .endOfStream
-                return nil
-            }
-            fed = true
-            outStatus.pointee = .haveData
-            return input
-        }
-        guard status != .error else { return nil }
-        return output
     }
 }
 

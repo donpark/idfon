@@ -128,49 +128,35 @@ private extension LiveWaveformView.Mode {
     }
 }
 
-/// Mic amplitude meter for the call screen: taps the session input and feeds
-/// normalized RMS to a LiveWaveformView. Display-only — the daemon owns the
-/// call's capture pipeline.
-final class AudioMeter {
-    private let engine = AVAudioEngine()
+/// Mic amplitude meter for the call screen: a consumer of the single
+/// microphone source (`AudioIO`). It subscribes to raw mic buffers instead of
+/// installing a second tap, and never touches the AVAudioSession.
+final class AudioMeter: AudioCaptureObserver {
     private weak var view: LiveWaveformView?
     private(set) var running = false
+    /// Injected for tests; the app uses the single real microphone source.
+    private let source: AudioSource
 
-    init(view: LiveWaveformView) {
+    init(view: LiveWaveformView, source: AudioSource = AudioIO.shared) {
         self.view = view
+        self.source = source
     }
 
     func start() {
         guard !running else { return }
-        let session = AVAudioSession.sharedInstance()
-        AVAudioApplication.requestRecordPermission { [weak self] granted in
-            guard granted, let self, !self.running else { return }
-            do {
-                // Reuse the call's session config — never flip it to
-                // `.voiceChat` here, which would route the whole session
-                // through VoiceProcessingIO and attenuate playback. Match the
-                // on-device voice-agent: `.default` + loudspeaker.
-                try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
-                try session.setActive(true)
-                let input = self.engine.inputNode
-                let format = input.outputFormat(forBus: 0)
-                input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
-                    let rms = Self.rms(buffer)
-                    self?.view?.add(amplitude: Float(min(rms * 12, 1)))
-                }
-                try self.engine.start()
-                self.running = true
-            } catch {
-                idfonError("idfon audio meter failed: \(error.localizedDescription)")
-            }
-        }
+        source.addCaptureObserver(self)
+        running = true
     }
 
     func stop() {
         guard running else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        source.removeCaptureObserver(self)
         running = false
+    }
+
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        let rms = Self.rms(buffer)
+        view?.add(amplitude: Float(min(rms * 12, 1)))
     }
 
     /// RMS of the first channel.

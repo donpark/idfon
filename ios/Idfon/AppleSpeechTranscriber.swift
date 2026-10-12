@@ -8,32 +8,36 @@ import Speech
 /// emits volatile partial results live; below iOS 26 the app falls back to
 /// `SFSpeechRecognizer` (`OnDeviceVoice.startListening`).
 ///
+/// It is a *consumer* of the single microphone source (`AudioIO`): it owns no
+/// `AVAudioEngine`, tap, or playback bus. Voice processing (AEC) is the
+/// source's responsibility.
+///
 /// Counterpart of the macOS `MacSpeechTranscriber`; same options and pipeline.
 @available(iOS 26.0, *)
-final class SystemSpeechTranscriber {
+final class AppleSpeechTranscriber: AudioCaptureObserver {
     private let locale: Locale
+    /// Injected for tests; the app uses the single real microphone source.
+    private let source: AudioSource
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
-    private var engine: AVAudioEngine?
     private var analyzerFormat: AVAudioFormat?
     private var lastPartial = ""
     private var fedFrames: AVAudioFramePosition = 0
     private var inputConverter: Any?
-    /// Tap gate. Pausing/restarting `AVAudioEngine` renegotiates the shared
-    /// play-and-record IO while TTS plays and made `SpeechAnalyzer` reject the
-    /// session (`RecogRejected`); keeping the engine running and dropping tap
-    /// buffers while the agent thinks/speaks leaves the IO stable.
+    /// Tap gate. The source engine keeps running; this drops buffers while the
+    /// agent thinks/speaks, so `SpeechAnalyzer` never sees the agent's own TTS.
     private let gateLock = NSLock()
     private var listening = true
 
-    init(locale: Locale = Locale.current) {
+    init(locale: Locale = Locale.current, source: AudioSource = AudioIO.shared) {
         self.locale = locale
+        self.source = source
     }
 
-    /// Start listening on the mic; `onText` receives (text, isFinal) as results
-    /// stream, `onError` a failure description.
+    /// Start listening; `onText` receives (text, isFinal) as results stream,
+    /// `onError` a failure description.
     func start(
         enableVoiceProcessing: Bool = true,
         onText: @escaping (String, Bool) -> Void,
@@ -109,68 +113,21 @@ final class SystemSpeechTranscriber {
         }
         Automation.mark("voice: mic granted=\(granted)")
 
-        let engine = AVAudioEngine()
-        self.engine = engine
-        let input = engine.inputNode
-        // iOS AEC: enable voice processing on the input node. Requires a
-        // play-and-record/voiceChat audio session (the barge-in caller sets it).
-        if enableVoiceProcessing {
-            do {
-                try input.setVoiceProcessingEnabled(true)
-                Automation.mark("voice: voice-processing enabled")
-            } catch {
-                Automation.mark("voice: voice-processing unsupported: \(error.localizedDescription)")
-            }
-            // Keep the call cue tones (a separate engine) from being ducked as
-            // "other audio" while VPIO runs.
-            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
-                enableAdvancedDucking: false, duckingLevel: .min)
-        }
-        let hardware = input.outputFormat(forBus: 0)
-        Automation.mark(
-            "voice: analyzer rate=\(format.sampleRate) ch=\(format.channelCount) hw=\(hardware.sampleRate)/\(hardware.channelCount)"
-        )
         if #available(iOS 27.0, *) {
             inputConverter = try await AnalyzerInputConverter.converter(
                 compatibleWith: [detector, transcriber]
             )
             Automation.mark("voice: analyzer input converter ready")
         }
-        var tapBuffers = 0
-        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, time in
-            guard let self, let builder = self.inputBuilder else { return }
-            guard self.isListening else { return }
-            tapBuffers += 1
-            if tapBuffers == 1 || tapBuffers % 500 == 0 {
-                Automation.mark("voice: tap buffers=\(tapBuffers) frames=\(buffer.frameLength)")
-            }
-            if #available(iOS 27.0, *),
-               let converter = self.inputConverter as? AnalyzerInputConverter {
-                if let inputs = try? converter.convert(buffer, at: time) {
-                    for input in inputs { builder.yield(input) }
-                }
-                return
-            }
-            // iOS 26 fallback: manual conversion + explicit timeline.
-            if let converted = self.convert(buffer, to: format) {
-                let start = CMTime(
-                    value: self.fedFrames,
-                    timescale: CMTimeScale(format.sampleRate)
-                )
-                self.fedFrames += AVAudioFramePosition(converted.frameLength)
-                builder.yield(AnalyzerInput(buffer: converted, bufferStartTime: start))
-            }
-        }
-        engine.prepare()
-        try engine.start()
+        // Capture is the single source's job; AEC is enabled there.
+        source.addCaptureObserver(self)
+        _ = enableVoiceProcessing
     }
 
     func stop() {
+        source.removeCaptureObserver(self)
         resultsTask?.cancel()
         resultsTask = nil
-        engine?.stop()
-        engine?.inputNode.removeTap(onBus: 0)
-        engine = nil
         if #available(iOS 27.0, *),
            let converter = inputConverter as? AnalyzerInputConverter,
            let inputs = try? converter.flush() {
@@ -184,19 +141,14 @@ final class SystemSpeechTranscriber {
         Task { await analyzer?.cancelAndFinishNow() }
     }
 
-    /// Close/open the tap gate without touching the engine or the analyzer, so
-    /// the agent's own TTS cannot feed the next utterance.
+    /// Close/open the buffer gate without touching the source or the analyzer,
+    /// so the agent's own TTS cannot feed the next utterance.
     func pause() {
         setListening(false)
     }
 
     func resume() {
         setListening(true)
-        // Recover if the engine was stopped (interruption/route change) while
-        // gated; a normal resume does not restart it.
-        guard let engine, !engine.isRunning else { return }
-        engine.prepare()
-        try? engine.start()
     }
 
     private func setListening(_ value: Bool) {
@@ -209,6 +161,27 @@ final class SystemSpeechTranscriber {
         gateLock.lock()
         defer { gateLock.unlock() }
         return listening
+    }
+
+    // MARK: - AudioCaptureObserver
+
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        guard let builder = inputBuilder, isListening else { return }
+        if #available(iOS 27.0, *),
+           let converter = inputConverter as? AnalyzerInputConverter {
+            if let inputs = try? converter.convert(buffer, at: time) {
+                for input in inputs { builder.yield(input) }
+            }
+            return
+        }
+        // iOS 26 fallback: manual conversion + explicit timeline.
+        guard let format = analyzerFormat, let converted = convert(buffer, to: format) else { return }
+        let start = CMTime(
+            value: fedFrames,
+            timescale: CMTimeScale(format.sampleRate)
+        )
+        fedFrames += AVAudioFramePosition(converted.frameLength)
+        builder.yield(AnalyzerInput(buffer: converted, bufferStartTime: start))
     }
 
     /// Manual conversion (tap format → 16 kHz Int16 mono) for iOS 26 before

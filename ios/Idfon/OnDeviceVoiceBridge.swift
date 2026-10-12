@@ -128,13 +128,7 @@ extension OnDeviceVoice {
     /// Rust barge-in and echo filters stops playback and engages.
     func runBargeInExercise(timeout: TimeInterval = 40) {
         Automation.mark("voice: bargein start")
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(
-            .playAndRecord,
-            mode: .voiceChat,
-            options: [.defaultToSpeaker, .allowBluetoothHFP]
-        )
-        try? session.setActive(true, options: .notifyOthersOnDeactivation)
+        AudioIO.shared.start(profile: .voiceAgent)
 
         let phrase = "Here is a longer answer that keeps talking for a while so "
             + "you have time to interrupt me by speaking over the top of it."
@@ -145,25 +139,17 @@ extension OnDeviceVoice {
             Automation.mark("voice: done")
             return
         }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("idfon-bargein.wav")
-        guard (try? wav.write(to: url)) != nil,
-              let player = try? AVAudioPlayer(contentsOf: url)
-        else {
-            Automation.mark("voice: FAIL bargein player")
-            Automation.mark("voice: done")
-            return
-        }
-        self.bargeInPlayer = player
-        Automation.mark("voice: bargein prepared seconds=\(player.duration)")
+        let duration = Double(pcm.data.count) / (Double(pcm.rate) * 2)
+        var engaged = false
+        Automation.mark("voice: bargein prepared seconds=\(duration)")
 
         let handle: (String) -> Void = { [weak self] text in
-            guard let self, player.isPlaying else { return }
+            guard let self, AudioIO.shared.isPlaying, !engaged else { return }
             let cancellable = idfon_voice_is_cancellable(text, 1, 0) != 0
             let echo = idfon_voice_is_echo(phrase, text) != 0
             if cancellable && !echo {
-                player.stop()
-                self.bargeInPlayer = nil
+                engaged = true
+                AudioIO.shared.stopPlayback()
                 self.stopSystemTranscriber()
                 Automation.mark("voice: bargein engaged transcript=\(text)")
                 Automation.mark("voice: PASS")
@@ -177,8 +163,8 @@ extension OnDeviceVoice {
         // iOS 26+ shares the SpeechAnalyzer path with macOS; older iOS uses the
         // legacy SFSpeechRecognizer fallback.
         if #available(iOS 26.0, *) {
-            let transcriber = SystemSpeechTranscriber()
-            systemTranscriber = transcriber
+            let transcriber = AppleSpeechTranscriber()
+            appleTranscriber = transcriber
             Task {
                 do {
                     try await transcriber.start(
@@ -194,24 +180,24 @@ extension OnDeviceVoice {
                 }
             }
         } else {
-            startListening(configureSession: false, onPartial: handle) { _ in }
+            startListening(onPartial: handle) { _ in }
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
-            player.play()
+            Task { await AudioIO.shared.play(wav: wav) }
             Automation.mark("voice: bargein playing")
             // Fail fast if playback finishes without an interruption.
-            DispatchQueue.main.asyncAfter(deadline: .now() + player.duration + 1) { [self] in
-                guard let current = self.bargeInPlayer, !current.isPlaying else { return }
-                self.bargeInPlayer = nil
-                self.stopSystemTranscriber()
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration + 1) { [self] in
+                guard !engaged else { return }
+                engaged = true
+                stopSystemTranscriber()
                 Automation.mark("voice: FAIL bargein no interruption")
                 Automation.mark("voice: done")
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
-            guard let self, self.bargeInPlayer != nil else { return }
-            self.bargeInPlayer = nil
+            guard let self, !engaged else { return }
+            engaged = true
             self.stopSystemTranscriber()
             Automation.mark("voice: FAIL bargein no interruption")
             Automation.mark("voice: done")

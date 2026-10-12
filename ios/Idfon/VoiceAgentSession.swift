@@ -156,9 +156,9 @@ final class VoiceAgentSession: NSObject {
             // Enabling voice processing re-evaluates the output route and can
             // drop `.voiceChat` back to the receiver; re-assert the loudspeaker.
             try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.speaker)
-            // TTS must render on the recognizer's VPIO engine to be the echo
-            // cancellation reference (docs/voice-side-channel.md).
-            tts.playback = asr as? TtsPlayer
+            // TTS renders on the app's single playback bus (`AudioIO`), the AEC
+            // reference for capture.
+            tts.playback = AudioIO.shared
             // Load the reply voice and fetch the greeting while ringback still
             // plays, so "answered" is followed immediately by speech instead
             // of dead air waiting on the model or the agent.
@@ -496,8 +496,8 @@ final class VoiceAgentSession: NSObject {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 700_000_000)
             guard let self, !self.isActive else { return }
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             CallTonePlayer.shared.stop()
+            AudioIO.shared.stop()
         }
     }
 
@@ -547,23 +547,17 @@ final class VoiceAgentSession: NSObject {
     /// plays back on the same play-and-record session, so `speak()` must not
     /// reconfigure it mid-session.
     private func configureSession() {
-        let session = AVAudioSession.sharedInstance()
-        // `.voiceChat` is the mode VPIO's AEC is tuned for; `.default` silently
-        // disables echo cancellation (docs/voice-side-channel.md). Output level
-        // stays usable because the recognizer attaches a playback bus before
-        // enabling voice processing.
-        try? session.setCategory(
-            .playAndRecord,
-            mode: .voiceChat,
-            options: [.defaultToSpeaker, .allowBluetoothHFP]
-        )
-        try? session.setActive(true, options: .notifyOthersOnDeactivation)
+        // The single audio owner configures the session (`.voiceChat`, VPIO) and
+        // starts capture/playback; this class only re-asserts the caller's
+        // speaker preference after route changes.
+        AudioIO.shared.start(profile: .voiceAgent)
         // Track route changes: enabling voice processing (and other session
         // reconfigurations) can drop `.voiceChat` back to the receiver after
         // the initial override, so the guard re-asserts the caller's choice.
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
         routeObserver = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification, object: session, queue: .main
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main
         ) { [weak self] note in
             Task { @MainActor in self?.handleRouteChange(note) }
         }
@@ -737,8 +731,6 @@ final class VoiceAgentSession: NSObject {
                 }
             }
             self.voice.startListening(
-                configureSession: false,
-                enableVoiceProcessing: false,
                 onPartial: { text in
                     latest = text
                     lastChange = Date()

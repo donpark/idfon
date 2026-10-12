@@ -19,10 +19,9 @@ enum CallFeedback {
 /// In-app call sounds: ringback while dialing, incoming ringtone, and short
 /// answer/end cues.
 ///
-/// Threading: the AVAudioEngine lives entirely on a private serial queue.
-/// Callers (the main thread) only record intent via `start`/`stop`; no engine
-/// setup, buffer generation, or scheduling runs on the UI thread.
-///
+/// It owns no `AVAudioEngine`: every cue is synthesized to PCM and rendered on
+/// the app's single playback sink (`AudioIO`), so cues share the call's output
+/// bus (and its AEC reference) instead of racing it with a second engine.
 /// Tones are synthesized so no assets ship; swap `toneBuffer` for an asset load
 /// if/when real ringtones are added. When CallKit lands it supplies the system
 /// incoming ringtone, so the `.ringtone` case becomes the non-CallKit fallback.
@@ -31,69 +30,49 @@ final class CallTonePlayer {
 
     enum Tone { case ringback, ringtone, answered, ended }
 
-    private let queue = DispatchQueue(label: "idfon.call-tones")
     private let sampleRate = 48_000.0
-    private var engine: AVAudioEngine?
-    private var player: AVAudioPlayerNode?
     private var current: Tone?
+    /// Injected for tests; the app renders cues on the single playback sink.
+    private let sink: AudioSink
+
+    init(sink: AudioSink = AudioIO.shared) {
+        self.sink = sink
+    }
 
     /// Start (or switch to) a looping tone or one-shot cue. Idempotent.
     func start(_ tone: Tone) {
-        queue.async { self.startLocked(tone) }
-    }
-
-    /// Stop whatever is playing and release the engine. Idempotent.
-    func stop() {
-        queue.async { self.stopLocked() }
-    }
-
-    // MARK: - queue-confined
-
-    private func startLocked(_ tone: Tone) {
-        if current == tone, player?.isPlaying == true { return }
-        stopLocked()
-        guard ensureStartedLocked(), let player, let buffer = toneBuffer(tone) else { return }
-        current = tone
-        switch tone {
-        case .ringback, .ringtone:
-            player.scheduleBuffer(buffer, at: nil, options: [.loops], completionHandler: nil)
-        case .answered, .ended:
-            player.scheduleBuffer(buffer, at: nil, options: []) { [weak self] in
-                guard let self else { return }
-                self.queue.async { if self.current == tone { self.stopLocked() } }
+        runOnMain { [self] in
+            if current == tone { return }
+            current = tone
+            sink.stopPlayback()
+            guard let buffer = toneBuffer(tone) else { return }
+            switch tone {
+            case .ringback, .ringtone:
+                sink.playLooping(buffer)
+            case .answered, .ended:
+                Task { await sink.play(buffer) }
             }
         }
     }
 
-    private func ensureStartedLocked() -> Bool {
-        if let engine, engine.isRunning { return true }
-        // Call cues are loudspeaker by default; a VPIO engine starting later
-        // can otherwise leave this engine routed to the receiver.
-        try? AVAudioSession.sharedInstance().overrideOutputAudioPort(.speaker)
-        let engine = AVAudioEngine()
-        let player = AVAudioPlayerNode()
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format())
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            idfonError("idfon call tones: engine start failed: \(error)")
-            return false
+    /// Stop whatever is playing. Idempotent.
+    func stop() {
+        runOnMain { [self] in
+            guard current != nil else { return }
+            current = nil
+            sink.stopPlayback()
         }
-        player.play()
-        self.engine = engine
-        self.player = player
-        return true
     }
 
-    private func stopLocked() {
-        current = nil
-        player?.stop()
-        engine?.stop()
-        engine = nil
-        player = nil
+    private func runOnMain(_ block: @escaping () -> Void) {
+        if Thread.isMainThread {
+            block()
+        } else {
+            DispatchQueue.main.async(execute: block)
+        }
     }
+
+    // MARK: - synthesis
 
     private func format() -> AVAudioFormat {
         AVAudioFormat(

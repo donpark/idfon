@@ -77,7 +77,7 @@ hear, so the only honest way to give it a voice memo is text: the app
 transcribes the memo and sends the transcript the same way it sends a text file
 (`Attachment::Text`). Decided 2026-10-11; not built, because the engines are
 streaming-only today — `AsrEngine` has `start/pause/resume/stop` and a live
-mic tap, and no batch or file entry (`SystemSpeechTranscriber.start` bundles
+mic tap, and no batch or file entry (`AppleSpeechTranscriber.start` bundles
 analyzer creation with the mic wiring). The slice is a seam
 (`AsrEngine.transcribe(file:)`) that reuses the analyzer setup for a file, which
 touches the same code the live call path uses, so it wants a device run rather
