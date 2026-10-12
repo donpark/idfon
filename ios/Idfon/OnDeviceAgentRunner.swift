@@ -11,32 +11,28 @@ final class OnDeviceAgentRunner {
 
     private init() {}
 
-    /// Run one turn for `agent`. Returns the spoken reply, or nil when AFM is
-    /// unavailable or the turn failed.
+    /// Run one plain-text turn for `agent`. Returns the spoken reply, or nil
+    /// when AFM is unavailable or the turn failed.
     func reply(agent: OnDeviceAgent, text: String) async -> String? {
+        await run(agent: agent) { $0.turn(text) }
+    }
+
+    /// Run one turn that points at something: a `TurnInput` (text, artifact
+    /// references, attachments) instead of bare text. A reference carries its
+    /// selection in the selector, so a local model sees what was pointed at
+    /// (`docs/voice-multimodal.md`).
+    func reply(agent: OnDeviceAgent, input: [String: Any]) async -> String? {
+        await run(agent: agent) { $0.turn(input: input) }
+    }
+
+    private func run(agent: OnDeviceAgent, _ body: @escaping (Director) -> [String: Any]?) async -> String? {
         await withCheckedContinuation { continuation in
             queue.async {
-                let director: Director
-                if let cached = self.directors[agent.id], cached.instructions == agent.instructions {
-                    director = cached.director
-                } else {
-                    guard let created = Director.createAFM(
-                        instructions: agent.instructions,
-                        config: [
-                            "grant": ["speak"],
-                            "trace": [
-                                "tier": "on-device", "provider": "afm",
-                                "model": "apple-foundation-models",
-                            ],
-                        ]
-                    ) else {
-                        continuation.resume(returning: nil)
-                        return
-                    }
-                    self.directors[agent.id] = (agent.instructions, created)
-                    director = created
+                guard let director = self.warmDirector(for: agent) else {
+                    continuation.resume(returning: nil)
+                    return
                 }
-                guard let result = director.turn(text) else {
+                guard let result = body(director) else {
                     continuation.resume(returning: nil)
                     return
                 }
@@ -44,6 +40,26 @@ final class OnDeviceAgentRunner {
                 continuation.resume(returning: spoken.isEmpty ? nil : spoken)
             }
         }
+    }
+
+    /// The agent's director, created on first use and recreated when its prompt
+    /// changes. Nil when AFM is unavailable.
+    private func warmDirector(for agent: OnDeviceAgent) -> Director? {
+        if let cached = directors[agent.id], cached.instructions == agent.instructions {
+            return cached.director
+        }
+        guard let created = Director.createAFM(
+            instructions: agent.instructions,
+            config: [
+                "grant": ["speak"],
+                "trace": [
+                    "tier": "on-device", "provider": "afm",
+                    "model": "apple-foundation-models",
+                ],
+            ]
+        ) else { return nil }
+        directors[agent.id] = (agent.instructions, created)
+        return created
     }
 
     /// Drop the cached director for a deleted agent.

@@ -1008,8 +1008,16 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                     envelope = "IDFON-DATA/1\nticket=\(ticket)\nsize=\(preview.count)\n" + refEnvelope
                 }
                 if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
-                    // On-device agents have no artifacts yet: send the words.
-                    await replyLocally(agent: agent, text: text, peerId: peer.id, messageID: id)
+                    // The local model gets the reference itself: its selector
+                    // carries the selected text, so point-and-ask works without
+                    // a fetch. A crop ticket would be unreadable to it (no
+                    // on-device resolver), so it is not staged here.
+                    let ref = ArtifactRef(artifactId: pending.artifact.artifactId,
+                                          selector: pending.selector,
+                                          blobTicket: pending.artifact.blobTicket,
+                                          note: nil)
+                    await replyLocally(agent: agent, text: text, peerId: peer.id,
+                                       messageID: id, reference: ref)
                     return
                 }
                 if let room = conversation.room {
@@ -1026,8 +1034,16 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     /// Answer a turn for an on-device agent and record it in the thread.
-    private func replyLocally(agent: OnDeviceAgent, text: String, peerId: String, messageID: String) async {
-        guard let spoken = await OnDeviceAgentRunner.shared.reply(agent: agent, text: text) else {
+    private func replyLocally(agent: OnDeviceAgent, text: String, peerId: String,
+                              messageID: String, reference: ArtifactRef? = nil) async {
+        let spoken: String?
+        if let reference {
+            spoken = await OnDeviceAgentRunner.shared.reply(
+                agent: agent, input: Self.turnInput(text: text, reference: reference))
+        } else {
+            spoken = await OnDeviceAgentRunner.shared.reply(agent: agent, text: text)
+        }
+        guard let spoken else {
             store.updateMessage(id: messageID) { $0.status = "Failed" }
             showBanner("The on-device agent did not answer (Apple Intelligence off?)")
             return
@@ -1036,6 +1052,19 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         store.appendOutgoing(
             ChatMessage(id: UUID().uuidString, peerId: peerId, kind: .text(spoken),
                         outgoing: false, timestamp: Date()))
+    }
+
+    /// The director's `TurnInput` JSON for a turn that points at an artifact
+    /// (`docs/voice-multimodal.md`): the question in `text`, the reference in
+    /// `references`, so the loop renders both into one prompt and marks the
+    /// reference as untrusted data.
+    private static func turnInput(text: String, reference: ArtifactRef) -> [String: Any] {
+        var input: [String: Any] = ["text": text]
+        if let data = try? JSONEncoder().encode(reference),
+           let json = try? JSONSerialization.jsonObject(with: data) {
+            input["references"] = [json]
+        }
+        return input
     }
 
     private func sendConversationText(_ text: String) async throws {
@@ -1180,6 +1209,12 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     /// ticket envelope, tracked in the Session Tray. The blob streams from disk,
     /// so large files never sit in memory.
     private func sendFile(at url: URL, name: String) {
+        // An app-local agent cannot read a blob yet (the local model has no
+        // resolver), so a file would upload to a peer that does not exist.
+        guard OnDeviceAgents.shared.agent(forPeerId: peer.id) == nil else {
+            showBanner("\(peer.displayName) is an on-device agent: no file attachments yet")
+            return
+        }
         let transferId = UUID().uuidString
         let started = Date()
         TransferCenter.shared.begin(id: transferId, peerId: peer.id, name: name) { [weak self] in
@@ -1615,6 +1650,12 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     private func sendRecording(fileURL: URL, durationMs: Int, codec: String, sampleRate: String) async {
+        // An app-local agent has no audio path: it cannot hear a memo, and the
+        // upload would be sent to a peer that does not exist.
+        guard OnDeviceAgents.shared.agent(forPeerId: peer.id) == nil else {
+            showBanner("\(peer.displayName) is an on-device agent: no voice messages yet")
+            return
+        }
         // Claim any pending reference now; it rides with the memo.
         let pending = pendingReference
         pendingReference = nil
