@@ -44,6 +44,17 @@ final class Director {
         return Self.object(String(cString: pointer))
     }
 
+    /// Run one multimodal turn (`TurnInput`: text, references, attachments).
+    func turn(input: [String: Any]) -> [String: Any]? {
+        let json = (try? JSONSerialization.data(withJSONObject: input))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        guard let pointer = json.withCString({ idfon_director_turn_input(handle, $0) }) else {
+            return nil
+        }
+        defer { idfon_director_free_string(pointer) }
+        return Self.object(String(cString: pointer))
+    }
+
     deinit {
         idfon_director_free(handle)
     }

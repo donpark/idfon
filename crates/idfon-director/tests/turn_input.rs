@@ -125,6 +125,33 @@ fn a_camera_frame_requires_the_grant() {
     assert!(input.render(granted.permits("camera")).contains("cam-1"));
 }
 
+/// The app-side path for an on-device turn depends on this: with no resolver
+/// (an on-device model cannot call `read_reference` and get a second pass), the
+/// selector's `quote` is the only copy of the selected text, so it must reach
+/// the prompt — inside the data block, like any other attached content.
+#[test]
+fn a_text_quote_reaches_the_prompt_as_data() {
+    let selected = "the selected sentence";
+    let input = TurnInput {
+        text: "what does this mean?".into(),
+        references: vec![reference(
+            "blob-1",
+            ArtifactSelector::Text {
+                start: 10,
+                end: 32,
+                quote: Some(selected.into()),
+            },
+        )],
+        attachments: Vec::new(),
+    };
+    let prompt = input.render(false);
+    let marker = prompt.find(UNTRUSTED_MARKER).expect("the data marker");
+    assert!(
+        prompt.find(selected).unwrap() >= marker,
+        "the quote stays in the data block: {prompt}"
+    );
+}
+
 /// Attached content is marked as untrusted data in the joined prompt, and it
 /// cannot grant itself a capability.
 #[test]

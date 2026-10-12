@@ -50,6 +50,18 @@ The director implements the turn as one joined prompt (`crates/idfon-director/sr
 into one question. The model resolves a reference with `read_reference` over a
 `ReferenceResolver` seam. A camera frame renders only under the `camera` grant.
 
+**On-device turns have no resolver.** An app-local agent (AFM 3,
+`docs/voice-agent-modes.md`) runs a model that cannot call `read_reference` and
+see the result — the AFM provider ends the turn after one tool call — and the
+apps pass no `ReferenceResolver` over the FFI. So the app resolves what it can
+before the turn and the reference's own content rides in the prompt: a
+`text`/`element` selection carries its selected text in the selector's `quote`
+(the field is documented for exactly this), which the loop renders inside the
+untrusted-data block. When the app replies to a reference, it sends the
+reference this way (`ChatViewController.turnInput`). An image `region` or a
+`time` range has no text to carry and needs an image/audio path into the
+model; until that exists an app-local agent sees the selector, not the pixels.
+
 ## Client-facing tools
 
 The multimodal surface is a set of tools in `eve-idfon`, so any idfon-aware
