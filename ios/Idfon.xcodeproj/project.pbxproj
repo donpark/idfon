@@ -295,6 +295,12 @@
 					CoreVideo,
 					"-framework",
 					CoreMedia,
+					/* The director's AFM shim references FoundationModels, which only
+					   exists from iOS 26. Weak-link it so the app still launches below
+					   that floor: no agent contact is seeded there, so no director is
+					   ever created (mac does the same in Package.swift). */
+					"-weak_framework",
+					FoundationModels,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.idfon;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -337,6 +343,12 @@
 					CoreVideo,
 					"-framework",
 					CoreMedia,
+					/* The director's AFM shim references FoundationModels, which only
+					   exists from iOS 26. Weak-link it so the app still launches below
+					   that floor: no agent contact is seeded there, so no director is
+					   ever created (mac does the same in Package.swift). */
+					"-weak_framework",
+					FoundationModels,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.idfon;
 				PRODUCT_NAME = "$(TARGET_NAME)";
