@@ -72,6 +72,18 @@ binary file is refused with a message rather than sent as mojibake, and a file
 turn is recorded as words in the thread, not as a downloadable bubble: a local
 agent has no blob to download.
 
+**Audio for a local agent is a transcript, not audio.** A local model cannot
+hear, so the only honest way to give it a voice memo is text: the app
+transcribes the memo and sends the transcript the same way it sends a text file
+(`Attachment::Text`). Decided 2026-10-11; not built, because the engines are
+streaming-only today — `AsrEngine` has `start/pause/resume/stop` and a live
+mic tap, and no batch or file entry (`SystemSpeechTranscriber.start` bundles
+analyzer creation with the mic wiring). The slice is a seam
+(`AsrEngine.transcribe(file:)`) that reuses the analyzer setup for a file, which
+touches the same code the live call path uses, so it wants a device run rather
+than a hopeful patch. Until then a memo to an app-local agent says so and stops
+(`ChatViewController.sendMemo`), instead of uploading a blob nobody fetches.
+
 **What "attachment" means per kind today** (the model never fetches bytes
 itself; the shell or the agent does):
 
@@ -79,7 +91,7 @@ itself; the shell or the agent does):
 | --- | --- | --- |
 | Text (reference quote, text file) | ticket + `quote`; the agent resolves | inlined in the prompt |
 | Image (region crop, camera frame) | blob ticket staged for the agent's own tools — whether a given model sees the pixels is unverified | region crop rides as an image content part |
-| Audio (voice memo) | blob ticket, the agent's speech path handles it | not wired: no audio path |
+| Audio (voice memo) | blob ticket, the agent's speech path handles it | decided: the app transcribes it and inlines the text (not built — see below) |
 
 **Images travel as content parts.** `Attachment::Image { name, mime, data }`
 (base64, `Content::Image`'s encoding) becomes a `yoagent` `Content::Image` part
