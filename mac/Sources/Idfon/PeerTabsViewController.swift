@@ -302,6 +302,7 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
                     CapabilityTickets.remove(for: peer.id)
                     ContactVoiceSelection.remove(for: peer.id)
                     ContactOnDeviceEngines.remove(for: peer.id)
+                    ContactVoiceTurnModes.remove(for: peer.id)
                     self?.onMutate?()
                     self?.reload()
                 } catch {

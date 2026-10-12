@@ -1551,6 +1551,15 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         voiceCatalog = []
         rebuildSpeech()
 
+        // How a client-cascade call handles each turn: passive (the agent
+        // answers) or proxy (the on-device director decides first). Per contact,
+        // like the speech picks above (`docs/voice-agent-modes.md`).
+        let turnMode = NSPopUpButton()
+        turnMode.addItems(withTitles: VoiceTurnMode.allCases.map(\.title))
+        turnMode.selectItem(at: VoiceTurnMode.allCases.firstIndex(of: ContactVoiceTurnModes.mode(for: peer.id)) ?? 0)
+        turnMode.target = self
+        turnMode.action = #selector(turnModePicked(_:))
+
         let stack = NSStackView(views: [
             NSTextField(labelWithString: peer.displayName),
             endpoint,
@@ -1558,6 +1567,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             NSTextField(labelWithString: "Speech"),
             NSTextField(labelWithString: "Recognition"), recognition,
             NSTextField(labelWithString: "Generation"), generation,
+            NSTextField(labelWithString: "Voice turns"),
+            NSTextField(labelWithString: "Mode"), turnMode,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -1631,6 +1642,14 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         else { return }
         ContactSpeech.set(choice, catalog: voiceCatalog, for: peer.id, slot: slot)
         rebuildSpeech()
+    }
+
+    @objc private func turnModePicked(_ sender: NSPopUpButton) {
+        let modes = VoiceTurnMode.allCases
+        guard sender.indexOfSelectedItem >= 0, sender.indexOfSelectedItem < modes.count else { return }
+        let mode = modes[sender.indexOfSelectedItem]
+        ContactVoiceTurnModes.set(mode, for: peer.id)
+        showBanner("Voice turns: \(mode.title)")
     }
 
     @objc private func copyEndpointTapped() {

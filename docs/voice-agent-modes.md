@@ -23,8 +23,9 @@ agent without editing its own prompt. No LLM sits in front of the content.
 does something with the turn (intermediary, judge, interpreter) or has its own
 tools. For passive conversation it only adds latency and failure modes (it
 re-paraphrased a question, and its greeting echoed into the transcript). Set it
-in the contact's detail screen ("Voice turns › Mode"); `-directorcall` forces a
-proxy call on any contact, as the device probe for this path.
+in the contact's detail screen (iOS) or the peer-details popover (mac), under
+"Voice turns › Mode"; `-directorcall` forces a proxy call on any contact, as the
+device probe for this path.
 
 **On-device is per contact.** The AFM3 loop answers directly, so there is no
 network. AFM3 has no tools and no live data; it chats and knows what it was
