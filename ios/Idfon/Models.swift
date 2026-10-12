@@ -203,6 +203,9 @@ enum MessageKind {
     case reference(MessageReference)
     /// A live-call transcript snapshot (spoken turn shown as a chat bubble).
     case callTranscript(CallTranscript)
+    /// A declarative view the agent produced for this turn
+    /// (`crates/idfon-protocol/src/blocks.rs`, `docs/reply-blocks.md`).
+    case render(RenderEnvelope)
 
     static let recordingPrefix = "IDFON-RECORDING/1\n"
     static let filePrefix = "IDFON-FILE/1\n"
@@ -226,6 +229,7 @@ enum MessageKind {
                               localURL: nil)
         }
         if let call = CallEnvelope.decodeCall(text) { return .callTranscript(call) }
+        if let render = RenderEnvelope.decode(text) { return .render(render) }
         if let artifact = ArtifactEnvelope.decodeArtifact(text) { return .artifact(artifact) }
         if let reference = ArtifactEnvelope.decodeReference(text) { return .reference(reference) }
         return .text(text)
@@ -302,6 +306,7 @@ enum MessageBody {
         "IDFON-SCREENSHOT/1\n",
         "IDFON-DATA/1\n",
         "IDFON-SPEAK/1\n",
+        "IDFON-RENDER/1\n",
         "IDFON-RECORDING/1\n",
         "IDFON-FILE/1\n",
         "IDFON-CALL/1\n",
@@ -339,6 +344,48 @@ enum MessageBody {
             }
         }
         return best
+    }
+}
+
+/// `IDFON-RENDER/1`: a declarative view for this turn, drawn natively from the
+/// app's own component catalog (`JSONRenderSpec`). Data only: no code, no
+/// markup, no scripts. A spec that does not validate or normalize is not a
+/// render block at all, so the message stays text.
+struct RenderEnvelope: Equatable {
+    static let prefix = "IDFON-RENDER/1\n"
+    /// The block's id on the wire, so two blocks can be the same block
+    /// (`crates/idfon-protocol/src/blocks.rs`). A reply arrives whole today, so
+    /// nothing merges on it yet; it is carried so nothing has to be re-derived.
+    let id: String?
+    let title: String?
+    let spec: JSONRenderSpec
+
+    private struct Body: Codable {
+        let title: String?
+        /// Decoded as raw JSON so the spec's `id` is readable: `JSONRenderSpec`
+        /// ignores keys it does not know, which would drop it.
+        let spec: [String: JSONValue]
+    }
+
+    static func decode(_ raw: String) -> RenderEnvelope? {
+        guard raw.hasPrefix(prefix) else { return nil }
+        let body = String(raw.dropFirst(prefix.count))
+        guard let decoded = try? JSONDecoder().decode(Body.self, from: Data(body.utf8)),
+              let data = try? JSONEncoder().encode(decoded.spec),
+              let spec = try? JSONRenderSpec.decode(data),
+              let normalized = try? spec.normalized(),
+              !normalized.elements.isEmpty else { return nil }
+        return RenderEnvelope(id: decoded.spec["id"]?.string, title: decoded.title, spec: normalized)
+    }
+
+    /// The wire form, for the store: a thread item re-decodes it on load.
+    static func encode(_ render: RenderEnvelope) -> String {
+        var object: [String: JSONValue] = (try? JSONEncoder().encode(render.spec))
+            .flatMap { try? JSONDecoder().decode([String: JSONValue].self, from: $0) } ?? [:]
+        if let id = render.id { object["id"] = .string(id) }
+        guard let data = try? JSONEncoder().encode(Body(title: render.title, spec: object)),
+              let body = String(data: data, encoding: .utf8) else { return prefix }
+        return prefix + body
     }
 }
 
@@ -461,6 +508,7 @@ struct ChatMessage: Identifiable {
         case .reference(let reference):
             return reference.text.isEmpty ? "Asked about an artifact" : reference.text
         case .callTranscript(let transcript): return transcript.text
+        case .render(let render): return render.title ?? "View"
         }
     }
 }

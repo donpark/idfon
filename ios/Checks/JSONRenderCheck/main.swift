@@ -98,6 +98,19 @@ func runChecks() async {
     check(audits.contains { $0.action == "risky" && $0.outcome == "denied" }, "denied sensitive action audited")
     check(audits.contains { $0.action == "risky" && $0.outcome == "ok: ran" }, "confirmed action audited")
     check(audits.count == 4, "every dispatch audited")
+
+    // The thread row's gist: a caller sees enough to decide whether to open it.
+    let spec = try! JSONRenderSpec.decode(Data("""
+    {"root": "card", "elements": {
+      "card": {"type": "Card", "props": {"title": "Options"}, "children": ["m1", "t1"]},
+      "m1": {"type": "Metric", "props": {"label": "per month", "value": "40"}},
+      "t1": {"type": "Text", "props": {"value": "cancel anytime"}}
+    }}
+    """.utf8))
+    check(spec.summary() == "Options · 40", "summary gist: \(spec.summary())")
+    check(JSONRenderSpec(root: "t1", elements: spec.elements).summary() == "cancel anytime",
+          "summary of a leaf spec")
+
     print("ALL OK")
     exit(0)
 }

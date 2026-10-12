@@ -2,7 +2,8 @@
 // Models.swift is Foundation-only, so this compiles and runs on the host —
 // no simulator needed:
 //
-//   swiftc -o /tmp/mkpcheck ios/Idfon/Models.swift ios/Checks/MessageKindParseCheck/main.swift
+//   swiftc -o /tmp/mkpcheck ios/Idfon/JSONRenderModel.swift ios/Idfon/Artifact.swift \
+//     ios/Idfon/Models.swift ios/Checks/MessageKindParseCheck/main.swift
 //   /tmp/mkpcheck
 //
 // Prints "ALL OK" or the first failing assertion (exit 1).
@@ -66,4 +67,23 @@ if case .file(_, let name, _, _) = MessageKind.parse("IDFON-FILE/1\nname=a=b.txt
 } else {
     check(false, "name containing '=' parses")
 }
+// A render block is a spec the app can draw; one it cannot draw stays text.
+let renderWire = """
+IDFON-RENDER/1
+{"title": "Options", "spec": {"id": "chart-block", "root": "root", "elements": {"root": {"type": "Metric", "props": {"label": "per month", "value": "40"}}}}}
+"""
+if case .render(let render) = MessageKind.parse(renderWire) {
+    check(render.title == "Options", "render block title")
+check(render.id == "chart-block", "render block id: \(render.id ?? "nil")")
+
+    check(render.spec.summary() == "40", "render block gist: \(render.spec.summary())")
+} else {
+    check(false, "a valid render block parses as a render block")
+}
+let unknownOnly = """
+IDFON-RENDER/1
+{"title": "Nope", "spec": {"root": "root", "elements": {"root": {"type": "Spline"}}}}
+"""
+check(isText(MessageKind.parse(unknownOnly)), "a spec with no known components stays text")
+
 print("ALL OK")

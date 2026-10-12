@@ -137,6 +137,31 @@ struct JSONRenderSpec: Codable, Equatable {
         visit(root, 0)
         return JSONRenderSpec(root: root, elements: kept)
     }
+
+    /// The one-line gist of a spec, for a thread row: the title-bearing and
+    /// value-bearing nodes, in order, which is what a caller needs to decide
+    /// whether to open it. The live tree stays behind a tap.
+    func summary(limit: Int = 2) -> String {
+        var parts: [String] = []
+        func visit(_ id: String, _ depth: Int) {
+            guard depth <= 4, parts.count < limit, let element = elements[id] else { return }
+            switch element.type {
+            case "Card":
+                if let title = element.props?["title"]?.string { parts.append(title) }
+            case "Text":
+                if let value = element.props?["value"]?.string { parts.append(value) }
+            case "Metric":
+                if let value = element.props?["value"]?.string { parts.append(value) }
+            default:
+                break
+            }
+            for child in element.children ?? [] where parts.count < limit {
+                visit(child, depth + 1)
+            }
+        }
+        visit(root, 0)
+        return parts.joined(separator: " · ")
+    }
 }
 
 /// A tool the app exposes to a rendered spec. `sensitive` tools require an

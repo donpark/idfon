@@ -357,6 +357,13 @@ final class ChatStore {
                 name = nil
                 sizeBytes = nil
                 durationMs = nil
+            case .render(let render):
+                kind = "render"
+                text = RenderEnvelope.encode(render)
+                ticket = nil
+                name = render.title
+                sizeBytes = nil
+                durationMs = nil
             case .callTranscript(let transcript):
                 kind = "call"
                 text = CallEnvelope.encodeCall(transcript)
@@ -372,7 +379,7 @@ final class ChatStore {
             switch kind {
             case "recording": messageKind = .recording(ticket: ticket ?? "", durationMs: durationMs ?? 0, localURL: nil)
             case "file": messageKind = .file(ticket: ticket ?? "", name: name ?? "file", sizeBytes: sizeBytes ?? 0, localURL: nil)
-            case "artifact", "reference", "call": messageKind = MessageKind.parse(text ?? "")
+            case "artifact", "reference", "call", "render": messageKind = MessageKind.parse(text ?? "")
             default: messageKind = .text(text ?? "")
             }
             return ChatMessage(id: id, peerId: peerId, kind: messageKind, outgoing: outgoing, timestamp: timestamp, conversation: conversation)

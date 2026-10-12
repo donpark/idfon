@@ -1179,6 +1179,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             cell.messageLabel.text = reference.text.isEmpty ? "Asked about an artifact" : reference.text
             cell.detailLabel.text = "\(reference.refs.count) reference\(reference.refs.count == 1 ? "" : "s")"
             cell.accessoryView = nil
+        case .render(let render):
+            cell.setAlignment(outgoing: false)
+            cell.messageLabel.text = render.title ?? "View"
+            cell.messageLabel.textColor = .link
+            let gist = render.spec.summary()
+            cell.detailLabel.text = gist.isEmpty ? "Interactive · tap to open" : "\(gist) · tap to open"
+            let button = UIButton(type: .system)
+            button.setImage(UIImage(systemName: "rectangle.grid.1x2"), for: .normal)
+            button.addTarget(self, action: #selector(renderTapped(_:)), for: .touchUpInside)
+            button.tag = indexPath.row
+            cell.accessoryView = button
         case .callTranscript(let transcript):
             cell.setAlignment(outgoing: transcript.role != "agent")
             cell.messageLabel.text = transcript.text
@@ -1189,6 +1200,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         cell.isUserInteractionEnabled = true
         return cell
+    }
+
+    /// A render block opens full-screen: the thread row carries the gist, the
+    /// live tree (and its actions) need the room.
+    @objc private func renderTapped(_ sender: UIButton) {
+        guard case .render(let render) = messages[sender.tag].kind else { return }
+        navigationController?.pushViewController(
+            RenderBlockViewController(title: render.title, spec: render.spec), animated: true)
     }
 
     @objc private func playRecordingTapped(_ sender: UIButton) {

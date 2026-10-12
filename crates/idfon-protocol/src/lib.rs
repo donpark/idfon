@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod artifacts;
+pub mod blocks;
 pub mod calls;
 pub use artifacts::*;
+pub use blocks::*;
 pub use calls::*;
 
 pub const PROTOCOL_VERSION: u16 = 2;
