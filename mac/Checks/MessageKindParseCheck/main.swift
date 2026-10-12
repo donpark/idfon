@@ -1,8 +1,8 @@
 // Runnable check for `MessageKind.parse` (not part of the app target).
 // Models.swift is Foundation-only, so this runs on the host with plain swiftc:
 //
-//   swiftc -o /tmp/mkpcheck mac/Sources/Idfon/Models.swift \
-//     mac/Sources/Idfon/Artifact.swift \
+//   swiftc -o /tmp/mkpcheck mac/Sources/Idfon/JSONRenderModel.swift \
+//     mac/Sources/Idfon/Models.swift mac/Sources/Idfon/Artifact.swift \
 //     mac/Checks/MessageKindParseCheck/main.swift
 //   /tmp/mkpcheck
 //
@@ -117,5 +117,24 @@ if case .callTranscript(let transcript) = MessageKind.parse(callEnvelope) {
     check(false, "call envelope parses as .callTranscript")
 }
 check(isText(MessageKind.parse("IDFON-CALL/1\nnot json")), "malformed call envelope falls back to text")
+
+// A render block is a spec this app can draw; one it cannot draw stays text.
+let renderWire = """
+IDFON-RENDER/1
+{"title": "Options", "spec": {"id": "chart-block", "root": "root", "elements": {"root": {"type": "Metric", "props": {"label": "per month", "value": "40"}}}}}
+"""
+if case .render(let render) = MessageKind.parse(renderWire) {
+    check(render.title == "Options", "render block title")
+check(render.id == "chart-block", "render block id: \(render.id ?? "nil")")
+
+    check(render.spec.summary() == "40", "render block gist: \(render.spec.summary())")
+} else {
+    check(false, "a valid render block parses as a render block")
+}
+let unknownOnly = """
+IDFON-RENDER/1
+{"title": "Nope", "spec": {"root": "root", "elements": {"root": {"type": "Spline"}}}}
+"""
+check(isText(MessageKind.parse(unknownOnly)), "a spec with no known components stays text")
 
 print("ALL OK")

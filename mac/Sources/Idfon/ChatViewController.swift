@@ -706,7 +706,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let message = history[row]
         let height: CGFloat
         switch message.kind {
-        case .recording, .file, .artifact, .reference:
+        case .recording, .file, .artifact, .reference, .render:
             height = 46
         case .text(let text):
             height = textHeight(for: message, text: text)
@@ -883,6 +883,36 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             bubble.identifier = NSUserInterfaceItemIdentifier(message.id)
             bubble.addGestureRecognizer(NSClickGestureRecognizer(
                 target: self, action: #selector(artifactBubbleTapped(_:))))
+        case .render(let render):
+            let icon = NSImageView()
+            icon.image = NSImage(systemSymbolName: "rectangle.grid.1x2", accessibilityDescription: "View")
+            icon.contentTintColor = .controlAccentColor
+            let gist = render.spec.summary()
+            let label = NSTextField(labelWithString: "\(render.title ?? "View")\n\(gist.isEmpty ? "Interactive" : gist)")
+            label.font = NSFont.systemFont(ofSize: 12)
+            label.maximumNumberOfLines = 2
+            label.lineBreakMode = .byTruncatingTail
+            let open = NSButton(title: "Open", target: self, action: #selector(renderTapped(_:)))
+            open.bezelStyle = .rounded
+            open.identifier = NSUserInterfaceItemIdentifier(message.id)
+            for view in [icon, label, open] {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                bubble.addSubview(view)
+            }
+            NSLayoutConstraint.activate([
+                icon.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
+                icon.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                icon.widthAnchor.constraint(equalToConstant: 18),
+                label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+                label.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                label.widthAnchor.constraint(lessThanOrEqualToConstant: 240),
+                open.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
+                open.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                open.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+            ])
+            bubble.identifier = NSUserInterfaceItemIdentifier(message.id)
+            bubble.addGestureRecognizer(NSClickGestureRecognizer(
+                target: self, action: #selector(renderBubbleTapped(_:))))
         case .reference(let reference):
             let icon = NSImageView()
             icon.image = NSImage(systemSymbolName: "text.bubble", accessibilityDescription: "Reference")
@@ -1301,6 +1331,25 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// Reveals a received file in Finder, fetching it first if the eager ingest
     /// fetch hasn't landed.
+    @objc private func renderTapped(_ sender: NSButton) {
+        guard let messageId = sender.identifier?.rawValue,
+              let message = history.first(where: { $0.id == messageId }),
+              case .render(let render) = message.kind else { return }
+        presentRenderBlock(render)
+    }
+
+    @objc private func renderBubbleTapped(_ sender: NSClickGestureRecognizer) {
+        guard let messageId = (sender.view as? NSView)?.identifier?.rawValue,
+              let message = history.first(where: { $0.id == messageId }),
+              case .render(let render) = message.kind else { return }
+        presentRenderBlock(render)
+    }
+
+    /// The thread row carries the gist; the live tree needs the room.
+    private func presentRenderBlock(_ render: RenderEnvelope) {
+        presentAsSheet(RenderBlockViewController(title: render.title, spec: render.spec))
+    }
+
     @objc private func artifactTapped(_ sender: NSButton) {
         guard let messageId = sender.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),
