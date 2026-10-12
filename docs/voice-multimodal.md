@@ -118,6 +118,7 @@ the effects ordered.
 | `point` | `IDFON-POINT/1` | App opens the artifact and highlights the selector. |
 | `show` | `IDFON-SHOW/1` | App opens the artifact. |
 | `add_artifact` | `IDFON-ARTIFACT/1` | Publishes bytes as a durable artifact the user opens. |
+| `render` | `IDFON-RENDER/1` | Shows a small interactive view the app draws natively from its own components (`docs/reply-blocks.md`). |
 | `screenshot` | `IDFON-SCREENSHOT/1` | Requests a screenshot; the app captures its window and sends it back as a follow-up turn. |
 | camera tool (planned, name not fixed) | — | Requests live camera use on a capable app; the app captures frames and sends them back as a follow-up turn, scoped to the per-contact grant. |
 | `context_edit` | — | Edits the host-owned virtual context ([`session-context.md`](session-context.md)). |
