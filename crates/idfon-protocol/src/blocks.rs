@@ -583,6 +583,26 @@ mod tests {
         assert!(encode(&show).starts_with("IDFON-SHOW/1\n"));
     }
 
+    /// The exact envelope the remote `render` tool emits
+    /// (`integrations/eve-idfon/extension/tools/render.ts`). Rust, the tool and
+    /// the shells must agree on one shape; this is that shape, pinned.
+    #[test]
+    fn the_render_tool_wire_parses() {
+        let wire = r#"IDFON-RENDER/1
+{"title":"Options","spec":{"id":"options","root":"root","elements":{"root":{"type":"Metric","props":{"label":"per month","value":"40"}}}}}"#;
+        let blocks = parse(wire);
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0].id, "options");
+        match &blocks[0].body {
+            BlockBody::JsonRender { title, spec } => {
+                assert_eq!(title.as_deref(), Some("Options"));
+                assert!(is_render_spec(spec));
+                assert_eq!(spec["elements"]["root"]["type"], "Metric");
+            }
+            other => panic!("not a render block: {other:?}"),
+        }
+    }
+
     /// A reply that has been parsed and rebuilt is the same reply: the wire is
     /// not a lossy way to carry blocks.
     #[test]

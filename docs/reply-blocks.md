@@ -70,15 +70,23 @@ side knows and the other does not is a block that gets cut in the wrong place.
 
 ## Status
 
-Built: the model with tests, the render envelope end to end (parse → thread row
-→ sheet/VC → catalog action → audit), and the gist each row shows
+Built: the model with tests; the `render` tool
+(`integrations/eve-idfon/extension/tools/render.ts`), so a remote agent can
+produce a block; the envelope end to end (parse → thread row → sheet/VC →
+catalog action → audit); and the gist each row shows
 (`JSONRenderSpec.summary`). The thread row shows the gist inline with the live
-tree one tap away.
+tree one tap away. The wire shape is pinned four ways: the TS tool's emitted
+envelope is a Rust test fixture, and the shells' `MessageKindParseCheck`
+asserts the same shape parses.
 
-Open: hosting the *live* tree inline in a row (needs a height budget per row,
-which this table does not have yet); blocks that *replace* an earlier one inside
-one reply — `upsert` is ready in the protocol and the id is carried end to end,
-but a reply arrives whole today, so no shell merges yet; ids declared by the
-remote producers (`speak`/`artifact` still derive theirs); and a single render
-host shared by the artifact detail screen and the block sheet, which currently
-repeat the confirm and result UI (`shortcut:` noted in both).
+Open: hosting the *live* tree inline in a row (needs a height budget per row;
+the chat tables size rows from their labels today); blocks that *replace* an
+earlier one inside one reply — `upsert` is ready in the protocol and the id is
+carried end to end, but replies arrive whole and no producer emits a revision
+yet, so no shell merges; and a single render host shared by the artifact detail
+screen and the block sheet, which currently repeat the confirm and result UI
+(`shortcut:` noted in both).
+
+Deliberately not a producer id: `speak`. Two speak blocks in one reply are two
+utterances, not a revision, so a declared id there would silently swallow the
+second one; `artifact` already derives its id from `artifact_id`.
