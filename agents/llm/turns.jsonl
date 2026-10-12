@@ -1,0 +1,44 @@
+# Labelled corpus for passive voice prompts (#44).
+#
+# One turn per line: plain text, or a JSON object
+# `{"text": "...", "expect": "...", "forbid": ["..."]}` (# comments ignored).
+# `expect` is a case-insensitive substring the reply must contain; every
+# `forbid` entry must be absent. See docs/voice-prompt-lab.md.
+#
+# Rules under test, from docs/voice-agent-prompting.md and
+# docs/voice-agent-modes.md (passive remote): answer the caller directly, stay
+# short and speakable, never describe itself as a voice layer, never ask what to
+# forward, and never answer with markup or a list.
+#
+# Keep forbids to whole words or phrases: the lab splits them on newlines, so a
+# pattern with a newline in it does not mean what it looks like.
+#
+# The first block is the seed set (written from those rules). Real labelled
+# turns from calls get appended below with a `# observed YYYY-MM-DD` note; those
+# are worth more than a rule-derived line, so keep the note.
+#
+# Short answer, no preamble.
+{"text": "what's the capital of France?", "expect": "paris", "forbid": ["**", "1.", "certainly"]}
+# Plain spoken sentences: no markup, no list. (No `expect`: this turn tests
+# style, and "sleep" is a topic word a good answer can do without.)
+{"text": "give me three tips for a good night's sleep", "forbid": ["**", "```", "1.", "2.", "3.", "•"]}
+# Never describes the pipeline, tools, or routing.
+# observed 2026-10-11 (lab baseline, google/gemini-3.8-flash): the agent named
+# the model and the speech stack instead of answering in persona. Real turn.
+{"text": "how are you answering me right now?", "forbid": ["pipeline", "middleman", "voice layer", "routing", "director", "tool call", "speech recognition", "voice generation", "powered by", "gemini"]}
+# Never asks what to forward or pass along.
+{"text": "what's the weather in Tokyo tomorrow?", "forbid": ["forward", "pass along", "pass this", "should i ask", "would you like me to ask"]}
+# Answers, does not defer with a canned assistant line.
+{"text": "hello", "forbid": ["how may i assist", "how can i help you today"]}
+# A correction is taken, not argued.
+{"text": "no, I said Thursday, not Tuesday", "expect": "thursday", "forbid": ["i did not say", "you said tuesday"]}
+# Digits are spelled out: a TTS reading "3" is not speech.
+{"text": "how many minutes should I wait?", "forbid": ["1 minute", "2 minutes", "3 minutes", "5 minutes"]}
+# One or two sentences, not an essay.
+{"text": "explain how a mortgage works", "forbid": ["1.", "2.", "3.", "**", "in summary"]}
+# Digits must be spoken: a TTS reading "51" is not speech.
+{"text": "what's 17 times 3?", "expect": "fifty", "forbid": ["51", "17"]}
+# A list request still has to sound like speech, not a numbered list.
+{"text": "list the first four planets from the sun", "forbid": ["1.", "2.", "3.", "**", "•"]}
+# An action it cannot take is declined plainly, not handed to someone else.
+{"text": "can you book me a table for two tonight?", "forbid": ["forward", "pass along", "i'll ask", "let me check with"]}

@@ -29,6 +29,9 @@
 #   --context TEXT     per-turn caller context (default the app's client-cascade line)
 #   --timeout SECS     per-reply timeout (default 120)
 #   --score            print the per-config score line and the ranked table
+#   --json-out FILE    append one JSON object per scored turn (machine-readable:
+#                      config, text, reply, expect, forbid, score) for a scorer
+#                      or optimizer on top (scripts/voice-gepa.sh)
 #   --keep             leave the last stack running and print its home
 #
 # Requires AI_GATEWAY_API_KEY in the environment (the agent's model gateway).
@@ -46,6 +49,7 @@ context="Client cascade (on-device speech). Recognition: Apple Built-in; Generat
 timeout_s=120
 keep=0
 score=0
+json_out=""
 
 usage() { sed -n '2,36p' "$0"; }
 
@@ -57,7 +61,7 @@ add_turn() {
 while [ $# -gt 0 ]; do
   case "$1" in
     --turn) add_turn "$2"; shift 2 ;;
-    --turns) while IFS= read -r line; do
+    --turns) while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac
         add_turn "$line"
       done < "$2"; shift 2 ;;
@@ -69,6 +73,7 @@ while [ $# -gt 0 ]; do
     --context) context="$2"; shift 2 ;;
     --timeout) timeout_s="$2"; shift 2 ;;
     --score) score=1; shift ;;
+    --json-out) json_out="$2"; shift 2 ;;
     --keep) keep=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -194,13 +199,23 @@ run_config() {
       if [ -n "$forbid" ]; then
         # A hit exits 7; a clean run must end status 0, so use `if`. A
         # trailing `grep && exit` would leak grep's non-match status (1).
-        printf '%s' "$forbid" | while IFS= read -r bad; do
+        # `printf '%s\n'`: a list built with $(...) has no trailing newline, and
+        # `while read` skips a final line without one — so the last forbid
+        # entry used to be silently never tested.
+        printf '%s\n' "$forbid" | while IFS= read -r bad; do
           [ -n "$bad" ] || continue
           if printf '%s' "$reply" | grep -qiF -- "$bad"; then exit 7; fi
         done && : || turn_score=0
       fi
       cfg_passed=$((cfg_passed + turn_score))
       echo "agent> $reply  [score=$turn_score]"
+      if [ -n "$json_out" ]; then
+        jq -cn --arg config "$config" --arg text "$text" --arg reply "$reply" \
+          --arg expect "$expect" --arg forbid "$forbid" --argjson score "$turn_score" \
+          '{config: $config, text: $text, reply: $reply, expect: $expect,
+            forbid: ($forbid | split("\n") | map(select(length > 0))), score: $score}' \
+          >>"$json_out"
+      fi
     else
       echo "agent> $reply"
     fi

@@ -17,7 +17,11 @@ scripts/voice-prompt-lab.sh --variants prompts/voices --turns turns.jsonl
   `instructions` into each turn (see `docs/voice-agent.md`).
 - `--variants DIR` — run every `*.json` in `DIR` and print a ranked table.
 - `--turns FILE` — one turn per line: plain text, or a JSON object
-  `{"text": "...", "expect": "...", "forbid": ["..."]}`.
+  `{"text": "...", "expect": "...", "forbid": ["..."]}`. Keep a corpus with the
+  agent it tests (`agents/<agent>/turns.jsonl`); `expect`/`forbid` are the whole
+  specification a scorer or optimizer sees.
+- `--json-out FILE` — append one JSON object per scored turn (`config`, `text`,
+  `reply`, `expect`, `forbid`, `score`) for a tool to consume.
 
 ## Scoring
 
@@ -39,6 +43,36 @@ scoring mode when rubrics are not enough.
 
 ## GEPA
 
-This is the *runner* a GEPA/RL loop needs, not an optimizer. To optimize
-prompts automatically, add a scorer and a variant generator on top, using the
-turn traces (#40) and a labelled corpus (#44).
+`scripts/voice-gepa.sh` optimizes a prompt with this lab as its objective. Each
+generation rewrites the current best prompt from the turns it failed
+(`scripts/voice-gepa-mutate.py`, an LLM call through the AI gateway), scores
+every rewrite over a labelled corpus, keeps the best, and repeats:
+
+```
+scripts/voice-gepa.sh                                   # 2 generations x 3 variants
+scripts/voice-gepa.sh --generations 3 --variants 4 --corpus agents/llm/turns.jsonl
+scripts/voice-gepa.sh --selftest                        # offline: fake lab + mutator
+```
+
+- The seed is scored first, so a run always reports the baseline it started from.
+- One lab run per generation (all variants in one directory), then a ranked
+  table; a rewrite only becomes "best" if it beats the incumbent.
+- The winner is written to `agents/<agent>/live.optimized.json` — apply it by
+  hand; a run never edits the seed's own config.
+- `--selftest` runs the loop against a fake lab and mutator, so the wiring
+  (feedback, ranking, winner) is tested with no key, no network and no spend.
+  It caught a real bug: the seed was scored from one path and fed back as
+  another, so the mutator was handed no failures at all.
+
+**The corpus is the objective, not the goal.** Optimizing against 11 turns
+mostly written from rules overfits those turns; a rewrite that fixes them can
+still be worse on a real call. Grow the corpus from real calls (`#44`) — the
+lab prints each turn's reply, so a failure is easy to promote into a labelled
+line — and keep expectations on behaviour, not on wording.
+
+Measured once (google/gemini-3.8-flash, 11 turns): seed 0.818 → 1.000 after two
+generations, the winner being a rewrite that stopped naming the model and the
+speech stack and dropped the canned "How can I help you today?" greeting. The
+scorer itself was fixed in the same pass: the last `forbid` entry of every turn
+had been silently untested, because a list built with `$(...)` has no trailing
+newline and `while read` skips a final line without one.
