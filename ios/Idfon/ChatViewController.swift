@@ -2,43 +2,254 @@ import UIKit
 import AVFAudio
 import UniformTypeIdentifiers
 
+/// D11 variant-A bubble: ours right (blue), theirs left (gray); the far edge
+/// keeps a gap so the side reads at a glance. Sender header only where a side
+/// carries multiple identities (rooms); provenance caption + time inside.
 private final class MessageCell: UITableViewCell {
+    let senderLabel = UILabel()
     let messageLabel = UILabel()
-    let detailLabel = UILabel()
-    private var messageConstraints: [NSLayoutConstraint] = []
-    private var detailConstraints: [NSLayoutConstraint] = []
+    let captionLabel = UILabel()
+    private let bubbleView = UIView()
+    private var sideConstraints: [NSLayoutConstraint] = []
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
-        for label in [messageLabel, detailLabel] {
-            label.translatesAutoresizingMaskIntoConstraints = false
-            label.numberOfLines = 0
-            contentView.addSubview(label)
-        }
-        detailLabel.font = .preferredFont(forTextStyle: .subheadline)
-        detailLabel.textColor = .secondaryLabel
+        selectionStyle = .none
+        backgroundColor = .clear
+        bubbleView.layer.cornerRadius = 18
+        bubbleView.layer.cornerCurve = .continuous
+        bubbleView.translatesAutoresizingMaskIntoConstraints = false
+        senderLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        messageLabel.font = .preferredFont(forTextStyle: .body)
+        messageLabel.numberOfLines = 0
+        captionLabel.font = .preferredFont(forTextStyle: .caption2)
+        let stack = UIStackView(arrangedSubviews: [senderLabel, messageLabel, captionLabel])
+        stack.axis = .vertical
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bubbleView.addSubview(stack)
+        contentView.addSubview(bubbleView)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: bubbleView.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -8),
+            stack.leadingAnchor.constraint(equalTo: bubbleView.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: bubbleView.trailingAnchor, constant: -14),
+            bubbleView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            bubbleView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+        ])
+        setAlignment(outgoing: false)
     }
 
     required init?(coder: NSCoder) { fatalError("storyboards are not used") }
 
     func setAlignment(outgoing: Bool) {
-        NSLayoutConstraint.deactivate(messageConstraints + detailConstraints)
-        let edge = outgoing ? contentView.trailingAnchor : contentView.leadingAnchor
-        messageLabel.textAlignment = outgoing ? .right : .left
-        detailLabel.textAlignment = outgoing ? .right : .left
-        messageConstraints = [
-            messageLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
-            messageLabel.bottomAnchor.constraint(equalTo: detailLabel.topAnchor, constant: -2),
-            messageLabel.leadingAnchor.constraint(equalTo: outgoing ? contentView.leadingAnchor : edge, constant: outgoing ? 20 : 16),
-            messageLabel.trailingAnchor.constraint(equalTo: outgoing ? edge : contentView.trailingAnchor, constant: outgoing ? -16 : -20),
-        ]
-        detailConstraints = [
-            detailLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10),
-            detailLabel.leadingAnchor.constraint(equalTo: outgoing ? contentView.leadingAnchor : edge, constant: outgoing ? 20 : 16),
-            detailLabel.trailingAnchor.constraint(equalTo: outgoing ? edge : contentView.trailingAnchor, constant: outgoing ? -16 : -20),
-        ]
-        NSLayoutConstraint.activate(messageConstraints + detailConstraints)
+        NSLayoutConstraint.deactivate(sideConstraints)
+        if outgoing {
+            bubbleView.backgroundColor = .systemBlue
+            senderLabel.textColor = UIColor.white.withAlphaComponent(0.8)
+            messageLabel.textColor = .white
+            captionLabel.textColor = UIColor.white.withAlphaComponent(0.65)
+            sideConstraints = [
+                bubbleView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+                bubbleView.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 60),
+            ]
+        } else {
+            bubbleView.backgroundColor = .secondarySystemBackground
+            senderLabel.textColor = .label
+            messageLabel.textColor = .label
+            captionLabel.textColor = .secondaryLabel
+            sideConstraints = [
+                bubbleView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+                bubbleView.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -60),
+            ]
+        }
+        NSLayoutConstraint.activate(sideConstraints)
     }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Self-sizing labels wrap at this cap; it keeps the bubble hugging its
+        // content instead of spanning the row.
+        let cap = max(contentView.bounds.width * 0.78 - 40, 120)
+        messageLabel.preferredMaxLayoutWidth = cap
+        captionLabel.preferredMaxLayoutWidth = cap
+    }
+}
+
+/// The timeline's card rows (D11): content cards (artifact / file / voice /
+/// render) sit on their side like a bubble, thread cards are centered with a
+/// gap on both sides, bucket cards span the row. Colored edges carry card
+/// kind (thread blue, artifact green) and always pair with a kind icon (§7.6).
+private final class TimelineCardCell: UITableViewCell {
+    enum Placement { case side(outgoing: Bool), centered, fullWidth }
+    enum Edge { case colored(UIColor), dashed }
+
+    private let card = UIView()
+    private let edgeView = UIView()
+    private let titleIcon = UIImageView()
+    private let titleLabel = UILabel()
+    private let subtitleLabel = UILabel()
+    private let disclosure = UIImageView()
+    /// Dashed stroke for bucket cards; plain cards keep no border.
+    private let dashedBorder = CAShapeLayer()
+    private var placementConstraints: [NSLayoutConstraint] = []
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        selectionStyle = .none
+        backgroundColor = .clear
+        contentView.backgroundColor = .clear
+        card.backgroundColor = .secondarySystemBackground
+        card.layer.cornerRadius = 14
+        card.layer.cornerCurve = .continuous
+        card.translatesAutoresizingMaskIntoConstraints = false
+        edgeView.layer.cornerRadius = 1.5
+        edgeView.translatesAutoresizingMaskIntoConstraints = false
+        titleIcon.contentMode = .scaleAspectFit
+        titleIcon.setContentHuggingPriority(.required, for: .horizontal)
+        titleLabel.font = .preferredFont(forTextStyle: .headline)
+        titleLabel.numberOfLines = 0
+        subtitleLabel.font = .preferredFont(forTextStyle: .subheadline)
+        subtitleLabel.textColor = .secondaryLabel
+        subtitleLabel.numberOfLines = 0
+        disclosure.image = UIImage(systemName: "chevron.right")
+        disclosure.tintColor = .tertiaryLabel
+        disclosure.setContentHuggingPriority(.required, for: .horizontal)
+        dashedBorder.fillColor = nil
+        dashedBorder.strokeColor = UIColor.separator.cgColor
+        dashedBorder.lineDashPattern = [4, 4]
+        dashedBorder.lineWidth = 1
+        dashedBorder.isHidden = true
+        card.layer.addSublayer(dashedBorder)
+        let text = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
+        text.axis = .vertical
+        text.spacing = 2
+        let row = UIStackView(arrangedSubviews: [titleIcon, text, disclosure])
+        row.axis = .horizontal
+        row.spacing = 8
+        row.alignment = .top
+        row.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(edgeView)
+        card.addSubview(row)
+        contentView.addSubview(card)
+        NSLayoutConstraint.activate([
+            card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            card.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+            edgeView.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            edgeView.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
+            edgeView.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
+            edgeView.widthAnchor.constraint(equalToConstant: 3),
+            row.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+            titleIcon.widthAnchor.constraint(equalToConstant: 20),
+            disclosure.widthAnchor.constraint(equalToConstant: 14),
+        ])
+        setPlacement(.fullWidth)
+    }
+
+    required init?(coder: NSCoder) { fatalError("storyboards are not used") }
+
+    func setPlacement(_ placement: Placement) {
+        NSLayoutConstraint.deactivate(placementConstraints)
+        switch placement {
+        case .side(let outgoing):
+            // Like bubbles: pin to the side, gap at the far edge so the sender
+            // is clear at a glance (never span the row and read right-aligned).
+            if outgoing {
+                placementConstraints = [
+                    card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+                    card.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 60),
+                ]
+            } else {
+                placementConstraints = [
+                    card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+                    card.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -60),
+                ]
+            }
+        case .centered:
+            // Threads are two-sided summaries: centered, gaps on both sides.
+            placementConstraints = [
+                card.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+                card.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 60),
+                card.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -60),
+            ]
+        case .fullWidth:
+            placementConstraints = [
+                card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+                card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            ]
+        }
+        NSLayoutConstraint.activate(placementConstraints)
+    }
+
+    func configure(edge: Edge, glyph: String?, title: String, subtitle: String?,
+                   placement: Placement, expanded: Bool, showsDisclosure: Bool = true) {
+        switch edge {
+        case .colored(let color):
+            edgeView.backgroundColor = color
+            dashedBorder.isHidden = true
+        case .dashed:
+            edgeView.backgroundColor = .clear
+            dashedBorder.isHidden = false
+        }
+        titleIcon.image = glyph.flatMap { UIImage(systemName: $0) }
+        titleIcon.isHidden = glyph == nil
+        titleLabel.text = title
+        subtitleLabel.text = subtitle
+        subtitleLabel.isHidden = (subtitle ?? "").isEmpty
+        disclosure.isHidden = !showsDisclosure
+        disclosure.image = UIImage(systemName: expanded ? "chevron.down" : "chevron.right")
+        setPlacement(placement)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        dashedBorder.path = UIBezierPath(roundedRect: card.bounds, cornerRadius: 14).cgPath
+        let cap = max(contentView.bounds.width * 0.78 - 60, 120)
+        titleLabel.preferredMaxLayoutWidth = cap
+        subtitleLabel.preferredMaxLayoutWidth = cap
+    }
+}
+
+/// §7.2a ambient dateline: slim, low-contrast day separator.
+private final class DatelineCell: UITableViewCell {
+    let label = UILabel()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        selectionStyle = .none
+        backgroundColor = .clear
+        label.font = .preferredFont(forTextStyle: .caption1)
+        label.textColor = .tertiaryLabel
+        label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        let left = UIView()
+        let right = UIView()
+        [left, right].forEach {
+            $0.backgroundColor = .separator
+            $0.translatesAutoresizingMaskIntoConstraints = false
+        }
+        contentView.addSubview(left)
+        contentView.addSubview(label)
+        contentView.addSubview(right)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            label.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            label.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+            left.heightAnchor.constraint(equalToConstant: 0.5),
+            right.heightAnchor.constraint(equalToConstant: 0.5),
+            left.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            right.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            left.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            left.trailingAnchor.constraint(equalTo: label.leadingAnchor, constant: -8),
+            label.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -8),
+            right.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("storyboards are not used") }
 }
 
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UITextViewDelegate {
@@ -91,6 +302,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var fileTask: Task<Void, Never>?
 
     private var messages: [ChatMessage] = []
+    /// §7.3 derived display rows; `messages` stays the raw log.
+    private var timelineItems: [Timeline.Item] = []
+    /// Cards drilled open in place (§7.4); keyed by item id.
+    private var expandedItems: Set<String> = []
+    /// §7.3b: shown whenever the bottom is out of view — never auto-scroll a
+    /// reader who has scrolled up.
+    private let jumpButton = UIButton(type: .system)
     private var senderNames: [String: String] = [:]
     private var players: [String: AVAudioPlayer] = [:] // ticket -> player
 
@@ -353,8 +571,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.dataSource = self
         tableView.delegate = self
         tableView.register(MessageCell.self, forCellReuseIdentifier: "message")
+        tableView.register(TimelineCardCell.self, forCellReuseIdentifier: "card")
+        tableView.register(DatelineCell.self, forCellReuseIdentifier: "dateline")
         tableView.separatorStyle = .none
         tableView.keyboardDismissMode = .interactive
+
+        // §7.3b jump-to-latest (P12: Messages).
+        var jumpConfig = UIButton.Configuration.filled()
+        jumpConfig.image = UIImage(systemName: "chevron.down")
+        jumpConfig.cornerStyle = .capsule
+        jumpButton.configuration = jumpConfig
+        jumpButton.translatesAutoresizingMaskIntoConstraints = false
+        jumpButton.isHidden = true
+        jumpButton.accessibilityLabel = "Jump to latest"
+        jumpButton.addTarget(self, action: #selector(jumpToLatestTapped), for: .touchUpInside)
 
         composerBar.translatesAutoresizingMaskIntoConstraints = false
         composerBar.backgroundColor = .secondarySystemBackground
@@ -461,6 +691,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         view.addSubview(videoBar)
         view.addSubview(tableView)
+        view.addSubview(jumpButton)
         view.addSubview(callStatusLabel)
         view.addSubview(waveformView)
         view.addSubview(referenceChip)
@@ -479,6 +710,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         referenceChipHeight = referenceChip.heightAnchor.constraint(equalToConstant: 0)
 
         NSLayoutConstraint.activate([
+            jumpButton.trailingAnchor.constraint(equalTo: tableView.trailingAnchor, constant: -16),
+            jumpButton.bottomAnchor.constraint(equalTo: tableView.bottomAnchor, constant: -16),
+            jumpButton.widthAnchor.constraint(equalToConstant: 44),
+            jumpButton.heightAnchor.constraint(equalToConstant: 44),
+
             videoBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             videoBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             videoBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -943,26 +1179,76 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// attachment picker reaches, so the harness exercises the real wiring.
     func automateSendFile(at url: URL) { sendFile(at: url, name: url.lastPathComponent) }
 
-    /// Fetch-on-demand for a received file, then offer it. Deliberately not part
-    /// of ingest: a large file isn't pulled down until the recipient asks.
-    @objc private func artifactTapped(_ sender: UIButton) {
-        guard let indexPath = indexPath(for: sender), messages.indices.contains(indexPath.row),
-              case .artifact(let artifact) = messages[indexPath.row].kind else { return }
-        openArtifact(artifact, peerId: messages[indexPath.row].peerId)
-    }
-
-    /// Row tap target for artifact cards: the whole card opens, not just the
-    /// small glyph button (whose tag can also go stale while messages stream in).
+    /// Row taps: cards drill open in place (§7.4) and content cards run their
+    /// one primary action (open / play / fetch) — no accessory buttons and no
+    /// row-index tags that go stale while messages stream in.
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: false)
-        guard messages.indices.contains(indexPath.row),
-              case .artifact(let artifact) = messages[indexPath.row].kind else { return }
-        openArtifact(artifact, peerId: messages[indexPath.row].peerId)
+        switch timelineItems[indexPath.row] {
+        case .thread(let id, _), .bucket(let id, _, _, _):
+            if expandedItems.contains(id) {
+                expandedItems.remove(id)
+            } else {
+                expandedItems.insert(id)
+            }
+            syncMessages()
+        case .message(let message):
+            switch message.kind {
+            case .artifact(let artifact):
+                openArtifact(artifact, peerId: message.peerId)
+            case .render(let render):
+                navigationController?.pushViewController(
+                    RenderBlockViewController(title: render.title, spec: render.spec), animated: true)
+            case .recording(let ticket, _, let localURL):
+                toggleRecording(messageID: message.id, ticket: ticket, localURL: localURL)
+            case .file(let ticket, let name, _, let localURL):
+                fetchFile(messageID: message.id, ticket: ticket, name: name, localURL: localURL)
+            default:
+                break
+            }
+        case .dateline:
+            break
+        }
     }
 
-    private func indexPath(for view: UIView) -> IndexPath? {
-        let center = view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: tableView)
-        return tableView.indexPathForRow(at: center)
+    private func reloadRow(for messageID: String) {
+        guard let row = timelineItems.firstIndex(where: { $0.id == messageID }) else { return }
+        tableView.reloadRows(at: [IndexPath(row: row, section: 0)], with: .none)
+    }
+
+    private func toggleRecording(messageID: String, ticket: String, localURL: URL?) {
+        if let player = players[ticket] {
+            if player.isPlaying { player.pause() } else { player.play() }
+            reloadRow(for: messageID)
+            return
+        }
+        Task {
+            do {
+                let data: Data
+                if let localURL {
+                    // Local cache read off the main actor too (this Task
+                    // inherits MainActor from the view controller).
+                    let cached = await Task.detached(priority: .userInitiated) {
+                        try? Data(contentsOf: localURL)
+                    }.value
+                    if let cached {
+                        data = cached
+                    } else {
+                        data = try await client.fetchBlob(ticket)
+                    }
+                } else {
+                    data = try await client.fetchBlob(ticket)
+                }
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent("rec-\(ticket.prefix(12)).wav")
+                try data.write(to: url)
+                let player = try AVAudioPlayer(contentsOf: url)
+                player.play()
+                players[ticket] = player
+                reloadRow(for: messageID)
+            } catch {
+                idfonError("idfon recording fetch failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func openArtifact(_ artifact: Artifact, peerId: String) {
@@ -1003,16 +1289,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    @objc private func fileTapped(_ sender: UIButton) {
-        let message = messages[sender.tag]
-        guard case .file(let ticket, let name, _, let localURL) = message.kind else { return }
+    /// Fetch-on-demand for a received file, then offer it. Deliberately not part
+    /// of ingest: a large file isn't pulled down until the recipient asks.
+    private func fetchFile(messageID: String, ticket: String, name: String, localURL: URL?) {
         if let localURL {
-            share(url: localURL, source: sender)
+            share(url: localURL, source: tableView)
             return
         }
-        sender.isEnabled = false
         Task {
-            defer { sender.isEnabled = true }
             do {
                 let data = try await client.fetchBlob(ticket)
                 let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -1022,8 +1306,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 // the Downloads directory.
                 let url = dir.appendingPathComponent((name as NSString).lastPathComponent)
                 try data.write(to: url)
-                ChatStore.shared.attachFile(at: url, to: message.id)
-                self.share(url: url, source: sender)
+                ChatStore.shared.attachFile(at: url, to: messageID)
+                self.share(url: url, source: self.tableView)
             } catch {
                 idfonError("idfon file: download failed \(error.localizedDescription)")
                 self.showCallStatus("Download failed: \(error.localizedDescription)")
@@ -1210,126 +1494,180 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         present(alert, animated: true)
     }
 
-    // MARK: - Table view
+    // MARK: - Table view (§7.3 timeline)
 
+    private struct ScrollAnchor { let id: String; let offset: CGFloat }
+
+    /// Re-derive the timeline and reload without losing the reader's place
+    /// (§7.3b): anchor the top visible row across regrouping and prepends, and
+    /// never auto-scroll a reader who has scrolled up — the jump button shows.
     private func syncMessages() {
+        let atBottom = isNearBottom()
+        let anchor = atBottom ? nil : scrollAnchor()
         messages = ChatStore.shared.messages(for: conversation)
+        timelineItems = Timeline.items(for: messages, expanding: expandedItems)
         tableView.reloadData()
-        if !messages.isEmpty {
-            tableView.scrollToRow(at: IndexPath(row: messages.count - 1, section: 0), at: .bottom, animated: true)
+        if atBottom {
+            scrollToLatest(animated: false)
+        } else {
+            if let anchor { restore(anchor) }
+            jumpButton.isHidden = false
         }
+    }
+
+    private func isNearBottom() -> Bool {
+        guard tableView.contentSize.height > 0 else { return true }
+        let bottom = tableView.contentOffset.y + tableView.bounds.height - tableView.adjustedContentInset.bottom
+        return tableView.contentSize.height - bottom < 80
+    }
+
+    private func scrollAnchor() -> ScrollAnchor? {
+        guard let row = tableView.indexPathsForVisibleRows?.first?.row,
+              timelineItems.indices.contains(row) else { return nil }
+        let top = tableView.rectForRow(at: IndexPath(row: row, section: 0)).minY
+        return ScrollAnchor(id: timelineItems[row].id, offset: top - tableView.contentOffset.y)
+    }
+
+    private func restore(_ anchor: ScrollAnchor) {
+        guard let row = timelineItems.firstIndex(where: { $0.id == anchor.id }) else { return }
+        let top = tableView.rectForRow(at: IndexPath(row: row, section: 0)).minY - anchor.offset
+        tableView.contentOffset.y = max(-tableView.adjustedContentInset.top, top)
+    }
+
+    private func scrollToLatest(animated: Bool) {
+        guard !timelineItems.isEmpty else { return }
+        tableView.scrollToRow(at: IndexPath(row: timelineItems.count - 1, section: 0), at: .bottom, animated: animated)
+        jumpButton.isHidden = true
+    }
+
+    /// §7.3b: re-derive first (grouping may have shifted while the reader was
+    /// up in history — D17), then land on the bottom.
+    @objc private func jumpToLatestTapped() {
+        syncMessages()
+        scrollToLatest(animated: true)
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        jumpButton.isHidden = isNearBottom()
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        messages.count
+        timelineItems.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
-        let message = messages[indexPath.row]
-        cell.setAlignment(outgoing: message.outgoing)
-        cell.messageLabel.textColor = .label
-        cell.messageLabel.text = message.displayText
-        cell.detailLabel.text = message.outgoing ? "sent" : (conversation.isRoom ? (senderNames[message.peerId] ?? String(message.peerId.prefix(8))) : nil)
+        switch timelineItems[indexPath.row] {
+        case .message(let message):
+            return messageCell(for: message, at: indexPath)
+        case .dateline(_, let text):
+            let cell = tableView.dequeueReusableCell(withIdentifier: "dateline", for: indexPath) as! DatelineCell
+            cell.label.text = text
+            return cell
+        case .thread(let id, let thread):
+            let cell = tableView.dequeueReusableCell(withIdentifier: "card", for: indexPath) as! TimelineCardCell
+            let duration = (thread.last?.timestamp ?? Date()).timeIntervalSince(thread.first?.timestamp ?? Date())
+            cell.configure(edge: .colored(.systemBlue), glyph: "bubble.left.and.bubble.right",
+                           title: "Thread · \(thread.count) messages · \(Self.durationText(duration))",
+                           subtitle: threadPreview(thread),
+                           placement: .centered, expanded: expandedItems.contains(id))
+            return cell
+        case .bucket(let id, let label, let summary, _):
+            let cell = tableView.dequeueReusableCell(withIdentifier: "card", for: indexPath) as! TimelineCardCell
+            cell.configure(edge: .dashed, glyph: nil, title: label, subtitle: summary,
+                           placement: .fullWidth, expanded: expandedItems.contains(id))
+            return cell
+        }
+    }
+
+    /// D11: bubbles carry the simple messages (typed / spoken / reference);
+    /// anything that is really an artifact (file, voice memo, artifact, render
+    /// block) renders as a side-aligned card with its kind glyph (§7.2a).
+    private func messageCell(for message: ChatMessage, at indexPath: IndexPath) -> UITableViewCell {
         switch message.kind {
         case .text(let text):
+            let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
+            cell.senderLabel.text = senderHeader(for: message)
             cell.messageLabel.text = text
-            cell.accessoryView = nil
-        case .recording(let ticket, let durationMs, _):
-            cell.messageLabel.text = "Voice message (\(Self.format(Double(durationMs) / 1000)))"
-            cell.messageLabel.textColor = .link
-            let button = UIButton(type: .system)
-            button.setImage(UIImage(systemName: players[ticket]?.isPlaying == true ? "pause.fill" : "play.fill"), for: .normal)
-            button.addTarget(self, action: #selector(playRecordingTapped(_:)), for: .touchUpInside)
-            button.tag = indexPath.row
-            cell.accessoryView = button
-        case .file(_, let name, let sizeBytes, let localURL):
-            cell.messageLabel.text = "\(name) (\(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)))"
-            cell.messageLabel.textColor = .link
-            let button = UIButton(type: .system)
-            button.setImage(UIImage(systemName: localURL == nil ? "arrow.down.circle" : "square.and.arrow.up"), for: .normal)
-            button.addTarget(self, action: #selector(fileTapped(_:)), for: .touchUpInside)
-            button.tag = indexPath.row
-            cell.accessoryView = button
-        case .artifact(let artifact):
-            cell.messageLabel.text = artifact.title
-            cell.messageLabel.textColor = .link
-            cell.detailLabel.text = "Artifact · \(artifact.kind.rawValue) · tap to open"
-            let button = UIButton(type: .system)
-            button.setImage(UIImage(systemName: artifact.kind.glyph), for: .normal)
-            button.addTarget(self, action: #selector(artifactTapped(_:)), for: .touchUpInside)
-            button.tag = indexPath.row
-            cell.accessoryView = button
-        case .reference(let reference):
-            cell.messageLabel.text = reference.text.isEmpty ? "Asked about an artifact" : reference.text
-            cell.detailLabel.text = "\(reference.refs.count) reference\(reference.refs.count == 1 ? "" : "s")"
-            cell.accessoryView = nil
-        case .render(let render):
-            cell.setAlignment(outgoing: false)
-            cell.messageLabel.text = render.title ?? "View"
-            cell.messageLabel.textColor = .link
-            let gist = render.spec.summary()
-            cell.detailLabel.text = gist.isEmpty ? "Interactive · tap to open" : "\(gist) · tap to open"
-            let button = UIButton(type: .system)
-            button.setImage(UIImage(systemName: "rectangle.grid.1x2"), for: .normal)
-            button.addTarget(self, action: #selector(renderTapped(_:)), for: .touchUpInside)
-            button.tag = indexPath.row
-            cell.accessoryView = button
+            cell.captionLabel.text = caption(message.outgoing ? "typed · sent" : "typed", for: message)
+            cell.setAlignment(outgoing: side(for: message))
+            return cell
         case .callTranscript(let transcript):
-            cell.setAlignment(outgoing: transcript.role != "agent")
+            let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
+            cell.senderLabel.text = senderHeader(for: message)
             cell.messageLabel.text = transcript.text
-            cell.messageLabel.textColor = .label
-            let who = transcript.role == "agent" ? "Agent" : "You"
-            cell.detailLabel.text = transcript.final ? "\(who) · spoken" : "\(who) · speaking…"
-            cell.accessoryView = nil
+            cell.captionLabel.text = caption(
+                "\(transcript.role == "agent" ? "Agent" : "You") · \(transcript.final ? "spoken" : "speaking…")",
+                for: message)
+            cell.setAlignment(outgoing: side(for: message))
+            return cell
+        case .reference(let reference):
+            let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
+            cell.senderLabel.text = senderHeader(for: message)
+            cell.messageLabel.text = reference.text.isEmpty ? "Asked about an artifact" : reference.text
+            cell.captionLabel.text = caption(
+                "\(reference.refs.count) reference\(reference.refs.count == 1 ? "" : "s")", for: message)
+            cell.setAlignment(outgoing: side(for: message))
+            return cell
+        case .recording(let ticket, let durationMs, _):
+            let cell = tableView.dequeueReusableCell(withIdentifier: "card", for: indexPath) as! TimelineCardCell
+            cell.configure(edge: .colored(.systemGreen),
+                           glyph: players[ticket]?.isPlaying == true ? "pause.fill" : "play.fill",
+                           title: "Voice message",
+                           subtitle: Self.format(Double(durationMs) / 1000),
+                           placement: .side(outgoing: side(for: message)), expanded: false, showsDisclosure: false)
+            return cell
+        case .file(_, let name, let sizeBytes, _):
+            let cell = tableView.dequeueReusableCell(withIdentifier: "card", for: indexPath) as! TimelineCardCell
+            cell.configure(edge: .colored(.systemGreen), glyph: "doc", title: name,
+                           subtitle: ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file),
+                           placement: .side(outgoing: side(for: message)), expanded: false, showsDisclosure: false)
+            return cell
+        case .artifact(let artifact):
+            let cell = tableView.dequeueReusableCell(withIdentifier: "card", for: indexPath) as! TimelineCardCell
+            cell.configure(edge: .colored(.systemGreen), glyph: artifact.kind.glyph, title: artifact.title,
+                           subtitle: "Artifact · \(artifact.kind.rawValue)",
+                           placement: .side(outgoing: side(for: message)), expanded: false, showsDisclosure: false)
+            return cell
+        case .render(let render):
+            let cell = tableView.dequeueReusableCell(withIdentifier: "card", for: indexPath) as! TimelineCardCell
+            cell.configure(edge: .colored(.systemGreen), glyph: "rectangle.grid.1x2",
+                           title: render.title ?? "View", subtitle: render.spec.summary(),
+                           placement: .side(outgoing: side(for: message)), expanded: false, showsDisclosure: false)
+            return cell
         }
-        cell.isUserInteractionEnabled = true
-        return cell
     }
 
-    /// A render block opens full-screen: the thread row carries the gist, the
-    /// live tree (and its actions) need the room.
-    @objc private func renderTapped(_ sender: UIButton) {
-        guard case .render(let render) = messages[sender.tag].kind else { return }
-        navigationController?.pushViewController(
-            RenderBlockViewController(title: render.title, spec: render.spec), animated: true)
+    /// D11: alignment shows the side, not the sender — ours right, theirs left.
+    private func side(for message: ChatMessage) -> Bool {
+        if case .callTranscript(let transcript) = message.kind { return transcript.role != "agent" }
+        return message.outgoing
     }
 
-    @objc private func playRecordingTapped(_ sender: UIButton) {
-        guard case .recording(let ticket, _, let localURL) = messages[sender.tag].kind else { return }
-        if let player = players[ticket] {
-            if player.isPlaying { player.pause(); sender.setImage(UIImage(systemName: "play.fill"), for: .normal); return }
-            player.play(); sender.setImage(UIImage(systemName: "pause.fill"), for: .normal)
-            return
-        }
-        Task {
-            do {
-                let data: Data
-                if let localURL {
-                    // Local cache read off the main actor too (this Task
-                    // inherits MainActor from the view controller).
-                    let cached = await Task.detached(priority: .userInitiated) {
-                        try? Data(contentsOf: localURL)
-                    }.value
-                    if let cached {
-                        data = cached
-                    } else {
-                        data = try await client.fetchBlob(ticket)
-                    }
-                } else {
-                    data = try await client.fetchBlob(ticket)
-                }
-                let url = FileManager.default.temporaryDirectory.appendingPathComponent("rec-\(ticket.prefix(12)).wav")
-                try data.write(to: url)
-                let player = try AVAudioPlayer(contentsOf: url)
-                player.play()
-                players[ticket] = player
-                tableView.reloadRows(at: [IndexPath(row: sender.tag, section: 0)], with: .none)
-            } catch {
-                idfonError("idfon recording fetch failed: \(error.localizedDescription)")
-            }
-        }
+    /// Sender header only where a side holds multiple identities (§7.2a).
+    private func senderHeader(for message: ChatMessage) -> String? {
+        guard conversation.isRoom, !message.outgoing else { return nil }
+        return senderNames[message.peerId] ?? String(message.peerId.prefix(8))
     }
+
+    /// D11 detail level: provenance caption + timestamp inside the bubble.
+    private func caption(_ text: String, for message: ChatMessage) -> String {
+        "\(message.timestamp.formatted(date: .omitted, time: .shortened)) · \(text)"
+    }
+
+    /// Thread card preview: the burst's last line, sender-prefixed in rooms.
+    private func threadPreview(_ thread: [ChatMessage]) -> String? {
+        guard let last = thread.last else { return nil }
+        if conversation.isRoom {
+            let name = senderNames[last.peerId] ?? String(last.peerId.prefix(2)).uppercased()
+            return "\(name): \(last.displayText)"
+        }
+        return last.displayText
+    }
+
+    private static func durationText(_ seconds: TimeInterval) -> String {
+        seconds < 3600 ? "\(max(1, Int(seconds / 60)))m" : format(seconds)
+    }
+
 }
 
 /// §5 intent routing: non-streamable files bypass the modal; streamable media
