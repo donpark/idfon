@@ -213,13 +213,18 @@ A 1:1 chat is a room of two with `conversation = None`: same envelope, same
 grants, same `message.send`. Nothing in R0–R3 should add a code path that only
 rooms take, or only 1:1 takes.
 
-**Explicit exception — voice is 1:1 only (P2, epic #17).** The voice
-side-channel (`docs/voice-side-channel.md`) refuses to open a call in a room,
-and room turns/voice memos are text-only. This is the one deliberate
-room-vs-1:1 branch: a *room* is decided **by membership** (two or more distinct
-senders in a `conversation`), not by `conversation` being set — a threaded 1:1
-also sets one. The holder gates it in the live-call handler
-(`crates/eve-idfon/src/rooms.rs`).
+**Room voice calls — a supported capability, currently disabled.** A live
+call is a session inside the room (`docs/ios-ui-design.md` §3/§7.1): one
+should be able to *call a room*. The multi-party details (ringing, joining,
+turn-taking) are not worked out yet, so the live-call handler
+(`crates/eve-idfon/src/rooms.rs`) still refuses room calls — a **temporary
+disable** until the room-call design lands, not a design rule (decided
+2026-10-12: an earlier "voice is 1:1 only" exception in this section was
+wrong). While the disable stands, the chat screen shows the room call button
+disabled, and room turns/voice memos stay text-only. Room detection is
+unchanged: a *room* is decided **by membership** (two or more distinct
+senders in a `conversation`), not by `conversation` being set — a threaded
+1:1 also sets one.
 
 ## Open questions
 

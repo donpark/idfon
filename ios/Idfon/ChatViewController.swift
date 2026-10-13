@@ -297,11 +297,13 @@ private final class DatelineCell: UITableViewCell {
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UITextViewDelegate {
     /// Read by the Live Activity Bar coordinator (density + `.open` routing).
     let peer: Peer
-    /// Rooms share the chat surface but expose no call controls, so the Bar
-    /// shows no idle Call button for them.
-    // shortcut: rooms get no call button — the voice side-channel is 1:1 only
-    // and refuses calls in a room (docs/chatrooms.md); §7.1's room call button
-    // waits on the protocol.
+    /// Whether this chat can actually place a call right now. Rooms show the
+    /// §7.1 call button disabled: calling a room is a supported capability,
+    /// but the handler still refuses room calls (temporary disable —
+    /// docs/chatrooms.md) and the Bar shows no idle Call button for them.
+    // shortcut: `allowsCall` stays false for rooms so nothing dials into the
+    // handler's temporary refusal; flip it when room-call (multi-party) work
+    // starts.
     var allowsCall: Bool { !conversation.isRoom }
     private let conversation: Conversation
     private let client = DaemonClient()
@@ -562,6 +564,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // ☰ reads as a nav drawer; the overflow is `ellipsis.circle` (P12).
         overflowItem.image = UIImage(systemName: "ellipsis.circle")
         overflowItem.menu = buildOverflowMenu()
+        if conversation.isRoom {
+            // §7.1: a live call is a session inside the room — the room call
+            // button exists, disabled while the multi-party details are
+            // unworked (docs/chatrooms.md). The shape, without pretending to
+            // work (P11). LiveActivityController never touches rooms.
+            let roomCall = UIBarButtonItem(image: UIImage(systemName: "phone.arrow.up.right"),
+                                           style: .plain, target: nil, action: nil)
+            roomCall.isEnabled = false
+            callChromeItem = roomCall
+        }
         refreshNavChrome()
     }
 

@@ -39,16 +39,19 @@ This design is the **cascade voice side-channel**.
   bypass the text boundary it is an **explicit F9 exception**, not the default;
   the cascade is chosen as the default because the side-channel serves *other
   agents'* content (verbatim rendering, multi-voice, deterministic transcripts).
-- **Voice is 1:1 only.** Rooms already exist (`chatrooms.md` R1-complete), so a
-  room **by membership** (not merely a set `conversation` — threaded 1:1 also
-  sets one) must not open a voice session. This is an **explicit exception** to
-  `chatrooms.md`'s "1:1 equivalence, no room-only code path", and must be
-  recorded there. **Enforcement lives in the registered live-call handler** (before the
-  `IDFON-LIVE/1` dispatch in `main.rs`) and is **P0**, not P2. In the P0
-  implementation the guard is the `message.conversation.is_none()` condition on
-  that dispatch, so a room-addressed control falls through as ordinary content.
-  Room-addressed turns and **room voice memos** are passed through **text-only**
-  (not transcribed). Tested.
+- **Voice is 1:1 today; calling a room is a supported capability, disabled
+  pending design** (`docs/chatrooms.md`). Rooms already exist
+  (`chatrooms.md` R1-complete), and a *room* is decided **by membership**
+  (not merely a set `conversation` — threaded 1:1 also sets one). Until the
+  multi-party details (ringing, joining, turn-taking) are worked out, the
+  live-call handler refuses room-addressed calls — a **temporary disable**,
+  not a scope rule (decided 2026-10-12; an earlier "voice is 1:1 only" claim
+  was wrong). **Enforcement lives in the registered live-call handler**
+  (before the `IDFON-LIVE/1` dispatch in `main.rs`). In the current
+  implementation the guard is the `message.conversation.is_none()` condition
+  on that dispatch, so a room-addressed control falls through as ordinary
+  content. Room-addressed turns and **room voice memos** are passed through
+  **text-only** (not transcribed) while the disable stands. Tested.
 - **A single-agent focus** is therefore the callee. The "Alice, …" override and
   a cross-agent arbiter are deferred until voice-in-rooms is designed.
 
@@ -153,7 +156,7 @@ call arrives as an incoming request the user can decline. See
 | F1 | **`speak(text, voice)`** — the output verb. Speaks text; `voice` selects from a registry; agents may omit for a default. |
 | F2 | **Listen** — while a session is active, accept caller audio and publish **partial** (replaceable) and **final** transcripts. |
 | F3 | **End-of-turn, one authoritative endpointer per topology** — client on-device endpointing *or* service semantic VAD, not both acting. The non-authoritative endpointer only feeds barge-in. |
-| F4 | **Focus/addressing** — 1:1 only (voice in rooms is out of scope); each final turn routes to the callee's session. |
+| F4 | **Focus/addressing** — 1:1 today (calling a room is a supported capability, disabled until voice-in-rooms is designed); each final turn routes to the callee's session. |
 | F5 | **Arbitration** — one active speaker; agents queue; preemption is a policy. |
 | F6 | **Barge-in** — user speech flushes in-flight playback locally; the follow-up is `steer` before playback, or `cancel` + `queue` after. Deltas are dropped by a barge-in counter (not `turnId`), a backchannel never cancels tool work, and what was heard is recorded (see "Barge-in semantics"). |
 | F7 | **Events** — a user turn is a signed message whose chat bubble is its display projection; one event, two projections. |
