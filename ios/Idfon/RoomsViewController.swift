@@ -8,7 +8,7 @@ final class RoomsViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Rooms"
+        title = "Projects"
         navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Join", style: .plain, target: self, action: #selector(joinRoom))
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addRoom))
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "room")

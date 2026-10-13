@@ -9,7 +9,7 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Recents"
+        title = "Messages"
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "conversation")
         refreshControl = UIRefreshControl()
         refreshControl?.addTarget(self, action: #selector(refresh), for: .valueChanged)
@@ -75,15 +75,22 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
 }
 
 /// Contacts tab: every known identity, searchable by display name or id.
-/// Detail (the chat thread) is pushed on this tab's own stack.
+/// D1: the row's default action opens the person screen (the relationship
+/// hub); chat and call are reached from there. D7: All/Recents are filter
+/// segments, not tabs.
 final class PeerListViewController: UITableViewController, UISearchResultsUpdating {
     private let client = DaemonClient()
     private let search = UISearchController(searchResultsController: nil)
     private var peers: [Peer] = [] {
         didSet { applyFilter() }
     }
-    /// What the table shows: `peers`, narrowed by the search text.
+    /// What the table shows: `peers`, narrowed by filter and search text.
     private var shownPeers: [Peer] = []
+
+    /// D7 filter segments. Favorites joins when pinned contacts exist; the
+    /// segment count is the only change.
+    enum ContactFilter { case all, recents }
+    private var filter: ContactFilter = .all { didSet { applyFilter() } }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -111,6 +118,25 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         navigationItem.searchController = search
         navigationItem.hidesSearchBarWhenScrolling = false
         definesPresentationContext = true
+
+        // D7 segmented filter strip: All | Recents (interacted-with, most
+        // recent first). Favorites joins when pinned contacts exist.
+        let filters = UISegmentedControl(items: ["All", "Recents"])
+        filters.selectedSegmentIndex = 0
+        filters.addAction(UIAction { [weak self] action in
+            guard let self else { return }
+            self.filter = (action.sender as? UISegmentedControl)?.selectedSegmentIndex == 1 ? .recents : .all
+        }, for: .valueChanged)
+        filters.translatesAutoresizingMaskIntoConstraints = false
+        let header = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 48))
+        header.addSubview(filters)
+        NSLayoutConstraint.activate([
+            filters.topAnchor.constraint(equalTo: header.topAnchor, constant: 6),
+            filters.bottomAnchor.constraint(equalTo: header.bottomAnchor, constant: -6),
+            filters.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+            filters.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+        ])
+        tableView.tableHeaderView = header
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -214,8 +240,20 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
 
     private func applyFilter() {
         let query = (search.searchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // D7: Recents = contacts with a chat, most recent interaction first.
+        let base: [Peer]
+        switch filter {
+        case .all:
+            base = peers
+        case .recents:
+            let order = Dictionary(uniqueKeysWithValues:
+                ChatStore.shared.recentChatIDs.enumerated().map { ($1, $0) })
+            base = peers
+                .filter { order[$0.id] != nil }
+                .sorted { order[$0.id]! < order[$1.id]! }
+        }
         // Match everything the row displays, endpoint id included.
-        shownPeers = query.isEmpty ? peers : peers.filter {
+        shownPeers = query.isEmpty ? base : base.filter {
             $0.displayName.lowercased().contains(query)
                 || $0.id.lowercased().contains(query)
                 || ($0.endpointId?.lowercased().contains(query) ?? false)
@@ -238,17 +276,13 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
             ? "on-device"
             : peer.endpointId.map { String($0.prefix(16)) + "…" }
         cell.contentConfiguration = config
-        // ⓘ opens the detail screen; the row itself still opens the chat.
-        cell.accessoryType = .detailButton
         return cell
     }
 
+    /// D1: the row's default action opens the person screen; on-device agents
+    /// keep their editor as the hub.
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        navigationController?.pushViewController(ChatViewController(peer: shownPeers[indexPath.row]), animated: true)
-    }
-
-    override func tableView(_ tableView: UITableView, accessoryButtonTappedForRowWith indexPath: IndexPath) {
         let peer = shownPeers[indexPath.row]
         if let id = OnDeviceAgent.id(fromPeerId: peer.id) {
             let editor = OnDeviceAgentEditorViewController(
