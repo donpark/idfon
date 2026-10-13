@@ -96,6 +96,8 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     private var shownPeers: [Peer] = []
     /// §5.4 list states (loading / empty / failed).
     private var listState: ListState = .loading
+    /// Identity id → display name for the A8 row label.
+    private var identityNames: [String: String] = [:]
 
     /// D7 filter segments. Favorites joins when pinned contacts exist; the
     /// segment count is the only change.
@@ -233,9 +235,11 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
             // Retry while the daemon finishes coming up, so a cold/crash start
             // does not leave Contacts empty with no way back but a manual pull.
             let fetched = await client.whenReady({ try await client.peers() })
+            let identities = await client.whenReady({ try await client.identities() }) ?? []
             // On-device agents are local contacts (no daemon peer), so they are
             // added here whether or not the daemon answered.
             await MainActor.run {
+                self.identityNames = Dictionary(uniqueKeysWithValues: identities.map { ($0.id, $0.name) })
                 self.peers = OnDeviceAgents.shared.peers + (fetched ?? [])
                 if fetched == nil {
                     self.listState = .failed { [weak self] in self?.refresh() }
@@ -358,9 +362,16 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         var config = cell.defaultContentConfiguration()
         let peer = shownPeers[indexPath.row]
         config.text = peer.displayName
-        config.secondaryText = OnDeviceAgent.id(fromPeerId: peer.id) != nil
-            ? "on-device"
-            : peer.endpointId.map { String($0.prefix(16)) + "…" }
+        // A8: the relationship's identity label is always visible; the
+        // endpoint fragment is optional status.
+        if OnDeviceAgent.id(fromPeerId: peer.id) != nil {
+            config.secondaryText = "on-device"
+        } else {
+            let identityLabel = peer.identity.map { identityNames[$0] ?? $0 }
+            let parts = [identityLabel, peer.endpointId.map { String($0.prefix(16)) + "…" }]
+                .compactMap { $0 }
+            config.secondaryText = parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
         cell.contentConfiguration = config
         return cell
     }

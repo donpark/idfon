@@ -133,7 +133,10 @@ impl TransportMode {
 
     async fn add_identity(&self, identity: &str, key: [u8; 32]) -> io::Result<String> {
         let Self::Iroh(manager) = self else {
-            return Err(io::Error::other("fake transport has no endpoints"));
+            // The fake transport binds no endpoints (tests, `--transport
+            // fake`); every identity being live at startup (D20) is a no-op
+            // for it, not an error.
+            return Ok(String::new());
         };
         manager
             .add_identity(identity, key)
@@ -275,6 +278,10 @@ struct Store {
     mcp_command: Option<String>,
     #[serde(default)]
     sessions: Vec<idfon_protocol::MediaSession>,
+    /// One-shot marker: the D4 preset identities are provisioned once per
+    /// store (see `ensure_presets`).
+    #[serde(default)]
+    presets_v1: bool,
     #[serde(skip)]
     data_dir: PathBuf,
 }
@@ -308,6 +315,7 @@ impl Store {
                 let mut store: Self = serde_json::from_str(&snapshot).map_err(io::Error::other)?;
                 store.data_dir = data_dir.to_path_buf();
                 store.ensure_identity_keys(data_dir)?;
+                store.ensure_presets(data_dir)?;
                 return Ok(store);
             }
         }
@@ -317,6 +325,7 @@ impl Store {
                 let mut store: Self = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
                 store.data_dir = data_dir.to_path_buf();
                 store.ensure_identity_keys(data_dir)?;
+                store.ensure_presets(data_dir)?;
                 Ok(store)
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -339,14 +348,46 @@ impl Store {
                     mcp_discovery: Vec::new(),
                     mcp_command: None,
                     sessions: Vec::new(),
+                    presets_v1: false,
                     data_dir: data_dir.to_path_buf(),
                 };
                 let mut store = store;
                 store.ensure_identity_keys(data_dir)?;
+                store.ensure_presets(data_dir)?;
                 Ok(store)
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// D4/D20: preset identities at first launch — Work / Personal / Private,
+    /// renamable. The existing `default` identity migrates into the presets
+    /// (its name becomes Personal; the id stays `default`, so endpoint keys
+    /// and paired peers keep working). Marked `presets_v1`, so a preset the
+    /// user later deletes or renames stays gone.
+    fn ensure_presets(&mut self, data_dir: &Path) -> io::Result<()> {
+        if self.presets_v1 {
+            return Ok(());
+        }
+        self.presets_v1 = true;
+        for identity in &mut self.identities {
+            if identity.id == "default" && identity.name == "Default" {
+                identity.name = "Personal".into();
+            }
+        }
+        for name in ["Work", "Personal", "Private"] {
+            if !self.identities.iter().any(|identity| identity.name == name) {
+                self.identities.push(Identity {
+                    id: name.into(),
+                    name: name.into(),
+                    endpoint_id: None,
+                    public_key: None,
+                    active: false,
+                });
+            }
+        }
+        self.ensure_identity_keys(data_dir)?;
+        self.save(data_dir)
     }
 
     fn ensure_identity_keys(&mut self, data_dir: &Path) -> io::Result<()> {
@@ -454,10 +495,6 @@ pub struct DaemonConfig {
     /// Exit gracefully after this long with zero connected clients.
     /// None (default) = run until ctrl_c or `daemon.shutdown`.
     pub idle_exit: Option<Duration>,
-    /// Mobile: bind/wire only `default` and the active identity at startup
-    /// instead of every identity, binding others on `identity.use`. Env
-    /// `IDFON_LAZY_IDENTITIES` also enables it (see `run_blocking`).
-    pub lazy_identities: bool,
 }
 
 /// Blocking entry point: builds its own tokio runtime and runs the daemon
@@ -479,19 +516,12 @@ pub fn run_blocking(config: DaemonConfig) -> io::Result<()> {
         .idle_exit
         .or(env_idle_exit)
         .filter(|duration| !duration.is_zero());
-    // IDFON_LAZY_IDENTITIES lets the iOS app opt into active-only binding
-    // without touching the C ABI. Empty or "0" = off (desktop default).
-    let lazy_identities = config.lazy_identities
-        || std::env::var("IDFON_LAZY_IDENTITIES")
-            .map(|value| !value.is_empty() && value != "0")
-            .unwrap_or(false);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(io::Error::other)?;
     runtime.block_on(run(DaemonConfig {
         idle_exit,
-        lazy_identities,
         ..config
     }))
 }
@@ -502,7 +532,6 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
         data_dir,
         transport,
         idle_exit,
-        lazy_identities,
     } = config;
     let transport = transport.unwrap_or_else(|| DEFAULT_TRANSPORT.into());
     if transport != "fake" && transport != "iroh" {
@@ -546,11 +575,11 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
     // key so their endpoint id — and peers' records — do not change.
     let bound_keys: Vec<(String, [u8; 32])> = {
         let state = store.lock().expect("store mutex poisoned");
-        let ids = startup_identity_ids(&state.identities, lazy_identities);
+        // D20: every identity is live at once — all endpoints bind at startup
+        // (`IDFON_LAZY_IDENTITIES` no longer gates this).
         state
             .identities
             .iter()
-            .filter(|identity| ids.contains(&identity.id))
             .filter_map(|identity| {
                 state
                     .endpoint_key(&identity.id)
@@ -573,9 +602,8 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
         state.save(&data_dir)?;
     }
     // Per-identity inbound work (message receiver, MCP relay, gossip, rooms)
-    // is wired for the bound set. On lazy (mobile) startup that is `default`
-    // plus the active identity; `identity.use` wires the rest on demand. The
-    // relay reads its command per connection (env overrides the persisted
+    // is wired for every identity: all are live at once (D20). The relay
+    // reads its command per connection (env overrides the persisted
     // `mcp.configure` value), so runtime configuration needs no
     // re-registration. The env var keeps the C ABI unchanged (same precedent
     // as IDFON_IDLE_EXIT_SECS).
@@ -1059,23 +1087,6 @@ fn spawn_receiver(
             tracing::warn!(target: "idfon.daemon", identity = %identity, error = %error, "iroh receiver stopped");
         }
     });
-}
-
-/// Identities whose endpoints are bound at startup: all of them on desktop;
-/// on lazy (mobile) startup only `default` — always bound by the manager — and
-/// the active identity. `identity.use` binds a switched-to identity on demand.
-fn startup_identity_ids(identities: &[Identity], lazy: bool) -> Vec<String> {
-    let active = identities
-        .iter()
-        .find(|identity| identity.active)
-        .map(|identity| identity.id.clone());
-    identities
-        .iter()
-        .filter(|identity| {
-            identity.id == "default" || !lazy || active.as_deref() == Some(identity.id.as_str())
-        })
-        .map(|identity| identity.id.clone())
-        .collect()
 }
 
 /// Wires the per-identity background work for an already-bound transport:
@@ -4676,6 +4687,11 @@ fn policy_dry_run(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     )
 }
 
+/// A10: identity creation is capped — no minting hundreds of personas.
+// shortcut: fixed cap, becomes permission- or payment-gated if that is how
+// identity creation gets monetized (A10).
+const MAX_IDENTITIES: usize = 6;
+
 fn identity_create(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let Some(name) = request
         .params
@@ -4692,6 +4708,15 @@ fn identity_create(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         );
     };
     let mut state = store.lock().expect("store mutex poisoned");
+    if state.identities.len() >= MAX_IDENTITIES {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            format!("identity limit reached ({MAX_IDENTITIES})"),
+            false,
+        );
+    }
     if state
         .identities
         .iter()
@@ -6306,6 +6331,53 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn preset_identities_provision_once_and_migrate_default() {
+        let dir = temp_dir("presets");
+        let store = Store::load(&dir).unwrap();
+        assert_eq!(
+            store
+                .identities
+                .iter()
+                .find(|identity| identity.id == "default")
+                .map(|identity| identity.name.as_str()),
+            Some("Personal")
+        );
+        for preset in ["Work", "Personal", "Private"] {
+            assert!(store
+                .identities
+                .iter()
+                .any(|identity| identity.name == preset));
+        }
+        // One-shot (`presets_v1`): a preset the user deletes stays deleted.
+        let mut store = store;
+        store.identities.retain(|identity| identity.name != "Work");
+        store.save(&dir).unwrap();
+        let reloaded = Store::load(&dir).unwrap();
+        assert!(!reloaded
+            .identities
+            .iter()
+            .any(|identity| identity.name == "Work"));
+    }
+
+    #[test]
+    fn identity_create_is_capped() {
+        let dir = temp_dir("identity-cap");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let request = |name: &str| Request {
+            version: PROTOCOL_VERSION,
+            id: "create".into(),
+            method: "identity.create".into(),
+            params: serde_json::json!({ "name": name }),
+        };
+        // A fresh store already carries the three presets.
+        assert_eq!(store.lock().unwrap().identities.len(), 3);
+        for index in 0..(MAX_IDENTITIES - 3) {
+            assert!(identity_create(&request(&format!("Extra{index}")), &store).ok);
+        }
+        assert!(!identity_create(&request("OneTooMany"), &store).ok);
+    }
+
+    #[test]
     fn edge_url_composes_the_public_url() {
         assert_eq!(
             edge_url(Some("https://idfon.net".into()), "abc", "fs/x").unwrap(),
@@ -6331,7 +6403,12 @@ mod tests {
         );
         // An IP/port base cannot take a wildcard subdomain: path form.
         assert_eq!(
-            edge_url(Some("http://127.0.0.1:8080".into()), &id.to_string(), "fs/x").unwrap(),
+            edge_url(
+                Some("http://127.0.0.1:8080".into()),
+                &id.to_string(),
+                "fs/x"
+            )
+            .unwrap(),
             format!("http://127.0.0.1:8080/{}/fs/x", id)
         );
     }
@@ -7408,7 +7485,7 @@ mod tests {
         );
         assert!(add.ok);
         let state = Store::load(&dir).unwrap();
-        assert_eq!(state.identities.len(), 2);
+        assert_eq!(state.identities.len(), 4); // 3 presets + the one above
         assert!(
             !state
                 .identities
@@ -8050,38 +8127,14 @@ mod tests {
             data_dir: dir.clone(),
             transport: Some("fake".into()),
             idle_exit: Some(Duration::from_millis(300)),
-            lazy_identities: false,
         }));
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .unwrap()
             .unwrap();
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "daemon run failed: {result:?}");
         assert!(!socket.exists(), "socket not cleaned up on idle exit");
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn lazy_startup_binds_default_and_active_only() {
-        let make = |id: &str, active: bool| Identity {
-            id: id.into(),
-            name: id.into(),
-            endpoint_id: None,
-            public_key: None,
-            active,
-        };
-        let identities = vec![
-            make("default", false),
-            make("work", true),
-            make("home", false),
-        ];
-        assert_eq!(startup_identity_ids(&identities, true), ["default", "work"]);
-        assert_eq!(
-            startup_identity_ids(&identities, false),
-            ["default", "work", "home"]
-        );
-        let identities = vec![make("default", true), make("work", false)];
-        assert_eq!(startup_identity_ids(&identities, true), ["default"]);
     }
 
     #[test]
@@ -8142,7 +8195,7 @@ mod tests {
         assert!(dir.join("state.db").is_file());
         std::fs::remove_file(dir.join("state.json")).unwrap();
         let restored = Store::load(&dir).unwrap();
-        assert_eq!(restored.identities.len(), 1);
+        assert_eq!(restored.identities.len(), 3); // Work / Personal / Private
         assert_eq!(restored.identities[0].id, "default");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -8151,7 +8204,7 @@ mod tests {
     fn first_load_creates_default_identity_and_persists_it() {
         let dir = temp_dir("identity");
         let store = Store::load(&dir).unwrap();
-        assert_eq!(store.identities.len(), 1);
+        assert_eq!(store.identities.len(), 3); // `default` + the D4 presets
         assert_eq!(store.identities[0].id, "default");
         assert!(store.identities[0].public_key.is_some());
         assert!(dir.join("state.json").is_file());

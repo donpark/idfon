@@ -59,9 +59,8 @@ enum DaemonBootstrap {
         // sandbox): point NATIVE_SDK_APP_DATA_DIR at the durable profile so
         // video-frame.jpg / received.wav land somewhere writable.
         setenv("NATIVE_SDK_APP_DATA_DIR", dataDir, 1)
-        // Bind only the active identity's endpoint; idle ones die on
-        // background anyway, and `identity.use` binds on demand.
-        setenv("IDFON_LAZY_IDENTITIES", "1", 1)
+        // D20: every identity is live at once — the daemon binds all identity
+        // endpoints at startup (the IDFON_LAZY_IDENTITIES opt-in is gone).
         // Enterprise relay config from settings, applied before the daemon binds.
         RelaySettings.applyToProcess()
         iroh_enable_tracing()

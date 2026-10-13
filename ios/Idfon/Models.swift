@@ -51,6 +51,8 @@ struct PeerDevice: Decodable, Hashable {
 
 struct Peer: Decodable, Identifiable {
     let id: String
+    /// The identity (persona) this relationship lives under (A8/D20).
+    let identity: String?
     let name: String?
     let endpointId: String?
     let devices: [PeerDevice]
@@ -58,13 +60,14 @@ struct Peer: Decodable, Identifiable {
     let callMode: IncomingCallMode?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, aliases, devices
+        case id, name, aliases, devices, identity
         case endpointId = "endpoint_id"
         case callMode = "call_mode"
     }
 
-    init(id: String, name: String?, endpointId: String?, aliases: [String]?, callMode: IncomingCallMode?, devices: [PeerDevice] = []) {
+    init(id: String, name: String?, endpointId: String?, aliases: [String]?, callMode: IncomingCallMode?, devices: [PeerDevice] = [], identity: String? = nil) {
         self.id = id
+        self.identity = identity
         self.name = name
         self.endpointId = endpointId
         self.aliases = aliases
@@ -75,6 +78,7 @@ struct Peer: Decodable, Identifiable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
+        identity = try values.decodeIfPresent(String.self, forKey: .identity)
         name = try values.decodeIfPresent(String.self, forKey: .name)
         endpointId = try values.decodeIfPresent(String.self, forKey: .endpointId)
         devices = try values.decodeIfPresent([PeerDevice].self, forKey: .devices) ?? []
