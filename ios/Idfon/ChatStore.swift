@@ -362,6 +362,13 @@ final class ChatStore {
                 name = nil
                 sizeBytes = nil
                 durationMs = nil
+            case .sessionStart:
+                kind = "session"
+                text = MessageKind.sessionStartPrefix
+                ticket = nil
+                name = nil
+                sizeBytes = nil
+                durationMs = nil
             }
         }
 
@@ -370,7 +377,7 @@ final class ChatStore {
             switch kind {
             case "recording": messageKind = .recording(ticket: ticket ?? "", durationMs: durationMs ?? 0, localURL: nil)
             case "file": messageKind = .file(ticket: ticket ?? "", name: name ?? "file", sizeBytes: sizeBytes ?? 0, localURL: nil)
-            case "artifact", "reference", "call", "render": messageKind = MessageKind.parse(text ?? "")
+            case "artifact", "reference", "call", "render", "session": messageKind = MessageKind.parse(text ?? "")
             default: messageKind = .text(text ?? "")
             }
             return ChatMessage(id: id, peerId: peerId, kind: messageKind, outgoing: outgoing, timestamp: timestamp, conversation: conversation)

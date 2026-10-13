@@ -53,9 +53,32 @@ enum Timeline {
         calendar: Calendar = .current
     ) -> [Item] {
         let sorted = messages.sorted { $0.timestamp < $1.timestamp }
+        // D21: `session_start` markers are the one stored grouping boundary —
+        // derived grouping never merges across them. Each marker renders as a
+        // divider and the segments on either side derive independently.
+        var items: [Item] = []
+        var segment: [ChatMessage] = []
+        for message in sorted {
+            if case .sessionStart = message.kind {
+                items += derived(segment, expanding: expanding, now: now, calendar: calendar)
+                items.append(.dateline(id: message.id, text: "New Session"))
+                segment = []
+            } else {
+                segment.append(message)
+            }
+        }
+        return items + derived(segment, expanding: expanding, now: now, calendar: calendar)
+    }
+
+    private static func derived(
+        _ messages: [ChatMessage],
+        expanding: Set<String>,
+        now: Date,
+        calendar: Calendar
+    ) -> [Item] {
         let todayStart = calendar.startOfDay(for: now)
-        return buckets(sorted.filter { $0.timestamp < todayStart }, expanding: expanding, now: now, calendar: calendar)
-            + inline(sorted.filter { $0.timestamp >= todayStart }, expanding: expanding, now: now,
+        return buckets(messages.filter { $0.timestamp < todayStart }, expanding: expanding, now: now, calendar: calendar)
+            + inline(messages.filter { $0.timestamp >= todayStart }, expanding: expanding, now: now,
                      calendar: calendar, collapse: true)
     }
 
