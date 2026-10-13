@@ -53,7 +53,7 @@ The interface relies on a single persistent thread per contact, anchored by the 
 
 ## 3. Live Activity Bar State Logic
 
-The thread's **nav bar** is the call surface: inline title = contact name, right bar items = `Call` when idle and `Mic`/`Cam`/`Speaker`/`End` while in a call. The **Bar** (a window overlay) is the cross-screen surface: it shows the call's stats and activity (tray) rows for the visible thread, rings incoming calls, and shows a compact pill on other screens. (Pre-call staging was removed; see State 2. Incoming-call handling is per-channel — CallKit or the Bar, with the Bar as the interim default until CallKit lands; see §6. Outgoing-pending presentation remains open.)
+The thread's **nav bar** is the call surface: inline title = contact name, right bar items = `Call` when idle and `Mic`/`Cam`/`Speaker`/`End` while in a call. *(Control placement superseded by `ios-ui-design.md` §7.1/D2 — that doc wins on structure: the nav bar carries start/stop only (call → hang-up) plus the overflow menu; mute/route/camera/gear live in the Bar's controls row. The state machine below stands.)* The **Bar** (a window overlay) is the cross-screen surface: it shows the call's stats and activity (tray) rows for the visible thread, rings incoming calls, and shows a compact pill on other screens. (Pre-call staging was removed; see State 2. Incoming-call handling is per-channel — CallKit or the Bar, with the Bar as the interim default until CallKit lands; see §6. Outgoing-pending presentation remains open.)
 
 ### State 1: Idle (Not in Call)
 
