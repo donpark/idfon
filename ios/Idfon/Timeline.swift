@@ -52,7 +52,7 @@ enum Timeline {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [Item] {
-        let sorted = messages.sorted { $0.timestamp < $1.timestamp }
+        let sorted = collapseRevisions(messages.sorted { $0.timestamp < $1.timestamp })
         // D21: `session_start` markers are the one stored grouping boundary —
         // derived grouping never merges across them. Each marker renders as a
         // divider and the segments on either side derive independently.
@@ -83,6 +83,25 @@ enum Timeline {
     }
 
     // MARK: - Inline region (today, and the inside of drilled-open cards)
+
+    /// §14: revision chains (`metadata.revision_of`) collapse to their latest
+    /// revision — one card with a revision count, never a card per revision.
+    private static func collapseRevisions(_ sorted: [ChatMessage]) -> [ChatMessage] {
+        var artifacts: [String: Artifact] = [:]
+        for message in sorted {
+            if case .artifact(let artifact) = message.kind { artifacts[artifact.artifactId] = artifact }
+        }
+        var latestByRoot: [String: String] = [:]
+        for message in sorted {
+            if case .artifact(let artifact) = message.kind {
+                latestByRoot[artifact.revisionRoot { artifacts[$0] }] = message.id
+            }
+        }
+        return sorted.filter { message in
+            guard case .artifact(let artifact) = message.kind else { return true }
+            return latestByRoot[artifact.revisionRoot { artifacts[$0] }] == message.id
+        }
+    }
 
     /// Messages as inline rows with datelines and (today only) burst collapse.
     private static func inline(

@@ -51,6 +51,12 @@ final class ContactDetailViewController: UIViewController {
         actionsRow.axis = .horizontal
         actionsRow.spacing = 12
         actionsRow.distribution = .fillEqually
+        // §6: shared artifacts/transfers are reachable from here (§14 gallery).
+        let artifactsButton = UIButton(configuration: .plain())
+        artifactsButton.setTitle("Shared Artifacts", for: .normal)
+        artifactsButton.setImage(UIImage(systemName: "photo.on.rectangle"), for: .normal)
+        artifactsButton.contentHorizontalAlignment = .leading
+        artifactsButton.addTarget(self, action: #selector(openGallery), for: .touchUpInside)
 
         nameField.text = peer.name ?? ""
         nameField.placeholder = "Name"
@@ -91,7 +97,7 @@ final class ContactDetailViewController: UIViewController {
         delete.addTarget(self, action: #selector(confirmDelete), for: .touchUpInside)
 
         let stack = UIStackView(arrangedSubviews: [
-            actionsRow,
+            actionsRow, artifactsButton,
             nameLabel, nameField, instantRow,
             sectionLabel("Endpoint"), idLabel,
             sectionLabel("Speech"),
@@ -130,6 +136,12 @@ final class ContactDetailViewController: UIViewController {
         let chat = ChatViewController(peer: peer)
         navigationController?.pushViewController(chat, animated: true)
         if startCall { chat.startCall() }
+    }
+
+    /// §14: the per-contact artifact gallery.
+    @objc private func openGallery() {
+        navigationController?.pushViewController(
+            ArtifactGalleryViewController(conversation: Conversation(peer: peer)), animated: true)
     }
 
     /// §5.1: the instant-call flag saves on flip (contact metadata, not the

@@ -43,6 +43,26 @@ struct Artifact: Codable, Equatable {
     }
 }
 
+extension Artifact {
+    /// §14: `metadata.revision_of` — the artifact this one revises.
+    var revisionOf: String? {
+        if case .string(let id)? = metadata?["revision_of"] { return id }
+        return nil
+    }
+
+    /// §14: the revision chain's root id (itself when not a revision).
+    func revisionRoot(_ lookup: (String) -> Artifact?) -> String {
+        var current = self
+        var seen: Set<String> = []
+        while !seen.contains(current.artifactId),
+              let parent = current.revisionOf.flatMap(lookup) {
+            seen.insert(current.artifactId)
+            current = parent
+        }
+        return current.artifactId
+    }
+}
+
 /// A selection inside an artifact; geometry is normalized to `[0, 1]`.
 enum ArtifactSelector: Codable, Equatable {
     case whole
