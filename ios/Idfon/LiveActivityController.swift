@@ -63,6 +63,9 @@ final class LiveActivityController: NSObject {
     /// Last nav-bar chrome key per peer, so right bar items are only rebuilt
     /// when the call state they show actually changes.
     private var navChromeKeys: [String: String] = [:]
+    /// §5.2 session indicator: the peer whose session is live (nil = none),
+    /// readable by the Messages rows.
+    static private(set) var currentCallPeer: String?
     /// The in-call Bar's toggle state. Mirrored from the active machine on
     /// phase entry and after each toggle, so the Bar always shows what the
     /// call is really sending (and hides toggles for absent tracks). The route
@@ -302,6 +305,7 @@ final class LiveActivityController: NSObject {
         let visiblePeer = visibleChat?.peer.id
         let machine = ActiveMachine.current
         let callPeer = ((machine?.peer ?? nil) ?? pendingCall).flatMap { $0.isEmpty ? nil : $0 }
+        Self.currentCallPeer = (phase == .calling || phase == .inCall) ? callPeer : nil
 
         let transfers = TransferCenter.shared
         let visibleIsCallPeer = visiblePeer != nil && visiblePeer == callPeer

@@ -239,6 +239,10 @@ private final class TimelineCardCell: UITableViewCell {
         subtitleLabel.isHidden = (subtitle ?? "").isEmpty
         disclosure.isHidden = !showsDisclosure
         disclosure.image = UIImage(systemName: expanded ? "chevron.down" : "chevron.right")
+        // §7.6: the card is one VoiceOver element with a tap action.
+        isAccessibilityElement = true
+        accessibilityLabel = subtitle.map { "\(title). \($0)" } ?? title
+        accessibilityTraits = .button
         setPlacement(placement)
     }
 
@@ -793,21 +797,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
             attachButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
             attachButton.leadingAnchor.constraint(equalTo: composerBar.leadingAnchor, constant: 8),
-            attachButton.widthAnchor.constraint(equalToConstant: 36),
-            attachButton.heightAnchor.constraint(equalToConstant: 36),
+            attachButton.widthAnchor.constraint(equalToConstant: 44),
+            attachButton.heightAnchor.constraint(equalToConstant: 44),
 
             // Mic and send share one trailing slot: they are mutually exclusive
             // (mic while the field is empty, send once it has text), so both pin
             // to the same edge instead of stacking on top of each other.
             micButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
             micButton.trailingAnchor.constraint(equalTo: composerBar.trailingAnchor, constant: -8),
-            micButton.widthAnchor.constraint(equalToConstant: 36),
-            micButton.heightAnchor.constraint(equalToConstant: 36),
+            micButton.widthAnchor.constraint(equalToConstant: 44),
+            micButton.heightAnchor.constraint(equalToConstant: 44),
 
             sendButton.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
             sendButton.trailingAnchor.constraint(equalTo: composerBar.trailingAnchor, constant: -8),
-            sendButton.widthAnchor.constraint(equalToConstant: 36),
-            sendButton.heightAnchor.constraint(equalToConstant: 36),
+            sendButton.widthAnchor.constraint(equalToConstant: 44),
+            sendButton.heightAnchor.constraint(equalToConstant: 44),
 
             elapsedLabel.centerYAnchor.constraint(equalTo: composerBar.centerYAnchor),
             elapsedLabel.trailingAnchor.constraint(equalTo: composerBar.trailingAnchor, constant: -64),

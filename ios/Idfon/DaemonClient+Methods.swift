@@ -73,13 +73,38 @@ extension DaemonClient {
         ])
     }
 
-    /// Removes a contact (`peer.remove`).
-    func removePeer(ref: String) async throws {
-        let identity = (try? await identityId()) ?? "default"
+    /// Removes a contact (`peer.remove`). `identity` names the relationship's
+    /// line (D20); without it the daemon scopes to the active identity.
+    func removePeer(ref: String, identity: String? = nil) async throws {
+        let owner: String
+        if let identity {
+            owner = identity
+        } else {
+            owner = (try? await identityId()) ?? "default"
+        }
         _ = try await request(method: "peer.remove", params: [
             "ref": AnyEncodable(ref),
-            "identity": AnyEncodable(identity),
+            "identity": AnyEncodable(owner),
         ])
+    }
+
+    /// Contact metadata flags (§19 model deltas): Favorites pin (D7) and the
+    /// instant-call flag (§5.1).
+    func updatePeerFlags(ref: String, identity: String? = nil,
+                         pinned: Bool? = nil, instantCall: Bool? = nil) async throws {
+        let owner: String
+        if let identity {
+            owner = identity
+        } else {
+            owner = (try? await identityId()) ?? "default"
+        }
+        var params: [String: AnyEncodable] = [
+            "ref": AnyEncodable(ref),
+            "identity": AnyEncodable(owner),
+        ]
+        if let pinned { params["pinned"] = AnyEncodable(pinned) }
+        if let instantCall { params["instant_call"] = AnyEncodable(instantCall) }
+        _ = try await request(method: "peer.update", params: params)
     }
 
     func createIdentity(_ name: String) async throws {

@@ -12,7 +12,7 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Messages"
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "conversation")
+        tableView.register(ListRowCell.self, forCellReuseIdentifier: ListRowCell.reuseID)
         refreshControl = UIRefreshControl()
         refreshControl?.addTarget(self, action: #selector(refresh), for: .valueChanged)
         ChatStore.shared.addObserver(self)
@@ -57,20 +57,53 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { conversations.count }
 
+    /// §5.2 row anatomy: room identity · last-message preview · timestamp ·
+    /// session indicators.
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "conversation", for: indexPath)
+        let cell = tableView.dequeueReusableCell(withIdentifier: ListRowCell.reuseID, for: indexPath) as! ListRowCell
         let chat = conversations[indexPath.row]
-        var config = cell.defaultContentConfiguration()
+        let last = ChatStore.shared.messages(for: chat).last
         let unread = ChatStore.shared.unreadCount(for: chat)
-        config.text = unread > 0 ? "\(chat.title) · \(unread)" : chat.title
-        if let room = chat.room {
-            config.secondaryText = "Room · \(room.members.count) members"
-        } else {
-            config.secondaryText = chat.peer?.endpointId.map { String($0.prefix(16)) + "…" }
-        }
-        cell.contentConfiguration = config
+        let secondary = [
+            LiveActivityController.currentCallPeer == chat.id ? "● Live" : nil,
+            last?.displayText,
+        ].compactMap { $0 }
+        cell.configure(avatar: chat.title,
+                       title: unread > 0 ? "\(chat.title) · \(unread)" : chat.title,
+                       secondary: secondary.isEmpty ? nil : secondary.joined(separator: " · "),
+                       time: ListRowCell.time(last?.timestamp))
         cell.accessoryType = .disclosureIndicator
         return cell
+    }
+
+    /// §5.2 edit verbs: mark unread / delete — that is the whole verb set.
+    override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath)
+        -> UISwipeActionsConfiguration? {
+        let chat = conversations[indexPath.row]
+        let unread = UIContextualAction(style: .normal, title: "Mark Unread") { [weak self] _, _, done in
+            ChatStore.shared.markUnread(chat)
+            self?.rebuild()
+            done(true)
+        }
+        let delete = UIContextualAction(style: .destructive, title: "Delete") { [weak self] _, _, done in
+            self?.confirmDelete(chat) { done($0) }
+        }
+        return UISwipeActionsConfiguration(actions: [delete, unread])
+    }
+
+    private func confirmDelete(_ chat: Conversation, done: @escaping (Bool) -> Void) {
+        let alert = UIAlertController(
+            title: "Delete this conversation?",
+            message: "Its messages are removed from this device.",
+            preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in done(false) })
+        alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+            ChatStore.shared.removeConversation(chat)
+            self?.rebuild()
+            done(true)
+        })
+        alert.popoverPresentationController?.sourceView = tableView
+        present(alert, animated: true)
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -101,8 +134,14 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
 
     /// D7 filter segments. Favorites joins when pinned contacts exist; the
     /// segment count is the only change.
-    enum ContactFilter { case all, recents }
+    enum ContactFilter { case all, favorites, recents }
     private var filter: ContactFilter = .all { didSet { applyFilter() } }
+    private let filters = UISegmentedControl()
+    /// D7 pin order (drag-reordered in edit mode) — presentation state, local.
+    private var pinOrder: [String] {
+        get { UserDefaults.standard.stringArray(forKey: "idfon.pins.order") ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: "idfon.pins.order") }
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -116,11 +155,13 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         navigationItem.rightBarButtonItems = [identity, edge, relay]
         // §5.4: Add contact enters here (identity fixed at add time, §11);
         // the on-device agent editor shares the add slot.
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "plus"), menu: buildAddMenu())
+        navigationItem.leftBarButtonItems = [
+            UIBarButtonItem(image: UIImage(systemName: "plus"), menu: buildAddMenu()),
+            editButtonItem, // §5.1 edit mode: drag to reorder pinned + delete
+        ]
         navigationItem.backButtonDisplayMode = .generic // show "Back", not the callee's name
         navigationController?.navigationBar.prefersLargeTitles = true
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "peer")
+        tableView.register(ListRowCell.self, forCellReuseIdentifier: ListRowCell.reuseID)
         refreshControl = UIRefreshControl()
         refreshControl?.addTarget(self, action: #selector(refresh), for: .valueChanged)
 
@@ -133,13 +174,16 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
 
         // D7 segmented filter strip: All | Recents (interacted-with, most
         // recent first). Favorites joins when pinned contacts exist.
-        let filters = UISegmentedControl(items: ["All", "Recents"])
-        filters.selectedSegmentIndex = 0
         filters.addAction(UIAction { [weak self] action in
-            guard let self else { return }
-            self.filter = (action.sender as? UISegmentedControl)?.selectedSegmentIndex == 1 ? .recents : .all
+            guard let self, let control = action.sender as? UISegmentedControl else { return }
+            switch control.titleForSegment(at: control.selectedSegmentIndex) {
+            case "Favorites": self.filter = .favorites
+            case "Recents": self.filter = .recents
+            default: self.filter = .all
+            }
         }, for: .valueChanged)
         filters.translatesAutoresizingMaskIntoConstraints = false
+        syncFilterStrip()
         let header = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 48))
         header.addSubview(filters)
         NSLayoutConstraint.activate([
@@ -241,6 +285,7 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
             await MainActor.run {
                 self.identityNames = Dictionary(uniqueKeysWithValues: identities.map { ($0.id, $0.name) })
                 self.peers = OnDeviceAgents.shared.peers + (fetched ?? [])
+                self.syncFilterStrip()
                 if fetched == nil {
                     self.listState = .failed { [weak self] in self?.refresh() }
                 } else {
@@ -322,6 +367,51 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         applyFilter()
     }
 
+    /// D7: the Favorites segment joins when pinned contacts exist.
+    private func syncFilterStrip() {
+        let titles = peers.contains(where: \Peer.pinned)
+            ? ["All", "Favorites", "Recents"] : ["All", "Recents"]
+        guard filters.numberOfSegments != titles.count else { return }
+        filters.removeAllSegments()
+        for (index, title) in titles.enumerated() {
+            filters.insertSegment(withTitle: title, at: index, animated: false)
+        }
+        filters.selectedSegmentIndex = 0
+        filter = .all
+    }
+
+    /// Pin-order bookkeeping: newly pinned sorts first.
+    private func setPinned(_ pinned: Bool, for id: String) {
+        var order = pinOrder
+        order.removeAll { $0 == id }
+        if pinned { order.insert(id, at: 0) }
+        pinOrder = order
+    }
+
+    /// §5.1 edit mode: drag to reorder pinned (visible in the Favorites view).
+    override func tableView(_ tableView: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool {
+        filter == .favorites
+    }
+
+    override func tableView(_ tableView: UITableView, moveRowAt sourceIndexPath: IndexPath,
+                            to destinationIndexPath: IndexPath) {
+        var visible = shownPeers
+        let moved = visible.remove(at: sourceIndexPath.row)
+        visible.insert(moved, at: destinationIndexPath.row)
+        shownPeers = visible
+        pinOrder = visible.map(\.id)
+    }
+
+    override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle,
+                            forRowAt indexPath: IndexPath) {
+        guard editingStyle == .delete else { return }
+        let peer = shownPeers[indexPath.row]
+        Task { [weak self] in
+            try? await self?.client.removePeer(ref: peer.id, identity: peer.identity)
+            await MainActor.run { self?.refresh() }
+        }
+    }
+
     private func applyFilter() {
         let query = (search.searchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         // D7: Recents = contacts with a chat, most recent interaction first.
@@ -329,6 +419,11 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         switch filter {
         case .all:
             base = peers
+        case .favorites:
+            let order = pinOrder
+            base = peers.filter(\.pinned).sorted {
+                (order.firstIndex(of: $0.id) ?? .max) < (order.firstIndex(of: $1.id) ?? .max)
+            }
         case .recents:
             let order = Dictionary(uniqueKeysWithValues:
                 ChatStore.shared.recentChatIDs.enumerated().map { ($1, $0) })
@@ -357,22 +452,19 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         shownPeers.count
     }
 
+    /// §5.1 row anatomy: avatar · name · identity label (A8) · optional status.
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "peer", for: indexPath)
-        var config = cell.defaultContentConfiguration()
+        let cell = tableView.dequeueReusableCell(withIdentifier: ListRowCell.reuseID, for: indexPath) as! ListRowCell
         let peer = shownPeers[indexPath.row]
-        config.text = peer.displayName
-        // A8: the relationship's identity label is always visible; the
-        // endpoint fragment is optional status.
-        if OnDeviceAgent.id(fromPeerId: peer.id) != nil {
-            config.secondaryText = "on-device"
-        } else {
-            let identityLabel = peer.identity.map { identityNames[$0] ?? $0 }
-            let parts = [identityLabel, peer.endpointId.map { String($0.prefix(16)) + "…" }]
-                .compactMap { $0 }
-            config.secondaryText = parts.isEmpty ? nil : parts.joined(separator: " · ")
-        }
-        cell.contentConfiguration = config
+        let status = OnDeviceAgent.id(fromPeerId: peer.id) != nil
+            ? "on-device"
+            : peer.endpointId.map { String($0.prefix(16)) + "…" }
+        let identityLabel = peer.identity.map { identityNames[$0] ?? $0 }
+        let secondary = [identityLabel, status].compactMap { $0 }
+        cell.configure(avatar: peer.displayName, title: peer.displayName,
+                       secondary: secondary.isEmpty ? nil : secondary.joined(separator: " · "),
+                       time: nil)
+        cell.accessoryType = .disclosureIndicator
         return cell
     }
 
@@ -385,6 +477,13 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
             let editor = OnDeviceAgentEditorViewController(
                 agent: OnDeviceAgents.shared.agent(id: id)) { [weak self] in self?.refresh() }
             navigationController?.pushViewController(editor, animated: true)
+            return
+        }
+        // §5.1: instant-call contacts dial into the chat's call immediately.
+        if peer.instantCall {
+            let chat = ChatViewController(peer: peer)
+            navigationController?.pushViewController(chat, animated: true)
+            chat.startCall()
             return
         }
         let detail = ContactDetailViewController(peer: peer)
@@ -407,11 +506,25 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
             }
             return UISwipeActionsConfiguration(actions: [delete])
         }
+        // §5.1 edit verbs: pin/unpin (Favorites) + delete.
+        let pin = UIContextualAction(style: .normal, title: peer.pinned ? "Unpin" : "Pin") { [weak self] _, _, done in
+            guard let self else { return done(false) }
+            Task {
+                do {
+                    try await self.client.updatePeerFlags(ref: peer.id, identity: peer.identity, pinned: !peer.pinned)
+                    self.setPinned(!peer.pinned, for: peer.id)
+                    await MainActor.run { self.refresh() }
+                    done(true)
+                } catch {
+                    done(false)
+                }
+            }
+        }
         let delete = UIContextualAction(style: .destructive, title: "Delete") { [weak self] _, _, done in
             guard let self else { return done(false) }
             Task {
                 do {
-                    try await self.client.removePeer(ref: peer.id)
+                    try await self.client.removePeer(ref: peer.id, identity: peer.identity)
                     CapabilityTickets.remove(for: peer.id)
                     ContactVoiceSelection.remove(for: peer.id)
                     ContactOnDeviceEngines.remove(for: peer.id)
@@ -423,6 +536,6 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
                 }
             }
         }
-        return UISwipeActionsConfiguration(actions: [delete])
+        return UISwipeActionsConfiguration(actions: [delete, pin])
     }
 }
