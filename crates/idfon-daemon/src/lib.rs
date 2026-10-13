@@ -1146,8 +1146,6 @@ fn resolved_identity_id(request: &Request, store: &Arc<Mutex<Store>>) -> String 
 /// message path) and hands the serialized endpoint address to the live dial
 /// handler.
 fn live_dial_dispatch(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
-    let identity_ref =
-        request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let Some(to) = request_text(&request.params, "to").filter(|value| !value.is_empty()) else {
         return error_response(
             request.id.clone(),
@@ -1158,12 +1156,7 @@ fn live_dial_dispatch(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
         );
     };
     let state = store.lock().expect("store mutex poisoned");
-    let identity_id = state
-        .identities
-        .iter()
-        .find(|identity| identity.id == identity_ref || identity.name == identity_ref)
-        .map(|identity| identity.id.as_str())
-        .unwrap_or("default");
+    let identity_id = send_identity_id(&state, request, &to);
     let Some(peer) = state.peers.iter().find(|peer| {
         peer.identity == identity_id
             && (peer.id == to
@@ -2046,6 +2039,7 @@ fn dispatch_with_transport(
         "policy.set" => policy_set(&request, store),
         "policy.dry_run" => policy_dry_run(&request, store),
         "identity.create" => identity_create(&request, store),
+        "identity.rename" => identity_rename(&request, store),
         "identity.delete" => identity_delete(&request, store),
         "identity.use" => {
             let name = request
@@ -2214,6 +2208,27 @@ fn identity_id_of(state: &Store, identity_ref: &str) -> String {
         .find(|identity| identity.id == identity_ref || identity.name == identity_ref)
         .map(|identity| identity.id.clone())
         .unwrap_or_else(|| identity_ref.to_owned())
+}
+
+/// D20: a send rides the relationship's line. An explicit `identity` param
+/// wins; otherwise the target peer's stored identity routes the send —
+/// identity is fixed at contact-add (§11), so the peer record carries it.
+/// Ambiguous or unknown targets fall back to `default` (pass `identity`
+/// explicitly when one ref names contacts under several identities — A9).
+fn send_identity_id(state: &Store, request: &Request, to: &str) -> String {
+    if let Some(identity_ref) = request_text(&request.params, "identity") {
+        return identity_id_of(state, &identity_ref);
+    }
+    let mut matches = state.peers.iter().filter(|peer| {
+        peer.id == to
+            || peer.name == to
+            || peer.aliases.iter().any(|alias| alias == to)
+            || peer.knows_endpoint(to)
+    });
+    match (matches.next(), matches.next()) {
+        (Some(peer), None) => peer.identity.clone(),
+        _ => "default".into(),
+    }
 }
 
 /// Ensures a peer carries its derived account handle (`blake3(peer.id)`) as an
@@ -2788,8 +2803,14 @@ fn send_message(
     store: &Arc<Mutex<Store>>,
     transport: &Arc<TransportMode>,
 ) -> Response {
-    let identity_id = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let to = request_text(&request.params, "to");
+    let identity_id = match &to {
+        Some(target) => {
+            let state = store.lock().expect("store mutex poisoned");
+            send_identity_id(&state, request, target)
+        }
+        None => "default".into(),
+    };
     let text = request_text(&request.params, "text");
     let key = request_text(&request.params, "idempotency_key");
     let conversation = request
@@ -4687,6 +4708,69 @@ fn policy_dry_run(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     )
 }
 
+/// D20 management: rename an identity's display name. The id — and with it
+/// every endpoint key, peer record, and paired ticket — never changes.
+fn identity_rename(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(name) = request
+        .params
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "name is required".into(),
+            false,
+        );
+    };
+    let identity_ref = request_text(&request.params, "identity").unwrap_or_default();
+    let mut state = store.lock().expect("store mutex poisoned");
+    let Some(index) = state
+        .identities
+        .iter()
+        .position(|identity| identity.id == identity_ref || identity.name == identity_ref)
+    else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "unknown identity".into(),
+            false,
+        );
+    };
+    if state
+        .identities
+        .iter()
+        .enumerate()
+        .any(|(other, identity)| other != index && (identity.name == name || identity.id == name))
+    {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "identity already exists".into(),
+            false,
+        );
+    }
+    state.identities[index].name = name.to_owned();
+    let data_dir = state.data_dir.clone();
+    if let Err(error) = state.save(&data_dir) {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::Internal,
+            error.to_string(),
+            true,
+        );
+    }
+    success(
+        request,
+        serde_json::json!({"identity": state.identities[index].id, "name": name}),
+    )
+}
+
 /// A10: identity creation is capped — no minting hundreds of personas.
 // shortcut: fixed cap, becomes permission- or payment-gated if that is how
 // identity creation gets monetized (A10).
@@ -4816,6 +4900,18 @@ fn identity_delete(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         );
     }
     let id = state.identities.remove(index).id;
+    // A9: an identity's world dies with it — the relationships under it go too.
+    // shortcut: message/event history is not purged — the log is global
+    // append-only state today; purge with per-identity history if it grows.
+    state.peers.retain(|peer| peer.identity != id);
+    state.grants.retain(|grant| grant.identity != id);
+    state.rooms.retain(|room| room.identity != id);
+    record_state_event(
+        &mut state,
+        &id,
+        "identity.deleted",
+        serde_json::json!({"identity": id}),
+    );
     let data_dir = state.data_dir.clone();
     if let Err(error) = state.save(&data_dir) {
         return error_response(
@@ -4827,6 +4923,7 @@ fn identity_delete(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         );
     }
     let _ = std::fs::remove_file(data_dir.join(format!("identity-{id}.key")));
+    let _ = std::fs::remove_file(data_dir.join(format!("endpoint-{id}.key")));
     success(request, serde_json::json!({"deleted": id}))
 }
 
@@ -6375,6 +6472,145 @@ mod tests {
             assert!(identity_create(&request(&format!("Extra{index}")), &store).ok);
         }
         assert!(!identity_create(&request("OneTooMany"), &store).ok);
+    }
+
+    #[test]
+    fn identity_rename_moves_the_display_name_only() {
+        let dir = temp_dir("identity-rename");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let rename = |identity: &str, name: &str| {
+            dispatch(
+                Request {
+                    version: PROTOCOL_VERSION,
+                    id: "rename".into(),
+                    method: "identity.rename".into(),
+                    params: serde_json::json!({"identity": identity, "name": name}),
+                },
+                &store,
+            )
+        };
+        assert!(rename("default", "Home").ok);
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .identities
+                .iter()
+                .find(|identity| identity.id == "default")
+                .map(|identity| identity.name.as_str()),
+            Some("Home")
+        );
+        // Names collide with names and ids (same rule as create).
+        assert!(!rename("Work", "Home").ok);
+        assert!(!rename("Work", "Private").ok);
+        assert!(rename("Work", "Office").ok);
+    }
+
+    #[test]
+    fn identity_delete_removes_the_relationships() {
+        let dir = temp_dir("identity-delete");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let delete = |name: &str| {
+            dispatch(
+                Request {
+                    version: PROTOCOL_VERSION,
+                    id: "delete".into(),
+                    method: "identity.delete".into(),
+                    params: serde_json::json!({"name": name}),
+                },
+                &store,
+            )
+        };
+        // The active identity (and the last one) is gated.
+        assert!(!delete("default").ok);
+        {
+            let mut state = store.lock().unwrap();
+            state.peers.push(idfon_protocol::Peer {
+                id: "work-peer".into(),
+                identity: "Work".into(),
+                name: "Coworker".into(),
+                endpoint_id: None,
+                endpoint_addr: None,
+                devices: Vec::new(),
+                aliases: vec![],
+                call_mode: idfon_protocol::IncomingCallMode::default(),
+            });
+            state.grants.push(idfon_protocol::CapabilityGrant {
+                capability: idfon_protocol::Capability::MessageSend,
+                identity: "Work".into(),
+                subject: "work-peer".into(),
+                conversation: None,
+                active_at: "0".into(),
+                expires_at: None,
+                revision: 0,
+                revoked_at: None,
+            });
+        }
+        assert!(delete("Work").ok);
+        let state = store.lock().unwrap();
+        assert!(!state
+            .identities
+            .iter()
+            .any(|identity| identity.id == "Work" || identity.name == "Work"));
+        // A9: the identity's relationships die with it.
+        assert!(!state.peers.iter().any(|peer| peer.identity == "Work"));
+        assert!(!state.grants.iter().any(|grant| grant.identity == "Work"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn send_rides_the_relationships_identity() {
+        let dir = temp_dir("send-identity");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let transport = Arc::new(TransportMode::new("fake", None).await.unwrap());
+        let key = idfon_core::generate_identity();
+        let peer_id = idfon_core::peer_id(&key);
+        {
+            let mut state = store.lock().unwrap();
+            state.peers.push(idfon_protocol::Peer {
+                id: peer_id.clone(),
+                identity: "Work".into(),
+                name: "Coworker".into(),
+                endpoint_id: Some("ep".into()),
+                endpoint_addr: None,
+                devices: Vec::new(),
+                aliases: vec![],
+                call_mode: idfon_protocol::IncomingCallMode::default(),
+            });
+            state.grants.push(idfon_protocol::CapabilityGrant {
+                capability: idfon_protocol::Capability::MessageSend,
+                identity: "Work".into(),
+                subject: peer_id.clone(),
+                conversation: None,
+                active_at: "0".into(),
+                expires_at: None,
+                revision: 0,
+                revoked_at: None,
+            });
+        }
+        let send = |key: &str, identity: Option<&str>| {
+            let mut params = serde_json::json!({
+                "to": peer_id.clone(),
+                "text": "hello",
+                "idempotency_key": key,
+            });
+            if let Some(identity) = identity {
+                params["identity"] = serde_json::Value::String(identity.into());
+            }
+            send_message(
+                &Request {
+                    version: PROTOCOL_VERSION,
+                    id: "send".into(),
+                    method: "message.send".into(),
+                    params,
+                },
+                &store,
+                &transport,
+            )
+        };
+        // D20: no explicit identity → the target peer's line (Work) routes it.
+        assert!(send("k1", None).ok);
+        // An explicit identity wins — and the Work peer is not on Personal.
+        assert!(!send("k2", Some("Personal")).ok);
     }
 
     #[test]

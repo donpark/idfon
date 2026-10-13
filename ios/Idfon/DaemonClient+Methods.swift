@@ -82,12 +82,23 @@ extension DaemonClient {
         ])
     }
 
-    func useIdentity(_ name: String) async throws {
-        _ = try await request(method: "identity.use", params: ["name": AnyEncodable(name)])
-    }
-
     func createIdentity(_ name: String) async throws {
         _ = try await request(method: "identity.create", params: ["name": AnyEncodable(name)])
+    }
+
+    /// Renames an identity's display name (`identity.rename`); its id — and
+    /// every endpoint key and paired record — never changes (D20).
+    func renameIdentity(_ ref: String, name: String) async throws {
+        _ = try await request(method: "identity.rename", params: [
+            "identity": AnyEncodable(ref),
+            "name": AnyEncodable(name),
+        ])
+    }
+
+    /// Deletes an identity and its relationships (`identity.delete`); the
+    /// daemon gates deleting the active or last identity.
+    func deleteIdentity(_ ref: String) async throws {
+        _ = try await request(method: "identity.delete", params: ["name": AnyEncodable(ref)])
     }
 
     func peers() async throws -> [Peer] {
@@ -187,7 +198,7 @@ extension DaemonClient {
     /// (`CapabilityTickets`); gated peers such as the Eve agent's holder
     /// require it, ungated idfon peers ignore it and use local grants.
     func sendText(to peer: String, _ text: String, conversation: String? = nil,
-                  context: String? = nil) async throws {
+                  context: String? = nil, identity: String? = nil) async throws {
         var params: [String: AnyEncodable] = [
             "to": AnyEncodable(peer),
             "text": AnyEncodable(text),
@@ -197,6 +208,9 @@ extension DaemonClient {
         // Per-turn caller context (unsigned, untrusted data): the active
         // caller-side state the UI applied to this turn.
         if let context { params["context"] = AnyEncodable(context) }
+        // D20: the send rides the relationship's line. The daemon can resolve
+        // the peer's identity on its own, but the chat knows it outright.
+        if let identity { params["identity"] = AnyEncodable(identity) }
         if let ticket = CapabilityTickets.ticket(for: peer) {
             params["capability_ticket"] = ticket
         }
