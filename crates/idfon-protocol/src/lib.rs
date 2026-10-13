@@ -613,6 +613,21 @@ pub struct Room {
     /// recipient.
     #[serde(default)]
     pub members: Vec<String>,
+    /// P6: "project" (a typed chatroom — icon + repo metadata) or "chat".
+    /// Legacy rooms default to `project`: the room list was always the
+    /// project list.
+    #[serde(default = "default_room_kind")]
+    pub kind: String,
+    /// P6: the project's display icon (emoji or symbol name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// P6: optional repo address for a project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+}
+
+fn default_room_kind() -> String {
+    "project".into()
 }
 
 /// An open, namespaced capability. Wire names are dotted strings (e.g.

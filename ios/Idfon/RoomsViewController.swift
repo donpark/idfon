@@ -31,7 +31,9 @@ final class RoomsViewController: UITableViewController, ChatStoreObserver {
             let result = try? await client.rooms()
             await MainActor.run {
                 if let result {
-                    self.rooms = result
+                    // P6: the Projects tab is projects; plain chat rooms live
+                    // in Messages.
+                    self.rooms = result.filter(\.isProject)
                     self.listState = .empty(symbol: "folder", title: "No Projects")
                     self.tableView.reloadData()
                 } else {
@@ -63,18 +65,37 @@ final class RoomsViewController: UITableViewController, ChatStoreObserver {
         present(alert, animated: true)
     }
 
+    /// §5.4 Add project: name + icon + optional repo metadata (P6). Members
+    /// join at creation; the kind defaults to project.
     @objc private func addRoom() {
-        let alert = UIAlertController(title: "New Room", message: "Add member peer ids separated by commas.", preferredStyle: .alert)
-        alert.addTextField { $0.placeholder = "Room name (optional)" }
-        alert.addTextField { $0.placeholder = "peer-id, peer-id" }
+        let alert = UIAlertController(title: "New Project", message: nil, preferredStyle: .alert)
+        alert.addTextField { $0.placeholder = "Project name" }
+        alert.addTextField {
+            $0.placeholder = "Icon (emoji)"
+            $0.autocapitalizationType = .none
+        }
+        alert.addTextField {
+            $0.placeholder = "Repo (optional)"
+            $0.autocapitalizationType = .none
+            $0.autocorrectionType = .no
+        }
+        alert.addTextField { $0.placeholder = "Members: peer-id, peer-id (optional)" }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Create", style: .default) { [weak self, weak alert] _ in
             guard let self else { return }
             let name = alert?.textFields?[0].text?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let members = (alert?.textFields?[1].text ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            let icon = alert?.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let repo = alert?.textFields?[2].text?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let members = (alert?.textFields?[3].text ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             Task {
-                do { _ = try await self.client.createRoom(name: name?.isEmpty == false ? name : nil, members: members); self.refresh() }
-                catch { self.presentError(error) }
+                do {
+                    _ = try await self.client.createRoom(
+                        name: name?.isEmpty == false ? name : nil,
+                        members: members,
+                        icon: icon?.isEmpty == false ? icon : nil,
+                        repo: repo?.isEmpty == false ? repo : nil)
+                    self.refresh()
+                } catch { self.presentError(error) }
             }
         })
         present(alert, animated: true)
@@ -93,7 +114,7 @@ final class RoomsViewController: UITableViewController, ChatStoreObserver {
         let cell = tableView.dequeueReusableCell(withIdentifier: ListRowCell.reuseID, for: indexPath) as! ListRowCell
         let room = rooms[indexPath.row]
         let last = ChatStore.shared.messages(in: room.id).last
-        cell.configure(avatar: room.name?.isEmpty == false ? room.name : room.id,
+        cell.configure(avatar: room.icon ?? (room.name?.isEmpty == false ? room.name : room.id),
                        title: room.name?.isEmpty == false ? room.name! : room.id,
                        secondary: last?.displayText ?? "\(room.members.count) members",
                        time: ListRowCell.time(last?.timestamp))
