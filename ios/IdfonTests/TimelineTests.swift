@@ -112,4 +112,23 @@ final class TimelineTests: XCTestCase {
             if case .dateline(_, let text) = $0 { return text == "New Session" } else { return false }
         })
     }
+
+    func testRevisionChainsCollapseToLatest() {
+        // §14: never a card per revision — the chain shows its latest only.
+        func artifactMessage(_ id: String, revisionOf: String?, minutes: Double) -> ChatMessage {
+            let metadata: JSONValue? = revisionOf.map { .object(["revision_of": .string($0)]) }
+            let artifact = Artifact(artifactId: id, kind: .document, mime: "text/plain", title: id,
+                                    sizeBytes: 1, blobTicket: nil, sourceMessageId: nil,
+                                    conversation: nil, metadata: metadata, createdAt: "")
+            return ChatMessage(id: "m-\(id)", peerId: "peer", kind: .artifact(artifact),
+                               outgoing: false, timestamp: now.addingTimeInterval(minutes * 60))
+        }
+        let items = Timeline.items(for: [
+            artifactMessage("a1", revisionOf: nil, minutes: -60),
+            artifactMessage("a2", revisionOf: "a1", minutes: -59),
+            artifactMessage("a3", revisionOf: "a2", minutes: -58),
+        ], now: now, calendar: calendar)
+        let rows = items.filter { if case .message = $0 { return true } else { return false } }
+        XCTAssertEqual(rows.count, 1, "the chain collapses to its latest revision")
+    }
 }

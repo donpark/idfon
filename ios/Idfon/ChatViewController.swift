@@ -1696,7 +1696,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return cell
         case .artifact(let artifact):
             let cell = tableView.dequeueReusableCell(withIdentifier: "card", for: indexPath) as! TimelineCardCell
-            cell.configure(edge: .colored(.systemGreen), glyph: artifact.kind.glyph, title: artifact.title,
+            // §14: a revision chain shows one card — its latest revision, with
+            // the chain's revision count.
+            let revisions = revisionCount(for: artifact)
+            cell.configure(edge: .colored(.systemGreen), glyph: artifact.kind.glyph,
+                           title: revisions > 1 ? "\(artifact.title) · rev \(revisions)" : artifact.title,
                            subtitle: "Artifact · \(artifact.kind.rawValue)",
                            placement: .side(outgoing: side(for: message)), expanded: false, showsDisclosure: false)
             return cell
@@ -1713,6 +1717,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             cell.label.text = "New Session"
             return cell
         }
+    }
+
+    /// §14: the artifact chain's revision count (1 = not a revision chain).
+    private func revisionCount(for artifact: Artifact) -> Int {
+        var artifacts: [String: Artifact] = [:]
+        for message in messages {
+            if case .artifact(let other) = message.kind { artifacts[other.artifactId] = other }
+        }
+        let root = artifact.revisionRoot { artifacts[$0] }
+        return artifacts.values.filter { $0.revisionRoot { artifacts[$0] } == root }.count
     }
 
     /// D11: alignment shows the side, not the sender — ours right, theirs left.
