@@ -36,6 +36,11 @@ final class PeerTabsViewController: NSTabViewController {
     /// Tab labels, for `mac/Checks/PeerTabsCheck`.
     var tabLabels: [String] { tabViewItems.map(\.label) }
 
+    /// Identity id → display name for the A8 row label (fed by the sidebar).
+    var identityNames: [String: String] = [:] {
+        didSet { for section in sections { section.identityNames = identityNames } }
+    }
+
     /// The three sections, for `mac/Checks/PeerTabsCheck`.
     var sections: [PeerSectionViewController] { children.compactMap { $0 as? PeerSectionViewController } }
 
@@ -324,6 +329,9 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
 
     func numberOfRows(in tableView: NSTableView) -> Int { shown.count }
 
+    /// Identity id → display name for the A8 row label (fed by the sidebar).
+    var identityNames: [String: String] = [:]
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         let row = table.selectedRow
         guard row >= 0, row < shown.count else { return }
@@ -360,7 +368,11 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         labels[0].stringValue = unread > 0 ? "\(chat.title) · \(unread)" : chat.title
         labels[0].font = NSFont.systemFont(ofSize: 13, weight: .medium)
         labels[0].lineBreakMode = .byTruncatingTail
-        labels[1].stringValue = chat.peer.map(Self.subtitle(for:)) ?? (chat.isRoom ? "Room · \(chat.id)" : chat.id)
+        labels[1].stringValue = chat.peer.map { peer in
+            // A8: the relationship's identity label is always visible.
+            let identity = peer.identity.map { identityNames[$0] ?? $0 }
+            return [identity, Self.subtitle(for: peer)].compactMap { $0 }.joined(separator: " · ")
+        } ?? (chat.isRoom ? "Room · \(chat.id)" : chat.id)
         labels[1].font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         labels[1].textColor = .secondaryLabelColor
         labels[1].lineBreakMode = .byTruncatingMiddle
