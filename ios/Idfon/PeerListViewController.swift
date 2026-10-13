@@ -6,6 +6,8 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
     private var peers: [Peer] = []
     private var rooms: [Room] = []
     private var conversations: [Conversation] = []
+    /// §5.4 list states (loading / empty / failed).
+    private var listState: ListState = .loading
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -27,11 +29,16 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
         Task {
             async let fetchedPeers = client.whenReady { try await client.peers() }
             async let fetchedRooms = client.whenReady { try await client.rooms() }
-            let nextPeers = await fetchedPeers ?? []
-            let nextRooms = await fetchedRooms ?? []
+            let nextPeers = await fetchedPeers
+            let nextRooms = await fetchedRooms
             await MainActor.run {
-                self.peers = nextPeers
-                self.rooms = nextRooms
+                self.peers = nextPeers ?? []
+                self.rooms = nextRooms ?? []
+                if nextPeers == nil || nextRooms == nil {
+                    self.listState = .failed { [weak self] in self?.refresh() }
+                } else {
+                    self.listState = .empty(symbol: "message", title: "No Conversations")
+                }
                 self.rebuild()
                 self.refreshControl?.endRefreshing()
             }
@@ -43,6 +50,7 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
         let roomByID = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, Conversation(room: $0)) })
         conversations = ChatStore.shared.recentChatIDs.compactMap { roomByID[$0] ?? peerByID[$0] }
         tableView.reloadData()
+        listState.apply(to: tableView, rows: conversations.count)
     }
 
     func chatStoreDidUpdate() { rebuild() }
@@ -86,6 +94,8 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     }
     /// What the table shows: `peers`, narrowed by filter and search text.
     private var shownPeers: [Peer] = []
+    /// §5.4 list states (loading / empty / failed).
+    private var listState: ListState = .loading
 
     /// D7 filter segments. Favorites joins when pinned contacts exist; the
     /// segment count is the only change.
@@ -102,10 +112,10 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         let relay = UIBarButtonItem(
             title: "Relay", style: .plain, target: self, action: #selector(showRelaySettings))
         navigationItem.rightBarButtonItems = [identity, edge, relay]
-        if OnDeviceAgents.available {
-            navigationItem.leftBarButtonItem = UIBarButtonItem(
-                barButtonSystemItem: .add, target: self, action: #selector(addOnDeviceAgent))
-        }
+        // §5.4: Add contact enters here (identity fixed at add time, §11);
+        // the on-device agent editor shares the add slot.
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "plus"), menu: buildAddMenu())
         navigationItem.backButtonDisplayMode = .generic // show "Back", not the callee's name
         navigationController?.navigationBar.prefersLargeTitles = true
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "peer")
@@ -222,11 +232,81 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
             defer { DispatchQueue.main.async { self.refreshControl?.endRefreshing() } }
             // Retry while the daemon finishes coming up, so a cold/crash start
             // does not leave Contacts empty with no way back but a manual pull.
-            let fetched = await client.whenReady({ try await client.peers() }) ?? []
+            let fetched = await client.whenReady({ try await client.peers() })
             // On-device agents are local contacts (no daemon peer), so they are
             // added here whether or not the daemon answered.
-            await MainActor.run { self.peers = OnDeviceAgents.shared.peers + fetched }
+            await MainActor.run {
+                self.peers = OnDeviceAgents.shared.peers + (fetched ?? [])
+                if fetched == nil {
+                    self.listState = .failed { [weak self] in self?.refresh() }
+                } else {
+                    self.listState = .empty(symbol: "person.crop.circle", title: "No Contacts")
+                }
+                self.applyFilter()
+            }
         }
+    }
+
+    /// §5.4 Add contact: pick the identity first (a constrained choice, P11) —
+    /// the relationship's identity is fixed at add time (§11) — then the
+    /// ticket form. The daemon grants the chat capabilities on add (A7's
+    /// scope step; per-grant moderation UI is future work).
+    private func buildAddMenu() -> UIMenu {
+        let contact = UIMenu(title: "Add Contact", image: UIImage(systemName: "person.badge.plus"),
+                             children: [UIDeferredMenuElement { [weak self] completion in
+            Task {
+                let identities = (try? await self?.client.identities()) ?? []
+                let actions: [UIAction]
+                if identities.isEmpty {
+                    actions = [UIAction(title: "Add Contact") { [weak self] _ in
+                        self?.addContact(identity: "default")
+                    }]
+                } else {
+                    actions = identities.map { info in
+                        UIAction(title: info.displayName) { [weak self] _ in
+                            self?.addContact(identity: info.id)
+                        }
+                    }
+                }
+                await MainActor.run { completion(actions) }
+            }
+        }])
+        guard OnDeviceAgents.available else { return UIMenu(children: [contact]) }
+        return UIMenu(children: [
+            contact,
+            UIAction(title: "On-Device Agent", image: UIImage(systemName: "cpu")) { [weak self] _ in
+                self?.addOnDeviceAgent()
+            },
+        ])
+    }
+
+    private func addContact(identity: String) {
+        let alert = UIAlertController(title: "Add Contact", message: nil, preferredStyle: .alert)
+        alert.addTextField { $0.placeholder = "Name" }
+        alert.addTextField {
+            $0.placeholder = "Contact ticket (JSON)"
+            $0.autocapitalizationType = .none
+            $0.autocorrectionType = .no
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Add", style: .default) { [weak self, weak alert] _ in
+            guard let self else { return }
+            let name = alert?.textFields?[0].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let ticket = alert?.textFields?[1].text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !name.isEmpty, !ticket.isEmpty else { return }
+            Task {
+                do {
+                    try await self.client.addChannel(name: name, ticketJSON: ticket, identity: identity)
+                    self.refresh()
+                } catch {
+                    let failure = UIAlertController(
+                        title: "Contact failed", message: error.localizedDescription, preferredStyle: .alert)
+                    failure.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(failure, animated: true)
+                }
+            }
+        })
+        present(alert, animated: true)
     }
 
     @objc private func addOnDeviceAgent() {
@@ -259,6 +339,12 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
                 || ($0.endpointId?.lowercased().contains(query) ?? false)
         }
         tableView.reloadData()
+        // A search that matches nothing is its own emptiness (§5.4).
+        if !query.isEmpty && shownPeers.isEmpty {
+            ListState.empty(symbol: "magnifyingglass", title: "No Results").apply(to: tableView, rows: 0)
+        } else {
+            listState.apply(to: tableView, rows: shownPeers.count)
+        }
     }
 
     // MARK: - Table view
