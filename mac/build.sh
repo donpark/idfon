@@ -19,6 +19,7 @@ mkdir -p "$APP/Contents/MacOS"
 cp .build/release/Idfon "$APP/Contents/MacOS/Idfon"
 cp "$ROOT/target/release/idfond" "$APP/Contents/MacOS/idfond"
 cp Vendor/libiroh_c_ffi.dylib "$APP/Contents/MacOS/"
+cp Vendor/libidfon_director.dylib "$APP/Contents/MacOS/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -47,6 +48,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+# Ad-hoc sign the dlopen'd director dylib too: a stale signature on a relinked
+# dylib gets it SIGKILLed at load (see scripts/test-e2e.sh).
+codesign --force -s - "$APP/Contents/MacOS/libidfon_director.dylib"
 codesign --force -s - "$APP"
 
 echo "built $APP — open it (or: $APP/Contents/MacOS/Idfon)"
