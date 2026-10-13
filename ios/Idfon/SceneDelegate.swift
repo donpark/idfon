@@ -1,6 +1,6 @@
 import UIKit
 
-class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDelegate {
     var window: UIWindow?
     /// Strong scene-level reference: the Live Activity Bar's overlay window
     /// and the call-state coordinator (docs/ui-design-notes.md §6).
@@ -21,6 +21,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         let tabs = UITabBarController()
         tabs.viewControllers = [contacts, messages, projects]
+        // §4: launch into the last used tab.
+        tabs.delegate = self
+        tabs.selectedIndex = min(UserDefaults.standard.integer(forKey: "idfon.lastTab"),
+                                 (tabs.viewControllers?.count ?? 1) - 1)
         let identityButton = UIBarButtonItem(title: "Identity", style: .plain, target: self, action: #selector(showIdentityPicker))
         contacts.navigationItem.rightBarButtonItem = identityButton
 
@@ -75,6 +79,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidEnterBackground(_ scene: UIScene) {
         if EdgeClient.shared.isProbing { EdgeClient.shared.probeLog("scene didEnterBackground") }
+    }
+
+    func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) {
+        UserDefaults.standard.set(tabBarController.selectedIndex, forKey: "idfon.lastTab")
     }
 
     /// §11: identity management lives behind the identity surfaces (P9).

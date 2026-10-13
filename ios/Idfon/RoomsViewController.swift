@@ -2,7 +2,7 @@ import UIKit
 
 /// Room list. Room messages use the same ChatViewController and ChatStore as
 /// direct chats; only the conversation scope and a few controls differ.
-final class RoomsViewController: UITableViewController {
+final class RoomsViewController: UITableViewController, ChatStoreObserver {
     private let client = DaemonClient()
     private var rooms: [Room] = []
     /// §5.4 list states (loading / empty / failed).
@@ -13,10 +13,13 @@ final class RoomsViewController: UITableViewController {
         title = "Projects"
         navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Join", style: .plain, target: self, action: #selector(joinRoom))
         navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addRoom))
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "room")
+        tableView.register(ListRowCell.self, forCellReuseIdentifier: ListRowCell.reuseID)
         refreshControl = UIRefreshControl()
         refreshControl?.addTarget(self, action: #selector(refresh), for: .valueChanged)
+        ChatStore.shared.addObserver(self)
     }
+
+    func chatStoreDidUpdate() { tableView.reloadData() }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -85,13 +88,15 @@ final class RoomsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { rooms.count }
 
+    /// §5.3 row anatomy: project · latest-message preview · timestamp.
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "room", for: indexPath)
+        let cell = tableView.dequeueReusableCell(withIdentifier: ListRowCell.reuseID, for: indexPath) as! ListRowCell
         let room = rooms[indexPath.row]
-        var config = cell.defaultContentConfiguration()
-        config.text = room.name?.isEmpty == false ? room.name : room.id
-        config.secondaryText = "\(room.members.count) members"
-        cell.contentConfiguration = config
+        let last = ChatStore.shared.messages(in: room.id).last
+        cell.configure(avatar: room.name?.isEmpty == false ? room.name : room.id,
+                       title: room.name?.isEmpty == false ? room.name! : room.id,
+                       secondary: last?.displayText ?? "\(room.members.count) members",
+                       time: ListRowCell.time(last?.timestamp))
         cell.accessoryType = .disclosureIndicator
         return cell
     }

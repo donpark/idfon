@@ -13,6 +13,8 @@ final class ContactDetailViewController: UIViewController {
     private let recognitionButton = UIButton(type: .system)
     private let generationButton = UIButton(type: .system)
     private let turnModeButton = UIButton(type: .system)
+    /// §5.1 contact metadata: tap the contact row → chat + auto-start the call.
+    private let instantSwitch = UISwitch()
     private let turnModeCaption = UILabel()
     private var catalog: [VoiceOption] = []
     /// §6 primary actions: Call starts the call, Message opens the chat. Both
@@ -56,6 +58,14 @@ final class ContactDetailViewController: UIViewController {
         nameField.autocapitalizationType = .words
         nameField.returnKeyType = .done
         nameField.addTarget(self, action: #selector(save), for: .editingDidEndOnExit)
+        instantSwitch.isOn = peer.instantCall
+        instantSwitch.addTarget(self, action: #selector(instantChanged), for: .valueChanged)
+        let instantLabel = UILabel()
+        instantLabel.text = "Instant Call"
+        instantLabel.font = .preferredFont(forTextStyle: .body)
+        let instantRow = UIStackView(arrangedSubviews: [instantLabel, instantSwitch])
+        instantRow.axis = .horizontal
+        instantRow.alignment = .center
 
         let nameLabel = sectionLabel("Name")
         let idLabel = UILabel()
@@ -82,7 +92,7 @@ final class ContactDetailViewController: UIViewController {
 
         let stack = UIStackView(arrangedSubviews: [
             actionsRow,
-            nameLabel, nameField,
+            nameLabel, nameField, instantRow,
             sectionLabel("Endpoint"), idLabel,
             sectionLabel("Speech"),
             voiceRow("Recognition", recognitionButton),
@@ -120,6 +130,16 @@ final class ContactDetailViewController: UIViewController {
         let chat = ChatViewController(peer: peer)
         navigationController?.pushViewController(chat, animated: true)
         if startCall { chat.startCall() }
+    }
+
+    /// §5.1: the instant-call flag saves on flip (contact metadata, not the
+    /// saved name field).
+    @objc private func instantChanged() {
+        Task { [weak self] in
+            guard let self else { return }
+            try? await self.client.updatePeerFlags(
+                ref: self.peer.id, identity: self.peer.identity, instantCall: self.instantSwitch.isOn)
+        }
     }
 
     // MARK: - Speech engines
@@ -286,7 +306,7 @@ final class ContactDetailViewController: UIViewController {
     private func delete() {
         Task {
             do {
-                try await client.removePeer(ref: peer.id)
+                try await client.removePeer(ref: peer.id, identity: peer.identity)
                 CapabilityTickets.remove(for: peer.id)
                 ContactVoiceSelection.remove(for: peer.id)
                 ContactOnDeviceEngines.remove(for: peer.id)

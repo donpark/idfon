@@ -408,6 +408,20 @@ final class ChatStore {
 
     private static func readKey(_ identity: String, _ id: String) -> String { "idfon.chat.read.\(identity).\(id)" }
 
+    /// §5.2 edit verb: clear the read mark so the row shows as unread.
+    func markUnread(_ conversation: Conversation) {
+        UserDefaults.standard.set(0, forKey: Self.readKey(identityId, conversation.id))
+        notifyObservers()
+    }
+
+    /// §5.2 edit verb: drop the conversation's messages from the log.
+    func removeConversation(_ conversation: Conversation) {
+        let ids = Set(messages(for: conversation).map(\.id))
+        messages.removeAll { ids.contains($0.id) }
+        persistMessages()
+        notifyObservers()
+    }
+
     func markRead(_ conversation: Conversation) {
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.readKey(identityId, conversation.id))
         notifyObservers()

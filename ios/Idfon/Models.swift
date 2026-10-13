@@ -58,16 +58,23 @@ struct Peer: Decodable, Identifiable {
     let devices: [PeerDevice]
     let aliases: [String]?
     let callMode: IncomingCallMode?
+    /// D7: Favorites = pinned contacts.
+    let pinned: Bool
+    /// §5.1: tap the row → chat + auto-start the call (e.g. emergency).
+    let instantCall: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, name, aliases, devices, identity
+        case id, name, aliases, devices, identity, pinned
         case endpointId = "endpoint_id"
         case callMode = "call_mode"
+        case instantCall = "instant_call"
     }
 
-    init(id: String, name: String?, endpointId: String?, aliases: [String]?, callMode: IncomingCallMode?, devices: [PeerDevice] = [], identity: String? = nil) {
+    init(id: String, name: String?, endpointId: String?, aliases: [String]?, callMode: IncomingCallMode?, devices: [PeerDevice] = [], identity: String? = nil, pinned: Bool = false, instantCall: Bool = false) {
         self.id = id
         self.identity = identity
+        self.pinned = pinned
+        self.instantCall = instantCall
         self.name = name
         self.endpointId = endpointId
         self.aliases = aliases
@@ -84,6 +91,8 @@ struct Peer: Decodable, Identifiable {
         devices = try values.decodeIfPresent([PeerDevice].self, forKey: .devices) ?? []
         aliases = try values.decodeIfPresent([String].self, forKey: .aliases)
         callMode = try values.decodeIfPresent(IncomingCallMode.self, forKey: .callMode)
+        pinned = try values.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        instantCall = try values.decodeIfPresent(Bool.self, forKey: .instantCall) ?? false
     }
 
     var displayName: String { name ?? id }
