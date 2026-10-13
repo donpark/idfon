@@ -649,10 +649,12 @@ person screen), and P6 (the `Room.kind`/icon/repo model + Add-project +
 project icons in rows and the chat title).
 **Still open:** split-chat `side` (needs the "who is on which side" metadata
 design); §7.1's Share Screen (D18) and the D2 gear (both lack a
-backend/surface);
-the room call button (voice is 1:1-only, `docs/chatrooms.md` — a deliberate
-protocol branch that §7.1 contradicts; pick one); §8 thread detail + §10
-agent sessions (unmodeled session kinds); the §13 mac layout pass (sidebar
-three-perspective sections, chat-header `[⋯]` overflow cluster — the
-segmented strips, identity labels, and New Session are in); CallKit
-(sequenced later, §18).
+backend/surface); §8 thread detail + §10 agent sessions (unmodeled session
+kinds); the §13 mac layout pass (sidebar three-perspective sections,
+chat-header `[⋯]` overflow cluster — the segmented strips, identity labels,
+and New Session are in); CallKit (sequenced later, §18).
+**Decided (2026-10-12):** calling a room is a supported capability — this
+doc's §7.1 stands and `docs/chatrooms.md`'s "voice is 1:1 only" exception was
+wrong (now corrected). The live-call handler's room refusal is a **temporary
+disable** until the multi-party details land; the room call button shows
+**disabled** meanwhile.
