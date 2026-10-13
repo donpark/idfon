@@ -644,11 +644,12 @@ minimize, §7.6 (card VoiceOver labels, 44 pt composer), §9, D21
 (`session_start` markers + New Session, with mac parity), identity (§11 +
 D20 end-to-end: presets, `default`→Personal migration, cap, management on
 both apps, relationship-routed sends), the `pinned`/`instant_call` model
-deltas, and §14 (revision grouping + the artifact gallery, entered from the
-person screen).
-**Still open:** `Room.kind`/icon/repo (P6) + the Add-project fields;
-split-chat `side` (needs the "who is on which side" metadata design);
-§7.1's Share Screen (D18) and the D2 gear (both lack a backend/surface);
+deltas, §14 (revision grouping + the artifact gallery, entered from the
+person screen), and P6 (the `Room.kind`/icon/repo model + Add-project +
+project icons in rows and the chat title).
+**Still open:** split-chat `side` (needs the "who is on which side" metadata
+design); §7.1's Share Screen (D18) and the D2 gear (both lack a
+backend/surface);
 the room call button (voice is 1:1-only, `docs/chatrooms.md` — a deliberate
 protocol branch that §7.1 contradicts; pick one); §8 thread detail + §10
 agent sessions (unmodeled session kinds); the §13 mac layout pass (sidebar
