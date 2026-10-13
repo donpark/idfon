@@ -562,13 +562,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         navigationItem.rightBarButtonItems = [overflowItem] + (callChromeItem.map { [$0] } ?? [])
     }
 
-    /// D8 overflow. New Session and Share Screen are the design's verbs, but
-    /// their backends (thread derivation §7.3, the screenshare stream) don't
-    /// exist yet — shown disabled so the menu shape is visible without
-    /// pretending to work.
+    /// D8 overflow. New Session writes the D21 marker; Share Screen's stream
+    /// backend doesn't exist yet — shown disabled so the menu shape is
+    /// visible without pretending to work.
     private func buildOverflowMenu() -> UIMenu {
+        // D21: New Session is the room's one stored grouping boundary.
+        let newSession = UIAction(title: "New Session", image: UIImage(systemName: "plus.bubble")) { [weak self] _ in
+            self?.startNewSession()
+        }
         if conversation.isRoom {
             return UIMenu(children: [
+                newSession,
                 UIAction(title: "Copy Invite", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
                     self?.copyInviteTapped()
                 },
@@ -578,14 +582,29 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 },
             ])
         }
-        let newSession = UIAction(title: "New Session", image: UIImage(systemName: "plus.bubble"),
-                                  attributes: .disabled) { _ in }
         let shareScreen = UIAction(title: "Share Screen", image: UIImage(systemName: "rectangle.inset.filled.and.person.filled"),
                                    attributes: .disabled) { _ in }
         let settings = UIAction(title: "Chat Settings", image: UIImage(systemName: "gearshape")) { [weak self] _ in
             self?.openPersonScreen()
         }
         return UIMenu(children: [newSession, shareScreen, settings])
+    }
+
+    /// D21: "New Session" writes the one stored grouping boundary — a
+    /// `session_start` marker. All other grouping stays derived (P3/D17).
+    private func startNewSession() {
+        let message = ChatMessage(id: UUID().uuidString,
+                                  peerId: conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id,
+                                  kind: .sessionStart, outgoing: true, timestamp: Date(),
+                                  conversation: conversation.room?.id)
+        ChatStore.shared.appendOutgoing(message)
+        Task {
+            if let room = conversation.room {
+                try? await client.sendRoom(room.id, text: MessageKind.sessionStartPrefix)
+            } else {
+                try? await client.sendText(to: peer.id, MessageKind.sessionStartPrefix, identity: peer.identity)
+            }
+        }
     }
 
     @objc private func titleTapped() { openPersonScreen() }
@@ -1589,8 +1608,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         scrollToLatest(animated: true)
     }
 
+    /// D19: one passive minimize per excursion into history; the pill tap
+    /// re-expands, returning to the bottom rearms it.
+    private var reportedHistoryScroll = false
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        jumpButton.isHidden = isNearBottom()
+        let near = isNearBottom()
+        jumpButton.isHidden = near
+        if near {
+            reportedHistoryScroll = false
+        } else if !reportedHistoryScroll {
+            reportedHistoryScroll = true
+            NotificationCenter.default.post(name: .init("idfon.scrollIntoHistory"), object: nil)
+        }
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -1675,6 +1705,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             cell.configure(edge: .colored(.systemGreen), glyph: "rectangle.grid.1x2",
                            title: render.title ?? "View", subtitle: render.spec.summary(),
                            placement: .side(outgoing: side(for: message)), expanded: false, showsDisclosure: false)
+            return cell
+        case .sessionStart:
+            // Markers render as dividers through the timeline (D21); a
+            // defensive fallback for any path that bypasses it.
+            let cell = tableView.dequeueReusableCell(withIdentifier: "dateline", for: indexPath) as! DatelineCell
+            cell.label.text = "New Session"
             return cell
         }
     }

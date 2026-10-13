@@ -22,13 +22,14 @@ final class LiveActivityController: NSObject {
             tabBarController?.delegate = self
             // One overlay callback fans out to every tab's nav.
             overlay.onContentInsetChange = { [weak self] inset in
-                self?.navigationControllers.forEach { $0.applyContentInset(inset) }
+                self?.applyInset(inset)
             }
             navigationControllers.forEach {
                 $0.onVisibleControllerChanged = { [weak self] in self?.render() }
                 $0.onLayout = { [weak self] in self?.syncClearance() }
             }
             navigationControllers.forEach { $0.applyContentInset(overlay.contentInset) }
+            appliedInset = overlay.contentInset
             syncClearance()
             render()
         }
@@ -66,6 +67,14 @@ final class LiveActivityController: NSObject {
     /// §5.2 session indicator: the peer whose session is live (nil = none),
     /// readable by the Messages rows.
     static private(set) var currentCallPeer: String?
+    /// D19: the panel passively minimizes to the pill when the reader scrolls
+    /// into history on the call's own thread. Sticky — the pill tap is the
+    /// only re-expand (iOS convention).
+    private var passiveMinimize = false
+    /// The visible thread's peer id, so a thread change resets D19.
+    private var lastVisiblePeer: String?
+    /// D19 no-churn: the last top inset fanned out to the tabs.
+    private var appliedInset: CGFloat = 0
     /// The in-call Bar's toggle state. Mirrored from the active machine on
     /// phase entry and after each toggle, so the Bar always shows what the
     /// call is really sending (and hides toggles for absent tracks). The route
@@ -228,6 +237,10 @@ final class LiveActivityController: NSObject {
         overlay.onIntent = { [weak self] peerId, intent in
             self?.handle(intent, peerId: peerId)
         }
+        // D19: scrolling up into history passively minimizes the call panel.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(historyScrollNoticed),
+            name: .init("idfon.scrollIntoHistory"), object: nil)
         // Session Tray rows refresh whenever a transfer progresses (§4).
         TransferCenter.shared.onChange = { [weak self] in self?.render() }
         // Take ownership of both machines' state hooks (the scene delegate no
@@ -306,6 +319,11 @@ final class LiveActivityController: NSObject {
         let machine = ActiveMachine.current
         let callPeer = ((machine?.peer ?? nil) ?? pendingCall).flatMap { $0.isEmpty ? nil : $0 }
         Self.currentCallPeer = (phase == .calling || phase == .inCall) ? callPeer : nil
+        // A thread change is a fresh context: D19 starts un-minimized.
+        if visiblePeer != lastVisiblePeer {
+            lastVisiblePeer = visiblePeer
+            passiveMinimize = false
+        }
 
         let transfers = TransferCenter.shared
         let visibleIsCallPeer = visiblePeer != nil && visiblePeer == callPeer
@@ -326,7 +344,9 @@ final class LiveActivityController: NSObject {
             model.rows = transfers.rows(for: callPeer)
             // Expanded only while the visible thread is the call peer's —
             // that thread owns the call; every other screen shows the pill.
-            model.density = visibleIsCallPeer ? .expanded : .compact
+            // D19: on the call's own thread the panel passively minimizes to
+            // the pill once the reader scrolls into history.
+            model.density = (visibleIsCallPeer && !passiveMinimize) ? .expanded : .compact
             // The visible thread's own call shows identity in the nav title
             // (D8), so the panel drops it and keeps stats + controls (D2).
             model.statusOnly = visibleIsCallPeer && (phase == .calling || phase == .inCall)
@@ -422,7 +442,16 @@ final class LiveActivityController: NSObject {
         case .answer: ActiveMachine.current?.answer()
         case .decline: ActiveMachine.current?.decline()
         case .end: ActiveMachine.current?.hangUp()
-        case .open: openPeerThread(peerId)
+        case .open:
+            // D19: the pill on the call's own thread expands the panel;
+            // elsewhere it opens the owning thread (the existing verb).
+            let visible = visibleNavigationController?.visibleViewController as? ChatViewController
+            if passiveMinimize, visible?.peer.id == peerId {
+                passiveMinimize = false
+                animatePanel { self.render() }
+            } else {
+                openPeerThread(peerId)
+            }
         case .toggleMic: toggleSendState(peerId: peerId, mic: true)
         case .toggleCam: toggleSendState(peerId: peerId, mic: false)
         case .selectRoute(let id): selectRoute(id)
@@ -450,6 +479,47 @@ final class LiveActivityController: NSObject {
             self.pendingCall = nil
             self.sync()
         }
+    }
+
+    // MARK: - Passive minimize (D19)
+
+    /// The reader scrolled into history (posted by the chat, once per
+    /// excursion). Minimize is sticky until the pill is tapped.
+    @objc private func historyScrollNoticed() {
+        markPassivelyMinimized()
+    }
+
+    private func markPassivelyMinimized() {
+        guard !passiveMinimize else { return }
+        passiveMinimize = true
+        animatePanel { self.render() }
+    }
+
+    /// D19's expand/collapse animation: interruptible, instant under Reduce
+    /// Motion (§7.6).
+    private func animatePanel(_ changes: @escaping () -> Void) {
+        UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : 0.25,
+                       delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            changes()
+            self.overlay.layoutIfNeeded()
+        }
+    }
+
+    /// D19 no-churn: a minimize must not move content — moving re-triggers
+    /// the scroll. While the call is live on its own thread the inset holds
+    /// the taller expanded height and the pill floats in the vacated strip.
+    private func applyInset(_ inset: CGFloat) {
+        let callOnOwnThread: Bool = {
+            guard phase == .calling || phase == .inCall else { return false }
+            let visible = visibleNavigationController?.visibleViewController as? ChatViewController
+            let callPeer = ((ActiveMachine.current?.peer ?? nil) ?? pendingCall)
+                .flatMap { $0.isEmpty ? nil : $0 }
+            return callPeer != nil && visible?.peer.id == callPeer
+        }()
+        let next = (callOnOwnThread && passiveMinimize && inset < appliedInset) ? appliedInset : inset
+        guard next != appliedInset else { return }
+        appliedInset = next
+        navigationControllers.forEach { $0.applyContentInset(next) }
     }
 
     // MARK: - Audio routes (D2)

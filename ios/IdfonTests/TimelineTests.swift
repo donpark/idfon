@@ -94,4 +94,22 @@ final class TimelineTests: XCTestCase {
         let items = Timeline.items(for: [message("t1", minutesFromNow: -60)], now: now, calendar: calendar)
         XCTAssertTrue(items.contains { if case .dateline(_, let text) = $0 { return text == "Today" } else { return false } })
     }
+
+    func testSessionMarkerIsABoundary() {
+        // D21: derived grouping never merges across the stored session_start
+        // marker — these two bursts would otherwise share one 10-minute
+        // window and collapse into a single thread.
+        let marker = ChatMessage(id: "marker", peerId: "peer", kind: .sessionStart, outgoing: true,
+                                 timestamp: now.addingTimeInterval(-55 * 60))
+        let items = Timeline.items(for: burst("a", at: -60) + burst("b", at: -50) + [marker],
+                                   now: now, calendar: calendar)
+        let threads = items.compactMap { item -> Int? in
+            if case .thread(_, let messages) = item { return messages.count }
+            return nil
+        }
+        XCTAssertEqual(threads, [5, 5])
+        XCTAssertTrue(items.contains {
+            if case .dateline(_, let text) = $0 { return text == "New Session" } else { return false }
+        })
+    }
 }
