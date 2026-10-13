@@ -91,15 +91,6 @@ final class ChatStore {
         }
     }
 
-    func switchIdentity(to name: String) async throws {
-        try await client.useIdentity(name)
-        messages = []
-        seenMessageIDs.removeAll()
-        identityId = (try? await client.identityId()) ?? name
-        loadMessages()
-        notifyObservers()
-    }
-
     /// Delivers an event (new or replayed) into the store on the main queue.
     private func ingest(_ event: Event) {
         guard !Thread.isMainThread else { ingestOnMain(event); return }

@@ -876,7 +876,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 } else if let room = conversation.room {
                     try? await client.sendRoom(room.id, text: envelope)
                 } else {
-                    try? await client.sendText(to: peer.id, envelope)
+                    try? await client.sendText(to: peer.id, envelope, identity: peer.identity)
                 }
             }
             return
@@ -888,7 +888,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             } else if let room = conversation.room {
                 try? await client.sendRoom(room.id, text: text)
             } else {
-                try? await client.sendText(to: peer.id, text)
+                try? await client.sendText(to: peer.id, text, identity: peer.identity)
             }
         }
     }
@@ -931,7 +931,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if let room = conversation.room {
             try await client.sendRoom(room.id, text: text)
         } else {
-            try await client.sendText(to: peer.id, text)
+            try await client.sendText(to: peer.id, text, identity: peer.identity)
         }
     }
 

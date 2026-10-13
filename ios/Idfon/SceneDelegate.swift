@@ -77,22 +77,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         if EdgeClient.shared.isProbing { EdgeClient.shared.probeLog("scene didEnterBackground") }
     }
 
+    /// §11: identity management lives behind the identity surfaces (P9).
+    /// Nothing to gate — every identity is live at once (D20), there is no
+    /// switch to protect a call from.
     @objc private func showIdentityPicker() {
-        guard LiveCall.shared.state == .idle, VideoCall.shared.state == .idle else {
-            let alert = UIAlertController(title: "Call in progress", message: "End the current call before switching identity.", preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
-            window?.rootViewController?.presentedViewController?.present(alert, animated: true)
-            return
-        }
-        let picker = IdentityPickerViewController()
-        picker.onChanged = { [weak self] in self?.resetTabs() }
-        window?.rootViewController?.present(UINavigationController(rootViewController: picker), animated: true)
-    }
-
-    private func resetTabs() {
-        guard let tabs = window?.rootViewController as? UITabBarController else { return }
-        tabs.viewControllers?.compactMap { $0 as? UINavigationController }.forEach { $0.popToRootViewController(animated: false) }
-        tabs.viewControllers?.compactMap { $0 as? UITableViewController }.forEach { $0.tableView.reloadData() }
+        window?.rootViewController?.present(
+            UINavigationController(rootViewController: IdentityPickerViewController()),
+            animated: true)
     }
 
     /// One tab: a nav stack with a tab-bar item. Every tab is an
