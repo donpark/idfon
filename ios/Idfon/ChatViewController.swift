@@ -44,8 +44,11 @@ private final class MessageCell: UITableViewCell {
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UITextViewDelegate {
     /// Read by the Live Activity Bar coordinator (density + `.open` routing).
     let peer: Peer
-    /// Rooms share the chat surface but expose no 1:1 call controls, so the
-    /// Bar shows no idle Call button for them.
+    /// Rooms share the chat surface but expose no call controls, so the Bar
+    /// shows no idle Call button for them.
+    // shortcut: rooms get no call button — the voice side-channel is 1:1 only
+    // and refuses calls in a room (docs/chatrooms.md); §7.1's room call button
+    // waits on the protocol.
     var allowsCall: Bool { !conversation.isRoom }
     private let conversation: Conversation
     private let client = DaemonClient()
@@ -97,36 +100,43 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var inlineVideoImage: UIImageView?
     private var videoObservers: [NSObjectProtocol] = []
 
+    // D8 nav chrome (§7.1): the overflow (`ellipsis.circle`) is the stable
+    // right-edge anchor; the call-state button sits left of it and is written
+    // by LiveActivityController through `callChromeItem` — nav starts/stops
+    // the call, the Bar operates it.
+    private let overflowItem = UIBarButtonItem()
+    /// The call-state nav item (idle call → calling → hang-up). Nil while an
+    /// incoming ring (the Bar shows Answer/Decline) or another peer's call owns
+    /// the chrome.
+    var callChromeItem: UIBarButtonItem? { didSet { refreshNavChrome() } }
+
     init(peer: Peer) {
         self.peer = peer
         self.conversation = Conversation(peer: peer)
         super.init(nibName: nil, bundle: nil)
+        // D12: the tab bar yields to the chat — even minimized it would float
+        // over the composer, which owns the bottom edge.
+        hidesBottomBarWhenPushed = true
     }
 
     init(room: Room) {
         self.peer = Peer(id: room.id, name: room.name, endpointId: nil, aliases: nil, callMode: nil)
         self.conversation = Conversation(room: room)
         super.init(nibName: nil, bundle: nil)
+        hidesBottomBarWhenPushed = true
     }
 
     required init?(coder: NSCoder) { fatalError("storyboards are not used") }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // The nav bar is the thread's identity and call chrome: inline title =
-        // contact name, and the call controls are set by LiveActivityController
-        // as right bar items. Rooms set their own items and keep the title as-is.
+        // The nav bar is the thread's identity and call chrome (§7.1): title =
+        // avatar + name, tappable → the person screen; trailing cluster =
+        // [overflow] + the call-state item LiveActivityController writes (D8).
         title = conversation.title
         if !conversation.isRoom { navigationItem.largeTitleDisplayMode = .never }
         view.backgroundColor = .systemBackground
-
-        // Rooms use the same chat surface but do not expose 1:1 call controls.
-        if conversation.isRoom {
-            navigationItem.rightBarButtonItems = [
-                UIBarButtonItem(title: "Copy Invite", style: .plain, target: self, action: #selector(copyInviteTapped)),
-                UIBarButtonItem(title: "Leave", style: .plain, target: self, action: #selector(leaveTapped)),
-            ]
-        }
+        buildNavChrome()
 
         // The call entry is the Bar's idle chrome (docs/ui-design-notes.md §3
         // State 1): the floating panel shows a Call button when idle and the
@@ -175,6 +185,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // A rename in the person screen must be reflected when we come back.
+        title = conversation.title
+        titleButton.setTitle(conversation.title, for: .normal)
         ChatStore.shared.onPoint = { [weak self] point, _ in self?.handlePoint(point) }
         ChatStore.shared.onShow = { [weak self] show, _ in self?.handleShow(show) }
         ChatStore.shared.onScreenshot = { [weak self] request, _ in self?.handleScreenshot(request) }
@@ -262,6 +275,78 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     // MARK: - Views
+
+    private let titleButton = UIButton(type: .system)
+
+    /// §7.1 nav chrome: title = avatar + name, tappable → the person screen
+    /// (the title is navigation, P9); trailing = [overflow] + the call-state
+    /// item (written by LiveActivityController). Rooms keep a plain title and
+    /// get no call-state item (`allowsCall` is false).
+    private func buildNavChrome() {
+        if !conversation.isRoom {
+            titleButton.setTitle(conversation.title, for: .normal)
+            titleButton.setImage(UIImage(systemName: "person.crop.circle.fill"), for: .normal)
+            titleButton.setTitleColor(.label, for: .normal)
+            titleButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+            titleButton.tintColor = .label
+            titleButton.addTarget(self, action: #selector(titleTapped), for: .touchUpInside)
+            navigationItem.titleView = titleButton
+        }
+        // ☰ reads as a nav drawer; the overflow is `ellipsis.circle` (P12).
+        overflowItem.image = UIImage(systemName: "ellipsis.circle")
+        overflowItem.menu = buildOverflowMenu()
+        refreshNavChrome()
+    }
+
+    private func refreshNavChrome() {
+        navigationItem.rightBarButtonItems = [overflowItem] + (callChromeItem.map { [$0] } ?? [])
+    }
+
+    /// D8 overflow. New Session and Share Screen are the design's verbs, but
+    /// their backends (thread derivation §7.3, the screenshare stream) don't
+    /// exist yet — shown disabled so the menu shape is visible without
+    /// pretending to work.
+    private func buildOverflowMenu() -> UIMenu {
+        if conversation.isRoom {
+            return UIMenu(children: [
+                UIAction(title: "Copy Invite", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+                    self?.copyInviteTapped()
+                },
+                UIAction(title: "Leave", image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
+                         attributes: .destructive) { [weak self] _ in
+                    self?.leaveTapped()
+                },
+            ])
+        }
+        let newSession = UIAction(title: "New Session", image: UIImage(systemName: "plus.bubble"),
+                                  attributes: .disabled) { _ in }
+        let shareScreen = UIAction(title: "Share Screen", image: UIImage(systemName: "rectangle.inset.filled.and.person.filled"),
+                                   attributes: .disabled) { _ in }
+        let settings = UIAction(title: "Chat Settings", image: UIImage(systemName: "gearshape")) { [weak self] _ in
+            self?.openPersonScreen()
+        }
+        return UIMenu(children: [newSession, shareScreen, settings])
+    }
+
+    @objc private func titleTapped() { openPersonScreen() }
+
+    /// The person screen (§6). ContactDetail is its stand-in until the
+    /// dedicated hub exists; on-device agents keep their editor, and identity
+    /// labels (A8) wait on the identity data model.
+    func openPersonScreen() {
+        if let id = OnDeviceAgent.id(fromPeerId: peer.id) {
+            let editor = OnDeviceAgentEditorViewController(agent: OnDeviceAgents.shared.agent(id: id)) { }
+            navigationController?.pushViewController(editor, animated: true)
+            return
+        }
+        let detail = ContactDetailViewController(peer: peer)
+        detail.onChanged = { [weak self] in
+            guard let self else { return }
+            self.title = self.conversation.title
+            self.titleButton.setTitle(self.conversation.title, for: .normal)
+        }
+        navigationController?.pushViewController(detail, animated: true)
+    }
 
     private func buildViews() {
         tableView.translatesAutoresizingMaskIntoConstraints = false

@@ -28,7 +28,10 @@ struct LiveActivityBarModel: Equatable {
     var phase: Phase = .idle
     var micOn = false
     var camOn = false
-    var speakerOn = false
+    /// Audio routes available right now + the one the call is on (D2's route
+    /// menu): routes change at runtime, so the host re-reads them per render.
+    var routes: [LiveActivityRoute] = []
+    var currentRoute = ""
     /// Stream set the session actually carries (§3 State 3): a call can only
     /// toggle the tracks it was started with, so a toggle for an absent track
     /// is hidden rather than shown as if it worked. Calls publish both, so
@@ -42,9 +45,9 @@ struct LiveActivityBarModel: Equatable {
     /// True for the client-cascade voice call: shows a subtle on-device
     /// provenance glyph that explains where the audio is processed.
     var onDevice = false
-    /// The visible thread's own call carries its identity and controls in the
-    /// nav bar, so the panel drops them and keeps only the call stats and the
-    /// activity (tray) rows.
+    /// True when the visible thread is this call's own: the nav title carries
+    /// the identity (D8), so the panel drops identity and keeps stats + the
+    /// operating controls (D2).
     var statusOnly = false
     var rows: [Row] = []
     var density: Density = .expanded
@@ -69,8 +72,14 @@ struct LiveActivityBarModel: Equatable {
     }
 }
 
+/// One audio route the call can use right now (D2's route menu).
+struct LiveActivityRoute: Equatable {
+    let id: String // "earpiece", "speaker", or the port's uid
+    let name: String // "iPhone", "Speaker", "AirPods Pro", …
+}
+
 enum LiveActivityBarIntent: Equatable {
-    case toggleMic, toggleCam, toggleSpeaker, end, answer, decline
+    case toggleMic, toggleCam, selectRoute(String), end, answer, decline
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill tapped: navigate to the owning thread.
     case open
@@ -83,7 +92,7 @@ enum LiveActivityBarIntent: Equatable {
 ///   rootStack (V)
 ///     headerStack (H; V at accessibility sizes)
 ///       identityStack (H): dot · textStack (V): titleLabel / statusLabel
-///       controlsStack (H): mic · cam · decline · answer · verb
+///       controlsStack (H): mic · route · cam · decline · answer · verb
 ///     separator
 ///     trayStack (V): TrayRowView…
 final class LiveActivityBar: UIView {
@@ -95,7 +104,7 @@ final class LiveActivityBar: UIView {
     private let statusLabel = UILabel()
     private let micButton = UIButton(configuration: .tinted())
     private let camButton = UIButton(configuration: .tinted())
-    private let speakerButton = UIButton(configuration: .tinted())
+    private let routeButton = UIButton(configuration: .tinted())
     private let declineButton = UIButton(configuration: .filled())
     private let answerButton = UIButton(configuration: .filled())
     private let verbButton = UIButton(configuration: .filled())
@@ -176,7 +185,17 @@ final class LiveActivityBar: UIView {
         }
         control(micButton, "mic.slash.fill", "Microphone", #selector(micTapped))
         control(camButton, "video.slash.fill", "Camera", #selector(camTapped))
-        control(speakerButton, "ear", "Phone earpiece", #selector(speakerTapped))
+        // D2's route menu: the routes available right now, rebuilt at render
+        // from the host's AVAudioSession reads. No tap handler — the menu is
+        // the action.
+        // shortcut: no gear (D2 advanced A/V settings) — no settings surface
+        // exists for it to open yet, add the button when one lands.
+        routeButton.configuration?.cornerStyle = .capsule
+        routeButton.configuration?.image = UIImage(systemName: "airplayaudio")
+        routeButton.accessibilityLabel = "Audio route"
+        routeButton.showsMenuAsPrimaryAction = true
+        routeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        routeButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         control(declineButton, "phone.down.fill", "Decline", #selector(declineTapped))
         control(answerButton, "phone.fill", "Answer", #selector(answerTapped))
         control(verbButton, "phone.down.fill", "End", #selector(verbTapped))
@@ -185,7 +204,7 @@ final class LiveActivityBar: UIView {
         controlsStack.axis = .horizontal
         controlsStack.spacing = 8
         controlsStack.alignment = .center
-        [micButton, camButton, speakerButton, declineButton, answerButton, verbButton]
+        [micButton, routeButton, camButton, declineButton, answerButton, verbButton]
             .forEach(controlsStack.addArrangedSubview)
 
         headerStack.axis = .horizontal
@@ -263,14 +282,19 @@ final class LiveActivityBar: UIView {
         // nothing to answer with — calls always begin mic-only. A toggle for
         // an absent track is hidden too (compact hides both anyway).
         let togglesActive = model.phase == .calling || model.phase == .inCall
-        controlsStack.isHidden = statusOnly
+        // D2: the Bar row operates the call, so its controls survive statusOnly
+        // (identity-only); only the compact pill drops them.
+        controlsStack.isHidden = compact
         micButton.isHidden = compact || !togglesActive || !model.audioAvailable
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
-        speakerButton.isHidden = compact || model.phase != .inCall || !model.audioAvailable
-        speakerButton.configuration?.image = UIImage(systemName: model.speakerOn ? "speaker.wave.2.fill" : "ear")
-        speakerButton.configuration?.baseForegroundColor = model.speakerOn ? .tintColor : .secondaryLabel
-        speakerButton.accessibilityLabel = model.speakerOn ? "Speakerphone" : "Phone earpiece"
-        speakerButton.accessibilityValue = model.speakerOn ? "on" : "off"
+        routeButton.isHidden = compact || model.phase != .inCall || !model.audioAvailable
+        routeButton.menu = UIMenu(children: model.routes.map { route in
+            UIAction(title: route.name,
+                     image: route.id == model.currentRoute ? UIImage(systemName: "checkmark") : nil) { [weak self] _ in
+                self?.onIntent?(.selectRoute(route.id))
+            }
+        })
+        routeButton.accessibilityValue = model.routes.first { $0.id == model.currentRoute }?.name
         micButton.configuration?.image = UIImage(systemName: model.micOn ? "mic.fill" : "mic.slash.fill")
         camButton.configuration?.image = UIImage(systemName: model.camOn ? "video.fill" : "video.slash.fill")
         micButton.configuration?.baseForegroundColor = model.micOn ? .tintColor : .secondaryLabel
@@ -329,7 +353,6 @@ final class LiveActivityBar: UIView {
 
     @objc private func micTapped() { onIntent?(.toggleMic) }
     @objc private func camTapped() { onIntent?(.toggleCam) }
-    @objc private func speakerTapped() { onIntent?(.toggleSpeaker) }
     @objc private func declineTapped() { onIntent?(.decline) }
     @objc private func answerTapped() { onIntent?(.answer) }
     @objc private func openTapped() { onIntent?(.open) }

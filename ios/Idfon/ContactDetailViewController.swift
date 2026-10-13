@@ -1,10 +1,8 @@
 import UIKit
 
-/// Contact detail: rename the contact, choose its per-contact speech engines
-/// (on-device backends plus the agent's fetched `idfon.json` options) from one
-/// "Speech" section, set how its voice turns are handled, and remove it.
-/// Pushed from the contact list's ⓘ accessory so tapping the row still opens
-/// the chat.
+/// Person screen (§6): the contact hub. Call and Message are the primary
+/// actions (D1); the rest is the relationship's settings (rename, per-contact
+/// speech engines, voice turns, remove).
 final class ContactDetailViewController: UIViewController {
     private let client = DaemonClient()
     private let peer: Peer
@@ -17,6 +15,10 @@ final class ContactDetailViewController: UIViewController {
     private let turnModeButton = UIButton(type: .system)
     private let turnModeCaption = UILabel()
     private var catalog: [VoiceOption] = []
+    /// §6 primary actions: Call starts the call, Message opens the chat. Both
+    /// push the chat (the room surface) so back returns here.
+    private let callButton = UIButton(configuration: .filled())
+    private let messageButton = UIButton(configuration: .filled())
 
     init(peer: Peer) {
         self.peer = peer
@@ -27,10 +29,26 @@ final class ContactDetailViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Contact"
+        title = peer.displayName
         view.backgroundColor = .systemGroupedBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             title: "Save", style: .done, target: self, action: #selector(save))
+
+        var callConfig = UIButton.Configuration.filled()
+        callConfig.title = "Call"
+        callConfig.image = UIImage(systemName: "phone")
+        callConfig.baseBackgroundColor = .systemGreen
+        callButton.configuration = callConfig
+        callButton.addTarget(self, action: #selector(callTapped), for: .touchUpInside)
+        var messageConfig = UIButton.Configuration.filled()
+        messageConfig.title = "Message"
+        messageConfig.image = UIImage(systemName: "message")
+        messageButton.configuration = messageConfig
+        messageButton.addTarget(self, action: #selector(messageTapped), for: .touchUpInside)
+        let actionsRow = UIStackView(arrangedSubviews: [callButton, messageButton])
+        actionsRow.axis = .horizontal
+        actionsRow.spacing = 12
+        actionsRow.distribution = .fillEqually
 
         nameField.text = peer.name ?? ""
         nameField.placeholder = "Name"
@@ -63,6 +81,7 @@ final class ContactDetailViewController: UIViewController {
         delete.addTarget(self, action: #selector(confirmDelete), for: .touchUpInside)
 
         let stack = UIStackView(arrangedSubviews: [
+            actionsRow,
             nameLabel, nameField,
             sectionLabel("Endpoint"), idLabel,
             sectionLabel("Speech"),
@@ -83,6 +102,24 @@ final class ContactDetailViewController: UIViewController {
             stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
         ])
+    }
+
+    // MARK: - §6 primary actions
+
+    @objc private func messageTapped() {
+        pushChat(startCall: false)
+    }
+
+    @objc private func callTapped() {
+        pushChat(startCall: true)
+    }
+
+    /// Pushes the chat surface; `startCall` runs the same routing the chat's
+    /// call button would (on-device, delegated, live, or classic).
+    private func pushChat(startCall: Bool) {
+        let chat = ChatViewController(peer: peer)
+        navigationController?.pushViewController(chat, animated: true)
+        if startCall { chat.startCall() }
     }
 
     // MARK: - Speech engines

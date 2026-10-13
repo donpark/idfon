@@ -65,10 +65,10 @@ final class LiveActivityController: NSObject {
     private var navChromeKeys: [String: String] = [:]
     /// The in-call Bar's toggle state. Mirrored from the active machine on
     /// phase entry and after each toggle, so the Bar always shows what the
-    /// call is really sending (and hides toggles for absent tracks).
+    /// call is really sending (and hides toggles for absent tracks). The route
+    /// is not mirrored: it is read live from AVAudioSession (D2).
     private var micOn = false
     private var camOn = false
-    private var speakerOn = false
 
     private var elapsed: TimeInterval = 0
     private var startedAt: Date?
@@ -260,11 +260,7 @@ final class LiveActivityController: NSObject {
             // A pending call has no machine yet; it begins mic-only, like a dial.
             micOn = machine?.audioEnabled ?? (pendingCall != nil)
             camOn = machine?.videoEnabled ?? false
-            // LiveCall.activateAudioSession() starts on the loudspeaker; keep
-            // the button in sync so the first tap switches to the earpiece.
-            speakerOn = true
         }
-        if next == .idle { speakerOn = false }
         phase = next
 
         if next == .inCall {
@@ -315,7 +311,9 @@ final class LiveActivityController: NSObject {
             model.phase = phase
             model.micOn = micOn
             model.camOn = camOn
-            model.speakerOn = speakerOn
+            let (routes, current) = currentRoutes()
+            model.routes = routes
+            model.currentRoute = current
             model.audioAvailable = machine?.audioAvailable ?? true
             model.videoAvailable = machine?.videoAvailable ?? true
             model.elapsed = elapsed
@@ -325,8 +323,8 @@ final class LiveActivityController: NSObject {
             // Expanded only while the visible thread is the call peer's —
             // that thread owns the call; every other screen shows the pill.
             model.density = visibleIsCallPeer ? .expanded : .compact
-            // The visible thread's own call carries identity + controls in the
-            // nav bar, so the panel drops them and keeps only stats/activity.
+            // The visible thread's own call shows identity in the nav title
+            // (D8), so the panel drops it and keeps stats + controls (D2).
             model.statusOnly = visibleIsCallPeer && (phase == .calling || phase == .inCall)
             models.append(model)
         }
@@ -343,45 +341,38 @@ final class LiveActivityController: NSObject {
         overlay.render(models)
     }
 
-    /// The visible thread's nav bar carries the call identity and controls
-    /// (§3): title = peer name, right items = Call when idle, else the live
-    /// call's Mic / Cam / Speaker / End. The Bar overlay keeps the stats,
-    /// activity rows, incoming rings, and other screens' pills.
+    /// The visible thread's nav bar starts and stops the call (D8: one
+    /// call-state button left of the chat's stable overflow); the Bar row
+    /// operates the call (mic/cam/speaker/answer/decline — D2). The chat owns
+    /// the overflow and the title; this writes only the call-state slot.
     private func syncNavChrome() {
         guard let chat = visibleNavigationController?.visibleViewController as? ChatViewController,
               chat.allowsCall else { return }
         let peer = chat.peer.id
         let callPeer = (ActiveMachine.current?.peer ?? nil) ?? pendingCall
         let isThisPeer = callPeer == peer
-        let videoAvailable = ActiveMachine.current?.videoAvailable ?? false
 
-        var key = "idle"
-        var items: [UIBarButtonItem] = []
+        var key: String
+        var item: UIBarButtonItem?
         switch (isThisPeer, phase) {
-        case (true, .incoming):
-            key = "incoming"
-            items = [navItem("phone.down.fill", #selector(navDeclineTapped), red: true),
-                     navItem("phone.fill", #selector(navAnswerTapped))]
         case (true, .calling), (true, .inCall):
-            key = "active-\(micOn)-\(camOn)-\(speakerOn)-\(videoAvailable)"
-            // Order is right-to-left: End is rightmost, then Speaker, Cam, Mic.
-            items = [navItem("phone.down.fill", #selector(navEndTapped), red: true),
-                     navItem(speakerOn ? "speaker.wave.2.fill" : "ear", #selector(navSpeakerTapped))]
-            if videoAvailable {
-                items.append(navItem(camOn ? "video.fill" : "video.slash.fill", #selector(navCamTapped)))
-            }
-            items.append(navItem(micOn ? "mic.fill" : "mic.slash.fill", #selector(navMicTapped)))
+            key = "active"
+            item = navItem("phone.down.fill", #selector(navEndTapped), red: true)
+        case (true, .incoming):
+            // The Bar rings with Answer/Decline; the nav carries no call verb.
+            key = "incoming"
+            item = nil
         case (_, .idle):
             key = "idle"
-            items = [navItem("phone.arrow.up.right", #selector(navCallTapped))]
+            item = navItem("phone.arrow.up.right", #selector(navCallTapped))
         default:
             // A call is in flight with another peer: no action here.
             key = "blocked"
-            items = []
+            item = nil
         }
         guard navChromeKeys[peer] != key else { return }
         navChromeKeys[peer] = key
-        chat.navigationItem.rightBarButtonItems = items
+        chat.callChromeItem = item
     }
 
     private func navItem(_ symbol: String, _ action: Selector, red: Bool = false) -> UIBarButtonItem {
@@ -398,18 +389,7 @@ final class LiveActivityController: NSObject {
         guard let peer = visiblePeerRef() else { return }
         requestCall(peer)
     }
-    @objc private func navMicTapped() {
-        guard let peer = visiblePeerRef() else { return }
-        toggleSendState(peerId: peer, mic: true)
-    }
-    @objc private func navCamTapped() {
-        guard let peer = visiblePeerRef() else { return }
-        toggleSendState(peerId: peer, mic: false)
-    }
-    @objc private func navSpeakerTapped() { toggleSpeakerphone() }
     @objc private func navEndTapped() { ActiveMachine.current?.hangUp() }
-    @objc private func navDeclineTapped() { ActiveMachine.current?.decline() }
-    @objc private func navAnswerTapped() { ActiveMachine.current?.answer() }
 
     // MARK: - Elapsed timer
 
@@ -441,7 +421,7 @@ final class LiveActivityController: NSObject {
         case .open: openPeerThread(peerId)
         case .toggleMic: toggleSendState(peerId: peerId, mic: true)
         case .toggleCam: toggleSendState(peerId: peerId, mic: false)
-        case .toggleSpeaker: toggleSpeakerphone()
+        case .selectRoute(let id): selectRoute(id)
         // Session Tray actions (§4): Cancel aborts the transfer; pause/Stop is
         // for media streams, which have no producer yet.
         case .cancelRow(let id): TransferCenter.shared.cancel(id: id)
@@ -468,18 +448,40 @@ final class LiveActivityController: NSObject {
         }
     }
 
-    private func toggleSpeakerphone() {
-        let enabled = !speakerOn
-        if case .voice(let session)? = ActiveMachine.current {
-            session.setSpeakerphone(enabled)
+    // MARK: - Audio routes (D2)
+
+    /// The routes the call can use right now (D2: the menu lists reality —
+    /// headphones plug in and CarPlay comes and goes at runtime).
+    private func currentRoutes() -> (options: [LiveActivityRoute], current: String) {
+        let session = AVAudioSession.sharedInstance()
+        var options = [LiveActivityRoute(id: "earpiece", name: "iPhone"),
+                       LiveActivityRoute(id: "speaker", name: "Speaker")]
+        options += (session.availableInputs ?? []).map { LiveActivityRoute(id: $0.uid, name: $0.portName) }
+        let current: String
+        if session.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
+            current = "speaker"
+        } else if let input = session.currentRoute.inputs.first {
+            current = input.uid
         } else {
-            do {
-                try AVAudioSession.sharedInstance().overrideOutputAudioPort(enabled ? .speaker : .none)
-            } catch {
-                idfonError("idfon audio route change failed: \(error.localizedDescription)")
-            }
+            current = "earpiece"
         }
-        speakerOn = enabled
+        return (options, current)
+    }
+
+    private func selectRoute(_ id: String) {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            if let port = (session.availableInputs ?? []).first(where: { $0.uid == id }) {
+                try session.setPreferredInput(port)
+            } else if case .voice(let voice)? = ActiveMachine.current {
+                // The voice session owns its route and re-asserts it.
+                voice.setSpeakerphone(id == "speaker")
+            } else {
+                try session.overrideOutputAudioPort(id == "speaker" ? .speaker : .none)
+            }
+        } catch {
+            idfonError("idfon audio route change failed: \(error.localizedDescription)")
+        }
         render()
     }
 

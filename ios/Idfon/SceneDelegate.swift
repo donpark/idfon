@@ -12,16 +12,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Bar mode (the default call surface): the overlay is the in-app
         // incoming/active-call UI; content shifts down below it. Each tab is
         // its own nav stack; the Bar renders through whichever is selected.
-        let favorites = Self.tab(
-            PlaceholderViewController(title: "Favorites", symbol: "star",
-                                      message: "Favorites you add will appear here."),
-            title: "Favorites", symbol: "star")
-        let recents = Self.tab(ConversationsViewController(), title: "Recents", symbol: "clock")
+        // §4 shell: one shell, three perspectives — Contacts / Messages /
+        // Projects. Favorites/Recents live in the Contacts tab's D7 filter
+        // strip (Favorites joins when pinned contacts exist).
         let contacts = Self.tab(PeerListViewController(), title: "Contacts", symbol: "person.crop.circle")
-        let rooms = Self.tab(RoomsViewController(), title: "Rooms", symbol: "person.3")
+        let messages = Self.tab(ConversationsViewController(), title: "Messages", symbol: "message")
+        let projects = Self.tab(RoomsViewController(), title: "Projects", symbol: "folder")
 
         let tabs = UITabBarController()
-        tabs.viewControllers = [favorites, recents, contacts, rooms]
+        tabs.viewControllers = [contacts, messages, projects]
         let identityButton = UIBarButtonItem(title: "Identity", style: .plain, target: self, action: #selector(showIdentityPicker))
         contacts.navigationItem.rightBarButtonItem = identityButton
 
