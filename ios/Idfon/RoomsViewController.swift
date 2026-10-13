@@ -5,6 +5,8 @@ import UIKit
 final class RoomsViewController: UITableViewController {
     private let client = DaemonClient()
     private var rooms: [Room] = []
+    /// §5.4 list states (loading / empty / failed).
+    private var listState: ListState = .loading
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -25,7 +27,14 @@ final class RoomsViewController: UITableViewController {
         Task {
             let result = try? await client.rooms()
             await MainActor.run {
-                if let result { self.rooms = result; self.tableView.reloadData() }
+                if let result {
+                    self.rooms = result
+                    self.listState = .empty(symbol: "folder", title: "No Projects")
+                    self.tableView.reloadData()
+                } else {
+                    self.listState = .failed { [weak self] in self?.refresh() }
+                }
+                self.listState.apply(to: self.tableView, rows: self.rooms.count)
                 self.refreshControl?.endRefreshing()
             }
         }
