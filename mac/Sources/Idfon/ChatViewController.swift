@@ -240,6 +240,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             }
         }
         callLabel.stringValue = status
+        // D8/D21: New Session is always reachable — it writes the one stored
+        // grouping boundary.
+        buttons.insert(headerButton("New Session", #selector(newSessionTapped)), at: 0)
         headerRow.arrangedSubviews.filter { $0 is NSButton }.forEach { headerRow.removeArrangedSubview($0); $0.removeFromSuperview() }
         buttons.forEach { headerRow.insertView($0, at: 0, in: .leading) }
     }
@@ -712,6 +715,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             height = textHeight(for: message, text: text)
         case .callTranscript(let transcript):
             height = transcriptHeight(transcript)
+        case .sessionStart:
+            height = 36 // the New Session divider (D21)
         }
         return height + (conversation.isRoom && !message.outgoing ? 16 : 0)
     }
@@ -756,6 +761,20 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             : NSColor.controlBackgroundColor.cgColor
 
         switch message.kind {
+        case .sessionStart:
+            // D21 divider: the stored grouping boundary, rendered like a
+            // dateline across the row.
+            let label = NSTextField(labelWithString: "New Session")
+            label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = .secondaryLabelColor
+            label.alignment = .center
+            label.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.centerXAnchor.constraint(equalTo: row.centerXAnchor),
+                label.topAnchor.constraint(equalTo: row.topAnchor, constant: 10),
+            ])
+            return row
         case .text(let text):
             let tv = NSTextView()
             tv.isEditable = false
@@ -989,6 +1008,16 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     // MARK: - Sending text
+
+    /// D21: "New Session" writes the one stored grouping boundary — a
+    /// `session_start` marker; all other grouping stays derived.
+    @objc private func newSessionTapped() {
+        let peerId = conversation.isRoom ? store.selfPeerId : peer.id
+        store.appendOutgoing(ChatMessage(id: UUID().uuidString, peerId: peerId,
+                                         kind: .sessionStart, outgoing: true, status: nil,
+                                         conversation: conversation.room?.id))
+        Task { try? await sendConversationText(MessageKind.sessionStartPrefix) }
+    }
 
     @objc private func sendTapped() {
         guard let composerTextView else { return }

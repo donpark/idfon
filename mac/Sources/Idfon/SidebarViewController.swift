@@ -109,6 +109,7 @@ final class SidebarViewController: NSViewController {
         statusLabel.stringValue = app.statusText
         Task { await refreshRooms() }
         rebuildIdentityMenu()
+        tabs.identityNames = Dictionary(uniqueKeysWithValues: app.identities.map { ($0.id, $0.name) })
         tabs.refresh()
     }
 

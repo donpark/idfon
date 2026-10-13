@@ -9,12 +9,14 @@ struct Room: Decodable, Identifiable, Hashable {
 
 struct Peer: Decodable, Identifiable, Hashable {
     let id: String
+    /// The identity (persona) this relationship lives under (A8/D20).
+    var identity: String? = nil
     let name: String?
     let endpointId: String?
     let aliases: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, aliases
+        case id, name, aliases, identity
         case endpointId = "endpoint_id"
     }
 
@@ -146,14 +148,20 @@ enum MessageKind {
     /// A declarative view the agent produced for this turn
     /// (`crates/idfon-protocol/src/blocks.rs`, `docs/reply-blocks.md`).
     case render(RenderEnvelope)
+    /// D21: the room's one stored grouping boundary (`session_start` marker),
+    /// written by "New Session".
+    case sessionStart
 
     static let recordingPrefix = "IDFON-RECORDING/1\n"
     static let filePrefix = "IDFON-FILE/1\n"
+    /// A bare header — the marker carries no payload (D21).
+    static let sessionStartPrefix = "IDFON-SESSION-START/1"
 
     /// Parses a message body into plain text or an `IDFON-*/1` envelope.
     /// Kept here (not in `ChatStore`) so it stays Foundation-only and testable
     /// by `mac/Checks/MessageKindParseCheck`.
     static func parse(_ text: String) -> MessageKind {
+        if text == sessionStartPrefix { return .sessionStart }
         if text.hasPrefix(filePrefix) {
             let fields = envelopeFields(text, prefix: filePrefix)
             guard let ticket = fields["ticket"], !ticket.isEmpty else { return .text(text) }
@@ -445,6 +453,7 @@ struct ChatMessage: Identifiable {
             return reference.text.isEmpty ? "Asked about an artifact" : reference.text
         case .callTranscript(let transcript): return transcript.text
         case .render(let render): return render.title ?? "View"
+        case .sessionStart: return "New Session"
         }
     }
 }
