@@ -591,8 +591,9 @@ identity creation capped.
   approval** (code may land earlier); the Bar path serves incoming calls until
   then.
 - In-chat artifact filter strip (§14): keep or drop.
-- D11's approved mockup lives only on `prototype/ios-ui-chat-timeline`;
-  committing variant-A screenshots is owed before the timeline work starts.
+- D11's approved mockup lives only on `prototype/ios-ui-chat-timeline`; the
+  variant-A reference screenshot is committed at
+  `docs/mockups/ios-ui-timeline-variant-a.png`.
 - §15's UI-production pipeline moves to its own doc when that work resumes.
 
 ## 19. Implementation mapping (current code)
