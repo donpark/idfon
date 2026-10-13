@@ -38,8 +38,6 @@ pub extern "C" fn idfon_daemon_run(
         data_dir: data_dir.into(),
         transport: to_option(transport),
         idle_exit: None,
-        // Mobile opts in through IDFON_LAZY_IDENTITIES (see DaemonBootstrap).
-        lazy_identities: false,
     };
     match idfon_daemon::run_blocking(config) {
         Ok(()) => IDFON_DAEMON_OK,

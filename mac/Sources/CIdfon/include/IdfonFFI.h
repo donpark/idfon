@@ -96,8 +96,10 @@ void rust_free_string(char *ptr);
 
 // On-device conversation director (crates/idfon-director): the voice-agent
 // loop over yoagent + Apple Foundation Models (#34,
-// docs/voice-agent-loop-contract.md). A null director means AFM is
-// unavailable (OS floor / Apple Intelligence off) or the config is invalid.
+// docs/voice-agent-loop-contract.md). Served from libidfon_director.dylib
+// (dlopen'd in CIdfon.c, macOS 26+), not linked into the app. A null director
+// means AFM is unavailable (OS floor / Apple Intelligence off) or the config
+// is invalid.
 // Turn results are JSON (envelopes + trace record); free with
 // idfon_director_free_string.
 void *idfon_director_new_afm_config(const char *instructions, const char *config_json);
