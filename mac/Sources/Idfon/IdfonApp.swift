@@ -558,32 +558,25 @@ final class AppModel: NSObject {
         peers = OnDeviceAgents.shared.peers + peers.filter { OnDeviceAgent.id(fromPeerId: $0.id) == nil }
     }
 
-    func useIdentity(_ name: String) async {
-        guard let active = identities.first(where: { $0.name == name }), !active.active else { return }
-        guard LiveCall.shared.state == .idle, VideoCall.shared.state == .idle else {
-            ChatStore.shared.onBanner?("End the active call before switching identity")
-            return
-        }
-        selectedPeer = nil
-        selectedRoom = nil
-        onSelection?(nil)
-        onRoomSelection?(nil)
-        ChatStore.shared.switchIdentity(to: name)
-        await refresh()
+    /// D20: identities are managed, not switched — every line is live at once.
+    func createIdentity(_ name: String) async {
+        await mutateIdentity("identity.create", ["name": AnyEncodable(name)])
     }
 
-    func createIdentity(_ name: String) async {
-        guard LiveCall.shared.state == .idle, VideoCall.shared.state == .idle else {
-            ChatStore.shared.onBanner?("End the active call before switching identity")
-            return
-        }
+    func renameIdentity(_ ref: String, name: String) async {
+        await mutateIdentity("identity.rename", [
+            "identity": AnyEncodable(ref),
+            "name": AnyEncodable(name),
+        ])
+    }
+
+    func deleteIdentity(_ ref: String) async {
+        await mutateIdentity("identity.delete", ["name": AnyEncodable(ref)])
+    }
+
+    private func mutateIdentity(_ method: String, _ params: [String: AnyEncodable]) async {
         do {
-            _ = try await client.request(method: "identity.create", params: ["name": AnyEncodable(name)])
-            ChatStore.shared.switchIdentity(to: name)
-            selectedPeer = nil
-            selectedRoom = nil
-            onSelection?(nil)
-            onRoomSelection?(nil)
+            _ = try await client.request(method: method, params: params)
             await refresh()
         } catch {
             addError = error.localizedDescription
