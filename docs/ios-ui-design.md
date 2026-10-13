@@ -639,14 +639,19 @@ tab), the one row template and §5.1–5.3 rows (previews, session badge,
 identity labels, Favorites/D7 pins + edit-mode reorder, instant-call tap),
 §5.4 states + add-contact, §6 person screen actions + instant-call flag,
 §7.1 nav chrome (incl. the D2 bar row: mute/route/camera), §7.2a/§7.3–7.4
-timeline engine + D11 grammar + §7.3b scroll stability, §7.6 (card
-VoiceOver labels, 44 pt composer), §9, identity (§11 + D20 end-to-end:
-presets, `default`→Personal migration, cap, management on both apps,
-relationship-routed sends), and the `pinned`/`instant_call` model deltas.
-**Still open:** D19 passive pill minimize; `Room.kind`/icon/repo (P6) + the
-Add-project fields; `session_start` marker (D21 → New Session stays
-disabled); split-chat `side`; §7.1's Share Screen (D18) and the D2 gear
-(both lack a backend/surface); the room call button (voice is 1:1-only,
-`docs/chatrooms.md`); §8 thread detail + §10 agent sessions (unmodeled);
-§14 gallery/revision grouping; the §13 mac adaptation (sidebar filters,
-chat-header verbs, A8 row labels); CallKit (sequenced later, §18).
+timeline engine + D11 grammar + §7.3b scroll stability, D19 passive pill
+minimize, §7.6 (card VoiceOver labels, 44 pt composer), §9, D21
+(`session_start` markers + New Session, with mac parity), identity (§11 +
+D20 end-to-end: presets, `default`→Personal migration, cap, management on
+both apps, relationship-routed sends), the `pinned`/`instant_call` model
+deltas, and §14 (revision grouping + the artifact gallery, entered from the
+person screen).
+**Still open:** `Room.kind`/icon/repo (P6) + the Add-project fields;
+split-chat `side` (needs the "who is on which side" metadata design);
+§7.1's Share Screen (D18) and the D2 gear (both lack a backend/surface);
+the room call button (voice is 1:1-only, `docs/chatrooms.md` — a deliberate
+protocol branch that §7.1 contradicts; pick one); §8 thread detail + §10
+agent sessions (unmodeled session kinds); the §13 mac layout pass (sidebar
+three-perspective sections, chat-header `[⋯]` overflow cluster — the
+segmented strips, identity labels, and New Session are in); CallKit
+(sequenced later, §18).
