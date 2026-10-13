@@ -327,6 +327,12 @@ pub struct Peer {
     pub aliases: Vec<String>,
     #[serde(default)]
     pub call_mode: IncomingCallMode,
+    /// Favorites pin (D7: Favorites = pinned contacts).
+    #[serde(default)]
+    pub pinned: bool,
+    /// §5.1: tapping the contact row dials straight into the chat's call.
+    #[serde(default)]
+    pub instant_call: bool,
 }
 
 impl Peer {

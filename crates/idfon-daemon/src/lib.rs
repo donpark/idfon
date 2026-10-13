@@ -5105,7 +5105,25 @@ fn peer_add(
             })
             .unwrap_or_default(),
         call_mode,
+        pinned: false,
+        instant_call: false,
     };
+    // Contact metadata (§19 model deltas): Favorites pin (D7) and the
+    // instant-call flag (§5.1), settable at add time like `call_mode`.
+    if let Some(pinned) = request
+        .params
+        .get("pinned")
+        .and_then(serde_json::Value::as_bool)
+    {
+        peer.pinned = pinned;
+    }
+    if let Some(instant_call) = request
+        .params
+        .get("instant_call")
+        .and_then(serde_json::Value::as_bool)
+    {
+        peer.instant_call = instant_call;
+    }
     ensure_account_alias(&mut peer);
     state
         .peers
@@ -5152,6 +5170,8 @@ fn peer_add(
                 devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             };
             if !reciprocal.id.is_empty() {
                 state.peers.retain(|candidate| {
@@ -5282,6 +5302,20 @@ fn peer_update(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             );
         }
         peer.endpoint_addr = Some(endpoint_addr.into());
+    }
+    if let Some(pinned) = request
+        .params
+        .get("pinned")
+        .and_then(serde_json::Value::as_bool)
+    {
+        peer.pinned = pinned;
+    }
+    if let Some(instant_call) = request
+        .params
+        .get("instant_call")
+        .and_then(serde_json::Value::as_bool)
+    {
+        peer.instant_call = instant_call;
     }
     if let Some(devices) = request
         .params
@@ -6534,6 +6568,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: vec![],
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             });
             state.grants.push(idfon_protocol::CapabilityGrant {
                 capability: idfon_protocol::Capability::MessageSend,
@@ -6557,6 +6593,47 @@ mod tests {
         assert!(!state.grants.iter().any(|grant| grant.identity == "Work"));
     }
 
+    #[test]
+    fn peer_update_toggles_contact_flags() {
+        let dir = temp_dir("peer-flags");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        {
+            let mut state = store.lock().unwrap();
+            state.peers.push(idfon_protocol::Peer {
+                id: "p1".into(),
+                identity: "default".into(),
+                name: "Alice".into(),
+                endpoint_id: None,
+                endpoint_addr: None,
+                devices: Vec::new(),
+                aliases: vec![],
+                call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
+            });
+        }
+        let update = |params: serde_json::Value| {
+            dispatch(
+                Request {
+                    version: PROTOCOL_VERSION,
+                    id: "update".into(),
+                    method: "peer.update".into(),
+                    params,
+                },
+                &store,
+            )
+        };
+        // §19 model deltas: Favorites pin (D7) + instant-call flag (§5.1).
+        assert!(update(serde_json::json!({"ref": "p1", "pinned": true, "instant_call": true})).ok);
+        {
+            let state = store.lock().unwrap();
+            let peer = state.peers.iter().find(|peer| peer.id == "p1").unwrap();
+            assert!(peer.pinned && peer.instant_call);
+        }
+        assert!(update(serde_json::json!({"ref": "p1", "pinned": false})).ok);
+        assert!(!store.lock().unwrap().peers[0].pinned);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn send_rides_the_relationships_identity() {
         let dir = temp_dir("send-identity");
@@ -6575,6 +6652,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: vec![],
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             });
             state.grants.push(idfon_protocol::CapabilityGrant {
                 capability: idfon_protocol::Capability::MessageSend,
@@ -6782,6 +6861,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: vec![],
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             });
             state.grants.push(idfon_protocol::CapabilityGrant {
                 capability: idfon_protocol::Capability::MessageSend,
@@ -6895,6 +6976,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             };
             ensure_account_alias(&mut peer);
             state.peers.push(peer);
@@ -6965,6 +7048,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             });
             state.grants.push(idfon_protocol::CapabilityGrant {
                 capability: idfon_protocol::Capability::new("resource.read"),
@@ -7112,6 +7197,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             });
             state.grants.push(idfon_protocol::CapabilityGrant {
                 capability: idfon_protocol::Capability::new("resource.read"),
@@ -7169,6 +7256,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             };
             ensure_account_alias(&mut peer);
             state.peers.push(peer);
@@ -7304,6 +7393,8 @@ mod tests {
             devices: Vec::new(),
             aliases: Vec::new(),
             call_mode: idfon_protocol::IncomingCallMode::default(),
+            pinned: false,
+            instant_call: false,
         });
         state.grants.push(idfon_protocol::CapabilityGrant {
             capability: idfon_protocol::Capability::MessageReceive,
@@ -7370,6 +7461,8 @@ mod tests {
             devices: Vec::new(),
             aliases: Vec::new(),
             call_mode: idfon_protocol::IncomingCallMode::default(),
+            pinned: false,
+            instant_call: false,
         });
         let ticket = idfon_core::issue_capability_ticket(
             &receiver_key,
@@ -7445,6 +7538,8 @@ mod tests {
             devices: Vec::new(),
             aliases: Vec::new(),
             call_mode: idfon_protocol::IncomingCallMode::default(),
+            pinned: false,
+            instant_call: false,
         });
         state.grants.push(idfon_protocol::CapabilityGrant {
             capability: idfon_protocol::Capability::MessageReceive,
@@ -7539,6 +7634,8 @@ mod tests {
             devices: Vec::new(),
             aliases: vec![],
             call_mode: idfon_protocol::IncomingCallMode::default(),
+            pinned: false,
+            instant_call: false,
         });
         state.grants.push(idfon_protocol::CapabilityGrant {
             capability: idfon_protocol::Capability::MessageReceive,
@@ -7787,6 +7884,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: Default::default(),
+                pinned: false,
+                instant_call: false,
             });
             let data_dir = state.data_dir.clone();
             state.save(&data_dir).unwrap();
@@ -7996,6 +8095,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             });
             identity.public_key.unwrap()
         };
@@ -8179,6 +8280,8 @@ mod tests {
             devices: Vec::new(),
             aliases: Vec::new(),
             call_mode: Default::default(),
+            pinned: false,
+            instant_call: false,
         };
         let event = idfon_protocol::Event {
             event_id: "peer-event-1".into(),
@@ -8465,6 +8568,8 @@ mod tests {
             devices: Vec::new(),
             aliases: vec!["alice@work".into()],
             call_mode: idfon_protocol::IncomingCallMode::default(),
+            pinned: false,
+            instant_call: false,
         });
         store.save(&dir).unwrap();
         let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
@@ -8498,6 +8603,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             });
         }
         store.save(&dir).unwrap();
@@ -8540,6 +8647,8 @@ mod tests {
                 devices: Vec::new(),
                 aliases: Vec::new(),
                 call_mode: idfon_protocol::IncomingCallMode::default(),
+                pinned: false,
+                instant_call: false,
             });
             state.grants.push(idfon_protocol::CapabilityGrant {
                 capability: idfon_protocol::Capability::MessageSend,

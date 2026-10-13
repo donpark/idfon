@@ -24,6 +24,8 @@ fn sample() -> Peer {
         ],
         aliases: vec![],
         call_mode: IncomingCallMode::default(),
+        pinned: false,
+        instant_call: false,
     }
 }
 
