@@ -68,7 +68,7 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
             LiveActivityController.currentCallPeer == chat.id ? "● Live" : nil,
             last?.displayText,
         ].compactMap { $0 }
-        cell.configure(avatar: chat.title,
+        cell.configure(avatar: chat.room?.icon ?? chat.title,
                        title: unread > 0 ? "\(chat.title) · \(unread)" : chat.title,
                        secondary: secondary.isEmpty ? nil : secondary.joined(separator: " · "),
                        time: ListRowCell.time(last?.timestamp))

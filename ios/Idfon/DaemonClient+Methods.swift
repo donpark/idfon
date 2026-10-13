@@ -197,11 +197,16 @@ extension DaemonClient {
         return try JSONDecoder().decode(Room.self, from: JSONEncoder().encode(raw))
     }
 
-    func createRoom(id: String? = nil, name: String? = nil, members: [String] = []) async throws -> Room {
+    func createRoom(id: String? = nil, name: String? = nil, members: [String] = [],
+                    icon: String? = nil, repo: String? = nil, kind: String? = nil) async throws -> Room {
         var params: [String: AnyEncodable] = [:]
         if let id { params["id"] = AnyEncodable(id) }
         if let name { params["name"] = AnyEncodable(name) }
         if !members.isEmpty { params["members"] = AnyEncodable(members.map(AnyEncodable.init)) }
+        // P6 project metadata: type + icon + repo.
+        if let kind { params["kind"] = AnyEncodable(kind) }
+        if let icon { params["icon"] = AnyEncodable(icon) }
+        if let repo { params["repo"] = AnyEncodable(repo) }
         guard let raw = try await request(method: "room.create", params: params)?["room"] else {
             throw DaemonClient.DaemonError.request("room.create returned no room")
         }

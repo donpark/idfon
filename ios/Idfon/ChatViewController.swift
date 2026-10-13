@@ -391,9 +391,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     override func viewDidLoad() {
         super.viewDidLoad()
         // The nav bar is the thread's identity and call chrome (§7.1): title =
-        // avatar + name, tappable → the person screen; trailing cluster =
+        // avatar + name (a project shows its icon + name), tappable → the
+        // person screen; trailing cluster =
         // [overflow] + the call-state item LiveActivityController writes (D8).
-        title = conversation.title
+        title = roomTitle
         if !conversation.isRoom { navigationItem.largeTitleDisplayMode = .never }
         view.backgroundColor = .systemBackground
         buildNavChrome()
@@ -446,7 +447,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         // A rename in the person screen must be reflected when we come back.
-        title = conversation.title
+        title = roomTitle
         titleButton.setTitle(conversation.title, for: .normal)
         ChatStore.shared.onPoint = { [weak self] point, _ in self?.handlePoint(point) }
         ChatStore.shared.onShow = { [weak self] show, _ in self?.handleShow(show) }
@@ -537,6 +538,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // MARK: - Views
 
     private let titleButton = UIButton(type: .system)
+
+    /// §7: a project's title shows its icon + name instead of a person.
+    private var roomTitle: String {
+        guard let icon = conversation.room?.icon, !icon.isEmpty else { return conversation.title }
+        return "\(icon) \(conversation.title)"
+    }
 
     /// §7.1 nav chrome: title = avatar + name, tappable → the person screen
     /// (the title is navigation, P9); trailing = [overflow] + the call-state

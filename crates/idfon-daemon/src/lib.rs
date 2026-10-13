@@ -2506,6 +2506,10 @@ fn room_create(
         request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let id = request_text(&request.params, "id").unwrap_or_else(random_room_id);
     let name = request_text(&request.params, "name");
+    // P6 project metadata: type + icon + repo (D5 keeps "task" out of here).
+    let kind = request_text(&request.params, "kind").unwrap_or_else(|| "project".into());
+    let icon = request_text(&request.params, "icon");
+    let repo = request_text(&request.params, "repo");
     let member_refs: Vec<String> = request
         .params
         .get("members")
@@ -2555,6 +2559,9 @@ fn room_create(
         identity: identity_id,
         name,
         members,
+        kind,
+        icon,
+        repo,
     };
     state.rooms.push(room.clone());
     record_state_event(
@@ -6632,6 +6639,48 @@ mod tests {
         }
         assert!(update(serde_json::json!({"ref": "p1", "pinned": false})).ok);
         assert!(!store.lock().unwrap().peers[0].pinned);
+    }
+
+    #[test]
+    fn room_create_carries_project_metadata() {
+        let dir = temp_dir("room-metadata");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let create = |id: &str, params: serde_json::Value| {
+            dispatch(
+                Request {
+                    version: PROTOCOL_VERSION,
+                    id: id.into(),
+                    method: "room.create".into(),
+                    params,
+                },
+                &store,
+            )
+        };
+        // P6: type + icon + repo ride the room model.
+        assert!(
+            create(
+                "meta",
+                serde_json::json!({
+                    "id": "r_meta", "name": "idfon", "kind": "project",
+                    "icon": "🚀", "repo": "github.com/donpark/idfon",
+                })
+            )
+            .ok
+        );
+        // Legacy continuity: an untyped room is a project (the room list was
+        // always the project list).
+        assert!(create("plain", serde_json::json!({"id": "r_plain"})).ok);
+        let state = store.lock().unwrap();
+        let meta = state.rooms.iter().find(|room| room.id == "r_meta").unwrap();
+        assert_eq!(meta.kind, "project");
+        assert_eq!(meta.icon.as_deref(), Some("🚀"));
+        assert_eq!(meta.repo.as_deref(), Some("github.com/donpark/idfon"));
+        let plain = state
+            .rooms
+            .iter()
+            .find(|room| room.id == "r_plain")
+            .unwrap();
+        assert_eq!(plain.kind, "project");
     }
 
     #[tokio::test(flavor = "multi_thread")]

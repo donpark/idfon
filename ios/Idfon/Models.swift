@@ -32,6 +32,15 @@ struct Room: Decodable, Identifiable, Hashable {
     let identity: String
     let name: String?
     let members: [String]
+    /// P6: "project" (typed chatroom) or "chat"; legacy rooms decode as
+    /// projects (the room list was always the project list).
+    var kind: String? = nil
+    /// P6: the project's display icon (emoji or symbol name).
+    var icon: String? = nil
+    /// P6: optional repo address.
+    var repo: String? = nil
+
+    var isProject: Bool { kind != "chat" }
 }
 
 struct PeerDevice: Decodable, Hashable {
