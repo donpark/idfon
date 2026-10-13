@@ -6,9 +6,14 @@ import UniformTypeIdentifiers
 /// keeps a gap so the side reads at a glance. Sender header only where a side
 /// carries multiple identities (rooms); provenance caption + time inside.
 private final class MessageCell: UITableViewCell {
-    let senderLabel = UILabel()
     let messageLabel = UILabel()
     let captionLabel = UILabel()
+    /// Header row (avatar chip + nick) — hidden in 1:1 (D11: the side shows
+    /// the sender there); shown where a side carries multiple identities.
+    private let senderStack = UIStackView()
+    private let senderLabel = UILabel()
+    private let avatarView = UIView()
+    private let avatarLabel = UILabel()
     private let bubbleView = UIView()
     private var sideConstraints: [NSLayoutConstraint] = []
 
@@ -23,7 +28,18 @@ private final class MessageCell: UITableViewCell {
         messageLabel.font = .preferredFont(forTextStyle: .body)
         messageLabel.numberOfLines = 0
         captionLabel.font = .preferredFont(forTextStyle: .caption2)
-        let stack = UIStackView(arrangedSubviews: [senderLabel, messageLabel, captionLabel])
+        avatarView.layer.cornerRadius = 9
+        avatarView.translatesAutoresizingMaskIntoConstraints = false
+        avatarLabel.font = .systemFont(ofSize: 9, weight: .bold)
+        avatarLabel.textColor = .white
+        avatarLabel.textAlignment = .center
+        avatarLabel.translatesAutoresizingMaskIntoConstraints = false
+        avatarView.addSubview(avatarLabel)
+        senderStack.axis = .horizontal
+        senderStack.spacing = 6
+        senderStack.alignment = .center
+        [avatarView, senderLabel].forEach(senderStack.addArrangedSubview)
+        let stack = UIStackView(arrangedSubviews: [senderStack, messageLabel, captionLabel])
         stack.axis = .vertical
         stack.spacing = 2
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -34,6 +50,10 @@ private final class MessageCell: UITableViewCell {
             stack.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -8),
             stack.leadingAnchor.constraint(equalTo: bubbleView.leadingAnchor, constant: 14),
             stack.trailingAnchor.constraint(equalTo: bubbleView.trailingAnchor, constant: -14),
+            avatarView.widthAnchor.constraint(equalToConstant: 18),
+            avatarView.heightAnchor.constraint(equalToConstant: 18),
+            avatarLabel.centerXAnchor.constraint(equalTo: avatarView.centerXAnchor),
+            avatarLabel.centerYAnchor.constraint(equalTo: avatarView.centerYAnchor),
             bubbleView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
             bubbleView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
         ])
@@ -41,6 +61,24 @@ private final class MessageCell: UITableViewCell {
     }
 
     required init?(coder: NSCoder) { fatalError("storyboards are not used") }
+
+    /// The sender header (avatar chip + nick, D11); `nil` collapses it.
+    func setSender(_ name: String?) {
+        senderLabel.text = name
+        avatarLabel.text = name.map {
+            $0.split(separator: " ").prefix(2).compactMap { $0.first }.map(String.init).joined().uppercased()
+        }
+        avatarView.backgroundColor = name.map { Self.avatarColor(for: $0) }
+        senderStack.isHidden = name == nil
+    }
+
+    /// Stable per-name chip color (hashing is order-stable here, unlike
+    /// `hashValue`).
+    private static func avatarColor(for name: String) -> UIColor {
+        let palette: [UIColor] = [.systemBlue, .systemOrange, .systemGreen, .systemPink, .systemPurple, .systemTeal]
+        let sum = name.unicodeScalars.reduce(0) { $0 + Int($1.value) }
+        return palette[sum % palette.count]
+    }
 
     func setAlignment(outgoing: Bool) {
         NSLayoutConstraint.deactivate(sideConstraints)
@@ -1586,14 +1624,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         switch message.kind {
         case .text(let text):
             let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
-            cell.senderLabel.text = senderHeader(for: message)
+            cell.setSender(senderHeader(for: message))
             cell.messageLabel.text = text
             cell.captionLabel.text = caption(message.outgoing ? "typed · sent" : "typed", for: message)
             cell.setAlignment(outgoing: side(for: message))
             return cell
         case .callTranscript(let transcript):
             let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
-            cell.senderLabel.text = senderHeader(for: message)
+            cell.setSender(senderHeader(for: message))
             cell.messageLabel.text = transcript.text
             cell.captionLabel.text = caption(
                 "\(transcript.role == "agent" ? "Agent" : "You") · \(transcript.final ? "spoken" : "speaking…")",
@@ -1602,7 +1640,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return cell
         case .reference(let reference):
             let cell = tableView.dequeueReusableCell(withIdentifier: "message", for: indexPath) as! MessageCell
-            cell.senderLabel.text = senderHeader(for: message)
+            cell.setSender(senderHeader(for: message))
             cell.messageLabel.text = reference.text.isEmpty ? "Asked about an artifact" : reference.text
             cell.captionLabel.text = caption(
                 "\(reference.refs.count) reference\(reference.refs.count == 1 ? "" : "s")", for: message)
