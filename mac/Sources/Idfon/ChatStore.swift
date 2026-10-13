@@ -99,29 +99,6 @@ final class ChatStore {
         }
     }
 
-    /// Switches identity (after identity.use): resets history and cursors —
-    /// events are per-identity. The run loop keeps polling; the daemon now
-    /// serves the new active identity.
-    func switchIdentity(to name: String) {
-        Task {
-            do {
-                let raw = try await client.request(method: "identity.use", params: ["name": AnyEncodable(name)])
-                messages = []
-                seenMessageIDs.removeAll()
-                recordingURLs = [:]
-                fileURLs = [:]
-                identityId = raw?["identity"]?["id"]?.stringValue ?? name
-                if let status = try? await client.status(), status.ready { selfPeerId = status.identityName }
-                if let id = try? await client.identityId() { identityId = id }
-                await hydrateHistory()
-                onBanner?("Switched to \(name)")
-            } catch {
-                onBanner?("Identity switch failed: \(error.localizedDescription)")
-            }
-            notifyObservers()
-        }
-    }
-
     /// Delivers an event (new or replayed) into the store.
     private func ingest(_ event: Event) {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }

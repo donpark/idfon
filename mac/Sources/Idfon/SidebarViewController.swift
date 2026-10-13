@@ -11,7 +11,6 @@ final class SidebarViewController: NSViewController {
     private let identityPopup = NSPopUpButton()
     private let roomPopup = NSPopUpButton()
     private var rooms: [Room] = []
-    private var suppressPopupSync = false
 
     init(app: AppModel) {
         self.app = app
@@ -40,10 +39,11 @@ final class SidebarViewController: NSViewController {
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 600))
 
-        // Header: identity picker + daemon status
+        // Header: identity menu + daemon status. D20: every identity is live
+        // at once — the menu is management (share / rename / delete), never a
+        // switcher.
         identityPopup.translatesAutoresizingMaskIntoConstraints = false
-        identityPopup.target = self
-        identityPopup.action = #selector(identityPicked)
+        identityPopup.pullsDown = true
         roomPopup.target = self
         roomPopup.action = #selector(roomPicked)
         roomPopup.translatesAutoresizingMaskIntoConstraints = false
@@ -61,8 +61,6 @@ final class SidebarViewController: NSViewController {
         let actions = NSStackView(views: [
             button("Add Channel…", #selector(addChannelTapped)),
             button("Add Agent…", #selector(addAgentTapped)),
-            button("Create Identity…", #selector(createIdentityTapped)),
-            button("Share Identity…", #selector(shareIdentityTapped)),
             button("Issue Receive Ticket…", #selector(issueTicketTapped)),
             button("Audio Settings…", #selector(audioSettingsTapped)),
         ])
@@ -110,16 +108,32 @@ final class SidebarViewController: NSViewController {
     private func refreshData() {
         statusLabel.stringValue = app.statusText
         Task { await refreshRooms() }
-        suppressPopupSync = true
-        identityPopup.removeAllItems()
-        for identity in app.identities {
-            identityPopup.addItem(withTitle: identity.name)
-        }
-        if let active = app.identities.first(where: { $0.active }) {
-            identityPopup.selectItem(withTitle: active.name)
-        }
-        suppressPopupSync = false
+        rebuildIdentityMenu()
         tabs.refresh()
+    }
+
+    /// D20: the identity menu lists every line with its management verbs.
+    private func rebuildIdentityMenu() {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Identities", action: nil, keyEquivalent: ""))
+        let create = NSMenuItem(title: "New Identity…", action: #selector(createIdentityTapped), keyEquivalent: "")
+        create.target = self
+        menu.addItem(create)
+        for identity in app.identities {
+            let item = NSMenuItem(title: identity.name, action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            let share = NSMenuItem(title: "Share Ticket", action: #selector(shareIdentityTapped(_:)), keyEquivalent: "")
+            let rename = NSMenuItem(title: "Rename…", action: #selector(renameIdentityTapped(_:)), keyEquivalent: "")
+            let delete = NSMenuItem(title: "Delete…", action: #selector(deleteIdentityTapped(_:)), keyEquivalent: "")
+            for verb in [share, rename, delete] {
+                verb.target = self
+                verb.representedObject = identity.name
+                submenu.addItem(verb)
+            }
+            item.submenu = submenu
+            menu.addItem(item)
+        }
+        identityPopup.menu = menu
     }
 
     private func refreshRooms() async {
@@ -171,9 +185,28 @@ final class SidebarViewController: NSViewController {
         }
     }
 
-    @objc private func identityPicked() {
-        guard !suppressPopupSync, let name = identityPopup.titleOfSelectedItem else { return }
-        Task { await app.useIdentity(name) }
+    @objc private func renameIdentityTapped(_ sender: NSMenuItem) {
+        guard let current = sender.representedObject as? String else { return }
+        let name = NSTextField(string: current)
+        name.placeholderString = "Identity name"
+        presentAlert(title: "Rename Identity",
+                     message: "The id and paired records stay; only the name changes.",
+                     accessory: name, okTitle: "Rename") {
+            let value = name.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !value.isEmpty else { return }
+            Task { await self.app.renameIdentity(current, name: value) }
+        }
+    }
+
+    /// Deleting an identity takes its contacts and chats with it (A9); the
+    /// daemon gates deleting the active or last identity.
+    @objc private func deleteIdentityTapped(_ sender: NSMenuItem) {
+        guard let identity = sender.representedObject as? String else { return }
+        presentAlert(title: "Delete \(identity)?",
+                     message: "Its contacts and chats are removed from this device.",
+                     accessory: nil, okTitle: "Delete") {
+            Task { await self.app.deleteIdentity(identity) }
+        }
     }
 
     // MARK: - Actions
@@ -209,9 +242,10 @@ final class SidebarViewController: NSViewController {
         }
     }
 
-    @objc private func shareIdentityTapped() {
+    @objc private func shareIdentityTapped(_ sender: NSMenuItem) {
+        let identity = sender.representedObject as? String
         Task {
-            guard let ticket = try? await app.client.contactTicket() else { return }
+            guard let ticket = try? await app.client.contactTicket(identity: identity) else { return }
             await MainActor.run {
                 let field = NSTextField(wrappingLabelWithString: ticket)
                 field.font = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
@@ -228,7 +262,7 @@ final class SidebarViewController: NSViewController {
     @objc private func createIdentityTapped() {
         let name = NSTextField(string: "")
         name.placeholderString = "Identity name"
-        presentAlert(title: "Create Identity", message: "Creates the identity and switches to it.", accessory: name, okTitle: "Create") {
+        presentAlert(title: "Create Identity", message: "Creates another line on this device.", accessory: name, okTitle: "Create") {
             let value = name.stringValue.trimmingCharacters(in: .whitespaces)
             guard !value.isEmpty else { return }
             Task { await self.app.createIdentity(value) }
