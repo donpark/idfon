@@ -1368,7 +1368,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     @objc private func renderBubbleTapped(_ sender: NSClickGestureRecognizer) {
-        guard let messageId = (sender.view as? NSView)?.identifier?.rawValue,
+        guard let messageId = sender.view?.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),
               case .render(let render) = message.kind else { return }
         presentRenderBlock(render)

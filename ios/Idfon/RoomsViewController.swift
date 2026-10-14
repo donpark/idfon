@@ -29,7 +29,7 @@ final class RoomsViewController: UITableViewController, ChatStoreObserver {
     @objc private func refresh() {
         Task {
             let result = try? await client.rooms()
-            await MainActor.run {
+            await MainActor.run { [self] in
                 if let result {
                     // P6: the Projects tab is projects; plain chat rooms live
                     // in Messages.

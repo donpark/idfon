@@ -31,7 +31,7 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
             async let fetchedRooms = client.whenReady { try await client.rooms() }
             let nextPeers = await fetchedPeers
             let nextRooms = await fetchedRooms
-            await MainActor.run {
+            await MainActor.run { [self] in
                 self.peers = nextPeers ?? []
                 self.rooms = nextRooms ?? []
                 if nextPeers == nil || nextRooms == nil {
@@ -283,7 +283,7 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
             let identities = await client.whenReady({ try await client.identities() }) ?? []
             // On-device agents are local contacts (no daemon peer), so they are
             // added here whether or not the daemon answered.
-            await MainActor.run {
+            await MainActor.run { [self] in
                 self.identityNames = Dictionary(uniqueKeysWithValues: identities.map { ($0.id, $0.name) })
                 self.peers = OnDeviceAgents.shared.peers + (fetched ?? [])
                 self.syncFilterStrip()
