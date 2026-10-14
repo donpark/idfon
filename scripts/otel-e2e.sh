@@ -17,10 +17,13 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   exit 0
 fi
 
-out=$(mktemp -d /tmp/idfon-otel-e2e.XXXXXX)
+# The output dir lives under target/ (gitignored): /tmp is not docker-sharable
+# on Docker Desktop for macOS, so the bind mount would silently go nowhere.
+mkdir -p "$root/target"
+out=$(mktemp -d "$root/target/idfon-otel-e2e.XXXXXX")
 cid=""
 cleanup() {
-  if [ -n "$cid" ]; then docker stop "$cid" >/dev/null 2>&1 || true; fi
+  if [ -n "$cid" ]; then docker rm -f "$cid" >/dev/null 2>&1 || true; fi
   rm -rf "$out"
 }
 trap cleanup EXIT
@@ -28,7 +31,9 @@ trap cleanup EXIT
 trace_id=4bf92f3577b34da6a3ce929d0e0e4736
 span_id=00f067aa0ba902b7
 
-cid=$(docker run -d --rm -p 4318:4318 -p 13133:13133 \
+# The collector image defaults to uid 10001, which cannot write a bind mount
+# made by another uid (0700 tmpdir on Linux CI) — run it as root.
+cid=$(docker run -d --user 0:0 -p 4318:4318 -p 13133:13133 \
   -v "$root/scripts/otel-collector.yaml":/etc/otelcol/config.yaml \
   -v "$out":/out \
   otel/opentelemetry-collector:latest \
@@ -38,6 +43,11 @@ cid=$(docker run -d --rm -p 4318:4318 -p 13133:13133 \
 i=0
 while [ "$i" -lt 30 ]; do
   if curl -sf -o /dev/null http://127.0.0.1:13133/; then break; fi
+  if [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" != "true" ]; then
+    echo "otel-e2e: FAILED (collector container exited)" >&2
+    docker logs "$cid" >&2 || true
+    exit 1
+  fi
   i=$((i + 1))
   sleep 1
 done
@@ -60,4 +70,5 @@ done
 
 echo "otel-e2e: FAILED (no trace $trace_id in collector output)" >&2
 if [ -f "$out/spans.json" ]; then tail -5 "$out/spans.json" >&2; fi
+docker logs "$cid" >&2 || true
 exit 1
