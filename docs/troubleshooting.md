@@ -46,6 +46,57 @@ renders on the app's single playback bus (`AudioIO`, see
 other-audio ducking is minimized. Verified on device (ringback and reply volume
 normal, no self-bleed).
 
+## Message sends intermittently stall ~30 s (2026-10-14, FIXED)
+
+**Symptom.** Chat/voice turns occasionally hang ~30 s: a delivery lands at
+30.0x s, or a message fails and a resend succeeds instantly. Bimodal per
+daemon pair (some runs clean at ~120 ms, some all-30 s), mostly on
+direct-path connections; `scripts/relay-bench.sh` shows it as msg p95 ≈
+30 000 ms and occasional `stalls`. A voice turn hitting it is exactly "the
+agent stopped answering".
+
+**Cause.** Head-of-line blocking in `IrohTransport::serve_with_peer`
+(`crates/idfon-core/src/transport.rs`): the accept loop awaited each incoming
+handshake *sequentially*, so one half-open handshake (stray UDP, or the
+competing multi-path dial iroh makes — visible as `message connection
+handshake aborted … authentication failed`) blocked every later valid
+handshake for its full ~30 s server-side timeout. Recovery was always the
+queue draining — which is why the delay was so exactly 30 s.
+
+**Fix.** Handshakes are awaited inside the per-connection `tokio::spawn`.
+Defense in depth: each connect+open+write+ack exchange is bounded (10 s × 3
+attempts, fresh connection per attempt — a bare attempt can hang far longer
+than the old 30 s ack timeout). Per-message phase timings log at debug:
+`message exchange timings … connect_ms/write_ms/total_ms`.
+
+**Diagnosis recipe.** `scripts/relay-bench.sh` (msg p95 / stalls columns), or
+a loop of `idfon --json send <peer> --text …` + `operation wait` against two
+daemons with `RUST_LOG=idfon=debug`.
+
+## Changed crates/ but the running daemon didn't change (2026-10-14, gotcha)
+
+`idfond` is a **launcher**: the daemon core lives in `libiroh_c_ffi.dylib`,
+which embeds `idfon-daemon` → `idfon-core` and is built separately
+(`native/vendor/iroh-c-ffi` is excluded from the workspace). `cargo build -p
+idfond` reports `Fresh` with a one-node graph and silently ignores every
+crates/ change; tests then see the new code while every runtime observation
+is stale. (`strings` cannot confirm binary content either — tracing literals
+don't surface.)
+
+Rebuild chain (docs/build.md; built into `scripts/relay-bench.sh`):
+
+```sh
+RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
+  cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+cargo build --release -p idfond -p idfon-cli
+codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
+```
+
+The Apple apps bundle their own copies (`ios/build-deps.sh` device staticlib,
+`mac/build-deps.sh` dylib) — rebuild the app too. The codesign line is
+mandatory: a stale ad-hoc signature on a relinked dylib is SIGKILLed at exec
+(`DiagnosticReports`: "Code Signature Invalid").
+
 ## iOS call is mute from the first second (2026-10-14, FIXED)
 
 **Symptom.** Client-cascade calls connected and the agent replied in text, but

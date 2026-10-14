@@ -5,6 +5,7 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     pin::Pin,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -38,6 +39,42 @@ fn env_truthy(name: &str) -> bool {
 
 fn is_truthy(value: &str) -> bool {
     matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+}
+
+/// Bounded dial-and-exchange: a first handshake can be aborted by a competing
+/// multi-path handshake ("authentication failed" compliance error) and the
+/// connection then sits dead until iroh's internal dial gives up ~30 s later —
+/// observed as intermittent ~30 s message deliveries whose recovery is always
+/// a *fresh* connection. So bound a whole attempt (connect + open + write +
+/// ack) and retry it fresh (same lesson as the blob-fetch rework: never trust
+/// a stalled attempt to recover in time). A healthy exchange is well under a
+/// second; relayed worst case a few seconds.
+const EXCHANGE_ATTEMPTS: u32 = 3;
+const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn connect_attempts<T, F, Fut>(
+    attempts: u32,
+    per_try: Duration,
+    mut try_once: F,
+) -> Result<T, TransportError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, TransportError>>,
+{
+    let mut error = TransportError::Failed(format!("connect timed out after {per_try:?}"));
+    for attempt in 0..attempts.max(1) {
+        match tokio::time::timeout(per_try, try_once()).await {
+            Ok(Ok(value)) => return Ok(value),
+            Ok(Err(failure)) => error = failure,
+            Err(_) => {
+                error = TransportError::Failed(format!("connect timed out after {per_try:?}"));
+            }
+        }
+        if attempt + 1 < attempts {
+            tracing::warn!(target: "idfon.core", attempt, "dial attempt failed; retrying fresh");
+        }
+    }
+    Err(error)
 }
 
 fn relay_mode_from(urls: &str, token: Option<&str>) -> Option<RelayMode> {
@@ -320,15 +357,20 @@ impl IrohTransport {
         target: &EndpointAddr,
         alpn: &[u8],
     ) -> Result<(Connection, SendStream, RecvStream), TransportError> {
-        let connection = self
-            .endpoint
-            .connect(target.clone(), alpn)
-            .await
-            .map_err(|error| TransportError::Failed(error.to_string()))?;
-        let (send, recv) = connection
-            .open_bi()
-            .await
-            .map_err(|error| TransportError::Failed(error.to_string()))?;
+        let (connection, send, recv) =
+            connect_attempts(EXCHANGE_ATTEMPTS, EXCHANGE_TIMEOUT, || async {
+                let connection = self
+                    .endpoint
+                    .connect(target.clone(), alpn)
+                    .await
+                    .map_err(|error| TransportError::Failed(error.to_string()))?;
+                let (send, recv) = connection
+                    .open_bi()
+                    .await
+                    .map_err(|error| TransportError::Failed(error.to_string()))?;
+                Ok((connection, send, recv))
+            })
+            .await?;
         Ok((connection, send, recv))
     }
 
@@ -356,37 +398,39 @@ impl IrohTransport {
                 .accept()
                 .await
                 .ok_or_else(|| TransportError::Failed("message endpoint closed".into()))?;
-            let connection = match incoming.await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    // Expected noise, per iroh's Incoming::accept docs: the QUIC
-                    // socket receives unsolicited datagrams that abort handshakes.
-                    // Sends retry, so delivery is unaffected.
-                    tracing::warn!(target: "idfon.core", error = %error, "message connection handshake aborted (background UDP noise)");
-                    continue;
-                }
-            };
-            let remote_id = connection.remote_id();
             let handler = handler.clone();
             let alpn = self.alpn.clone();
             let side_channels = self.side_channels.clone();
-            // Side-channel ALPNs (e.g. live-call MoQ sessions) are handed to
-            // whoever registered them; nobody home → close. They never reach
-            // the message path below (which owns the connection).
-            let forwarder = side_channels
-                .lock()
-                .expect("side channels poisoned")
-                .get(connection.alpn())
-                .cloned();
-            if let Some(sender) = forwarder {
-                tokio::spawn(async move {
+            // The handshake is awaited inside the task: a half-open or
+            // abandoned handshake (stray UDP, a competing multi-path dial)
+            // must not head-of-line block every later connection for its full
+            // ~30 s timeout — that was the intermittent 30 s message stall.
+            tokio::spawn(async move {
+                let connection = match incoming.await {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        // Expected noise, per iroh's Incoming::accept docs: the
+                        // QUIC socket receives unsolicited datagrams that abort
+                        // handshakes. Sends retry, so delivery is unaffected.
+                        tracing::warn!(target: "idfon.core", error = %error, "message connection handshake aborted (background UDP noise)");
+                        return;
+                    }
+                };
+                let remote_id = connection.remote_id();
+                // Side-channel ALPNs (e.g. live-call MoQ sessions) are handed to
+                // whoever registered them; nobody home → close. They never reach
+                // the message path below (which owns the connection).
+                let forwarder = side_channels
+                    .lock()
+                    .expect("side channels poisoned")
+                    .get(connection.alpn())
+                    .cloned();
+                if let Some(sender) = forwarder {
                     if sender.send(connection).await.is_err() {
                         tracing::warn!("side channel closed, inbound connection dropped");
                     }
-                });
-                continue;
-            }
-            tokio::spawn(async move {
+                    return;
+                }
                 let result = async {
                     if connection.alpn() != alpn {
                         return Err(TransportError::Failed("ALPN mismatch".into()));
@@ -541,37 +585,51 @@ impl MessageTransport for IrohTransport {
     ) -> SendFuture<'a> {
         Box::pin(async move {
             let frame = encode_frame(message).map_err(|_| TransportError::MessageTooLarge)?;
-            let connection = self
-                .endpoint
-                .connect(target.clone(), &self.alpn)
-                .await
-                .map_err(|error| TransportError::Failed(error.to_string()))?;
-            let (mut send, mut recv) = connection
-                .open_bi()
-                .await
-                .map_err(|error| TransportError::Failed(error.to_string()))?;
-            send.write_all(&frame)
-                .await
-                .map_err(|error| TransportError::Failed(error.to_string()))?;
-            send.finish()
-                .map_err(|error| TransportError::Failed(error.to_string()))?;
-            let ack_frame = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                recv.read_to_end(MAX_FRAME_BYTES),
-            )
+            // One bounded attempt = connect + open + write + ack read (see
+            // [`connect_attempts`] for why a bare attempt is unsafe).
+            connect_attempts(EXCHANGE_ATTEMPTS, EXCHANGE_TIMEOUT, || async {
+                let started = std::time::Instant::now();
+                let connection = self
+                    .endpoint
+                    .connect(target.clone(), &self.alpn)
+                    .await
+                    .map_err(|error| TransportError::Failed(error.to_string()))?;
+                let connect_ms = started.elapsed().as_millis() as u64;
+                let (mut send, mut recv) = connection
+                    .open_bi()
+                    .await
+                    .map_err(|error| TransportError::Failed(error.to_string()))?;
+                send.write_all(&frame)
+                    .await
+                    .map_err(|error| TransportError::Failed(error.to_string()))?;
+                send.finish()
+                    .map_err(|error| TransportError::Failed(error.to_string()))?;
+                let write_ms = started.elapsed().as_millis() as u64;
+                let ack_frame = recv
+                    .read_to_end(MAX_FRAME_BYTES)
+                    .await
+                    .map_err(|error| TransportError::Failed(error.to_string()))?;
+                let ack: MessageAck = decode_frame(&ack_frame).map_err(|error| {
+                    TransportError::Failed(format!("invalid acknowledgment: {error}"))
+                })?;
+                if ack.message_id != message.message_id {
+                    return Err(TransportError::Failed(
+                        "acknowledgment message ID mismatch".into(),
+                    ));
+                }
+                let total_ms = started.elapsed().as_millis() as u64;
+                tracing::debug!(
+                    target: "idfon.core",
+                    message_id = %message.message_id,
+                    connect_ms,
+                    write_ms,
+                    total_ms,
+                    "message exchange timings"
+                );
+                connection.close(0u8.into(), b"message sent");
+                Ok(ack)
+            })
             .await
-            .map_err(|_| TransportError::Failed("ack timeout".into()))?
-            .map_err(|error| TransportError::Failed(error.to_string()))?;
-            let ack: MessageAck = decode_frame(&ack_frame).map_err(|error| {
-                TransportError::Failed(format!("invalid acknowledgment: {error}"))
-            })?;
-            if ack.message_id != message.message_id {
-                return Err(TransportError::Failed(
-                    "acknowledgment message ID mismatch".into(),
-                ));
-            }
-            connection.close(0u8.into(), b"message sent");
-            Ok(ack)
         })
     }
 }
@@ -600,6 +658,41 @@ mod tests {
             RelayMode::Custom(map) => assert_eq!(map.len(), 2),
             _ => panic!("expected RelayMode::Custom"),
         }
+    }
+
+    #[test]
+    fn connect_attempts_gives_up_fast_when_dials_hang() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let started = std::time::Instant::now();
+            let result: Result<u8, TransportError> =
+                connect_attempts(2, Duration::from_millis(50), std::future::pending).await;
+            assert!(result.is_err());
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "a hung dial must not stall for iroh's internal retry"
+            );
+        });
+    }
+
+    #[test]
+    fn connect_attempts_retries_after_a_hung_dial() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut calls = 0u32;
+            let result: Result<u8, TransportError> =
+                connect_attempts(3, Duration::from_millis(50), || {
+                    calls += 1;
+                    async move {
+                        if calls == 1 {
+                            std::future::pending::<()>().await;
+                        }
+                        Ok(7)
+                    }
+                })
+                .await;
+            assert_eq!(result.unwrap(), 7);
+        });
     }
 
     #[test]
