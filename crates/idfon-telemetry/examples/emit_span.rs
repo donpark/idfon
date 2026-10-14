@@ -14,5 +14,7 @@ fn main() {
         let _entered = span.enter();
         tracing::info!("emitted for the collector");
     }
+    // A span exports only once its handle drops; flush first and the batch is lost at exit.
+    drop(span);
     idfon_telemetry::flush();
 }
