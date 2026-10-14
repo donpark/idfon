@@ -37,6 +37,8 @@ kept because it records decisions; **design** = not all implemented.
 | --- | --- |
 | `idfon-gateway.md` | `idfon://` addressing, loopback gateway, HTTP/3 provider |
 | `multi-device.md` | one account across devices (design) |
+| `relay-auth.md` | relay access: identity→relay claiming, caller-bound grants, relay-issued owner/non-owner tokens, revocation (as-built for the auth service + grant contract) |
+| `relay-test-plan.md` | hand-off test plan for relay auth: L0–L3 cases, pass criteria, known gaps, rollback |
 | `chatrooms.md` | rooms, direct fan-out, gossip |
 | `mcp-transport.md` | idfon as an MCP transport binding (implemented) |
 

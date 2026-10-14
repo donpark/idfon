@@ -21,6 +21,11 @@
 #   IDFON_RELAY_ALLOWLIST comma-separated endpoint ids the relay admits
 #   IDFON_RELAY_AUTH_URL  relay HTTP-callout auth endpoint (optional)
 #   IDFON_RELAY_AUTH_TOKEN bearer for the relay's callout (optional)
+#   IDFON_RELAY_AUTH      1 = deploy the bundled relay-auth service (webhook
+#                         admission + relay-issued tokens; docs/relay-auth.md)
+#   IDFON_RELAY_ISSUERS   owner identity keys (64-hex, comma-separated) that
+#                         relay-auth trusts; required with IDFON_RELAY_AUTH=1
+#   IDFON_RELAY_ADMIN_TOKEN  ops bearer for relay-auth (generated if unset)
 #   IDFON_RELAY_OPEN      1 = deliberately deploy an OPEN relay; without any
 #                         auth config above the deploy refuses (fail-closed)
 #   IDFON_EDGE_IMAGE       default ghcr.io/donpark/idfon-edge:latest
@@ -54,6 +59,9 @@ RELAY_TOKEN="${IDFON_RELAY_TOKEN:-$(cat "$HOME/.idfon/relay-token" 2>/dev/null |
 RELAY_ALLOWLIST="${IDFON_RELAY_ALLOWLIST:-}"
 RELAY_AUTH_URL="${IDFON_RELAY_AUTH_URL:-}"
 RELAY_AUTH_TOKEN="${IDFON_RELAY_AUTH_TOKEN:-}"
+RELAY_AUTH_MODE="${IDFON_RELAY_AUTH:-0}"
+RELAY_ISSUERS="${IDFON_RELAY_ISSUERS:-}"
+RELAY_ADMIN_TOKEN="${IDFON_RELAY_ADMIN_TOKEN:-}"
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 info() { printf '   %s\n' "$*"; }
@@ -130,6 +138,10 @@ ADMIN_IP="${IDFON_ADMIN_IP:-$(curl -fsS https://api.ipify.org || true)}"
 [ -n "$ADMIN_IP" ] || die "could not detect your IP; set IDFON_ADMIN_IP"
 FW_NAME="${NAME}-fw"
 INBOUND="protocol:tcp,ports:22,address:${ADMIN_IP}/32 protocol:tcp,ports:80,address:0.0.0.0/0 protocol:tcp,ports:443,address:0.0.0.0/0 protocol:tcp,ports:8443,address:0.0.0.0/0 protocol:udp,ports:7842,address:0.0.0.0/0"
+# relay-auth's public enroll/owner API (HTTPS on 9443), only in auth mode.
+if [ "$DEPLOY_RELAY" = "1" ] && [ "$RELAY_AUTH_MODE" = "1" ]; then
+  INBOUND="$INBOUND protocol:tcp,ports:9443,address:0.0.0.0/0"
+fi
 OUTBOUND="protocol:tcp,ports:all,address:0.0.0.0/0 protocol:udp,ports:all,address:0.0.0.0/0 protocol:icmp,address:0.0.0.0/0"
 FW_ID="$(d compute firewall list --format ID,Name --no-header | awk -v n="$FW_NAME" '$2==n{print $1; exit}')"
 if [ -z "$FW_ID" ]; then
@@ -208,7 +220,15 @@ if [ "$DEPLOY_RELAY" = "1" ]; then
   # to deploy, unless IDFON_RELAY_OPEN=1 deliberately requests an open relay.
   RELAY_CONFIG="$DEPLOY/relay/config.toml"
   ACCESS_LINE=""
-  if [ -n "$RELAY_ALLOWLIST" ]; then
+  if [ "$RELAY_AUTH_MODE" = "1" ]; then
+    # Bundled webhook auth (docs/relay-auth.md): the relay asks relay-auth on
+    # every client connection; admission is per endpoint id and revocable at
+    # runtime without touching the relay or any client.
+    [ -n "$RELAY_ISSUERS" ] || die "IDFON_RELAY_AUTH=1 requires IDFON_RELAY_ISSUERS (comma-separated 64-hex owner identity keys)"
+    [ -n "$RELAY_AUTH_TOKEN" ] || { RELAY_AUTH_TOKEN="$(openssl rand -hex 32)"; info "generated relay callout bearer (stored in the droplet .env)"; }
+    [ -n "$RELAY_ADMIN_TOKEN" ] || { RELAY_ADMIN_TOKEN="$(openssl rand -hex 32)"; info "generated relay-auth admin bearer (stored in the droplet .env)"; }
+    ACCESS_LINE="access = { http = { url = \"http://relay-auth:9090/check\", bearer_token = \"$RELAY_AUTH_TOKEN\" } }"
+  elif [ -n "$RELAY_ALLOWLIST" ]; then
     ids="$(printf '%s' "$RELAY_ALLOWLIST" | tr ',' '\n' \
       | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' -e 's/.*/"&"/' \
       | paste -sd ', ' -)"
@@ -224,20 +244,24 @@ if [ "$DEPLOY_RELAY" = "1" ]; then
   elif [ "${IDFON_RELAY_OPEN:-0}" = "1" ]; then
     ACCESS_LINE="access = \"everyone\""
   else
-    die "refusing to deploy an unauthenticated relay: set IDFON_RELAY_ALLOWLIST, IDFON_RELAY_AUTH_URL, or IDFON_RELAY_TOKEN (or keep the token in ~/.idfon/relay-token), or pass IDFON_RELAY_OPEN=1 for an open relay"
+    die "refusing to deploy an unauthenticated relay: set IDFON_RELAY_AUTH=1 (with IDFON_RELAY_ISSUERS), IDFON_RELAY_ALLOWLIST, IDFON_RELAY_AUTH_URL, or IDFON_RELAY_TOKEN (or keep the token in ~/.idfon/relay-token), or pass IDFON_RELAY_OPEN=1 for an open relay"
   fi
   RELAY_CONFIG="$(mktemp)"
   awk -v line="$ACCESS_LINE" \
     '{ if ($0 ~ /^access = /) print line; else print }' \
     "$DEPLOY/relay/config.toml" > "$RELAY_CONFIG"
-  ssh $SSH_OPTS "root@$PUBLIC_IP" "mkdir -p /srv/idfon-edge/relay"
+  ssh $SSH_OPTS "root@$PUBLIC_IP" "mkdir -p /srv/idfon-edge/relay /srv/idfon-edge/relay-auth/data"
   scp $SSH_OPTS "$RELAY_CONFIG" "root@$PUBLIC_IP:/srv/idfon-edge/relay/config.toml" >/dev/null
   [ "$RELAY_CONFIG" != "$DEPLOY/relay/config.toml" ] && rm -f "$RELAY_CONFIG"
   scp $SSH_OPTS "$DEPLOY/compose.relay.yaml" "root@$PUBLIC_IP:/srv/idfon-edge/compose.relay.yaml" >/dev/null
+  scp $SSH_OPTS "$ROOT/deploy/relay-auth/server.mjs" "root@$PUBLIC_IP:/srv/idfon-edge/relay-auth/server.mjs" >/dev/null
   COMPOSE_FILES="-f compose.yaml -f compose.relay.yaml"
   RELAY_ENV="IDFON_RELAY_URLS=https://relay.$DOMAIN:8443\n"
   if [ -n "$RELAY_TOKEN" ]; then
     RELAY_ENV="${RELAY_ENV}IDFON_RELAY_TOKEN=$RELAY_TOKEN\n"
+  fi
+  if [ "$RELAY_AUTH_MODE" = "1" ]; then
+    RELAY_ENV="${RELAY_ENV}IDFON_RELAY_ISSUERS=$RELAY_ISSUERS\nIDFON_RELAY_AUTH_TOKEN=$RELAY_AUTH_TOKEN\nIDFON_RELAY_ADMIN_TOKEN=$RELAY_ADMIN_TOKEN\nCOMPOSE_PROFILES=auth\n"
   fi
 fi
 
@@ -275,3 +299,20 @@ done.
   health:   https://$DOMAIN/healthz
   logs:     ssh root@$PUBLIC_IP 'cd /srv/idfon-edge && docker compose logs -f'
 EOF
+
+if [ "$DEPLOY_RELAY" = "1" ] && [ "$RELAY_AUTH_MODE" = "1" ]; then
+  cat <<EOF
+
+relay-auth is live (webhook admission, tokens on :9443). The edge's own
+endpoint id needs an entry before it can use the relay. Find the id:
+
+  ssh root@$PUBLIC_IP 'cd /srv/idfon-edge && docker compose logs idfon-edge | grep -i endpoint'
+
+then admit it (long lease; revoke any time with DELETE /owner/entries/<id>):
+
+  curl -sS -X POST https://relay.$DOMAIN:9443/owner/entries \\
+    -H "authorization: Bearer $RELAY_ADMIN_TOKEN" \\
+    -H 'content-type: application/json' \\
+    -d '{"endpoint_id":"<edge endpoint id>","label":"edge","lease_days":3650}'
+EOF
+fi

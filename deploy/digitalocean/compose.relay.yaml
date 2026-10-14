@@ -13,3 +13,26 @@ services:
     volumes:
       - ./relay/config.toml:/config/config.toml:ro
       - /etc/idfon-edge:/etc/idfon-edge:ro
+
+  # Relay access auth (docs/relay-auth.md): the relay's `access.http` callout.
+  # Started only when the auth profile is active (COMPOSE_PROFILES=auth in
+  # .env, set by scripts/deploy-digitalocean.sh with IDFON_RELAY_AUTH=1), so
+  # allowlist/shared-token relays don't run it at all.
+  relay-auth:
+    profiles: ["auth"]
+    image: node:22-alpine
+    restart: unless-stopped
+    command: ["node", "/app/server.mjs"]
+    environment:
+      IDFON_RELAY_ISSUERS: ${IDFON_RELAY_ISSUERS:-}
+      IDFON_RELAY_AUTH_TOKEN: ${IDFON_RELAY_AUTH_TOKEN:-}
+      IDFON_RELAY_ADMIN_TOKEN: ${IDFON_RELAY_ADMIN_TOKEN:-}
+      IDFON_RELAY_AUTH_DATA: /data/state.json
+      IDFON_RELAY_AUTH_TLS_CERT: /etc/idfon-edge/cert.pem
+      IDFON_RELAY_AUTH_TLS_KEY: /etc/idfon-edge/key.pem
+    volumes:
+      - ./relay-auth/server.mjs:/app/server.mjs:ro
+      - ./relay-auth/data:/data
+      - /etc/idfon-edge:/etc/idfon-edge:ro
+    ports:
+      - "9443:9443" # public enroll/owner API (HTTPS, wildcard cert)
