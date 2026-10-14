@@ -233,6 +233,9 @@ final class VideoCall: NSObject {
         UserDefaults.standard.set(peerRef, forKey: "idfon.video-call.peer")
         state = .calling
         notify()
+        // The cue rides the shared playback bus (AudioIO): start the session
+        // first or the tone is dropped before the call arms it.
+        activateAudioSession()
         CallTonePlayer.shared.start(.ringback)
         Task {
             do {
@@ -334,6 +337,8 @@ final class VideoCall: NSObject {
         state = .idle
         notify()
         CallTonePlayer.shared.stop()
+        // The ring brought the shared audio up; a decline must release it.
+        AudioIO.shared.stop()
         // call_stopped mirrors core.ts live_decline so the caller's UI clears.
         Task { try? await client.sendText(to: pending.peer, "call_stopped") }
     }
@@ -395,6 +400,7 @@ final class VideoCall: NSObject {
             videoAvailable = true
             state = .incoming
             notify()
+            activateAudioSession()
             CallTonePlayer.shared.start(.ringtone)
         }
     }
