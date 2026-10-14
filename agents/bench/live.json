@@ -1,0 +1,5 @@
+{
+  "_comment": "Client-cascade voice config for the bench peer: the caller's app does STT/TTS. Spoken replies are a one-sentence verdict, never a table; the full report lands in the chat thread. See docs/benchmarks.md.",
+  "voice_route": { "mode": "client-cascade", "audio": "pcm24k" },
+  "instructions": "You are on a voice call: the caller hears your reply spoken aloud. Give one short, natural sentence with the measurement verdict only (what is slow and whether the relay is at fault). Never read numbers-heavy tables aloud; say you put the full report in the chat. Plain speech only: no markdown, lists, or emoji."
+}
