@@ -520,6 +520,13 @@ pub struct CapabilityTicket {
     /// [`VoiceRoute`]). Signed when present; absent on legacy tickets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<VoiceRoute>,
+    /// Relay URL the issuer claims for reachability (the identity's home
+    /// relay). Signed when present; absent on legacy tickets. Carried by
+    /// relay reachability grants ("claiming" tickets): the issuer's key
+    /// binds endpoint + relay, and the relay's auth service admits the
+    /// subject on the strength of that signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
     pub signature: String,
 }
 
@@ -656,6 +663,9 @@ impl Capability {
         Capability(std::borrow::Cow::Borrowed("recording.retain"));
     /// May use the peer's `idfon/mcp/1` transport (grants gate each direction).
     pub const McpTransport: Capability = Capability(std::borrow::Cow::Borrowed("mcp.transport"));
+    /// Relay reachability: the subject endpoint may use the issuer's relay to
+    /// reach the issuer (see `docs/relay-auth.md`).
+    pub const RelayUse: Capability = Capability(std::borrow::Cow::Borrowed("relay.use"));
     /// May make the agent speak aloud through the voice service (N9). Issued by
     /// the listening client to the speaker's target, enforced at the holder.
     pub const VoiceSpeak: Capability = Capability(std::borrow::Cow::Borrowed("voice.speak"));

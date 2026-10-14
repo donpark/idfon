@@ -236,6 +236,38 @@ pub fn issue_capability_ticket_with_voice(
         expires_at,
         ticket_id: ticket_id.into(),
         voice,
+        relay: None,
+        signature: String::new(),
+    };
+    ticket.signature = encode_hex(
+        &key.sign(&serde_json::to_vec(&ticket_unsigned(&ticket)).unwrap())
+            .to_bytes(),
+    );
+    ticket
+}
+
+/// Mints a relay reachability grant (a "claiming" ticket): the issuer's
+/// identity key binds the **subject** endpoint id to the issuer's **relay**
+/// URL with an expiry. The relay's auth service (`deploy/relay-auth`)
+/// admits the subject endpoint on the strength of this signature — the
+/// grant is the caller-bound capability, checked once at bootstrap.
+pub fn issue_relay_grant(
+    key: &SigningKey,
+    subject_endpoint_id: impl Into<String>,
+    relay_url: impl Into<String>,
+    expires_at: Option<String>,
+    ticket_id: impl Into<String>,
+) -> CapabilityTicket {
+    let mut ticket = CapabilityTicket {
+        issuer: peer_id(key),
+        subject: Some(subject_endpoint_id.into()),
+        conversation: None,
+        path_scope: None,
+        capabilities: vec![idfon_protocol::Capability::RelayUse],
+        expires_at,
+        ticket_id: ticket_id.into(),
+        voice: None,
+        relay: Some(relay_url.into()),
         signature: String::new(),
     };
     ticket.signature = encode_hex(
@@ -285,6 +317,11 @@ fn ticket_unsigned(ticket: &CapabilityTicket) -> serde_json::Value {
                 "voice".into(),
                 serde_json::to_value(voice).expect("voice route serializes"),
             );
+        }
+    }
+    if let Some(relay) = &ticket.relay {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("relay".into(), serde_json::Value::String(relay.clone()));
         }
     }
     value
@@ -538,6 +575,10 @@ mod tests {
             .unwrap()
             .get("voice")
             .is_none());
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("relay")
+            .is_none());
     }
 
     #[test]
@@ -551,6 +592,7 @@ mod tests {
             expires_at: None,
             ticket_id: "ticket-1".into(),
             voice: None,
+            relay: None,
             signature: "bad".into(),
         };
         assert_eq!(
@@ -580,6 +622,44 @@ mod tests {
         .unwrap();
         message.sender.endpoint_id = "endpoint-b".into();
         assert_eq!(verify_message(&message), Err(AuthError::VerificationFailed));
+    }
+
+    #[test]
+    fn relay_grant_golden_vector() {
+        // Cross-language contract: deploy/relay-auth/test.mjs verifies the
+        // same vector with node:crypto. If canonicalization (ticket_unsigned)
+        // changes, both sides must move in lockstep — the pinned signature is
+        // deterministic (ed25519), so any byte drift breaks one side.
+        let key = decode_signing_key(&"07".repeat(32)).expect("fixed key");
+        let grant = issue_relay_grant(
+            &key,
+            "11".repeat(32),
+            "https://relay.example.com:8443",
+            Some("2030-01-01T00:00:00Z".into()),
+            "ticket-golden-1",
+        );
+        assert_eq!(
+            serde_json::to_string(&grant).unwrap(),
+            concat!(
+                r#"{"issuer":"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c","#,
+                r#""subject":"1111111111111111111111111111111111111111111111111111111111111111","#,
+                r#""capabilities":["relay.use"],"expires_at":"2030-01-01T00:00:00Z","#,
+                r#""ticket_id":"ticket-golden-1","relay":"https://relay.example.com:8443","#,
+                r#""signature":"533a6ae19605959c16ceef172e3275efde6ee3541fa964224740bd254b522a69"#,
+                r#"5a241ea08d7d83c11f8b84f6e238455de0d6934ca5760b69685c4de404c3bb02"}"#
+            )
+        );
+        assert_eq!(
+            String::from_utf8(serde_json::to_vec(&ticket_unsigned(&grant)).unwrap()).unwrap(),
+            concat!(
+                r#"{"capabilities":["relay.use"],"conversation":null,"expires_at":"2030-01-01T00:00:00Z","#,
+                r#""issuer":"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c","#,
+                r#""relay":"https://relay.example.com:8443","#,
+                r#""subject":"1111111111111111111111111111111111111111111111111111111111111111","#,
+                r#""ticket_id":"ticket-golden-1"}"#
+            )
+        );
+        assert!(verify_capability_ticket(&grant).is_ok());
     }
 
     #[test]

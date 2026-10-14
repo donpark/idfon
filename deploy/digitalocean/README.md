@@ -72,10 +72,16 @@ with no auth configured it refuses to run, unless `IDFON_RELAY_OPEN=1`
 deliberately requests an open relay (the template default is an empty
 allowlist, which admits nobody):
 
+- **`IDFON_RELAY_AUTH=1` (+ `IDFON_RELAY_ISSUERS=<key>,…`)** → the bundled
+  `relay-auth` service (`deploy/relay-auth`, `docs/relay-auth.md`): webhook
+  admission by endpoint id with relay-issued owner/non-owner tokens. Revocable
+  per device at runtime (`DELETE /owner/entries/<id>`) — no redeploy, no client
+  secret. This is the preferred mode; grant-based caller enrollment and the
+  auth API live on `https://relay.<domain>:9443`.
 - `IDFON_RELAY_ALLOWLIST=<id>,<id>` → the relay admits only those endpoint ids.
   Brittle for fleets: every new device/agent endpoint needs a redeploy.
 - `IDFON_RELAY_AUTH_URL=<url>` (+ optional `IDFON_RELAY_AUTH_TOKEN`) → the relay
-  asks your auth service per connecting endpoint.
+  asks *your* external auth service per connecting endpoint.
 - `IDFON_RELAY_TOKEN=<token>` → shared bearer (falls back to the local secret
   file `~/.idfon/relay-token`). Clients present it at **runtime** (app Relay
   settings / env), never compiled in; it cannot be revoked per device.
