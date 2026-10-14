@@ -91,12 +91,19 @@ Row anatomy: avatar · name · **identity label** (which identity this relations
 uses — always visible, A8; informational — every identity is live, D20) ·
 optional status.
 
-- **Tap (default)**: opens the **person screen** (§6). One extra tap to call, but
-  the person screen is the relationship hub (D1).
+- **Tap (default)**: opens the **chat screen** with the conversation's
+  messages; the person screen (§6) is on the chat's title tap (D1, revised
+  2026-10-14 after manual testing).
 - **Tap (instant-call contacts)**: contact metadata can mark a contact as
   instantly callable (e.g. emergency contacts). Tap then **navigates to the chat
   screen and auto-starts the call** — the user sees navigation, then the call
   begins as the room's live session. No confirmation, no warning copy (P11).
+- **Row Call button** (left of the chevron): dials — the same as tapping the
+  row, then pressing the chat's call button.
+- **Chrome (2026-10-14)**: Edit left-most, `+` top-right; the filter strip
+  leads with **Recents** (the default filter); the Contacts title sits in the
+  nav bar like Messages; the Edge/Relay settings and the identity picker are
+  hidden until their purpose is decided.
 - **Edit mode**: pin/unpin; delete; drag to reorder pinned. Nothing else
   (stock-app restraint).
 - No cross-identity anything: the same human under two identities is two
@@ -554,7 +561,7 @@ design leaves no blockers:
 
 | ID | Decision |
 | --- | --- |
-| D1 | Person-row tap: default opens the person screen; contact metadata may make a contact instantly callable (tap → chat + auto-call). |
+| D1 | Person-row tap: default opens the chat (the person screen is on the chat's title tap; revised 2026-10-14 after manual testing); a row Call button dials the chat's call; contact metadata may make a contact instantly callable (tap → chat + auto-call). |
 | D2 | Call state lives in one nav button (call → calling/hang-up) beside a stable overflow menu; the live-call bar row carries call stats + a mute toggle, a route menu (the routes available right now), a video on/off toggle, and a gear for advanced A/V settings, above the tray rows. Nav starts/stops the call; the bar operates it. Mute is never a step in a route cycle. |
 | D3 | No "request screenshare" feature — a text message does it. |
 | D4 | Three preset identities (Work / Personal / Private) at first launch, renamable. |

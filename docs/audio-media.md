@@ -261,6 +261,18 @@ used. Not yet ported: the macOS shell still owns its own pipeline, and the
 memo *review* player stays an `AVAudioPlayer` because it needs transport
 (pause/seek/progress) that `AudioSink` does not model.
 
+**Engine self-stop recovery (iOS).** The engine stops itself on hardware
+format/channel changes (`AVAudioEngineConfigurationChangeNotification`;
+`AVAudioEngine.h` — "the nodes remain attached"), which the session churn of
+every call start triggers within the first second. `AudioIO` recovers per the
+documented protocol: restart the same graph (`engine.start()`, debounced and
+capped), re-arm any looping cue, and rebuild only when the app itself tore the
+tap down (interruptions, where the session is also reactivated). Rebuilding to
+recover is wrong — re-enabling voice processing posts more session churn and
+halts the engine again (observed runaway that froze the app). See
+[troubleshooting.md](troubleshooting.md) ("iOS call is mute from the first
+second") for the full failure record.
+
 ### Sources are pluggable
 
 The pipeline takes a **source**, not a device. `iroh-live` already models this:

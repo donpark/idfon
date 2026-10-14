@@ -1456,6 +1456,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// client-cascade starts the on-device voice call, which uses the same
     /// call Bar/End UI as a live call.
     func startCall() {
+        Automation.mark("call: start peer=\(peer.id)")
         // On-device agents run entirely in-app: no dial, no peer, no network.
         if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
             VoiceAgentSession.shared.runOnDevice(agent: agent)
@@ -1483,6 +1484,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func perform(_ decision: VoiceCallDecision) {
+        // One trace line names the machine the call became.
+        switch decision {
+        case .onDevice: Automation.mark("call: plan onDevice (client cascade)")
+        case .delegated(let route):
+            Automation.mark("call: plan delegated delegate=\(route.delegatePeerId ?? "?")")
+        case .live(let route):
+            Automation.mark("call: plan live mode=\(route.map { String(describing: $0.mode) } ?? "legacy")")
+        case .classic: Automation.mark("call: plan classic (audio/video)")
+        }
         switch decision {
         case .onDevice:
             voiceAgentTapped()

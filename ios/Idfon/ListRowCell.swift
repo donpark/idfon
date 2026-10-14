@@ -9,6 +9,10 @@ final class ListRowCell: UITableViewCell {
     private let titleLabel = UILabel()
     private let secondaryLabel = UILabel()
     private let timeLabel = UILabel()
+    /// §5.1: the row's optional Call verb — a button left of the chevron.
+    private let callButton = UIButton(type: .system)
+    private let accessoryStack = UIStackView()
+    private var onCall: (() -> Void)?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -42,6 +46,22 @@ final class ListRowCell: UITableViewCell {
             avatarView.widthAnchor.constraint(equalToConstant: 36),
             avatarView.heightAnchor.constraint(equalToConstant: 36),
         ])
+        // §5.1: accessory area = [Call] · chevron; `setCallAction` swaps it in.
+        callButton.translatesAutoresizingMaskIntoConstraints = false
+        callButton.setImage(UIImage(systemName: "phone.fill"), for: .normal)
+        callButton.tintColor = .systemGreen
+        callButton.accessibilityLabel = "Call"
+        callButton.addTarget(self, action: #selector(callTapped), for: .touchUpInside)
+        callButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        callButton.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        let chevron = UIImageView(image: UIImage(systemName: "chevron.right"))
+        chevron.tintColor = .tertiaryLabel
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+        accessoryStack.axis = .horizontal
+        accessoryStack.spacing = 4
+        accessoryStack.alignment = .center
+        accessoryStack.addArrangedSubview(callButton)
+        accessoryStack.addArrangedSubview(chevron)
     }
 
     required init?(coder: NSCoder) { fatalError("storyboards are not used") }
@@ -54,6 +74,16 @@ final class ListRowCell: UITableViewCell {
         secondaryLabel.isHidden = (secondary ?? "").isEmpty
         timeLabel.text = time
     }
+
+    /// §5.1 row Call verb: shown left of the chevron; nil restores the plain
+    /// disclosure chevron (other lists reuse this row template).
+    func setCallAction(_ action: (() -> Void)?) {
+        onCall = action
+        accessoryView = action == nil ? nil : accessoryStack
+        accessoryType = action == nil ? .disclosureIndicator : .none
+    }
+
+    @objc private func callTapped() { onCall?() }
 
     /// Row timestamp: clock time today, date otherwise.
     static func time(_ date: Date?) -> String? {

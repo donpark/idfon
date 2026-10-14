@@ -133,6 +133,7 @@ final class ContactDetailViewController: UIViewController {
     /// Pushes the chat surface; `startCall` runs the same routing the chat's
     /// call button would (on-device, delegated, live, or classic).
     private func pushChat(startCall: Bool) {
+        Automation.mark("call: person screen peer=\(peer.id) dial=\(startCall)")
         let chat = ChatViewController(peer: peer)
         navigationController?.pushViewController(chat, animated: true)
         if startCall { chat.startCall() }

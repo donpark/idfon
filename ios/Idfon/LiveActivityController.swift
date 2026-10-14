@@ -61,9 +61,11 @@ final class LiveActivityController: NSObject {
     /// until the machine picks it up. Gives immediate feedback (the item
     /// becomes the in-call controls), so a slow start cannot be double-tapped.
     private var pendingCall: String?
-    /// Last nav-bar chrome key per peer, so right bar items are only rebuilt
-    /// when the call state they show actually changes.
-    private var navChromeKeys: [String: String] = [:]
+    /// Last nav-bar chrome written, keyed by the chat *instance* (the item
+    /// lives on that instance's `navigationItem` and a new chat is pushed per
+    /// visit): rebuild only when the shown state changes, but a fresh instance
+    /// always gets its item.
+    private var navChrome: (id: ObjectIdentifier, key: String)?
     /// §5.2 session indicator: the peer whose session is live (nil = none),
     /// readable by the Messages rows.
     static private(set) var currentCallPeer: String?
@@ -394,8 +396,9 @@ final class LiveActivityController: NSObject {
             key = "blocked"
             item = nil
         }
-        guard navChromeKeys[peer] != key else { return }
-        navChromeKeys[peer] = key
+        let chatID = ObjectIdentifier(chat)
+        guard navChrome?.id != chatID || navChrome?.key != key else { return }
+        navChrome = (chatID, key)
         chat.callChromeItem = item
     }
 
@@ -468,6 +471,7 @@ final class LiveActivityController: NSObject {
     /// The machine's first state change clears the placeholder; a start that
     /// never produces a call times out.
     private func requestCall(_ peerId: String) {
+        Automation.mark("call: nav call tapped peer=\(peerId)")
         guard ActiveMachine.current == nil else { return }
         guard let chat = visibleNavigationController?.visibleViewController as? ChatViewController,
               chat.peer.id == peerId, chat.allowsCall else { return }

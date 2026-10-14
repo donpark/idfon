@@ -116,9 +116,9 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
 }
 
 /// Contacts tab: every known identity, searchable by display name or id.
-/// D1: the row's default action opens the person screen (the relationship
-/// hub); chat and call are reached from there. D7: All/Recents are filter
-/// segments, not tabs.
+/// Test notes: pressing a contact opens its chat (the person screen is on
+/// the chat's title tap); the row Call button dials it. D7: Recents/All are
+/// filter segments, not tabs — Recents leads and is the default.
 final class PeerListViewController: UITableViewController, UISearchResultsUpdating {
     private let client = DaemonClient()
     private let search = UISearchController(searchResultsController: nil)
@@ -135,7 +135,8 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     /// D7 filter segments. Favorites joins when pinned contacts exist; the
     /// segment count is the only change.
     enum ContactFilter { case all, favorites, recents }
-    private var filter: ContactFilter = .all { didSet { applyFilter() } }
+    /// Test notes: Recents is the default filter.
+    private var filter: ContactFilter = .recents { didSet { applyFilter() } }
     private let filters = UISegmentedControl()
     /// D7 pin order (drag-reordered in edit mode) — presentation state, local.
     private var pinOrder: [String] {
@@ -146,21 +147,21 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Contacts"
-        let identity = UIBarButtonItem(
-            title: "Identity", style: .plain, target: self, action: #selector(showIdentityPicker))
-        let edge = UIBarButtonItem(
-            title: "Edge", style: .plain, target: self, action: #selector(showEdgeSettings))
-        let relay = UIBarButtonItem(
-            title: "Relay", style: .plain, target: self, action: #selector(showRelaySettings))
-        navigationItem.rightBarButtonItems = [identity, edge, relay]
-        // §5.4: Add contact enters here (identity fixed at add time, §11);
-        // the on-device agent editor shares the add slot.
-        navigationItem.leftBarButtonItems = [
+        // Test-notes chrome: Edit is left-most; + sits top-right where the
+        // collapsed ⋯ (→ the "Identities" sheet) used to be. The Edge/Relay
+        // settings and identity picker stay in code, hidden until we decide
+        // what they are for.
+        navigationItem.rightBarButtonItems = [
+            // §5.4: Add contact enters here (identity fixed at add time, §11);
+            // the on-device agent editor shares the add slot.
             UIBarButtonItem(image: UIImage(systemName: "plus"), menu: buildAddMenu()),
+        ]
+        navigationItem.leftBarButtonItems = [
             editButtonItem, // §5.1 edit mode: drag to reorder pinned + delete
         ]
         navigationItem.backButtonDisplayMode = .generic // show "Back", not the callee's name
-        navigationController?.navigationBar.prefersLargeTitles = true
+        // Test notes: the title sits in the nav bar like Messages (no large
+        // title header).
         tableView.register(ListRowCell.self, forCellReuseIdentifier: ListRowCell.reuseID)
         refreshControl = UIRefreshControl()
         refreshControl?.addTarget(self, action: #selector(refresh), for: .valueChanged)
@@ -367,17 +368,18 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         applyFilter()
     }
 
-    /// D7: the Favorites segment joins when pinned contacts exist.
+    /// D7: the Favorites segment joins when pinned contacts exist. Test notes:
+    /// Recents leads and is the default; All moved to the trailing slot.
     private func syncFilterStrip() {
         let titles = peers.contains(where: \Peer.pinned)
-            ? ["All", "Favorites", "Recents"] : ["All", "Recents"]
+            ? ["Recents", "Favorites", "All"] : ["Recents", "All"]
         guard filters.numberOfSegments != titles.count else { return }
         filters.removeAllSegments()
         for (index, title) in titles.enumerated() {
             filters.insertSegment(withTitle: title, at: index, animated: false)
         }
         filters.selectedSegmentIndex = 0
-        filter = .all
+        filter = .recents
     }
 
     /// Pin-order bookkeeping: newly pinned sorts first.
@@ -465,30 +467,27 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
                        secondary: secondary.isEmpty ? nil : secondary.joined(separator: " · "),
                        time: nil)
         cell.accessoryType = .disclosureIndicator
+        // Test notes: the row's Call button (left of the chevron) is the same
+        // as tapping the row, then pressing the chat's call button.
+        cell.setCallAction { [weak self] in self?.openChat(peer, startCall: true) }
         return cell
     }
 
-    /// D1: the row's default action opens the person screen; on-device agents
-    /// keep their editor as the hub.
+    /// Test notes: pressing a contact opens its chat, with its messages — not
+    /// the person screen (that stays on the chat's title tap). Instant-call
+    /// contacts dial the chat's call immediately.
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let peer = shownPeers[indexPath.row]
-        if let id = OnDeviceAgent.id(fromPeerId: peer.id) {
-            let editor = OnDeviceAgentEditorViewController(
-                agent: OnDeviceAgents.shared.agent(id: id)) { [weak self] in self?.refresh() }
-            navigationController?.pushViewController(editor, animated: true)
-            return
-        }
-        // §5.1: instant-call contacts dial into the chat's call immediately.
-        if peer.instantCall {
-            let chat = ChatViewController(peer: peer)
-            navigationController?.pushViewController(chat, animated: true)
-            chat.startCall()
-            return
-        }
-        let detail = ContactDetailViewController(peer: peer)
-        detail.onChanged = { [weak self] in self?.refresh() }
-        navigationController?.pushViewController(detail, animated: true)
+        openChat(peer, startCall: peer.instantCall)
+    }
+
+    /// The chat surface; `startCall` runs the chat's own call routing.
+    private func openChat(_ peer: Peer, startCall: Bool) {
+        Automation.mark("call: contact row peer=\(peer.id) dial=\(startCall)")
+        let chat = ChatViewController(peer: peer)
+        navigationController?.pushViewController(chat, animated: true)
+        if startCall { chat.startCall() }
     }
 
     /// Swipe to delete a contact (and drop its provisioned capability ticket).

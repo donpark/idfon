@@ -42,7 +42,11 @@ final class CallTonePlayer {
     /// Start (or switch to) a looping tone or one-shot cue. Idempotent.
     func start(_ tone: Tone) {
         runOnMain { [self] in
-            if current == tone { return }
+            if current == tone {
+                Automation.mark("call-tone: \(tone) already current (no-op)")
+                return
+            }
+            Automation.mark("call-tone: \(tone)")
             current = tone
             sink.stopPlayback()
             guard let buffer = toneBuffer(tone) else { return }

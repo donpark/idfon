@@ -21,7 +21,12 @@ Most triage starts by joining one flow across processes. See
 - **Boundary events.** Each crossing logs `target: "idfon.seam"` with
   `direction`, `kind`, `message_id`, `peer_id`, `conversation`, and `trace`.
 - **Native apps.** Unified log: `log stream --predicate 'subsystem ==
-  "app.idfon"'`.
+  "app.idfon"'`. Each run also writes a per-run marker log the phone hands
+  over **without root**: `xcrun devicectl device copy from --device <UDID>
+  --domain-type appDataContainer --domain-identifier app.idfon --source
+  tmp/idfon-app-<pid>.log` (stale logs from earlier runs are deleted at app
+  startup; it pairs by pid with the daemon's `tmp/idfon-<pid>.log`).
+  `log collect --device` works too but needs sudo.
 - **Verbosity.** `IDFON_LOG` > `RUST_LOG` > `IROH_C_LOG` (default `info`);
   `IDFON_LOG_FILE` diverts the sink. Set `debug` to include per-delta stream
   logs.
@@ -40,6 +45,47 @@ renders on the app's single playback bus (`AudioIO`, see
 [audio-media.md](audio-media.md)), a route guard re-asserts the loudspeaker, and
 other-audio ducking is minimized. Verified on device (ringback and reply volume
 normal, no self-bleed).
+
+## iOS call is mute from the first second (2026-10-14, FIXED)
+
+**Symptom.** Client-cascade calls connected and the agent replied in text, but
+the ringback, the answer cue, the agent's voice and the caller's own
+recognition were all dead — a fully mute call with a healthy-looking log.
+
+**Diagnosis path.** The per-run app log (see "Where to look first") showed the
+whole pipeline "working": `audio: started profile=voiceAgent`, `call-tone:
+ringback`, `audio: loop scheduled frames=… rms=…` (non-silent PCM), route
+`Speaker`, volume 0.75 — yet a render check 0.5 s later read
+`sampleTime=nil playing=false engine=false`: the buffer was scheduled, but the
+engine had already stopped and rendered nothing. No `stopEngine` path had run
+(no interruption, no route loss, no `audio: stopped`).
+
+**Root cause.** `AVAudioEngine` **stops itself** when its I/O unit observes a
+hardware format/channel change (documented in `AVAudioEngine.h`,
+`AVAudioEngineConfigurationChangeNotification`: "the engine stops itself …
+the nodes remain attached"). The session churn every call start produces
+(`setCategory`, `setActive`, `overrideOutputAudioPort`, enabling voice
+processing) lands asynchronously right after `engine.start()` and halts the
+engine within the first second. Nothing restarted it, so every later cue and
+TTS buffer "scheduled" into a dead engine — one cause, four symptoms.
+
+**Fix** (`ios/Idfon/AudioIO.swift`). Recovery follows the documented protocol:
+on `AVAudioEngineConfigurationChangeNotification` (and a session route change
+finding the engine down), restart the *same* graph — `engine.start()` with the
+nodes still attached — debounced 0.3 s and capped at 3 per call, then re-arm
+the looping cue. A full rebuild happens only where the app itself tore the tap
+down (interruption begin/end, which now also reactivates the session). Do NOT
+rebuild the graph to recover: re-enabling voice processing posts more session
+churn, which halts the engine again — a runaway restart loop that froze the
+app (observed; the debounce + cap make it impossible). Never restart from
+inside notification callbacks either: the engine notification arrives on an
+internal queue and teardown/restart there can deadlock (dispatch it).
+
+**Diagnosing next time.** The `audio:` lines carry the whole story: `loop
+scheduled frames=… rms=…` proves non-silent PCM reached the bus, `output at
+ring outputs=[…] volume=…` the hardware state, and `loop check sampleTime=…
+playing=… engine=…` whether anything actually rendered. `engine halted —
+recovery #N full=…` shows the self-stop healing itself.
 
 ## iOS voice call aborts (SIGABRT) in setVoiceProcessingEnabled (2026-10-07, FIXED)
 
