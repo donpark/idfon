@@ -142,6 +142,9 @@ final class LiveCall {
         UserDefaults.standard.set(peerRef, forKey: "idfon.live-call.peer")
         audioEnabled = audioAvailable // this session carries audio from the start
         notify()
+        // The cue rides the shared playback bus (AudioIO): start the session
+        // first or the tone is dropped before the dial task arms it.
+        LiveCallHarness.activateAudioSession()
         CallTonePlayer.shared.start(.ringback)
         operation = Task {
             do {
@@ -275,6 +278,8 @@ final class LiveCall {
         state = .idle
         notify()
         CallTonePlayer.shared.stop()
+        // The ring brought the shared audio up; a decline must release it.
+        AudioIO.shared.stop()
         Task { try? await client.sendText(to: peer, "call_stopped") }
     }
 
@@ -361,6 +366,7 @@ final class LiveCall {
         UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
         state = .incoming(peer: peerID)
         notify()
+        LiveCallHarness.activateAudioSession()
         CallTonePlayer.shared.start(.ringtone)
     }
 
