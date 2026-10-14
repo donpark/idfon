@@ -391,8 +391,9 @@ final class AudioIO: AudioSource, AudioSink {
             isPlaying = true
             playbackPlayer.scheduleBuffer(
                 converted, at: nil, options: [], completionCallbackType: .dataPlayedBack
-            ) { [weak self] _ in
-                DispatchQueue.main.async { self?.finishPlay(id) }
+            ) { _ in
+                // via .shared: captures no self in the @Sendable hop
+                DispatchQueue.main.async { AudioIO.shared.finishPlay(id) }
             }
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
         }

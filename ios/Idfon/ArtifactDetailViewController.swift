@@ -184,7 +184,7 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
 
     private func load() {
         message("Loading…")
-        Task {
+        Task { [self] in
             // Shared-root artifacts render through the gateway (loopback first,
             // then the public edge): the web view loads the URL itself, so
             // relative subresources resolve and no bytes cross the app layer.
@@ -214,7 +214,7 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     /// background session (it finishes even if iOS suspends the app), cache the
     /// result in `SessionStore`, and let the reconcile notification reload.
     private func loadFailed(_ error: Error) {
-        guard let peerRef, EdgeClient.shared.isConfigured else {
+        guard peerRef != nil, EdgeClient.shared.isConfigured else {
             message("Could not load artifact: \(error.localizedDescription)")
             return
         }

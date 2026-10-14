@@ -2,8 +2,9 @@ import Foundation
 
 /// Runs on-device agent turns on Apple Foundation Models (text and, later,
 /// voice). One warm director per agent, recreated when its prompt changes; all
-/// work runs off the main thread, since `Director.turn` blocks.
-final class OnDeviceAgentRunner {
+/// work runs off the main thread, since `Director.turn` blocks. All state is
+/// confined to `queue`, hence `@unchecked Sendable`.
+final class OnDeviceAgentRunner: @unchecked Sendable {
     static let shared = OnDeviceAgentRunner()
 
     private let queue = DispatchQueue(label: "idfon.on-device-agents")
