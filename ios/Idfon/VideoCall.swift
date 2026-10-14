@@ -220,6 +220,7 @@ final class VideoCall: NSObject {
     /// the Bar's camera toggle is switched on — the default for calls started
     /// from the nav bar (mic first).
     func dial(_ peerRef: String, audio: Bool = true, video: Bool = true, cameraOn: Bool = true) {
+        Automation.mark("video: dial ref=\(peerRef) audio=\(audio) video=\(video)")
         guard state == .idle, audio || video else {
             CallFeedback.post("A call is already in progress.")
             return
@@ -407,6 +408,7 @@ final class VideoCall: NSObject {
         // delivery); restarting the watch would drop the live frame artifact.
         guard joinedTicket != ticket else { return }
         joinedTicket = ticket
+        Automation.mark("video: join")
         if state == .calling {
             CallTonePlayer.shared.start(.answered) // caller: answer cue
         } else {

@@ -68,6 +68,15 @@ final class AudioIO: AudioSource, AudioSink {
     private var pendingPlays: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var sessionObservers: [NSObjectProtocol] = []
     private var restartAfterInterruption = false
+    /// The looping cue (ringback/ringtone) currently on the bus, re-armed when
+    /// the engine is rebuilt — a restart drops everything scheduled.
+    private var activeLoop: AVAudioPCMBuffer?
+    /// Engine self-stop recovery (AVAudioEngine.h: a hardware format change
+    /// stops the engine and posts AVAudioEngineConfigurationChangeNotification;
+    /// nodes stay attached): debounced, capped restarts.
+    private var engineObserver: NSObjectProtocol?
+    private var restartWorkItem: DispatchWorkItem?
+    private var restartAttempts = 0
 
     private init() {}
 
@@ -77,13 +86,33 @@ final class AudioIO: AudioSource, AudioSink {
     /// a different profile restarts it. Main thread.
     func start(profile: Profile) {
         runOnMain { [self] in
-            AVAudioApplication.requestRecordPermission { _ in } // no-op if granted
+            Automation.mark("audio: mic permission=\(AVAudioApplication.shared.recordPermission)")
+            AVAudioApplication.requestRecordPermission { granted in
+                // The engine start below can fail while the mic answer is
+                // still pending; retry on a grant. Still the one engine —
+                // `startEngine` rebuilds the same single graph, never a second.
+                guard granted else {
+                    Automation.mark("audio: mic permission denied")
+                    return
+                }
+                self.runOnMain {
+                    guard self.profile == profile, !self.running else { return }
+                    Automation.mark("audio: retrying engine start after mic grant")
+                    self.startEngine()
+                }
+            }
             if running, self.profile == profile { return }
             if running || self.profile != nil { stopLocked() }
             self.profile = profile
-            configureSession(profile)
             restartAfterInterruption = false
+            restartAttempts = 0
+            restartWorkItem?.cancel()
+            // Observers BEFORE configuration: setActive/override can begin an
+            // interruption synchronously, and a missed `.began` leaves
+            // `restartAfterInterruption` false — the engine then dies at the
+            // start of every call and is never restarted (mute call).
             installSessionObservers()
+            configureSession(profile)
             startEngine()
         }
     }
@@ -107,6 +136,11 @@ final class AudioIO: AudioSource, AudioSink {
         // rebuilt graph, and voice processing must be enabled before the
         // playback bus is connected.
         engine = AVAudioEngine()
+        if let engineObserver { NotificationCenter.default.removeObserver(engineObserver) }
+        // The documented self-stop signal; object-scoped to this engine.
+        engineObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in self?.engineConfigurationChanged() }
         playbackPlayer = AVAudioPlayerNode()
         engine.attach(playbackPlayer)
         let input = engine.inputNode
@@ -134,12 +168,34 @@ final class AudioIO: AudioSource, AudioSink {
             try engine.start()
             running = true
             Automation.mark("audio: started profile=\(String(describing: profile))")
+            markOutput("output at start")
+            // Re-arm the looping cue the rebuild dropped (the ring must not
+            // die with one interruption).
+            if let loop = activeLoop {
+                playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
+                if !playbackPlayer.isPlaying { playbackPlayer.play() }
+                Automation.mark("audio: loop re-armed after engine restart")
+            }
         } catch {
+            // Marker as well as os_log error: every later cue/TTS drop is a
+            // consequence of this, and console captures must show the cause.
+            Automation.mark("audio: engine start FAILED \(error.localizedDescription)")
             idfonError("idfon audio: engine start failed: \(error.localizedDescription)")
+            // A dead engine is total call silence (tones, TTS, recognition) —
+            // never fail mute again.
+            CallFeedback.post("Audio unavailable: \(error.localizedDescription)")
         }
     }
 
+    /// The engine stopped itself (hardware format change; AVAudioEngine.h).
+    private func engineConfigurationChanged() {
+        Automation.mark("audio: engine configuration changed running=\(engine.isRunning)")
+        if profile != nil, !engine.isRunning { scheduleRestart() }
+    }
+
     private func stopEngine() {
+        if let engineObserver { NotificationCenter.default.removeObserver(engineObserver) }
+        engineObserver = nil
         playbackPlayer.stop()
         isPlaying = false
         resumePendingPlays()
@@ -167,7 +223,13 @@ final class AudioIO: AudioSource, AudioSink {
                 .playAndRecord, mode: .default,
                 options: [.defaultToSpeaker])
         }
-        try? session.setActive(true, options: .notifyOthersOnDeactivation)
+        do {
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            // Swallowed before: a dead session yields an engine that halts
+            // within a beat and a mute call that logs like a healthy one.
+            Automation.mark("audio: setActive FAILED \(error.localizedDescription)")
+        }
         try? session.overrideOutputAudioPort(.speaker)
         Automation.mark(
             "audio: session category=\(session.category.rawValue) mode=\(session.mode.rawValue)"
@@ -194,19 +256,77 @@ final class AudioIO: AudioSource, AudioSink {
     private func handleInterruption(_ note: Notification) {
         guard let value = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else { return }
         if value == AVAudioSession.InterruptionType.began.rawValue {
+            Automation.mark("audio: interruption began running=\(running)")
             restartAfterInterruption = running
             if running { stopEngine() }
-        } else if value == AVAudioSession.InterruptionType.ended.rawValue, restartAfterInterruption {
+        } else if value == AVAudioSession.InterruptionType.ended.rawValue {
+            // Self-heal: restart whenever a profile is active and the engine is
+            // down, even if the `.began` was missed.
+            let restart = restartAfterInterruption || (profile != nil && !running)
             restartAfterInterruption = false
-            startEngine()
+            Automation.mark("audio: interruption ended restart=\(restart)")
+            if restart {
+                // Interruptions tear the tap down at `.began`, so recovery is a
+                // full rebuild; reactivate the session first (the documented
+                // interruption-end step).
+                try? AVAudioSession.sharedInstance().setActive(true)
+                startEngine()
+            }
         }
     }
 
     private func handleRouteChange(_ note: Notification) {
-        guard let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue
-        else { return }
-        stopEngine()
+        guard let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt else { return }
+        if reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
+            Automation.mark("audio: route lost (old device unavailable) — engine stopped")
+            stopEngine()
+        }
+        // The engine stopped itself on a hardware format change (AVAudioEngine.h:
+        // "the engine stops itself … nodes remain attached"); the graph is
+        // intact, so recovery is a debounced restart — never a rebuild from
+        // inside a notification callback (documented deadlock), and never a
+        // rebuild at all here: re-enabling voice processing posts more session
+        // churn (observed runaway that froze the app).
+        if profile != nil, !engine.isRunning { scheduleRestart() }
+    }
+
+    /// Debounced, capped engine recovery (debounce coalesces the session churn
+    /// that accompanies every configuration change).
+    private func scheduleRestart() {
+        restartWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.restartEngine() }
+        restartWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
+    }
+
+    /// `running == true`: the engine stopped itself with the graph intact —
+    /// plain `start()` and re-arm the looping cue. `running == false`: we tore
+    /// the tap down, so a full rebuild. Capped per activation so a hopeless
+    /// session cannot spin.
+    private func restartEngine() {
+        guard profile != nil, !engine.isRunning else { return }
+        guard restartAttempts < 3 else {
+            Automation.mark("audio: engine restart gave up after \(restartAttempts) attempts")
+            return
+        }
+        restartAttempts += 1
+        Automation.mark("audio: engine halted — recovery #\(restartAttempts) full=\(!running)")
+        guard running else {
+            startEngine()
+            return
+        }
+        do {
+            try engine.start()
+            playbackPlayer.stop()
+            resumePendingPlays()
+            if let loop = activeLoop {
+                playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
+                if !playbackPlayer.isPlaying { playbackPlayer.play() }
+                Automation.mark("audio: loop re-armed after engine restart")
+            }
+        } catch {
+            Automation.mark("audio: engine restart FAILED \(error.localizedDescription)")
+        }
     }
 
     // MARK: - capture (AudioSource)
@@ -241,16 +361,30 @@ final class AudioIO: AudioSource, AudioSink {
     // MARK: - playback (AudioSink)
 
     func play(wav: Data) async {
-        guard running,
-              let buffer = Self.buffer(wav: wav, target: playbackPlayer.outputFormat(forBus: 0))
-        else { return }
+        // A dropped play is silent by design (no crash on a dead bus), so it
+        // must leave a marker: "no tone / no TTS" triage reads these lines.
+        guard running else {
+            Automation.mark("audio: wav play dropped engine idle")
+            return
+        }
+        guard let buffer = Self.buffer(wav: wav, target: playbackPlayer.outputFormat(forBus: 0))
+        else {
+            Automation.mark("audio: wav play dropped decode failed")
+            return
+        }
         await play(buffer)
     }
 
     func play(_ buffer: AVAudioPCMBuffer) async {
-        guard running,
-              let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))
-        else { return }
+        guard running else {
+            Automation.mark("audio: play dropped engine idle")
+            return
+        }
+        guard let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))
+        else {
+            Automation.mark("audio: play dropped convert failed in=\(buffer.format.sampleRate)Hz/\(buffer.format.channelCount)ch out=\(playbackPlayer.outputFormat(forBus: 0).sampleRate)Hz/\(playbackPlayer.outputFormat(forBus: 0).channelCount)ch")
+            return
+        }
         let id = UUID()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             pendingPlays[id] = continuation
@@ -278,21 +412,67 @@ final class AudioIO: AudioSource, AudioSink {
     }
 
     func playLooping(_ buffer: AVAudioPCMBuffer) {
-        guard running,
-              let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))
-        else { return }
+        guard running else {
+            Automation.mark("audio: loop play dropped engine idle")
+            return
+        }
+        guard let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))
+        else {
+            Automation.mark("audio: loop play dropped convert failed in=\(buffer.format.sampleRate)Hz/\(buffer.format.channelCount)ch")
+            return
+        }
         playbackPlayer.scheduleBuffer(converted, at: nil, options: [.loops], completionHandler: nil)
+        activeLoop = converted
         isPlaying = true
         if !playbackPlayer.isPlaying { playbackPlayer.play() }
+        // The ring is the canary: prove the loop was real (non-silent PCM) and
+        // that the engine actually rendered it — a scheduled-but-never-rendered
+        // buffer logs exactly like a played one otherwise.
+        Automation.mark(
+            "audio: loop scheduled frames=\(converted.frameLength) rms=\(String(format: "%.4f", Self.rms(converted))) fmt=\(converted.format.sampleRate)Hz/\(converted.format.channelCount)ch")
+        markOutput("output at ring")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            // nil lastRenderTime = the node never rendered at all.
+            let clock = self.playbackPlayer.lastRenderTime.flatMap {
+                self.playbackPlayer.playerTime(forNodeTime: $0)
+            }
+            Automation.mark(
+                "audio: loop check sampleTime=\(clock.map { String($0.sampleTime) } ?? "nil") playing=\(self.playbackPlayer.isPlaying) engine=\(self.engine.isRunning)")
+        }
     }
 
     func stopPlayback() {
         playbackPlayer.stop()
+        activeLoop = nil
         isPlaying = false
         resumePendingPlays()
     }
 
     // MARK: - PCM helpers
+
+    /// One marker line with the session's output reality: route, system volume,
+    /// category and mode — "played per the log" is only worth something next to
+    /// what the hardware was set to.
+    private func markOutput(_ tag: String) {
+        let session = AVAudioSession.sharedInstance()
+        let outputs = session.currentRoute.outputs
+            .map { "\($0.portType.rawValue)(\($0.portName))" }
+            .joined(separator: ",")
+        Automation.mark(
+            "audio: \(tag) outputs=[\(outputs)] volume=\(session.outputVolume) category=\(session.category.rawValue) mode=\(session.mode.rawValue)")
+    }
+
+    /// Mean amplitude of the buffer's first channel; -1 when the format has no
+    /// accessible float channel (verification marker only).
+    private static func rms(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let data = buffer.floatChannelData?[0] else { return -1 }
+        let n = Int(buffer.frameLength)
+        guard n > 0 else { return 0 }
+        var sum: Float = 0
+        for i in 0..<n { sum += data[i] * data[i] }
+        return (sum / Float(n)).squareRoot()
+    }
 
     /// Decode WAV and convert to `target`. `nil` on any decode error.
     static func buffer(wav: Data, target: AVAudioFormat) -> AVAudioPCMBuffer? {

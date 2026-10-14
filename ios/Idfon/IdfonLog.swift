@@ -1,3 +1,4 @@
+import Foundation
 import os
 
 /// Native-app logging under one `os.Logger` subsystem (`app.idfon`), so app
@@ -20,4 +21,37 @@ func idfonError(_ message: String, file: String = #fileID) {
 
 private func logToIdfon(_ level: OSLogType, _ message: String, _ file: String) {
     Logger(subsystem: "app.idfon", category: file).log(level: level, "\(message, privacy: .public)")
+    IdfonLogFile.append(message)
+}
+
+/// Per-run app log file — the rootless pull documented in
+/// docs/troubleshooting.md (`devicectl device copy from --domain-type
+/// appDataContainer --domain-identifier app.idfon --source tmp/…`). One file
+/// per process, named with the same pid as the in-process daemon's
+/// `idfon-<pid>.log`, so one launch is one clean, pairable trace; stale logs
+/// from earlier runs are removed at startup so the pull is unambiguous.
+enum IdfonLogFile {
+    private static let lock = NSLock()
+    private static let handle: FileHandle? = {
+        let dir = NSTemporaryDirectory()
+        let me = ProcessInfo.processInfo.processIdentifier
+        let fm = FileManager.default
+        if let existing = try? fm.contentsOfDirectory(atPath: dir) {
+            for name in existing
+            where name.hasPrefix("idfon-") && name.hasSuffix(".log")
+                && name != "idfon-\(me).log" && name != "idfon-app-\(me).log" {
+                try? fm.removeItem(atPath: dir + name)
+            }
+        }
+        let path = dir + "idfon-app-\(me).log"
+        fm.createFile(atPath: path, contents: nil)
+        return FileHandle(forWritingAtPath: path)
+    }()
+
+    static func append(_ message: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        try? handle?.write(contentsOf: Data("\(stamp) \(message)\n".utf8))
+    }
 }

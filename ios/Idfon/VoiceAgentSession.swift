@@ -94,7 +94,11 @@ final class VoiceAgentSession: NSObject {
     }
 
     func start(peerRef: String, turns: Int = Int.max, agent: OnDeviceAgent? = nil) {
-        guard !isActive else { return }
+        Automation.mark("voice-agent: start requested ref=\(peerRef) active=\(isActive)")
+        guard !isActive else {
+            Automation.mark("voice-agent: start IGNORED — session already active")
+            return
+        }
         isActive = true
         localAgent = agent
         stopRequested = false
@@ -219,6 +223,7 @@ final class VoiceAgentSession: NSObject {
     }
 
     func stop() {
+        Automation.mark("voice-agent: stop requested active=\(isActive)")
         stopRequested = true
         // Cancel setup and speech now; otherwise hang-up waits out a recognizer
         // download / TTS load and the ringback keeps playing until the setup
@@ -762,6 +767,7 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func speak(_ text: String) async -> String? {
+        Automation.mark("voice-agent: speak begin chars=\(text.count)")
         lastSpoken = text
         // Arm barge-in: keep the recognizer live while TTS plays. AEC keeps the
         // agent's own voice out, so a cancellable non-echo utterance is the
@@ -775,6 +781,7 @@ final class VoiceAgentSession: NSObject {
             asr?.resume()
         }
         await tts.speak(text)
+        Automation.mark("voice-agent: speak done")
         var interrupted: String?
         if armed {
             bargeInArmed = false

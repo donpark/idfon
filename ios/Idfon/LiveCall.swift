@@ -130,6 +130,7 @@ final class LiveCall {
     // MARK: - Caller
 
     func dial(_ peerRef: String) {
+        Automation.mark("live: dial ref=\(peerRef)")
         guard case .idle = state else {
             CallFeedback.post("A call is already in progress.")
             return
@@ -218,6 +219,7 @@ final class LiveCall {
     // MARK: - Callee
 
     func answer() {
+        Automation.mark("live: answer")
         guard case .incoming(let peer) = state, let pending = pendingInvite else { return }
         operation?.cancel()
         operationGeneration += 1
@@ -452,6 +454,7 @@ final class HybridVoice {
     private var speakLocal = false
 
     func start(peerRef: String, route: VoiceRoute) {
+        Automation.mark("hybrid: start ref=\(peerRef)")
         guard !isActive, route.isHybrid else { return }
         isActive = true
         peerId = peerRef
