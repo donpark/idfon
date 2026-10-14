@@ -16,10 +16,13 @@
 #   IDFON_DO_RESERVED_IP   1 (default) create/assign a reserved IP, 0 = use ephemeral
 #   IDFON_ADMIN_IP         /32 allowed to SSH (default: auto-detected)
 #   IDFON_RELAY_URLS      set on the edge when the relay is deployed
-#   IDFON_RELAY_TOKEN     shared-token relay access (optional)
+#   IDFON_RELAY_TOKEN     shared-token relay access (falls back to the local
+#                         secret file ~/.idfon/relay-token)
 #   IDFON_RELAY_ALLOWLIST comma-separated endpoint ids the relay admits
 #   IDFON_RELAY_AUTH_URL  relay HTTP-callout auth endpoint (optional)
 #   IDFON_RELAY_AUTH_TOKEN bearer for the relay's callout (optional)
+#   IDFON_RELAY_OPEN      1 = deliberately deploy an OPEN relay; without any
+#                         auth config above the deploy refuses (fail-closed)
 #   IDFON_EDGE_IMAGE       default ghcr.io/donpark/idfon-edge:latest
 set -euo pipefail
 
@@ -44,7 +47,10 @@ SSH_KEY="${IDFON_DO_SSH_KEY:-}"
 USE_RESERVED_IP="${IDFON_DO_RESERVED_IP:-1}"
 EDGE_IMAGE="${IDFON_EDGE_IMAGE:-ghcr.io/donpark/idfon-edge:latest}"
 DEPLOY_RELAY="${IDFON_DEPLOY_RELAY:-0}"
-RELAY_TOKEN="${IDFON_RELAY_TOKEN:-}"
+# Relay access (shared_token mode): env wins, else the local secret file the
+# deploy instructs you to keep at ~/.idfon/relay-token. Empty + no allowlist /
+# auth URL = open relay — only deliberate, then.
+RELAY_TOKEN="${IDFON_RELAY_TOKEN:-$(cat "$HOME/.idfon/relay-token" 2>/dev/null || true)}"
 RELAY_ALLOWLIST="${IDFON_RELAY_ALLOWLIST:-}"
 RELAY_AUTH_URL="${IDFON_RELAY_AUTH_URL:-}"
 RELAY_AUTH_TOKEN="${IDFON_RELAY_AUTH_TOKEN:-}"
@@ -92,6 +98,12 @@ if [ -z "$DROPLET_ID" ]; then
     --ssh-keys "$SSH_KEY" --user-data-file "$DEPLOY/cloud-init.yaml" \
     --enable-monitoring --wait --format ID --no-header)"
 else
+  # Reserved IPs are region-bound, so a region change is a recreate, not a
+  # converge — refusing here beats silently keeping the old region.
+  DROPLET_REGION="$(d compute droplet get "$DROPLET_ID" --format Region --no-header)"
+  if [ "$DROPLET_REGION" != "$REGION" ]; then
+    die "droplet $NAME exists in region $DROPLET_REGION but IDFON_DO_REGION=$REGION. Reserved IPs cannot move regions: snapshot if you care, delete the droplet (\`doctl compute droplet delete $NAME\`), then re-run to recreate in $REGION (DNS is re-pointed automatically)."
+  fi
   info "reusing droplet $DROPLET_ID"
 fi
 
@@ -133,9 +145,18 @@ fi
 # --- DNS zone + records ----------------------------------------------------
 say "DNS zone + records"
 d compute domain get "$DOMAIN" >/dev/null 2>&1 || d compute domain create "$DOMAIN" >/dev/null
-add_a() { # name ip
-  if d compute domain records list "$DOMAIN" --format Type,Name,Data --no-header \
-    | awk -v n="$1" -v p="$2" '$1=="A" && $2==n && $3==p {found=1} END {exit !found}'; then
+add_a() { # name ip — upsert: stale A records for the name are replaced
+  local found=0 id data
+  while read -r id data; do
+    if [ "$data" = "$2" ]; then
+      found=1
+    else
+      d compute domain records delete "$DOMAIN" "$id" --force >/dev/null
+      info "A $1 -> $data (removed stale)"
+    fi
+  done < <(d compute domain records list "$DOMAIN" --format ID,Type,Name,Data --no-header \
+    | awk -v n="$1" '$2=="A" && $3==n {print $1, $4}')
+  if [ "$found" = 1 ]; then
     info "A $1 -> $2 (exists)"
   else
     d compute domain records create "$DOMAIN" --record-type A --record-name "$1" \
@@ -181,9 +202,10 @@ COMPOSE_FILES="-f compose.yaml"
 RELAY_ENV=""
 if [ "$DEPLOY_RELAY" = "1" ]; then
   info "provisioning the co-located iroh relay"
-  # Relay access. Prefer the endpoint allowlist or an HTTP callout: neither
-  # needs a secret on the client. Fall back to a shared token, else open
-  # (like N0's public relays).
+  # Relay access (fail-closed). The relay handshake authenticates each
+  # client's endpoint id (TLS key export) before the access hook runs, so
+  # allowlist/callout decisions are trustworthy. No auth configured = refuse
+  # to deploy, unless IDFON_RELAY_OPEN=1 deliberately requests an open relay.
   RELAY_CONFIG="$DEPLOY/relay/config.toml"
   ACCESS_LINE=""
   if [ -n "$RELAY_ALLOWLIST" ]; then
@@ -199,13 +221,15 @@ if [ "$DEPLOY_RELAY" = "1" ]; then
     fi
   elif [ -n "$RELAY_TOKEN" ]; then
     ACCESS_LINE="access = { shared_token = [\"$RELAY_TOKEN\"] }"
+  elif [ "${IDFON_RELAY_OPEN:-0}" = "1" ]; then
+    ACCESS_LINE="access = \"everyone\""
+  else
+    die "refusing to deploy an unauthenticated relay: set IDFON_RELAY_ALLOWLIST, IDFON_RELAY_AUTH_URL, or IDFON_RELAY_TOKEN (or keep the token in ~/.idfon/relay-token), or pass IDFON_RELAY_OPEN=1 for an open relay"
   fi
-  if [ -n "$ACCESS_LINE" ]; then
-    RELAY_CONFIG="$(mktemp)"
-    awk -v line="$ACCESS_LINE" \
-      '{ if ($0 ~ /^access = /) print line; else print }' \
-      "$DEPLOY/relay/config.toml" > "$RELAY_CONFIG"
-  fi
+  RELAY_CONFIG="$(mktemp)"
+  awk -v line="$ACCESS_LINE" \
+    '{ if ($0 ~ /^access = /) print line; else print }' \
+    "$DEPLOY/relay/config.toml" > "$RELAY_CONFIG"
   ssh $SSH_OPTS "root@$PUBLIC_IP" "mkdir -p /srv/idfon-edge/relay"
   scp $SSH_OPTS "$RELAY_CONFIG" "root@$PUBLIC_IP:/srv/idfon-edge/relay/config.toml" >/dev/null
   [ "$RELAY_CONFIG" != "$DEPLOY/relay/config.toml" ] && rm -f "$RELAY_CONFIG"

@@ -65,17 +65,33 @@ already allows those two ports.
 `IDFON_RELAY_URLS` / `IDFON_RELAY_TOKEN` on each daemon too. A peer left on N0
 will not meet one on the enterprise relay.
 
-Relay access — prefer a mode that needs **no client secret**:
+Relay access — prefer a mode that needs **no client secret**. The relay
+handshake authenticates each client's endpoint id (TLS key export) before the
+access check, so id-based modes are trustworthy. **The deploy is fail-closed:**
+with no auth configured it refuses to run, unless `IDFON_RELAY_OPEN=1`
+deliberately requests an open relay (the template default is an empty
+allowlist, which admits nobody):
 
 - `IDFON_RELAY_ALLOWLIST=<id>,<id>` → the relay admits only those endpoint ids.
+  Brittle for fleets: every new device/agent endpoint needs a redeploy.
 - `IDFON_RELAY_AUTH_URL=<url>` (+ optional `IDFON_RELAY_AUTH_TOKEN`) → the relay
   asks your auth service per connecting endpoint.
-- `IDFON_RELAY_TOKEN=<token>` → shared bearer. Clients present it at **runtime**
-  (app Relay settings / env), never compiled in; it cannot be revoked per device.
+- `IDFON_RELAY_TOKEN=<token>` → shared bearer (falls back to the local secret
+  file `~/.idfon/relay-token`). Clients present it at **runtime** (app Relay
+  settings / env), never compiled in; it cannot be revoked per device.
+- `IDFON_RELAY_OPEN=1` → open relay, like N0's public ones. Dev only.
 
 Clients are configured the same way: the iOS/mac apps have a **Relay** setting
-(applied via `setenv`/subprocess env when the daemon starts), and CLI/native/eve
-use the env vars.
+(applied via `setenv`/subprocess env when the daemon starts; on iOS also
+`-relayurls <url> [-relaytoken <token>]` at launch), and CLI/native/eve use the
+env vars.
+
+**Changing `IDFON_DO_REGION` is a recreate, not a converge** — reserved IPs
+are region-bound. The deploy refuses on a region mismatch: snapshot if you
+care, `doctl compute droplet delete idfon-edge`, then re-run with the new
+region. DNS records are re-pointed automatically (stale A records are
+removed); clients should reference `relay.<domain>` / `<domain>` names, never
+the IP.
 
 ## What you need
 

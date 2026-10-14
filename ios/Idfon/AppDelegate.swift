@@ -3,6 +3,9 @@ import UIKit
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // Before the daemon starts so an automation launch (-relayurls …) both
+        // sets and uses the relay config.
+        RelaySettings.configureFromLaunchArgs(ProcessInfo.processInfo.arguments)
         DaemonBootstrap.start()
         ChatStore.shared.start()
         // Contact invites from a trusted directory enroll silently; everyone

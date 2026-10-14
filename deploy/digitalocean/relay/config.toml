@@ -12,10 +12,16 @@ enable_quic_addr_discovery = true
 http_bind_addr = "[::]:8080"
 metrics_bind_addr = "[::]:9090"
 
-# Access control. "everyone" is an open relay (dev/small); for an enterprise,
-# restrict it and give the edge the same token:
-#   access = { shared_token = ["<token>"] }   # edge: IDFON_RELAY_TOKEN=<token>
-access = "everyone"
+# Access control (fail-closed: this default admits nobody — an empty
+# allowlist). The relay handshake authenticates each client's endpoint id
+# (TLS key export) before this hook runs, so id-based decisions are
+# trustworthy. scripts/deploy-digitalocean.sh rewrites this line from its
+# environment (allowlist / http callout / shared_token) and refuses to deploy
+# with no auth at all unless IDFON_RELAY_OPEN=1 deliberately asks for:
+#   access = "everyone"                       # open relay — dev only
+# Shared-token clients present IDFON_RELAY_TOKEN (apps: Relay Settings);
+# the relay itself can override its token list via IROH_RELAY_ACCESS_TOKEN.
+access = { allowlist = [] }
 
 [tls]
 # 443 belongs to the edge, so the relay URL carries its port:

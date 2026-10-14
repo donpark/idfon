@@ -33,6 +33,23 @@ enum RelaySettings {
         !(urls?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 
+    /// Launch-arg override for automation/tests (`scripts/ios-device-test.sh`
+    /// style): `-relayurls <url> [-relaytoken <token>] [-relayonly]`. Persists
+    /// exactly like the settings UI, and is applied before the daemon starts so
+    /// one launch both sets and uses the config. Absent token / relay-only
+    /// keep their current values.
+    static func configureFromLaunchArgs(_ args: [String]) {
+        guard let i = args.firstIndex(of: "-relayurls"), args.count > i + 1 else { return }
+        let argToken = args.firstIndex(of: "-relaytoken").flatMap { index -> String? in
+            args.count > index + 1 && !args[index + 1].hasPrefix("-") ? args[index + 1] : nil
+        }
+        configure(
+            urls: args[i + 1],
+            token: argToken ?? token ?? "",
+            relayOnly: args.contains("-relayonly") || isRelayOnly
+        )
+    }
+
     static func configure(urls: String, token: String, relayOnly: Bool = false) {
         let urls = urls.trimmingCharacters(in: .whitespacesAndNewlines)
         let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
