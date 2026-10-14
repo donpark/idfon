@@ -51,3 +51,6 @@ agents/*/invites.ndjson
 
 # Built speech-model packs (scripts/build-speech-pack.sh)
 /dist/speech-packs/
+
+# Benchmark result history (scripts/relay-bench.sh)
+/bench-results/
