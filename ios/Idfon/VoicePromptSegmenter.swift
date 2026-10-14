@@ -18,6 +18,12 @@ final class VoicePromptSegmenter {
     private var enabled = true
     private var timer: Timer?
 
+    /// Benchmarking (docs/benchmarks.md): ms between the recognizer's last
+    /// update and the commit — the turn-detection heuristic's cost (0 on a
+    /// recognizer final, `gap` + tick latency on the silence fallback).
+    private(set) var lastCommitGapMs = 0
+    private(set) var lastCommitFinal = false
+
     var onPartial: ((String) -> Void)?
     var onCommit: ((String) -> Void)?
 
@@ -48,15 +54,17 @@ final class VoicePromptSegmenter {
         latest = trimmed
         lastChange = Date()
         onPartial?(trimmed)
-        if isFinal { commit(trimmed) }
+        if isFinal { commit(trimmed, viaFinal: true) }
     }
 
     private func tick() {
         guard enabled, !latest.isEmpty, Date().timeIntervalSince(lastChange) > gap else { return }
-        commit(latest)
+        commit(latest, viaFinal: false)
     }
 
-    private func commit(_ text: String) {
+    private func commit(_ text: String, viaFinal: Bool) {
+        lastCommitGapMs = Int(Date().timeIntervalSince(lastChange) * 1000)
+        lastCommitFinal = viaFinal
         guard text != lastCommitted else { return }
         // Recognizers occasionally emit punctuation-only fragments (""); never
         // pass those through as a user turn.

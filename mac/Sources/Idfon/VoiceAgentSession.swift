@@ -249,6 +249,7 @@ final class VoiceAgentSession: NSObject {
 
     private func performTurn(peerId: String) async -> Bool {
         turnsDone += 1
+        let turnStart = Date()
         var heard: String? = pendingHeard
         pendingHeard = nil
         // Retry within the turn when the recognizer catches the agent's own TTS
@@ -297,6 +298,7 @@ final class VoiceAgentSession: NSObject {
             turnId: "\(callId)-\(turnsDone)-user", role: "caller", text: heard
         )
         setState(.thinking)
+        let replyStart = Date()
         guard let result = await reply(
             peerId: peerId, text: heard, logPrefix: "voice-agent",
             spokenTurnId: "\(callId)-\(turnsDone)-agent"
@@ -306,11 +308,21 @@ final class VoiceAgentSession: NSObject {
             Automation.mark("voice-agent: no reply, continuing")
             return true
         }
+        let replyMs = Int(Date().timeIntervalSince(replyStart) * 1000)
         Automation.mark("voice-agent: reply=\(result.display)")
+        var speakMs = 0
         if !result.spoken.isEmpty {
             setState(.speaking(result.spoken))
+            let speakStart = Date()
             pendingHeard = await speak(result.spoken)
+            speakMs = Int(Date().timeIntervalSince(speakStart) * 1000)
         }
+        // Turn-stage timings for the latency report (docs/benchmarks.md):
+        // asr_gap_ms = turn-detection wait, reply_ms = network + agent turn,
+        // speak_ms = TTS + playback (includes speak()'s post-roll hold).
+        Automation.mark(
+            "voice-agent: turn=\(turnsDone) asr_gap_ms=\(segmenter.lastCommitGapMs) listen_ms=\(lastListenMs) reply_ms=\(replyMs) speak_ms=\(speakMs) total_ms=\(Int(Date().timeIntervalSince(turnStart) * 1000))"
+        )
         updateStats()
         setState(.idle)
         return turnsDone < turnLimit
