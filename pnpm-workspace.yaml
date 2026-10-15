@@ -6,3 +6,5 @@ packages:
   - 'integrations/eve-idfon'
   - 'integrations/eve-idfon-voice'
   
+allowBuilds:
+  scriptc: true
