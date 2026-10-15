@@ -55,7 +55,28 @@ enum RelaySettings {
         var env = ["IDFON_RELAY_URLS": urls]
         if let token, !token.isEmpty { env["IDFON_RELAY_TOKEN"] = token }
         if isRelayOnly { env["IDFON_RELAY_ONLY"] = "1" }
+        // Relay auto-enrollment (docs/relay-auth.md §6): our deploy runs the
+        // auth service on :9443 beside the relay's :8443 (deploy/digitalocean).
+        // Derived only for that shape — never probe arbitrary relays — and an
+        // explicit env value always wins.
+        if ProcessInfo.processInfo.environment["IDFON_RELAY_ENROLL_URL"] == nil,
+           let enroll = Self.enrollUrl(from: urls) {
+            env["IDFON_RELAY_ENROLL_URL"] = enroll
+        }
         return env
+    }
+
+    private static func enrollUrl(from urls: String) -> String? {
+        for value in urls.split(separator: ",") {
+            guard var components = URLComponents(string: value.trimmingCharacters(in: .whitespaces)),
+                  components.port == 8443, components.host != nil else { continue }
+            components.port = 9443
+            components.path = ""
+            components.query = nil
+            components.fragment = nil
+            return components.string
+        }
+        return nil
     }
 
     /// Sets the variables in this process (iOS runs the daemon in-process).

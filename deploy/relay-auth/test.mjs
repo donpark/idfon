@@ -18,6 +18,7 @@ import {
   createApp,
   expiryPassed,
   loadConfig,
+  verifyEd25519,
   verifyGrant,
 } from "./server.mjs";
 
@@ -139,6 +140,27 @@ test("golden grant: canonical bytes and signature match the Rust vector", () => 
     verifyGrant(state, { ...GOLDEN_GRANT, subject: "22".repeat(32) }),
     /signature invalid/,
   );
+});
+
+test("golden owner proof: bytes and signature match the Rust vector", () => {
+  // Rust: crates/idfon-core `relay_owner_proof_golden_vector`. The proof is
+  // `idfon-relay-owner/1|<identity>|<endpoint>|<nonce>` in UTF-8; the daemon
+  // signs exactly these bytes with the identity key at owner bootstrap.
+  const nonce = "00112233445566778899aabbccddeeff";
+  const proof = Buffer.from(`idfon-relay-owner/1|${KEY_A}|${SUBJECT}|${nonce}`, "utf8");
+  assert.equal(
+    proof.toString("utf8"),
+    `idfon-relay-owner/1|${KEY_A}|${SUBJECT}|${nonce}`,
+  );
+  const golden =
+    "6024d46a9d40787d532358cd25c704c29684b021f875941c5ebef1f3b3b26fa3" +
+    "e453cb7b9fa1ba75000d89ceda627bf0c3282f7b2eeb61c6574fe3a850a1cf08";
+  assert.equal(verifyEd25519(KEY_A, proof, golden), true);
+  // Deterministic: re-signing the same bytes with the same key reproduces it.
+  const reminted = crypto.sign(null, proof, goldenKeypair().privateKey).toString("hex");
+  assert.equal(reminted, golden);
+  // The server verifies the proof the same way (spot check the exact string).
+  assert.equal(verifyEd25519(KEY_A, Buffer.from(`idfon-relay-owner/1|${KEY_A}|${SUBJECT}|${nonce}`), golden), true);
 });
 
 test("expiryPassed: epoch seconds, RFC 3339, garbage fails closed", () => {

@@ -5,10 +5,11 @@ and how any of it is revoked — without restarting the relay or updating
 clients. Companion to `deploy/relay-auth/server.mjs` (the auth service) and
 `deploy/digitalocean/README.md` (deployment).
 
-> Status: as-built for the auth service + grant contract; the daemon-side
-> enrollment hooks (owner bootstrap at `peer.add`, lease refresh) are the
-> follow-up, see §6. `deploy/relay-auth/ctl.mjs` is the manual ops/test
-> surface until those hooks land (see §7).
+> Status: as-built for the auth service + grant contract; the daemon now
+> self-enrolls its own and its peers' endpoints (`IDFON_RELAY_ENROLL_URL`, see
+> §3). The caller-side half (grant mint/delivery in the pairing exchange) is
+> still a follow-up, see §6. `deploy/relay-auth/ctl.mjs` remains the manual
+> ops/test surface (see §7).
 
 ## 1. The topology fact everything rests on
 
@@ -60,9 +61,28 @@ identity keys).
 - *Caller-side (fallback):* the caller presents the grant to `POST /enroll`
   and gets a non-owner token; `POST /refresh` keeps its lease alive.
 
-Until the daemon hooks land, `deploy/relay-auth/ctl.mjs` drives all of these
-by hand (`enroll-owner` signs the challenge from an `identity-<id>.key` seed,
-then `admit` / `revoke` / `revoke-ticket` / `entries` / `check`).
+**Daemon auto-enrollment (owner side).** With `IDFON_RELAY_ENROLL_URL` set to
+the auth service's owner API (e.g. `https://relay.example.com:9443`), the
+daemon runs the flows above itself (`crates/idfon-daemon/src/relay_auth.rs`):
+
+- owner bootstrap at startup with the first local identity key listed in
+  `IDFON_RELAY_ISSUERS` (challenge → sign → enroll; non-issuers just get a
+  403 on the challenge and are skipped);
+- keeps every local identity endpoint and every peer device endpoint
+  (`Peer::endpoint_id` + `Peer::devices`) admitted via `POST /owner/entries`,
+  topped up at half-life (`IDFON_RELAY_ENROLL_LEASE_DAYS`, default 30 —
+  long-lived hand-made entries are left alone until they near expiry);
+- revokes exactly the endpoints that stop existing (peer/device removed,
+  identity deleted, including via state sync) — set difference against the
+  persisted `relay_admitted` set, so entries created by ops or other owners
+  are never touched;
+- every peer/identity mutation pokes the loop; a periodic tick (6 h) is the
+  backstop. Everything is best-effort and never blocks message handling.
+
+The mac app derives `IDFON_RELAY_ENROLL_URL` from its Relay Settings URL when
+that URL matches our deployment shape (relay `:8443` → auth `:9443` on the
+same host); CLI-run daemons set it explicitly. `ctl.mjs admit` etc. remain
+for bootstrapping a brand-new device before its first pairing.
 
 **Revoke.** `DELETE /owner/entries/<endpoint>` or
 `POST /owner/revoke-ticket {ticket_id}` — the entry and every derived token
@@ -100,12 +120,20 @@ with keys sorted **alphabetically** — pinned by the golden vector in
 
 ## 6. Follow-ups
 
-- Daemon hooks: owner bootstrap + `POST /owner/entries` at `peer.add`,
-  revoke at `peer.remove`, lease refresh loop, per-identity relay config
-  (`crates/idfon-core/src/transport.rs` is global `IDFON_RELAY_URLS` today).
 - Grant delivery to the caller (signed in/alongside the pairing exchange) so
-  the caller-side `/enroll` fallback works.
+  the caller-side `/enroll` fallback works, plus the caller's `/refresh`
+  loop. **Needs persisted `ticket_id`s and `revoke-ticket` handling first:**
+  today `DELETE /owner/entries` is only effective while the removed peer
+  holds no grant — a live grant re-creates the entry via `/enroll`.
+- Per-identity relay config (`crates/idfon-core/src/transport.rs` is global
+  `IDFON_RELAY_URLS` today).
 - Apps: relay settings UI for per-identity relay + `auth_denied_reason()`.
+
+Landed (2026-10-15): the daemon's owner-side hooks — owner bootstrap,
+`POST /owner/entries` at peer/identity mutations, set-difference revocation
+(`peer.remove`/`peer.device.remove`/`identity.delete` + synced equivalents),
+and the lease top-up loop (`crates/idfon-daemon/src/relay_auth.rs`; proof
+bytes pinned by `idfon_core::relay_owner_proof_bytes`).
 
 ## 7. Testing
 
