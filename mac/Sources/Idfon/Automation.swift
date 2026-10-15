@@ -16,10 +16,9 @@ enum Automation {
         return (args[index + 1], args[index + 2])
     }()
 
-    /// Writes a harness-visible marker. `stderr` is unbuffered, so it lands
-    /// immediately; the `idfonLog` line is for the unified log trail.
+    /// Writes a harness-visible marker. `idfonLog` mirrors to stderr (unbuffered,
+    /// so it lands immediately) and to the unified log trail.
     static func mark(_ message: String) {
-        FileHandle.standardError.write(Data("idfon-auto: \(message)\n".utf8))
         idfonLog("idfon-auto: \(message)")
     }
 }

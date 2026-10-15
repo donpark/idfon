@@ -1,3 +1,4 @@
+import Foundation
 import os
 
 /// Native-app logging under one `os.Logger` subsystem (`app.idfon`), so app
@@ -20,4 +21,7 @@ func idfonError(_ message: String, file: String = #fileID) {
 
 private func logToIdfon(_ level: OSLogType, _ message: String, _ file: String) {
     Logger(subsystem: "app.idfon", category: file).log(level: level, "\(message, privacy: .public)")
+    // Mirror to stderr like NSLog did: launch captures (mac-e2e.sh) grep
+    // these markers there; os.Logger alone never reaches them.
+    FileHandle.standardError.write(Data("\(message)\n".utf8))
 }
