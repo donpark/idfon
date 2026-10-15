@@ -4,7 +4,7 @@ import UIKit
 /// actions (D1); the rest is the relationship's settings (rename, per-contact
 /// speech engines, voice turns, remove).
 final class ContactDetailViewController: UIViewController {
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     private let peer: Peer
     /// Fired after a successful rename/remove so the list refreshes.
     var onChanged: (() -> Void)?

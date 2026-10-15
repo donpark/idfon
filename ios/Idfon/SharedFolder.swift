@@ -1,7 +1,7 @@
 import Foundation
 
 /// The user-visible directory the daemon serves to granted peers at
-/// `GET /fs/<path>` (see `DaemonClient.startSharedProvider`), plus the action
+/// `GET /fs/<path>` (see `IdfonClient.startSharedProvider`), plus the action
 /// that promotes a session file into it so another peer can fetch it.
 enum SharedFolder {
     static var url: URL {

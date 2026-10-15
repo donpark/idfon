@@ -161,7 +161,7 @@ verified **caller context**, not just `(account, path)`.
   <ticket>`, or `-edgeurl <url> -edgeticket <ticket>`, persisted in
   `UserDefaults`), fetches through the edge in the foreground, and starts a
   **background `URLSession`** download whose bytes are staged in
-  `Idfon/edge-inbox` and drained on foreground. `DaemonClient.fetchResource`
+  `Idfon/edge-inbox` and drained on foreground. `IdfonClient.fetchResource`
   tries the loopback gateway (direct P2P) first, then the edge; the artifact
   detail's remote view uses it. `AppDelegate` installs the
   `handleEventsForBackgroundURLSession` handler (recreating the session so a
@@ -293,7 +293,7 @@ land. Security residuals are filed as issues.
   `idfon access ticket --path-scope /fs/public`, presents it to the edge, and the
   edge forwards it as `x-idfon-ticket`; the provider authorizes the issuer and
   enforces `path_scope` (a scoped ticket is 403 outside the prefix, an unscoped
-  ticket reads it). `DaemonClient.fetchRemoteResource` still sends no ticket, so
+  ticket reads it). `IdfonClient.fetchRemoteResource` still sends no ticket, so
   the iOS path is not yet covered.
 - [x] **Background handoff (P4).** Triggered on device via the
   `-edgebghandoff` probe: a background `URLSession` download staged its bytes,

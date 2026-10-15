@@ -21,8 +21,8 @@ should not require every peer to add a new contact.
 1. **The iPhone must work when the Mac is off.** No always-on home node. If the
    Mac daemon happens to be the only place a key lives, that is a
    single-point-of-failure, not an architecture.
-2. **The iOS daemon is in-process and freezes when the app backgrounds.**
-   `AppDelegate` → `DaemonBootstrap.start()` runs `idfond` on a background
+2. **The iOS core is in-process and freezes when the app backgrounds.**
+   `AppDelegate` → `IdfonRuntime.start()` runs `idfon_daemon_run` on a background
    thread that lives only while the process does (`docs/ios-architecture.md`).
    A frozen phone is **not a listener**. Any design that assumes the phone
    answers a dial in the background is wrong.

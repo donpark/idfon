@@ -5,7 +5,7 @@ import Foundation
 /// anything else is `RenderError.unknown`. This is the same shape an MCP tool
 /// registry takes — the idfon operations double as the action set.
 enum RenderTools {
-    static func make(client: DaemonClient = DaemonClient()) -> RenderToolRegistry {
+    static func make(client: IdfonClient = IdfonClient()) -> RenderToolRegistry {
         let registry = RenderToolRegistry()
         registry.audit = { ActionAudit.shared.record($0) }
 

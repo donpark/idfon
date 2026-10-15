@@ -50,7 +50,7 @@ enum VoiceCatalog {
     /// The contact's options, or `[]` when the agent advertises none (older
     /// agent, unreachable) — the caller then falls back to the signed route.
     /// The fetch is bounded: a hung gateway must not stall the call decision.
-    static func options(for peerID: String, client: DaemonClient,
+    static func options(for peerID: String, client: IdfonClient,
                         timeout: Duration = .seconds(3)) async -> [VoiceOption] {
         if let cached = cache[peerID] { return cached }
         let data = await withTaskGroup(of: Data?.self) { group in

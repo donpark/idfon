@@ -5,7 +5,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
     time::Duration,
 };
 
@@ -252,6 +252,30 @@ impl TransportMode {
     }
 }
 
+/// Identity (account signing) key on disk. Plain files in the profile dir —
+/// no store involved — so endpoint binding can start before the store loads.
+fn identity_key_in(data_dir: &Path, identity_id: &str) -> io::Result<ed25519_dalek::SigningKey> {
+    let path = data_dir.join(format!("identity-{identity_id}.key"));
+    let value = std::fs::read_to_string(path)?;
+    idfon_core::decode_signing_key(value.trim())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid identity key"))
+}
+
+/// The transport (endpoint) key for an identity (see `Store::endpoint_key`):
+/// a dedicated `endpoint-<id>.key` when the account/endpoint split created
+/// one, the identity key otherwise.
+fn endpoint_key_in(data_dir: &Path, identity_id: &str) -> io::Result<ed25519_dalek::SigningKey> {
+    let path = data_dir.join(format!("endpoint-{identity_id}.key"));
+    match std::fs::read_to_string(&path) {
+        Ok(value) => idfon_core::decode_signing_key(value.trim())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid endpoint key")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            identity_key_in(data_dir, identity_id)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Store {
     identities: Vec<Identity>,
@@ -425,10 +449,7 @@ impl Store {
     }
 
     fn identity_key(&self, identity_id: &str) -> io::Result<ed25519_dalek::SigningKey> {
-        let path = self.data_dir.join(format!("identity-{identity_id}.key"));
-        let value = std::fs::read_to_string(path)?;
-        idfon_core::decode_signing_key(value.trim())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid identity key"))
+        identity_key_in(&self.data_dir, identity_id)
     }
 
     /// The transport (endpoint) key for an identity. Identities created since
@@ -437,13 +458,7 @@ impl Store {
     /// to the identity key, because switching their endpoint id would break
     /// every peer record that already points at it.
     fn endpoint_key(&self, identity_id: &str) -> io::Result<ed25519_dalek::SigningKey> {
-        let path = self.data_dir.join(format!("endpoint-{identity_id}.key"));
-        match std::fs::read_to_string(&path) {
-            Ok(value) => idfon_core::decode_signing_key(value.trim())
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid endpoint key")),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => self.identity_key(identity_id),
-            Err(error) => Err(error),
-        }
+        endpoint_key_in(&self.data_dir, identity_id)
     }
 
     /// Creates a dedicated transport key for a new identity (idempotent).
@@ -502,6 +517,94 @@ pub struct DaemonConfig {
     /// Exit gracefully after this long with zero connected clients.
     /// None (default) = run until ctrl_c or `daemon.shutdown`.
     pub idle_exit: Option<Duration>,
+}
+
+/// The feature set for in-process callers: the store the moment it opens,
+/// the transport once the endpoints are bound, and the daemon's runtime —
+/// request handling runs on it so spawned work (send delivery, gateways)
+/// lands on the long-lived runtime, never on a caller's throwaway one.
+#[derive(Clone)]
+struct Live {
+    store: Arc<Mutex<Store>>,
+    transport: Option<Arc<TransportMode>>,
+    runtime: tokio::runtime::Handle,
+}
+
+static LIVE: RwLock<Option<Live>> = RwLock::new(None);
+
+/// Registers [`LIVE`] while a `run` is active and clears it on exit (panic
+/// included), so `request_json` never serves a stopped runtime.
+struct LiveGuard;
+
+impl LiveGuard {
+    fn install(store: Arc<Mutex<Store>>) -> Self {
+        *LIVE.write().expect("live lock poisoned") = Some(Live {
+            store,
+            transport: None,
+            runtime: tokio::runtime::Handle::current(),
+        });
+        Self
+    }
+
+    fn bind(&self, transport: Arc<TransportMode>) {
+        if let Some(live) = LIVE.write().expect("live lock poisoned").as_mut() {
+            live.transport = Some(transport);
+        }
+    }
+}
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        *LIVE.write().expect("live lock poisoned") = None;
+    }
+}
+
+/// In-process entry into the feature functions, for packagings that embed
+/// them (the iOS app links this crate and calls directly — no socket, no
+/// separate lifecycle). Same Request/Response contract as the RPC bridge
+/// (`idfon-client`), so a target build only chooses its call path. Store-only
+/// requests are served as soon as the store is open — display data never
+/// waits for endpoints to bind. Returns `ErrorKind::NotConnected` before
+/// that (callers retry, exactly like the bridge's connect error). Returns
+/// the response frame plus `response.ok` (binary `*.compact` payloads cannot
+/// fail and report `true` — the `idfon-client` convention). Must not be
+/// called from inside an async runtime.
+pub fn request_json(payload: &[u8]) -> io::Result<(Vec<u8>, bool)> {
+    let body = match serde_json::from_slice::<Request>(payload) {
+        Ok(request) => {
+            let live = LIVE.read().expect("live lock poisoned").clone();
+            let Some(live) = live else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "feature set not started",
+                ));
+            };
+            let mut session_identity = active_identity(&live.store);
+            live.runtime.block_on(handle_request(
+                request,
+                &live.store,
+                live.transport.as_ref(),
+                &mut session_identity,
+            ))?
+        }
+        Err(error) => encode_json(&error_response(
+            "unknown".into(),
+            "protocol",
+            ErrorCode::InvalidJson,
+            error.to_string(),
+            false,
+        ))
+        .map_err(io::Error::other)?,
+    };
+    if body.len() > idfon_protocol::MAX_FRAME_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
+    }
+    // Same convention as `idfon-client`: a frame that is not a protocol
+    // Response is a `*.compact` binary payload, which cannot fail.
+    let ok = serde_json::from_slice::<Response>(&body)
+        .map(|response| response.ok)
+        .unwrap_or(true);
+    Ok((body, ok))
 }
 
 /// Blocking entry point: builds its own tokio runtime and runs the daemon
@@ -564,19 +667,28 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
         std::env::set_var("IDFON_ENDPOINT_PORT", (59_000 + (hash % 900)).to_string());
     }
     let store = Arc::new(Mutex::new(Store::load(&data_dir)?));
+    // The feature set serves in-process callers the moment the store is open:
+    // local reads (contacts, identities, rooms) never wait on endpoint binds.
+    let live = LiveGuard::install(Arc::clone(&store));
     let media_service = Arc::new(MediaService::default());
     let _ = MEDIA_SERVICE.set((*media_service).clone());
     let default_endpoint_key = store
         .lock()
         .expect("store mutex poisoned")
         .endpoint_key("default")?;
-    let transport = Arc::new(
+    // Bind endpoints ASAP — concurrent with whatever the first requests
+    // need, not serialized before them (the key material comes from the
+    // profile files the store just loaded).
+    let bind_name = transport.clone();
+    let bound = tokio::spawn(async move {
         TransportMode::new(
-            &transport,
+            &bind_name,
             Some(idfon_core::signing_key_bytes(&default_endpoint_key)),
         )
-        .await?,
-    );
+        .await
+    });
+    let transport = Arc::new(bound.await.map_err(io::Error::other)??);
+    live.bind(Arc::clone(&transport));
     // The endpoint key is separate from the identity (account) signing key for
     // identities created since the split; older ones fall back to the identity
     // key so their endpoint id — and peers' records — do not change.
@@ -700,18 +812,7 @@ async fn serve(
     transport: Arc<TransportMode>,
     shutdown: Arc<tokio::sync::Notify>,
 ) -> io::Result<()> {
-    let mut session_identity = {
-        // Default to the daemon's persisted active identity so `identity use`
-        // survives across CLI invocations (each command opens a new
-        // connection); explicit --identity still overrides per request.
-        let state = store.lock().expect("store mutex poisoned");
-        state
-            .identities
-            .iter()
-            .find(|identity| identity.active)
-            .map(|identity| identity.id.clone())
-            .unwrap_or_else(|| String::from("default"))
-    };
+    let mut session_identity = active_identity(&store);
     loop {
         let Some(frame) = read_frame(&mut stream).await? else {
             return Ok(());
@@ -734,37 +835,7 @@ async fn serve(
                 continue;
             }
         };
-        if let Some(params) = request.params.as_object_mut() {
-            params
-                .entry("identity")
-                .or_insert_with(|| serde_json::Value::String(session_identity.clone()));
-            params
-                .entry("__identity")
-                .or_insert_with(|| serde_json::Value::String(session_identity.clone()));
-        }
-        if request.method == "wait" {
-            let timeout = request
-                .params
-                .get("timeout_ms")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(30_000)
-                .min(300_000);
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout);
-            loop {
-                let response = dispatch_with_transport(request.clone(), &store, &transport);
-                let found = matches!(&response.body, ResponseBody::Success { result, .. } if result.get("events").and_then(serde_json::Value::as_array).is_some_and(|events| !events.is_empty()));
-                if found || tokio::time::Instant::now() >= deadline {
-                    write_frame(
-                        &mut stream,
-                        &encode_json(&response).map_err(io::Error::other)?,
-                    )
-                    .await?;
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            continue;
-        }
+        with_session_identity(&mut request, &session_identity);
         if request.method == "events"
             && request
                 .params
@@ -774,7 +845,8 @@ async fn serve(
         {
             let mut follow_request = request;
             loop {
-                let response = dispatch_with_transport(follow_request.clone(), &store, &transport);
+                let response =
+                    dispatch_with_transport(follow_request.clone(), &store, Some(&transport));
                 if let ResponseBody::Success { result, .. } = &response.body {
                     if let Some(last) = result
                         .get("events")
@@ -796,80 +868,6 @@ async fn serve(
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
         }
-        if request.method == "peers.compact" {
-            let payload =
-                compact_peers(&store, request_text(&request.params, "identity").as_deref());
-            write_frame(&mut stream, &payload).await?;
-            continue;
-        }
-        if request.method == "identities.compact" {
-            let payload = compact_identities(&store);
-            write_frame(&mut stream, &payload).await?;
-            continue;
-        }
-        if request.method == "events.compact" {
-            let after = request_text(&request.params, "after");
-            let payload = compact_events(
-                &store,
-                after.as_deref(),
-                request_text(&request.params, "identity").as_deref(),
-            );
-            write_frame(&mut stream, &payload).await?;
-            continue;
-        }
-        if request.method == "gateway.start" {
-            let identity = request_text(&request.params, "identity")
-                .unwrap_or_else(|| session_identity.clone());
-            let response = gateway_start(&request, &store, &transport, &identity).await;
-            write_frame(
-                &mut stream,
-                &encode_json(&response).map_err(io::Error::other)?,
-            )
-            .await?;
-            continue;
-        }
-        if request.method == "gateway.stop" {
-            let identity = request_text(&request.params, "identity")
-                .unwrap_or_else(|| session_identity.clone());
-            let response = gateway_stop(&request, &identity);
-            write_frame(
-                &mut stream,
-                &encode_json(&response).map_err(io::Error::other)?,
-            )
-            .await?;
-            continue;
-        }
-        if request.method == "web.url" {
-            let response = web_url(&request);
-            write_frame(
-                &mut stream,
-                &encode_json(&response).map_err(io::Error::other)?,
-            )
-            .await?;
-            continue;
-        }
-        if request.method == "provider.start" {
-            let identity = request_text(&request.params, "identity")
-                .unwrap_or_else(|| session_identity.clone());
-            let response = provider_start(&request, &store, &transport, &identity).await;
-            write_frame(
-                &mut stream,
-                &encode_json(&response).map_err(io::Error::other)?,
-            )
-            .await?;
-            continue;
-        }
-        if request.method == "provider.stop" {
-            let identity = request_text(&request.params, "identity")
-                .unwrap_or_else(|| session_identity.clone());
-            let response = provider_stop(&request, &identity);
-            write_frame(
-                &mut stream,
-                &encode_json(&response).map_err(io::Error::other)?,
-            )
-            .await?;
-            continue;
-        }
         if request.method == "daemon.shutdown" {
             let response = success(&request, serde_json::json!({"shutdown": true}));
             write_frame(
@@ -880,18 +878,122 @@ async fn serve(
             shutdown.notify_waiters();
             return Ok(());
         }
-        let response = dispatch_with_transport(request.clone(), &store, &transport);
-        if request.method == "identity.use" && response.ok {
-            if let Some(identity) = request_text(&request.params, "name") {
-                session_identity = identity;
-            }
-        }
-        write_frame(
-            &mut stream,
-            &encode_json(&response).map_err(io::Error::other)?,
-        )
-        .await?
+        let payload =
+            handle_request(request, &store, Some(&transport), &mut session_identity).await?;
+        write_frame(&mut stream, &payload).await?
     }
+}
+
+/// Per-request identity defaulting: an explicit `identity` param wins,
+/// otherwise the session identity fills both (`__identity` carries the
+/// resolved value for handlers). Idempotent.
+fn with_session_identity(request: &mut Request, session_identity: &str) {
+    if let Some(params) = request.params.as_object_mut() {
+        params
+            .entry("identity")
+            .or_insert_with(|| serde_json::Value::String(session_identity.to_owned()));
+        params
+            .entry("__identity")
+            .or_insert_with(|| serde_json::Value::String(session_identity.to_owned()));
+    }
+}
+
+/// The persisted active identity (`identity use` survives restarts, so every
+/// connection — and every in-process request — starts from it); an explicit
+/// `--identity` param still overrides per request.
+fn active_identity(store: &Arc<Mutex<Store>>) -> String {
+    let state = store.lock().expect("store mutex poisoned");
+    state
+        .identities
+        .iter()
+        .find(|identity| identity.active)
+        .map(|identity| identity.id.clone())
+        .unwrap_or_else(|| String::from("default"))
+}
+
+/// One request through the feature pipeline — identity defaulting, the
+/// `wait` long-poll, the compact payloads, the gateway/provider/web methods,
+/// and `dispatch_with_transport` for everything else — returning the encoded
+/// response frame. This is the whole feature layer, shared by the two
+/// packagings: `idfond` serves it over the unix socket (`serve`) and an
+/// embedder calls it in-process (`request_json`). `transport` is optional by
+/// design: store-only functions run without one, so local data is never
+/// gated on endpoints binding. `events --follow` (multi-frame stream) and
+/// `daemon.shutdown` (connection teardown) stay in `serve` — they act on the
+/// connection, not on the request.
+async fn handle_request(
+    mut request: Request,
+    store: &Arc<Mutex<Store>>,
+    transport: Option<&Arc<TransportMode>>,
+    session_identity: &mut String,
+) -> io::Result<Vec<u8>> {
+    with_session_identity(&mut request, session_identity);
+    if request.method == "wait" {
+        let timeout = request
+            .params
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(30_000)
+            .min(300_000);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout);
+        loop {
+            let response = dispatch_with_transport(request.clone(), store, transport);
+            let found = matches!(&response.body, ResponseBody::Success { result, .. } if result.get("events").and_then(serde_json::Value::as_array).is_some_and(|events| !events.is_empty()));
+            if found || tokio::time::Instant::now() >= deadline {
+                return encode_json(&response).map_err(io::Error::other);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+    if request.method == "peers.compact" {
+        return Ok(compact_peers(
+            store,
+            request_text(&request.params, "identity").as_deref(),
+        ));
+    }
+    if request.method == "identities.compact" {
+        return Ok(compact_identities(store));
+    }
+    if request.method == "events.compact" {
+        let after = request_text(&request.params, "after");
+        return Ok(compact_events(
+            store,
+            after.as_deref(),
+            request_text(&request.params, "identity").as_deref(),
+        ));
+    }
+    if request.method == "gateway.start" {
+        let identity = request_text(&request.params, "identity")
+            .unwrap_or_else(|| session_identity.clone());
+        let response = gateway_start(&request, store, transport, &identity).await;
+        return encode_json(&response).map_err(io::Error::other);
+    }
+    if request.method == "gateway.stop" {
+        let identity = request_text(&request.params, "identity")
+            .unwrap_or_else(|| session_identity.clone());
+        return encode_json(&gateway_stop(&request, &identity)).map_err(io::Error::other);
+    }
+    if request.method == "web.url" {
+        return encode_json(&web_url(&request)).map_err(io::Error::other);
+    }
+    if request.method == "provider.start" {
+        let identity = request_text(&request.params, "identity")
+            .unwrap_or_else(|| session_identity.clone());
+        let response = provider_start(&request, store, transport, &identity).await;
+        return encode_json(&response).map_err(io::Error::other);
+    }
+    if request.method == "provider.stop" {
+        let identity = request_text(&request.params, "identity")
+            .unwrap_or_else(|| session_identity.clone());
+        return encode_json(&provider_stop(&request, &identity)).map_err(io::Error::other);
+    }
+    let response = dispatch_with_transport(request.clone(), store, transport);
+    if request.method == "identity.use" && response.ok {
+        if let Some(identity) = request_text(&request.params, "name") {
+            *session_identity = identity;
+        }
+    }
+    encode_json(&response).map_err(io::Error::other)
 }
 
 async fn wire_sync_identity(
@@ -1248,7 +1350,7 @@ fn live_dial_dispatch(request: &Request, store: &Arc<Mutex<Store>>) -> Response 
 
 fn contact_ticket_value(
     state: &Store,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
     identity_id: &str,
 ) -> Option<idfon_protocol::ContactTicket> {
     let identity = state
@@ -1256,7 +1358,7 @@ fn contact_ticket_value(
         .iter()
         .find(|identity| identity.id == identity_id)?;
     let endpoint_id = identity.endpoint_id.clone()?;
-    let endpoint_addr = String::from_utf8(transport.endpoint_ticket_for(identity_id)?).ok()?;
+    let endpoint_addr = String::from_utf8(transport?.endpoint_ticket_for(identity_id)?).ok()?;
     Some(idfon_protocol::ContactTicket {
         version: 1,
         account_id: identity.public_key.clone()?,
@@ -1271,11 +1373,14 @@ fn contact_ticket_value(
 fn contact_ticket(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
 ) -> Response {
+    let Some(transport) = transport else {
+        return transport_not_ready(request);
+    };
     let state = store.lock().expect("store mutex poisoned");
     let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
-    match contact_ticket_value(&state, transport, &identity) {
+    match contact_ticket_value(&state, Some(transport), &identity) {
         Some(ticket) => success(
             request,
             serde_json::to_value(ticket).expect("contact ticket serializes"),
@@ -1486,9 +1591,12 @@ fn gateway_value(
 async fn gateway_start(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
     identity: &str,
 ) -> Response {
+    let Some(transport) = transport else {
+        return transport_not_ready(request);
+    };
     let prefer = Prefer::parse(request_text(&request.params, "prefer").as_deref());
     if let Some(instance) = gateways()
         .lock()
@@ -1810,9 +1918,12 @@ fn provider_router(state: ProviderState) -> AxumRouter {
 async fn provider_start(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
     identity: &str,
 ) -> Response {
+    let Some(transport) = transport else {
+        return transport_not_ready(request);
+    };
     if providers()
         .lock()
         .expect("provider registry poisoned")
@@ -1909,13 +2020,27 @@ const RELAY_ENROLL_MUTATIONS: &[&str] = &[
 
 fn dispatch(request: Request, store: &Arc<Mutex<Store>>) -> Response {
     let transport = Arc::new(TransportMode::Fake(FakeTransport::default()));
-    dispatch_with_transport(request, store, &transport)
+    dispatch_with_transport(request, store, Some(&transport))
+}
+
+/// Transport-dependent methods fail closed, retryably, while the endpoints
+/// are still binding — and before touching any state (a send must never
+/// record an operation that is doomed to fail). Store-only functions never
+/// take this path, so local data is available the moment the store opens.
+fn transport_not_ready(request: &Request) -> Response {
+    error_response(
+        request.id.clone(),
+        &request.method,
+        ErrorCode::Internal,
+        "transport is still starting".into(),
+        true,
+    )
 }
 
 fn dispatch_with_transport(
     request: Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
 ) -> Response {
     if let Err(error) = validate_request(&request) {
         let (code, message) = match error {
@@ -1965,7 +2090,9 @@ fn dispatch_with_transport(
                     "daemon": "idfond",
                     "ready": true,
                     "protocol_version": PROTOCOL_VERSION,
-                    "ticket": transport.endpoint_ticket_for(identity_id).unwrap_or_default(),
+                    "ticket": transport
+                        .and_then(|transport| transport.endpoint_ticket_for(identity_id))
+                        .unwrap_or_default(),
                     "contact_ticket": contact_ticket_value(&state, transport, identity_id),
                 }),
             )
@@ -2112,6 +2239,9 @@ fn dispatch_with_transport(
                         false,
                     )
                 }
+            };
+            let Some(transport) = transport else {
+                return transport_not_ready(&request);
             };
             let endpoint_id = match transport
                 .ensure_identity(&identity_id, idfon_core::signing_key_bytes(&key))
@@ -2538,8 +2668,11 @@ fn gossip_room_send(
 fn room_create(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
 ) -> Response {
+    let Some(transport) = transport else {
+        return transport_not_ready(request);
+    };
     let identity_ref =
         request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let id = request_text(&request.params, "id").unwrap_or_else(random_room_id);
@@ -2629,8 +2762,11 @@ fn room_create(
 fn room_join(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
 ) -> Response {
+    let Some(transport) = transport else {
+        return transport_not_ready(request);
+    };
     let room_id = match request_text(&request.params, "room") {
         Some(room) if !room.is_empty() => room,
         _ => {
@@ -2675,7 +2811,7 @@ fn room_join(
         params,
         ..request.clone()
     };
-    let response = room_create(&create, store, transport);
+    let response = room_create(&create, store, Some(transport));
     match response.body {
         ResponseBody::Success { result, .. } => success(request, result),
         ResponseBody::Failure { error, .. } => error_response(
@@ -2746,8 +2882,11 @@ fn room_leave(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
 fn room_send(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
 ) -> Response {
+    let Some(transport) = transport else {
+        return transport_not_ready(request);
+    };
     let room_ref = request_text(&request.params, "room");
     let text = request_text(&request.params, "text");
     let base_key = request_text(&request.params, "idempotency_key");
@@ -2817,7 +2956,7 @@ fn room_send(
             method: "message.send".into(),
             params,
         };
-        match send_message(&sub_request, store, transport).body {
+        match send_message(&sub_request, store, Some(transport)).body {
             ResponseBody::Success { result, .. } => {
                 if let Some(operation_id) = result
                     .get("operation_id")
@@ -2846,8 +2985,13 @@ fn room_send(
 fn send_message(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
 ) -> Response {
+    // Fail closed before recording anything: a send queued with no transport
+    // would end up marked Failed instead of waiting for the bind to finish.
+    let Some(transport) = transport else {
+        return transport_not_ready(request);
+    };
     let to = request_text(&request.params, "to");
     let identity_id = match &to {
         Some(target) => {
@@ -5011,7 +5155,7 @@ fn parse_contact_ticket(
 fn peer_add(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
 ) -> Response {
     // An M3 contact ticket carries the dial address, endpoint id, and an
     // optional cached `server/discover`; it fills any omitted fields.
@@ -5210,7 +5354,7 @@ fn peer_add(
                 name: source.name.clone(),
                 endpoint_id: source.endpoint_id.clone(),
                 endpoint_addr: transport
-                    .endpoint_ticket_for(&source.id)
+                    .and_then(|transport| transport.endpoint_ticket_for(&source.id))
                     .and_then(|bytes| String::from_utf8(bytes).ok()),
                 devices: Vec::new(),
                 aliases: Vec::new(),
@@ -5892,8 +6036,11 @@ fn compact_events(
 fn events_sync(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
 ) -> Response {
+    let Some(transport) = transport else {
+        return transport_not_ready(request);
+    };
     let identity_ref =
         request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let target = request_text(&request.params, "to");
@@ -6506,6 +6653,76 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Local reads run with no transport at all: display data (contacts,
+    /// identities, rooms) is available the moment the store opens, never
+    /// gated on endpoints binding.
+    #[test]
+    fn store_reads_serve_without_a_transport() {
+        let dir = temp_dir("reads-without-transport");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let response = dispatch_with_transport(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "peers".into(),
+                method: "peers".into(),
+                params: serde_json::json!({}),
+            },
+            &store,
+            None,
+        );
+        assert!(response.ok);
+    }
+
+    /// A send before the transport binds fails closed, retryably, and records
+    /// nothing: a queued operation would end up marked Failed for good
+    /// instead of waiting for the bind to finish.
+    #[test]
+    fn sends_fail_closed_before_the_transport_binds() {
+        let dir = temp_dir("send-without-transport");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let response = dispatch_with_transport(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "send".into(),
+                method: "message.send".into(),
+                params: serde_json::json!({"to": "nobody", "text": "hi", "idempotency_key": "k1"}),
+            },
+            &store,
+            None,
+        );
+        assert!(!response.ok);
+        assert!(matches!(
+            &response.body,
+            ResponseBody::Failure { error, .. } if error.retryable
+        ));
+        assert!(store.lock().unwrap().operations.is_empty());
+    }
+
+    /// The shared feature pipeline serves reads with no transport installed:
+    /// the embedded packaging paints local data before the endpoints finish
+    /// binding, through exactly the code the socket packaging runs.
+    #[test]
+    fn handle_request_serves_reads_before_the_transport_binds() {
+        let dir = temp_dir("handle-request");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let frame = runtime
+            .block_on(handle_request(
+                Request {
+                    version: PROTOCOL_VERSION,
+                    id: "t".into(),
+                    method: "peers".into(),
+                    params: serde_json::json!({}),
+                },
+                &store,
+                None,
+                &mut String::from("default"),
+            ))
+            .unwrap();
+        let response: Response = serde_json::from_slice(&frame).unwrap();
+        assert!(response.ok);
+    }
+
     #[test]
     fn preset_identities_provision_once_and_migrate_default() {
         let dir = temp_dir("presets");
@@ -6770,7 +6987,7 @@ mod tests {
                     params,
                 },
                 &store,
-                &transport,
+                Some(&transport),
             )
         };
         // D20: no explicit identity → the target peer's line (Work) routes it.
@@ -6978,7 +7195,7 @@ mod tests {
                 method: "message.send".into(),
                 params,
             };
-            send_message(&request, &store, &transport)
+            send_message(&request, &store, Some(&transport))
         };
         assert!(send("k1", &peer_id, Some("Client STT=Apple Built-in")).ok);
         {
@@ -7076,7 +7293,7 @@ mod tests {
             method: "gateway.start".into(),
             params: serde_json::json!({"identity": "default"}),
         };
-        let response = gateway_start(&request, &store, &transport, "default").await;
+        let response = gateway_start(&request, &store, Some(&transport), "default").await;
         let (addr, token) = match response.body {
             ResponseBody::Success { result, .. } => (
                 result["addr"].as_str().unwrap().parse().unwrap(),
@@ -7175,7 +7392,7 @@ mod tests {
             params: serde_json::json!({"identity": "default", "root": shared.display().to_string()}),
         };
         assert!(
-            provider_start(&request, &store, &transport, "default")
+            provider_start(&request, &store, Some(&transport), "default")
                 .await
                 .ok
         );
@@ -7322,7 +7539,7 @@ mod tests {
             params: serde_json::json!({"identity": "e2e", "root": shared.display().to_string()}),
         };
         assert!(
-            provider_start(&start, &producer_store, &producer_transport, "e2e")
+            provider_start(&start, &producer_store, Some(&producer_transport), "e2e")
                 .await
                 .ok
         );

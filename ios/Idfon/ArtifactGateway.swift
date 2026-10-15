@@ -32,7 +32,7 @@ enum ArtifactGateway {
     }
 
     private static func loopback(account: String, path: String) async -> GatewayArtifactSource? {
-        guard let gateway = try? await DaemonClient().gatewayStart(),
+        guard let gateway = try? await IdfonClient().gatewayStart(),
               var components = URLComponents(string: "http://\(gateway.addr)/\(account)\(path)") else {
             return nil
         }

@@ -6,7 +6,7 @@ import Foundation
 /// Ephemeral by default (the OS caches directory); the "persist logs" opt-in
 /// moves the root to Application Support so a session survives OS cache
 /// pressure. Nothing here is served to peers — only the user-visible
-/// `Documents/Shared` directory is (see `DaemonClient.startSharedProvider`).
+/// `Documents/Shared` directory is (see `IdfonClient.startSharedProvider`).
 final class SessionStore {
     static let shared = SessionStore()
 

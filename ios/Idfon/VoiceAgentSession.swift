@@ -67,7 +67,7 @@ final class VoiceAgentSession: NSObject {
     /// Optional reference sentence (`IDFON_ASR_REF` / `-asrref`) for an A/B
     /// WER readout of the active recognizer.
     private var asrReference: String?
-    private var client = DaemonClient()
+    private var client = IdfonClient()
     private var promptWaiter: CheckedContinuation<String?, Never>?
     /// The call setup task, cancelled on hang-up so a slow recognizer/TTS load
     /// cannot keep the call alive.

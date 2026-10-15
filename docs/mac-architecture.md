@@ -72,8 +72,11 @@ Key facts:
   logging to `/tmp/idfond-auto.log`. The child deliberately outlives the app —
   `idfond` is a system-wide service. Shared socket: `/tmp/idfon/idfond.sock`
   (see `crates/idfond`).
-- **Same layering as iOS**: `DaemonClient` JSON IPC for chat/events, direct C media
-  calls for the call/camera path (video uses landscape 1280x720 vs iOS portrait).
+- **Same layering, different packaging**: mac's `DaemonClient` stays on the JSON
+  RPC bridge (the daemon is a real process here — the CLI needs it), while the
+  iOS app calls the embedded feature functions in-process (`IdfonClient` →
+  `idfon_request`); both then use direct C media calls for the call/camera path
+  (video uses landscape 1280x720 vs iOS portrait).
 - **Contacts are editable**: right-clicking a contact row opens **Rename…** (a sheet
   calling `peer.update`) and **Delete…** (`peer.remove`, plus capability-ticket
   cleanup); after a mutation the sidebar re-reads peers via `AppModel.refresh()`.

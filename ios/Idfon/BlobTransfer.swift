@@ -1,7 +1,7 @@
 import Foundation
 
 /// Chunked blob store/fetch over the protocol (mirrors the CLI's put/fetch).
-extension DaemonClient {
+extension IdfonClient {
     /// Chunked blob store (media.resource.put; mirrors the CLI's put_data:
     /// single-chunk puts carry finish=false and the ticket comes back in that
     /// response; multi-chunk sends a trailing empty finish=true).

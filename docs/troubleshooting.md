@@ -196,14 +196,16 @@ relying on `try`.
 **Symptom.** After the app relaunched — including right after a crash — the
 Contacts and Recents lists were empty; a later launch showed them again.
 
-**Cause.** The in-process daemon binds its socket on a background thread
-(`DaemonBootstrap.start`). The first `refresh()` called `client.peers()` once;
+**Cause.** The in-process core binds its socket on a background thread
+(`IdfonRuntime.start`). The first `refresh()` called `client.peers()` once;
 on the not-yet-ready socket it threw, and `PeerListViewController` returned
 without populating and without retrying (only `viewWillAppear` or a manual
 pull refreshed).
 
-**Fix.** `DaemonClient.whenReady { … }` polls the read (15 × 400 ms) and both
-Contacts and Recents use it, so the list fills once the daemon is up.
+**Fix.** `IdfonClient.whenReady { … }` polls the read (15 × 400 ms) and both
+Contacts and Recents use it, so the list fills once the daemon is up. (Later
+fixes narrowed the window further: store-only reads now serve in-process
+before any bind — `docs/daemon.md`, "packaging, not semantics".)
 
 ## Client-cascade voice call: dead air after "answered", dropped while silent, caller turns missing (2026-10-04, FIXED)
 

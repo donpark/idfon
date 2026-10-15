@@ -3,7 +3,7 @@ import UIKit
 /// Room list. Room messages use the same ChatViewController and ChatStore as
 /// direct chats; only the conversation scope and a few controls differ.
 final class RoomsViewController: UITableViewController, ChatStoreObserver {
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     private var rooms: [Room] = []
     /// §5.4 list states (loading / empty / failed).
     private var listState: ListState = .loading

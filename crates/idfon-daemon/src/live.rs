@@ -355,10 +355,13 @@ pub fn live_dial(request: &Request, peer_addr: &str) -> Response {
 /// side-channel ALPN for the duration.
 pub fn live_answer(
     request: &Request,
-    transport: &std::sync::Arc<TransportMode>,
+    transport: Option<&std::sync::Arc<TransportMode>>,
     identity_id: &str,
 ) -> Response {
     let method = &request.method;
+    let Some(transport) = transport else {
+        return crate::transport_not_ready(request);
+    };
     let Some(transport) = transport.current_transport(identity_id) else {
         return error(&request.id, method, "no transport for identity");
     };

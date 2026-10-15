@@ -113,8 +113,11 @@ fn inbound_allowed(store: &Arc<Mutex<Store>>, identity: &str, remote_endpoint_id
 pub fn listen(
     request: &Request,
     store: &Arc<Mutex<Store>>,
-    transport: &Arc<TransportMode>,
+    transport: Option<&Arc<TransportMode>>,
 ) -> Response {
+    let Some(transport) = transport else {
+        return crate::transport_not_ready(request);
+    };
     let method = &request.method;
     let identity = resolved_identity_id(request, store);
     let Some(reference) = request_text(&request.params, "to") else {

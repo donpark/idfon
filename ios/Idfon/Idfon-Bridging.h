@@ -12,12 +12,21 @@
 // shutdown never happens on iOS: the daemon lives with the process).
 int idfon_daemon_run(const char *socket_path, const char *data_dir, const char *transport);
 
-// One-shot JSON request/response over the daemon socket. Thread-safe; each
-// call opens its own connection. On IDFON_OK, *out/*out_len hold a
-// heap-allocated response body that the caller frees with
-// idfon_client_result_free. ok (optional) receives 1/0 for response.ok.
+// One-shot JSON request/response over the daemon socket (the RPC bridge to
+// a separately-packaged daemon). Thread-safe; each call opens its own
+// connection. On IDFON_OK, *out/*out_len hold a heap-allocated response body
+// that the caller frees with idfon_client_result_free. ok (optional)
+// receives 1/0 for response.ok.
 int idfon_client_request(const char *socket_path, const uint8_t *req, uintptr_t req_len,
                          uint8_t **out, uintptr_t *out_len, uint8_t *ok, uint32_t connect_timeout_ms);
+
+// One JSON request/response round-trip into the app's embedded feature set
+// (the daemon core linked in-process — same functions the RPC bridge serves,
+// no socket, no separate lifecycle). Same body and free conventions as
+// idfon_client_request; ok (optional) receives 1/0 for response.ok.
+// IDFON_ECONNECT = the feature set is still starting, retry.
+int idfon_request(const uint8_t *req, uintptr_t req_len,
+                  uint8_t **out, uintptr_t *out_len, uint8_t *ok);
 
 void idfon_client_result_free(uint8_t *ptr, uintptr_t len);
 

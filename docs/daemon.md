@@ -10,6 +10,34 @@ the **state that many local agents must share safely**. Everything
 interactive and ephemeral lives in the client (GUI, CLI); everything that must
 outlive a client or be single-writer lives in the daemon.
 
+## The daemon is packaging, not semantics
+
+The product is a set of feature functions over a local store plus an optional
+transport (`crates/idfon-daemon`, the `handle_request` pipeline); `idfond` is
+one *packaging* of them — a process serving them over a JSON RPC bridge
+(`idfon-client`) — and the iOS app is another, embedding the same functions
+and calling them in-process (`idfon_request`). Function names carry no
+"daemon"; the packaging is chosen by the target build. The rule covers every
+name: "daemon" survives only where it names the daemon itself — `idfond`, the
+run/serve packaging in `crates/idfon-daemon`, the `idfon_daemon_run` C entry,
+mac's `DaemonClient`/`DaemonRuntime` (real daemon clients) — while the iOS
+app's client-side types are `IdfonClient`, `IdfonRuntime`, `IdfonPaths`
+(names kept only for legacy reasons were renamed 2026-10-15).
+
+Two properties the code enforces:
+
+- **Store-only functions take no transport** — `peers`, `identities`,
+  `room.list`, `events*`, `operation.*`, `message.receive`, `access.*`,
+  `media.session.*`, `policy.*`, `identity.*`, … They serve the moment the
+  store opens, so no client's display data ever waits for endpoint binding.
+- **Transport-dependent functions accept `Option<&…>`** — `message.send`,
+  `room.*`, `events.sync`, `contact.ticket`, `identity.use`, `mcp.listen`,
+  `media.live.answer`, `gateway.*`, `provider.*` fail closed with a *retryable*
+  error while the endpoints bind (a send never records an operation that is
+  doomed to fail); `peer.add` degrades gracefully (its transport use is
+  enrichment only). Startup serves reads first and binds endpoints ASAP,
+  concurrent with the first requests.
+
 ## What the daemon earns
 
 1. **Reachability that outlives apps.** Closing a window doesn't drop the
@@ -27,8 +55,8 @@ outlive a client or be single-writer lives in the daemon.
 5. **Blob serving while you're away.** Peers fetch content from your node on
    the daemon's listener; a transfer doesn't die because the sending agent
    closed.
-6. **One IPC surface for every client shape** — CLI (stateless), macOS GUI
-   (thin), iOS (in-process daemon, since iOS can't background). The daemon is
+6. **One feature surface for every client shape** — CLI (stateless), macOS GUI
+   (thin), iOS (embedded, since iOS can't background). The daemon is
    embeddable; that's why iOS works.
 
 ## What the daemon deliberately does not do
