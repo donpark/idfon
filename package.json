@@ -13,6 +13,7 @@
     "eve": "bash ./scripts/eve.sh",
     "pair": "bash ./scripts/pair-apple-channels.sh",
     "agent": "bash ./scripts/agent.sh",
+    "edge": "bash ./scripts/edge.sh",
     "deploy:do": "bash ./scripts/deploy-digitalocean.sh",
     "deploy:do:relay": "IDFON_DEPLOY_RELAY=1 bash ./scripts/deploy-digitalocean.sh"
   },
