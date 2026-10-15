@@ -248,7 +248,12 @@ export function createApp(config) {
       // Relay callout: the only answer the relay accepts is 200 "true".
       if (route === "POST /check") {
         if (!config.relayBearer || bearer(req) !== config.relayBearer) return deny("bad bearer");
-        const id = normalizeEndpoint(req.headers["x-iroh-node-id"]);
+        // Wire name is X-Iroh-NodeId -> lowercase "x-iroh-nodeid" (iroh-relay
+        // main.rs X_IROH_ENDPOINT_ID). The hyphenated spelling is accepted as
+        // an alias; pinned against the real relay in docs/relay-test-plan.md L2.
+        const id = normalizeEndpoint(
+          req.headers["x-iroh-nodeid"] ?? req.headers["x-iroh-node-id"],
+        );
         const allowed = Boolean(id && admitted(state, id));
         console.log(`check ${id || "<no id>"} ${allowed ? "allow" : "deny"}`);
         if (allowed) {
