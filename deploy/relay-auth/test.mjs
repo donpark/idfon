@@ -228,6 +228,40 @@ test("check: fail closed, owner admits and revokes callers", async () => {
   }
 });
 
+// --- lease hygiene --------------------------------------------------------
+test("admit: re-admit never shortens a live lease; revoke resets it", async () => {
+  const owner = keypair();
+  const config = testConfig({ IDFON_RELAY_ISSUERS: `${KEY_A},${owner.pubHex}` });
+  const { server, base } = await start(config);
+  try {
+    const challenge = await call(base, "/owner/challenge", {
+      body: { identity: owner.pubHex, endpoint_id: SUBJECT },
+    });
+    const { nonce } = JSON.parse(challenge.text);
+    const proof = `idfon-relay-owner/1|${owner.pubHex}|${SUBJECT}|${nonce}`;
+    const signature = crypto.sign(null, Buffer.from(proof, "utf8"), owner.privateKey).toString("hex");
+    const { token: ownerToken } = JSON.parse(
+      (await call(base, "/owner/enroll", { body: { identity: owner.pubHex, endpoint_id: SUBJECT, nonce, signature } })).text,
+    );
+    const CALLER = "44".repeat(32);
+    const admit = (body) =>
+      call(base, "/owner/entries", { body: { endpoint_id: CALLER, ...body }, headers: asBearer(ownerToken) });
+    const long = JSON.parse((await admit({ label: "edge", lease_days: 3650 })).text);
+    // Re-admit with the default (short) lease keeps the long one.
+    const again = JSON.parse((await admit({ label: "edge" })).text);
+    assert.equal(again.lease_expires, long.lease_expires);
+    // Revoke + re-admit resets the lease from scratch.
+    assert.equal(
+      (await call(base, `/owner/entries/${CALLER}`, { method: "DELETE", headers: asBearer(ownerToken) })).status,
+      200,
+    );
+    const fresh = JSON.parse((await admit({ lease_days: 1 })).text);
+    assert.ok(fresh.lease_expires < long.lease_expires);
+  } finally {
+    server.close();
+  }
+});
+
 // --- caller bootstrap with a grant ----------------------------------------
 test("enroll: grant bootstrap, refresh rotation, ticket revocation cascade", async () => {
   const owner = keypair();
