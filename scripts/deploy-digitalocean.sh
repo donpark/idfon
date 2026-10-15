@@ -273,6 +273,20 @@ info "starting idfon-edge"
 ssh $SSH_OPTS "root@$PUBLIC_IP" \
   "printf 'IDFON_EDGE_IMAGE=%s\nIDFON_EDGE_DOMAIN=%s\n${RELAY_ENV}' '$EDGE_IMAGE' '$DOMAIN' > /srv/idfon-edge/.env
    cd /srv/idfon-edge && docker compose $COMPOSE_FILES pull -q && docker compose $COMPOSE_FILES up -d --remove-orphans"
+# compose does not recreate the relay when only the bind-mounted config.toml
+# changed (access-mode switches!) — restart it so the new access policy is
+# actually enforced. Idempotent and cheap.
+if [ "$DEPLOY_RELAY" = "1" ]; then
+  if [ "$RELAY_AUTH_MODE" != "1" ]; then
+    # Rollback path: the profile-gated service would otherwise linger (inert)
+    # after the access mode is switched away from the webhook.
+    ssh $SSH_OPTS "root@$PUBLIC_IP" \
+      "cd /srv/idfon-edge && docker compose $COMPOSE_FILES rm -sf relay-auth >/dev/null 2>&1" || true
+  fi
+  ssh $SSH_OPTS "root@$PUBLIC_IP" \
+    "cd /srv/idfon-edge && docker compose $COMPOSE_FILES restart iroh-relay >/dev/null 2>&1"
+  info "iroh-relay restarted with the current access policy"
+fi
 
 # --- verify ----------------------------------------------------------------
 say "verify"

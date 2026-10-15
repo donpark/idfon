@@ -127,6 +127,44 @@ IDFON_RELAY_URLS=http://127.0.0.1:3340 idfond --data-dir /tmp/idfon-test
 - `ctl.mjs` needs explicit `method: "POST"` semantics for body-less POSTs —
   already handled; if you add commands, don't fall back to GET.
 
+## First full run — 2026-10-14 (L0–L3 all executed)
+
+| Level | Result |
+| --- | --- |
+| L0 | ✅ 6/6 node + 45 rust |
+| L1 | ✅ 16/16 |
+| L2 | ✅ 01/02/03/06 live relay+endpoint; 04/05 later closed with real daemon pairs via `relay-bench.sh` (0 stalls, `idfon-relay-only` 125.8/128.0 dev-relay; shared_token seam 130.7/131.5) |
+| L3 | ✅ 01–05 on the live relay (sfo3 droplet) |
+
+Records worth keeping:
+
+- **RA-L3-04 (acceptance):** delivered 1154 ms → revoke + reconnect → **not
+delivered** → re-admit → delivered **124 ms**. No relay restart, no client
+change at any point.
+- **RA-L3-03:** webhook admission `idfon-relay-only` 123.8/129.0 ms vs
+shared_token 121.3/123.5 vs historical baseline 126.5/127.4 — the callout
+adds no measurable latency (p50/p95, msg).
+- **Live fail-closed evidence:** a stranger's endpoint id probing the relay
+was denied by the webhook within seconds of the mode flip, while mac/iPhone/
+edge reconnects were admitted from the persisted registry.
+- Registry state survived two mode flips (auth → token → auth) without
+re-admission — `state.json` lives in the `relay-auth/data` volume.
+
+Two more run findings (fixed in `scripts/deploy-digitalocean.sh`):
+
+4. **Access-mode changes needed a relay restart** — compose does not recreate
+the relay when only the bind-mounted `config.toml` changed, so the old policy
+stayed enforced (the bench completing with zero `/check` calls exposed it).
+The deploy now always restarts `iroh-relay` in relay mode.
+5. **Rollback left `relay-auth` running** (profile-gated service is not an
+orphan). Inert and firewalled, but the deploy now `rm -sf`s it when leaving
+auth mode.
+
+Posture after the run: **the production relay runs webhook mode** with the
+seven real endpoints admitted on ~10-year leases (edge, mac, iPhone, four
+agent peers) and `IDFON_RELAY_ISSUERS` = the mac identity key. Rollback is
+one redeploy without `IDFON_RELAY_AUTH` (verified).
+
 ## Pass criteria
 
 - L0 all green (required for every commit touching `deploy/relay-auth/` or
