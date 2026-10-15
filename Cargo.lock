@@ -3101,6 +3101,7 @@ dependencies = [
  "iroh-blobs",
  "iroh-gossip",
  "libc",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

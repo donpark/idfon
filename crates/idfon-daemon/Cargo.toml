@@ -20,6 +20,7 @@ iroh-blobs = "0.103"
 libc = "0.2"
 ed25519-dalek = "3"
 rusqlite = { version = "0.40", features = ["bundled"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 idfon-core = { path = "../idfon-core" }
 idfon-gateway = { path = "../idfon-gateway" }
 idfon-h3 = { path = "../idfon-h3" }

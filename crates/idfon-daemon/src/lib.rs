@@ -12,6 +12,7 @@ use std::{
 mod blob;
 mod live;
 mod mcp;
+mod relay_auth;
 
 use axum::{
     extract::{Path as AxumPath, State},
@@ -270,6 +271,11 @@ struct Store {
     policies: Vec<idfon_protocol::LocalPolicy>,
     #[serde(default)]
     revoked_tickets: Vec<String>,
+    /// Endpoint ids this daemon admitted at the relay's auth service
+    /// (`relay_auth`); revocation is the set difference against live
+    /// peers/identities (docs/relay-auth.md §6).
+    #[serde(default)]
+    relay_admitted: Vec<String>,
     #[serde(default)]
     mcp_discovery: Vec<idfon_protocol::McpDiscoveryRecord>,
     /// Local MCP server command the inbound `idfon/mcp/1` relay splices to
@@ -345,6 +351,7 @@ impl Store {
                     rooms: Vec::new(),
                     policies: Vec::new(),
                     revoked_tickets: Vec::new(),
+                    relay_admitted: Vec::new(),
                     mcp_discovery: Vec::new(),
                     mcp_command: None,
                     sessions: Vec::new(),
@@ -612,6 +619,10 @@ pub async fn run(config: DaemonConfig) -> io::Result<()> {
         wire_sync_identity(Arc::clone(&transport), Arc::clone(&store), identity.clone()).await;
     }
     resume_pending_operations(Arc::clone(&store), Arc::clone(&transport));
+    // Relay auto-enrollment (docs/relay-auth.md §6): keeps every identity and
+    // peer device endpoint admitted at the relay's auth service. No-op unless
+    // IDFON_RELAY_ENROLL_URL is set.
+    relay_auth::spawn(Arc::clone(&store));
     prepare_socket(&socket)?;
     if let Some(parent) = socket.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -971,6 +982,11 @@ fn merge_state_events(
     }
     let data_dir = state.data_dir.clone();
     state.save(&data_dir)?;
+    if added > 0 {
+        // Synced peer/identity changes can add or drop endpoints to admit
+        // (docs/relay-auth.md §6).
+        relay_auth::poke();
+    }
     Ok(added)
 }
 
@@ -1877,6 +1893,20 @@ fn provider_stop(request: &Request, identity: &str) -> Response {
     )
 }
 
+/// Mutations that change which endpoints the relay should admit
+/// (`relay_auth`, docs/relay-auth.md §6); they poke the enrollment loop.
+const RELAY_ENROLL_MUTATIONS: &[&str] = &[
+    "peer.add",
+    "peer.update",
+    "peer.device.add",
+    "peer.device.update",
+    "peer.device.remove",
+    "peer.remove",
+    "identity.create",
+    "identity.delete",
+    "events.merge",
+];
+
 fn dispatch(request: Request, store: &Arc<Mutex<Store>>) -> Response {
     let transport = Arc::new(TransportMode::Fake(FakeTransport::default()));
     dispatch_with_transport(request, store, &transport)
@@ -1900,7 +1930,7 @@ fn dispatch_with_transport(
         return error_response(request.id, &request.method, code, message, false);
     }
 
-    match request.method.as_str() {
+    let response = match request.method.as_str() {
         "message.receive" => receive_message(&request, store),
         "message.send" => send_message(&request, store, transport),
         "room.create" => room_create(&request, store, transport),
@@ -2177,7 +2207,15 @@ fn dispatch_with_transport(
             format!("unknown method '{}'", request.method),
             false,
         ),
+    };
+    // Relay auto-enrollment: re-sync admission after mutations. Wakes coalesce
+    // in the maintenance task, so this stays cheap on hot paths.
+    if matches!(&response.body, ResponseBody::Success { .. })
+        && RELAY_ENROLL_MUTATIONS.contains(&request.method.as_str())
+    {
+        relay_auth::poke();
     }
+    response
 }
 
 fn request_text(params: &serde_json::Value, name: &str) -> Option<String> {

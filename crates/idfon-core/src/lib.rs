@@ -288,6 +288,30 @@ pub fn verify_capability_ticket(ticket: &CapabilityTicket) -> Result<(), AuthErr
     .map_err(|_| AuthError::VerificationFailed)
 }
 
+/// The exact bytes an owner-bootstrap proof signs
+/// (`deploy/relay-auth/server.mjs` `OWNER_PROOF_PREFIX`). Pinned by the golden
+/// vector below and `deploy/relay-auth/test.mjs` — the two sides must agree
+/// byte for byte or every enrollment is refused.
+pub fn relay_owner_proof_bytes(identity: &str, endpoint: &str, nonce: &str) -> Vec<u8> {
+    format!("idfon-relay-owner/1|{identity}|{endpoint}|{nonce}").into_bytes()
+}
+
+/// Signs the owner proof with the **identity** key (never the endpoint key:
+/// identities created after the account/endpoint split have separate keys).
+/// `identity` is the lowercase hex public key, as the relay lists it in
+/// `IDFON_RELAY_ISSUERS`.
+pub fn sign_relay_owner_proof(
+    key: &SigningKey,
+    identity: &str,
+    endpoint: &str,
+    nonce: &str,
+) -> String {
+    encode_hex(
+        &key.sign(&relay_owner_proof_bytes(identity, endpoint, nonce))
+            .to_bytes(),
+    )
+}
+
 /// True when `expires_at` is at or before `now_epoch`. `expires_at` may be
 /// epoch seconds or RFC 3339; an unparseable value counts as expired.
 pub fn expiry_passed(expires_at: &str, now_epoch: u64) -> bool {
@@ -660,6 +684,26 @@ mod tests {
             )
         );
         assert!(verify_capability_ticket(&grant).is_ok());
+    }
+
+    #[test]
+    fn relay_owner_proof_golden_vector() {
+        // Cross-language contract with deploy/relay-auth/server.mjs: the
+        // owner proof bytes and their ed25519 signature. test.mjs verifies the
+        // same vector with node:crypto (verifyEd25519).
+        let key = decode_signing_key(&"07".repeat(32)).expect("fixed key");
+        let identity = peer_id(&key);
+        assert_eq!(identity, "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c");
+        let endpoint = "11".repeat(32);
+        let nonce = "00112233445566778899aabbccddeeff";
+        assert_eq!(
+            relay_owner_proof_bytes(&identity, &endpoint, nonce),
+            format!("idfon-relay-owner/1|{identity}|{endpoint}|{nonce}").into_bytes()
+        );
+        assert_eq!(
+            sign_relay_owner_proof(&key, &identity, &endpoint, nonce),
+            "6024d46a9d40787d532358cd25c704c29684b021f875941c5ebef1f3b3b26fa3e453cb7b9fa1ba75000d89ceda627bf0c3282f7b2eeb61c6574fe3a850a1cf08"
+        );
     }
 
     #[test]
