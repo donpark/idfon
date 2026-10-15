@@ -47,3 +47,51 @@ pub extern "C" fn idfon_daemon_run(
         }
     }
 }
+
+/// One request/response round-trip into the embedded feature set: the same
+/// functions the daemon packaging serves over the RPC bridge
+/// (`idfon_client_request`), called directly in-process — the embedder (the
+/// iOS app) links this crate, so there is no socket and no separate
+/// lifecycle. Result conventions mirror `idfon_client_request`: `IDFON_OK`
+/// plus a heap buffer freed with `idfon_client_result_free`; `ok` (optional)
+/// receives 1/0 for response.ok. `IDFON_ECONNECT` means the feature set has
+/// not finished starting — retry, exactly like the bridge's connect error.
+#[no_mangle]
+pub extern "C" fn idfon_request(
+    req: *const u8,
+    req_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+    ok: *mut u8,
+) -> i32 {
+    use crate::client::{
+        IDFON_EARG, IDFON_ECONNECT, IDFON_EINVALID, IDFON_EREQUEST, IDFON_ETOOLARGE, IDFON_OK,
+    };
+
+    if out.is_null() || out_len.is_null() || (req.is_null() && req_len > 0) {
+        return IDFON_EARG;
+    }
+    if req_len > idfon_protocol::MAX_FRAME_BYTES {
+        return IDFON_EREQUEST;
+    }
+    let request = if req_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(req, req_len) }
+    };
+    let (body, response_ok) = match idfon_daemon::request_json(request) {
+        Ok(result) => result,
+        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => return IDFON_ECONNECT,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return IDFON_ETOOLARGE,
+        Err(_) => return IDFON_EINVALID,
+    };
+    if !ok.is_null() {
+        unsafe { ok.write(u8::from(response_ok)) };
+    }
+    let boxed: Box<[u8]> = body.into_boxed_slice();
+    unsafe {
+        *out_len = boxed.len();
+        *out = Box::into_raw(boxed).cast();
+    }
+    IDFON_OK
+}

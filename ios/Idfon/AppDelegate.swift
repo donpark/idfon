@@ -6,14 +6,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Before the daemon starts so an automation launch (-relayurls …) both
         // sets and uses the relay config.
         RelaySettings.configureFromLaunchArgs(ProcessInfo.processInfo.arguments)
-        DaemonBootstrap.start()
+        IdfonRuntime.start()
         ChatStore.shared.start()
         // Contact invites from a trusted directory enroll silently; everyone
         // else prompts. The message is already sender-authenticated.
         ChatStore.shared.onInvite = { [weak self] invite, sender in
             self?.promptInvite(invite, sender: sender)
         }
-        Task { await DaemonClient().startSharedProvider() }
+        Task { await IdfonClient().startSharedProvider() }
         LiveCall.shared.recoverStaleCall()
         VideoCall.shared.recoverStaleCall()
         // Warm the TTS model (Kokoro) so the first call reply is not blocked by
@@ -189,7 +189,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             let ref = args[i + 2]
             VoiceMemo.requestPermission { granted in
                 guard granted else { idfonLog("idfon memo: no mic permission"); return }
-                let memoClient = DaemonClient()
+                let memoClient = IdfonClient()
                 let memo = VoiceMemo()
                 do { _ = try memo.start() } catch {
                     idfonError("idfon memo start failed: \(error.localizedDescription)")
@@ -248,7 +248,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// (`idfon self ticket:`) so the remote side can be paired from console
     /// output.
     private func pairPeer(ticketJSON: String, name: String) async {
-        let client = DaemonClient()
+        let client = IdfonClient()
         do {
             // Canonical identity id (name may differ, e.g. id "default"
             // vs name "Default" — grants and peer.add must use the id).
@@ -305,7 +305,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     private func unpairPeer(name: String) async {
-        let client = DaemonClient()
+        let client = IdfonClient()
         let identity = (try? await client.request(method: "status"))?["identity"]?["id"]?.stringValue ?? "default"
         _ = try? await client.request(method: "peer.remove", params: [
             "ref": AnyEncodable(name),
@@ -372,7 +372,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     /// M1 smoke check (kept for console diagnostics): log daemon readiness.
     private func smokeCheckStatus() {
-        let client = DaemonClient()
+        let client = IdfonClient()
         Task {
             for _ in 0..<50 {
                 if let status = try? await client.status(), status.ready {

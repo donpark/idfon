@@ -55,7 +55,7 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
     /// The peer the artifact came from, when known. Enables a remote fetch
     /// through the gateway if the blob is not held locally.
     private let peerRef: String?
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     /// App-owned tool catalog a JSON-render artifact may dispatch (P5).
     private let renderTools = RenderTools.make()
     private let stack = UIStackView()
@@ -266,7 +266,7 @@ final class ArtifactDetailViewController: UIViewController, UITextViewDelegate {
             return data
         }
         guard let peerRef else {
-            throw DaemonClient.DaemonError.request("artifact content is not available locally")
+            throw IdfonClient.RequestError.request("artifact content is not available locally")
         }
         // Live shared-root fetch: direct P2P first, edge fallback (P4).
         return try await client.fetchResource(

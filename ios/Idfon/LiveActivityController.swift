@@ -50,7 +50,7 @@ final class LiveActivityController: NSObject {
         overlay.topClearance = visibleNavigationController?.topClearance ?? 0
     }
 
-    private let client = DaemonClient()
+    private let client = IdfonClient()
 
     /// peer-id → display name, so the Bar shows a callee name instead of the
     /// raw iroh public key (#3). Refreshed on call start and on resolution.

@@ -2,7 +2,7 @@ import Foundation
 
 /// Typed convenience methods over the raw protocol request.
 /// Contract: docs/protocol.md.
-extension DaemonClient {
+extension IdfonClient {
     func status() async throws -> (ready: Bool, identityName: String) {
         let result = try await request(method: "status")
         let ready = result?["ready"]?.boolValue ?? false
@@ -26,7 +26,7 @@ extension DaemonClient {
         let identity = try await identityId()
         let raw = try await request(method: "contact.ticket", params: ["identity": AnyEncodable(identity)])
         guard let address = raw?["endpoint_addr"]?.stringValue else {
-            throw DaemonError.request("contact.ticket returned no endpoint address")
+            throw RequestError.request("contact.ticket returned no endpoint address")
         }
         return address
     }
@@ -37,13 +37,13 @@ extension DaemonClient {
     /// `CapabilityTickets.store`.
     func addChannel(name: String, ticketJSON: String, identity: String) async throws {
         guard let ticket = try JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any] else {
-            throw DaemonError.request("invalid contact ticket JSON")
+            throw RequestError.request("invalid contact ticket JSON")
         }
         let transport = (ticket["endpoint_addr"] as? String)
             .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? ticket
         guard let endpointId = (ticket["endpoint_id"] as? String) ?? (transport["id"] as? String),
               !endpointId.isEmpty else {
-            throw DaemonError.request("ticket has no endpoint_id")
+            throw RequestError.request("ticket has no endpoint_id")
         }
         let accountId = (ticket["account_id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? endpointId
         let endpointAddr = (ticket["endpoint_addr"] as? String) ?? ticketJSON
@@ -133,7 +133,7 @@ extension DaemonClient {
     }
 
     /// Poll a read until the daemon answers. The in-process daemon binds its
-    /// socket on a background thread (`DaemonBootstrap.start`), so the first
+    /// socket on a background thread (`IdfonRuntime.start`), so the first
     /// screen after a cold start — including right after a crash relaunch —
     /// can otherwise read an empty list and never retry.
     func whenReady<T>(
@@ -192,7 +192,7 @@ extension DaemonClient {
         if let name { params["name"] = AnyEncodable(name) }
         if !members.isEmpty { params["members"] = AnyEncodable(members.map(AnyEncodable.init)) }
         guard let raw = try await request(method: "room.join", params: params)?["room"] else {
-            throw DaemonClient.DaemonError.request("room.join returned no room")
+            throw IdfonClient.RequestError.request("room.join returned no room")
         }
         return try JSONDecoder().decode(Room.self, from: JSONEncoder().encode(raw))
     }
@@ -208,7 +208,7 @@ extension DaemonClient {
         if let icon { params["icon"] = AnyEncodable(icon) }
         if let repo { params["repo"] = AnyEncodable(repo) }
         guard let raw = try await request(method: "room.create", params: params)?["room"] else {
-            throw DaemonClient.DaemonError.request("room.create returned no room")
+            throw IdfonClient.RequestError.request("room.create returned no room")
         }
         return try JSONDecoder().decode(Room.self, from: JSONEncoder().encode(raw))
     }
@@ -302,7 +302,7 @@ extension DaemonClient {
         guard let result = try await request(method: "gateway.start"),
               let addr = result["addr"]?.stringValue,
               let token = result["token"]?.stringValue else {
-            throw DaemonError.request("gateway.start returned no address")
+            throw RequestError.request("gateway.start returned no address")
         }
         return (addr, token)
     }
@@ -313,17 +313,17 @@ extension DaemonClient {
     func fetchRemoteResource(account: String, path: String) async throws -> Data {
         let gateway = try await gatewayStart()
         guard let url = URL(string: "http://\(gateway.addr)/\(account)\(path)") else {
-            throw DaemonError.request("invalid gateway URL for \(account)")
+            throw RequestError.request("invalid gateway URL for \(account)")
         }
         var httpRequest = URLRequest(url: url)
         httpRequest.setValue("Bearer \(gateway.token)", forHTTPHeaderField: "Authorization")
         httpRequest.timeoutInterval = 30
         let (data, response) = try await URLSession.shared.data(for: httpRequest)
         guard let http = response as? HTTPURLResponse else {
-            throw DaemonError.request("gateway returned no HTTP response")
+            throw RequestError.request("gateway returned no HTTP response")
         }
         guard http.statusCode == 200 else {
-            throw DaemonError.request("gateway returned HTTP \(http.statusCode)")
+            throw RequestError.request("gateway returned HTTP \(http.statusCode)")
         }
         return data
     }
@@ -344,7 +344,7 @@ extension DaemonClient {
                     ?? String(describing: directError)
                 let edge = (error as? LocalizedError)?.errorDescription
                     ?? String(describing: error)
-                throw DaemonError.request("direct: \(direct); edge: \(edge)")
+                throw RequestError.request("direct: \(direct); edge: \(edge)")
             }
         }
     }

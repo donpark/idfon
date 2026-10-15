@@ -196,12 +196,12 @@ final class EdgeClient: NSObject, @unchecked Sendable {
     /// serves a public certificate, so no trust override is needed.
     func fetch(account: String, path: String) async throws -> Data {
         guard let request = request(account: account, path: path) else {
-            throw DaemonClient.DaemonError.request("edge is not configured")
+            throw IdfonClient.RequestError.request("edge is not configured")
         }
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         guard status == 200 else {
-            throw DaemonClient.DaemonError.request("edge returned HTTP \(status)")
+            throw IdfonClient.RequestError.request("edge returned HTTP \(status)")
         }
         return data
     }
@@ -211,7 +211,7 @@ final class EdgeClient: NSObject, @unchecked Sendable {
     @discardableResult
     func fetchInBackground(account: String, path: String) throws -> Int {
         guard let request = request(account: account, path: path) else {
-            throw DaemonClient.DaemonError.request("edge is not configured")
+            throw IdfonClient.RequestError.request("edge is not configured")
         }
         let task = session().downloadTask(with: request)
         rememberPending(task.taskIdentifier, account: account, path: path)

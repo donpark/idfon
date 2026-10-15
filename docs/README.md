@@ -11,7 +11,7 @@ kept because it records decisions; **design** = not all implemented.
 | Doc | Covers | Read when |
 | --- | --- | --- |
 | `communication-model.md` | identities, peers, messages, grants | anything about the core model |
-| `daemon.md` | why there is a daemon at all | questioning the process model |
+| `daemon.md` | why there is a daemon at all; the daemon as packaging of the feature functions | questioning the process model |
 | `protocol.md` | daemon JSON IPC methods/params | adding/changing an RPC or a client |
 | `interaction-parameters.md` | CLI vs GUI responsibility split | where a policy/feature belongs |
 | `build.md` | which subprojects to rebuild after a change; the Rust/FFI target dirs | touching a shared crate or the vendored c-ffi, or unsure what needs rebuilding |
@@ -20,7 +20,7 @@ kept because it records decisions; **design** = not all implemented.
 
 | Doc | Covers |
 | --- | --- |
-| `ios-architecture.md` | iOS app structure, scene, daemon-in-process |
+| `ios-architecture.md` | iOS app structure, scene, embedded feature core | 
 | `mac-architecture.md` | macOS app structure, daemon subprocess |
 | `native-architecture.md` | Native-SDK (web-content) shell |
 | `idfon-web-analysis.md` | viewing P2P pages in `WKWebView` (`idfon:` scheme vs local proxy), TLS/WebMCP/security notes (as-built analysis; resolved by the hybrid transport) |

@@ -4,7 +4,7 @@ import UIKit
 /// no switcher — only the rare management verbs (create, rename, delete) and
 /// the pairing action: tapping a row shares that identity's contact ticket.
 final class IdentityPickerViewController: UITableViewController {
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     private var identities: [IdentityInfo] = []
     /// Called after a management change (create / rename / delete).
     var onChanged: (() -> Void)?

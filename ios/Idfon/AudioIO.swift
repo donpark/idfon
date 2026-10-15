@@ -44,7 +44,7 @@ final class AudioIO: AudioSource, AudioSink {
 
     /// Session/routing profile for the active call.
     enum Profile {
-        /// Daemon-streamed call audio. `.default` keeps VoiceProcessingIO from
+        /// Core-streamed call audio. `.default` keeps VoiceProcessingIO from
         /// attenuating playback (docs/troubleshooting.md).
         case liveCall
         /// On-device cascade. `.voiceChat` is VPIO's native AEC mode.

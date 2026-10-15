@@ -306,7 +306,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // starts.
     var allowsCall: Bool { !conversation.isRoom }
     private let conversation: Conversation
-    private let client = DaemonClient()
+    private let client = IdfonClient()
 
     private let tableView = UITableView()
     private let composerBar = UIView()

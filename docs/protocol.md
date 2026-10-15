@@ -13,6 +13,12 @@ JSON body; one request frame expects one response frame (the daemon may send
 multiple response frames for `events` with `follow: true` and for `wait`
 while it holds the request until a match or timeout).
 
+The frames are the contract, not the socket: an embedding target (the iOS
+app) calls the same dispatch in-process through `idfon_request`
+(`idfon_daemon::request_json`), one request frame in, one response frame out.
+`events --follow`'s multi-frame stream and `daemon.shutdown` exist only on
+the socket server.
+
 ## Envelope
 
 Request:

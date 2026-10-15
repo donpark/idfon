@@ -15,7 +15,7 @@ enum LiveCallHarness {
     /// Where the callee's recording lands (sandbox, daemon-readable since
     /// the daemon runs in-process).
     static var recordingPath: String {
-        DaemonPaths.dataDir.appendingPathComponent("last-call.wav").path
+        IdfonPaths.dataDir.appendingPathComponent("last-call.wav").path
     }
 
     /// Configure the audio session before any daemon audio starts.
@@ -28,7 +28,7 @@ enum LiveCallHarness {
 
     /// Dial a peer and stream the bundled WAV. Blocks until the callee hangs
     /// up or `seconds` elapses — run off the main actor.
-    static func dial(peer: String, seconds: UInt64, client: DaemonClient) async throws {
+    static func dial(peer: String, seconds: UInt64, client: IdfonClient) async throws {
         activateAudioSession()
         _ = try await client.request(method: "media.live.dial", params: [
             "to": AnyEncodable(peer),
@@ -40,7 +40,7 @@ enum LiveCallHarness {
     /// Arm auto-answer: blocks until someone dials, records the call to the
     /// sandbox recording path. Run in a long-lived task; `wait` caps how
     /// long the daemon listens per attempt.
-    static func armAutoAnswer(waitSeconds: UInt64, captureSeconds: UInt64, client: DaemonClient) async throws -> String {
+    static func armAutoAnswer(waitSeconds: UInt64, captureSeconds: UInt64, client: IdfonClient) async throws -> String {
         activateAudioSession()
         let result = try await client.request(method: "media.live.answer", params: [
             "wait": AnyEncodable(Int(waitSeconds)),
@@ -109,7 +109,7 @@ final class LiveCall {
     /// Observed on the main queue whenever state (or error) changed.
     var onState: (() -> Void)?
 
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     private var pendingInvite: (peer: String, ticket: String)?
     private var published = false
     private var operationGeneration = 0
@@ -451,7 +451,7 @@ final class LiveCall {
 final class HybridVoice {
     static let shared = HybridVoice()
 
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     private let segmenter = VoicePromptSegmenter()
     private var asr: (any AsrEngine)?
     private var tts: TtsEngine = SpeechEngines.tts

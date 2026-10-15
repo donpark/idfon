@@ -5,7 +5,7 @@ import Foundation
 /// Unix domain sockets are limited to ~104 bytes. Device sandbox paths fit
 /// (~91 chars); no separate simulator path exists because the app is
 /// device-only.
-enum DaemonPaths {
+enum IdfonPaths {
     /// Durable profile: identity keys, peers, state. iOS may purge `tmp`
     /// whenever the app is not running, and a lost identity key changes the
     /// endpoint id — invalidating every subject-bound capability ticket (the
@@ -51,10 +51,10 @@ enum DaemonPaths {
 
 /// Starts the daemon on a background thread. The daemon runs until process
 /// exit (there is no stop path; see iroh-c-ffi/src/daemon.rs).
-enum DaemonBootstrap {
+enum IdfonRuntime {
     static func start() {
-        let socket = DaemonPaths.socketPath
-        let dataDir = DaemonPaths.dataDir.path
+        let socket = IdfonPaths.socketPath
+        let dataDir = IdfonPaths.dataDir.path
         // Rust media paths fall back to literal /tmp (absent in the iOS
         // sandbox): point NATIVE_SDK_APP_DATA_DIR at the durable profile so
         // video-frame.jpg / received.wav land somewhere writable.

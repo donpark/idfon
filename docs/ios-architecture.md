@@ -1,7 +1,8 @@
 # iOS App Architecture
 
 The iOS app (`ios/Idfon/`, ~4.2K lines Swift) is a UIKit app with programmatic UI that
-talks to an **in-process Rust daemon** (`idfond`, via the `libiroh_c_ffi.a` static lib).
+embeds the **Rust feature core** (`libiroh_c_ffi.a`) — the same functions `idfond`
+serves over RPC on desktop — and calls them in-process (`idfon_request`).
 
 ```text
 ios/
@@ -33,10 +34,10 @@ ios/
 │   ├── LiveWaveformView.swift# mic-level visualization
 │   ├── BlobTransfer.swift    # chunked put/fetch (memos; putFile streams from disk for §5)
 │   ├── TransferCenter.swift  # Session Tray registry: transfer rows for the Bar
-│   ├── DaemonClient.swift    # JSON IPC request/response (5s timeout)
-│   ├── DaemonClient+Methods.swift    # status/peers/sendText/waitMessages/events/call-mode
-│   ├── DaemonBootstrap.swift # spawns idfond on background thread, socket paths
-│   └── Idfon-Bridging.h      # C ABI surface (daemon_run, client_request, media_*)
+│   ├── IdfonClient.swift    # JSON request/response into the embedded feature set (idfon_request)
+│   ├── IdfonClient+Methods.swift    # status/peers/sendText/waitMessages/events/call-mode
+│   ├── IdfonRuntime.swift   # runs the core (idfon_daemon_run) on a background thread, profile/socket paths
+│   └── Idfon-Bridging.h      # C ABI surface (daemon_run, request, client_request, media_*)
 ├── Checks/                   # host-run checks (not in the Xcode target)
 ├── IdfonTests/               # app-hosted XCTest target (`pnpm ios test`)
 └── Vendor/                   # libiroh_c_ffi.a static lib (Rust, gitignored)
@@ -65,27 +66,30 @@ flowchart TD
         LAC -.->|clearance, content inset, per tab| NAV[AppNavigationController ×3]
     end
     subgraph Services["App services"]
-        CS --> DC[DaemonClient<br/>+ Methods, BlobTransfer]
+        CS --> DC[IdfonClient<br/>+ Methods, BlobTransfer]
         LC & VC --> FFI1[media_live_start(audio,video)<br/>set_audio/video_enabled]
         CAMP --> FFI2[media_video_push_frame]
         WM --> FFI3[blob put/fetch]
-        CS --> FFI4[idfon_client_request]
+        CS --> FFI4[idfon_request]
     end
     subgraph Rust["Rust static lib (libiroh_c_ffi.a)"]
-        FFI1 & FFI2 & FFI3 & FFI4 --> D[idfond daemon<br/>in-process thread]
+        FFI1 & FFI2 & FFI3 & FFI4 --> D[daemon core<br/>in-process thread]
         D --> IROH[iroh-net / moq<br/>live audio + video + blobs]
     end
 ```
 
 Key facts:
 
-- **Daemon is in-process**: `AppDelegate` → `DaemonBootstrap.start()` runs
+- **The core is in-process**: `AppDelegate` → `IdfonRuntime.start()` runs
   `idfon_daemon_run` on a background `Thread` (16MB stack); it lives until process
-  exit. No separate daemon binary. A Rust change therefore means rebuilding the
+  exit. No separate daemon process. A Rust change therefore means rebuilding the
   vendored `ios/Vendor/device` lib.
-- **One IPC channel, two usages**: JSON requests/responses (`idfon_client_request`
-  over Unix socket, each call its own connection) for chat/events/peers, and direct C
-  media functions that bypass IPC entirely (zero-copy frame push).
+- **Feature calls are direct**: JSON requests/responses (`idfon_request`)
+  call the embedded feature functions in-process — no socket, no separate
+  lifecycle — and media uses direct C functions that bypass request framing
+  entirely (zero-copy frame push). Local reads (contacts, identities, rooms)
+  are served as soon as the store opens, before iroh binds (`docs/daemon.md`
+  "packaging" section).
 - **Events are polled**: `ChatStore` long-polls `waitMessages` (30s). Invite
   envelopes go through `IncomingCallRouter` (per-channel Bar-vs-CallKit mode);
   `call_started`/`call_stopped` go direct to both machines, since the mode governs
@@ -106,9 +110,11 @@ Key facts:
   nav-bar `Call` item, publishes both tracks, and begins **mic-only** (camera off until
   the Bar's `Cam` toggle); in-call Mic/Cam buttons gate whether each published stream is
   *sent*.
-- **Socket path**: the app is device-only and uses a flat tmp path for the Unix
-  socket (sandbox paths would otherwise exceed the 104-byte `SUN_LEN`).
-- **Daemon profile is durable**: `DaemonPaths.dataDir` is
+- **Socket path (external tooling)**: `idfond` still binds its Unix socket for
+  `nufon`/ssh debugging, served by the same feature functions. The app is
+  device-only and uses a flat tmp path for it (sandbox paths would otherwise
+  exceed the 104-byte `SUN_LEN`).
+- **The core profile is durable**: `IdfonPaths.dataDir` is
   `Application Support/Idfon/daemon` (identity keys, peers, state), migrating a
   legacy `tmp/idfond` profile on first run. iOS may purge `tmp` while the app is
   not running; losing the identity key changes the endpoint id and invalidates
@@ -135,7 +141,7 @@ ticket is provisioned out of band and attached to outbound turns:
    is the one the app paired the agent under (the `id` field of the `-pair`
    EndpointAddr JSON, which `sendText` passes as `to`); `CapabilityTickets`
    persists it per peer (UserDefaults).
-3. `DaemonClient.sendText()` attaches it as `message.send`'s
+3. `IdfonClient.sendText()` attaches it as `message.send`'s
    `capability_ticket` param when one is stored. Ungated idfon peers store no
    ticket and keep using local grants, so the ordinary text path is unchanged.
 

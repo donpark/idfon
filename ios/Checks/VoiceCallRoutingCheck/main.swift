@@ -14,7 +14,7 @@ func check(_ cond: Bool, _ msg: String) { if !cond { print("FAIL:", msg); exit(1
 func isLive(_ decision: VoiceCallDecision) -> Bool { if case .live = decision { return true }; return false }
 
 // `VoiceCatalog` names the gateway fetch; the check exercises the resolver only.
-final class DaemonClient {
+final class IdfonClient {
     func fetchRemoteResource(account: String, path: String) async throws -> Data {
         throw NSError(domain: "check", code: 1)
     }

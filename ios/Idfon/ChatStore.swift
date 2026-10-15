@@ -16,7 +16,7 @@ final class ChatStore {
     static let shared = ChatStore()
     private static func cursorKey(_ identity: String) -> String { "idfon.event.cursor.\(identity)" }
 
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     private let queue = DispatchQueue(label: "app.idfon.chatstore")
 
     private(set) var messages: [ChatMessage] = []
@@ -100,7 +100,7 @@ final class ChatStore {
     private func ingestOnMain(_ event: Event) {
         guard let text = event.messageText, let peerId = event.messagePeerId else { return }
         let messageID = event.messageId ?? event.eventId
-        // Daemon message ids are sender-local (an eve holder restarts its
+        // Core message ids are sender-local (an eve holder restarts its
         // counter), so qualify by sender: deduping on the bare id silently
         // dropped a new message that reused an id seen from another sender.
         guard seenMessageIDs.insert("\(peerId)|\(messageID)").inserted else { return }
@@ -488,7 +488,7 @@ final class ChatStore {
                     cursor = event.cursor
                     ingest(event)
                 }
-            } catch let error as DaemonClient.DaemonError {
+            } catch let error as IdfonClient.RequestError {
                 if let message = error.errorDescription, message.contains("cursor") {
                     idfonLog("idfon events: cursor older than retention, restarting from history")
                     cursor = nil // older than retention: restart from retained history

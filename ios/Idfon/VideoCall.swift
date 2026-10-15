@@ -190,7 +190,7 @@ final class VideoCall: NSObject {
     /// Decoded peer frames (~10fps), main queue.
     var onFrame: ((UIImage?) -> Void)?
 
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     private var frameTimer: Timer?
     /// True while a decoded peer frame is on screen (for clearing it).
     private var peerFrameVisible = false

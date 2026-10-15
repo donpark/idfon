@@ -2,7 +2,7 @@ import UIKit
 
 /// Recents uses the same conversation model as rooms and direct chats.
 final class ConversationsViewController: UITableViewController, ChatStoreObserver {
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     private var peers: [Peer] = []
     private var rooms: [Room] = []
     private var conversations: [Conversation] = []
@@ -120,7 +120,7 @@ final class ConversationsViewController: UITableViewController, ChatStoreObserve
 /// the chat's title tap); the row Call button dials it. D7: Recents/All are
 /// filter segments, not tabs — Recents leads and is the default.
 final class PeerListViewController: UITableViewController, UISearchResultsUpdating {
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     private let search = UISearchController(searchResultsController: nil)
     private var peers: [Peer] = [] {
         didSet { applyFilter() }

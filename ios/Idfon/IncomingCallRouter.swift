@@ -25,7 +25,7 @@ final class IncomingCallRouter {
         }
     }
 
-    private let client = DaemonClient()
+    private let client = IdfonClient()
     /// Cached `[peerId: IncomingCallMode]`; unknown peers resolve to `.bar`.
     private var modes: [String: IncomingCallMode] = [:]
     /// Peers already told once that their CallKit mode is deferring to the Bar.
