@@ -21,6 +21,10 @@ func idfonError(_ message: String, file: String = #fileID) {
 
 private func logToIdfon(_ level: OSLogType, _ message: String, _ file: String) {
     Logger(subsystem: "app.idfon", category: file).log(level: level, "\(message, privacy: .public)")
+    // Mirror to stderr like NSLog did: `devicectl … --console` and the e2e
+    // scripts grep these markers there (pair-apple-channels.sh,
+    // ios-device-test.sh, mac-e2e.sh); os.Logger alone never reaches them.
+    FileHandle.standardError.write(Data("\(message)\n".utf8))
     IdfonLogFile.append(message)
 }
 

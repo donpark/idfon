@@ -25,8 +25,9 @@ Most triage starts by joining one flow across processes. See
   over **without root**: `xcrun devicectl device copy from --device <UDID>
   --domain-type appDataContainer --domain-identifier app.idfon --source
   tmp/idfon-app-<pid>.log` (stale logs from earlier runs are deleted at app
-  startup; it pairs by pid with the daemon's `tmp/idfon-<pid>.log`).
-  `log collect --device` works too but needs sudo.
+  startup; it pairs by pid with the daemon's `tmp/idfon-<pid>.log`). Every app
+  line is also mirrored to stderr, so `devicectl … --console` captures show
+  them too. `log collect --device` works too but needs sudo.
 - **Verbosity.** `IDFON_LOG` > `RUST_LOG` > `IROH_C_LOG` (default `info`);
   `IDFON_LOG_FILE` diverts the sink. Set `debug` to include per-delta stream
   logs.
@@ -45,6 +46,37 @@ renders on the app's single playback bus (`AudioIO`, see
 [audio-media.md](audio-media.md)), a route guard re-asserts the loudspeaker, and
 other-audio ducking is minimized. Verified on device (ringback and reply volume
 normal, no self-bleed).
+
+## `pnpm pair` fails silently; device-test markers missing from the console (2026-10-14, FIXED)
+
+**Symptom.** `pnpm pair` exits 1 with *no output at all*. `scripts/ios-device-test.sh`
+and `scripts/mac-e2e.sh` report `FAIL: missing 'idfon tray: finish'` (and the
+other `idfon file:` / `idfon paired:` markers) even though the flow completed
+and the per-run device log shows the lines happened.
+
+**Cause.** Two stacked bugs:
+
+1. The `os.Logger` migration (01f5411) dropped the stderr mirror the old
+   `NSLog` calls had. `devicectl device process launch --console` and a
+   redirected process launch only capture stdout/stderr — unified-log lines
+   never appear there — so every harness grep (`idfon self ticket:`,
+   `idfon paired:`, `idfon tray:`, `idfon file:`) matched nothing.
+   `Automation.mark` was the one marker still visible because it wrote stderr
+   itself.
+2. `ios_ticket=$(grep … | sed … | tail -1)` under `set -euo pipefail`: a
+   grep-no-match fails the whole assignment, and `set -e` exits *before* the
+   intended "iOS did not print its contact ticket" message and log dump — so
+   the real diagnostic never ran.
+
+**Fix.** `logToIdfon` mirrors every line to stderr again (ios + mac
+`IdfonLog.swift`), and `Automation.mark` now just calls `idfonLog` (its own
+stderr write would double every marker). The capture pipeline in
+`pair-apple-channels.sh` gets `|| true` so the error message prints.
+
+**Rule of thumb.** Anything a script greps out of a launch capture must reach
+stderr — `os.Logger` alone is invisible to `devicectl --console`. And in
+`set -euo pipefail` harness scripts, every `var=$(… | grep …)` capture needs
+`|| true`, or a no-match exits the script before its own diagnostics.
 
 ## Message sends intermittently stall ~30 s (2026-10-14, FIXED)
 

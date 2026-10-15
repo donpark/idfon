@@ -104,7 +104,7 @@ for _ in $(seq 1 50); do
 done
 kill "$launcher" 2>/dev/null || true
 wait "$launcher" 2>/dev/null || true
-ios_ticket=$(grep 'idfon self ticket:' "$log" | sed 's/.*idfon self ticket: //' | tail -1)
+ios_ticket=$(grep 'idfon self ticket:' "$log" | sed 's/.*idfon self ticket: //' | tail -1 || true)
 [ -n "$ios_ticket" ] || { echo "iOS did not print its contact ticket" >&2; cat "$log" >&2; exit 1; }
 printf '%s' "$ios_ticket" | jq -e . >/dev/null || { echo "invalid iOS ticket" >&2; exit 1; }
 ios_endpoint=$(printf '%s' "$ios_ticket" | jq -r '.endpoint_id // .id // empty')
