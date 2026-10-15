@@ -92,8 +92,8 @@ IDFON_RELAY_URLS=http://127.0.0.1:3340 idfond --data-dir /tmp/idfon-test
 | RA-L2-01 | daemon starts with no admission | service log `deny`; the endpoint never settles on the relay (reconnect backoff visible in daemon logs) |
 | RA-L2-02 | `C enroll-owner --key-file <data>/identity-<id>.key` (pass `--endpoint` if the identity has a separate `endpoint-<id>.key`) | log flips to `allow`; endpoint goes online without a daemon restart |
 | RA-L2-03 | `C revoke` while the endpoint is connected, then force a reconnect (daemon restart or network blip) | open connection survives until it drops (revocation bites at the *next* connect — record the observed window); new connect denied |
-| RA-L2-04 | two daemons, owner + admitted caller (L1-06 grant): message send caller → owner over relay | delivered; `/check` shows `allow` for both ids |
-| RA-L2-05 | regression, N0 door stays open: relay with `access = { shared_token = ["s3cret"] }` + daemon with `IDFON_RELAY_TOKEN=s3cret` | connects (this is the `RelayConfig::with_auth_token` seam) |
+| RA-L2-04 | two daemons, owner + admitted caller (L1-06 grant): message send caller → owner over relay | delivered; `/check` shows `allow` for both ids. **Deferred to L3** (needs a daemon pair or the bench; L1 covers multi-endpoint admission logic) |
+| RA-L2-05 | regression, N0 door stays open: relay with `access = { shared_token = ["s3cret"] }` + daemon with `IDFON_RELAY_TOKEN=s3cret` | connects (this is the `RelayConfig::with_auth_token` seam). **Deferred to L3-03** (the production relay runs shared_token today, so the bench is the live regression; the seam itself is iroh's `test_endpoint_relay_auth_token`) |
 | RA-L2-06 | regression: daemon with `IDFON_RELAY_URLS` **unset** | uses iroh's default (N0) relays; a message between two such daemons still delivers |
 
 ## L3 — production smoke (each deploy)
@@ -105,6 +105,27 @@ IDFON_RELAY_URLS=http://127.0.0.1:3340 idfond --data-dir /tmp/idfon-test
 | RA-L3-03 | `scripts/relay-bench.sh` | relayed rows match baseline (sfo3: ~127 ms p50, 0 stalls); no `deny` in the relay-auth log for bench endpoints |
 | RA-L3-04 | revocation drill: `C revoke` a live contact endpoint → that contact dials → re-admit → redial | denied → allowed; **no relay restart, no client change** between the two |
 | RA-L3-05 | rollback drill: redeploy with `IDFON_RELAY_TOKEN` mode (or `IDFON_RELAY_ALLOWLIST`) instead | service stops (auth profile off), relay keeps working under the old mode |
+
+## Gotchas from the first full run (all hit, all fixed — do not re-derive)
+
+- **Wire header name is `x-iroh-nodeid`**, not `x-iroh-node-id` (i.e.
+  `X-Iroh-NodeId` lowercased). Tests originally set the wrong name on *both*
+  sides and stayed green — only a live relay caught it. Service accepts both
+  spellings now.
+- **Docker Desktop does not share `/var/folders`** (where `mktemp -d` lands).
+  A `-v` mount from there silently yields no file, and iroh-relay's
+  `Config::load` then falls back to **defaults (`access: AllowAll`)** instead
+  of failing. Put the config under `$HOME` and verify with `RUST_LOG=debug`
+  that the startup dump says `access:HttpAccess{…}`.
+- **`--dev` does not touch `access`** (only TLS/port); the dump printout
+  (`docker logs relay-l2 | grep access:`) is the ground truth for what is
+  enforced.
+- **Rebuild `target/release/idfon-edge`** before using it as the test
+  endpoint — a stale binary silently ignored `IDFON_RELAY_URLS` and homed on
+  N0 (`cargo build --release -p idfon-edge`, ~90 s; workspace-only, no
+  vendored c-ffi chain).
+- `ctl.mjs` needs explicit `method: "POST"` semantics for body-less POSTs —
+  already handled; if you add commands, don't fall back to GET.
 
 ## Pass criteria
 
