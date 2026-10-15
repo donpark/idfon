@@ -377,6 +377,10 @@ export function createApp(config) {
           ticketId = body.grant.ticket_id ?? ticketId;
         }
         const leaseMs = body.lease_days ? days(Number(body.lease_days)) : config.callerLeaseMs;
+        // Never SHORTEN a live lease: a re-admit with the default lease once
+        // silently downgraded a 10-year infra entry to 1 day. To reset a lease,
+        // revoke and re-admit.
+        const leaseExpires = Math.max(existing?.lease_expires ?? 0, Date.now() + leaseMs);
         state.entries[endpoint] = {
           ...(state.entries[endpoint] ?? {}),
           role: "caller",
@@ -384,10 +388,11 @@ export function createApp(config) {
           account: body.account ?? null,
           label: body.label ?? null,
           ticket_id: ticketId,
-          lease_expires: Date.now() + leaseMs,
+          lease_expires: leaseExpires,
           updated: Date.now(),
         };
         persist();
+        console.log(`entry ${existing ? "update" : "add"} ${endpoint} lease ${new Date(leaseExpires).toISOString()}${ticketId ? ` ticket ${ticketId}` : ""}`);
         return send(200, { endpoint_id: endpoint, lease_expires: state.entries[endpoint].lease_expires });
       }
 
@@ -416,6 +421,7 @@ export function createApp(config) {
         delete state.entries[endpoint];
         dropTokens(state, (row) => row.endpoint === endpoint);
         persist();
+        console.log(`entry revoke ${endpoint}`);
         return send(200, { revoked: endpoint });
       }
 
@@ -424,6 +430,7 @@ export function createApp(config) {
         const ticketId = String(body.ticket_id ?? "");
         if (!ticketId) return deny("ticket_id required");
         if (!state.revoked_tickets.includes(ticketId)) state.revoked_tickets.push(ticketId);
+        console.log(`ticket revoke ${ticketId}`);
         for (const [endpoint, entry] of Object.entries(state.entries)) {
           if (entry.ticket_id === ticketId && (asAdmin || !entry.identity || entry.identity === owner)) {
             delete state.entries[endpoint];
