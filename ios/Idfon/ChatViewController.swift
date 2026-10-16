@@ -572,8 +572,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             titleButton.addTarget(self, action: #selector(titleTapped), for: .touchUpInside)
             navigationItem.titleView = titleButton
         }
-        // ☰ reads as a nav drawer; the overflow is `ellipsis.circle` (P12).
-        overflowItem.image = UIImage(systemName: "ellipsis.circle")
+        // The overflow menu trigger is ☰ (line.3.horizontal).
+        overflowItem.image = UIImage(systemName: "line.3.horizontal")
         overflowItem.menu = buildOverflowMenu()
         if conversation.isRoom {
             // §7.1: a live call is a session inside the room — the room call
