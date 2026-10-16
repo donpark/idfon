@@ -1,0 +1,7 @@
+// Custom module map so `import CIdfon` works from the Xcode project
+// (SWIFT_INCLUDE_PATHS points here). SwiftPM uses this file too instead of
+// generating an umbrella; module name stays the target name either way.
+module CIdfon {
+    header "IdfonFFI.h"
+    export *
+}

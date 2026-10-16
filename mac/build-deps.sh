@@ -22,6 +22,12 @@ echo "== libidfon_director.dylib (on-device AFM voice-agent loop)"
 
 mkdir -p Vendor
 cp "$ROOT/native/vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib" Vendor/
+# rustc bakes the build-machine deps/ path in as the dylib's install name, so
+# a linked app would load THAT file and ignore the bundled copy (fine on this
+# machine, a missing-dylib crash everywhere else). Rewrite the id and re-sign:
+# a relinked dylib with a stale ad-hoc signature is SIGKILLed at load.
+install_name_tool -id @executable_path/libiroh_c_ffi.dylib Vendor/libiroh_c_ffi.dylib
+codesign --force -s - Vendor/libiroh_c_ffi.dylib
 
 # The director's AFM shim needs macOS 26 (AFM3 paths gate at macOS 27 inside
 # fm-rs), so it gets its own dylib with a matching min OS and only the C ABI

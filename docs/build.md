@@ -42,7 +42,7 @@ fingerprint and recompiles the whole ~550-crate graph — see
 | `crates/idfond` (daemon) | `pnpm cli build`, `pnpm mac build`, `pnpm native build` (all bundle `idfond`) |
 | `crates/idfon-cli` (CLI binary) | `pnpm cli build` |
 | `ios/Idfon/*` (Swift) | `pnpm ios build` |
-| `mac/Sources/*` (Swift) | `pnpm mac build` |
+| `mac/Sources/*` (Swift) | `pnpm mac build`, or `mac/Idfon.xcodeproj` (same sources; run-script phases build + embed the Rust deps) |
 | `native/src/*`, `native/build.zig`, `native/app.json` | `pnpm native build` |
 | `integrations/eve-idfon` or `agents/*` | `pnpm eve build` or `pnpm agent build <name>` |
 | docs only | nothing |

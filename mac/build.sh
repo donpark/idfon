@@ -20,34 +20,7 @@ cp .build/release/Idfon "$APP/Contents/MacOS/Idfon"
 cp "$ROOT/target/release/idfond" "$APP/Contents/MacOS/idfond"
 cp Vendor/libiroh_c_ffi.dylib "$APP/Contents/MacOS/"
 cp Vendor/libidfon_director.dylib "$APP/Contents/MacOS/"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key><string>Idfon</string>
-    <key>CFBundleDisplayName</key><string>Idfon</string>
-    <key>CFBundleIdentifier</key><string>com.idfon.mac</string>
-    <key>CFBundleExecutable</key><string>Idfon</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>LSMinimumSystemVersion</key><string>13.0</string>
-    <key>NSPrincipalClass</key><string>NSApplication</string>
-    <key>NSCameraUsageDescription</key><string>Idfon uses the camera for video calls.</string>
-    <key>NSMicrophoneUsageDescription</key><string>Idfon uses the microphone for calls and voice messages.</string>
-    <key>NSSpeechRecognitionUsageDescription</key><string>Idfon uses on-device speech recognition to transcribe your voice.</string>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key><string>com.idfon</string>
-            <key>CFBundleURLSchemes</key>
-            <array><string>idfon</string></array>
-        </dict>
-    </array>
-</dict>
-</plist>
-PLIST
+cp Info.plist "$APP/Contents/Info.plist"
 # Ad-hoc sign the dlopen'd director dylib too: a stale signature on a relinked
 # dylib gets it SIGKILLed at load (see scripts/test-e2e.sh).
 codesign --force -s - "$APP/Contents/MacOS/libidfon_director.dylib"

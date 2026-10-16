@@ -16,6 +16,12 @@ cd mac
 open build/Idfon.app
 ```
 
+Or open `mac/Idfon.xcodeproj` in Xcode and hit Run — same sources, and a
+run-script phase calls `build-deps.sh` so the Rust artifacts get built and
+embedded automatically. Use the Xcode project for Archive / distribution.
+The SwiftPM + `build.sh` path stays for scripted flows (`pnpm mac build`,
+`scripts/mac-e2e.sh`).
+
 Or from the repo root via the pnpm workspace:
 
 ```sh
