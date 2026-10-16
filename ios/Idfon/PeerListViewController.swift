@@ -469,7 +469,13 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         cell.accessoryType = .disclosureIndicator
         // Test notes: the row's Call button (left of the chevron) is the same
         // as tapping the row, then pressing the chat's call button.
-        cell.setCallAction { [weak self] in self?.openChat(peer, startCall: true) }
+        // §5.1: the row Call verb is shown only on callable contacts (the call
+        // profile: a deaf human or a voice-refusing agent takes no calls).
+        if ContactCallProfiles.isCallable(peer.id) {
+            cell.setCallAction { [weak self] in self?.openChat(peer, startCall: true) }
+        } else {
+            cell.setCallAction(nil)
+        }
         return cell
     }
 
@@ -479,7 +485,7 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let peer = shownPeers[indexPath.row]
-        openChat(peer, startCall: peer.instantCall)
+        openChat(peer, startCall: peer.instantCall && ContactCallProfiles.isCallable(peer.id))
     }
 
     /// The chat surface; `startCall` runs the chat's own call routing.

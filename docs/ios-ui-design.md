@@ -99,7 +99,13 @@ optional status.
   screen and auto-starts the call** — the user sees navigation, then the call
   begins as the room's live session. No confirmation, no warning copy (P11).
 - **Row Call button** (left of the chevron): dials — the same as tapping the
-  row, then pressing the chat's call button.
+  row, then pressing the chat's call button. Shown only on **callable**
+  contacts: the per-contact call profile (kind human/agent × voice on/off;
+  derived from the capability ticket's signed `voice` block and ticket
+  presence, overridden on the person screen — a human can be deaf, an agent
+  can refuse voice by policy) gates the row Call verb, the chat's call chrome,
+  and the chat-open speech prewarm (engines warm as soon as a callable
+  contact's chat opens, off the call's critical path).
 - **Chrome (2026-10-14)**: Edit left-most, `+` top-right; the filter strip
   leads with **Recents** (the default filter); the Contacts title sits in the
   nav bar like Messages; the Edge/Relay settings and the identity picker are

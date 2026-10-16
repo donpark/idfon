@@ -170,6 +170,39 @@ ring outputs=[…] volume=…` the hardware state, and `loop check sampleTime=�
 playing=… engine=…` whether anything actually rendered. `engine halted —
 recovery #N full=…` shows the self-stop healing itself.
 
+## iOS voice call "is not answered" — rings forever, greeting lands in chat (2026-10-15, MOSTLY FIXED)
+
+**Symptom.** Calling a voice-agent contact (e.g. `Gemini`) rings 14–16 s,
+never says "answered", and the user hangs up; the agent's greeting pops into
+the chat seconds later.
+
+**Diagnosis path** (phone per-run logs via `devicectl device copy from` paired
+with the holder's `bridge.log`/`eve.log`; one `trace` id joins them):
+
+1. Delivery was healthy: the call's messages were Delivered/Accepted in
+   250–600 ms and the bridge forwarded each turn to the Eve agent — the call
+   DID reach the agent, and it answered.
+2. The app sends the greet turn only AFTER on-device engine prep (parakeet ASR
+   + kokoro TTS load, +1.5 s ChatStore hydration) — 13 s on a cold app start —
+   while the caller only hears ringback.
+3. The agent's greeting then took 13.7 s (model latency; 2.5–4.4 s baseline).
+4. `voice-agent-greet: FAIL no reply` is the hang-up (`stopRequested`), not a
+   timeout (`waitForReply` allows 30 s); the late reply is ingested as chat.
+
+**Root causes and fixes.**
+
+- KokoroTtsEngine's model warmup was per-instance while a call builds its own
+  engine (`SpeechEngines.makeTts`), so the launch/call `SpeechEngines.prewarm()`
+  warm was discarded and every call paid the cold load. The warmup is now
+  shared across engine instances (`ParakeetReduxAsr.warmCache` pattern).
+- Prewarm used to start only at call start; it now starts as soon as a callable
+  contact's chat opens (`ContactCallProfiles.isCallable` — the per-contact call
+  profile, docs/ios-ui-design.md §5.1), per-contact engine picks included.
+
+**Still open.** The greet turn is still sent after engine prep (the send-first
+reorder is not done), and model latency up to ~14 s remains — a "connecting"
+fill or a canned-greeting timeout would cover that case.
+
 ## iOS voice call aborts (SIGABRT) in setVoiceProcessingEnabled (2026-10-07, FIXED)
 
 **Symptom.** The app crashed during a client-cascade call. Crash report:
