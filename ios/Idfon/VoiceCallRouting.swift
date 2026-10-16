@@ -303,7 +303,13 @@ enum VoiceCallRouting {
         // An explicit on-device pick is a pick too: without this the picker is a
         // silent no-op on a holder that advertises its own route.
         let hasPick = !chosen.isEmpty || onDevice.stt != nil || onDevice.tts != nil
-        if hasPick {
+        // A holder that never terminates media — client cascade, or a ticket
+        // with no voice block (that holder's documented default is the
+        // cascade) — is a text peer: picks choose the local engines the
+        // cascade runs and must never re-route the call into a media session
+        // such a holder leaves ringing forever.
+        let textOnlyHolder = signed?.mode == .clientCascade || (signed == nil && holderTicket)
+        if hasPick && !textOnlyHolder {
             // Any server/full-duplex option means the holder terminates audio;
             // an all-client selection or on-device pick is a client cascade.
             let remote = chosen.contains { $0.fillsBothSlots || $0.side == .server }

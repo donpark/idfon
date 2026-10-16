@@ -167,7 +167,8 @@ project's nav-bar title shows the project icon + name instead of a person.
 Idle:     ‹ Back   [avatar] Name                       [call] [⋯]
 Calling:  ‹ Back   [avatar] Name                 [call•active] [⋯]
 In call:  ‹ Back   [avatar] Name                  [hang-up] [⋯]
-Blocked:  ‹ Back   [avatar] Name                            [⋯]
+Incoming: ‹ Back   [avatar] Name                [call·disabled] [⋯]
+Blocked:  ‹ Back   [avatar] Name                [call·disabled] [⋯]
 ```
 
 - **Back** → the list you came from.
@@ -176,10 +177,12 @@ Blocked:  ‹ Back   [avatar] Name                            [⋯]
   gives the title area more room.
 - **One call button, states per the diagram (D8)**: idle `call` → `calling`
   (highlighted; tapping it cancels — the button reads hang-up from the moment
-  the call goes out) → `hang-up` once established → **blocked** (a call with
-  another peer is active elsewhere: no call button — a gate, not a warning,
-  P11). Rooms/projects get the same button: a live call is a session inside the
-  room (§3). **Audio-first by
+  the call goes out) → `hang-up` once established. When a call isn't
+  available the button shows **disabled, never hidden**: an incoming ring
+  (the Bar carries Answer/Decline), a call with another peer active
+  elsewhere (the gate is visible, not absent — P11), and rooms/projects
+  while room calls are disabled (docs/chatrooms.md). Rooms/projects get the
+  same button: a live call is a session inside the room (§3). **Audio-first by
   design (D14)** — it relieves the stress of being seen unprepared; the user
   turns video on when ready (the live-call bar's camera toggle).
 - **Overflow menu (`ellipsis.circle`)** at the far right — ☰ reads as a nav

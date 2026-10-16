@@ -379,22 +379,22 @@ final class LiveActivityController: NSObject {
         let isThisPeer = callPeer == peer
 
         var key: String
-        var item: UIBarButtonItem?
+        var item: UIBarButtonItem
         switch (isThisPeer, phase) {
         case (true, .calling), (true, .inCall):
+            // §7.1: the button reads hang-up from the moment the call goes out.
             key = "active"
             item = navItem("phone.down.fill", #selector(navEndTapped), red: true)
-        case (true, .incoming):
-            // The Bar rings with Answer/Decline; the nav carries no call verb.
-            key = "incoming"
-            item = nil
         case (_, .idle):
             key = "idle"
             item = navItem("phone.arrow.up.right", #selector(navCallTapped))
         default:
-            // A call is in flight with another peer: no action here.
+            // Not callable right now — an incoming ring (the Bar carries
+            // Answer/Decline) or a call in flight with another peer: the call
+            // button shows disabled, never hidden (a visible gate).
             key = "blocked"
-            item = nil
+            item = navItem("phone.arrow.up.right", #selector(navCallTapped))
+            item.isEnabled = false
         }
         let chatID = ObjectIdentifier(chat)
         guard navChrome?.id != chatID || navChrome?.key != key else { return }
@@ -403,9 +403,19 @@ final class LiveActivityController: NSObject {
     }
 
     private func navItem(_ symbol: String, _ action: Selector, red: Bool = false) -> UIBarButtonItem {
-        let item = UIBarButtonItem(image: UIImage(systemName: symbol), style: .plain, target: self, action: action)
-        if red { item.tintColor = .systemRed }
-        return item
+        guard red else {
+            return UIBarButtonItem(image: UIImage(systemName: symbol), style: .plain, target: self, action: action)
+        }
+        // Hang-up: filled glyph, white on systemRed.
+        var config = UIButton.Configuration.filled()
+        config.image = UIImage(systemName: symbol)
+        config.baseBackgroundColor = .systemRed
+        config.baseForegroundColor = .white
+        config.cornerStyle = .capsule
+        let button = UIButton(configuration: config)
+        button.accessibilityLabel = "Hang up"
+        button.addTarget(self, action: action, for: .touchUpInside)
+        return UIBarButtonItem(customView: button)
     }
 
     private func visiblePeerRef() -> String? {
@@ -444,7 +454,6 @@ final class LiveActivityController: NSObject {
         switch intent {
         case .answer: ActiveMachine.current?.answer()
         case .decline: ActiveMachine.current?.decline()
-        case .end: ActiveMachine.current?.hangUp()
         case .open:
             // D19: the pill on the call's own thread expands the panel;
             // elsewhere it opens the owning thread (the existing verb).
