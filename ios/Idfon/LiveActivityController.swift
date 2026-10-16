@@ -61,11 +61,14 @@ final class LiveActivityController: NSObject {
     /// until the machine picks it up. Gives immediate feedback (the item
     /// becomes the in-call controls), so a slow start cannot be double-tapped.
     private var pendingCall: String?
-    /// Last nav-bar chrome written, keyed by the chat *instance* (the item
-    /// lives on that instance's `navigationItem` and a new chat is pushed per
-    /// visit): rebuild only when the shown state changes, but a fresh instance
-    /// always gets its item.
-    private var navChrome: (id: ObjectIdentifier, key: String)?
+    /// Last nav-bar chrome written, for one chat *instance* (the item lives
+    /// on that instance's `navigationItem`): rebuild only when the shown state
+    /// changes. Compared by live identity, never ObjectIdentifier — an address
+    /// is recycled on dealloc, and a fresh chat that looked like the dressed
+    /// one skipped its write and was left without any call button. The button
+    /// is never hidden: an unusable contact shows it disabled.
+    private weak var navChromeChat: ChatViewController?
+    private var navChromeKey: String?
     /// §5.2 session indicator: the peer whose session is live (nil = none),
     /// readable by the Messages rows.
     static private(set) var currentCallPeer: String?
@@ -396,9 +399,12 @@ final class LiveActivityController: NSObject {
             item = navItem("phone.arrow.up.right", #selector(navCallTapped))
             item.isEnabled = false
         }
-        let chatID = ObjectIdentifier(chat)
-        guard navChrome?.id != chatID || navChrome?.key != key else { return }
-        navChrome = (chatID, key)
+        // Same live chat, same state, and it already carries an item: nothing
+        // to redo. A chat without one is always dressed — the call button is
+        // never hidden, only disabled when the contact cannot be called.
+        if navChromeChat === chat, navChromeKey == key, chat.callChromeItem != nil { return }
+        navChromeChat = chat
+        navChromeKey = key
         chat.callChromeItem = item
     }
 
