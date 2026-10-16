@@ -7,7 +7,7 @@
 #
 # Prints the base URL to pass to the app:
 #   xcrun devicectl device process launch --console --device <UDID> \
-#     --terminate-existing app.idfon -- -speechpackurl <base>/kokoro-ane/
+#     --terminate-existing com.idfon.ios -- -speechpackurl <base>/kokoro-ane/
 set -euo pipefail
 
 dir="${1:-dist/speech-packs}"

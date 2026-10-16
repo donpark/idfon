@@ -44,4 +44,4 @@ fi
 echo "== launching"
 # `--` stops devicectl from parsing the app's own -flags (e.g. -dial) as its
 # own options; without it every launch argument fails with "Unknown option".
-xcrun devicectl device process launch --terminate-existing --device "$device" app.idfon -- "$@"
+xcrun devicectl device process launch --terminate-existing --device "$device" com.idfon.ios -- "$@"

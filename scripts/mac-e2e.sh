@@ -18,7 +18,7 @@ set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 bin="$root/mac/build/Idfon.app/Contents/MacOS/Idfon"
-bundle_id=app.idfon.mac
+bundle_id=com.idfon.mac
 
 peer="${PEER:-}"
 file=""

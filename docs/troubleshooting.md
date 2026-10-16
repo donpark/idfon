@@ -23,7 +23,7 @@ Most triage starts by joining one flow across processes. See
 - **Native apps.** Unified log: `log stream --predicate 'subsystem ==
   "app.idfon"'`. Each run also writes a per-run marker log the phone hands
   over **without root**: `xcrun devicectl device copy from --device <UDID>
-  --domain-type appDataContainer --domain-identifier app.idfon --source
+  --domain-type appDataContainer --domain-identifier com.idfon.ios --source
   tmp/idfon-app-<pid>.log` (stale logs from earlier runs are deleted at app
   startup; it pairs by pid with the daemon's `tmp/idfon-<pid>.log`). Every app
   line is also mirrored to stderr, so `devicectl … --console` captures show
@@ -400,7 +400,7 @@ answered every turn — transcripts confirmed the model was replying.
    `caller_audio_late` events: the holder side was healthy.
 2. Pulled the phone's decode capture:
    `xcrun devicectl device copy from --device <ID> --domain-type
-   appDataContainer --domain-identifier app.idfon --source tmp/idfon/received.wav`.
+   appDataContainer --domain-identifier com.idfon.ios --source tmp/idfon/received.wav`.
    It contained only 18.7s of audio (the greeting), while `received-timing.csv`
    showed a perfect 20 ms decode cadence right up to a clean stop — the mux
    consumer returned `Ok(None)` ("track finished") ~20s in, and the FFI
@@ -604,7 +604,7 @@ calls connected fine (audio both ways, remote subscribe accepted) but the
 iPhone's remote pane stayed black. Reverse direction (iPhone→mac) worked.
 The FFI decoded mac's stream fine the whole time — the phone's
 `video-frame.jpg` (pullable via `xcrun devicectl device copy from
---domain-type appDataContainer --domain-identifier app.idfon`) was a
+--domain-type appDataContainer --domain-identifier com.idfon.ios`) was a
 perfect 1280x720 frame of the mac's camera, rewritten until hangup.
 
 **Root cause.** `ios/Idfon/VideoCall.swift` was not `@MainActor`, so
@@ -672,7 +672,7 @@ the subscriber is reconnecting. The per-call captures
 (`$TMPDIR/idfon-audio-captures/call-<pid>-<id>/agent-output.wav` vs
 `published.wav`) show what the agent produced versus what the holder sent.
 Pull the phone's decode capture with `xcrun devicectl device copy from
---domain-type appDataContainer --domain-identifier app.idfon --source
+--domain-type appDataContainer --domain-identifier com.idfon.ios --source
 tmp/idfon/received.wav`.
 
 **Related, still open:** a video call (`media=video-call`) ignores the holder's

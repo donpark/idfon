@@ -26,7 +26,7 @@ if [ "$build" = 1 ]; then
 fi
 app="$ios_dir/.derived/Build/Products/Release-iphoneos/Idfon.app"
 log=$(mktemp /tmp/idfon-ios-call-e2e.XXXXXX)
-launch() { xcrun devicectl device process launch --device "$device" --terminate-existing --console app.idfon -- "$@" >"$log" 2>&1; }
+launch() { xcrun devicectl device process launch --device "$device" --terminate-existing --console com.idfon.ios -- "$@" >"$log" 2>&1; }
 install() { xcrun devicectl device install app --device "$device" "$app" >/dev/null; }
 check() { grep -qF "$1" "$log" || { echo "FAIL: missing '$1'"; cat "$log"; exit 1; }; echo "ok: $1"; }
 install

@@ -27,7 +27,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
     <key>CFBundleName</key><string>Idfon</string>
     <key>CFBundleDisplayName</key><string>Idfon</string>
-    <key>CFBundleIdentifier</key><string>app.idfon.mac</string>
+    <key>CFBundleIdentifier</key><string>com.idfon.mac</string>
     <key>CFBundleExecutable</key><string>Idfon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
@@ -40,7 +40,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
-            <key>CFBundleURLName</key><string>app.idfon</string>
+            <key>CFBundleURLName</key><string>com.idfon</string>
             <key>CFBundleURLSchemes</key>
             <array><string>idfon</string></array>
         </dict>

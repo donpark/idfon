@@ -7,7 +7,7 @@
 #
 #   scripts/eve-volume-trace.sh [app arguments...]
 #
-# App arguments go to `devicectl ... app.idfon -- <args>` (e.g. pairing args).
+# App arguments go to `devicectl ... com.idfon.ios -- <args>` (e.g. pairing args).
 # Run the live-voice holder first (scripts/live-voice-serve.sh).
 set -euo pipefail
 
@@ -62,7 +62,7 @@ fi
 echo "capture dir: $out"
 echo "make one call with two GPT-Live turns; Ctrl-C here when done"
 
-launch=(device process launch --device "$udid" --terminate-existing --console app.idfon)
+launch=(device process launch --device "$udid" --terminate-existing --console com.idfon.ios)
 if [[ $# -gt 0 ]]; then launch+=(-- "$@"); fi
 # devicectl ignores SIGINT, so run it as a child and kill it ourselves on
 # Ctrl-C; piping it in the foreground only kills `tee` and the attach lingers.
