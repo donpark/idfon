@@ -54,7 +54,7 @@ else
   echo "launching $mode_label on device; log=$log"
 fi
 xcrun devicectl device process launch --device "$device" --terminate-existing \
-  --console app.idfon -- "${mode_args[@]}" >"$log" 2>&1 &
+  --console com.idfon.ios -- "${mode_args[@]}" >"$log" 2>&1 &
 launch_pid=$!
 
 for _ in $(seq 1 "$wait_s"); do

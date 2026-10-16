@@ -151,7 +151,7 @@ open -a Idfon --args \
   -pair-ticket "$HOLDER_PID" "$(cat ~/.idfon/live-voice/capability-ticket.json)"
 #    iOS (<IOS_PID> = the iPhone's endpoint id, e.g. from `idfon peer show iphone`):
 xcrun devicectl device process launch --device <udid> --terminate-existing \
-  app.idfon -- -pair-ticket "$HOLDER_PID" \
+  com.idfon.ios -- -pair-ticket "$HOLDER_PID" \
   "$(cat ~/.idfon/live-voice/capability-ticket-$IOS_PID.json)"
 ```
 

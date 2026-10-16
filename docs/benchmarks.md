@@ -77,7 +77,7 @@ scripts/voice-latency-report.sh call.log    # captured marker log
 scripts/voice-latency-report.sh --self-test
 ```
 
-Capture sources: `xcrun devicectl device process launch --console app.idfon --
+Capture sources: `xcrun devicectl device process launch --console com.idfon.ios --
 -voiceagent <peer> <turns>` on iPhone (same capture style as
 `scripts/ios-device-test.sh`), or the mac app's stderr (`-voiceagent`). Send
 the log to the bench agent instead and it does the same parse. Older logs
