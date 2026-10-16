@@ -342,7 +342,9 @@ final class LiveActivityController: NSObject {
             model.routes = routes
             model.currentRoute = current
             model.audioAvailable = machine?.audioAvailable ?? true
-            model.videoAvailable = machine?.videoAvailable ?? true
+            // No machine yet (pending placeholder): no cam toggle — it would be
+            // dead (toggles need a machine) and voice calls never publish video.
+            model.videoAvailable = machine?.videoAvailable ?? false
             model.elapsed = elapsed
             model.stats = machine?.stats
             model.onDevice = machine?.onDevice ?? false
