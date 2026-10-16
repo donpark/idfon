@@ -367,9 +367,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // by LiveActivityController through `callChromeItem` — nav starts/stops
     // the call, the Bar operates it.
     private let overflowItem = UIBarButtonItem()
-    /// The call-state nav item (idle call → calling → hang-up). Nil while an
-    /// incoming ring (the Bar shows Answer/Decline) or another peer's call owns
-    /// the chrome.
+    /// The call-state nav item (idle call → calling → hang-up). Disabled —
+    /// never hidden — while a call isn't available (an incoming ring, where
+    /// the Bar shows Answer/Decline, or another peer's call owns the chrome).
     var callChromeItem: UIBarButtonItem? { didSet { refreshNavChrome() } }
 
     init(peer: Peer) {

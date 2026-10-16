@@ -79,7 +79,7 @@ struct LiveActivityRoute: Equatable {
 }
 
 enum LiveActivityBarIntent: Equatable {
-    case toggleMic, toggleCam, selectRoute(String), end, answer, decline
+    case toggleMic, toggleCam, selectRoute(String), answer, decline
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill tapped: navigate to the owning thread.
     case open
@@ -92,7 +92,7 @@ enum LiveActivityBarIntent: Equatable {
 ///   rootStack (V)
 ///     headerStack (H; V at accessibility sizes)
 ///       identityStack (H): dot · textStack (V): titleLabel / statusLabel
-///       controlsStack (H): mic · route · cam · decline · answer · verb
+///       controlsStack (H): mic · route · cam · decline · answer
 ///     separator
 ///     trayStack (V): TrayRowView…
 final class LiveActivityBar: UIView {
@@ -107,7 +107,6 @@ final class LiveActivityBar: UIView {
     private let routeButton = UIButton(configuration: .tinted())
     private let declineButton = UIButton(configuration: .filled())
     private let answerButton = UIButton(configuration: .filled())
-    private let verbButton = UIButton(configuration: .filled())
     private let onDeviceButton = UIButton(configuration: .plain())
     private let textStack = UIStackView()
     private let identityStack = UIStackView()
@@ -198,13 +197,15 @@ final class LiveActivityBar: UIView {
         routeButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         control(declineButton, "phone.down.fill", "Decline", #selector(declineTapped))
         control(answerButton, "phone.fill", "Answer", #selector(answerTapped))
-        control(verbButton, "phone.down.fill", "End", #selector(verbTapped))
+        // Ring actions: filled glyphs, white on systemRed / systemGreen.
         declineButton.configuration?.baseBackgroundColor = .systemRed
+        declineButton.configuration?.baseForegroundColor = .white
         answerButton.configuration?.baseBackgroundColor = .systemGreen
+        answerButton.configuration?.baseForegroundColor = .white
         controlsStack.axis = .horizontal
         controlsStack.spacing = 8
         controlsStack.alignment = .center
-        [micButton, routeButton, camButton, declineButton, answerButton, verbButton]
+        [micButton, routeButton, camButton, declineButton, answerButton]
             .forEach(controlsStack.addArrangedSubview)
 
         headerStack.axis = .horizontal
@@ -302,19 +303,11 @@ final class LiveActivityBar: UIView {
         micButton.accessibilityValue = model.micOn ? "on" : "off"
         camButton.accessibilityValue = model.camOn ? "on" : "off"
 
+        // Answer/Decline ring here; starting and stopping the call is the chat
+        // nav's job (docs/ios-ui-design.md §7.1/D2) — no hang-up button in the panel.
         let incoming = model.phase == .incoming
         declineButton.isHidden = !incoming
         answerButton.isHidden = !incoming
-        verbButton.isHidden = incoming
-        switch model.phase {
-        case .idle:
-            verbButton.isHidden = true
-        case .calling, .inCall, .incoming:
-            // Icon only: the "End" label wrapped and broke the control row (#2).
-            setVerb("phone.down.fill", "End", .systemRed, showsTitle: false)
-        }
-        // Idle pill (rows only, no call) has no verb: its rows are the activity.
-        if compact && model.phase == .idle { verbButton.isHidden = true }
 
         // Tray
         trayStack.isHidden = compact || model.rows.isEmpty
@@ -330,15 +323,6 @@ final class LiveActivityBar: UIView {
         }
         applyAxis()
         setNeedsLayout()
-    }
-
-    private func setVerb(_ symbol: String, _ title: String, _ color: UIColor, showsTitle: Bool = true) {
-        verbButton.configuration?.image = UIImage(systemName: symbol)
-        let titled = showsTitle && model.density == .expanded
-        verbButton.configuration?.title = titled ? title : nil
-        verbButton.configuration?.imagePadding = titled ? 6 : 0
-        verbButton.configuration?.baseBackgroundColor = color
-        verbButton.accessibilityLabel = title
     }
 
     /// Accessibility text sizes: identity and controls stack vertically so
@@ -370,13 +354,6 @@ final class LiveActivityBar: UIView {
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         top.present(alert, animated: true)
-    }
-    @objc private func verbTapped() {
-        switch model.phase {
-        case .idle: break
-        case .calling, .inCall: onIntent?(.end)
-        case .incoming: break
-        }
     }
 
     // MARK: - Formatting

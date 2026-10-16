@@ -227,8 +227,12 @@ extension IdfonClient {
     /// Attaches the peer's provisioned capability ticket when there is one
     /// (`CapabilityTickets`); gated peers such as the Eve agent's holder
     /// require it, ungated idfon peers ignore it and use local grants.
+    /// Queues a text message and returns the `message.send` operation id (nil
+    /// when the daemon did not name one). The request only queues, so callers
+    /// that care about delivery — call dials — watch the returned operation.
+    @discardableResult
     func sendText(to peer: String, _ text: String, conversation: String? = nil,
-                  context: String? = nil, identity: String? = nil) async throws {
+                  context: String? = nil, identity: String? = nil) async throws -> String? {
         var params: [String: AnyEncodable] = [
             "to": AnyEncodable(peer),
             "text": AnyEncodable(text),
@@ -248,7 +252,17 @@ extension IdfonClient {
         // the peer take tens of seconds); the receiving daemon dedupes by
         // message id, so retries are safe.
         params["retries"] = AnyEncodable(3)
-        _ = try await request(method: "message.send", params: params)
+        let result = try await request(method: "message.send", params: params)
+        return result?["operation_id"]?.stringValue
+    }
+
+    /// Delivery status of a `message.send` operation (`operation.get`), or nil
+    /// when the operation is gone.
+    func operationStatus(_ operationId: String) async throws -> String? {
+        let result = try await request(method: "operation.get", params: [
+            "operation_id": AnyEncodable(operationId),
+        ])
+        return result?["operation"]?["status"]?.stringValue
     }
 
     /// Blocks server-side until one matching event arrives or the timeout

@@ -200,19 +200,31 @@ final class LiveCall {
                 // Reset the model history before the call: the session log is the
                 // medium, never the model's context (docs/session-context.md).
                 try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
-                try await client.sendText(
+                let inviteOperation = try await client.sendText(
                     to: peerId,
                     "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
                 )
                 // Dial watchdog: the invite was accepted for delivery, but if the
                 // return leg never lands (peer offline, relay flap, network
-                // transition), do not hang in .calling forever.
+                // transition), do not hang in .calling forever. Delivery is
+                // watched too (message.send only queues): "no answer" must never
+                // stand in for an invite that never left this device.
+                var delivered = false
                 for _ in 0..<40 {
                     try await Task.sleep(nanoseconds: 500_000_000)
                     guard operationGeneration == generation, !Task.isCancelled else { return }
                     if case .calling = state {} else { return } // answered, failed, or hung up
+                    if !delivered, let inviteOperation {
+                        let status = (try? await client.operationStatus(inviteOperation)) ?? nil
+                        if status == "Delivered" {
+                            delivered = true
+                        } else if ["Failed", "Expired", "Cancelled"].contains(status ?? "") {
+                            fail("invite delivery failed (network unreachable)")
+                            return
+                        }
+                    }
                 }
-                fail("no answer (peer unreachable)")
+                fail(delivered ? "no answer (peer unreachable)" : "invite not delivered (network unreachable)")
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
             }
