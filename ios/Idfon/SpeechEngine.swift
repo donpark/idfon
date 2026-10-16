@@ -54,11 +54,17 @@ enum SpeechEngines {
     /// The active engine; read by `VoiceAgentSession` at call time.
     static var tts: TtsEngine = makeTts(backend)
 
-    /// Warm the selected engine in the background so the first call's reply is
-    /// not blocked by a cold model download/compile.
-    static func prewarm() {
-        Task { await tts.prepare() }
-        if asrBackend == .parakeet {
+    /// Warm the speech engines in the background so a call is not blocked by a
+    /// cold model download/compile. `asr`/`tts` are a contact's selected
+    /// backend ids (ContactOnDeviceEngines); nil warms the app defaults. The
+    /// model work is shared across engine instances (ParakeetReduxAsr.warmCache,
+    /// KokoroTtsEngine's shared manager), so this also covers the fresh engines
+    /// a call builds for itself.
+    static func prewarm(asr: String? = nil, tts: String? = nil) {
+        let ttsChoice = tts.flatMap(TtsBackend.init(rawValue:)) ?? backend
+        Task { await makeTts(ttsChoice).prepare() }
+        let asrChoice = asr.flatMap(AsrBackend.init(rawValue:)) ?? asrBackend
+        if asrChoice == .parakeet {
             Task {
                 if #available(iOS 18.0, *) { await ParakeetReduxAsr.warmCache() }
             }
@@ -232,7 +238,11 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
     private var manager: KokoroAneManager?
     private let fallback = AppleTtsEngine()
     private var prepared = false
-    private var prepareTask: Task<Void, Never>?
+    /// The model load is shared across engine instances: a call builds its own
+    /// engine on top of what the prewarm warmed (ParakeetReduxAsr.warmCache
+    /// pattern), so per-instance prepare would pay the load again.
+    private static let warmLock = NSLock()
+    private static var warmTask: Task<KokoroAneManager?, Never>?
     private var player: AVAudioPlayer?
     private var finish: (() -> Void)?
     /// The call's single playback sink (`VoiceAgentSession` wires `AudioIO`).
@@ -247,25 +257,30 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
 
     func prepare() async {
         if prepared { return }
-        if prepareTask == nil {
-            prepareTask = Task { [weak self] in
-                guard let self else { return }
+        let task = Self.warmLock.withLock { () -> Task<KokoroAneManager?, Never> in
+            if let existing = Self.warmTask { return existing }
+            let created: Task<KokoroAneManager?, Never> = Task {
+                Automation.mark("voice: kokoro initializing")
+                // Apple-managed asset pack when configured; else FluidAudio's
+                // own HuggingFace download (directory == nil).
+                let directory = await SpeechProvisioning.directory(for: .kokoroAne)
+                let manager = KokoroAneManager(variant: .english, directory: directory)
                 do {
-                    Automation.mark("voice: kokoro initializing")
-                    // Apple-managed asset pack when configured; else FluidAudio's
-                    // own HuggingFace download (directory == nil).
-                    let directory = await SpeechProvisioning.directory(for: .kokoroAne)
-                    let manager = KokoroAneManager(variant: .english, directory: directory)
                     try await manager.initialize()
-                    self.manager = manager
-                    self.prepared = true
                     Automation.mark("voice: kokoro ready")
+                    return manager
                 } catch {
                     Automation.mark("voice: kokoro init failed \(error.localizedDescription)")
+                    return nil
                 }
             }
+            Self.warmTask = created
+            return created
         }
-        await prepareTask?.value
+        if let manager = await task.value {
+            self.manager = manager
+            prepared = true
+        }
     }
 
     func speak(_ text: String) async {

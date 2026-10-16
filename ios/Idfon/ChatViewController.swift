@@ -301,10 +301,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// §7.1 call button disabled: calling a room is a supported capability,
     /// but the handler still refuses room calls (temporary disable —
     /// docs/chatrooms.md) and the Bar shows no idle Call button for them.
+    /// A contact the call profile marks not-callable (voice off) shows no call
+    /// chrome either.
     // shortcut: `allowsCall` stays false for rooms so nothing dials into the
     // handler's temporary refusal; flip it when room-call (multi-party) work
     // starts.
-    var allowsCall: Bool { !conversation.isRoom }
+    var allowsCall: Bool { !conversation.isRoom && ContactCallProfiles.isCallable(peer.id) }
     private let conversation: Conversation
     private let client = IdfonClient()
 
@@ -413,6 +415,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         ChatStore.shared.addObserver(self)
         ChatStore.shared.markRead(conversation)
         syncMessages()
+        // A call from here is plausible now, so warm the speech engines early:
+        // the open chat is the first moment the app knows a voice-enabled
+        // contact may be about to be called, and the model load must not sit
+        // on the call's critical path (per-contact engine picks included).
+        if !conversation.isRoom, ContactCallProfiles.isCallable(peer.id) {
+            SpeechEngines.prewarm(
+                asr: ContactOnDeviceEngines.asr(for: peer.id),
+                tts: ContactOnDeviceEngines.tts(for: peer.id))
+        }
         if conversation.isRoom {
             Task {
                 if let peers = try? await client.peers() {

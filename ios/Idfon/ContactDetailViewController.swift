@@ -15,6 +15,10 @@ final class ContactDetailViewController: UIViewController {
     private let turnModeButton = UIButton(type: .system)
     /// §5.1 contact metadata: tap the contact row → chat + auto-start the call.
     private let instantSwitch = UISwitch()
+    /// §5.1 call profile overrides: who the contact is (human vs agent) and
+    /// whether calls to them are possible at all (see ContactCallProfiles).
+    private let kindButton = UIButton(type: .system)
+    private let voiceSwitch = UISwitch()
     private let turnModeCaption = UILabel()
     private var catalog: [VoiceOption] = []
     /// §6 primary actions: Call starts the call, Message opens the chat. Both
@@ -42,6 +46,7 @@ final class ContactDetailViewController: UIViewController {
         callConfig.baseBackgroundColor = .systemGreen
         callButton.configuration = callConfig
         callButton.addTarget(self, action: #selector(callTapped), for: .touchUpInside)
+        callButton.isHidden = !ContactCallProfiles.isCallable(peer.id)
         var messageConfig = UIButton.Configuration.filled()
         messageConfig.title = "Message"
         messageConfig.image = UIImage(systemName: "message")
@@ -72,6 +77,25 @@ final class ContactDetailViewController: UIViewController {
         let instantRow = UIStackView(arrangedSubviews: [instantLabel, instantSwitch])
         instantRow.axis = .horizontal
         instantRow.alignment = .center
+        kindButton.showsMenuAsPrimaryAction = true
+        kindButton.contentHorizontalAlignment = .trailing
+        kindButton.titleLabel?.font = .preferredFont(forTextStyle: .body)
+        kindButton.setTitleColor(.label, for: .normal)
+        rebuildKind()
+        voiceSwitch.isOn = ContactCallProfiles.profile(for: peer.id).voiceEnabled
+        voiceSwitch.addTarget(self, action: #selector(voiceChanged), for: .valueChanged)
+        let kindLabel = UILabel()
+        kindLabel.text = "Kind"
+        kindLabel.font = .preferredFont(forTextStyle: .body)
+        let kindRow = UIStackView(arrangedSubviews: [kindLabel, kindButton])
+        kindRow.axis = .horizontal
+        kindRow.alignment = .center
+        let voiceCallsLabel = UILabel()
+        voiceCallsLabel.text = "Voice Calls"
+        voiceCallsLabel.font = .preferredFont(forTextStyle: .body)
+        let voiceCallsRow = UIStackView(arrangedSubviews: [voiceCallsLabel, voiceSwitch])
+        voiceCallsRow.axis = .horizontal
+        voiceCallsRow.alignment = .center
 
         let nameLabel = sectionLabel("Name")
         let idLabel = UILabel()
@@ -98,7 +122,7 @@ final class ContactDetailViewController: UIViewController {
 
         let stack = UIStackView(arrangedSubviews: [
             actionsRow, artifactsButton,
-            nameLabel, nameField, instantRow,
+            nameLabel, nameField, instantRow, kindRow, voiceCallsRow,
             sectionLabel("Endpoint"), idLabel,
             sectionLabel("Speech"),
             voiceRow("Recognition", recognitionButton),
@@ -153,6 +177,35 @@ final class ContactDetailViewController: UIViewController {
             try? await self.client.updatePeerFlags(
                 ref: self.peer.id, identity: self.peer.identity, instantCall: self.instantSwitch.isOn)
         }
+    }
+
+    /// §5.1 call profile overrides also save on change; each control shows the
+    /// effective value (the stored override, else the derived default), the
+    /// same contract as the speech pickers.
+    private func rebuildKind() {
+        let kind = ContactCallProfiles.profile(for: peer.id).kind
+        kindButton.setTitle(kind == .agent ? "Agent" : "Human", for: .normal)
+        kindButton.menu = UIMenu(title: "Kind", children: ContactCallProfile.Kind.allCases.map { option in
+            UIAction(title: option == .agent ? "Agent" : "Human",
+                     state: option == kind ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                ContactCallProfiles.set(kind: option, voice: nil, for: self.peer.id)
+                self.rebuildKind()
+                self.refreshCallAvailability()
+            }
+        })
+    }
+
+    @objc private func voiceChanged() {
+        ContactCallProfiles.set(kind: nil, voice: voiceSwitch.isOn, for: peer.id)
+        refreshCallAvailability()
+    }
+
+    /// The person screen's Call verb follows the profile the same way the
+    /// contacts list's row Call verb does; the list refreshes on return.
+    private func refreshCallAvailability() {
+        callButton.isHidden = !ContactCallProfiles.isCallable(peer.id)
+        onChanged?()
     }
 
     // MARK: - Speech engines
