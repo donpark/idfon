@@ -1,0 +1,328 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		4EDE359CCB42920BD36539D6 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9D2 /* FluidAudio */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		1C000001000000000000000A /* Idfon.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Idfon.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		1C00000D0000000000000016 /* Exceptions for "Sources" folder in "Idfon" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				CIdfon/include/module.modulemap,
+			);
+			target = 1C000006000000000000000F /* Idfon */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		1C000002000000000000000B /* Sources */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				1C00000D0000000000000016 /* Exceptions for "Sources" folder in "Idfon" target */,
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1C000003000000000000000C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4EDE359CCB42920BD36539D6 /* FluidAudio in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1C000004000000000000000D = {
+			isa = PBXGroup;
+			children = (
+				1C000002000000000000000B /* Sources */,
+				1C000005000000000000000E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1C000005000000000000000E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1C000001000000000000000A /* Idfon.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1C000006000000000000000F /* Idfon */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1C0000070000000000000010 /* Build configuration list for PBXNativeTarget "Idfon" */;
+			buildPhases = (
+				1C00000E0000000000000017 /* Build Rust deps */,
+				1C0000080000000000000011 /* Sources */,
+				1C000003000000000000000C /* Frameworks */,
+				1C0000090000000000000012 /* Resources */,
+				1C00000A0000000000000013 /* Embed Rust artifacts */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1C000002000000000000000B /* Sources */,
+			);
+			name = Idfon;
+			packageProductDependencies = (
+				FBED5B9B4DCF10AFC62DA9D2 /* FluidAudio */,
+			);
+			productName = Idfon;
+			productReference = 1C000001000000000000000A /* Idfon.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1C00000B0000000000000014 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					1C000006000000000000000F = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			buildConfigurationList = 1C00000C0000000000000015 /* Build configuration list for PBXProject "Idfon" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 1C000004000000000000000D;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				54D511937386577BC39C5691 /* XCRemoteSwiftPackageReference "FluidAudio" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 1C000005000000000000000E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1C000006000000000000000F /* Idfon */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1C0000090000000000000012 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		1C00000A0000000000000013 /* Embed Rust artifacts */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed Rust artifacts";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\n# idfond + the two dylibs ride inside the .app next to the executable\n# (dylib install names are @executable_path/...; see build-deps.sh).\ndst=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Contents/MacOS\"\ncp \"$SRCROOT/../target/release/idfond\" \"$dst/idfond\"\ncp \"$SRCROOT/Vendor/libiroh_c_ffi.dylib\" \"$SRCROOT/Vendor/libidfon_director.dylib\" \"$dst/\"\n# Sign nested code with the app's identity (ad-hoc when unsigned): a stale\n# or missing signature gets the dylib SIGKILLed at load (scripts/test-e2e.sh).\nid=\"${EXPANDED_CODE_SIGN_IDENTITY:--}\"\ncodesign --force --sign \"$id\" \"$dst/libiroh_c_ffi.dylib\" \"$dst/libidfon_director.dylib\" \"$dst/idfond\"\n";
+		};
+		1C00000E0000000000000017 /* Build Rust deps */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust deps";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\n# Cargo is incremental; this phase just makes sure Vendor/libiroh_c_ffi.dylib\n# (the link input) and ../target/release/idfond exist before compilation.\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\n\"$SRCROOT/build-deps.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1C0000080000000000000011 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1C0000100000000000000019 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		1C000011000000000000001A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		1C000012000000000000001B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = RV27HPQNMF;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				INFOPLIST_FILE = Info.plist;
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OTHER_CFLAGS = (
+					"-fmodule-map-file=$(SRCROOT)/Sources/CIdfon/include/module.modulemap",
+				);
+				OTHER_LDFLAGS = (
+					"-liroh_c_ffi",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.idfon.mac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Sources/CIdfon/include";
+			};
+			name = Debug;
+		};
+		1C000013000000000000001C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = RV27HPQNMF;
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				INFOPLIST_FILE = Info.plist;
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OTHER_CFLAGS = (
+					"-fmodule-map-file=$(SRCROOT)/Sources/CIdfon/include/module.modulemap",
+				);
+				OTHER_LDFLAGS = (
+					"-liroh_c_ffi",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.idfon.mac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Sources/CIdfon/include";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1C0000070000000000000010 /* Build configuration list for PBXNativeTarget "Idfon" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1C000012000000000000001B /* Debug */,
+				1C000013000000000000001C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1C00000C0000000000000015 /* Build configuration list for PBXProject "Idfon" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1C0000100000000000000019 /* Debug */,
+				1C000011000000000000001A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		54D511937386577BC39C5691 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.17.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		FBED5B9B4DCF10AFC62DA9D2 /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 54D511937386577BC39C5691 /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 1C00000B0000000000000014 /* Project object */;
+}
