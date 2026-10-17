@@ -77,6 +77,17 @@ final class AudioIO: AudioSource, AudioSink {
     private var engineObserver: NSObjectProtocol?
     private var restartWorkItem: DispatchWorkItem?
     private var restartAttempts = 0
+    /// CallKit session ownership (docs/callkit-integration.md): while a
+    /// `call_kit` call runs, CallKit owns `AVAudioSession` — AudioIO starts
+    /// capture/playback but never configures or activates the session, and
+    /// only after the system hands it over (`didActivate`, the one-way-audio
+    /// rule).
+    private var callKitOwnsSession = false
+    private var callKitActivated = false
+    /// Recorded at start: CallKit owned the session for this run.
+    private var sessionOwnerIsCallKit = false
+    /// A `start` requested before CallKit activated the session.
+    private var pendingStart: Profile?
 
     private init() {}
 
@@ -86,6 +97,12 @@ final class AudioIO: AudioSource, AudioSink {
     /// a different profile restarts it. Main thread.
     func start(profile: Profile) {
         runOnMain { [self] in
+            if callKitOwnsSession, !callKitActivated {
+                pendingStart = profile
+                Automation.mark("audio: start deferred until callkit didActivate profile=\(profile)")
+                return
+            }
+            sessionOwnerIsCallKit = callKitOwnsSession
             Automation.mark("audio: mic permission=\(AVAudioApplication.shared.recordPermission)")
             AVAudioApplication.requestRecordPermission { granted in
                 // The engine start below can fail while the mic answer is
@@ -122,13 +139,47 @@ final class AudioIO: AudioSource, AudioSink {
         runOnMain { [self] in stopLocked() }
     }
 
+    /// CallKit is taking over the session for a call (before the report).
+    func callKitWillStart() {
+        runOnMain { [self] in
+            callKitOwnsSession = true
+            callKitActivated = false
+        }
+    }
+
+    /// The system activated the session: run any deferred start now.
+    func callKitDidActivate() {
+        runOnMain { [self] in
+            callKitActivated = true
+            guard let pending = pendingStart else { return }
+            pendingStart = nil
+            Automation.mark("audio: callkit didActivate — starting deferred profile=\(pending)")
+            start(profile: pending)
+        }
+    }
+
+    /// The CallKit call ended (or was refused): session control returns to the app.
+    func callKitDidEnd() {
+        runOnMain { [self] in
+            callKitOwnsSession = false
+            callKitActivated = false
+            pendingStart = nil
+        }
+    }
+
     private func stopLocked() {
+        pendingStart = nil
         guard running || profile != nil else { return }
         stopEngine()
         removeSessionObservers()
         profile = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        Automation.mark("audio: stopped")
+        if sessionOwnerIsCallKit {
+            // CallKit deactivates its own session.
+            Automation.mark("audio: stopped (callkit session left alone)")
+        } else {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            Automation.mark("audio: stopped")
+        }
     }
 
     private func startEngine() {
@@ -205,6 +256,12 @@ final class AudioIO: AudioSource, AudioSink {
     }
 
     private func configureSession(_ profile: Profile) {
+        if sessionOwnerIsCallKit {
+            // CallKit's activated session is in control (category, route,
+            // activation): configuring here is the one-way-audio bug.
+            Automation.mark("audio: session owned by callkit — not configuring")
+            return
+        }
         let session = AVAudioSession.sharedInstance()
         switch profile {
         case .liveCall:
@@ -414,7 +471,15 @@ final class AudioIO: AudioSource, AudioSink {
 
     func playLooping(_ buffer: AVAudioPCMBuffer) {
         guard running else {
-            Automation.mark("audio: loop play dropped engine idle")
+            // Engine not up yet (CallKit deferred start): stash the loop —
+            // `startEngine` re-arms it exactly like an engine restart.
+            if let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0)) {
+                activeLoop = converted
+                isPlaying = true
+                Automation.mark("audio: loop play deferred engine idle")
+            } else {
+                Automation.mark("audio: loop play dropped engine idle")
+            }
             return
         }
         guard let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))

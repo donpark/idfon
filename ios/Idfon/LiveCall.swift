@@ -95,6 +95,7 @@ final class LiveCall {
         guard audioAvailable else { return }
         audioEnabled = enabled
         applySendState()
+        CallKitController.shared.mutedChanged(!enabled)
         notify()
     }
 
@@ -135,6 +136,20 @@ final class LiveCall {
             CallFeedback.post("A call is already in progress.")
             return
         }
+        // `call_kit` channels dial through the system call UI — CallKit owns
+        // the whole call lifecycle, both directions (docs/callkit-integration.md).
+        // shortcut: the mode lookup keys on the dial ref, so a dial by alias
+        // misses its channel mode and takes the Bar path, <upgrade: resolve the id first>
+        if IncomingCallRouter.shared.ownsPresentation(for: peerRef) {
+            CallKitController.shared.startOutgoing(peerId: peerRef, video: false) { [weak self] in
+                self?.dialNow(peerRef)
+            }
+        } else {
+            dialNow(peerRef)
+        }
+    }
+
+    private func dialNow(_ peerRef: String) {
         operation?.cancel()
         operationGeneration += 1
         let generation = operationGeneration
@@ -204,6 +219,15 @@ final class LiveCall {
                     to: peerId,
                     "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
                 )
+                // Wake the peer's devices on a `call_kit` channel (P2): ring
+                // via the edge once the invite is queued. The call_uuid is the
+                // invite ticket's, so the callee's push report and the
+                // envelope land on the same system call.
+                if IncomingCallRouter.shared.ownsPresentation(for: peerId) {
+                    PushWake.shared.ring(
+                        peer: peerId, callUUID: CallUUID.from(ticket: ticket).uuidString,
+                        hasVideo: false)
+                }
                 // Dial watchdog: the invite was accepted for delivery, but if the
                 // return leg never lands (peer offline, relay flap, network
                 // transition), do not hang in .calling forever. Delivery is
@@ -378,8 +402,11 @@ final class LiveCall {
         UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
         state = .incoming(peer: peerID)
         notify()
-        LiveCallHarness.activateAudioSession()
-        CallTonePlayer.shared.start(.ringtone)
+        // CallKit owns the ring and the audio session on `call_kit` channels.
+        if !IncomingCallRouter.shared.ownsPresentation(for: peerID) {
+            LiveCallHarness.activateAudioSession()
+            CallTonePlayer.shared.start(.ringtone)
+        }
     }
 
     // MARK: - Internals
@@ -440,6 +467,18 @@ final class LiveCall {
     }
 
     private func notify() {
+        // CallKit mirrors the machine in the same turn
+        // (docs/callkit-integration.md); a no-op when no system call is up.
+        let phase: CallKitController.Phase
+        switch state {
+        case .idle: phase = .idle
+        case .incoming: phase = .incoming
+        case .calling: phase = .calling
+        case .inCall: phase = .inCall
+        }
+        if phase == .inCall { PushWake.shared.callConnected() }
+        if phase == .idle { PushWake.shared.cancelRing() }
+        CallKitController.shared.mirror(owner: .live, phase: phase)
         onState?()
     }
 

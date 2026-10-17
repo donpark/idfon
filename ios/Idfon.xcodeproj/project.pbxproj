@@ -263,6 +263,7 @@
 		1A00000E00000000000000E7 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Idfon/Idfon.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				ENABLE_DEBUG_DYLIB = NO;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -313,6 +314,7 @@
 		1A00000F00000000000000F8 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Idfon/Idfon.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RV27HPQNMF;
