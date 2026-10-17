@@ -209,12 +209,14 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                     CallKitController.shared.presentPush(
                         callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
                 } else if mustReport {
-                    // Apple demands a reported call for this push; report and
-                    // end once the report completes (#58). The channel's Bar
-                    // rings in-app when the envelope lands.
+                    // Apple demands a reported call for this push. Report and
+                    // KEEP it: the report-then-end flash (#58) looked like a
+                    // call the user could answer but ended under them
+                    // (the #51 E2E "blurry call screen"). If no invite lands,
+                    // the caller's cancel push or the 20s pending-answer guard
+                    // closes it; the Bar ring is presentation-only.
                     CallKitController.shared.presentPush(
-                        callUUID: callUUID, callerId: callerId, hasVideo: hasVideo,
-                        endImmediately: true)
+                        callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
                 } else {
                     idfonLog("idfon push: bar-mode channel \(callerId); no system ring")
                 }
