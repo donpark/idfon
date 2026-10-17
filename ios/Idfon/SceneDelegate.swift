@@ -77,20 +77,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDeleg
         if EdgeClient.shared.isProbing { EdgeClient.shared.probeLog("scene willEnterForeground") }
     }
 
-    /// Answering from the system UI surfaces the app: land on the call's chat
-    /// (the call chrome lives there), not whatever tab was last open.
-    func sceneDidBecomeActive(_ scene: UIScene) {
-        let callPeer: String?
-        switch LiveCall.shared.state {
-        case .incoming(let peer), .calling(let peer), .inCall(let peer):
-            callPeer = peer
-        case .idle:
-            callPeer = VideoCall.shared.activePeer
-        }
-        guard let peer = callPeer, !peer.isEmpty else { return }
-        liveActivity?.openThread(peerRef: peer)
-    }
-
     func sceneDidEnterBackground(_ scene: UIScene) {
         if EdgeClient.shared.isProbing { EdgeClient.shared.probeLog("scene didEnterBackground") }
     }

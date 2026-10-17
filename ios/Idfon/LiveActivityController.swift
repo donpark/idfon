@@ -307,9 +307,14 @@ final class LiveActivityController: NSObject {
             stopTimer()
         }
 
-        // Answering an incoming call takes you into the callee's thread, so the
-        // inline call surface is already on screen without a tap (#1).
-        if previous == .incoming, next == .inCall, let peer = machine?.peer, !peer.isEmpty {
+        // Switching to the call's chat happens when the user ANSWERS, not when
+        // the call arrives (the ring lives on whatever screen is up). The
+        // machine enters .inCall only via answer(); .calling → .inCall is the
+        // remote side answering our dial (already in its chat). The Bar's own
+        // previous phase may be .idle — a CallKit ring keeps the Bar out of
+        // .incoming (the suppression above) — so key on the machine states.
+        if next == .inCall, previous != .inCall, previous != .calling,
+           let peer = machine?.peer, !peer.isEmpty {
             openPeerThreadIfNeeded(peer)
         }
         // A fresh incoming invite's peer may not be in the name cache yet.
