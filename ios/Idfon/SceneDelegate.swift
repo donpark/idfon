@@ -107,10 +107,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDeleg
     ///   idfon://dial/<peer-ref>    — dial a peer (streams the bundled WAV)
     ///   idfon://videodial/<ref>    — start a video call
     ///   idfon://answer             — arm auto-answer
+    ///   idfon://add/<base64url>    — add the contact whose ticket rides in
+    ///                                the link (vCard deep link)
     /// `idfon://<ref>/<path>` opens an `EdgeWebView` when the edge is
-    /// configured, else the peer's thread.
+    /// configured, else the peer's thread. Non-`idfon://` opens are files:
+    /// .vcf documents go to `contact.import`.
     private func handleURL(_ context: UIOpenURLContext) {
-        guard let link = IdfonURL(context.url) else { return }
+        guard let link = IdfonURL(context.url) else {
+            handleDocument(context.url)
+            return
+        }
         idfonLog("idfon openURL: \(context.url)")
         switch link {
         case .dial(let ref):
@@ -119,12 +125,31 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDeleg
             VideoCall.shared.dial(ref)
         case .answer:
             NotificationCenter.default.post(name: .init("idfon.answer"), object: nil)
+        case .add(let payload):
+            guard let ticketJSON = ContactExchange.ticketJSON(fromLink: payload),
+                  let presenter = window?.rootViewController else { return }
+            ContactExchange.confirmAdd(ticketJSON: ticketJSON, from: presenter) { [weak self] in
+                (self?.window?.rootViewController as? UITabBarController)?.selectedIndex = 0
+            }
         case .resource(let ref, let path):
             if EdgeClient.shared.isConfigured {
                 presentEdgeResource(ref: ref, path: path)
             } else {
                 liveActivity?.openThread(peerRef: ref)
             }
+        }
+    }
+
+    /// A shared .vcf lands here (public.vcard, docs/contact-exchange.md); the
+    /// daemon adds every idfon card in the file.
+    private func handleDocument(_ url: URL) {
+        guard url.pathExtension.lowercased() == "vcf" else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let presenter = window?.rootViewController else { return }
+        ContactExchange.importVCard(text: text, from: presenter) { [weak self] in
+            (self?.window?.rootViewController as? UITabBarController)?.selectedIndex = 0
         }
     }
 

@@ -94,10 +94,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   idfon://dial/<peer-ref>    — dial a peer
     ///   idfon://videodial/<ref>    — start a video call
     ///   idfon://answer             — arm auto-answer
-    /// The resource path is parsed but not yet routed to a screen.
+    ///   idfon://add/<base64url>    — add the contact whose ticket rides in
+    ///                                the link (vCard deep link)
+    /// The resource path is parsed but not yet routed to a screen. Non-`idfon://`
+    /// opens are files: .vcf documents go to `contact.import`.
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            guard let link = IdfonURL(url) else { continue }
+            guard let link = IdfonURL(url) else {
+                handleDocument(url)
+                continue
+            }
             idfonLog("idfon openURL: \(url)")
             switch link {
             case .resource(let ref, let path):
@@ -112,8 +118,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 VideoCall.shared.dial(ref)
             case .answer:
                 waitForIncomingCall(video: false)
+            case .add(let payload):
+                if let ticketJSON = ContactExchange.ticketJSON(fromLink: payload) {
+                    ContactExchange.confirmAdd(ticketJSON: ticketJSON, app: app)
+                }
             }
         }
+    }
+
+    /// A shared .vcf lands here (public.vcard, docs/contact-exchange.md); the
+    /// daemon adds every idfon card in the file.
+    private func handleDocument(_ url: URL) {
+        guard url.pathExtension.lowercased() == "vcf",
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        idfonLog("idfon openDocument: \(url)")
+        ContactExchange.importVCard(text: text, app: app)
     }
 
     /// Selects the peer's chat, or a synthetic peer when the ref names nobody

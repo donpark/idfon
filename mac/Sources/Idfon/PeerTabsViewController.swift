@@ -138,6 +138,10 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         renameItem.target = self
         let deleteItem = contextMenu.addItem(withTitle: "Delete…", action: #selector(deleteContact), keyEquivalent: "")
         deleteItem.target = self
+        let shareItem = contextMenu.addItem(withTitle: "Share Contact Card…", action: #selector(shareContactCard), keyEquivalent: "")
+        shareItem.target = self
+        let saveItem = contextMenu.addItem(withTitle: "Save to Contacts", action: #selector(saveContactToSystem), keyEquivalent: "")
+        saveItem.target = self
         table.menu = contextMenu
 
         let scroll = NSScrollView()
@@ -227,6 +231,10 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
             if item.action == #selector(deleteContact), isBuiltInAgent {
                 item.isEnabled = false
             }
+            // Contact exchange needs a real endpoint to export.
+            if item.action == #selector(shareContactCard) || item.action == #selector(saveContactToSystem), isAgent {
+                item.isEnabled = false
+            }
         }
     }
 
@@ -234,6 +242,29 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
     /// they say what they are instead.
     private static func subtitle(for peer: Peer) -> String {
         OnDeviceAgent.id(fromPeerId: peer.id) != nil ? "on-device" : (peer.endpointId ?? peer.id)
+    }
+
+    /// Contact exchange (docs/contact-exchange.md): forward this contact's
+    /// card through the share picker or into the system Contacts app.
+    @objc private func shareContactCard() {
+        guard let peer = menuPeer else { return }
+        ContactExchange.shareCard(ref: peer.id, relativeTo: table)
+    }
+
+    @objc private func saveContactToSystem() {
+        guard let peer = menuPeer else { return }
+        Task {
+            do {
+                let card = try await ContactExchange.export(ref: peer.id)
+                await MainActor.run { ContactExchange.saveToSystemContacts(link: card.link) }
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Export Failed"
+                alert.informativeText = error.localizedDescription
+                alert.addButton(withTitle: "OK")
+                await MainActor.run { _ = alert.runModal() }
+            }
+        }
     }
 
     @objc private func renameContact() {

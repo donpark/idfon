@@ -321,13 +321,37 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
                 await MainActor.run { completion(actions) }
             }
         }])
-        guard OnDeviceAgents.available else { return UIMenu(children: [contact]) }
+        let exchange = [
+            UIAction(title: "Scan QR Code", image: UIImage(systemName: "qrcode.viewfinder")) { [weak self] _ in
+                self?.scanCode()
+            },
+            UIAction(title: "My Card", image: UIImage(systemName: "qrcode")) { [weak self] _ in
+                self?.showMyCard()
+            },
+        ]
+        guard OnDeviceAgents.available else { return UIMenu(children: [contact] + exchange) }
         return UIMenu(children: [
             contact,
+        ] + exchange + [
             UIAction(title: "On-Device Agent", image: UIImage(systemName: "cpu")) { [weak self] _ in
                 self?.addOnDeviceAgent()
             },
         ])
+    }
+
+    /// Contact exchange (docs/contact-exchange.md): scan a peer's QR code.
+    private func scanCode() {
+        let scanner = QRScannerViewController()
+        scanner.onCode = { [weak self] code in
+            guard let self else { return }
+            ContactExchange.handleScan(code, from: self) { self.refresh() }
+        }
+        present(UINavigationController(rootViewController: scanner), animated: true)
+    }
+
+    /// Contact exchange: this identity's own card (QR + share + Save to Contacts).
+    private func showMyCard() {
+        present(UINavigationController(rootViewController: MyCardViewController()), animated: true)
     }
 
     private func addContact(identity: String) {

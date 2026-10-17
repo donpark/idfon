@@ -31,6 +31,40 @@ extension IdfonClient {
         return address
     }
 
+    /// Contact exchange (docs/contact-exchange.md): exports this identity's
+    /// card (`ref` nil) or a saved peer's via `contact.export`.
+    func contactExport(ref: String?) async throws -> (vcard: String, link: String) {
+        var params: [String: AnyEncodable] = [:]
+        if let ref { params["ref"] = AnyEncodable(ref) }
+        guard let result = try await request(method: "contact.export", params: params),
+              let vcard = result["vcard"]?.stringValue else {
+            throw RequestError.request("contact.export returned no card")
+        }
+        return (vcard, result["link"]?.stringValue ?? "")
+    }
+
+    /// Imports every idfon card in a .vcf via `contact.import`, with the Add
+    /// Contact default grants; returns the added contacts' names.
+    func importVCard(text: String) async throws -> [String] {
+        let identity = (try? await identityId()) ?? "default"
+        guard let result = try await request(method: "contact.import", params: [
+            "text": AnyEncodable(text),
+            "identity": AnyEncodable(identity),
+        ]) else { return [] }
+        let peers = result["peers"]?.asArray ?? []
+        for peer in peers {
+            guard let id = peer["id"]?.stringValue else { continue }
+            for capability in ["message.send", "message.receive", "live.audio.subscribe", "resource.read"] {
+                _ = try? await request(method: "access.grant", params: [
+                    "identity": AnyEncodable(identity),
+                    "subject": AnyEncodable(id),
+                    "capability": AnyEncodable(capability),
+                ])
+            }
+        }
+        return peers.compactMap { $0["name"]?.stringValue }
+    }
+
     /// Adds a peer from a directory invite's endpoint-addr JSON and grants the
     /// chat capabilities (mirrors the mac `addChannel` and the `-pair`
     /// automation). The capability ticket is stored separately via

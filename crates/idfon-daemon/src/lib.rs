@@ -1370,6 +1370,116 @@ fn contact_ticket_value(
     })
 }
 
+/// `contact.export`: a vCard 3.0 card carrying this identity's contact ticket,
+/// or a saved peer's (`ref`). The card embeds the ticket twice —
+/// `X-IDFON-TICKET` and the `idfon://add/<base64url>` deep link that survives
+/// an AirDrop round-trip through the Contacts app (docs/contact-exchange.md).
+fn contact_export(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let state = store.lock().expect("store mutex poisoned");
+    let ticket = match request_text(&request.params, "ref") {
+        None => {
+            let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
+            match contact_ticket_value(&state, None, &identity) {
+                Some(ticket) => ticket,
+                None => {
+                    return error_response(
+                        request.id.clone(),
+                        &request.method,
+                        ErrorCode::InvalidRequest,
+                        "identity has no bound endpoint".into(),
+                        false,
+                    )
+                }
+            }
+        }
+        Some(reference) => {
+            let peer = state.peers.iter().find(|peer| {
+                peer.id == reference
+                    || peer.name == reference
+                    || peer.aliases.iter().any(|alias| *alias == reference)
+                    || peer.knows_endpoint(&reference)
+            });
+            let (Some(peer), Some(endpoint_id), Some(endpoint_addr)) = (
+                peer,
+                peer.and_then(|peer| peer.endpoint_id.clone()),
+                peer.and_then(|peer| peer.endpoint_addr.clone()),
+            ) else {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    "peer has no endpoint address".into(),
+                    false,
+                );
+            };
+            idfon_protocol::ContactTicket {
+                version: 1,
+                account_id: peer.id.clone(),
+                endpoint_id,
+                endpoint_addr,
+                label: Some(peer.name.clone()),
+                device_class: None,
+                capabilities: vec![],
+            }
+        }
+    };
+    drop(state);
+    success(
+        request,
+        serde_json::json!({
+            "vcard": idfon_protocol::vcf::contact_ticket_vcard(&ticket),
+            "link": idfon_protocol::vcf::contact_ticket_link(&ticket),
+        }),
+    )
+}
+
+/// `contact.import`: adds every idfon card in a vCard file as a peer (the
+/// existing `peer.add` upsert per card; a card that fails validation aborts
+/// the import, and re-importing is idempotent). Cards without a ticket are
+/// skipped by the parser.
+fn contact_import(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
+    let Some(text) = request_text(&request.params, "text") else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "text is required".into(),
+            false,
+        );
+    };
+    let tickets = match idfon_protocol::vcf::vcard_contact_tickets(&text) {
+        Ok(tickets) => tickets,
+        Err(message) => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                message,
+                false,
+            )
+        }
+    };
+    let mut peers = Vec::new();
+    for ticket in tickets {
+        let mut params = serde_json::json!({"contact_ticket": ticket});
+        if let Some(identity) = request_text(&request.params, "identity") {
+            params["identity"] = identity.into();
+        }
+        let call = Request {
+            version: PROTOCOL_VERSION,
+            id: request.id.clone(),
+            method: "peer.add".into(),
+            params,
+        };
+        let response = peer_add(&call, store, None);
+        let ResponseBody::Success { result, .. } = response.body else {
+            return response;
+        };
+        peers.push(result["peer"].clone());
+    }
+    success(request, serde_json::json!({"peers": peers}))
+}
+
 fn contact_ticket(
     request: &Request,
     store: &Arc<Mutex<Store>>,
@@ -2072,6 +2182,8 @@ fn dispatch_with_transport(
         "events.merge" => events_merge(&request, store),
         "wait" => wait_event(&request, store),
         "contact.ticket" => contact_ticket(&request, store, transport),
+        "contact.export" => contact_export(&request, store),
+        "contact.import" => contact_import(&request, store),
         "status" | "context" => {
             let state = store.lock().expect("store mutex poisoned");
             let identity_ref =
@@ -5220,6 +5332,9 @@ fn peer_add(
                 .as_ref()
                 .and_then(|contact| contact.peer.name.clone())
         })
+        // A ContactTicket's `label` is the name the sharer chose (vCard import
+        // folds FN into it), so cards name themselves.
+        .or_else(|| device_ticket.as_ref().and_then(|ticket| ticket.label.clone()))
         .unwrap_or_else(|| id.clone());
     let identity = request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     let call_mode = match requested_call_mode(request) {
@@ -8147,6 +8262,74 @@ mod tests {
             .aliases
             .contains(&idfon_core::account_alias("peer-1")));
         assert!(dir.join("identity-work.key").is_file());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn contact_exchange_round_trips_through_vcard() {
+        let dir = temp_dir("contact-exchange");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let send = |id: &str, method: &str, params: serde_json::Value| {
+            dispatch(
+                Request {
+                    version: PROTOCOL_VERSION,
+                    id: id.into(),
+                    method: method.into(),
+                    params,
+                },
+                &store,
+            )
+        };
+        assert!(
+            send(
+                "add",
+                "peer.add",
+                serde_json::json!({"id": "bob", "name": "Bob", "endpoint_id": "ep1", "endpoint_addr": "{\"node_id\":\"bob\"}"}),
+            )
+            .ok
+        );
+        // A saved peer exports as a card (deep link + X property).
+        let exported = send("exp", "contact.export", serde_json::json!({"ref": "Bob"}));
+        let ResponseBody::Success { result, .. } = exported.body else {
+            panic!("export failed")
+        };
+        let vcard = result["vcard"].as_str().unwrap().to_string();
+        assert!(result["link"]
+            .as_str()
+            .unwrap()
+            .starts_with("idfon://add/"));
+        assert!(vcard.contains("URL:idfon://add/"));
+        assert!(vcard.contains("X-IDFON-TICKET"));
+        // The card imports back with its label as the name (peer.add falls
+        // back to the ContactTicket label) — no name param passed.
+        assert!(send("rm", "peer.remove", serde_json::json!({"ref": "bob"})).ok);
+        let imported = send("imp", "contact.import", serde_json::json!({"text": vcard}));
+        let ResponseBody::Success { result, .. } = imported.body else {
+            panic!("import failed")
+        };
+        assert_eq!(result["peers"][0]["name"], "Bob");
+        assert_eq!(result["peers"][0]["endpoint_id"], "ep1");
+        // Re-import is an idempotent upsert.
+        assert!(
+            send("imp2", "contact.import", serde_json::json!({"text": vcard})).ok
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn contact_import_rejects_foreign_vcards() {
+        let dir = temp_dir("contact-import-foreign");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let imported = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "imp".into(),
+                method: "contact.import".into(),
+                params: serde_json::json!({"text": "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:No Ticket\r\nEND:VCARD\r\n"}),
+            },
+            &store,
+        );
+        assert!(!imported.ok);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

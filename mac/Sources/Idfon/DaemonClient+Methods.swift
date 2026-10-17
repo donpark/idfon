@@ -171,6 +171,40 @@ extension DaemonClient {
         }
     }
 
+    /// Contact exchange (docs/contact-exchange.md): exports this identity's
+    /// card (`ref` nil) or a saved peer's via `contact.export`.
+    func contactExport(ref: String?) async throws -> (vcard: String, link: String) {
+        var params: [String: AnyEncodable] = [:]
+        if let ref { params["ref"] = AnyEncodable(ref) }
+        guard let result = try await requestWithLaunch(method: "contact.export", params: params),
+              let vcard = result["vcard"]?.stringValue else {
+            throw DaemonError.request("contact.export returned no card")
+        }
+        return (vcard, result["link"]?.stringValue ?? "")
+    }
+
+    /// Imports every idfon card in a .vcf via `contact.import`, with the Add
+    /// Channel default grants; returns the added contacts' names.
+    func importVCard(text: String) async throws -> [String] {
+        let identity = try await identityId()
+        guard let result = try await requestWithLaunch(method: "contact.import", params: [
+            "text": AnyEncodable(text),
+            "identity": AnyEncodable(identity),
+        ]) else { return [] }
+        let peers = result["peers"]?.asArray ?? []
+        for peer in peers {
+            guard let id = peer["id"]?.stringValue else { continue }
+            for capability in ["message.send", "message.receive", "live.audio.subscribe", "resource.read"] {
+                _ = try? await requestWithLaunch(method: "access.grant", params: [
+                    "identity": AnyEncodable(identity),
+                    "subject": AnyEncodable(id),
+                    "capability": AnyEncodable(capability),
+                ])
+            }
+        }
+        return peers.compactMap { $0["name"]?.stringValue }
+    }
+
     /// Exposes the app's user-visible `Documents/Shared` directory to granted
     /// peers at `GET /fs/<path>`. Idempotent, and the daemon serves the dir in
     /// place — anything the user drops into it in Finder is shareable; a rename
