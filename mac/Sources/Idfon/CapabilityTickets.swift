@@ -40,6 +40,10 @@ enum CapabilityTickets {
     /// of the silent video-call fallback.
     static func hasTicket(for peer: String) -> Bool { table()[peer] != nil }
 
+    /// The stored ticket as raw JSON text (e.g. as ring auth for the edge's
+    /// `/_push/*` routes), or nil when none has been provisioned.
+    static func rawTicketJSON(for peer: String) -> String? { table()[peer] }
+
     private static func table() -> [String: String] {
         UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
     }
