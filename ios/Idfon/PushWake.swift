@@ -215,10 +215,23 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                     CallKitController.shared.cancelFromPush(callUUID: callUUID)
                 }
             } else {
-                CallKitController.shared.presentPush(
-                    callUUID: callUUID,
-                    callerId: dict["caller_id"] as? String ?? "",
-                    hasVideo: (dict["has_video"] as? Bool) ?? false)
+                let callerId = dict["caller_id"] as? String ?? ""
+                let hasVideo = (dict["has_video"] as? Bool) ?? false
+                // The callee's own channel mode decides who owns the ring —
+                // the sender's view of the channel may disagree (#47).
+                if IncomingCallRouter.shared.ownsPresentation(for: callerId) {
+                    CallKitController.shared.presentPush(
+                        callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                } else if mustReport {
+                    // Apple demands a reported call for this push; report and
+                    // end it in the same turn. The channel's Bar rings in-app
+                    // when the envelope lands.
+                    CallKitController.shared.presentPush(
+                        callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                    CallKitController.shared.cancelFromPush(callUUID: callUUID)
+                } else {
+                    idfonLog("idfon push: bar-mode channel \(callerId); no system ring")
+                }
             }
             completion()
         }
