@@ -402,16 +402,29 @@ final class CallKitController: NSObject, CXProviderDelegate {
             }
             gate.fulfill()
         case let end as CXEndCallAction:
+            // The user's end must reset the push-first state even when the
+            // machines never saw the call (the invite never arrived): nothing
+            // else clears `current`/`pendingAnswer`, and the UI then hangs
+            // until the 20s pending-answer guard fires.
+            pendingAnswer = nil
+            pendingAnswerWork?.cancel()
             if var call = current {
                 call.endedBySystem = true // the end is the system's; don't report back
                 current = call
+                let machineIdle: Bool
                 switch call.owner {
                 case .live:
+                    machineIdle = LiveCall.shared.state == .idle
                     if case .incoming = LiveCall.shared.state { LiveCall.shared.decline() }
                     else { LiveCall.shared.hangUp() }
                 case .video:
+                    machineIdle = VideoCall.shared.state == .idle
                     if VideoCall.shared.state == .incoming { VideoCall.shared.decline() }
                     else { VideoCall.shared.hangUp() }
+                }
+                if machineIdle {
+                    current = nil
+                    AudioIO.shared.callKitDidEnd()
                 }
             }
             gate.fulfill()

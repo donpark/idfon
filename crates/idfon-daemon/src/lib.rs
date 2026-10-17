@@ -3151,8 +3151,13 @@ fn send_message(
         .params
         .get("retries")
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0)
-        .min(3) as usize;
+        // A push-woken callee's transport needs seconds to come up (its
+        // endpoint binds before it starts accepting), so a single attempt
+        // fails within ~0.25s of the wake — the call invite never arrives and
+        // an answered call can never connect (the #51 wake legs). Default to
+        // a few backoff-paced retries.
+        .unwrap_or(4)
+        .min(5) as usize;
     if to.is_none()
         || text.is_none()
         || key.is_none()
@@ -3420,6 +3425,10 @@ fn send_message(
             }
             if delivery.is_ok() {
                 break;
+            }
+            if attempt < retries {
+                // Backoff: the peer may just be waking (transport cold).
+                tokio::time::sleep(std::time::Duration::from_millis(500 << attempt.min(3))).await;
             }
         }
         let status = if delivery.is_ok() {
