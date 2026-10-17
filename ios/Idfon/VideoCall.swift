@@ -359,16 +359,18 @@ final class VideoCall: NSObject {
         Task {
             do {
                 activateAudioSession()
-                guard await AudioPusher.shared.startForCall() else {
+                var micReady = await AudioPusher.shared.startForCall()
+                if !micReady {
                     // The CallKit session may still be activating (the
                     // didActivate handoff): the engine start then fails with
                     // avfaudio 561017449 and the call must not die on it (#51).
                     idfonLog("idfon video: mic start failed; retrying after the session settles")
                     try? await Task.sleep(nanoseconds: 700_000_000)
-                    guard await AudioPusher.shared.startForCall() else {
-                        fail("microphone unavailable")
-                        return
-                    }
+                    micReady = await AudioPusher.shared.startForCall()
+                }
+                guard micReady else {
+                    fail("microphone unavailable")
+                    return
                 }
                 if cameraOn { CameraPusher.shared.start() }
                 await join(ticket: pending.ticket)

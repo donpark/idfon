@@ -295,16 +295,18 @@ final class LiveCall {
             do {
                 let profile = ContactAudioProfiles.profile(for: pending.peer)
                 LiveCallHarness.activateAudioSession()
-                guard await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate) else {
+                var micReady = await AudioPusher.shared.startForCall()
+                if !micReady {
                     // The CallKit session may still be activating (the
                     // didActivate handoff): the engine start then fails with
                     // avfaudio 561017449 and the call must not die on it (#51).
                     idfonLog("idfon live: mic start failed; retrying after the session settles")
                     try? await Task.sleep(nanoseconds: 700_000_000)
-                    guard await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate) else {
-                        fail("microphone unavailable")
-                        return
-                    }
+                    micReady = await AudioPusher.shared.startForCall()
+                }
+                guard micReady else {
+                    fail("microphone unavailable")
+                    return
                 }
                 let pendingTicket = pending.ticket
                 await join(ticket: pendingTicket)
