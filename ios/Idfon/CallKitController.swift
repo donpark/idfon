@@ -98,10 +98,12 @@ final class CallKitController: NSObject, CXProviderDelegate {
     }
 
     /// A `cancel` push (the caller hung up before answer): end in one turn.
-    func cancelFromPush(callUUID: String) {
+    /// Returns whether a matching call was ended.
+    @discardableResult
+    func cancelFromPush(callUUID: String) -> Bool {
         guard let call = current, !call.outgoing,
               call.uuid.uuidString.caseInsensitiveCompare(callUUID) == .orderedSame
-        else { return }
+        else { return false }
         idfonLog("idfon callkit: push cancel call=\(callUUID)")
         current = nil
         pendingAnswer = nil
@@ -114,6 +116,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
         case .video:
             if VideoCall.shared.state == .incoming { VideoCall.shared.decline() }
         }
+        return true
     }
 
     /// Called after the machines consumed an invite envelope: a pending answer
