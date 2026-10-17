@@ -233,15 +233,27 @@ these:
   chat) is fenced (commit `3eeae06`); if the freeze reproduces, the observer
   forensics are the next step (all three observers are UI classes; move their
   work off main or gate it).
-- **#60 (open):** out-of-order legacy `call_stopped` from a killed attempt
-  terminates the next call — the "call cut off after 2s" cause. Mitigated by
-  a per-peer invite-sequence watermark (commit `5c4dafa`); the proper fix is
-  ticketed stops correlated to the call generation.
+- **#60 (closed 2026-10-17 — the ticket-correlation fix; verified on device):** an out-of-order
+  stop from a killed attempt terminated the next call — the "call cut off
+  after 2s" / "rings once or twice then dies" cause. A per-peer
+  invite-sequence watermark (commit `5c4dafa`) guarded only the bare
+  `call_stopped` form; the teardown that actually straggled was the
+  `IDFON-LIVE/1 action=stop` **envelope**, which bypassed it. Stops now carry
+  the call's generation ticket (the dialer's publish ticket, known to both
+  sides): every Swift sender names it (dial, answer, decline, hang-up,
+  `recoverStaleCall`, both platforms), and every receiver terminates only
+  when the stop's ticket matches the current call — empty ticket = legacy
+  sender, old behavior. `CallKitController.remoteEnded(peerId:ticket:)`
+  applies the same rule to a push-only ringing call (ring UUID =
+  `CallUUID.from(ticket)`). The watermark stays as a backstop for legacy
+  (unticketed) stops.
 - **#55 (open):** the woken app dying within seconds (SIGKILL). Suspect
   overlap with #61 (a wedge looks similar from outside) — re-verify only
   after #61 is resolved.
 - **#51 (open):** answer → two-way audio — the last functional leg.
-- **#52 / #54 (open):** host checks for the bitten seams; test-config
+- **#52 / #54 (open):** host checks for the bitten seams — the stop
+  correlation landed (`ios/Checks/CallStopCorrelationCheck` and its mac
+  twin, run with plain `swiftc` per their headers); the rest is test-config
   residue + droplet deploy checklist.
 - **#56 (open):** contact-ticket `account_id` vs `sender.peer_id` — pairing
   from the advertised ticket can never pass the message gate. Workaround:
@@ -250,7 +262,7 @@ these:
 **Wake chain status (verified on hardware):** registration, push → system
 ring (survives — the five ring-killers are fixed: report-then-end race #58,
 mode-cache regression #57, stale-ring block #59, phantom cancels (test
-tooling), straggler call_stopped #60-mitigation), cancel → same-turn dismiss,
+tooling), straggler stop #60 ticket-correlation), cancel → same-turn dismiss,
 stale-cancel no-op, caller names. Remaining: the answer-side freeze (#61)
 and then the audio leg (#51).
 - **Ring semantics (settled the hard way):** the **sender's** `call_mode`
