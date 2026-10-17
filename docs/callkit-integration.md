@@ -251,10 +251,13 @@ these:
   overlap with #61 (a wedge looks similar from outside) — re-verify only
   after #61 is resolved.
 - **#51 (open):** answer → two-way audio — the last functional leg.
-- **#52 / #54 (open):** host checks for the bitten seams — the stop
-  correlation landed (`ios/Checks/CallStopCorrelationCheck` and its mac
-  twin, run with plain `swiftc` per their headers); the rest is test-config
-  residue + droplet deploy checklist.
+- **#52 (landed) / #54 (mostly landed):** host checks for the bitten seams —
+  stop correlation (`CallStopCorrelationCheck`), ticket → caller_id
+  (`RingTicketCheck`), cache flattening (`PeerRefFlatteningCheck`) — each in
+  both trees where the seam is duplicated, run with plain `swiftc` per their
+  headers. Residue: `scripts/e2e-teardown.sh` + the
+  `edge-deploy-checklist.md` runbook (its §B manual steps run after #51's
+  legs).
 - **#56 (open):** contact-ticket `account_id` vs `sender.peer_id` — pairing
   from the advertised ticket can never pass the message gate. Workaround:
   pair with `account_id` overridden to the sender's `sender.peer_id`.

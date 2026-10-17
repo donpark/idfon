@@ -25,6 +25,7 @@ kept because it records decisions; **design** = not all implemented.
 | `native-architecture.md` | Native-SDK (web-content) shell |
 | `idfon-web-analysis.md` | viewing P2P pages in `WKWebView` (`idfon:` scheme vs local proxy), TLS/WebMCP/security notes (as-built analysis; resolved by the hybrid transport) |
 | `idfon-edge.md` | public `idfon.net` gateway + on-device adapter + P2P backbone + VoIP push channel (as-built; P0–P7 landed; public edge on a DigitalOcean droplet + co-located relay; residual issues #27–#29) |
+| `edge-deploy-checklist.md` | the CallKit test rig (local edge + app config), session teardown (`scripts/e2e-teardown.sh`), droplet deploy incl. the APNs push wiring (#54) |
 | `callkit-integration.md` | CallKit + incoming-call presentation; as-built + plan (P0–P2 landed incl. mac ring sender, iOS 26.4 wake requirement; P3 macOS LiveCommunicationKit deferred) |
 | `contact-exchange.md` | vCard contact cards: the NameDrop substitute, `idfon://add/` deep links, QR, import/export surfaces |
 | `live-activity-bar-layout.md` | live-call bar UIKit layout |
