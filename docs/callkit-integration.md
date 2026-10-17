@@ -171,6 +171,13 @@ builds deliver only via `api.sandbox.push.apple.com`, so a dev edge sets
 `--push-apns-url` there; an edge serving mixed sandbox/prod tokens would need
 per-token environment (not built).
 
+**Names and the call log (decided 2026-10-17, donpark/idfon#48).** The system
+call UI shows real peer display names, which land in the system call log
+(Recents) and sync to iCloud. Deliberate: idfon contacts are user-chosen
+labels, not phone numbers, and the call log is the user's own device log.
+Signal's placeholder-name posture is not ours (`includesCallsInRecents` stays
+on). If a "hide from call log" preference is ever wanted, that is the switch.
+
 **Landed (iOS + mac caller side)** — `ios/Idfon/PushWake.swift`, the
 `CallKitController` push hooks, and `mac/Sources/Idfon/CallRing.swift`:
 
