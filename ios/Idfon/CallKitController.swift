@@ -128,9 +128,23 @@ final class CallKitController: NSObject, CXProviderDelegate {
         guard let call = current, !call.outgoing,
               call.uuid.uuidString.caseInsensitiveCompare(callUUID) == .orderedSame
         else { return false }
+        // A ring-over (the caller connected on another device) must dismiss
+        // only unanswered rings — never a call this device answered (#46).
+        if answeredLocally(call) { return false }
         idfonLog("idfon callkit: push cancel call=\(callUUID)")
         endIncomingCall(call, reason: .remoteEnded)
         return true
+    }
+
+    /// True when this device answered the call: media up, or an answer
+    /// waiting for its invite envelope.
+    private func answeredLocally(_ call: Call) -> Bool {
+        if pendingAnswer != nil { return true }
+        switch call.owner {
+        case .live: if case .inCall = LiveCall.shared.state { return true }
+        case .video: if VideoCall.shared.state == .inCall { return true }
+        }
+        return false
     }
 
     /// The peer hung up at the transport level (`call_stopped`): the
