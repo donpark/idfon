@@ -47,6 +47,14 @@ Key facts:
   default `/tmp/idfon/idfond.sock` and can talk to the same daemon.
 - **No win32**: idfond IPC is a Unix socket (`std::os::unix`); Windows needs a
   named-pipe transport first (noted in `idfon.js`).
+- **Contact vCards**: `idfon contact export [--peer REF] [--out F]` wraps a
+  contact ticket (this identity's `contact.ticket`, or a saved peer's primary
+  pair) in a vCard 3.0 card twice: `X-IDFON-TICKET` (ticket JSON) and
+  `URL:idfon://add/<base64url>` (the deep link that survives an AirDrop
+  round-trip through the Contacts app, which strips unknown X- properties but
+  keeps standard `URL` fields). `idfon contact import [FILE|-]` adds every
+  idfon card in a .vcf via `peer.add`, reading either slot (foreign cards are
+  skipped). Codec: `crates/idfon-protocol/src/vcf.rs`.
 - **Publish flow**: `scripts/build-cli.sh` populates `cli/idfon-*/bin/`,
   `scripts/publish-cli.sh` publishes; CI workflow `cli.yml` must be run with
   `gh workflow run cli --ref cli-v<ver>` (tag pushes fire nothing — no tags

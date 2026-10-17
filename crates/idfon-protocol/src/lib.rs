@@ -6,6 +6,7 @@ use thiserror::Error;
 pub mod artifacts;
 pub mod blocks;
 pub mod calls;
+pub mod vcf;
 pub use artifacts::*;
 pub use blocks::*;
 pub use calls::*;

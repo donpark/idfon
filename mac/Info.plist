@@ -12,6 +12,18 @@
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSCameraUsageDescription</key><string>Idfon uses the camera for video calls.</string>
+    <key>NSContactsUsageDescription</key><string>Idfon saves contact cards to your Contacts so you can share them through AirDrop.</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <!-- Contact exchange (docs/contact-exchange.md): "Open in Idfon" for
+             shared .vcf files goes through contact.import. -->
+        <dict>
+            <key>CFBundleTypeName</key><string>vCard</string>
+            <key>LSItemContentTypes</key><array><string>public.vcard</string></array>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+        </dict>
+    </array>
     <key>NSMicrophoneUsageDescription</key><string>Idfon uses the microphone for calls and voice messages.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Idfon uses on-device speech recognition to transcribe your voice.</string>
     <key>CFBundleURLTypes</key>

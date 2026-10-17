@@ -60,6 +60,7 @@ final class SidebarViewController: NSViewController {
         roomRow.translatesAutoresizingMaskIntoConstraints = false
         let actions = NSStackView(views: [
             button("Add Channel…", #selector(addChannelTapped)),
+            button("My Card…", #selector(myCardTapped)),
             button("Add Agent…", #selector(addAgentTapped)),
             button("Issue Receive Ticket…", #selector(issueTicketTapped)),
             button("Audio Settings…", #selector(audioSettingsTapped)),
@@ -235,6 +236,12 @@ final class SidebarViewController: NSViewController {
                 if let error { await MainActor.run { self.plainSheet(title: "Add Channel Failed", message: error) } }
             }
         }
+    }
+
+    /// Contact exchange (docs/contact-exchange.md): this identity's own card
+    /// (QR for the phone's scanner, Save to Contacts, Share).
+    @objc private func myCardTapped() {
+        ContactExchange.showMyCard(relativeTo: view)
     }
 
     @objc private func addAgentTapped() {

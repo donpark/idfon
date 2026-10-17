@@ -8,6 +8,7 @@ import Foundation
 ///     idfon://dial/<peer-ref>        -> .dial(ref:)
 ///     idfon://videodial/<peer-ref>   -> .videoDial(ref:)
 ///     idfon://answer                 -> .answer
+///     idfon://add/<base64url>        -> .add(payload:)  contact self-add (vCard deep link)
 ///
 /// `peer-ref` is what the daemon's peer methods accept: peer id, name, alias,
 /// or endpoint id (docs/protocol.md). Hosts are case-insensitive per RFC 3986,
@@ -24,10 +25,13 @@ enum IdfonURL: Equatable {
     case dial(ref: String)
     case videoDial(ref: String)
     case answer
+    /// Add the contact whose ticket rides in the link (vCard deep link;
+    /// payload is base64url ContactTicket JSON).
+    case add(payload: String)
 
     static let scheme = "idfon"
     /// Hosts reserved for deeplink verbs; they never name a peer.
-    static let reservedVerbs: Set<String> = ["dial", "videodial", "answer"]
+    static let reservedVerbs: Set<String> = ["dial", "videodial", "answer", "add"]
 
     init?(_ url: URL) {
         guard url.scheme?.lowercased() == Self.scheme else { return nil }
@@ -54,6 +58,7 @@ enum IdfonURL: Equatable {
         case "dial": return ref.map { .dial(ref: $0) }
         case "videodial": return ref.map { .videoDial(ref: $0) }
         case "answer": return .answer
+        case "add": return ref.map { .add(payload: $0) }
         default: return nil
         }
     }

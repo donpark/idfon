@@ -86,6 +86,22 @@ reciprocal peer always takes the default.
 | `peer.resolve` | `{ ref }` | live channel info |
 | `peer.show` / `peer.status` | `{ ref }` | `{ peer }` / connectivity |
 
+#### Contact exchange (vCards)
+
+`contact.export` wraps a contact ticket in a vCard 3.0 card and
+`contact.import` unwraps one (codec: `crates/idfon-protocol/src/vcf.rs`). The
+card carries the ticket twice: `X-IDFON-TICKET` (ticket JSON) and
+`URL:idfon://add/<base64url>` — a deep link that survives an AirDrop
+round-trip through the Contacts app, which strips unknown X- properties but
+keeps standard `URL` fields. `peer.add` also accepts a `contact_ticket`
+(ContactTicket JSON or JSON string) and names the peer from its `label` when
+`name` is omitted. See [contact-exchange.md](contact-exchange.md).
+
+| method | params | result |
+|---|---|---|
+| `contact.export` | `{ ref?, identity? }` | `{ vcard, link }`; `ref` exports that saved peer, omitted exports the identity's own card; `link` is the `idfon://add/<base64url>` deep link |
+| `contact.import` | `{ text, identity? }` | `{ peers: [Peer] }`; upserts each idfon card (aborts on a card that fails validation; idempotent) |
+
 ### Messaging
 
 | method | params | result |

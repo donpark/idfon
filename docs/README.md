@@ -26,6 +26,7 @@ kept because it records decisions; **design** = not all implemented.
 | `idfon-web-analysis.md` | viewing P2P pages in `WKWebView` (`idfon:` scheme vs local proxy), TLS/WebMCP/security notes (as-built analysis; resolved by the hybrid transport) |
 | `idfon-edge.md` | public `idfon.net` gateway + on-device adapter + P2P backbone (as-built; P0–P6 landed; public edge on a DigitalOcean droplet + co-located relay; residual issues #27–#29) |
 | `callkit-integration.md` | CallKit + incoming-call presentation (iOS) |
+| `contact-exchange.md` | vCard contact cards: the NameDrop substitute, `idfon://add/` deep links, QR, import/export surfaces |
 | `live-activity-bar-layout.md` | live-call bar UIKit layout |
 | `ios-ui-design.md` | structural UX design for the iOS app (tabs, rows, chat timeline, sessions, identity) — design, for implementation |
 | `ui-design-notes.md` | UX/visual system spec (live activity bar, session tray) |
@@ -46,7 +47,7 @@ kept because it records decisions; **design** = not all implemented.
 
 | Doc | Covers |
 | --- | --- |
-| `cli-architecture.md` | CLI shape + npm packaging |
+| `cli-architecture.md` | CLI shape + npm packaging; contact vCards |
 | `cli-data.md` | `put`/`get`/`send-data`, live streaming |
 | `npm-distribution.md` | npm packages and the publish gate |
 

@@ -22,7 +22,11 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use idfon_client::{Client, ClientError};
-use idfon_protocol::{encode_json, Request, Response, ResponseBody, PROTOCOL_VERSION};
+use idfon_protocol::{
+    encode_json,
+    vcf::{contact_ticket_vcard, vcard_contact_tickets},
+    ContactTicket, Peer, Request, Response, ResponseBody, PROTOCOL_VERSION,
+};
 use serde_json::{json, Value};
 
 const DEFAULT_SOCKET: &str = "/tmp/idfon/idfond.sock";
@@ -89,6 +93,9 @@ enum Command {
     /// Manage peers
     #[command(subcommand)]
     Peer(PeerCmd),
+    /// vCard exchange: export a card carrying the idfon ticket, import .vcf files
+    #[command(subcommand)]
+    Contact(ContactCmd),
     /// Send content: --text chat, --file blob, --stream live (PEER = 1:1, no PEER = broadcast)
     ///
     /// Ticket contract: --text returns an operation id (delivery via
@@ -251,6 +258,24 @@ enum PeerCmd {
     Status {
         #[arg(value_name = "REF")]
         peer_ref: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ContactCmd {
+    /// Export a vCard 3.0 card carrying the idfon contact ticket
+    Export {
+        /// Export the saved peer REF's card instead of this identity's own
+        #[arg(long)]
+        peer: Option<String>,
+        /// Write to FILE instead of stdout
+        #[arg(long)]
+        out: Option<String>,
+    },
+    /// Add every idfon card in a vCard file as a peer (FILE may be '-' for stdin)
+    Import {
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 }
 
@@ -596,6 +621,12 @@ fn run() -> io::Result<()> {
                 println!("daemon stopped");
             }
             Ok(())
+        }
+        Command::Contact(ContactCmd::Export { peer, out }) => {
+            cmd_contact_export(socket, identity, peer.as_deref(), out.as_deref(), json)
+        }
+        Command::Contact(ContactCmd::Import { file }) => {
+            cmd_contact_import(socket, identity, file.as_deref(), json)
         }
         Command::Put(args) => cmd_put(
             socket,
@@ -1139,6 +1170,89 @@ fn run() -> io::Result<()> {
             finish(response, json)
         }
     }
+}
+
+/// Exports a vCard 3.0 card: this identity's own ticket (`contact.ticket`),
+/// or the saved peer REF's primary pair from `peers`, wrapped in `X-IDFON-TICKET`.
+fn cmd_contact_export(
+    socket: &str,
+    identity: Option<&str>,
+    peer_ref: Option<&str>,
+    out: Option<&str>,
+    json: bool,
+) -> io::Result<()> {
+    let ticket = match peer_ref {
+        None => {
+            let response = send_rpc(socket, "contact.ticket", json!({}), identity, false)?;
+            let result = match response.body {
+                ResponseBody::Success { result, .. } => result,
+                _ => return finish(response, json),
+            };
+            serde_json::from_value(result).map_err(io::Error::other)?
+        }
+        Some(reference) => {
+            let response = send_rpc(socket, "peers", json!({}), identity, false)?;
+            let result = match response.body {
+                ResponseBody::Success { result, .. } => result,
+                _ => return finish(response, json),
+            };
+            let peers: Vec<Peer> =
+                serde_json::from_value(result["peers"].clone()).map_err(io::Error::other)?;
+            let peer = peers
+                .into_iter()
+                .find(|peer| peer.id == reference || peer.name == reference)
+                .ok_or_else(|| io::Error::other(format!("no such peer: {reference}")))?;
+            let (Some(endpoint_id), Some(endpoint_addr)) =
+                (peer.endpoint_id.clone(), peer.endpoint_addr.clone())
+            else {
+                return Err(io::Error::other("peer has no endpoint address"));
+            };
+            ContactTicket {
+                version: 1,
+                account_id: peer.id,
+                endpoint_id,
+                endpoint_addr,
+                label: Some(peer.name),
+                device_class: None,
+                capabilities: vec![],
+            }
+        }
+    };
+    let vcard = contact_ticket_vcard(&ticket);
+    match out {
+        Some(path) => std::fs::write(path, vcard)?,
+        None => print!("{vcard}"),
+    }
+    Ok(())
+}
+
+/// Imports every idfon card in a vCard file as a peer (`peer.add` per card).
+fn cmd_contact_import(
+    socket: &str,
+    identity: Option<&str>,
+    file: Option<&str>,
+    json: bool,
+) -> io::Result<()> {
+    let text = match file {
+        None | Some("-") => {
+            let mut text = String::new();
+            io::Read::read_to_string(&mut io::stdin(), &mut text)?;
+            text
+        }
+        Some(path) => std::fs::read_to_string(path)?,
+    };
+    for ticket in vcard_contact_tickets(&text).map_err(io::Error::other)? {
+        let name = ticket.label.clone();
+        let response = send_rpc(
+            socket,
+            "peer.add",
+            json!({"contact_ticket": ticket, "name": name}),
+            identity,
+            false,
+        )?;
+        finish(response, json)?;
+    }
+    Ok(())
 }
 
 /// Prints the response (JSON envelope with `--json`, human text otherwise)

@@ -39,6 +39,19 @@ final class ContactDetailViewController: UIViewController {
         view.backgroundColor = .systemGroupedBackground
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             title: "Save", style: .done, target: self, action: #selector(save))
+        // Contact exchange (docs/contact-exchange.md): forward this contact's
+        // card or drop it into the system Contacts app.
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "ellipsis.circle"),
+            menu: UIMenu(children: [
+                UIAction(title: "Share Contact Card", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
+                    guard let self else { return }
+                    ContactExchange.shareCard(ref: self.peer.id, from: self, sourceView: self.view)
+                },
+                UIAction(title: "Save to Contacts", image: UIImage(systemName: "person.crop.circle.badge.plus")) { [weak self] _ in
+                    self?.saveToSystemContacts()
+                },
+            ]))
 
         var callConfig = UIButton.Configuration.filled()
         callConfig.title = "Call"
@@ -337,6 +350,26 @@ final class ContactDetailViewController: UIViewController {
         label.font = .preferredFont(forTextStyle: .footnote)
         label.textColor = .secondaryLabel
         return label
+    }
+
+    /// Saves this contact's card (name + `idfon://add/` URL) to the system
+    /// Contacts app — the handoff point for AirDrop/NameDrop onward.
+    private func saveToSystemContacts() {
+        Task {
+            do {
+                let card = try await ContactExchange.export(ref: peer.id)
+                try ContactExchange.saveToSystemContacts(link: card.link)
+                await MainActor.run {
+                    let alert = UIAlertController(
+                        title: "Saved", message: "The card is in your Contacts app.",
+                        preferredStyle: .alert)
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(alert, animated: true)
+                }
+            } catch {
+                await MainActor.run { self.showError(error.localizedDescription) }
+            }
+        }
     }
 
     @objc private func save() {

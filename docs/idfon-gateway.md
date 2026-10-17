@@ -17,6 +17,8 @@ Grammar (RFC 3986 hierarchical form), parsed by `IdfonURL` in both Apple apps:
 ```
 idfon://<ref>[/path...]     resource
 idfon://dial/<ref>          verb   (also videodial, answer)
+idfon://add/<base64url>     verb   self-add from a vCard deep link (the ticket
+                                  rides in the URL; see contact-exchange.md)
 ```
 
 - `ref` resolves against the local peer list: peer id, name, alias, endpoint
