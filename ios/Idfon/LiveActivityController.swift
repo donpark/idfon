@@ -250,6 +250,12 @@ final class LiveActivityController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(callkitBarFallback),
             name: .init("idfon.callkit.barFallback"), object: nil)
+        // The incoming ring can start in the background (suppressed while the
+        // system call UI owns the screen): re-derive on activation so the
+        // overlay appears the moment the app comes forward (#51 E2E).
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appBecameActive),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
         // Session Tray rows refresh whenever a transfer progresses (§4).
         TransferCenter.shared.onChange = { [weak self] in self?.render() }
         // Take ownership of both machines' state hooks (the scene delegate no
@@ -269,6 +275,10 @@ final class LiveActivityController: NSObject {
 
     deinit { timer?.invalidate() }
 
+    @objc private func appBecameActive() {
+        sync()
+    }
+
     /// Re-derives the Bar from call state; called on every state change and
     /// on the ≤1 Hz in-call tick (the view itself holds no timer).
     private func sync() {
@@ -277,9 +287,13 @@ final class LiveActivityController: NSObject {
         if machine != nil { pendingCall = nil }
         let next: LiveActivityBarModel.Phase
         if machine?.phase == .incoming, let peer = machine?.peer,
-           CallKitController.shared.isRinging(peer) {
-            // The system is already on this ring: the Bar stays out of the
-            // incoming state entirely (docs/ui-design-notes.md §6).
+           CallKitController.shared.isRinging(peer),
+           UIApplication.shared.applicationState != .active {
+            // The system call UI is on screen (app backgrounded): the Bar
+            // stays out of the incoming state entirely (docs/ui-design-notes.md
+            // §6). Foregrounded, the app covers the system UI — the overlay
+            // is then the only answer surface and must show (#51 E2E: tapping
+            // the call banner opened the app with no way to answer).
             next = .idle
         } else {
             next = machine?.phase ?? (pendingCall != nil ? .calling : .idle)
