@@ -70,7 +70,10 @@ final class CallKitController: NSObject, CXProviderDelegate {
     /// `CallUUID.from(invite ticket)`, so the envelope dedupes onto this call
     /// when it lands. Reported before anything else — a VoIP push that does
     /// not result in a reported call is grounds for app termination.
-    func presentPush(callUUID: String, callerId: String, hasVideo: Bool) {
+    /// `endImmediately` serves `mustReport` pushes for a bar-mode channel:
+    /// report first, end once the report completes (never before — ending a
+    /// call whose registration has not completed fails the report, #58).
+    func presentPush(callUUID: String, callerId: String, hasVideo: Bool, endImmediately: Bool = false) {
         guard !callerId.isEmpty, !callUUID.isEmpty else { return }
         guard current == nil else {
             idfonLog("idfon callkit: push ring ignored — a call is already up")
@@ -86,13 +89,25 @@ final class CallKitController: NSObject, CXProviderDelegate {
         AudioIO.shared.callKitWillStart()
         idfonLog("idfon callkit: reporting push ring \(uuid.uuidString) from \(callerId)")
         provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
-            guard let error else { return }
+            guard let error else {
+                if endImmediately {
+                    Task { @MainActor in self?.endReportedIfUnanswered(uuid: uuid) }
+                }
+                return
+            }
             DispatchQueue.main.async {
                 idfonError("idfon callkit: push report failed: \(error.localizedDescription)")
                 self?.abandonToBar(peerId: callerId)
             }
         }
         refreshName(uuid: uuid, peerId: callerId)
+    }
+
+    /// `mustReport` compliance: end the just-reported call once its
+    /// registration completes (the report-then-end pattern, #58).
+    private func endReportedIfUnanswered(uuid: UUID) {
+        guard let call = current, call.uuid == uuid, !answeredLocally(call) else { return }
+        endIncomingCall(call, reason: .remoteEnded)
     }
 
     /// Placeholder until the peer records are known: never a raw id hash on
