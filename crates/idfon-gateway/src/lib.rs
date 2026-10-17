@@ -118,6 +118,10 @@ pub trait RequestObserver: Send + Sync + 'static {
 /// the account's peer (the edge's `/_push/*` routes). Runs before requester
 /// authentication and outside the [`Authorizer`] — the route owns its own
 /// policy (e.g. the caller's capability ticket) and its own rate limiting.
+/// Also runs before the Host/Origin (DNS-rebinding) check: that guard protects
+/// *browser* consumers, while local routes are app-facing and validate a
+/// signed credential instead (a browser cannot get one). Direct-IP LAN clients
+/// are accepted here on purpose (donpark/idfon#53).
 pub trait LocalRoute: Send + Sync + 'static {
     /// Whether this route serves `path` (the account-stripped path) for `method`.
     fn matches(&self, method: &http::Method, path: &str) -> bool;
