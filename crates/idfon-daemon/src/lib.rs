@@ -3623,9 +3623,18 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
             );
         }
     }
+    // Split identities (#56): a peer record may be keyed on either the
+    // sender's identity key (`sender.peer_id` — what everything downstream is
+    // attributed to) or its iroh endpoint id (`sender.endpoint_id`), because
+    // pairing by endpoint ref records the latter while messages always sign
+    // with the former. Attribution and grants stay keyed on the
+    // signature-verified signer, so accepting either key only widens "is a
+    // known record" — never whose conversation a message lands in.
     let known_peer = state.peers.iter().any(|peer| {
         peer.identity == receiving_identity
-            && peer.id == envelope.sender.peer_id
+            && (peer.id == envelope.sender.peer_id
+                || (!envelope.sender.endpoint_id.is_empty()
+                    && peer.id == envelope.sender.endpoint_id))
             && peer.knows_endpoint(&envelope.sender.endpoint_id)
     });
     // A verified ticket (issuer = this identity, unexpired, unrevoked,
@@ -7954,6 +7963,97 @@ mod tests {
                     && grant.capability == idfon_protocol::Capability::MessageSend
             }),
             "reciprocal reply grant missing"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn endpoint_keyed_record_passes_for_the_signed_identity() {
+        let dir = temp_dir("split-identity");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let sender_key = idfon_core::generate_identity();
+        let receiver_key = store.lock().unwrap().identity_key("default").unwrap();
+        let sender_id = idfon_core::peer_id(&sender_key);
+        // Pairing by endpoint ref keys the record on the endpoint id (#56):
+        // it can never match `sender.peer_id`, only the signer's claimed
+        // endpoint — the split-identity pairing that died at the gate.
+        store.lock().unwrap().peers.push(idfon_protocol::Peer {
+            id: "endpoint-a".into(),
+            identity: "default".into(),
+            name: "MacApp".into(),
+            endpoint_id: Some("endpoint-a".into()),
+            endpoint_addr: None,
+            devices: Vec::new(),
+            aliases: Vec::new(),
+            call_mode: idfon_protocol::IncomingCallMode::default(),
+            pinned: false,
+            instant_call: false,
+        });
+        let ticket = idfon_core::issue_capability_ticket(
+            &receiver_key,
+            None,
+            vec![idfon_protocol::Capability::MessageReceive],
+            None,
+            "tk-split",
+        );
+        let message = idfon_core::sign_message_with_ticket(
+            &sender_key,
+            "endpoint-a",
+            "msg-split",
+            idfon_protocol::MessageContent::Text {
+                text: "hello".into(),
+            },
+            "key-split",
+            None,
+            Some(ticket),
+        )
+        .unwrap();
+        let response = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "split".into(),
+                method: "message.receive".into(),
+                params: serde_json::to_value(&message).unwrap(),
+            },
+            &store,
+        );
+        assert!(
+            response.ok,
+            "endpoint-keyed record must accept the signature-verified identity"
+        );
+        // Attribution stays on the signer, never on the matched record.
+        assert!(store.lock().unwrap().grants.iter().any(|grant| {
+            grant.identity == "default"
+                && grant.subject == sender_id
+                && grant.capability == idfon_protocol::Capability::MessageSend
+        }));
+
+        // A stranger claiming the same endpoint gains nothing without a
+        // ticket or grant of their own.
+        let stranger_key = idfon_core::generate_identity();
+        let stranger = idfon_core::sign_message(
+            &stranger_key,
+            "endpoint-a",
+            "msg-spoof",
+            idfon_protocol::MessageContent::Text {
+                text: "spoof".into(),
+            },
+            "key-spoof",
+            None,
+        )
+        .unwrap();
+        let response = dispatch(
+            Request {
+                version: PROTOCOL_VERSION,
+                id: "spoof".into(),
+                method: "message.receive".into(),
+                params: serde_json::to_value(stranger).unwrap(),
+            },
+            &store,
+        );
+        assert!(
+            !response.ok,
+            "an unvouched signer must not pass on the endpoint claim"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
