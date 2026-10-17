@@ -112,10 +112,15 @@ final class ChatStore {
         // Invites replayed from the event backlog are stale (the call they
         // belonged to already happened) — never ring on them, else every
         // hangup resurrects a ghost call.
-        if LiveInvite.parse(text) != nil {
+        if let invite = LiveInvite.parse(text) {
             let stale = isStaleInvite(event)
             idfonLog("idfon live control received peer=\(peerId) message=\(messageID) stale=\(stale)")
             if stale { return }
+            // A start invite opens a call generation: bare controls carrying a
+            // lower sender sequence are stragglers from an older one (#60).
+            if invite.isStart, let seq = Self.msgSeq(messageID) {
+                inviteSeqWatermark[peerId] = (seq, Date())
+            }
             DispatchQueue.main.async { Task { @MainActor in
                 IncomingCallRouter.shared.route(peerId: peerId, envelope: text)
             } }
@@ -123,6 +128,11 @@ final class ChatStore {
         }
         if text == "call_started" || text == "call_stopped" {
             if isStaleControl(event) { return }
+            if let seq = Self.msgSeq(messageID), let mark = inviteSeqWatermark[peerId],
+               Date().timeIntervalSince(mark.at) < 300, seq < mark.seq {
+                idfonLog("idfon live control dropped: straggler seq=\(seq) < invite seq=\(mark.seq) peer=\(peerId)")
+                return
+            }
             DispatchQueue.main.async { Task { @MainActor in
                 LiveCall.shared.handleControl(peer: peerId, text)
                 VideoCall.shared.handleEnvelope(peer: peerId, text)
@@ -240,6 +250,18 @@ final class ChatStore {
     private func isStaleControl(_ event: Event) -> Bool {
         guard let ts = Double(event.timestamp), ts > 0 else { return false }
         return Date().timeIntervalSince1970 - ts > 60
+    }
+
+    /// Highest invite sequence accepted per peer, with an arrival stamp:
+    /// `message.send` retries deliver across messages out of order, so a bare
+    /// `call_stopped` from an older call generation can arrive after a newer
+    /// invite and must not terminate it (donpark/idfon#60).
+    private var inviteSeqWatermark: [String: (seq: Int, at: Date)] = [:]
+
+    /// The numeric part of a core message id (`msg_42`): the sender-local
+    /// delivery sequence. Non-numeric ids skip the watermark logic.
+    private static func msgSeq(_ id: String) -> Int? {
+        Int(id.drop(while: { !$0.isNumber }))
     }
 
     /// Replayed invites older than 60s are from past calls; never ring.
