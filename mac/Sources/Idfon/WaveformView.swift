@@ -244,13 +244,11 @@ final class AudioMeter {
         if let completion { pendingStarts.append(completion) }
         if running { settle(); return }
         guard !startInFlight else { return } // joins the in-flight attempt
-        if tapInstalled {
-            // Stale tap with no active meter: clear it instead of failing —
-            // installTap aborts when a tap is already on the engine.
-            engine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
-            Self.inputTapInstalled = false
-        }
+        // The input tap is installed once per process and never removed:
+        // installTap raises an uncapturable ObjC exception (aborting the app)
+        // on re-install — every call start flips the audio route, which used
+        // to restart the meter through a remove/install cycle and crashed
+        // consistently. Engine start/stop gates delivery instead.
         startInFlight = true
         startGeneration += 1
         let generation = startGeneration
@@ -405,11 +403,8 @@ final class AudioMeter {
         startGeneration += 1
         startInFlight = false // a stop during an in-flight start discards it
         guard running || tapInstalled else { pendingStarts = []; return }
-        if tapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
-            Self.inputTapInstalled = false
-        }
+        // The tap stays installed (see start()); only the engine stops, so no
+        // buffers flow while idle and nothing ever re-installs the tap.
         if Self.activeInputMeter === self { Self.activeInputMeter = nil }
         engine.stop()
         converter = nil
