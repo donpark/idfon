@@ -287,13 +287,12 @@ final class LiveActivityController: NSObject {
         if machine != nil { pendingCall = nil }
         let next: LiveActivityBarModel.Phase
         if machine?.phase == .incoming, let peer = machine?.peer,
-           CallKitController.shared.isRinging(peer),
-           UIApplication.shared.applicationState != .active {
-            // The system call UI is on screen (app backgrounded): the Bar
-            // stays out of the incoming state entirely (docs/ui-design-notes.md
-            // §6). Foregrounded, the app covers the system UI — the overlay
-            // is then the only answer surface and must show (#51 E2E: tapping
-            // the call banner opened the app with no way to answer).
+           CallKitController.shared.isRinging(peer) {
+            // CallKit owns the ring when a system call is up: the system
+            // incoming-call bar (visible over the app too) is THE answer
+            // surface — the Bar offering a second answer/reject is
+            // double-present (#51 E2E). The Bar takes the incoming state when
+            // no system call is up (bar-mode channels) or once it ends.
             next = .idle
         } else {
             next = machine?.phase ?? (pendingCall != nil ? .calling : .idle)

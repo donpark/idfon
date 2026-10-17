@@ -56,6 +56,22 @@ enum IdfonLogFile {
         lock.lock()
         defer { lock.unlock() }
         let stamp = ISO8601DateFormatter().string(from: Date())
-        try? handle?.write(contentsOf: Data("\(stamp) \(message)\n".utf8))
+        let line = Data("\(stamp) \(message)\n".utf8)
+        if let handle {
+            try? handle.write(contentsOf: line)
+            return
+        }
+        // Self-heal: the lazy create can fail at launch and the log file then
+        // silently never appears (seen in the field — every E2E round ended
+        // blind). Retry the creation per append.
+        let path = NSTemporaryDirectory() + "idfon-app-\(ProcessInfo.processInfo.processIdentifier).log"
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: nil)
+        }
+        if let retry = FileHandle(forWritingAtPath: path) {
+            _ = try? retry.seekToEnd()
+            try? retry.write(contentsOf: line)
+            try? retry.close()
+        }
     }
 }

@@ -281,7 +281,18 @@ final class LiveCall {
 
     func answer() {
         Automation.mark("live: answer")
-        guard case .incoming(let peer) = state, let pending = pendingInvite else { return }
+        guard case .incoming(let peer) = state else {
+            idfonLog("idfon live: answer ignored — not incoming")
+            return
+        }
+        // The invite tuple can be missing while the state is .incoming (the
+        // #51 E2E "the CallKit answer had no effect"): fall back to the
+        // stored generation so the answer never silently vanishes.
+        let pending = pendingInvite ?? (peer: peer, ticket: callTicket ?? "")
+        guard !pending.ticket.isEmpty else {
+            idfonLog("idfon live: answer ignored — no call generation")
+            return
+        }
         operation?.cancel()
         operationGeneration += 1
         let generation = operationGeneration

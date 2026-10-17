@@ -341,8 +341,16 @@ final class VideoCall: NSObject {
     /// return-leg invite (own ticket) that makes the caller join us.
     func answer(cameraOn: Bool = true) {
         idfonLog("idfon video: answer state=\(state) pending=\(pendingInvite != nil)")
-        guard state == .incoming, let pending = pendingInvite else {
-            idfonLog("idfon video: answer ignored — no pending incoming invite")
+        guard state == .incoming else {
+            idfonLog("idfon video: answer ignored — not incoming")
+            return
+        }
+        // The invite tuple can be missing while the state is .incoming (the
+        // #51 E2E "the CallKit answer had no effect"): fall back to the
+        // stored generation so the answer never silently vanishes.
+        let pending = pendingInvite ?? (peer: peer ?? "", ticket: callTicket ?? "")
+        guard !pending.ticket.isEmpty, !pending.peer.isEmpty else {
+            idfonLog("idfon video: answer ignored — no call generation")
             return
         }
         pendingInvite = nil

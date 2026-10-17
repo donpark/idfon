@@ -264,7 +264,10 @@ final class AudioMeter {
                     return
                 }
                 guard generation == self.startGeneration,
-                      !self.running, !self.tapInstalled else {
+                      !self.running else {
+                    // tapInstalled is no longer a staleness flag: the tap is
+                    // process-sticky (see start()), so a second start simply
+                    // reuses it via the inputTapInstalled branch below.
                     self.startInFlight = false
                     self.settle()
                     return
@@ -344,7 +347,11 @@ final class AudioMeter {
                     if generation < 4 {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                             guard let self, self.startGeneration == generation,
-                                  !self.running, !self.tapInstalled else { return }
+                                  !self.running else {
+                                self?.startInFlight = false
+                                self?.settle()
+                                return
+                            }
                             self.startInFlight = false
                             self.start { self.settle() }
                         }
