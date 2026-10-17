@@ -287,6 +287,7 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
                 self.identityNames = Dictionary(uniqueKeysWithValues: identities.map { ($0.id, $0.name) })
                 self.peers = OnDeviceAgents.shared.peers + (fetched ?? [])
                 self.syncFilterStrip()
+                self.syncDefaultFilter()
                 if fetched == nil {
                     self.listState = .failed { [weak self] in self?.refresh() }
                 } else {
@@ -404,6 +405,17 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         }
         filters.selectedSegmentIndex = 0
         filter = .recents
+    }
+
+    /// Onboarding (D7): with no chats yet, land on All (the trailing segment)
+    /// instead of an empty Recents.
+    private func syncDefaultFilter() {
+        let recents = Set(ChatStore.shared.recentChatIDs)
+        guard filter == .recents,
+              !peers.contains(where: { recents.contains($0.id) }),
+              filters.numberOfSegments > 0 else { return }
+        filters.selectedSegmentIndex = filters.numberOfSegments - 1
+        filter = .all
     }
 
     /// Pin-order bookkeeping: newly pinned sorts first.

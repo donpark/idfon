@@ -40,19 +40,14 @@ final class IdentityPickerViewController: UITableViewController {
         return cell
     }
 
-    /// Tap = the pairing action: share this identity's contact ticket.
+    /// Tap = the pairing action: share this identity's contact card (vCard;
+    /// docs/contact-exchange.md) so the other device can add it.
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let identity = identities[indexPath.row]
-        Task {
-            guard let ticket = try? await client.contactTicket(identity: identity.id) else { return }
-            await MainActor.run {
-                let sheet = UIActivityViewController(activityItems: [ticket], applicationActivities: nil)
-                sheet.popoverPresentationController?.sourceView =
-                    tableView.cellForRow(at: indexPath) ?? tableView
-                self.present(sheet, animated: true)
-            }
-        }
+        ContactExchange.shareCard(
+            ref: nil, identity: identity.id, from: self,
+            sourceView: tableView.cellForRow(at: indexPath) ?? tableView)
     }
 
     // MARK: - Management (§11)
@@ -69,7 +64,18 @@ final class IdentityPickerViewController: UITableViewController {
             self?.confirmDelete(identity)
             done(true)
         }
-        return UISwipeActionsConfiguration(actions: [delete, rename])
+        // The raw contact ticket (JSON) for tooling that wants it; tapping
+        // shares the friendlier vCard.
+        let ticket = UIContextualAction(style: .normal, title: "Ticket") { [weak self] _, _, done in
+            Task {
+                let raw = (try? await self?.client.contactTicket(identity: identity.id)) ?? ""
+                await MainActor.run {
+                    if !raw.isEmpty { UIPasteboard.general.string = raw }
+                    done(true)
+                }
+            }
+        }
+        return UISwipeActionsConfiguration(actions: [delete, rename, ticket])
     }
 
     private func promptRename(_ identity: IdentityInfo) {
