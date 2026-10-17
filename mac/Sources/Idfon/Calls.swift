@@ -460,7 +460,9 @@ final class LiveCall {
         audioEnabled = false
         videoEnabled = false
         pendingInvite = nil
-        CallTonePlayer.shared.stop()
+        // End cue only when a connected call ends; an unconnected ring
+        // (decline/cancel) goes quiet (#15).
+        if case .inCall = state { CallTonePlayer.shared.start(.ended) } else { CallTonePlayer.shared.stop() }
         AudioMeter.shared.stop()
         Task.detached(priority: .userInitiated) {
             media_live_stop()
@@ -924,7 +926,9 @@ final class VideoCall {
         frameTimer = nil
         media_video_clear_render_cb()
         VideoFrameInbox.shared.clear()
-        CallTonePlayer.shared.stop()
+        // End cue only when a connected call ends; an unconnected ring
+        // (decline/cancel) goes quiet (#15).
+        if case .inCall = state { CallTonePlayer.shared.start(.ended) } else { CallTonePlayer.shared.stop() }
         joinedTicket = nil
         watching = false
         lastFrame = nil

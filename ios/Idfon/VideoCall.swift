@@ -516,7 +516,9 @@ final class VideoCall: NSObject {
         }
         frameTimer?.invalidate()
         frameTimer = nil
-        CallTonePlayer.shared.stop()
+        // End cue only when a connected call ends; an unconnected ring
+        // (decline/cancel) goes quiet (#15).
+        if state == .inCall { CallTonePlayer.shared.start(.ended) } else { CallTonePlayer.shared.stop() }
         media_video_clear_render_cb()
         VideoFrameInbox.shared.clear()
         joinedTicket = nil

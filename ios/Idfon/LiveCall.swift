@@ -498,7 +498,9 @@ final class LiveCall {
         UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
         clearCallTicket()
         pendingInvite = nil
-        CallTonePlayer.shared.stop()
+        // End cue only when a connected call ends; an unconnected ring
+        // (decline/cancel) goes quiet (#15).
+        if case .inCall = state { CallTonePlayer.shared.start(.ended) } else { CallTonePlayer.shared.stop() }
         audioEnabled = false
         videoEnabled = false
         AudioPusher.shared.stop()
