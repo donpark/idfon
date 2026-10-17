@@ -42,8 +42,10 @@ enum CallRing {
         send(peer: pending.peer, action: "cancel", callUUID: pending.callUUID, hasVideo: false)
     }
 
-    /// The call connected: any ring is answered, nothing to retract.
-    static func callConnected() { pendingRing = nil }
+    /// The call connected: the ring is over — retract it so the identity's
+    /// other devices stop ringing (#46). A device that answered ignores the
+    /// ring-over (its machine is already in call).
+    static func callConnected() { cancelRing() }
 
     /// The peer record behind a ref: canonical id and whether the channel
     /// selects the system-call wake (`call_mode` on the record — the Bar is

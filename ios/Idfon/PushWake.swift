@@ -65,8 +65,10 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         send(peer: pending.peer, action: "cancel", callUUID: pending.callUUID, hasVideo: false)
     }
 
-    /// The call connected: any ring is answered, nothing to retract.
-    func callConnected() { pendingRing = nil }
+    /// The call connected: the ring is over — retract it so the identity's
+    /// other devices stop ringing (#46). A device that answered ignores the
+    /// ring-over (`cancelFromPush` leaves answered calls alone).
+    func callConnected() { cancelRing() }
 
     private func send(peer: String, action: String, callUUID: String, hasVideo: Bool) {
         Task {
