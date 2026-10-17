@@ -4,7 +4,13 @@ import UIKit
 class AppDelegate: UIResponder, UIApplicationDelegate {
     private var warmSpeechOnActivation = false
 
+    /// Build stamp for device E2E: bumped on every fix round and confirmed in
+    /// the device console before testing. The stale-binary trap (testing an
+    /// old install while believing it is new) has cost several rounds.
+    static let buildStamp = "2026-10-17.answerfix2"
+
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        idfonLog("idfon build stamp \(Self.buildStamp)")
         // Before the daemon starts so an automation launch (-relayurls …) both
         // sets and uses the relay config.
         RelaySettings.configureFromLaunchArgs(ProcessInfo.processInfo.arguments)

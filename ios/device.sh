@@ -16,6 +16,12 @@ xcodebuild -project "$ios_dir/Idfon.xcodeproj" -scheme Idfon \
 
 app="$ios_dir/.derived/Build/Products/${CONFIG}-iphoneos/Idfon.app"
 
+# Prove what is about to ship: the binary must carry the current build
+# stamp ("idfon build stamp …" in AppDelegate). Testing a stale install
+# while believing it is new has cost whole E2E rounds.
+stamp=$(strings "$app/Idfon" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}\.[a-z0-9]+' | head -1)
+echo "device.sh: build stamp = ${stamp:-MISSING} (expect AppDelegate.buildStamp)"
+
 device=$(xcrun devicectl list devices 2>/dev/null \
   | grep -E "connected.*physical|physical.*connected" \
   | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
