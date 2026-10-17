@@ -215,16 +215,17 @@ final class CallKitController: NSObject, CXProviderDelegate {
     }
 
     /// Called after the machines consumed an invite envelope: a pending answer
-    /// (push-first wake) completes now that the machine can answer.
+    /// (push-first wake) completes now that the machine can answer. Answer the
+    /// machine that actually holds the invite — the owner armed at answer time
+    /// can disagree with the envelope's media line (#51 E2E).
     func envelopeArrived() {
-        guard let owner = pendingAnswer else { return }
+        guard pendingAnswer != nil else { return }
         pendingAnswer = nil
         pendingAnswerWork?.cancel()
-        switch owner {
-        case .live:
-            if case .incoming = LiveCall.shared.state { LiveCall.shared.answer() }
-        case .video:
-            if VideoCall.shared.state == .incoming { VideoCall.shared.answer() }
+        if VideoCall.shared.state == .incoming {
+            VideoCall.shared.answer()
+        } else if case .incoming = LiveCall.shared.state {
+            LiveCall.shared.answer()
         }
     }
 
@@ -391,14 +392,19 @@ final class CallKitController: NSObject, CXProviderDelegate {
             body?() // the machine's dial: publish + invite
             gate.fulfill()
         case let answer as CXAnswerCallAction:
-            switch current?.owner {
-            case .live:
-                if case .incoming = LiveCall.shared.state { LiveCall.shared.answer() }
-                else { armPendingAnswer(.live) } // push-first: invite in flight
-            case .video:
-                if VideoCall.shared.state == .incoming { VideoCall.shared.answer() }
-                else { armPendingAnswer(.video) }
-            case nil: gate.fail(); return
+            // Answer whichever machine holds the invite: the push's has_video
+            // (owner) can disagree with the envelope's media line, and a
+            // wrong-owner answer used to vanish silently (#51 E2E).
+            idfonLog("idfon callkit: answer action owner=\(String(describing: current?.owner)) live=\(LiveCall.shared.state) video=\(VideoCall.shared.state)")
+            if VideoCall.shared.state == .incoming {
+                VideoCall.shared.answer()
+            } else if case .incoming = LiveCall.shared.state {
+                LiveCall.shared.answer()
+            } else if current != nil {
+                armPendingAnswer(current?.owner ?? .live) // push-first: invite in flight
+            } else {
+                gate.fail()
+                return
             }
             gate.fulfill()
         case let end as CXEndCallAction:

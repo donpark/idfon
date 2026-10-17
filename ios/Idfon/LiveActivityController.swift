@@ -477,7 +477,9 @@ final class LiveActivityController: NSObject {
 
     private func handle(_ intent: LiveActivityBarIntent, peerId: String) {
         switch intent {
-        case .answer: ActiveMachine.current?.answer()
+        case .answer:
+            idfonLog("idfon bar: answer tapped machine=\(ActiveMachine.current != nil)")
+            ActiveMachine.current?.answer()
         case .decline: ActiveMachine.current?.decline()
         case .open:
             // D19: the pill on the call's own thread expands the panel;
