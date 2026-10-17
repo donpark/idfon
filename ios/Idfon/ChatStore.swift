@@ -139,6 +139,10 @@ final class ChatStore {
             } }
             return
         }
+        // Session-control envelopes are not chat: ingesting one wakes the
+        // chat-observer machinery (table rebuilds, timeline parsing) during a
+        // push wake, where it wedged the main actor (donpark/idfon#61).
+        if text.hasPrefix("IDFON-SESSION/1") { return }
         // A turn can carry reply text plus one or more trailing envelopes
         // (a transcript followed by an artifact, say). Keep the first part on
         // the event id so replay dedupe and seen-ids still hold.
