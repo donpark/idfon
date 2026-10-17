@@ -19,15 +19,17 @@
 //! bind, `Host`/`Origin` validation (DNS-rebinding), and `..` rejection.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -112,6 +114,26 @@ pub trait RequestObserver: Send + Sync + 'static {
     fn render_metrics(&self) -> Option<String>;
 }
 
+/// A request served by the gateway process itself instead of being proxied to
+/// the account's peer (the edge's `/_push/*` routes). Runs before requester
+/// authentication and outside the [`Authorizer`] — the route owns its own
+/// policy (e.g. the caller's capability ticket) and its own rate limiting.
+pub trait LocalRoute: Send + Sync + 'static {
+    /// Whether this route serves `path` (the account-stripped path) for `method`.
+    fn matches(&self, method: &http::Method, path: &str) -> bool;
+    /// Serves the request. `account` is the resolved ref (empty when the
+    /// request names none); `body` is the collected request body (at most
+    /// [`MAX_RESOURCE_BYTES`]).
+    fn handle(
+        &self,
+        account: &str,
+        path: &str,
+        headers: &HeaderMap,
+        uri: &Uri,
+        body: Bytes,
+    ) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send + '_>>;
+}
+
 /// The loopback gateway's shared-secret bearer token.
 pub struct StaticToken(String);
 
@@ -174,6 +196,8 @@ pub struct Config {
     /// Add `nosniff`, `Referrer-Policy`, and a framing CSP to every response
     /// (plus HSTS when `tls` is set). Default on.
     pub security_headers: bool,
+    /// Routes served by the process itself (not proxied). See [`LocalRoute`].
+    pub local_routes: Vec<Arc<dyn LocalRoute>>,
 }
 
 impl Default for Config {
@@ -187,6 +211,7 @@ impl Default for Config {
             metrics_path: None,
             observer: None,
             security_headers: true,
+            local_routes: Vec::new(),
         }
     }
 }
@@ -249,6 +274,7 @@ where
         metrics_path: config.metrics_path,
         observer: config.observer,
         security_headers: config.security_headers,
+        local_routes: config.local_routes,
         tls: config.tls.is_some(),
     });
     let task = tokio::spawn(async move {
@@ -281,6 +307,7 @@ struct Shared<B, A> {
     metrics_path: Option<String>,
     observer: Option<Arc<dyn RequestObserver>>,
     security_headers: bool,
+    local_routes: Vec<Arc<dyn LocalRoute>>,
     tls: bool,
 }
 
@@ -470,6 +497,38 @@ async fn handle_inner<B: Backend, A: Authorizer>(
     request: Request<Incoming>,
     uri: &Uri,
 ) -> (Response<Full<Bytes>>, Option<String>, Option<String>) {
+    // Local routes run before requester authentication and the method gate:
+    // they own their policy (see [`LocalRoute`]).
+    if !shared.local_routes.is_empty() {
+        let headers = request.headers().clone();
+        let (account, path) = target(uri, &headers, shared.origin_domain.as_deref())
+            .unwrap_or_else(|| (String::new(), uri.path().to_owned()));
+        if let Some(route) = shared
+            .local_routes
+            .iter()
+            .find(|route| route.matches(request.method(), &path))
+        {
+            let body = match request.into_body().collect().await {
+                Ok(collected) => collected.to_bytes(),
+                Err(_) => {
+                    return (
+                        plain(StatusCode::BAD_REQUEST, "unreadable body"),
+                        None,
+                        None,
+                    )
+                }
+            };
+            if body.len() > MAX_RESOURCE_BYTES {
+                return (
+                    plain(StatusCode::PAYLOAD_TOO_LARGE, "body too large"),
+                    None,
+                    None,
+                );
+            }
+            let response = route.handle(&account, &path, &headers, uri, body).await;
+            return (response, None, Some(account));
+        }
+    }
     if request.method() != http::Method::GET {
         return (
             plain(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),

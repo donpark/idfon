@@ -227,6 +227,26 @@ verified **caller context**, not just `(account, path)`.
   `idfon.net` zone is blocked on Cloudflare's ToS §2.2.1(j) proxy sign-off (see
   External / ops); the public zone uses the DigitalOcean edge instead.
 
+### P7 — VoIP push wake channel (CallKit ring)
+
+- **Landed:** `idfon-edge::push` — `/_push/{register,unregister,ring,cancel}` on
+  the edge's own listener via the gateway's new `LocalRoute` hook (routes run
+  before requester auth and own their policy: a capability ticket **issued by
+  the target ref** — self-issued for registration, the caller's contact ticket
+  for ring/cancel, with subject-bound tickets checked against `caller_id`).
+  Fan-out to registered PushKit tokens over APNs HTTP/2 (`--push-apns-key` /
+  `--push-apns-key-id` / `--push-apns-team`, JWT ES256 per request),
+  identifiers-only payloads (no names in APNs logs), token registry persisted at
+  `--push-state` (`token → topic`: tokens are per app bundle, one team-level key
+  signs `com.idfon.ios.voip` and the future `com.idfon.mac.voip`), 30/min
+  per-issuer limit, 503 when APNs is unconfigured.
+  Tests: `crates/idfon-edge/src/push.rs`. Client story:
+  `docs/callkit-integration.md` P2.
+- Deployment: create the APNs auth key (`.p8`) for `com.idfon.ios.voip` and
+  pass it to the edge on the droplet.
+- Follow-ups: cross-edge ring discovery (an edge hint on the capability
+  ticket); token GC on APNs 410/Unregistered.
+
 ## Decisions
 
 Settled 2026-10-09, grounded in what P0–P6 landed plus the live device/edge E2E

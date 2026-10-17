@@ -29,10 +29,13 @@ use http::{HeaderMap, Uri};
 use idfon_core::transport::IrohTransport;
 use idfon_gateway::{
     serve, AccountResolver, Authenticator, Authorizer, Caller, Config as GatewayConfig,
-    GatewayHandle, IrohBackend, RequestEvent, RequestObserver, StaticToken, TlsConfig,
+    GatewayHandle, IrohBackend, LocalRoute, RequestEvent, RequestObserver, StaticToken, TlsConfig,
 };
 use idfon_protocol::{Capability, CapabilityTicket};
 use iroh::{EndpointAddr, EndpointId};
+
+pub mod push;
+pub use push::{ApnsConfig, ApnsSender, HttpApns, PushRoutes, PushStore};
 
 /// How long to wait for the edge endpoint to come online (relay + discovery)
 /// before serving. Bounded: a host with only pinned peers still serves.
@@ -75,6 +78,8 @@ pub struct EdgeConfig {
     pub health_path: Option<String>,
     /// Max requests per caller per minute; `0` is unlimited.
     pub rate_limit_per_minute: u32,
+    /// Routes served by the edge itself (the `/_push/*` wake channel).
+    pub local_routes: Vec<Arc<dyn LocalRoute>>,
 }
 
 /// A running edge. [`shutdown`](Self::shutdown) stops the HTTP listener and
@@ -405,6 +410,7 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
         tls,
         health_path,
         rate_limit_per_minute,
+        local_routes,
     } = config;
     let transport = Arc::new(IrohTransport::bind_with_key(Some(key)).await?);
     let _ = tokio::time::timeout(ONLINE_TIMEOUT, transport.endpoint().online()).await;
@@ -436,6 +442,7 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
             metrics_path: Some("/metrics".to_owned()),
             observer: Some(metrics.clone()),
             security_headers: true,
+            local_routes,
         },
         backend,
         EdgeAuthorizer::new(rate_limit_per_minute, metrics.clone()),

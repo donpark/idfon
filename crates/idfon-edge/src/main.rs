@@ -13,11 +13,14 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
 use idfon_core::{decode_signing_key, encode_signing_key, generate_identity, signing_key_bytes};
-use idfon_edge::{run, EdgeAuth, EdgeConfig};
-use idfon_gateway::TlsConfig;
+use idfon_edge::{
+    run, ApnsConfig, ApnsSender, EdgeAuth, EdgeConfig, HttpApns, PushRoutes, PushStore,
+};
+use idfon_gateway::{LocalRoute, TlsConfig};
 
 const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
@@ -38,6 +41,12 @@ OPTIONS:
   --tls-key PATH          PEM private key
   --health-path PATH      Health probe path (default /healthz)
   --rate-limit N          Max requests per caller per minute (0 = unlimited)
+  --push-apns-key PATH    APNs .p8 auth key (enables the /_push ring channel)
+  --push-apns-key-id ID   APNs key id
+  --push-apns-team ID     Apple team id
+  --push-apns-topic T     VoIP topic (default com.idfon.ios.voip)
+  --push-apns-url URL     APNs host (default https://api.push.apple.com)
+  --push-state PATH       Push-token registry (default KEY.push.json)
   --help, -h              Print this help
 
 ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
@@ -69,6 +78,12 @@ async fn main() -> anyhow::Result<()> {
     let mut tls_key: Option<PathBuf> = None;
     let mut health_path: Option<String> = Some("/healthz".to_owned());
     let mut rate_limit_per_minute: u32 = 0;
+    let mut push_apns_key: Option<PathBuf> = None;
+    let mut push_apns_key_id: Option<String> = None;
+    let mut push_apns_team: Option<String> = None;
+    let mut push_apns_topic: Option<String> = None;
+    let mut push_apns_url: Option<String> = None;
+    let mut push_state: Option<PathBuf> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -112,6 +127,30 @@ async fn main() -> anyhow::Result<()> {
                 rate_limit_per_minute = args[i + 1].parse().context("--rate-limit is a number")?;
                 i += 2;
             }
+            "--push-apns-key" => {
+                push_apns_key = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--push-apns-key-id" => {
+                push_apns_key_id = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--push-apns-team" => {
+                push_apns_team = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--push-apns-topic" => {
+                push_apns_topic = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--push-apns-url" => {
+                push_apns_url = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--push-state" => {
+                push_state = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
             "--key-file" => {
                 key_file = PathBuf::from(&args[i + 1]);
                 i += 2;
@@ -137,6 +176,32 @@ async fn main() -> anyhow::Result<()> {
     let domain_for_print = domain.clone();
 
     let key = load_or_create_key(&key_file)?;
+    // The VoIP push wake channel (docs/callkit-integration.md, P2).
+    let default_topic = push_apns_topic.unwrap_or_else(|| "com.idfon.ios.voip".to_owned());
+    let apns: Option<Arc<dyn ApnsSender>> =
+        match (push_apns_key, push_apns_key_id, push_apns_team) {
+            (Some(key_file), Some(key_id), Some(team_id)) => Some(Arc::new(HttpApns::new(ApnsConfig {
+                key_file,
+                key_id,
+                team_id,
+                topic: default_topic.clone(),
+                url: push_apns_url
+                    .unwrap_or_else(|| "https://api.push.apple.com".to_owned()),
+            })?)),
+            (None, None, None) => None,
+            _ => {
+                return Err(anyhow!(
+                    "--push-apns-key, --push-apns-key-id, and --push-apns-team must be given together"
+                ))
+            }
+        };
+    let push_enabled = apns.is_some();
+    let push_state = push_state.unwrap_or_else(|| key_file.with_extension("push.json"));
+    let local_routes: Vec<Arc<dyn LocalRoute>> = vec![Arc::new(PushRoutes::new(
+        Arc::new(PushStore::load(push_state)),
+        apns,
+        default_topic,
+    ))];
     let handle = run(EdgeConfig {
         bind,
         key,
@@ -147,6 +212,7 @@ async fn main() -> anyhow::Result<()> {
         tls,
         health_path: health_path.clone(),
         rate_limit_per_minute,
+        local_routes,
     })
     .await?;
 
@@ -158,6 +224,11 @@ async fn main() -> anyhow::Result<()> {
     if let Some(path) = &health_path {
         println!("health: {scheme}://{}{path}", handle.addr);
     }
+    println!(
+        "push:   {scheme}://{}/<ref>/_push/{{register,ring,cancel}} (apns {})",
+        handle.addr,
+        if push_enabled { "configured" } else { "disabled" }
+    );
     println!(
         "metrics: {scheme}://{}/metrics (requester auth required)",
         handle.addr

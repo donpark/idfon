@@ -6,11 +6,16 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1"
+bytes = "1"
 http = "1"
+http-body-util = "0.1"
 idfon-core = { path = "../idfon-core" }
 idfon-gateway = { path = "../idfon-gateway" }
 idfon-protocol = { path = "../idfon-protocol" }
 iroh = "1"
+jsonwebtoken = "9"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time"] }
 tracing = "0.1"
@@ -18,4 +23,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 axum = "0.8"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 idfon-h3 = { path = "../idfon-h3" }
