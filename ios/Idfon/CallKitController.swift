@@ -361,7 +361,14 @@ final class CallKitController: NSObject, CXProviderDelegate {
     // MARK: - CXProviderDelegate (system queue → main actor)
 
     nonisolated func provider(_ provider: CXProvider, didPerform action: CXAction) {
-        Task { @MainActor in self.perform(action) }
+        // Settle the action on a deadline: CXAction times out in ~5s and an
+        // unsettled answer hangs the system UI ("froze when I pressed answer",
+        // #61 — the same main-actor starvation as the push completion, #55).
+        // End always completes (the user's hang-up wins), anything else fails
+        // so CallKit rolls back and the call stays answerable.
+        let gate = ActionOnce(action)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { gate.timeout() }
+        Task { @MainActor in self.perform(action, gate: gate) }
     }
 
     nonisolated func providerDidReset(_ provider: CXProvider) {
@@ -376,13 +383,13 @@ final class CallKitController: NSObject, CXProviderDelegate {
         action.fail()
     }
 
-    private func perform(_ action: CXAction) {
+    private func perform(_ action: CXAction, gate: ActionOnce) {
         switch action {
         case let start as CXStartCallAction:
             let body = startBody
             startBody = nil
             body?() // the machine's dial: publish + invite
-            start.fulfill()
+            gate.fulfill()
         case let answer as CXAnswerCallAction:
             switch current?.owner {
             case .live:
@@ -391,9 +398,9 @@ final class CallKitController: NSObject, CXProviderDelegate {
             case .video:
                 if VideoCall.shared.state == .incoming { VideoCall.shared.answer() }
                 else { armPendingAnswer(.video) }
-            case nil: answer.fail(); return
+            case nil: gate.fail(); return
             }
-            answer.fulfill()
+            gate.fulfill()
         case let end as CXEndCallAction:
             if var call = current {
                 call.endedBySystem = true // the end is the system's; don't report back
@@ -407,7 +414,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
                     else { VideoCall.shared.hangUp() }
                 }
             }
-            end.fulfill()
+            gate.fulfill()
         case let muted as CXSetMutedCallAction:
             lastMuted = muted.isMuted // echo guard: the mirror must not re-request
             switch current?.owner {
@@ -415,9 +422,32 @@ final class CallKitController: NSObject, CXProviderDelegate {
             case .video: VideoCall.shared.setAudioEnabled(!muted.isMuted)
             case nil: break
             }
-            muted.fulfill()
+            gate.fulfill()
         default:
-            action.fulfill()
+            gate.fulfill()
+        }
+    }
+
+    /// Settles a CXAction exactly once: the main-actor path and the deadline
+    /// fallback race for it (double-settling a CXAction is undefined).
+    private final class ActionOnce {
+        private let lock = NSLock()
+        private var action: CXAction?
+        init(_ action: CXAction) { self.action = action }
+        func fulfill() { settle { $0.fulfill() } }
+        func fail() { settle { $0.fail() } }
+        /// Deadline: end always completes, anything else fails.
+        func timeout() {
+            settle { action in
+                if action is CXEndCallAction { action.fulfill() } else { action.fail() }
+            }
+        }
+        private func settle(_ body: (CXAction) -> Void) {
+            lock.lock()
+            let action = self.action
+            self.action = nil
+            lock.unlock()
+            if let action { body(action) }
         }
     }
 
