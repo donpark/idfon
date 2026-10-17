@@ -188,6 +188,10 @@ final class LiveCall {
                     to: peerId,
                     "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
                 )
+                // Wake the peer's devices on a `call_kit` channel (P2): ring
+                // via the edge once the invite is queued. The call_uuid is the
+                // invite ticket's, so push and envelope share one system call.
+                await CallRing.ring(peer: peerId, inviteTicket: ticket, hasVideo: false)
             } catch {
                 let ns = error as NSError
                 fail("Dial failed: \(error.localizedDescription) [\(ns.domain) code=\(ns.code)]")
@@ -435,6 +439,13 @@ final class LiveCall {
     }
 
     private func notify() {
+        // Wake-channel bookkeeping (P2): a rang call that goes idle without
+        // connecting is cancelled; a connection clears the pending ring.
+        switch state {
+        case .inCall: CallRing.callConnected()
+        case .idle: CallRing.cancelRing()
+        default: break
+        }
         for case let observer as CallStateObserver in stateObservers.allObjects {
             observer.callStateDidChange()
         }
@@ -644,6 +655,10 @@ final class VideoCall {
                 published = true
                 applySendState()
                 try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
+                // Wake the peer's devices on a `call_kit` channel (P2): ring
+                // via the edge once the invite is queued (call_uuid = the
+                // invite ticket's, so push and envelope share one call).
+                await CallRing.ring(peer: id, inviteTicket: ticket, hasVideo: true)
                 if case .calling = state { /* still waiting for the return leg */ }
                 await waitForReturnInvite(peer: id)
             } catch {
@@ -909,6 +924,13 @@ final class VideoCall {
     }
 
     private func notify() {
+        // Wake-channel bookkeeping (P2): a rang call that goes idle without
+        // connecting is cancelled; a connection clears the pending ring.
+        switch state {
+        case .inCall: CallRing.callConnected()
+        case .idle: CallRing.cancelRing()
+        default: break
+        }
         for case let observer as CallStateObserver in stateObservers.allObjects {
             observer.callStateDidChange()
         }

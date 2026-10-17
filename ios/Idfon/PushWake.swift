@@ -71,27 +71,48 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     private func send(peer: String, action: String, callUUID: String, hasVideo: Bool) {
         Task {
             guard let base = EdgeClient.shared.baseURL else { return }
-            guard let ref = try? await selfRef() else { return }
-            var ticket = contactTicket(for: peer, callerId: ref)
-            if ticket == nil { ticket = try? await selfIssuedTicket() }
-            guard let ticket else { return }
-            var body: [String: Any] = ["call_uuid": callUUID, "caller_id": ref]
+            // `caller_id` must come from the ticket itself: a contact ticket
+            // binds it as `subject`, a self-issued statement as `issuer` —
+            // which is also the `sender.peer_id` message events carry, so the
+            // push report and the invite envelope dedupe onto one call. The
+            // identity key and the iroh endpoint id are different ids; any
+            // other derivation breaks the edge's ticket checks.
+            let ticket: String
+            let callerId: String
+            if let contact = contactTicket(for: peer), let subject = contact.subject {
+                ticket = contact.raw
+                callerId = subject
+            } else if let issued = try? await selfIssuedStatement() {
+                ticket = issued.raw
+                callerId = issued.issuer
+            } else {
+                return
+            }
+            var body: [String: Any] = ["call_uuid": callUUID, "caller_id": callerId]
             if action == "ring" { body["has_video"] = hasVideo }
             let url = EdgeClient.resourceURL(baseURL: base, account: peer, path: "/_push/\(action)")
             await postJSON(url: url, ticket: ticket, body: body)
         }
     }
 
-    /// The stored contact ticket, unless it is bound to an older identity of
-    /// ours (then the edge would refuse it and a self-issued statement wins).
-    private func contactTicket(for peer: String, callerId: String) -> String? {
-        guard let json = CapabilityTickets.rawTicketJSON(for: peer),
-              let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+    /// A ticket as it will be presented, with the fields the ring binds.
+    private struct TicketRef {
+        let raw: String
+        let issuer: String
+        let subject: String?
+    }
+
+    private func parseTicket(_ json: String) -> TicketRef? {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+              let issuer = object["issuer"] as? String, !issuer.isEmpty
         else { return nil }
-        if let subject = object["subject"] as? String, !subject.isEmpty, subject != callerId {
-            return nil
-        }
-        return json
+        let subject = (object["subject"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return TicketRef(raw: json, issuer: issuer, subject: subject)
+    }
+
+    /// The stored contact ticket (the callee's statement about us), if any.
+    private func contactTicket(for peer: String) -> TicketRef? {
+        CapabilityTickets.rawTicketJSON(for: peer).flatMap { parseTicket($0) }
     }
 
     // MARK: - Registration
@@ -108,12 +129,14 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
 
     private func registerOnce(token: String) async -> Bool {
         guard let base = EdgeClient.shared.baseURL else { return true } // no edge: nothing to do
-        guard let ref = try? await selfRef(), let ticket = try? await selfIssuedTicket() else {
-            return false
+        guard let statement = try? await selfIssuedStatement() else { return false }
+        for account in await accountRefs(issuer: statement.issuer) {
+            let url = EdgeClient.resourceURL(baseURL: base, account: account, path: "/_push/register")
+            guard await postJSON(
+                url: url, ticket: statement.raw, body: ["voip_token": token, "topic": Self.topic])
+            else { return false }
         }
-        let url = EdgeClient.resourceURL(baseURL: base, account: ref, path: "/_push/register")
-        return await postJSON(
-            url: url, ticket: ticket, body: ["voip_token": token, "topic": Self.topic])
+        return true
     }
 
     // MARK: - PKPushRegistryDelegate
@@ -134,11 +157,13 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         UserDefaults.standard.removeObject(forKey: Self.tokenKey)
         Task {
             guard let base = EdgeClient.shared.baseURL,
-                  let ref = try? await selfRef(),
-                  let ticket = try? await selfIssuedTicket()
+                  let statement = try? await selfIssuedStatement()
             else { return }
-            let url = EdgeClient.resourceURL(baseURL: base, account: ref, path: "/_push/unregister")
-            await postJSON(url: url, ticket: ticket, body: ["voip_token": token])
+            for account in await accountRefs(issuer: statement.issuer) {
+                let url = EdgeClient.resourceURL(
+                    baseURL: base, account: account, path: "/_push/unregister")
+                await postJSON(url: url, ticket: statement.raw, body: ["voip_token": token])
+            }
         }
     }
 
@@ -199,30 +224,34 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
 
     // MARK: - Identity / tickets
 
-    /// This device's endpoint id — the account ref it registers under and
-    /// rings as.
-    private func selfRef() async throws -> String {
-        let raw = try await client.request(method: "status")
-        if let endpoint = raw?["identity"]?["endpoint_id"]?.stringValue, !endpoint.isEmpty {
-            return endpoint
+    /// Every id this device is known by: the ticket issuer (`sender.peer_id`,
+    /// what message events carry) and the iroh endpoint id (what contact
+    /// records key on when the two differ).
+    private func accountRefs(issuer: String) async -> [String] {
+        var refs = [issuer]
+        if let raw = try? await client.request(method: "status"),
+           let endpoint = raw["identity"]?["endpoint_id"]?.stringValue,
+           !endpoint.isEmpty, endpoint != issuer {
+            refs.append(endpoint)
         }
-        return try await client.identityId()
+        return refs
     }
 
     /// A self-issued capability ticket: a signed statement by this identity
     /// (the edge verifies issuer + signature, no shared secret).
-    private func selfIssuedTicket() async throws -> String {
+    private func selfIssuedStatement() async throws -> TicketRef? {
         let raw = try await client.request(method: "capability.ticket", params: [
             "capabilities": AnyEncodable([AnyEncodable("message.send")]),
         ])
         guard let ticket = raw?["ticket"],
               let data = try? JSONEncoder().encode(ticket),
-              let text = String(data: data, encoding: .utf8)
+              let text = String(data: data, encoding: .utf8),
+              let parsed = parseTicket(text)
         else {
             idfonError("idfon push: capability.ticket returned no ticket")
-            return ""
+            return nil
         }
-        return text
+        return parsed
     }
 
     // MARK: - HTTP
