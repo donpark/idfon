@@ -737,166 +737,111 @@ endpoint_online (
     uint64_t timeout_ms);
 
 /** \brief
- *  Enables tracing for iroh.
- *
- *  Log level can be controlled using the env variable `IROH_C_LOG`.
+ *  Enables tracing for iroh (FFI entry, used by the apps).
  */
 void
 iroh_enable_tracing (void);
 
-/** \brief
- *  Returns whether a microphone source or live publisher is active.
- */
+/** <No documentation available> */
 uint8_t
 media_audio_active (void);
 
-/** \brief
- *  Returns the number of currently enumerated input devices.
- */
+/** <No documentation available> */
 size_t
 media_audio_input_count (void);
 
-/** \brief
- *  Returns the number of currently enumerated output devices.
- */
+/** <No documentation available> */
 size_t
 media_audio_output_count (void);
 
-/** \brief
- *  Captures a short sample window and returns the number of non-silent samples.
- */
+/** <No documentation available> */
 size_t
 media_audio_probe (
-    uint64_t duration_ms);
+    uint64_t _duration_ms);
 
-/** \brief
- *  Pushes caller-supplied mono f32 PCM at the active publisher's sample rate into the generic live audio
- *  source. Pair with `media_live_start_with_source(audio, video, "push")`.
- *
- *  `samples` is the number of f32 values (mono: samples == frames). Null or
- *  empty input is ignored; overflow past 2 s drops oldest, so a stalled
- *  encoder cannot grow memory or add latency. Trusted in-process caller.
- */
+/** <No documentation available> */
 void
 media_audio_push_samples (
     float const * pcm,
     size_t samples);
 
-/** \brief
- *  Sets the live audio encode target bitrate in bits per second (Opus VBR).
- *  Valid range 8000..=510000; applies to the next live publisher start.
- */
+/** <No documentation available> */
 uint8_t
 media_audio_set_bitrate (
     uint32_t bitrate);
 
-/** \brief
- *  Sets the active subscriber output volume from 0 to 100.
- */
+/** <No documentation available> */
 uint8_t
 media_audio_set_volume (
     uint8_t percent);
 
-/** \brief
- *  Starts the default 48 kHz mono microphone stream.
- */
+/** <No documentation available> */
 uint8_t
 media_audio_start (void);
 
-/** \brief
- *  Stops microphone capture when it is not owned by a live publisher.
- */
+/** <No documentation available> */
 void
 media_audio_stop (void);
 
-/** \brief
- *  Switches the microphone input device by its cpal device identifier.
- */
+/** <No documentation available> */
 uint8_t
 media_audio_switch_input (
     char const * device);
 
-/** \brief
- *  Switches the speaker output device by its cpal device identifier.
- */
+/** <No documentation available> */
 uint8_t
 media_audio_switch_output (
     char const * device);
 
-/** \brief
- *  Fetches a BlobTicket into the Native SDK app-data directory.
- *  Returns `0` on success and `1` on failure.
- */
+/** <No documentation available> */
 uint8_t
 media_blob_fetch (
     char const * ticket);
 
 /** \brief
- *  Immediately stops inbound live audio, playback, and microphone capture.
+ *  In-app call tones (donpark/idfon#15, native shell): a small tone
+ *  generator writing synthesized PCM through the same device playback the
+ *  recordings use — no assets ship. `kind`: 0 stop, 1 ringback (loop),
+ *  2 ringtone (loop), 3 answered (one-shot), 4 ended (one-shot). Every call
+ *  silences the previous tone first.
  */
+uint8_t
+media_call_tone (
+    uint8_t kind);
+
+/** <No documentation available> */
 void
 media_emergency_stop (void);
 
-/** \brief
- *  Returns the last live-publisher failure (empty string if none), so the
- *  GUI can show the real cause instead of a generic start-failed message.
- */
+/** <No documentation available> */
 char *
 media_live_last_error (void);
 
-/** \brief
- *  Returns the number of decoded frames written to the subscriber WAV file.
- */
+/** <No documentation available> */
 size_t
 media_live_recording_samples (void);
 
-/** \brief
- *  Stores the finalized recipient recording in the local iroh-blobs filesystem store.
- *  Returns the BLAKE3 content hash, or an empty string on failure.
- */
+/** <No documentation available> */
 char *
 media_live_recording_store (void);
 
-/** \brief
- *  Enables/disables the outgoing audio stream. Disabled sends silence while
- *  capture stays open (instant re-enable, OS mic indicator stays on); it does
- *  not release the input device. Returns 0.
- */
+/** <No documentation available> */
 uint8_t
 media_live_set_audio_enabled (
     uint8_t enabled);
 
-/** \brief
- *  Enables/disables the outgoing video stream. Disabled sends no frames and
- *  drops any queued frame. Returns 0.
- */
+/** <No documentation available> */
 uint8_t
 media_live_set_video_enabled (
     uint8_t enabled);
 
-/** \brief
- *  Starts the live broadcast and returns its ticket. `audio` and `video`
- *  select which tracks to publish; both zero is rejected (nothing to send).
- */
+/** <No documentation available> */
 char *
 media_live_start (
     uint8_t audio,
     uint8_t video);
 
-/** \brief
- *  Like [`media_live_start`], but selects the audio source by name: `"mic"`
- *  (the default capture device) or `"push"` (samples supplied through
- *  [`media_audio_push_samples`]). An unknown name fails with an empty ticket
- *  and sets [`media_live_last_error`]. Makes the source a caller decision
- *  without adding a new Rust source type per input.
- */
-char *
-media_live_start_with_source (
-    uint8_t audio,
-    uint8_t video,
-    char const * source);
-
-/** Publishes pushed audio using the selected Opus/48 kHz or PCM/24 kHz profile. */
+/** <No documentation available> */
 char *
 media_live_start_with_profile (
     uint8_t audio,
@@ -905,84 +850,70 @@ media_live_start_with_profile (
     char const * codec,
     uint32_t sample_rate);
 
-/** \brief
- *  Stops the live microphone broadcast.
- */
+/** <No documentation available> */
+char *
+media_live_start_with_source (
+    uint8_t audio,
+    uint8_t video,
+    char const * source);
+
+/** <No documentation available> */
 void
 media_live_stop (void);
 
-/** \brief
- *  Subscribes to a live ticket and records decoded audio in the app-data directory.
- */
+/** <No documentation available> */
 uint8_t
 media_live_subscribe (
     char const * ticket);
 
-/** \brief
- *  Stops the live audio subscription and finalizes its WAV recording.
- */
+/** <No documentation available> */
 void
 media_live_unsubscribe (void);
 
-/** \brief
- *  Returns the duration of the most recently finalized local recording.
- */
+/** <No documentation available> */
 uint64_t
 media_recording_duration_ms (void);
 
-/** \brief
- *  Persists a recording ticket once in the active conversation's ledger.
- */
+/** <No documentation available> */
 uint8_t
 media_recording_persist (
     char const * ticket);
 
-/** \brief
- *  Plays the fetched recording through the default output device.
- *  Returns `0` on success and `1` on failure.
- */
+/** <No documentation available> */
 uint8_t
 media_recording_play (
     char const * ticket);
 
-/** \brief
- *  Starts recording microphone audio in the Native SDK app-data directory.
- */
+/** <No documentation available> */
 uint8_t
 media_recording_start (void);
 
-/** \brief
- *  Stops and finalizes the local microphone recording.
- */
+/** <No documentation available> */
 uint8_t
 media_recording_stop (void);
 
-/** \brief
- *  Stops fetched-recording playback.
- */
+/** <No documentation available> */
 void
 media_recording_stop_playback (void);
 
-/** \brief
- *  Selects the identity/conversation namespace used by subsequent media operations.
- */
+/** <No documentation available> */
 uint8_t
 media_set_scope (
     char const * scope);
 
-/** \brief
- *  Stops all media resources during application shutdown.
- */
+/** <No documentation available> */
 void
 media_shutdown (void);
 
-/** \brief
- *  Pushes one camera frame (BGRA, 4 bytes/pixel, rows tightly packed) from
- *  Swift's AVCaptureSession into the slot drained by PushFrameSource.
- *  Drop-latest: an unconsumed frame is overwritten. Malformed sizes and
- *  short buffers are ignored (trusted in-process caller; belt for stride
- *  math mistakes).
- */
+/** <No documentation available> */
+void
+media_video_clear_render_cb (void);
+
+/** <No documentation available> */
+char *
+media_video_last_error (void);
+
+/** <No documentation available> */
 void
 media_video_push_frame (
     uint8_t const * data,
@@ -992,18 +923,23 @@ media_video_push_frame (
     uint64_t pts_ms);
 
 /** \brief
- *  Starts the video subscription for `ticket`: subscribes, enables network
- *  adaptation, and writes decoded frames to `video-frame.jpg` under the
- *  media directory (see `media_path`). Returns the absolute frame path for
- *  `Cmd.imageLoad`, or an empty string on failure.
+ *  Register an in-memory video renderer before `media_video_start`.
+ *
+ *  The callback runs on a Rust media thread and is handed a borrowed RGBA
+ *  buffer valid only for the duration of the call; copy before returning.
+ *  `len == 0` signals "no live frame" (peer camera off / track ended).
  */
+uint8_t
+media_video_set_render_cb (
+    void const * ctx,
+    void (*cb)(void const *, uint8_t const *, size_t, uint32_t, uint32_t, uint64_t));
+
+/** <No documentation available> */
 char *
 media_video_start (
     char const * ticket);
 
-/** \brief
- *  Stops the video subscription and frame writing.
- */
+/** <No documentation available> */
 void
 media_video_stop (void);
 
