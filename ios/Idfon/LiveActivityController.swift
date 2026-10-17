@@ -277,7 +277,7 @@ final class LiveActivityController: NSObject {
         if machine != nil { pendingCall = nil }
         let next: LiveActivityBarModel.Phase
         if machine?.phase == .incoming, let peer = machine?.peer,
-           IncomingCallRouter.shared.ownsPresentation(for: peer) {
+           IncomingCallRouter.shared.ringsViaSystem(for: peer) {
             // CallKit owns the ring on `call_kit` channels: the Bar stays out
             // of the incoming state entirely (docs/ui-design-notes.md §6).
             next = .idle

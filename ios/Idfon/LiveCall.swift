@@ -405,8 +405,8 @@ final class LiveCall {
         UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
         state = .incoming(peer: peerID)
         notify()
-        // CallKit owns the ring and the audio session on `call_kit` channels.
-        if !IncomingCallRouter.shared.ownsPresentation(for: peerID) {
+        // CallKit owns the ring and the audio session when the system rings.
+        if !IncomingCallRouter.shared.ringsViaSystem(for: peerID) {
             LiveCallHarness.activateAudioSession()
             CallTonePlayer.shared.start(.ringtone)
         }

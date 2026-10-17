@@ -53,11 +53,24 @@ final class IncomingCallRouter {
     /// Display name for the system call UI, or nil when no named peer matches.
     func name(for ref: String) -> String? { names[ref] }
 
-    /// CallKit owns incoming-ring presentation for this channel.
+    /// CallKit owns incoming-ring presentation for this channel (strict: an
+    /// explicit `call_kit` record — gates dials, where `bar` is the product
+    /// default for anything unknown).
     func ownsPresentation(for peerId: String) -> Bool {
         mode(for: peerId) == .callKit
             && CallKitIncomingPresenter.isAvailable
             && !barFallback.contains(peerId)
+    }
+
+    /// Who presents an *incoming* ring: the system call UI unless the channel
+    /// is known to be `bar`. A ref with no channel data (fresh install,
+    /// stranger) lets the sender's ring intent through — the sender rang a
+    /// `call_kit` channel on its side, and the alternative is a report-then-
+    /// end flash on every first wake (#57). Used by the push gate, the
+    /// envelope presentation, and the Bar ring gates alike, so the four
+    /// sites can never disagree.
+    func ringsViaSystem(for ref: String) -> Bool {
+        mode(for: ref) != .bar && !barFallback.contains(ref)
     }
 
     /// CallKit refused the call (report or transaction failed): the Bar takes
@@ -92,9 +105,9 @@ final class IncomingCallRouter {
     /// Only invites go through here; `call_started`/`call_stopped` stay direct
     /// to both machines.
     func route(peerId: String, envelope text: String) {
-        let viaCallKit = ownsPresentation(for: peerId)
-        idfonLog("idfon incoming-call route peer=\(peerId) mode=\(mode(for: peerId).rawValue) callkit=\(viaCallKit)")
-        if viaCallKit,
+        let viaSystem = ringsViaSystem(for: peerId)
+        idfonLog("idfon incoming-call route peer=\(peerId) mode=\(mode(for: peerId).rawValue) callkit=\(viaSystem)")
+        if viaSystem,
            let invite = LiveInvite.parse(text),
            invite.isStart, !invite.isReturn, !invite.ticket.isEmpty,
            machineWouldAccept(invite: invite, from: peerId) {
