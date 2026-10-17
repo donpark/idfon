@@ -380,11 +380,13 @@ final class LiveActivityController: NSObject {
             model.stats = machine?.stats
             model.onDevice = machine?.onDevice ?? false
             model.rows = transfers.rows(for: callPeer)
-            // Expanded only while the visible thread is the call peer's —
-            // that thread owns the call; every other screen shows the pill.
-            // D19: on the call's own thread the panel passively minimizes to
-            // the pill once the reader scrolls into history.
-            model.density = (visibleIsCallPeer && !passiveMinimize) ? .expanded : .compact
+            // The in-call surface shows on all non-modal screens (the
+            // floating-panel design): expanded whenever a call is live, on
+            // whatever screen is up — not just the call's own thread. The one
+            // exception is D19's passive minimize: on the call's own thread,
+            // scrolling into its history collapses the panel to the pill so
+            // the reader is not covered.
+            model.density = (visibleIsCallPeer && passiveMinimize) ? .compact : .expanded
             // The visible thread's own call shows identity in the nav title
             // (D8), so the panel drops it and keeps stats + controls (D2).
             model.statusOnly = visibleIsCallPeer && (phase == .calling || phase == .inCall)
