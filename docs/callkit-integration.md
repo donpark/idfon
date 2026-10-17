@@ -171,39 +171,51 @@ builds deliver only via `api.sandbox.push.apple.com`, so a dev edge sets
 `--push-apns-url` there; an edge serving mixed sandbox/prod tokens would need
 per-token environment (not built).
 
-**Landed (iOS + caller side)** — `ios/Idfon/PushWake.swift` + the `CallKitController`
-push hooks:
+**Landed (iOS + mac caller side)** — `ios/Idfon/PushWake.swift`, the
+`CallKitController` push hooks, and `mac/Sources/Idfon/CallRing.swift`:
 
 1. **Registration**: `PushWake.start()` at launch registers the PushKit token
-   under this device's endpoint id with topic `com.idfon.ios.voip`, signed by a
-   self-issued `capability.ticket` (retries while the core boots);
+   under every id this device is known by with topic `com.idfon.ios.voip`,
+   signed by a self-issued `capability.ticket` (retries while the core boots);
    `didInvalidatePushTokenFor` unregisters. Multi-device: ring-all.
-2. **Ring/cancel**: the machines post `/_push/ring` (`call_uuid =
+2. **Ring/cancel**: both apps post `/_push/ring` (`call_uuid =
    CallUUID.from(invite ticket)`) right after the invite is queued, gated on
    `call_kit` channels only; the `notify()` funnel posts `/_push/cancel` when a
    call that rang goes idle without connecting and clears the ring on connect.
-   Ticket selection: the callee's stored contact ticket (skipped when
-   subject-bound to an older identity), else a self-issued statement.
-   Shortcut: the caller posts to its *own* configured edge (`EdgeClient`
-   config) — shared-edge deployments only (idfon.net); cross-edge discovery is
-   follow-up.
-3. **Wake**: the PushKit delegate reports `presentPush` in the same turn
-   (payload `call_uuid`; display names resolve from the router's cache, never
-   from the payload) and the invite envelope dedupes onto the pushed call via
-   the P1 UUID mapping. An answer that beats the envelope arms a pending
-   answer completed by `envelopeArrived()` (a 20 s guard ends the call if the
-   invite never lands); a `cancel` push ends the call in one turn.
+   **`caller_id` derives from the presented ticket** — a contact ticket binds
+   it as `subject`, a self-issued statement as `issuer` (the `sender.peer_id`
+   message events carry): the identity key and the iroh endpoint id are
+   different ids on some daemons, and any other derivation breaks the edge's
+   ticket checks. Shortcut: the caller posts to its *own* configured edge
+   (`EdgeClient` config) — shared-edge deployments only (idfon.net);
+   cross-edge discovery is follow-up.
+3. **Wake**: on iOS 26.4+ the push arrives through
+   `pushRegistry(_:didReceiveIncomingVoIPPushWith:metadata:withCompletionHandler:)`
+   — implementing only the classic delegate means the push is **dropped
+   before the app** on iOS 27 (verified on hardware). The delegate reports
+   `presentPush` in the same turn (payload `call_uuid`; names resolve from the
+   persisted multi-ref peer cache — never a raw id hash, "Idfon caller" until
+   the live records refine the UI) and the invite envelope dedupes onto the
+   pushed call via the P1 UUID mapping. An answer that beats the envelope arms
+   a pending answer completed by `envelopeArrived()` (a 20 s guard ends the
+   call if the invite never lands).
 4. **Cancel**: caller hangs up before answer → `/_push/cancel` → second push →
-   end in one turn (the graceful de-escalation pattern; iOS may still flash the
-   sheet — known, acceptable).
+   end in one turn (the graceful de-escalation pattern). A stale cancel for a
+   call that is already gone must not resurrect one: only a `mustReport` push
+   (the iOS 26.4+ metadata flag) needs a reported call at all.
 5. **Honest limitation**: a `bar`-mode channel gets no wake. That is by design
    (ui-design-notes §6: the Bar is for people who are already here) and stays out of
    scope — no alert-push fallback.
 
-Checks/tests: edge unit tests landed (above); device E2E remains:
-force-quit the app, call from the mac → lock-screen ring → answer → two-way audio;
-ring→cancel race; ring with the app alive (must not double-present on top of P1).
+Checks/tests: edge unit tests landed (above). Device E2E proven (2026-10-17,
+iOS 27.0.1, sandbox APNs): token registration, mac→phone ring with the app
+force-quit on the lock screen (cold launch → system call UI), cancel →
+same-turn dismiss, stale cancel → no-op, caller names resolve. Remaining:
+answer → two-way audio in the same flow, a video ring, and the
+ring-with-app-alive double-present check.
 
+The mac already **sends** rings (`CallRing.swift` — caller-side plumbing is
+shared by any idfon app); what P3 adds is the mac's own wake + presentation.
 The ring fan-out reaches macOS once P3 lands: PushKit VoIP exists natively on macOS
 (`didReceiveIncomingVoIPPushWithPayload:metadata:`, `macos(26.4)`). A mac registers
 its token only once its LiveCommunicationKit presenter exists — a VoIP push that

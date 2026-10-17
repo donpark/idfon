@@ -25,6 +25,10 @@ ios/
 │   ├── OverlayWindow.swift   # window-level Bar host (pass-through hitTest)
 │   ├── LiveActivityController.swift  # maps call state → Bar models, routes Bar intents
 │   ├── IncomingCallRouter.swift      # per-channel Bar-vs-CallKit incoming routing seam
+│   ├── CallKitController.swift       # CallKit owner: CXProvider mirror + push wake hooks
+│   ├── CallUUID.swift                # deterministic call identity from the invite ticket
+│   ├── PushWake.swift                # PushKit registration + ring/cancel (the wake channel)
+│   ├── Idfon.entitlements            # aps-environment; Xcode auto-signing registers APNs
 │   ├── ChatStore.swift       # polling event loop: waitMessages → notifications
 │   ├── Models.swift          # Peer / Message / Event / IncomingCallMode
 │   ├── VideoCall.swift       # video-call state machine (dial/answer/route events)
@@ -60,7 +64,7 @@ flowchart TD
         CS -->|invite envelopes| R[IncomingCallRouter<br/>per-channel mode]
         R -->|Bar| LC[LiveCall<br/>audio machine]
         R -->|Bar| VC[VideoCall<br/>video machine]
-        R -->|CallKit| CK[CallKitIncomingPresenter<br/>stub · isAvailable=false]
+        R -->|CallKit| CK[CallKitController<br/>CXProvider mirror + push wake]
         LC & VC --> LAC[LiveActivityController]
         LAC --> OW[OverlayWindow → LiveActivityBar]
         LAC -.->|clearance, content inset, per tab| NAV[AppNavigationController ×3]
