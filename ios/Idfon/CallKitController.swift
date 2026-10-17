@@ -180,10 +180,20 @@ final class CallKitController: NSObject, CXProviderDelegate {
         return false
     }
 
-    /// The peer hung up at the transport level (`call_stopped`): the
-    /// de-escalation must not depend on the cancel push arriving (#45).
-    func remoteEnded(peerId: String) {
-        guard let call = current, !call.outgoing, call.peerId == peerId else { return }
+    /// The peer hung up at the transport level (`call_stopped` or a stop
+    /// envelope): the de-escalation must not depend on the cancel push
+    /// arriving (#45). Only the machine that owns the ringing call may end it
+    /// (`owner`), so an audio stop cannot dismiss a video ring and vice versa.
+    /// A non-empty ticket names the call generation — the ring UUID derives
+    /// from that ticket — so a stop for an older call is ignored (#60). An
+    /// empty ticket is a legacy sender: match by peer.
+    func remoteEnded(peerId: String, owner: Owner, ticket: String = "") {
+        guard let call = current, !call.outgoing, call.owner == owner,
+              call.peerId == peerId else { return }
+        if !ticket.isEmpty, CallUUID.from(ticket: ticket) != call.uuid {
+            idfonLog("idfon callkit: stop for an older call ignored peer=\(peerId)")
+            return
+        }
         idfonLog("idfon callkit: remote ended call=\(call.uuid.uuidString)")
         endIncomingCall(call, reason: .remoteEnded)
     }

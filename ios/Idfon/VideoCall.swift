@@ -119,7 +119,30 @@ final class VideoCall: NSObject {
     var activePeer: String? { peer ?? pendingInvite?.peer }
     private(set) var lastError: String?
     private var pendingInvite: (peer: String, ticket: String)?
+    /// The call generation's identity: the dialer's publish ticket (the
+    /// caller generated it, the callee received it in the start invite).
+    /// Stops carry it so an out-of-order stop from an older call cannot end
+    /// this one (#60).
+    private var callTicket: String?
     private var joinedTicket: String?
+
+    /// Records the call generation's identity (persisted so a crash can name
+    /// it in `recoverStaleCall`).
+    private func setCallTicket(_ ticket: String) {
+        callTicket = ticket
+        UserDefaults.standard.set(ticket, forKey: "idfon.video-call.ticket")
+    }
+
+    private func clearCallTicket() {
+        callTicket = nil
+        UserDefaults.standard.removeObject(forKey: "idfon.video-call.ticket")
+    }
+
+    /// Whether a stop envelope names this call (#60). The rule lives in the
+    /// tested pure seam; an empty ticket keeps the old terminate behavior.
+    private func stopNamesThisCall(_ ticket: String) -> Bool {
+        CallStopCorrelation.names(ticket, current: callTicket)
+    }
 
     // MARK: - Outgoing stream set (docs/ui-design-notes.md §3 State 3)
 
@@ -294,6 +317,7 @@ final class VideoCall: NSObject {
                     return
                 }
                 published = true
+                setCallTicket(ticket)
                 applySendState() // a toggle during `.calling` may predate the publish
                 try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
@@ -318,6 +342,7 @@ final class VideoCall: NSObject {
     func answer(cameraOn: Bool = true) {
         guard state == .incoming, let pending = pendingInvite else { return }
         pendingInvite = nil
+        setCallTicket(pending.ticket)
         peer = pending.peer
         state = .inCall
         // The callee always publishes both tracks, but starts mic-only — the
@@ -360,8 +385,10 @@ final class VideoCall: NSObject {
         CallTonePlayer.shared.stop()
         // The ring brought the shared audio up; a decline must release it.
         AudioIO.shared.stop()
-        // call_stopped mirrors core.ts live_decline so the caller's UI clears.
-        Task { try? await client.sendText(to: pending.peer, "call_stopped") }
+        let ticket = callTicket ?? ""
+        Task { try? await client.sendText(to: pending.peer, LiveInvite.build(action: "stop", ticket: ticket, call: true)) }
+        clearCallTicket()
+        UserDefaults.standard.removeObject(forKey: "idfon.video-call.peer")
     }
 
     func hangUp() {
@@ -370,13 +397,17 @@ final class VideoCall: NSObject {
 
     func recoverStaleCall() {
         guard let peer = UserDefaults.standard.string(forKey: "idfon.video-call.peer") else { return }
+        // The crash left the call generation behind; name it so a live call
+        // that took its place is not ended by this recovery stop (#60).
+        let ticket = UserDefaults.standard.string(forKey: "idfon.video-call.ticket") ?? ""
         UserDefaults.standard.removeObject(forKey: "idfon.video-call.peer")
+        UserDefaults.standard.removeObject(forKey: "idfon.video-call.ticket")
         Task.detached(priority: .userInitiated) {
             media_live_stop()
             media_video_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: "", call: true))
+            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true))
         }
     }
 
@@ -388,12 +419,21 @@ final class VideoCall: NSObject {
         if text == "call_started" { return } // informational only
         if text == "call_stopped" {
             if state != .idle && activePeer == peerID { terminate(local: false) }
-            else if state == .idle { CallKitController.shared.remoteEnded(peerId: peerID) }
+            else if state == .idle { CallKitController.shared.remoteEnded(peerId: peerID, owner: .video) }
             return
         }
         guard let invite = LiveInvite.parse(text) else { return }
         if invite.isStop {
-            if state != .idle && activePeer == peerID { terminate(local: false) }
+            if state == .idle {
+                CallKitController.shared.remoteEnded(peerId: peerID, owner: .video, ticket: invite.ticket)
+                return
+            }
+            guard activePeer == peerID else { return }
+            guard stopNamesThisCall(invite.ticket) else {
+                idfonLog("idfon video call: ignored stop for an older call peer=\(peerID)")
+                return
+            }
+            terminate(local: false)
             return
         }
         guard invite.isStart, invite.isCall, !invite.ticket.isEmpty else { return } // file-share/audio invites: unsupported here
@@ -411,11 +451,13 @@ final class VideoCall: NSObject {
             // A newer invite from the same peer supersedes the stale pending call.
             guard activePeer == peerID else { return }
             pendingInvite = (peerID, invite.ticket)
+            setCallTicket(invite.ticket)
             idfonLog("idfon video: replaced pending invite from \(peerID)")
             notify()
         } else if state == .idle {
             pendingInvite = (peerID, invite.ticket)
             UserDefaults.standard.set(peerID, forKey: "idfon.video-call.peer")
+            setCallTicket(invite.ticket)
             // Answering publishes both tracks but starts mic-only (camera off
             // until the Bar's toggle), so there is nothing to pre-stage.
             audioAvailable = true
@@ -469,7 +511,8 @@ final class VideoCall: NSObject {
 
     private func terminate(local: Bool) {
         if local, let peerID = peer {
-            Task { try? await client.sendText(to: peerID, LiveInvite.build(action: "stop", ticket: "", call: true)) }
+            let ticket = callTicket ?? ""
+            Task { try? await client.sendText(to: peerID, LiveInvite.build(action: "stop", ticket: ticket, call: true)) }
         }
         frameTimer?.invalidate()
         frameTimer = nil
@@ -490,6 +533,7 @@ final class VideoCall: NSObject {
         peer = nil
         pendingInvite = nil
         published = false
+        clearCallTicket()
         UserDefaults.standard.removeObject(forKey: "idfon.video-call.peer")
         audioAvailable = false
         videoAvailable = false

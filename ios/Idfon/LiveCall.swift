@@ -112,6 +112,11 @@ final class LiveCall {
 
     private let client = IdfonClient()
     private var pendingInvite: (peer: String, ticket: String)?
+    /// The call generation's identity: the dialer's publish ticket, known to
+    /// both sides (the caller generated it, the callee received it in the
+    /// start invite). Stops carry it so an out-of-order stop from an older
+    /// call cannot terminate this one (#60).
+    private var callTicket: String?
     private var published = false
     private var operationGeneration = 0
     private var operation: Task<Void, Never>?
@@ -121,6 +126,24 @@ final class LiveCall {
         case .incoming(let peer), .calling(let peer), .inCall(let peer): return peer
         case .idle: return nil
         }
+    }
+
+    /// Records the call generation's identity (persisted so a crash can name
+    /// it in `recoverStaleCall`).
+    private func setCallTicket(_ ticket: String) {
+        callTicket = ticket
+        UserDefaults.standard.set(ticket, forKey: "idfon.live-call.ticket")
+    }
+
+    private func clearCallTicket() {
+        callTicket = nil
+        UserDefaults.standard.removeObject(forKey: "idfon.live-call.ticket")
+    }
+
+    /// Whether a stop envelope names this call (#60). The rule lives in the
+    /// tested pure seam; an empty ticket keeps the old terminate behavior.
+    private func stopNamesThisCall(_ ticket: String) -> Bool {
+        CallStopCorrelation.names(ticket, current: callTicket)
     }
 
     func clearError() {
@@ -203,6 +226,7 @@ final class LiveCall {
                 idfonLog("idfon live call: caller audio published profile=\(profile.rawValue)")
                 applySendState() // a toggle during `.calling` may predate the publish
                 UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
+                setCallTicket(ticket)
                 // Carry the daemon's current dial address: endpoint-id-only
                 // discovery is unreliable for inbound calls to suspended phones.
                 let encodedAddr = Data(returnAddr.utf8).base64EncodedString()
@@ -262,6 +286,7 @@ final class LiveCall {
         operationGeneration += 1
         let generation = operationGeneration
         pendingInvite = nil
+        setCallTicket(pending.ticket)
         state = .inCall(peer: peer)
         audioEnabled = audioAvailable
         notify()
@@ -314,7 +339,10 @@ final class LiveCall {
         CallTonePlayer.shared.stop()
         // The ring brought the shared audio up; a decline must release it.
         AudioIO.shared.stop()
-        Task { try? await client.sendText(to: peer, "call_stopped") }
+        let ticket = callTicket ?? ""
+        Task { try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false)) }
+        clearCallTicket()
+        UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
     }
 
     func hangUp() {
@@ -323,12 +351,16 @@ final class LiveCall {
 
     func recoverStaleCall() {
         guard let peer = UserDefaults.standard.string(forKey: "idfon.live-call.peer") else { return }
+        // The crash left the call generation behind; name it so a live call
+        // that took its place is not ended by this recovery stop (#60).
+        let ticket = UserDefaults.standard.string(forKey: "idfon.live-call.ticket") ?? ""
         UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
+        UserDefaults.standard.removeObject(forKey: "idfon.live-call.ticket")
         Task.detached(priority: .userInitiated) {
             media_live_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: "", call: false))
+            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false))
         }
     }
 
@@ -341,7 +373,7 @@ final class LiveCall {
             if case .idle = state {
                 // A push-first wake can outlive the machine: the transport
                 // truth must end a ringing system call too (#45).
-                CallKitController.shared.remoteEnded(peerId: peerID)
+                CallKitController.shared.remoteEnded(peerId: peerID, owner: .live)
                 return
             }
             if activePeer == peerID { terminate(local: false) }
@@ -358,8 +390,19 @@ final class LiveCall {
         }
         idfonLog("idfon live call: envelope peer=\(peerID) state=\(String(describing: state)) start=\(invite.isStart) stop=\(invite.isStop) return=\(invite.isReturn) audio=\(invite.media == nil) ticket=\(!invite.ticket.isEmpty)")
         if invite.isStop {
-            if case .idle = state { return }
-            if activePeer == peerID { terminate(local: false) }
+            if case .idle = state {
+                // A push-first wake can outlive the machine: the transport
+                // truth must end a ringing system call too (#45), correlated
+                // to the call the stop names (#60).
+                CallKitController.shared.remoteEnded(peerId: peerID, owner: .live, ticket: invite.ticket)
+                return
+            }
+            guard activePeer == peerID else { return }
+            guard stopNamesThisCall(invite.ticket) else {
+                idfonLog("idfon live call: ignored stop for an older call peer=\(peerID)")
+                return
+            }
+            terminate(local: false)
             return
         }
         guard invite.isStart, invite.media == nil, !invite.ticket.isEmpty else {
@@ -396,6 +439,7 @@ final class LiveCall {
         if case .incoming(let pendingPeer) = state {
             guard pendingPeer == peerID else { return }
             pendingInvite = (peerID, invite.ticket)
+            setCallTicket(invite.ticket)
             idfonLog("idfon live: replaced pending invite from \(peerID)")
             notify()
             return
@@ -403,6 +447,7 @@ final class LiveCall {
         guard case .idle = state else { return } // video-call invites route to VideoCall
         pendingInvite = (peerID, invite.ticket)
         UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
+        setCallTicket(invite.ticket)
         state = .incoming(peer: peerID)
         notify()
         // The system already rings (a push-first wake): no Bar ringtone and
@@ -443,13 +488,15 @@ final class LiveCall {
         guard let peer = activePeer else { return }
         HybridVoice.shared.stop()
         if local {
-            Task { try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: "", call: false)) }
+            let ticket = callTicket ?? ""
+            Task { try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false)) }
         }
         operation?.cancel()
         operation = nil
         operationGeneration += 1
         published = false
         UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
+        clearCallTicket()
         pendingInvite = nil
         CallTonePlayer.shared.stop()
         audioEnabled = false
