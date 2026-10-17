@@ -11,5 +11,8 @@
   },
   "dependencies": {
     "@native-sdk/core": "0.10.1"
+  },
+  "devDependencies": {
+    "@native-sdk/cli": "^0.10.1"
   }
 }
