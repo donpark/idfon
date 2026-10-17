@@ -86,13 +86,17 @@ final class IncomingCallRouter {
         guard let peers = try? await client.peers() else { return }
         modes = peers.reduce(into: [:]) { table, peer in
             let mode = peer.incomingCallMode
-            for ref in [peer.id, peer.endpointId].compactMap({ $0 }) + (peer.aliases ?? []) {
+            for ref in PeerRefFlattening.refs(
+                id: peer.id, endpointId: peer.endpointId, aliases: peer.aliases
+            ) {
                 table[ref] = mode
             }
         }
         names = peers.reduce(into: [:]) { table, peer in
             guard let name = peer.name, !name.isEmpty else { return }
-            for ref in [peer.id, peer.endpointId].compactMap({ $0 }) + (peer.aliases ?? []) {
+            for ref in PeerRefFlattening.refs(
+                id: peer.id, endpointId: peer.endpointId, aliases: peer.aliases
+            ) {
                 table[ref] = name
             }
         }

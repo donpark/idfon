@@ -64,55 +64,33 @@ enum CallRing {
     private static func send(peer: String, action: String, callUUID: String, hasVideo: Bool) {
         Task {
             guard let base = EdgeClient.shared.baseURL else { return }
-            // `caller_id` must come from the ticket itself: a contact ticket
-            // binds it as `subject`, a self-issued statement as `issuer` —
-            // which is also the `sender.peer_id` message events carry, so the
-            // callee's push report and envelope dedupe onto one call. The
-            // identity key and the iroh endpoint id are different ids; any
-            // other derivation breaks the edge's ticket checks.
-            let ticket: String
-            let callerId: String
-            if let contact = contactTicket(for: peer), let subject = contact.subject {
-                ticket = contact.raw
-                callerId = subject
-            } else if let issued = try? await selfIssuedStatement() {
-                ticket = issued.raw
-                callerId = issued.issuer
-            } else {
-                return
-            }
-            var body: [String: Any] = ["call_uuid": callUUID, "caller_id": callerId]
+            // `caller_id` derives from the presented ticket (RingTicket): a
+            // contact ticket binds it as `subject`, a self-issued statement as
+            // `issuer` — which is also the `sender.peer_id` message events
+            // carry, so the callee's push report and envelope dedupe onto one
+            // call. The identity key and the iroh endpoint id are different
+            // ids (#56); any other derivation breaks the edge's ticket checks.
+            guard let ticket = RingTicket.presentation(
+                contact: contactTicket(for: peer),
+                issued: try? await selfIssuedStatement())
+            else { return }
+            var body: [String: Any] = ["call_uuid": callUUID, "caller_id": ticket.callerId]
             if action == "ring" { body["has_video"] = hasVideo }
             let url = EdgeClient.resourceURL(baseURL: base, account: peer, path: "/_push/\(action)")
-            await postJSON(url: url, ticket: ticket, body: body)
+            await postJSON(url: url, ticket: ticket.raw, body: body)
         }
-    }
-
-    /// A ticket as it will be presented, with the fields the ring binds.
-    private struct TicketRef {
-        let raw: String
-        let issuer: String
-        let subject: String?
-    }
-
-    private static func parseTicket(_ json: String) -> TicketRef? {
-        guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
-            let issuer = object["issuer"] as? String, !issuer.isEmpty
-        else { return nil }
-        let subject = (object["subject"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        return TicketRef(raw: json, issuer: issuer, subject: subject)
     }
 
     /// A self-issued capability ticket: a signed statement by this identity
     /// (the edge verifies issuer + signature, no shared secret).
-    private static func selfIssuedStatement() async throws -> TicketRef? {
+    private static func selfIssuedStatement() async throws -> RingTicket? {
         let raw = try await client.request(method: "capability.ticket", params: [
             "capabilities": AnyEncodable([AnyEncodable("message.send")]),
         ])
         guard let ticket = raw?["ticket"],
             let data = try? JSONEncoder().encode(ticket),
             let text = String(data: data, encoding: .utf8),
-            let parsed = parseTicket(text)
+            let parsed = RingTicket(json: text)
         else {
             idfonError("idfon ring: capability.ticket returned no ticket")
             return nil
@@ -121,8 +99,8 @@ enum CallRing {
     }
 
     /// The stored contact ticket (the callee's statement about us), if any.
-    private static func contactTicket(for peer: String) -> TicketRef? {
-        CapabilityTickets.rawTicketJSON(for: peer).flatMap(parseTicket)
+    private static func contactTicket(for peer: String) -> RingTicket? {
+        CapabilityTickets.rawTicketJSON(for: peer).flatMap(RingTicket.init(json:))
     }
 
     private static func postJSON(url: URL, ticket: String, body: [String: Any]) async {
