@@ -226,25 +226,33 @@ ring-with-app-alive double-present check.
 Tracked as donpark/idfon issues; the session that hunted the wake bugs left
 these:
 
-- **#55 (open, the current blocker):** a push-woken app dies within seconds
-  (SIGKILL — no crash report) and the ring dies with it. Deferring the
-  launch-time speech warmup (commit `89d65f0`) did **not** prove the cause.
-  Next steps: catch the kill (jetsam events via `devicectl device info files
-  --domain-type systemCrashLogs`, or reproduce with the console attached to a
-  foregrounded-then-backgrounded app) and audit everything a wake runs
-  (`IdfonRuntime.start`, ChatStore polling, agent flows).
-- **#51 (open):** the answer→two-way audio leg. Tried several times; each
-  attempt surfaced real bugs instead (#55, #56, the #47 regression chain,
-  #59). Use the runbook below.
-- **#52 (open):** host checks for the seams that bit us live — the
-  ticket→`caller_id` derivation, cache flattening, the ring predicates.
-- **#54 (open):** test-config residue (apps point at the local test edge;
-  `~/.idfon/edge.apns.p8` rides a local edge; `iphone` is `call_mode: call_kit`
-  on the mac) + the droplet deploy checklist.
-- **#56 (open):** the contact-ticket `account_id` vs `sender.peer_id` split
-  identity mismatch — pairing from the advertised ticket can never pass the
-  message gate. Workaround in use: pair with `account_id` overridden to the
-  sender's `sender.peer_id` (the ticket `issuer`).
+- **#61 (open, the current blocker):** the push-woken app wedges on main
+  during message ingest (`ChatStore.notifyObservers` → a chat-observer
+  callback — table rebuild / timeline parsing), which also hangs the CallKit
+  answer action. The known trigger (a `IDFON-SESSION/1` rotate ingested as
+  chat) is fenced (commit `3eeae06`); if the freeze reproduces, the observer
+  forensics are the next step (all three observers are UI classes; move their
+  work off main or gate it).
+- **#60 (open):** out-of-order legacy `call_stopped` from a killed attempt
+  terminates the next call — the "call cut off after 2s" cause. Mitigated by
+  a per-peer invite-sequence watermark (commit `5c4dafa`); the proper fix is
+  ticketed stops correlated to the call generation.
+- **#55 (open):** the woken app dying within seconds (SIGKILL). Suspect
+  overlap with #61 (a wedge looks similar from outside) — re-verify only
+  after #61 is resolved.
+- **#51 (open):** answer → two-way audio — the last functional leg.
+- **#52 / #54 (open):** host checks for the bitten seams; test-config
+  residue + droplet deploy checklist.
+- **#56 (open):** contact-ticket `account_id` vs `sender.peer_id` — pairing
+  from the advertised ticket can never pass the message gate. Workaround:
+  pair with `account_id` overridden to the sender's `sender.peer_id`.
+
+**Wake chain status (verified on hardware):** registration, push → system
+ring (survives — the five ring-killers are fixed: report-then-end race #58,
+mode-cache regression #57, stale-ring block #59, phantom cancels (test
+tooling), straggler call_stopped #60-mitigation), cancel → same-turn dismiss,
+stale-cancel no-op, caller names. Remaining: the answer-side freeze (#61)
+and then the audio leg (#51).
 - **Ring semantics (settled the hard way):** the **sender's** `call_mode`
   opt-in is the gate for system rings; the receiver-side gate was reverted
   (#47) because the wire collapses an unset `call_mode` into `bar`
