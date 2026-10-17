@@ -66,6 +66,14 @@ final class CallKitController: NSObject, CXProviderDelegate {
 
     // MARK: - Incoming
 
+    /// Whether a system call for this peer is up (ringing or connected): the
+    /// single truth behind "no double presentation" — the Bar ring and its
+    /// in-app ringtone stay out exactly when the system is already on it.
+    func isRinging(_ peerId: String) -> Bool {
+        guard let call = current, !call.outgoing else { return false }
+        return call.peerId == peerId
+    }
+
     /// Push-first ring (P2): the payload's `call_uuid` is the caller's
     /// `CallUUID.from(invite ticket)`, so the envelope dedupes onto this call
     /// when it lands. Reported before anything else — a VoIP push that does
@@ -75,9 +83,19 @@ final class CallKitController: NSObject, CXProviderDelegate {
     /// call whose registration has not completed fails the report, #58).
     func presentPush(callUUID: String, callerId: String, hasVideo: Bool, endImmediately: Bool = false) {
         guard !callerId.isEmpty, !callUUID.isEmpty else { return }
-        guard current == nil else {
-            idfonLog("idfon callkit: push ring ignored — a call is already up")
-            return
+        if let existing = current, !existing.outgoing {
+            // Redelivery or a newer invite from the same peer: keep the ring
+            // already up (the machines hold the newest ticket).
+            if existing.peerId == callerId { return }
+            // Never steal a call this device answered.
+            if answeredLocally(existing) {
+                idfonLog("idfon callkit: push ring ignored — busy")
+                return
+            }
+            // A newer ring supersedes a stale unanswered one (#59): a dead
+            // ring must not block the real call.
+            idfonLog("idfon callkit: push ring supersedes \(existing.uuid.uuidString)")
+            endIncomingCall(existing, reason: .declinedElsewhere)
         }
         let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
         let update = callUpdate(
