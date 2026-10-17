@@ -37,9 +37,15 @@ final class IncomingCallRouter {
     private var barFallback: Set<String> = []
 
     private static let namesKey = "idfon.peerNamesByRef"
+    private static let modesKey = "idfon.peerModes"
 
     private init() {
         names = UserDefaults.standard.dictionary(forKey: Self.namesKey) as? [String: String] ?? [:]
+        // Modes persist like names: a push wake has no daemon round-trip in
+        // the same turn as the report (#57), and the Bar controller that used
+        // to be the only refresher does not exist yet in a woken app.
+        let rawModes = UserDefaults.standard.dictionary(forKey: Self.modesKey) as? [String: String] ?? [:]
+        modes = rawModes.compactMapValues(IncomingCallMode.init(rawValue:))
     }
 
     func mode(for peerId: String) -> IncomingCallMode { modes[peerId] ?? .bar }
@@ -77,6 +83,7 @@ final class IncomingCallRouter {
             }
         }
         UserDefaults.standard.set(names, forKey: Self.namesKey)
+        UserDefaults.standard.set(modes.mapValues(\.wireValue), forKey: Self.modesKey)
     }
 
     /// Routes an invite envelope from `peerId`: a fresh incoming invite on a
