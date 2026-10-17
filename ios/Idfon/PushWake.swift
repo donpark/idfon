@@ -146,12 +146,39 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         _ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload,
         for type: PKPushType, withCompletionHandler completion: @escaping () -> Void
     ) {
-        let dict = payload.dictionaryPayload
+        idfonLog("idfon push: incoming (classic) type=\(type.rawValue)")
+        handlePush(payload.dictionaryPayload, completion)
+    }
+
+    /// iOS 26.4+ delivers VoIP pushes through this variant — when the delegate
+    /// does not implement it, the push is dropped before the app (verified on
+    /// iOS 27.0.1). `metadata.mustReport` marks pushes that must end in a
+    /// reported call; every ring is one.
+    @available(iOS 26.4, *)
+    func pushRegistry(
+        _ registry: PKPushRegistry,
+        didReceiveIncomingVoIPPushWith payload: PKPushPayload,
+        metadata: PKVoIPPushMetadata,
+        withCompletionHandler completion: @escaping () -> Void
+    ) {
+        idfonLog("idfon push: incoming (voip) mustReport=\(metadata.mustReport)")
+        handlePush(payload.dictionaryPayload, completion)
+    }
+
+    private func handlePush(_ dict: [AnyHashable: Any], _ completion: @escaping () -> Void) {
         let callUUID = dict["call_uuid"] as? String ?? ""
+        let cancel = (dict["cancel"] as? Bool) == true
+        idfonLog("idfon push: received call=\(callUUID) cancel=\(cancel)")
         // Report before anything else (Signal's rule) — the completion handler
-        // runs once the system has the call.
+        // runs once the system has the call. A cancel still reports first and
+        // ends in the same turn: a VoIP push must end in a reported call
+        // (`mustReport`), and report-then-end is the graceful de-escalation.
         Task { @MainActor in
-            if (dict["cancel"] as? Bool) == true {
+            if cancel {
+                CallKitController.shared.presentPush(
+                    callUUID: callUUID,
+                    callerId: dict["caller_id"] as? String ?? "",
+                    hasVideo: (dict["has_video"] as? Bool) ?? false)
                 CallKitController.shared.cancelFromPush(callUUID: callUUID)
             } else {
                 CallKitController.shared.presentPush(
