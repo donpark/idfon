@@ -16,6 +16,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         Task { await IdfonClient().startSharedProvider() }
         LiveCall.shared.recoverStaleCall()
         VideoCall.shared.recoverStaleCall()
+        // VoIP push wake channel (docs/callkit-integration.md, P2).
+        PushWake.shared.start()
         // Warm the TTS model (Kokoro) so the first call reply is not blocked by
         // a cold model download/compile.
         Task { @MainActor in SpeechEngines.prewarm() }
@@ -347,6 +349,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         idfonLog("idfon dumplog: \(lines.count) lines total, tail:")
         for line in lines.suffix(40) { idfonLog("| \(line)") }
+    }
+
+    /// A live CallKit call must not leave the system's in-call banner up
+    /// after the process is gone (docs/callkit-integration.md, P1).
+    func applicationWillTerminate(_ application: UIApplication) {
+        CallKitController.shared.appWillTerminate()
     }
 
     /// Background `URLSession` events (e.g. an edge download finishing while

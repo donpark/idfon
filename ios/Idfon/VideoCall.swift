@@ -148,6 +148,7 @@ final class VideoCall: NSObject {
             }
         }
         applySendState()
+        CallKitController.shared.mutedChanged(!enabled)
         notify()
     }
 
@@ -225,6 +226,20 @@ final class VideoCall: NSObject {
             CallFeedback.post("A call is already in progress.")
             return
         }
+        // `call_kit` channels dial through the system call UI — CallKit owns
+        // the whole call lifecycle, both directions (docs/callkit-integration.md).
+        // shortcut: the mode lookup keys on the dial ref, so a dial by alias
+        // misses its channel mode and takes the Bar path, <upgrade: resolve the id first>
+        if IncomingCallRouter.shared.ownsPresentation(for: peerRef) {
+            CallKitController.shared.startOutgoing(peerId: peerRef, video: true) { [weak self] in
+                self?.dialNow(peerRef, audio: audio, video: video, cameraOn: cameraOn)
+            }
+        } else {
+            dialNow(peerRef, audio: audio, video: video, cameraOn: cameraOn)
+        }
+    }
+
+    private func dialNow(_ peerRef: String, audio: Bool, video: Bool, cameraOn: Bool) {
         audioAvailable = true
         videoAvailable = true
         audioEnabled = audio
@@ -283,6 +298,14 @@ final class VideoCall: NSObject {
                 published = true
                 applySendState() // a toggle during `.calling` may predate the publish
                 try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
+                // Wake the peer's devices on a `call_kit` channel (P2): ring
+                // via the edge once the invite is queued (call_uuid = the
+                // invite ticket's, so push and envelope share one call).
+                if IncomingCallRouter.shared.ownsPresentation(for: id) {
+                    PushWake.shared.ring(
+                        peer: id, callUUID: CallUUID.from(ticket: ticket).uuidString,
+                        hasVideo: true)
+                }
                 if case .calling = state { notify() } // still waiting for the return leg
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
@@ -400,8 +423,11 @@ final class VideoCall: NSObject {
             videoAvailable = true
             state = .incoming
             notify()
-            activateAudioSession()
-            CallTonePlayer.shared.start(.ringtone)
+            // CallKit owns the ring and the audio session on `call_kit` channels.
+            if !IncomingCallRouter.shared.ownsPresentation(for: peerID) {
+                activateAudioSession()
+                CallTonePlayer.shared.start(.ringtone)
+            }
         }
     }
 
@@ -529,6 +555,18 @@ final class VideoCall: NSObject {
     }
 
     private func notify() {
+        // CallKit mirrors the machine in the same turn
+        // (docs/callkit-integration.md); a no-op when no system call is up.
+        let phase: CallKitController.Phase
+        switch state {
+        case .idle: phase = .idle
+        case .incoming: phase = .incoming
+        case .calling: phase = .calling
+        case .inCall: phase = .inCall
+        }
+        if phase == .inCall { PushWake.shared.callConnected() }
+        if phase == .idle { PushWake.shared.cancelRing() }
+        CallKitController.shared.mirror(owner: .video, phase: phase)
         DispatchQueue.main.async { [self] in
             onState?()
             NotificationCenter.default.post(name: .idfonVideoChanged, object: self)

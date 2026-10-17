@@ -4,6 +4,21 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>vCard</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.vcard</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -16,73 +31,6 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
-	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>UILaunchScreen</key>
-	<dict/>
-	<key>UIApplicationSceneManifest</key>
-	<dict>
-		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
-		<key>UISceneDelegateClassName</key>
-		<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
-	</dict>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>audio</string>
-		<string>fetch</string>
-	</array>
-	<key>UIApplicationSupportsIndirectInputEvents</key>
-	<true/>
-	<key>UISupportedInterfaceOrientations</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>UIRequiresFullScreen</key>
-	<true/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<!-- The local gateway is loopback HTTP; ATS must allow it. -->
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
-	<!-- A self-hosted edge may be a machine on the LAN (e.g. a Mac); the public
-	     idfon.net edge does not need this. iOS 14+ prompts on first use. -->
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Idfon connects to a self-hosted edge on your local network.</string>
-	<!-- Documents shows up in Files / the document picker, so saved and shared
-	     files are user-visible and selectable. -->
-	<key>UIFileSharingEnabled</key>
-	<true/>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Idfon uses the microphone for live calls.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Idfon uses on-device speech recognition to transcribe your voice.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Idfon uses the camera for video calls and to scan contact QR codes.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>Idfon saves contact cards to your Contacts so you can share them through AirDrop and NameDrop.</string>
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<!-- Contact exchange (docs/contact-exchange.md): "Open in Idfon" for
-		     shared/AirDropped .vcf files goes through contact.import. -->
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>vCard</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.vcard</string>
-			</array>
-			<key>CFBundleTypeRole</key>
-			<string>Viewer</string>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-		</dict>
-	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -93,6 +41,52 @@
 				<string>idfon</string>
 			</array>
 		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Idfon uses the camera for video calls and to scan contact QR codes.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Idfon saves contact cards to your Contacts so you can share them through AirDrop and NameDrop.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Idfon connects to a self-hosted edge on your local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Idfon uses the microphone for live calls.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Idfon uses on-device speech recognition to transcribe your voice.</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneDelegateClassName</key>
+		<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+	</dict>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>fetch</string>
+		<string>voip</string>
+	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 </dict>
 </plist>

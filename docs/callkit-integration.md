@@ -15,20 +15,254 @@ end-to-end short of CallKit itself:
 * Each daemon peer record carries `call_mode` (`"bar"` | `"call_kit"`, default `"bar"`),
   settable via `peer.add` / `peer.update` and the CLI (`idfon peer add|update --call-mode`).
   See `docs/protocol.md`.
-* `ios/Idfon/IncomingCallRouter.swift` is the single routing point: an incoming invite
-  resolves the **sending channel's** mode, then either hands it to the CallKit presenter
-  or to the Bar path (`LiveCall` + `VideoCall`).
-* `CallKitIncomingPresenter.isAvailable` is `false` — the one gate that flips when CallKit
-  integration lands. Until then a channel configured for `call_kit` is presented in the
-  Bar and the deferral is logged once per peer (explicit, never a silent mode switch). The
-  per-chat "Incoming calls" menu shows CallKit disabled with "Not available yet", so a
-  channel cannot be configured into a mode that cannot be served.
-* CallKit is iOS-only: macOS has no `CXProvider`, so mac always presents in-app and needs no
-  routing seam.
+* `ios/Idfon/IncomingCallRouter.swift` is the single routing point: a fresh incoming
+  invite resolves the **sending channel's** mode; a `call_kit` channel is reported to
+  CallKit **and** handed to the machines (the mode governs presentation, not
+  transport), every other channel takes the Bar path (`LiveCall` + `VideoCall`).
+* `CallKitIncomingPresenter.isAvailable` is `true` — P1 landed
+  (`ios/Idfon/CallKitController.swift`, `CXProvider` + `CXProviderDelegate`, mirroring
+  the machines via their `notify()` funnel). A channel whose CallKit report fails falls
+  back to the Bar (`forceBarFallback`, an explicit switch, never a silent mode change).
+  **No in-app UI sets `call_mode` yet** — it is settable via `peer.add`/`peer.update`
+  and the CLI over the app's socket (the doc's old "Incoming calls" menu never existed
+  in code; the mode-setting UI is a P1 follow-up).
+* macOS presents in-app today, and its system-call surface is **not** `CXProvider` —
+  it is **LiveCommunicationKit** (`ConversationManager`), CallKit's shape one
+  generation later. That lands as plan phase P3 (deferred); the mac app has no routing
+  seam yet (`ChatStore` feeds `LiveCall`/`VideoCall` directly,
+  `mac/Sources/Idfon/Calls.swift`). Wire values keep the `call_kit` name — it names the
+  mode family, not the framework.
 
-Not implemented: `CXProvider`/`CXProviderDelegate`, PushKit VoIP registration and token
-handling, the APNs payload split, and audio-session handoff to CallKit. The I/O notes below
-still apply to that work.
+Not implemented: PushKit VoIP registration and token handling, the APNs payload split,
+and the macOS LiveCommunicationKit presenter. The I/O notes below still apply to that
+work.
+
+---
+
+## Implementation plan
+
+Status: **P1 landed** (as-built details in "Implemented seam" above); **P3 deferred**
+(mac later). P2 is next. Three separable problems, shipped as three phases:
+
+* **P1 — CallKit owns the call lifecycle** while the app process is alive (foreground
+  or background-alive during a call). No backend, no push, no new entitlements beyond
+  the background mode. Delivers system call UI, call history, headset/CarPlay buttons,
+  cellular-interruption handling, and the `AVAudioSession` handoff.
+* **P2 — PushKit ring** for apps that are suspended or terminated: the lock-screen
+  ring that is the actual point of `call_mode: "call_kit"` ("reaching people who
+  aren't here", ui-design-notes §6). Needs an always-on pusher: the `idfon.net` edge
+  droplet.
+* **P3 — macOS system-call UI via LiveCommunicationKit**: same feature on the mac,
+  through `ConversationManager` instead of `CXProvider` (no Catalyst — native
+  AppKit). The mac app is usually alive, so P3 alone rings mac users; P2's push
+  wake extends to it.
+
+P1 is only half the promise without P2 (a dead process hears no iroh invite), but it
+is the entire CallKit integration surface and is testable in isolation; P2 is mostly
+infrastructure. Keep them separately shippable.
+
+### P0 — provisioning
+
+* **Xcode automatic signing registers APNs at build** (decided 2026-10-16): the target
+  declares the capability (`ios/Idfon/Idfon.entitlements`, `aps-environment`;
+  `CODE_SIGN_ENTITLEMENTS` in the project) and Xcode creates or updates the
+  `com.idfon.ios` App ID and provisioning profile itself. No manual dev-portal step
+  for the app.
+* Still manual, P2-only: the **APNs auth key** (`.p8` + key id + team id) the edge
+  pusher signs VoIP pushes with — a Keys & Identifiers artifact, kept in ops secrets,
+  never the repo.
+* `voip` joins `UIBackgroundModes` with the P2 PushKit code (the mode is justified by
+  the registration that uses it).
+* Distribution note: CallKit is banned by the Chinese App Store (see below). Not a
+  problem until China distribution is on the table — same bucket as MAS vs Developer ID.
+
+### P1 — CallKit call ownership (app alive)
+
+New `ios/Idfon/CallKitController.swift`: `CXProvider` + `CXProviderDelegate`, one
+instance at app start. Flipping
+`IncomingCallRouter.CallKitIncomingPresenter.isAvailable` to `true` and implementing
+`present(peerId:text:)` is the entire landing seam.
+
+1. **Incoming** (`CallKitIncomingPresenter.present`): parse the `IDFON-LIVE/1` /
+   video invite envelope exactly as the Bar path does, then `reportNewIncomingCall`
+   **synchronously in the same turn as the envelope receipt** — never after an await.
+   The call `UUID` is derived deterministically from the invite ticket (hash → UUID),
+   so re-delivered invites map to one CallKit call and the ghost-call rule below can
+   dedupe. `CXCallUpdate`: peer display name, `.generic` handle, `hasVideo` from the
+   invite's `media` line.
+2. **Answer** (`didPerform CXAnswerCallAction`): route to the existing
+   `LiveCall.answer()` / `VideoCall` answer — the state machines stay the source of
+   truth and CallKit mirrors them. With one exception: on the CallKit path `AudioIO`
+   must **not** configure/activate `AVAudioSession` (see 6).
+3. **Outgoing**: a call dialed on a `call_kit` channel goes out via
+   `CXCallController.request(CXStartCallAction)`; media publish + invite send happen
+   in `didPerform CXStartCallAction`, mic start in `didActivate` (below). Decision:
+   the mode covers both directions on a channel — an answered CallKit call continuing
+   as a non-CallKit outgoing call on the same channel would be incoherent.
+4. **Mute sync**: `CXSetMutedCallAction` ↔ `LiveCall.setAudioEnabled` /
+   `VideoCall.setVideoEnabled`, both directions (Bar toggles also request the CX
+   transaction so the lock-screen state can't desync).
+5. **End**: `CXEndCallAction` ↔ `terminate(local:)`; peer-side `call_stopped` or a
+   broken session → `reportCall(with:endedAt:reason:)`. `providerDidReset` tears
+   everything down unconditionally (the stuck-green-banner fix). On app termination
+   with a live call, report the call ended (`recoverStaleCall` already exists as the
+   startup-side recovery).
+6. **Audio handoff**: `AudioIO` gets an "external session owner" mode — on the
+   CallKit path it skips `setCategory`/`setActive`/interruption handling entirely;
+   capture + playback start only in `provider(_:didActivate:)` and stop in
+   `provider(_:didDeactivate:)`. Starting audio earlier is the documented
+   one-way-audio bug. `CallTones` is silent on this path (the system ringtone).
+7. **No double-presentation** (ui-design-notes §6): when CallKit owns the ring the
+   Bar never enters `.incoming`; it renders only the answered/active call. The
+   deferral behavior for unavailable CallKit stays exactly as-is.
+8. **Races to design against** (the verified bug list below): serialize all
+   `CXTransaction` requests on one queue and never touch a call UUID before its
+   start/answer action completed (unknownCallUUID, code 4); a superseded invite or
+   early `call_stopped` ends the CallKit call **in the same turn** it was reported
+   (ghost-call flash); cellular-interruption `didDeactivate` must leave the call
+   resumable, not frozen.
+
+Checks/tests: extend `ios/Checks/` with host-runnable checks for the pure seams
+(ticket→UUID derivation, invite→`CXCallUpdate` mapping); the rest is manual device
+E2E via `scripts/ios-call-e2e.sh` + runbook: system-UI answer/decline, mute from the
+lock screen, BT headset buttons, cellular interruption, quick cancel (ghost call),
+hangup both directions, force-quit while in call.
+
+### P2 — PushKit ring (app suspended or terminated)
+
+The callee's process is dead, so somebody else must ring it. The only always-on
+party in the topology is the **idfon.net edge droplet** — it carries the push
+service and the APNs auth key (`.p8`, key id, team id, topic
+`com.idfon.ios.voip`; secrets in ops, never the repo).
+
+**Landed (edge)** — `crates/idfon-edge/src/push.rs`, served on the edge's own
+listener through the gateway's `LocalRoute` hook (`crates/idfon-gateway`), so the
+routes share the edge's TLS/origin and address like any edge resource
+(`https://<ref>.idfon.net/_push/…` or `https://idfon.net/<ref>/_push/…`). No
+daemon or protocol change: everything is HTTP plus the capability tickets the
+apps already hold.
+
+| Route | Body | Auth |
+| --- | --- | --- |
+| `POST /_push/register` / `unregister` | `{voip_token, topic?}` | a capability ticket **issued by the ref** — the app self-issues one through the daemon's existing `capability.ticket` RPC, so only the identity's holder can claim its wake channel |
+| `POST /_push/ring` | `{call_uuid, caller_id, has_video}` | a capability ticket **issued by the ref** (the caller's contact ticket — being a contact is the right to ring) **or by the caller** (a self-issued statement: identified + rate-limited, so a plain paired peer can ring before a contact ticket exists). A subject-bound ticket must match `caller_id` |
+| `POST /_push/cancel` | `{call_uuid}` | same as ring |
+
+Fan-out sends one VoIP push (`apns-push-type: voip`, topic `com.idfon.ios.voip`,
+priority 10) per registered token; the payload carries **identifiers only**
+(`call_uuid`, `caller_id`, `has_video`, `cancel`) — the app resolves display
+names from its own peer store, keeping peer names out of APNs logs. Tokens
+persist to `--push-state` (default `<key>.push.json`); APNs is configured with
+`--push-apns-key/--push-apns-key-id/--push-apns-team` (optional topic/url), and
+with no key the routes answer 503 instead of dropping rings silently. Per-issuer
+rate limit 30/min. Verified: `cargo test -p idfon-edge` (register/ring fan-out,
+wrong-issuer and subject-mismatch refusal, expiry, cancel, unregister, 503).
+
+**Bundle ids and the identity layer.** `com.idfon.ios` and `com.idfon.mac` are
+two separate APNs apps, and that costs nothing at the identity layer: the
+registry keys on the endpoint ref, so ring-all spans every device and platform
+of one idfon identity, and tickets/`callUUID`/`call_mode` never see the bundle
+id. What the bundle id does dictate is the APNs envelope: tokens are per app
+bundle and every push carries its token's topic (`<bundle-id>.voip`), which is
+why registration stores `token → topic` and fan-out varies the topic per token.
+One team-level `.p8` auth key signs for **all** apps — no second key when the
+mac joins (P3). The one leak to remember is the APNs *environment*: dev-signed
+builds deliver only via `api.sandbox.push.apple.com`, so a dev edge sets
+`--push-apns-url` there; an edge serving mixed sandbox/prod tokens would need
+per-token environment (not built).
+
+**Landed (iOS + caller side)** — `ios/Idfon/PushWake.swift` + the `CallKitController`
+push hooks:
+
+1. **Registration**: `PushWake.start()` at launch registers the PushKit token
+   under this device's endpoint id with topic `com.idfon.ios.voip`, signed by a
+   self-issued `capability.ticket` (retries while the core boots);
+   `didInvalidatePushTokenFor` unregisters. Multi-device: ring-all.
+2. **Ring/cancel**: the machines post `/_push/ring` (`call_uuid =
+   CallUUID.from(invite ticket)`) right after the invite is queued, gated on
+   `call_kit` channels only; the `notify()` funnel posts `/_push/cancel` when a
+   call that rang goes idle without connecting and clears the ring on connect.
+   Ticket selection: the callee's stored contact ticket (skipped when
+   subject-bound to an older identity), else a self-issued statement.
+   Shortcut: the caller posts to its *own* configured edge (`EdgeClient`
+   config) — shared-edge deployments only (idfon.net); cross-edge discovery is
+   follow-up.
+3. **Wake**: the PushKit delegate reports `presentPush` in the same turn
+   (payload `call_uuid`; display names resolve from the router's cache, never
+   from the payload) and the invite envelope dedupes onto the pushed call via
+   the P1 UUID mapping. An answer that beats the envelope arms a pending
+   answer completed by `envelopeArrived()` (a 20 s guard ends the call if the
+   invite never lands); a `cancel` push ends the call in one turn.
+4. **Cancel**: caller hangs up before answer → `/_push/cancel` → second push →
+   end in one turn (the graceful de-escalation pattern; iOS may still flash the
+   sheet — known, acceptable).
+5. **Honest limitation**: a `bar`-mode channel gets no wake. That is by design
+   (ui-design-notes §6: the Bar is for people who are already here) and stays out of
+   scope — no alert-push fallback.
+
+Checks/tests: edge unit tests landed (above); device E2E remains:
+force-quit the app, call from the mac → lock-screen ring → answer → two-way audio;
+ring→cancel race; ring with the app alive (must not double-present on top of P1).
+
+The ring fan-out reaches macOS once P3 lands: PushKit VoIP exists natively on macOS
+(`didReceiveIncomingVoIPPushWithPayload:metadata:`, `macos(26.4)`). A mac registers
+its token only once its LiveCommunicationKit presenter exists — a VoIP push that
+arrives with nothing to report to is the same process-kill hazard as on iOS.
+
+### P3 — macOS: LiveCommunicationKit (deferred — mac version later)
+
+macOS has no `CXProvider`; its system-call surface is **LiveCommunicationKit**
+(iOS 17.4 / watchOS 10.4 / macCatalyst 17.4). It is CallKit's design one generation
+later; the P1 mapping is mechanical:
+
+| CallKit (iOS, P1) | LiveCommunicationKit (macOS) |
+| --- | --- |
+| `CXProvider` + `CXProviderDelegate` | `ConversationManager` + `ConversationManagerDelegate` |
+| `CXCallUpdate` | `Conversation.Update` |
+| `reportNewIncomingCall` | `reportNewIncomingConversation(uuid:update:)` |
+| `CXStartCallAction` / `CXAnswerCallAction` | `StartConversationAction` / `JoinConversationAction` |
+| `CXEndCallAction` / `CXSetMutedCallAction` | `EndConversationAction` / `MuteConversationAction` |
+| `reportCall(with:updated/ended:)` | `reportConversationEvent(_:for:)` (`conversationUpdated`/`StartedConnecting`/`Connected`/`Ended`) |
+| `providerDidReset` | `conversationManagerDidReset` |
+| PushKit payload → report | `ConversationManager.reportNewIncomingVoIPPushPayload(_:)` |
+| call history | `ConversationHistoryManager` (`includesConversationInRecents`) |
+
+Differences that matter:
+
+* **No audio handoff.** LCK has no `didActivate`-style audio-session callback — it is
+  presentation-only, and the mac app keeps owning its audio path exactly as today.
+  The P1-6 seam is iOS-only.
+* **Explicit action fulfillment.** Actions are `fulfill(dateStarted:/dateConnected:/
+  dateEnded:)` / `fail()` — the same unknown-UUID race applies, so the same
+  one-queue serialization rule carries over verbatim.
+* **Toolchain gate — checked 2026-10-16, not yet open.** Xcode 27.1 / macOS 27.0
+  SDK: the core classes typecheck `@available(macOS, unavailable)` for native targets
+  at every deployment target 26.0–27.1. Apple's current docs list the framework as
+  iOS/iPadOS/Mac Catalyst/visionOS/watchOS — no macOS entry. The one sign of
+  enablement work: `StartConversationAction` in the macOS SDK interface carries a
+  contradictory `macCatalyst 17.4, macOS 26.0, *)` **and** `@available(macOS,
+  unavailable)` pair. Re-verify with one typecheck per Xcode release; if it never
+  flips, P3 falls back to either a Mac Catalyst variant of the call surface
+  (CallKit typechecks clean under Catalyst today) or the mac keeps the Bar — decide
+  at P3 start, the mapping below is the same either way. Do not block iOS P1/P2 on it.
+
+Mac code shape: `Calls.swift`'s `LiveCall`/`VideoCall` stay the source of truth;
+`ChatStore` currently feeds them directly, so add the same `IncomingCallRouter` seam
+iOS has (per-channel `call_mode` from the daemon peer records via `DaemonClient`),
+routing to a `LiveCommunicationKitPresenter`. The no-double-presentation, ghost-call,
+and same-turn-report rules from P1 apply verbatim.
+
+### Not in scope
+
+China CallKit-stripped build variant, Siri/`INStartCallIntent`, CarPlay,
+Recents-directory customization, per-device ring preference, alert-push fallback
+for `bar` channels — all deferred, none blocking.
+
+### Rebuild scope
+
+P1: iOS app only. P2: `idfon-protocol`/`idfon-daemon` (+ vendored libs per
+`docs/build.md`), the edge service, and the iOS app. P3: macOS app (+ daemon-side
+push registration when the mac joins P2).
 
 **Integration Architecture**
 

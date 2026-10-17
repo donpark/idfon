@@ -246,6 +246,10 @@ final class LiveActivityController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(historyScrollNoticed),
             name: .init("idfon.scrollIntoHistory"), object: nil)
+        // CallKit refused a ring mid-flight: re-render on the Bar fallback.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(callkitBarFallback),
+            name: .init("idfon.callkit.barFallback"), object: nil)
         // Session Tray rows refresh whenever a transfer progresses (§4).
         TransferCenter.shared.onChange = { [weak self] in self?.render() }
         // Take ownership of both machines' state hooks (the scene delegate no
@@ -271,7 +275,15 @@ final class LiveActivityController: NSObject {
         let previous = phase
         let machine = ActiveMachine.current
         if machine != nil { pendingCall = nil }
-        let next = machine?.phase ?? (pendingCall != nil ? .calling : .idle)
+        let next: LiveActivityBarModel.Phase
+        if machine?.phase == .incoming, let peer = machine?.peer,
+           IncomingCallRouter.shared.ownsPresentation(for: peer) {
+            // CallKit owns the ring on `call_kit` channels: the Bar stays out
+            // of the incoming state entirely (docs/ui-design-notes.md §6).
+            next = .idle
+        } else {
+            next = machine?.phase ?? (pendingCall != nil ? .calling : .idle)
+        }
 
         // Entering a phase (re)initialises the toggles from the machine's
         // real send state. A call only publishes its staged tracks (dial) or
@@ -508,6 +520,10 @@ final class LiveActivityController: NSObject {
     /// excursion). Minimize is sticky until the pill is tapped.
     @objc private func historyScrollNoticed() {
         markPassivelyMinimized()
+    }
+
+    @objc private func callkitBarFallback() {
+        sync()
     }
 
     private func markPassivelyMinimized() {
