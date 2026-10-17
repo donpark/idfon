@@ -88,6 +88,9 @@ final class AudioIO: AudioSource, AudioSink {
     private var sessionOwnerIsCallKit = false
     /// A `start` requested before CallKit activated the session.
     private var pendingStart: Profile?
+    /// A one-shot play that arrived while the engine waits for CallKit's
+    /// `didActivate` (cues drop silently otherwise, #50).
+    private var pendingOneShot: AVAudioPCMBuffer?
 
     private init() {}
 
@@ -128,7 +131,9 @@ final class AudioIO: AudioSource, AudioSink {
             // interruption synchronously, and a missed `.began` leaves
             // `restartAfterInterruption` false — the engine then dies at the
             // start of every call and is never restarted (mute call).
-            installSessionObservers()
+            // CallKit owns interruptions for its own session (#49): our
+            // restart logic would race didDeactivate/didActivate.
+            if !sessionOwnerIsCallKit { installSessionObservers() }
             configureSession(profile)
             startEngine()
         }
@@ -155,6 +160,10 @@ final class AudioIO: AudioSource, AudioSink {
             pendingStart = nil
             Automation.mark("audio: callkit didActivate — starting deferred profile=\(pending)")
             start(profile: pending)
+            if let one = pendingOneShot {
+                pendingOneShot = nil
+                Task { await AudioIO.shared.play(one) }
+            }
         }
     }
 
@@ -164,11 +173,13 @@ final class AudioIO: AudioSource, AudioSink {
             callKitOwnsSession = false
             callKitActivated = false
             pendingStart = nil
+            pendingOneShot = nil
         }
     }
 
     private func stopLocked() {
         pendingStart = nil
+        pendingOneShot = nil
         guard running || profile != nil else { return }
         stopEngine()
         removeSessionObservers()
@@ -434,7 +445,14 @@ final class AudioIO: AudioSource, AudioSink {
 
     func play(_ buffer: AVAudioPCMBuffer) async {
         guard running else {
-            Automation.mark("audio: play dropped engine idle")
+            if pendingStart != nil {
+                // The engine waits for CallKit's didActivate: keep the cue and
+                // play it when the engine comes up (#50).
+                pendingOneShot = buffer
+                Automation.mark("audio: play deferred until callkit didActivate")
+            } else {
+                Automation.mark("audio: play dropped engine idle")
+            }
             return
         }
         guard let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))
