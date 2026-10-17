@@ -138,8 +138,6 @@ final class LiveCall {
         }
         // `call_kit` channels dial through the system call UI — CallKit owns
         // the whole call lifecycle, both directions (docs/callkit-integration.md).
-        // shortcut: the mode lookup keys on the dial ref, so a dial by alias
-        // misses its channel mode and takes the Bar path, <upgrade: resolve the id first>
         if IncomingCallRouter.shared.ownsPresentation(for: peerRef) {
             CallKitController.shared.startOutgoing(peerId: peerRef, video: false) { [weak self] in
                 self?.dialNow(peerRef)

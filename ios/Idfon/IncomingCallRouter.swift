@@ -24,7 +24,9 @@ final class IncomingCallRouter {
     }
 
     private let client = IdfonClient()
-    /// Cached `[peerId: IncomingCallMode]`; unknown peers resolve to `.bar`.
+    /// Cached `[ref: IncomingCallMode]` keyed by every ref a peer is known
+    /// by (id, endpoint id, aliases — same flattening as `names`, #47);
+    /// unknown peers resolve to `.bar`.
     private var modes: [String: IncomingCallMode] = [:]
     /// Display names by every ref a peer is known by (`id`, endpoint id,
     /// aliases): a push or envelope can arrive under either identity, and a
@@ -62,7 +64,12 @@ final class IncomingCallRouter {
     /// Refreshes the cached modes and names from the daemon's peer records.
     func refreshModes() async {
         guard let peers = try? await client.peers() else { return }
-        modes = peers.reduce(into: [:]) { $0[$1.id] = $1.incomingCallMode }
+        modes = peers.reduce(into: [:]) { table, peer in
+            let mode = peer.incomingCallMode
+            for ref in [peer.id, peer.endpointId].compactMap({ $0 }) + (peer.aliases ?? []) {
+                table[ref] = mode
+            }
+        }
         names = peers.reduce(into: [:]) { table, peer in
             guard let name = peer.name, !name.isEmpty else { return }
             for ref in [peer.id, peer.endpointId].compactMap({ $0 }) + (peer.aliases ?? []) {
