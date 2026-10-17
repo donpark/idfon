@@ -180,7 +180,14 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         let cancel = (dict["cancel"] as? Bool) == true
         idfonLog("idfon push: received call=\(callUUID) cancel=\(cancel) mustReport=\(mustReport)")
         // Report before anything else (Signal's rule) — the completion handler
-        // runs once the system has the call.
+        // runs once the system has the call. But PushKit kills the app when
+        // completion is late (~1.5s budget; the #55 death: the report landed
+        // and the call UI appeared, then the process died ~2s later because
+        // completion was still queued behind a busy main actor). So a deadline
+        // fallback exits the callback on time even when main stalls — exactly
+        // one of the two paths runs it.
+        let done = Once(completion)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.2) { done.run() }
         Task { @MainActor in
             if cancel {
                 // End the ringing call in one turn. A cancel for a call that
@@ -212,7 +219,22 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                     idfonLog("idfon push: bar-mode channel \(callerId); no system ring")
                 }
             }
-            completion()
+            done.run()
+        }
+    }
+
+    /// Runs the push completion exactly once: the main-actor path and the
+    /// deadline fallback race for it.
+    private final class Once {
+        private let lock = NSLock()
+        private var body: (() -> Void)?
+        init(_ body: @escaping () -> Void) { self.body = body }
+        func run() {
+            lock.lock()
+            let body = self.body
+            self.body = nil
+            lock.unlock()
+            body?()
         }
     }
 
