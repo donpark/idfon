@@ -221,6 +221,54 @@ same-turn dismiss, stale cancel → no-op, caller names resolve. Remaining:
 answer → two-way audio in the same flow, a video ring, and the
 ring-with-app-alive double-present check.
 
+### Open threads (updated 2026-10-17 — pick up here)
+
+Tracked as donpark/idfon issues; the session that hunted the wake bugs left
+these:
+
+- **#55 (open, the current blocker):** a push-woken app dies within seconds
+  (SIGKILL — no crash report) and the ring dies with it. Deferring the
+  launch-time speech warmup (commit `89d65f0`) did **not** prove the cause.
+  Next steps: catch the kill (jetsam events via `devicectl device info files
+  --domain-type systemCrashLogs`, or reproduce with the console attached to a
+  foregrounded-then-backgrounded app) and audit everything a wake runs
+  (`IdfonRuntime.start`, ChatStore polling, agent flows).
+- **#51 (open):** the answer→two-way audio leg. Tried several times; each
+  attempt surfaced real bugs instead (#55, #56, the #47 regression chain,
+  #59). Use the runbook below.
+- **#52 (open):** host checks for the seams that bit us live — the
+  ticket→`caller_id` derivation, cache flattening, the ring predicates.
+- **#54 (open):** test-config residue (apps point at the local test edge;
+  `~/.idfon/edge.apns.p8` rides a local edge; `iphone` is `call_mode: call_kit`
+  on the mac) + the droplet deploy checklist.
+- **#56 (open):** the contact-ticket `account_id` vs `sender.peer_id` split
+  identity mismatch — pairing from the advertised ticket can never pass the
+  message gate. Workaround in use: pair with `account_id` overridden to the
+  sender's `sender.peer_id` (the ticket `issuer`).
+- **Ring semantics (settled the hard way):** the **sender's** `call_mode`
+  opt-in is the gate for system rings; the receiver-side gate was reverted
+  (#47) because the wire collapses an unset `call_mode` into `bar`
+  (`Peer.call_mode` is non-optional) — a tri-state wire field is the future
+  work if receiver-side suppression is ever wanted. The no-double-present
+  guards key on actual system-call state (`CallKitController.isRinging`),
+  never on mode predictions; a new push ring supersedes a stale unanswered
+  one (#59).
+
+**Local E2E runbook (mac→phone wake):** run the edge with the push flags
+(`--push-apns-key ~/.idfon/edge.apns.p8 --push-apns-key-id LRV4AV57QS
+--push-apns-team RV27HPQNMF --push-apns-url
+https://api.sandbox.push.apple.com --push-state /tmp/edge-push-e2e.json`);
+both apps take `-edgeurl http://<mac-lan-ip>:<port> -edgeticket e2e`; the
+phone needs a peer record for the mac app's daemon identity (pairing
+workaround, #56) and the mac needs `peer update <phone> --call-mode call_kit`;
+kill the phone app, then
+`mac/build/Idfon.app/Contents/MacOS/Idfon -edgeurl … -dial iphone`. Pull the
+woken app's trace with `devicectl device copy from --domain-type
+appDataContainer --domain-identifier com.idfon.ios --source
+tmp/idfon-app-<pid>.log` (pid from `device info files --subdirectory tmp`;
+`--console` only attaches to foreground launches). Ring cancel curls must
+send `"cancel": true` — without it the edge treats them as rings.
+
 The mac already **sends** rings (`CallRing.swift` — caller-side plumbing is
 shared by any idfon app); what P3 adds is the mac's own wake + presentation.
 The ring fan-out reaches macOS once P3 lands: PushKit VoIP exists natively on macOS
