@@ -87,6 +87,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
             owner: hasVideo ? .video : .live,
             video: hasVideo, outgoing: false)
         AudioIO.shared.callKitWillStart()
+        idfonLog("idfon callkit: reporting push ring \(uuid.uuidString) from \(callerId)")
         provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
             guard let error else { return }
             DispatchQueue.main.async {
