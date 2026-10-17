@@ -422,8 +422,8 @@ final class VideoCall: NSObject {
             videoAvailable = true
             state = .incoming
             notify()
-            // CallKit owns the ring and the audio session on `call_kit` channels.
-            if !IncomingCallRouter.shared.ownsPresentation(for: peerID) {
+            // CallKit owns the ring and the audio session when the system rings.
+            if !IncomingCallRouter.shared.ringsViaSystem(for: peerID) {
                 activateAudioSession()
                 CallTonePlayer.shared.start(.ringtone)
             }

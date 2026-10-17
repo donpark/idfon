@@ -219,7 +219,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                 let hasVideo = (dict["has_video"] as? Bool) ?? false
                 // The callee's own channel mode decides who owns the ring —
                 // the sender's view of the channel may disagree (#47).
-                if IncomingCallRouter.shared.ownsPresentation(for: callerId) {
+                if IncomingCallRouter.shared.ringsViaSystem(for: callerId) {
                     CallKitController.shared.presentPush(
                         callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
                 } else if mustReport {
