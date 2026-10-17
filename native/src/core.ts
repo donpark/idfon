@@ -256,6 +256,8 @@ export type Msg =
   | { readonly kind: "events_loaded"; readonly data: Uint8Array }
   | { readonly kind: "events_sync_error"; readonly data: Uint8Array }
   | { readonly kind: "poll_events"; readonly at: number }
+  | { readonly kind: "call_tone_ok"; readonly data: Uint8Array }
+  | { readonly kind: "call_tone_error"; readonly data: Uint8Array }
   | { readonly kind: "banner_dismiss" };
 
 export const viewUnbound = [
@@ -263,7 +265,7 @@ export const viewUnbound = [
   "receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "events_sync_error", "poll_events", "tickAt",
   "recordingStartedAt", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "events_sync_error", "chat_closed", "banner_dismiss", "bannerExpiresAt", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready", "bitrate_edit", "set_audio_bitrate", "bitrateInput",
 "video_watch_started", "video_watch_error", "video_stopped", "video_frame_tick",
-"video_call_start", "video_media_session_ready", "video_call_started", "video_call_error", "video_image_event",
+"video_call_start", "video_media_session_ready", "video_call_started", "video_call_error", "video_image_event", "call_tone_ok", "call_tone_error",
 "videoWidth", "videoHeight",
 ] as const;
 
@@ -1009,7 +1011,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           const label = utf8Bytes(ticked.drainInviteCall ? "Incoming video call" : ticked.drainInviteVideo ? "Incoming video" : "Incoming call");
           // Adopt the caller as send target (same as the live invite path):
           // Answer's return invite rides model.receiverId.
-          return showBanner(withInboundTarget({ ...cleared, identitySelected: true, replyRoute: ticked.drainInvitePeer, liveTicketInput: ticked.drainInviteTicket, incomingVideo: ticked.drainInviteVideo, incomingVideoCall: ticked.drainInviteCall, sessionLaunch: { peerId: EMPTY, sessionId: ticked.drainInvitePeer, sessionType: utf8Bytes("chat") }, selectedChannelName: label, selectedChannelInitials: identityInitials(label), chatOpen: true, receiverStatus: label, incomingLive: true }, ticked.drainInvitePeer), label);
+          return [showBanner(withInboundTarget({ ...cleared, identitySelected: true, replyRoute: ticked.drainInvitePeer, liveTicketInput: ticked.drainInviteTicket, incomingVideo: ticked.drainInviteVideo, incomingVideoCall: ticked.drainInviteCall, sessionLaunch: { peerId: EMPTY, sessionId: ticked.drainInvitePeer, sessionType: utf8Bytes("chat") }, selectedChannelName: label, selectedChannelInitials: identityInitials(label), chatOpen: true, receiverStatus: label, incomingLive: true }, ticked.drainInvitePeer), label), Cmd.request("media.call_tone", utf8Bytes("ringtone"), { key: "call-tone-ringtone", ok: "call_tone_ok", err: "call_tone_error" })];
         }
         return cleared;
       }
@@ -1120,11 +1122,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
                   return [{ ...next, eventCursor: cursor, eventsReady: true, replyRoute: peer, liveTicketInput: EMPTY, incomingLive: false, incomingVideo: false, incomingVideoCall: false, videoWatching: true, receiverStatus: utf8Bytes("In video call") }, Cmd.batch([
                     Cmd.request("media.video.start", ticket, { key: "media-video-start", ok: "video_watch_started", err: "video_watch_error" }),
                     Cmd.request("media.live.subscribe", ticket, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
+                    Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
                   ])];
                 }
                 const incoming = showBanner({ ...next, identitySelected: true, replyRoute: peer, liveTicketInput: ticket, incomingVideo: isVideo, incomingVideoCall: mediaCall, sessionLaunch: { peerId: EMPTY, sessionId: peer, sessionType: utf8Bytes("chat") }, selectedChannelName: label, selectedChannelInitials: identityInitials(label), chatOpen: true, receiverStatus: label, incomingLive: isStart }, label);
                 if (isStart) {
-                  return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.none];
+                  return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.request("media.call_tone", utf8Bytes("ringtone"), { key: "call-tone-ringtone", ok: "call_tone_ok", err: "call_tone_error" })];
                 }
                 return [{ ...incoming, eventCursor: cursor, eventsReady: true }, Cmd.batch([
                   Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
@@ -1133,6 +1136,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
                   // answered a video call (no-op otherwise).
                   Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
                   Cmd.request("idfond.request", daemonMessagePayload(next.identityName, peer, stopMessage(ticket), utf8Bytes(`call-stopped-${next.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+                  Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
                 ])];
           } else if (text.length > recordingPrefix.length && sameBytes(text.slice(0, recordingPrefix.length), recordingPrefix)) {
             const ticket = recordingTicket(text);
@@ -1198,10 +1202,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           if (!isStart && !isStop) return model;
           if (isStart && ticket.length === 0) return model;
           const next = showBanner({ ...inbound, identitySelected: true, replyRoute: route, liveTicketInput: ticket, sessionLaunch: { peerId: EMPTY, sessionId: route, sessionType: utf8Bytes("chat") }, selectedChannelName: utf8Bytes(isStart ? "Incoming call" : "Call ended"), selectedChannelInitials: identityInitials(utf8Bytes(isStart ? "Incoming call" : "Call ended")), chatOpen: true, receiverStatus: utf8Bytes(isStart ? "Incoming call" : "Call ended"), incomingLive: isStart }, utf8Bytes(isStart ? "Incoming call" : "Call ended"));
-          if (isStart) return [next, Cmd.none];
+          if (isStart) return [next, Cmd.request("media.call_tone", utf8Bytes("ringtone"), { key: "call-tone-ringtone", ok: "call_tone_ok", err: "call_tone_error" })];
           return [next, Cmd.batch([
             Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
             Cmd.request("idfond.request", daemonMessagePayload(model.identityName, route, stopMessage(ticket), utf8Bytes(`call-stopped-${model.tickAt}-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+            Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
           ])];
         }
         const recordingPrefix = utf8Bytes("IDFON-RECORDING/1\n");
@@ -1290,13 +1295,20 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       }
       if (sameBytes(msg.data, utf8Bytes("call_stopped")) && model.liveActive) return [
         showBanner(model, utf8Bytes("Receiver ended call")),
-        Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
+        Cmd.batch([
+          Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
+          Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
+        ]),
       ];
       if (sameBytes(msg.data, utf8Bytes("media_scope_set"))) return { ...model, bannerVisible: false };
       // ok data from idfond.request paths is the daemon's JSON response envelope
       return setLastMessageStatus(showBanner(model, utf8Bytes("Message sent")), utf8Bytes("Sent"));
     case "sender_error":
       return setLastMessageStatus(showBanner({ ...model, pendingRecordingSend: false }, msg.data), utf8Bytes("Failed"));
+    case "call_tone_ok":
+      return model;
+    case "call_tone_error":
+      return model;
     case "recording_persisted":
       return model;
     case "recording_persist_error":
@@ -1343,24 +1355,30 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           Cmd.request("media.live.subscribe", model.liveTicketInput, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
           Cmd.request("media.live.video_start", EMPTY, { key: "media-video-call", ok: "video_call_started", err: "video_call_error" }),
           Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.tickAt}-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+          Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
         ])];
       }
       if (model.incomingVideo) {
         return [hideBanner({ ...model, incomingLive: false, videoWatching: true, receiverStatus: utf8Bytes("Watching video") }), Cmd.batch([
           Cmd.request("media.video.start", model.liveTicketInput, { key: "media-video-start", ok: "video_watch_started", err: "video_watch_error" }),
           Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.tickAt}-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+          Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
         ])];
       }
       return [hideBanner({ ...model, incomingLive: false, receiverStatus: utf8Bytes("In call") }), Cmd.batch([
         Cmd.request("media.live.subscribe", model.liveTicketInput, { key: "media-live-subscribe", ok: "live_subscribed", err: "live_subscribe_error" }),
         Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, utf8Bytes("call_started"), utf8Bytes(`call-started-${model.tickAt}-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+        Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
       ])];
     }
     case "live_decline": {
       if (!model.incomingLive) return model;
       const declined = hideBanner({ ...model, incomingLive: false, incomingVideo: false, incomingVideoCall: false, liveTicketInput: EMPTY, receiverStatus: utf8Bytes("Call declined"), selectedChannelName: utf8Bytes("Call declined") });
-      if (model.replyRoute.length === 0) return declined;
-      return [declined, Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, stopMessage(model.liveTicketInput), utf8Bytes(`call-stopped-${model.tickAt}-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" })];
+      if (model.replyRoute.length === 0) return [declined, Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" })];
+      return [declined, Cmd.batch([
+        Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, stopMessage(model.liveTicketInput), utf8Bytes(`call-stopped-${model.tickAt}-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+        Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
+      ])];
     }
     case "live_start":
       if (model.liveActive || model.receiverId.length === 0) return model;
@@ -1371,7 +1389,12 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "video_media_session_ready":
       return [model, Cmd.request("media.live.video_start", EMPTY, { key: "media-video-call", ok: "video_call_started", err: "video_call_error" })];
     case "video_call_started":
-      return [showBanner({ ...comUpdate(model, { live: true, audio: true }), audioStatus: utf8Bytes("Camera and microphone on"), liveTicket: msg.data }, utf8Bytes("Calling receiver")), Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.receiverId, videoInviteMessage(utf8Bytes("start"), msg.data, true), utf8Bytes(`video-call-${model.tickAt}-${model.history.length}`), model.capabilityTicket), { key: "media-video-call-signal", ok: "sender_ready", err: "sender_error" })];
+      return [showBanner({ ...comUpdate(model, { live: true, audio: true }), audioStatus: utf8Bytes("Camera and microphone on"), liveTicket: msg.data }, utf8Bytes("Calling receiver")), Cmd.batch([
+        Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.receiverId, videoInviteMessage(utf8Bytes("start"), msg.data, true), utf8Bytes(`video-call-${model.tickAt}-${model.history.length}`), model.capabilityTicket), { key: "media-video-call-signal", ok: "sender_ready", err: "sender_error" }),
+        // The callee's return-leg publish also lands here (videoWatching set):
+        // the call is answered, so only the dialing side rings back.
+        model.videoWatching ? Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }) : Cmd.request("media.call_tone", utf8Bytes("ringback"), { key: "call-tone-ringback", ok: "call_tone_ok", err: "call_tone_error" }),
+      ])];
     case "video_call_error": {
       const failed = comUpdate(model, { live: false });
       return showBanner(failed, msg.data);
@@ -1383,23 +1406,32 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         if (model.replyRoute.length === 0) return [model, Cmd.batch([
           Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
           Cmd.request("media.video.stop", EMPTY, { key: "media-video-stop", ok: "video_stopped", err: "video_watch_error" }),
+          Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
         ])];
         return [model, Cmd.batch([
           Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
           Cmd.request("media.video.stop", EMPTY, { key: "media-video-stop", ok: "video_stopped", err: "video_watch_error" }),
           Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.replyRoute, stopMessage(model.liveTicketInput), utf8Bytes(`call-stopped-${model.tickAt}-${model.history.length}`), EMPTY), { key: "iroh-reply", ok: "sender_ready", err: "sender_error" }),
+          Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
         ])];
       }
       if (!model.liveActive) return model;
-      if (model.receiverId.length === 0) return [model, Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" })];
+      if (model.receiverId.length === 0) return [model, Cmd.batch([
+        Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
+        Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
+      ])];
       return [model, Cmd.batch([
         Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.receiverId, stopMessage(model.liveTicket.length === 0 ? model.liveTicketInput : model.liveTicket), utf8Bytes(`live-stop-${model.tickAt}-${model.history.length}`), EMPTY), { key: "media-live-stop-signal", ok: "sender_ready", err: "sender_error" }),
         Cmd.request("media.live.stop", EMPTY, { key: "media-live", ok: "live_stopped", err: "live_error" }),
         Cmd.request("media.video.stop", EMPTY, { key: "media-video-stop", ok: "video_stopped", err: "video_watch_error" }),
         Cmd.request("media.live.unsubscribe", EMPTY, { key: "media-live-subscribe", ok: "live_unsubscribed", err: "live_subscribe_error" }),
+        Cmd.request("media.call_tone", utf8Bytes("stop"), { key: "call-tone-stop", ok: "call_tone_ok", err: "call_tone_error" }),
       ])];
     case "live_started":
-      return [showBanner({ ...comUpdate(model, { live: true, audio: true }), audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data }, utf8Bytes("Calling receiver")), Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.receiverId, liveInviteMessage(utf8Bytes("start"), msg.data), utf8Bytes(`live-start-${model.tickAt}-${model.history.length}`), model.capabilityTicket), { key: "media-live-signal", ok: "sender_ready", err: "sender_error" })];
+      return [showBanner({ ...comUpdate(model, { live: true, audio: true }), audioStatus: utf8Bytes("Microphone on (live)"), liveTicket: msg.data }, utf8Bytes("Calling receiver")), Cmd.batch([
+        Cmd.request("idfond.request", daemonMessagePayload(model.identityName, model.receiverId, liveInviteMessage(utf8Bytes("start"), msg.data), utf8Bytes(`live-start-${model.tickAt}-${model.history.length}`), model.capabilityTicket), { key: "media-live-signal", ok: "sender_ready", err: "sender_error" }),
+        Cmd.request("media.call_tone", utf8Bytes("ringback"), { key: "call-tone-ringback", ok: "call_tone_ok", err: "call_tone_error" }),
+      ])];
     case "copy_live_ticket":
       if (model.liveTicket.length === 0) return model;
       return [model, Cmd.clipboardWrite(model.liveTicket)];

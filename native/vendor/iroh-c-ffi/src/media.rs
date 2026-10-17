@@ -56,6 +56,9 @@ static VIDEO_QUEUE: Mutex<Option<(u32, u32, Vec<u8>, u64)>> = Mutex::new(None);
 static VIDEO_FRAMES_PUSHED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static VIDEO_FRAMES_CONSUMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PLAYBACK: Mutex<Option<Playback>> = Mutex::new(None);
+/// The looping call tone (donpark/idfon#15): its own playback thread so a
+/// tone stop never disturbs a recording playback and vice versa.
+static TONE: Mutex<Option<Playback>> = Mutex::new(None);
 static PLAYBACK_CONTROL: Mutex<Option<moq_audio::playback::Control>> = Mutex::new(None);
 static PLAYBACK_ENGINE: Mutex<Option<moq_audio::playback::Engine>> = Mutex::new(None);
 static INPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
@@ -1241,6 +1244,88 @@ pub fn media_recording_stop_playback() {
             let _ = handle.join();
         }
     }
+}
+
+/// In-app call tones (donpark/idfon#15, native shell): a small tone
+/// generator writing synthesized PCM through the same device playback the
+/// recordings use — no assets ship. `kind`: 0 stop, 1 ringback (loop),
+/// 2 ringtone (loop), 3 answered (one-shot), 4 ended (one-shot). Every call
+/// silences the previous tone first.
+#[ffi_export]
+pub fn media_call_tone(kind: u8) -> u8 {
+    if let Some(mut tone) = TONE.lock().unwrap().take() {
+        tone.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = tone.handle.take() {
+            let _ = handle.join();
+        }
+    }
+    if kind == 0 {
+        return 0;
+    }
+    if kind > 4 {
+        return 1;
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let handle = std::thread::spawn(move || {
+        let result = tokio_executor(async {
+            let mut playback_config = moq_audio::playback::Config::default();
+            playback_config.device = OUTPUT_DEVICE.lock().unwrap().clone();
+            let engine = moq_audio::playback::Engine::open(playback_config).await?;
+            let mut input = moq_audio::playback::Input::default();
+            input.format = Format::S16;
+            input.sample_rate = 48_000;
+            input.channels = 1;
+            let mut sink = engine.sink(input)?;
+            let control = sink.control();
+            control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
+            let pattern = tone_pcm(kind);
+            loop {
+                for chunk in pattern.chunks(1_920) {
+                    if thread_stop.load(Ordering::Relaxed) {
+                        return anyhow::Ok(());
+                    }
+                    sink.write(chunk)?;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                if kind >= 3 {
+                    return anyhow::Ok(()); // one-shot
+                }
+            }
+        });
+        if let Err(err) = result {
+            eprintln!("call tone failed: {err:#}");
+        }
+    });
+    *TONE.lock().unwrap() = Some(Playback {
+        stop,
+        handle: Some(handle),
+    });
+    0
+}
+
+/// One cadence of a call tone as S16 mono PCM at 48 kHz. Loops repeat the
+/// cadence; the short edge fade keeps the loop click-free.
+fn tone_pcm(kind: u8) -> Vec<u8> {
+    const SAMPLE_RATE: f64 = 48_000.0;
+    // (frequency Hz, seconds); 0 Hz is silence.
+    let segments: &[(f64, f64)] = match kind {
+        1 => &[(440.0, 0.6), (0.0, 0.6)],                // ringback
+        2 => &[(800.0, 0.35), (640.0, 0.35), (0.0, 1.1)], // ringtone
+        3 => &[(660.0, 0.12)],                            // answered
+        _ => &[(440.0, 0.12), (330.0, 0.12)],             // ended
+    };
+    let mut pcm = Vec::new();
+    for &(freq, secs) in segments {
+        let frames = (SAMPLE_RATE * secs) as usize;
+        for frame in 0..frames {
+            let t = frame as f64 / SAMPLE_RATE;
+            let edge = (frame.min(frames - frame) as f64 / 1_200.0).min(1.0); // ~25 ms fade
+            let sample = (2.0 * std::f64::consts::PI * freq * t).sin() * 0.25 * edge;
+            pcm.extend_from_slice(&((sample * i16::MAX as f64) as i16).to_le_bytes());
+        }
+    }
+    pcm
 }
 #[ffi_export]
 pub fn media_live_recording_samples() -> usize {

@@ -172,6 +172,7 @@ fn request(context: *anyopaque, name: []const u8, key: u64, payload: []const u8)
         std.mem.eql(u8, name, "media.audio.set_bitrate") or
         std.mem.eql(u8, name, "media.audio.input_count") or
         std.mem.eql(u8, name, "media.audio.probe") or
+        std.mem.eql(u8, name, "media.call_tone") or
         std.mem.eql(u8, name, "media.live.start") or
         std.mem.eql(u8, name, "media.live.video_start") or
         std.mem.eql(u8, name, "media.live.stop") or
@@ -418,6 +419,16 @@ fn mediaAudioWorker(job: *Job) void {
     } else if (std.mem.eql(u8, name, "media.video.stop")) {
         ffi.media_video_stop();
         self.complete(job.key, true, "video_stopped");
+    } else if (std.mem.eql(u8, name, "media.call_tone")) {
+        // Call tones (donpark/idfon#15): the payload names the tone; the
+        // generator lives in the FFI crate so no assets ship.
+        const tone: u8 = if (std.mem.eql(u8, job.bytes[0..job.len], "ringback")) 1
+            else if (std.mem.eql(u8, job.bytes[0..job.len], "ringtone")) 2
+            else if (std.mem.eql(u8, job.bytes[0..job.len], "answered")) 3
+            else if (std.mem.eql(u8, job.bytes[0..job.len], "ended")) 4
+            else 0;
+        if (ffi.media_call_tone(tone) == 0) self.complete(job.key, true, "call_tone_ok")
+        else self.complete(job.key, false, "call_tone_failed");
     } else if (std.mem.eql(u8, name, "media.blob.fetch")) {
         var ticket: [max_payload + 1]u8 = undefined;
         @memcpy(ticket[0..job.len], job.bytes[0..job.len]);
