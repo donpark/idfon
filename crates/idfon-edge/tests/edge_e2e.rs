@@ -100,6 +100,7 @@ async fn edge_bridges_and_gates_with_a_token() {
         tls: None,
         health_path: Some("/healthz".into()),
         rate_limit_per_minute: 0,
+        local_routes: Vec::new(),
     })
     .await
     .expect("edge runs");
@@ -165,6 +166,7 @@ async fn edge_accepts_a_capability_ticket() {
         tls: None,
         health_path: Some("/healthz".into()),
         rate_limit_per_minute: 0,
+        local_routes: Vec::new(),
     })
     .await
     .expect("edge runs");
@@ -250,6 +252,7 @@ async fn edge_rate_limits_per_caller() {
         tls: None,
         health_path: None,
         rate_limit_per_minute: 1,
+        local_routes: Vec::new(),
     })
     .await
     .expect("edge runs");
