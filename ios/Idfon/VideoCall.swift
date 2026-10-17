@@ -422,8 +422,9 @@ final class VideoCall: NSObject {
             videoAvailable = true
             state = .incoming
             notify()
-            // CallKit owns the ring and the audio session when the system rings.
-            if !IncomingCallRouter.shared.ringsViaSystem(for: peerID) {
+            // The system already rings (a push-first wake): no Bar ringtone
+            // and no app-owned audio session alongside it.
+            if !CallKitController.shared.isRinging(peerID) {
                 activateAudioSession()
                 CallTonePlayer.shared.start(.ringtone)
             }

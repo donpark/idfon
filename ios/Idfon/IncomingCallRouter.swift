@@ -62,15 +62,16 @@ final class IncomingCallRouter {
             && !barFallback.contains(peerId)
     }
 
-    /// Who presents an *incoming* ring: the system call UI unless the channel
-    /// is known to be `bar`. A ref with no channel data (fresh install,
-    /// stranger) lets the sender's ring intent through — the sender rang a
-    /// `call_kit` channel on its side, and the alternative is a report-then-
-    /// end flash on every first wake (#57). Used by the push gate, the
-    /// envelope presentation, and the Bar ring gates alike, so the four
-    /// sites can never disagree.
+    /// Whether this channel accepts a system ring at all. The **sender's**
+    /// `call_mode` opt-in decides whether a channel rings (`ring()` is gated
+    /// there); the receiver honors the ring unless its own CallKit
+    /// presentation has failed for this channel (`barFallback`). The
+    /// receiver's own mode governs only how *it* presents an arriving call
+    /// when running (`ownsPresentation` on the envelope path) — gating the
+    /// push on it broke the wake (the wire collapses unset into bar,
+    /// donpark/idfon#47, #57).
     func ringsViaSystem(for ref: String) -> Bool {
-        mode(for: ref) != .bar && !barFallback.contains(ref)
+        !barFallback.contains(ref)
     }
 
     /// CallKit refused the call (report or transaction failed): the Bar takes
@@ -105,7 +106,7 @@ final class IncomingCallRouter {
     /// Only invites go through here; `call_started`/`call_stopped` stay direct
     /// to both machines.
     func route(peerId: String, envelope text: String) {
-        let viaSystem = ringsViaSystem(for: peerId)
+        let viaSystem = ownsPresentation(for: peerId)
         idfonLog("idfon incoming-call route peer=\(peerId) mode=\(mode(for: peerId).rawValue) callkit=\(viaSystem)")
         if viaSystem,
            let invite = LiveInvite.parse(text),
