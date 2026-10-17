@@ -2,6 +2,8 @@ import UIKit
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
+    private var warmSpeechOnActivation = false
+
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         // Before the daemon starts so an automation launch (-relayurls …) both
         // sets and uses the relay config.
@@ -19,8 +21,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // VoIP push wake channel (docs/callkit-integration.md, P2).
         PushWake.shared.start()
         // Warm the TTS model (Kokoro) so the first call reply is not blocked by
-        // a cold model download/compile.
-        Task { @MainActor in SpeechEngines.prewarm() }
+        // a cold model download/compile. Deferred until the app is active: a
+        // push wake must stay light — the warmup's memory spike is what killed
+        // the woken process (and the ring with it), donpark/idfon#55. The
+        // engines lazy-init on first use, so a call answered cold is fine.
+        if application.applicationState == .active {
+            Task { @MainActor in SpeechEngines.prewarm() }
+        } else {
+            warmSpeechOnActivation = true
+        }
         setVideoRotation()
         smokeCheckStatus()
         registerVoiceEngine()
@@ -349,6 +358,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         idfonLog("idfon dumplog: \(lines.count) lines total, tail:")
         for line in lines.suffix(40) { idfonLog("| \(line)") }
+    }
+
+    /// A push-woken launch defers the speech warmup until the user brings the
+    /// app up (donpark/idfon#55).
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        guard warmSpeechOnActivation else { return }
+        warmSpeechOnActivation = false
+        Task { @MainActor in SpeechEngines.prewarm() }
     }
 
     /// A live CallKit call must not leave the system's in-call banner up
