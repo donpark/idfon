@@ -26,18 +26,24 @@ final class IncomingCallRouter {
     private let client = IdfonClient()
     /// Cached `[peerId: IncomingCallMode]`; unknown peers resolve to `.bar`.
     private var modes: [String: IncomingCallMode] = [:]
-    /// Cached peer display names for the system call UI.
+    /// Display names by every ref a peer is known by (`id`, endpoint id,
+    /// aliases): a push or envelope can arrive under either identity, and a
+    /// push-first wake resolves names with no daemon round-trip in the same
+    /// turn as the report. Persisted across launches for the same reason.
     private var names: [String: String] = [:]
     /// Channels whose CallKit presentation failed; the Bar serves them.
     private var barFallback: Set<String> = []
 
-    private init() {}
+    private static let namesKey = "idfon.peerNamesByRef"
+
+    private init() {
+        names = UserDefaults.standard.dictionary(forKey: Self.namesKey) as? [String: String] ?? [:]
+    }
 
     func mode(for peerId: String) -> IncomingCallMode { modes[peerId] ?? .bar }
 
-    /// Cached display name for the system call UI (push-first rings resolve
-    /// from here; a cache miss shows the peer id).
-    func name(for peerId: String) -> String? { names[peerId] }
+    /// Display name for the system call UI, or nil when no named peer matches.
+    func name(for ref: String) -> String? { names[ref] }
 
     /// CallKit owns incoming-ring presentation for this channel.
     func ownsPresentation(for peerId: String) -> Bool {
@@ -57,9 +63,13 @@ final class IncomingCallRouter {
     func refreshModes() async {
         guard let peers = try? await client.peers() else { return }
         modes = peers.reduce(into: [:]) { $0[$1.id] = $1.incomingCallMode }
-        names = peers.reduce(into: [:]) {
-            if let name = $1.name, !name.isEmpty { $0[$1.id] = name }
+        names = peers.reduce(into: [:]) { table, peer in
+            guard let name = peer.name, !name.isEmpty else { return }
+            for ref in [peer.id, peer.endpointId].compactMap({ $0 }) + (peer.aliases ?? []) {
+                table[ref] = name
+            }
         }
+        UserDefaults.standard.set(names, forKey: Self.namesKey)
     }
 
     /// Routes an invite envelope from `peerId`: a fresh incoming invite on a
@@ -74,7 +84,7 @@ final class IncomingCallRouter {
            let invite = LiveInvite.parse(text),
            invite.isStart, !invite.isReturn, !invite.ticket.isEmpty,
            machineWouldAccept(invite: invite, from: peerId) {
-            CallKitIncomingPresenter.present(peerId: peerId, name: names[peerId], invite: invite)
+            CallKitIncomingPresenter.present(peerId: peerId, name: name(for: peerId), invite: invite)
         }
         LiveCall.shared.handleEnvelope(peer: peerId, text)
         VideoCall.shared.handleEnvelope(peer: peerId, text)

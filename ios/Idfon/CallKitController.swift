@@ -77,11 +77,8 @@ final class CallKitController: NSObject, CXProviderDelegate {
             return
         }
         let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
-        let display = IncomingCallRouter.shared.name(for: callerId) ?? callerId
-        let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: display)
-        update.localizedCallerName = display
-        update.hasVideo = hasVideo
+        let update = callUpdate(
+            name: IncomingCallRouter.shared.name(for: callerId), hasVideo: hasVideo)
         current = Call(
             uuid: uuid, peerId: callerId,
             owner: hasVideo ? .video : .live,
@@ -94,6 +91,33 @@ final class CallKitController: NSObject, CXProviderDelegate {
                 idfonError("idfon callkit: push report failed: \(error.localizedDescription)")
                 self?.abandonToBar(peerId: callerId)
             }
+        }
+        refreshName(uuid: uuid, peerId: callerId)
+    }
+
+    /// Placeholder until the peer records are known: never a raw id hash on
+    /// the call screen.
+    private static let unknownCaller = "Idfon caller"
+
+    private func callUpdate(name: String?, hasVideo: Bool) -> CXCallUpdate {
+        let display = name ?? Self.unknownCaller
+        let update = CXCallUpdate()
+        update.remoteHandle = CXHandle(type: .generic, value: display)
+        update.localizedCallerName = display
+        update.hasVideo = hasVideo
+        return update
+    }
+
+    /// The report must not wait for the daemon (the same-turn rule), so the
+    /// name comes from the persisted peer cache; once the live records are
+    /// known the system call UI is updated in place.
+    private func refreshName(uuid: UUID, peerId: String) {
+        Task { @MainActor in
+            await IncomingCallRouter.shared.refreshModes()
+            guard self.current?.uuid == uuid,
+                  let name = IncomingCallRouter.shared.name(for: peerId) else { return }
+            let update = self.callUpdate(name: name, hasVideo: self.current?.video ?? false)
+            self.provider.reportCall(with: uuid, updated: update)
         }
     }
 
@@ -165,11 +189,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
             return
         }
         let uuid = CallUUID.from(ticket: invite.ticket)
-        let display = name ?? peerId
-        let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: display)
-        update.localizedCallerName = display
-        update.hasVideo = invite.isCall
+        let update = callUpdate(name: name, hasVideo: invite.isCall)
         current = Call(
             uuid: uuid, peerId: peerId,
             owner: invite.isCall ? .video : .live,
@@ -182,6 +202,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
                 self?.abandonToBar(peerId: peerId)
             }
         }
+        refreshName(uuid: uuid, peerId: peerId)
     }
 
     // MARK: - Outgoing
