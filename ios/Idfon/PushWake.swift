@@ -211,8 +211,8 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                     CallKitController.shared.presentPush(
                         callUUID: callUUID,
                         callerId: dict["caller_id"] as? String ?? "",
-                        hasVideo: (dict["has_video"] as? Bool) ?? false)
-                    CallKitController.shared.cancelFromPush(callUUID: callUUID)
+                        hasVideo: (dict["has_video"] as? Bool) ?? false,
+                        endImmediately: true)
                 }
             } else {
                 let callerId = dict["caller_id"] as? String ?? ""
@@ -224,11 +224,11 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                         callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
                 } else if mustReport {
                     // Apple demands a reported call for this push; report and
-                    // end it in the same turn. The channel's Bar rings in-app
-                    // when the envelope lands.
+                    // end once the report completes (#58). The channel's Bar
+                    // rings in-app when the envelope lands.
                     CallKitController.shared.presentPush(
-                        callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
-                    CallKitController.shared.cancelFromPush(callUUID: callUUID)
+                        callUUID: callUUID, callerId: callerId, hasVideo: hasVideo,
+                        endImmediately: true)
                 } else {
                     idfonLog("idfon push: bar-mode channel \(callerId); no system ring")
                 }
