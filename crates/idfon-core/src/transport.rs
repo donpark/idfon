@@ -191,11 +191,29 @@ pub trait MessageTransport: Send + Sync {
 #[derive(Clone, Default)]
 pub struct FakeTransport {
     sent: Arc<Mutex<Vec<MessageEnvelope>>>,
+    endpoint_tickets: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
 }
 
 impl FakeTransport {
     pub fn messages(&self) -> Vec<MessageEnvelope> {
         self.sent.lock().expect("fake transport poisoned").clone()
+    }
+
+    /// Test double for `endpoint_ticket`: what `endpoint_ticket_for` returns
+    /// for this identity.
+    pub fn set_endpoint_ticket(&self, identity: &str, ticket: Vec<u8>) {
+        self.endpoint_tickets
+            .lock()
+            .expect("fake transport poisoned")
+            .insert(identity.to_string(), ticket);
+    }
+
+    pub fn endpoint_ticket(&self, identity: &str) -> Option<Vec<u8>> {
+        self.endpoint_tickets
+            .lock()
+            .expect("fake transport poisoned")
+            .get(identity)
+            .cloned()
     }
 }
 

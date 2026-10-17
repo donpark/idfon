@@ -39,7 +39,8 @@ app "Share Contact Card"                                      ▼
 | `contact.export {ref?}` → `{vcard, link}`, `contact.import {text}` → `{peers}` | daemon (`docs/protocol.md` "Contact exchange"); `peer.add` also accepts `contact_ticket` and names the peer from its `label` |
 | CLI `idfon contact export [--peer REF] [--out F]` / `idfon contact import [FILE\|-]` | `crates/idfon-cli` |
 | `idfon://add/<base64url>` verb | `IdfonURL` (both apps); iOS `SceneDelegate`, mac `AppDelegate` |
-| My Card (QR + Share + Save to Contacts) | iOS Contacts tab → Add menu → "My Card"; mac sidebar → "My Card…" |
+| My Card (QR + Share + Save to Contacts) | iOS Contacts tab → Add menu → "My Card"; mac sidebar → "My Card…" (exports the active identity's card) |
+| Share an identity's card (any line) | iOS Identities list → tap a row (swipe "Ticket" copies the raw ticket JSON); mac sidebar → identity submenu → "Share Contact Card…" |
 | QR scan | iOS Add menu → "Scan QR Code" (mac has no scanner; show the code and let the phone scan) |
 | `.vcf` document open ("Open in Idfon") | `CFBundleDocumentTypes` (`public.vcard`) in both Info.plists |
 | Save to system Contacts (name + idfon URL) | `CNContactStore` (`NSContactsUsageDescription` in both Info.plists) |

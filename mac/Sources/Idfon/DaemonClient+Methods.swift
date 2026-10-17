@@ -172,10 +172,12 @@ extension DaemonClient {
     }
 
     /// Contact exchange (docs/contact-exchange.md): exports this identity's
-    /// card (`ref` nil) or a saved peer's via `contact.export`.
-    func contactExport(ref: String?) async throws -> (vcard: String, link: String) {
+    /// card (`ref` nil, `identity` names the line) or a saved peer's via
+    /// `contact.export`.
+    func contactExport(ref: String?, identity: String? = nil) async throws -> (vcard: String, link: String) {
         var params: [String: AnyEncodable] = [:]
         if let ref { params["ref"] = AnyEncodable(ref) }
+        if let identity { params["identity"] = AnyEncodable(identity) }
         guard let result = try await requestWithLaunch(method: "contact.export", params: params),
               let vcard = result["vcard"]?.stringValue else {
             throw DaemonError.request("contact.export returned no card")

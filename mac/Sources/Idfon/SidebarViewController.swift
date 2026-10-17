@@ -124,10 +124,11 @@ final class SidebarViewController: NSViewController {
         for identity in app.identities {
             let item = NSMenuItem(title: identity.name, action: nil, keyEquivalent: "")
             let submenu = NSMenu()
+            let card = NSMenuItem(title: "Share Contact Card…", action: #selector(shareIdentityCardTapped(_:)), keyEquivalent: "")
             let share = NSMenuItem(title: "Share Ticket", action: #selector(shareIdentityTapped(_:)), keyEquivalent: "")
             let rename = NSMenuItem(title: "Rename…", action: #selector(renameIdentityTapped(_:)), keyEquivalent: "")
             let delete = NSMenuItem(title: "Delete…", action: #selector(deleteIdentityTapped(_:)), keyEquivalent: "")
-            for verb in [share, rename, delete] {
+            for verb in [card, share, rename, delete] {
                 verb.target = self
                 verb.representedObject = identity.name
                 submenu.addItem(verb)
@@ -248,6 +249,13 @@ final class SidebarViewController: NSViewController {
         OnDeviceAgentEditor.present(agent: nil, in: view.window) { [weak app] in
             Task { await app?.refresh() }
         }
+    }
+
+    /// Contact exchange (docs/contact-exchange.md): this line's vCard (the
+    /// AirDrop/QR-friendly form of the raw ticket below).
+    @objc private func shareIdentityCardTapped(_ sender: NSMenuItem) {
+        ContactExchange.shareCard(
+            ref: nil, identity: sender.representedObject as? String, relativeTo: view)
     }
 
     @objc private func shareIdentityTapped(_ sender: NSMenuItem) {

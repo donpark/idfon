@@ -99,7 +99,7 @@ keeps standard `URL` fields. `peer.add` also accepts a `contact_ticket`
 
 | method | params | result |
 |---|---|---|
-| `contact.export` | `{ ref?, identity? }` | `{ vcard, link }`; `ref` exports that saved peer, omitted exports the identity's own card; `link` is the `idfon://add/<base64url>` deep link |
+| `contact.export` | `{ ref?, identity? }` | `{ vcard, link }`; `ref` exports that saved peer, omitted exports an identity's own card (`identity` names the line by id or name, default `default`); `link` is the `idfon://add/<base64url>` deep link |
 | `contact.import` | `{ text, identity? }` | `{ peers: [Peer] }`; upserts each idfon card (aborts on a card that fails validation; idempotent) |
 
 ### Messaging

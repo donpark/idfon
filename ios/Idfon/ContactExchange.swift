@@ -93,21 +93,27 @@ enum ContactExchange {
         }
     }
 
-    /// Exports a card `(vcard, link)`; `ref` nil exports this identity's own.
+    /// Exports a card `(vcard, link)`: a saved peer's (`ref`) or an identity's
+    /// own (`identity` names the line by id or name; nil = the active one).
     static func export(
-        ref: String?, client: IdfonClient = IdfonClient()
+        ref: String?, identity: String? = nil, client: IdfonClient = IdfonClient()
     ) async throws -> (vcard: String, link: String) {
-        try await client.contactExport(ref: ref)
+        var identity = identity
+        if ref == nil, identity == nil {
+            identity = (try? await client.identityId()) ?? "default"
+        }
+        return try await client.contactExport(ref: ref, identity: identity)
     }
 
     /// Share sheet with the card as a temp .vcf. AirDrop lands it in the
     /// receiver's Contacts app; the card's `idfon://add/` URL does the rest.
     static func shareCard(
-        ref: String?, from viewController: UIViewController, sourceView: UIView? = nil
+        ref: String?, identity: String? = nil, from viewController: UIViewController,
+        sourceView: UIView? = nil
     ) {
         Task {
             do {
-                let card = try await export(ref: ref)
+                let card = try await export(ref: ref, identity: identity)
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("idfon-contact.vcf")
                 try card.vcard.write(to: url, atomically: true, encoding: .utf8)
