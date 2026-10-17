@@ -147,7 +147,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         for type: PKPushType, withCompletionHandler completion: @escaping () -> Void
     ) {
         idfonLog("idfon push: incoming (classic) type=\(type.rawValue)")
-        handlePush(payload.dictionaryPayload, completion)
+        handlePush(payload.dictionaryPayload, mustReport: true, completion)
     }
 
     /// iOS 26.4+ delivers VoIP pushes through this variant — when the delegate
@@ -162,24 +162,31 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         withCompletionHandler completion: @escaping () -> Void
     ) {
         idfonLog("idfon push: incoming (voip) mustReport=\(metadata.mustReport)")
-        handlePush(payload.dictionaryPayload, completion)
+        handlePush(payload.dictionaryPayload, mustReport: metadata.mustReport, completion)
     }
 
-    private func handlePush(_ dict: [AnyHashable: Any], _ completion: @escaping () -> Void) {
+    /// The classic delegate (pre-26.4): every VoIP push must end in a
+    /// reported call there, so `mustReport` is carried as true.
+    private func handlePush(
+        _ dict: [AnyHashable: Any], mustReport: Bool, _ completion: @escaping () -> Void
+    ) {
         let callUUID = dict["call_uuid"] as? String ?? ""
         let cancel = (dict["cancel"] as? Bool) == true
-        idfonLog("idfon push: received call=\(callUUID) cancel=\(cancel)")
+        idfonLog("idfon push: received call=\(callUUID) cancel=\(cancel) mustReport=\(mustReport)")
         // Report before anything else (Signal's rule) — the completion handler
-        // runs once the system has the call. A cancel still reports first and
-        // ends in the same turn: a VoIP push must end in a reported call
-        // (`mustReport`), and report-then-end is the graceful de-escalation.
+        // runs once the system has the call.
         Task { @MainActor in
             if cancel {
-                CallKitController.shared.presentPush(
-                    callUUID: callUUID,
-                    callerId: dict["caller_id"] as? String ?? "",
-                    hasVideo: (dict["has_video"] as? Bool) ?? false)
-                CallKitController.shared.cancelFromPush(callUUID: callUUID)
+                // End the ringing call in one turn. A cancel for a call that
+                // is already gone must not resurrect it (report-then-end
+                // flash): only a `mustReport` push needs a reported call.
+                if !CallKitController.shared.cancelFromPush(callUUID: callUUID), mustReport {
+                    CallKitController.shared.presentPush(
+                        callUUID: callUUID,
+                        callerId: dict["caller_id"] as? String ?? "",
+                        hasVideo: (dict["has_video"] as? Bool) ?? false)
+                    CallKitController.shared.cancelFromPush(callUUID: callUUID)
+                }
             } else {
                 CallKitController.shared.presentPush(
                     callUUID: callUUID,
