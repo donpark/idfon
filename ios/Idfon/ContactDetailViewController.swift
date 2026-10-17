@@ -20,6 +20,10 @@ final class ContactDetailViewController: UIViewController {
     private let kindButton = UIButton(type: .system)
     private let voiceSwitch = UISwitch()
     private let turnModeCaption = UILabel()
+    private let callModeButton = UIButton(type: .system)
+    private let callModeCaption = UILabel()
+    /// The record's ring mode; updated on pick and persisted via peer.update.
+    private var callMode = IncomingCallMode.bar
     private var catalog: [VoiceOption] = []
     /// §6 primary actions: Call starts the call, Message opens the chat. Both
     /// push the chat (the room surface) so back returns here.
@@ -127,6 +131,16 @@ final class ContactDetailViewController: UIViewController {
         turnModeButton.titleLabel?.font = .preferredFont(forTextStyle: .body)
         turnModeButton.setTitleColor(.label, for: .normal)
 
+        callMode = peer.callMode ?? .bar
+        callModeCaption.font = .preferredFont(forTextStyle: .caption1)
+        callModeCaption.textColor = .secondaryLabel
+        callModeCaption.numberOfLines = 0
+        callModeButton.showsMenuAsPrimaryAction = true
+        callModeButton.contentHorizontalAlignment = .leading
+        callModeButton.titleLabel?.font = .preferredFont(forTextStyle: .body)
+        callModeButton.setTitleColor(.label, for: .normal)
+        rebuildCallMode()
+
         let delete = UIButton(type: .system)
         delete.setTitle("Delete Contact", for: .normal)
         delete.setTitleColor(.systemRed, for: .normal)
@@ -143,6 +157,9 @@ final class ContactDetailViewController: UIViewController {
             sectionLabel("Voice turns"),
             voiceRow("Mode", turnModeButton),
             turnModeCaption,
+            sectionLabel("Incoming calls"),
+            voiceRow("Ring", callModeButton),
+            callModeCaption,
             delete,
         ])
         stack.axis = .vertical
@@ -329,6 +346,27 @@ final class ContactDetailViewController: UIViewController {
         case .proxy:
             return "The on-device director hears the turn first and either answers or forwards it. Adds an on-device turn to every remote one."
         }
+    }
+
+    // MARK: - Incoming calls
+
+    /// Per-contact ring presentation (`Peer.call_mode` in the daemon record):
+    /// the Bar in-app, or the system call screen (docs/callkit-integration.md).
+    private func rebuildCallMode() {
+        callModeButton.setTitle(callMode.title, for: .normal)
+        callModeButton.menu = UIMenu(title: "Incoming calls", children: IncomingCallMode.allCases.map { option in
+            UIAction(title: option.title,
+                     subtitle: option == .bar ? "The Bar rings in this app" : "The system call screen rings",
+                     state: option == callMode ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                self.callMode = option
+                self.rebuildCallMode()
+                Task { try? await IncomingCallRouter.shared.setMode(option, for: self.peer.id) }
+            }
+        })
+        callModeCaption.text = callMode == .bar
+            ? "Incoming calls show in the Bar at the top of the app."
+            : "Incoming calls ring through the system call screen — visible from the lock screen."
     }
 
     private func voiceRow(_ title: String, _ button: UIButton) -> UIStackView {

@@ -7,11 +7,12 @@ import Foundation
 /// Decoded leniently: an unrecognized wire value resolves to `.bar` rather
 /// than throwing, so a future daemon mode iOS does not know never breaks
 /// decoding of the whole `peers` array.
-enum IncomingCallMode: String, Decodable {
+enum IncomingCallMode: String, Decodable, CaseIterable {
     case bar = "bar"
     case callKit = "call_kit"
 
     var wireValue: String { rawValue }
+    var title: String { self == .bar ? "Bar" : "System ring" }
 
     init(from decoder: Decoder) throws {
         let raw = try? decoder.singleValueContainer().decode(String.self)
