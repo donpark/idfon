@@ -337,6 +337,25 @@ final class AudioMeter {
                     }
                 }
                 Self.log("idfon audio meter installing tap format=\(format)")
+                // installTap raises an uncapturable ObjC exception (and aborts
+                // the app) on an invalid format: at call start macOS is often
+                // mid-route-change and inputNode reports 0 Hz/0 ch. Retry once
+                // the device settles instead of crashing or losing the capture.
+                guard format.sampleRate > 0, format.channelCount > 0 else {
+                    Self.log("idfon audio meter: invalid input format \(format); retrying")
+                    if generation < 4 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                            guard let self, self.startGeneration == generation,
+                                  !self.running, !self.tapInstalled else { return }
+                            self.startInFlight = false
+                            self.start { self.settle() }
+                        }
+                    } else {
+                        self.startInFlight = false
+                        self.settle()
+                    }
+                    return
+                }
                 input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak owner = self] buffer, _ in
                     guard let owner else { return }
                     owner.callbackBuffers += 1

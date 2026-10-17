@@ -340,7 +340,11 @@ final class VideoCall: NSObject {
     /// Answers: watch + hear the caller, publish own camera, send the
     /// return-leg invite (own ticket) that makes the caller join us.
     func answer(cameraOn: Bool = true) {
-        guard state == .incoming, let pending = pendingInvite else { return }
+        idfonLog("idfon video: answer state=\(state) pending=\(pendingInvite != nil)")
+        guard state == .incoming, let pending = pendingInvite else {
+            idfonLog("idfon video: answer ignored — no pending incoming invite")
+            return
+        }
         pendingInvite = nil
         setCallTicket(pending.ticket)
         peer = pending.peer
@@ -356,8 +360,15 @@ final class VideoCall: NSObject {
             do {
                 activateAudioSession()
                 guard await AudioPusher.shared.startForCall() else {
-                    fail("microphone unavailable")
-                    return
+                    // The CallKit session may still be activating (the
+                    // didActivate handoff): the engine start then fails with
+                    // avfaudio 561017449 and the call must not die on it (#51).
+                    idfonLog("idfon video: mic start failed; retrying after the session settles")
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    guard await AudioPusher.shared.startForCall() else {
+                        fail("microphone unavailable")
+                        return
+                    }
                 }
                 if cameraOn { CameraPusher.shared.start() }
                 await join(ticket: pending.ticket)
