@@ -340,7 +340,12 @@ final class LiveCall {
     func handleControl(peer peerID: String, _ text: String) {
         if text == "call_started" { return } // informational
         if text == "call_stopped" {
-            if case .idle = state { return }
+            if case .idle = state {
+                // A push-first wake can outlive the machine: the transport
+                // truth must end a ringing system call too (#45).
+                CallKitController.shared.remoteEnded(peerId: peerID)
+                return
+            }
             if activePeer == peerID { terminate(local: false) }
         }
     }

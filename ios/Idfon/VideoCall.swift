@@ -390,6 +390,7 @@ final class VideoCall: NSObject {
         if text == "call_started" { return } // informational only
         if text == "call_stopped" {
             if state != .idle && activePeer == peerID { terminate(local: false) }
+            else if state == .idle { CallKitController.shared.remoteEnded(peerId: peerID) }
             return
         }
         guard let invite = LiveInvite.parse(text) else { return }

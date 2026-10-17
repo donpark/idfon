@@ -121,26 +121,40 @@ final class CallKitController: NSObject, CXProviderDelegate {
         }
     }
 
-    /// A `cancel` push (the caller hung up before answer): end in one turn.
-    /// Returns whether a matching call was ended.
+    /// A `cancel` push (the caller hung up before answer, or the ring is
+    /// over): end in one turn. Returns whether a matching call was ended.
     @discardableResult
     func cancelFromPush(callUUID: String) -> Bool {
         guard let call = current, !call.outgoing,
               call.uuid.uuidString.caseInsensitiveCompare(callUUID) == .orderedSame
         else { return false }
         idfonLog("idfon callkit: push cancel call=\(callUUID)")
+        endIncomingCall(call, reason: .remoteEnded)
+        return true
+    }
+
+    /// The peer hung up at the transport level (`call_stopped`): the
+    /// de-escalation must not depend on the cancel push arriving (#45).
+    func remoteEnded(peerId: String) {
+        guard let call = current, !call.outgoing, call.peerId == peerId else { return }
+        idfonLog("idfon callkit: remote ended call=\(call.uuid.uuidString)")
+        endIncomingCall(call, reason: .remoteEnded)
+    }
+
+    /// Ends a not-yet-connected incoming call in one turn (the graceful
+    /// de-escalation pattern).
+    private func endIncomingCall(_ call: Call, reason: CXCallEndedReason) {
         current = nil
         pendingAnswer = nil
         pendingAnswerWork?.cancel()
         AudioIO.shared.callKitDidEnd()
-        provider.reportCall(with: call.uuid, endedAt: Date(), reason: .remoteEnded)
+        provider.reportCall(with: call.uuid, endedAt: Date(), reason: reason)
         switch call.owner {
         case .live:
             if case .incoming = LiveCall.shared.state { LiveCall.shared.decline() }
         case .video:
             if VideoCall.shared.state == .incoming { VideoCall.shared.decline() }
         }
-        return true
     }
 
     /// Called after the machines consumed an invite envelope: a pending answer
