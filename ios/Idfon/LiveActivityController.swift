@@ -383,11 +383,15 @@ final class LiveActivityController: NSObject {
             model.rows = transfers.rows(for: callPeer)
             // The in-call surface shows on all non-modal screens (the
             // floating-panel design): expanded whenever a call is live, on
-            // whatever screen is up — not just the call's own thread. The one
-            // exception is D19's passive minimize: on the call's own thread,
-            // scrolling into its history collapses the panel to the pill so
-            // the reader is not covered.
-            model.density = (visibleIsCallPeer && passiveMinimize) ? .compact : .expanded
+            // whatever screen is up — not just the call's own thread.
+            // Compact exceptions: D19's passive minimize on the call's own
+            // thread, and while CallKit owns the ring — there the system
+            // banner/lock-screen UI is the answer surface and the Bar is a
+            // status pill only (no duplicated answer/reject, #51 E2E).
+            let callKitRings = phase == .incoming
+                && CallKitController.shared.isRinging(callPeer)
+            model.density = (visibleIsCallPeer && passiveMinimize) || callKitRings
+                ? .compact : .expanded
             // The visible thread's own call shows identity in the nav title
             // (D8), so the panel drops it and keeps stats + controls (D2).
             model.statusOnly = visibleIsCallPeer && (phase == .calling || phase == .inCall)

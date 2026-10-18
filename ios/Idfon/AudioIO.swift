@@ -99,7 +99,7 @@ final class AudioIO: AudioSource, AudioSink {
     /// Configure the session and start the one engine. Idempotent per profile;
     /// a different profile restarts it. Main thread.
     func start(profile: Profile) {
-        runOnMain { [self] in
+        runOnAudio { [self] in
             if callKitOwnsSession, !callKitActivated {
                 pendingStart = profile
                 Automation.mark("audio: start deferred until callkit didActivate profile=\(profile)")
@@ -115,7 +115,7 @@ final class AudioIO: AudioSource, AudioSink {
                     Automation.mark("audio: mic permission denied")
                     return
                 }
-                self.runOnMain {
+                self.runOnAudio {
                     guard self.profile == profile, !self.running else { return }
                     Automation.mark("audio: retrying engine start after mic grant")
                     self.startEngine()
@@ -141,12 +141,12 @@ final class AudioIO: AudioSource, AudioSink {
 
     /// Stop capture and playback and deactivate the session.
     func stop() {
-        runOnMain { [self] in stopLocked() }
+        runOnAudio { [self] in stopLocked() }
     }
 
     /// CallKit is taking over the session for a call (before the report).
     func callKitWillStart() {
-        runOnMain { [self] in
+        runOnAudio { [self] in
             callKitOwnsSession = true
             callKitActivated = false
         }
@@ -154,7 +154,7 @@ final class AudioIO: AudioSource, AudioSink {
 
     /// The system activated the session: run any deferred start now.
     func callKitDidActivate() {
-        runOnMain { [self] in
+        runOnAudio { [self] in
             callKitActivated = true
             guard let pending = pendingStart else { return }
             pendingStart = nil
@@ -169,7 +169,7 @@ final class AudioIO: AudioSource, AudioSink {
 
     /// The CallKit call ended (or was refused): session control returns to the app.
     func callKitDidEnd() {
-        runOnMain { [self] in
+        runOnAudio { [self] in
             callKitOwnsSession = false
             callKitActivated = false
             pendingStart = nil
@@ -364,7 +364,7 @@ final class AudioIO: AudioSource, AudioSink {
         restartWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.restartEngine() }
         restartWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
+        Self.queue.asyncAfter(deadline: .now() + 0.3, execute: item)
     }
 
     /// `running == true`: the engine stopped itself with the graph intact —
@@ -400,7 +400,7 @@ final class AudioIO: AudioSource, AudioSink {
     // MARK: - capture (AudioSource)
 
     func addCaptureObserver(_ observer: AudioCaptureObserver) {
-        runOnMain { [self] in
+        runOnAudio { [self] in
             observerLock.lock()
             captureObservers.add(observer as AnyObject)
             observerLock.unlock()
@@ -408,7 +408,7 @@ final class AudioIO: AudioSource, AudioSink {
     }
 
     func removeCaptureObserver(_ observer: AudioCaptureObserver) {
-        runOnMain { [self] in
+        runOnAudio { [self] in
             observerLock.lock()
             captureObservers.remove(observer as AnyObject)
             observerLock.unlock()
@@ -468,7 +468,7 @@ final class AudioIO: AudioSource, AudioSink {
                 converted, at: nil, options: [], completionCallbackType: .dataPlayedBack
             ) { _ in
                 // via .shared: captures no self in the @Sendable hop
-                DispatchQueue.main.async { AudioIO.shared.finishPlay(id) }
+                Self.queue.async { AudioIO.shared.finishPlay(id) }
             }
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
         }
@@ -515,7 +515,7 @@ final class AudioIO: AudioSource, AudioSink {
         Automation.mark(
             "audio: loop scheduled frames=\(converted.frameLength) rms=\(String(format: "%.4f", Self.rms(converted))) fmt=\(converted.format.sampleRate)Hz/\(converted.format.channelCount)ch")
         markOutput("output at ring")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        Self.queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self else { return }
             // nil lastRenderTime = the node never rendered at all.
             let clock = self.playbackPlayer.lastRenderTime.flatMap {
@@ -601,11 +601,14 @@ final class AudioIO: AudioSource, AudioSink {
         return output
     }
 
-    private func runOnMain(_ block: @escaping () -> Void) {
-        if Thread.isMainThread {
-            block()
-        } else {
-            DispatchQueue.main.async(execute: block)
-        }
+    /// Engine/session work serializes here — never on the main actor. The
+    /// session activation and engine start/stop can block for seconds (and on
+    /// a cold wake indefinitely: the #61 wedge froze main inside the ring's
+    /// audio start and the app stopped handling pushes mid-handler). Same
+    /// one-engine discipline as before, just off-main.
+    private static let queue = DispatchQueue(label: "idfon.audio-io")
+
+    private func runOnAudio(_ block: @escaping () -> Void) {
+        Self.queue.async(execute: block)
     }
 }
