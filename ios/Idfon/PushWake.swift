@@ -197,8 +197,12 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
             if cancel {
                 // End the ringing call in one turn. A cancel for a call that
                 // is already gone must not resurrect it (report-then-end
-                // flash): only a `mustReport` push needs a reported call.
-                if !CallKitController.shared.cancelFromPush(callUUID: callUUID), mustReport {
+                // flash) — but it must still end in a *reported* call: every
+                // VoIP push that doesn't counts against the channel, and
+                // PushKit then stops delivering to a suspended app entirely
+                // (observed: ring pushes accepted by APNs, delegate never
+                // called, until the push stream goes quiet and it heals).
+                if !CallKitController.shared.cancelFromPush(callUUID: callUUID) {
                     CallKitController.shared.presentPush(
                         callUUID: callUUID,
                         callerId: dict["caller_id"] as? String ?? "",
