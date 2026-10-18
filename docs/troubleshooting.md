@@ -47,6 +47,41 @@ renders on the app's single playback bus (`AudioIO`, see
 other-audio ducking is minimized. Verified on device (ringback and reply volume
 normal, no self-bleed).
 
+## VoIP pushes stop reaching a locked iPhone (ring never arrives; app log silent) (2026-10-18, HARDENED)
+
+**Symptom.** mac → iPhone calls work while the iPhone app is active; with the
+screen locked (app suspended) "no incoming call arrives": no CallKit bar, no
+app log lines at all. Redialing doesn't help; much later (or after restarting
+the caller) it works again.
+
+**Diagnosis path (all three logs joined).** The per-run app log is the first
+check — a delivered push always leaves `idfon push: incoming (voip)` even for
+a suspended app, so its absence means the delegate never ran. The edge's
+access log (`/tmp/edge-e2e.log` for the rig) shows the `/_push/ring` reaching
+the edge; `idfon.edge.push` warns on APNs failures (none = APNs accepted);
+`--push-state` confirms the token registration. App-alive check:
+`devicectl device info processes`. Today: app alive (same pid the whole
+round), APNs 2xx, delegate never called — iOS stopped *delivering* VoIP
+pushes to the suspended app. `mustReport` on arrival is the system's own
+marker (NO when the app is foreground / already in a call), not a sender
+knob; `apns-priority: 10` + `apns-push-type: voip` are correct on our side.
+
+**Root cause (hardened).** PushKit's documented penalty: "repeatedly failing
+to report calls may cause the system to stop delivering any more VoIP push
+notifications to your app." Our **cancel pushes** (ring-over on answer,
+hang-up retracts) frequently end in *no* reported call — the cancel finds no
+ring to dismiss (`cancelFromPush` refuses when the call was answered here)
+and `mustReport=false` used to skip the report-then-end. Every VoIP push now
+ends in a reported call (cancel-with-no-ring → report-then-end always), so
+the channel's accounting stays clean. If delivery still stalls, the push
+stream going quiet for a while is what heals it — the "restart the caller"
+folk fix.
+
+**Not the bug (checked).** The caller retracting the ring ~11 s in is the
+user hanging up (invite-send `connect timed out after 10s` on a suspended
+callee is expected — the daemon retries delivery after the push wake), and
+the ring-over cancel refusing to dismiss an answered call is correct (#46).
+
 ## CallKit Accept/Reject (and every system-UI call button) do nothing (2026-10-17, FIXED)
 
 **Symptom.** The CallKit ring appears, but Accept only dismisses the system
