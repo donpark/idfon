@@ -51,6 +51,7 @@ kept because it records decisions; **design** = not all implemented.
 | `cli-architecture.md` | CLI shape + npm packaging; contact vCards |
 | `cli-data.md` | `put`/`get`/`send-data`, live streaming |
 | `npm-distribution.md` | npm packages and the publish gate |
+| `testflight-plan.md` | iOS TestFlight prerequisites: upload blockers (app icon, privacy manifest), archive/upload plumbing, ASC-side setup, review-risk audit (2026-10-17 review) |
 
 ## Media
 
