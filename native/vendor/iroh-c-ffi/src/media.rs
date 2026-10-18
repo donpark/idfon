@@ -6,6 +6,7 @@
 
 use std::{
     collections::VecDeque,
+    ffi::c_void,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     sync::{Arc, Mutex},
@@ -25,7 +26,7 @@ use safer_ffi::prelude::*;
 
 use idfon_media::seam::{
     audio_frames, video_frames, AudioCapture, AudioInput, AudioPlayback, DeviceAudioCapture,
-    FileAudioCapture, VideoCapture,
+    FileAudioCapture, PacedPlayback, VideoCapture,
 };
 
 use crate::util::tokio_executor;
@@ -65,6 +66,34 @@ static INPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 static OUTPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 static VOLUME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(100);
 static BITRATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(32_000);
+
+/// Stored as `usize` so the function pointer survives a static `Mutex`.
+type AudioPlaybackFn = unsafe extern "C" fn(*const c_void, *const u8, usize, u32, u32, u64);
+
+/// Optional shell-owned audio playback. When absent, decoded audio goes to the
+/// bundled moq playback device; when set, the shell gets interleaved f32 PCM.
+static AUDIO_PLAYBACK_CB: Mutex<Option<(usize, AudioPlaybackFn)>> = Mutex::new(None);
+
+/// Register a shell audio renderer before `media_live_subscribe`.
+///
+/// The callback runs on the seam's pacing thread and is handed a borrowed
+/// interleaved f32 PCM buffer valid only for the duration of the call; copy
+/// before returning. Frames are paced through `seam::PacedPlayback`'s jitter
+/// buffer, so `pts_us` is always 0 (in-order playout carries no per-frame
+/// clock).
+#[ffi_export]
+pub fn media_audio_set_playback_cb(
+    ctx: *const c_void,
+    cb: unsafe extern "C" fn(*const c_void, *const u8, usize, u32, u32, u64),
+) -> u8 {
+    *AUDIO_PLAYBACK_CB.lock().unwrap() = Some((ctx as usize, cb));
+    0
+}
+
+#[ffi_export]
+pub fn media_audio_clear_playback_cb() {
+    *AUDIO_PLAYBACK_CB.lock().unwrap() = None;
+}
 
 struct LiveSession {
     live: Live,
@@ -694,12 +723,11 @@ impl std::error::Error for SubscribeEndError {}
 ///
 /// Historically this compensated for `.playAndRecord` + `.voiceChat` routing
 /// playback through VoiceProcessingIO, which drops output gain with no public
-/// API to adjust it (StackOverflow 17528057 / 13502293). The shells now keep
-/// the live session at `.default` and get AEC from
-/// `setVoiceProcessingEnabled` on the capture input instead (see the on-device
-/// voice-agent and `docs/troubleshooting.md`), so the default is unity. It
-/// stays a knob for devices/paths that still end up on VoiceProcessingIO:
-/// override with `IDFON_PLAYBACK_GAIN_DB`.
+/// API to adjust it (StackOverflow 17528057 / 13502293); the 2026-09-25 device
+/// fix measured +12 dB (docs/troubleshooting.md, "iOS live-call audio too
+/// quiet"). Playback now renders on the shells' AVAudioEngine bus at normal
+/// level (verified 2026-10-07), so the default is unity. Keep the knob for
+/// devices/paths that still end up quiet: override with `IDFON_PLAYBACK_GAIN_DB`.
 const PLAYBACK_GAIN_DB_DEFAULT: f32 = 0.0;
 
 fn playback_gain() -> f32 {
@@ -787,20 +815,36 @@ async fn subscribe_decode_once(
             sample_rate: 48_000,
             channels: 1,
         };
-        // Shell-owned playback was removed: moq's engine already drives the
-        // platform output device on its own thread, with a jitter buffer the
-        // per-frame shell path lacked (it crackled). The seam stays so a shell
-        // adapter can be re-added deliberately.
-        let device = OUTPUT_DEVICE.lock().unwrap().clone();
-        let device_playback = DevicePlayback::open(device, input).await?;
-        PLAYBACK_ENGINE
-            .lock()
-            .unwrap()
-            .replace(device_playback.engine());
-        let control = device_playback.control();
-        control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
-        *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
-        let mut playback: Box<dyn AudioPlayback> = Box::new(device_playback);
+        // Shell playback renders remote call audio on the app's playback bus,
+        // which is the VoiceProcessingIO echo reference (docs/audio-media.md);
+        // the bundled device engine is the fallback when no callback is set.
+        let mut playback: Box<dyn AudioPlayback> = match *AUDIO_PLAYBACK_CB.lock().unwrap() {
+            Some((ctx, cb)) => Box::new(PacedPlayback::new(input, Box::new(move |pcm| {
+                // SAFETY: the shell copies before returning (documented contract).
+                unsafe {
+                    (cb)(
+                        ctx as *const c_void,
+                        pcm.as_ptr(),
+                        pcm.len(),
+                        input.sample_rate,
+                        input.channels,
+                        0,
+                    )
+                }
+            }))),
+            None => {
+                let device = OUTPUT_DEVICE.lock().unwrap().clone();
+                let device_playback = DevicePlayback::open(device, input).await?;
+                PLAYBACK_ENGINE
+                    .lock()
+                    .unwrap()
+                    .replace(device_playback.engine());
+                let control = device_playback.control();
+                control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
+                *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
+                Box::new(device_playback)
+            }
+        };
         // Do not start the speaker on the first arriving packet. A short
         // startup prebuffer absorbs normal network/decoder scheduling
         // jitter without turning the first late packet into a click.

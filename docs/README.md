@@ -59,7 +59,7 @@ kept because it records decisions; **design** = not all implemented.
 | --- | --- |
 | `audio-media.md` | audio capture/playback status; the single in-app audio owner (`AudioIO`: one mic tap + one playback bus, one session), the capture-ownership rule |
 | `video-media.md` | video capture/encode status |
-| `media-adapter-seam.md` | `video-frame.jpg` polling, seams, bundled playback |
+| `media-adapter-seam.md` | `video-frame.jpg` polling, seams, bundled playback / shell playback callback |
 
 ## Artifacts and agents
 

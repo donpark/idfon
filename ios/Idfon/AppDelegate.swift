@@ -1,3 +1,4 @@
+import AVFAudio
 import UIKit
 
 @main
@@ -7,7 +8,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// Build stamp for device E2E: bumped on every fix round and confirmed in
     /// the device console before testing. The stale-binary trap (testing an
     /// old install while believing it is new) has cost several rounds.
-    static let buildStamp = "2026-10-17.onebar3"
+    static let buildStamp = "2026-10-18.aec1"
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         idfonLog("idfon build stamp \(Self.buildStamp)")
@@ -36,6 +37,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         } else {
             warmSpeechOnActivation = true
         }
+        // Remote call audio renders on AudioIO's playback bus — the VPIO echo
+        // reference (docs/audio-media.md). Registered at launch so every
+        // subscribe path (audio and video calls) goes through it.
+        AudioPlaybackSink.shared.register()
         setVideoRotation()
         smokeCheckStatus()
         registerVoiceEngine()
@@ -414,4 +419,48 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
         }
     }
+}
+
+/// Plays decoded call audio from the Rust bridge (`media_audio_set_playback_cb`)
+/// on the app's single playback bus (`AudioIO`), which is the VoiceProcessingIO
+/// echo reference: remote audio on any other graph cannot be echo-cancelled.
+/// Rust paces frames through its jitter buffer (`seam::PacedPlayback`) and
+/// never drops, so each chunk is scheduled as it arrives.
+final class AudioPlaybackSink {
+    static let shared = AudioPlaybackSink()
+    /// The bridge's decode format: interleaved f32 mono @ 48 kHz.
+    private let format = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 48_000,
+        channels: 1,
+        interleaved: false
+    )!
+
+    func register() {
+        _ = media_audio_set_playback_cb(nil, audioPlaybackCallback)
+    }
+
+    fileprivate func enqueue(_ data: Data) {
+        let frames = data.count / 4
+        guard frames > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))
+        else { return }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        if let dst = buffer.floatChannelData?[0] {
+            data.withUnsafeBytes { raw in
+                guard let src = raw.bindMemory(to: Float.self).baseAddress else { return }
+                dst.update(from: src, count: frames)
+            }
+        }
+        AudioIO.shared.playStream(buffer)
+    }
+}
+
+/// C trampoline for `media_audio_set_playback_cb`; the buffer is borrowed, so
+/// copy before returning (documented contract).
+private let audioPlaybackCallback: @convention(c) (
+    UnsafeRawPointer?, UnsafePointer<UInt8>?, Int, UInt32, UInt32, UInt64
+) -> Void = { _, data, len, _, _, _ in
+    guard let data, len > 0 else { return }
+    AudioPlaybackSink.shared.enqueue(Data(bytes: data, count: len))
 }
