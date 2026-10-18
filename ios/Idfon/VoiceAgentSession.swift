@@ -143,7 +143,7 @@ final class VoiceAgentSession: NSObject {
                 // the medium, never the model's context (docs/session-context.md).
                 // Sent early; the engine prep and greeting that follow give the
                 // clear time to land.
-                try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
+                _ = try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
             }
             guard !stopRequested else { finish(); return }
             // Per-contact on-device engines (else the app defaults). Resolved

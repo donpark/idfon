@@ -36,6 +36,11 @@ final class CallKitController: NSObject, CXProviderDelegate {
         /// The system itself ended the call (CXEndCallAction, provider reset):
         /// the mirror must not report the end back.
         var endedBySystem = false
+        /// The system answered the call (CXAnswerCallAction from the unified
+        /// UX): the mirror must not request the answer back.
+        var answeredBySystem = false
+        /// An in-app answer was already mirrored to the system.
+        var answerMirrored = false
     }
 
     /// The call CallKit is presenting, if any.
@@ -76,8 +81,10 @@ final class CallKitController: NSObject, CXProviderDelegate {
 
     /// Push-first ring (P2): the payload's `call_uuid` is the caller's
     /// `CallUUID.from(invite ticket)`, so the envelope dedupes onto this call
-    /// when it lands. Reported before anything else — a VoIP push that does
-    /// not result in a reported call is grounds for app termination.
+    /// when it lands. The only path that reports a ring — one that arrived
+    /// over iroh never gets a system bar (#7). Reported before anything else —
+    /// a VoIP push that does not result in a reported call is grounds for app
+    /// termination.
     /// `endImmediately` serves `mustReport` pushes for a bar-mode channel:
     /// report first, end once the report completes (never before — ending a
     /// call whose registration has not completed fails the report, #58).
@@ -251,32 +258,6 @@ final class CallKitController: NSObject, CXProviderDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: work)
     }
 
-    /// Reports a ringing call for an accepted incoming invite. A second invite
-    /// from the same peer (supersede/redelivery) keeps the ring already up —
-    /// the machines hold the newest ticket, the UUID is presentation identity.
-    func presentIncoming(peerId: String, name: String?, invite: LiveInvite) {
-        if let call = current, call.peerId == peerId, !call.outgoing { return }
-        guard current == nil else {
-            idfonLog("idfon callkit: invite ignored — a call is already up")
-            return
-        }
-        let uuid = CallUUID.from(ticket: invite.ticket)
-        let update = callUpdate(name: name, hasVideo: invite.isCall)
-        current = Call(
-            uuid: uuid, peerId: peerId,
-            owner: invite.isCall ? .video : .live,
-            video: invite.isCall, outgoing: false)
-        AudioIO.shared.callKitWillStart()
-        provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
-            guard let error else { return }
-            DispatchQueue.main.async {
-                idfonError("idfon callkit: incoming report failed: \(error.localizedDescription)")
-                self?.abandonToBar(peerId: peerId)
-            }
-        }
-        refreshName(uuid: uuid, peerId: peerId)
-    }
-
     // MARK: - Outgoing
 
     /// Wraps a machine's dial in the system call UI: `body` runs when the
@@ -313,7 +294,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
     func mirror(owner: Owner, phase: Phase) {
         switch phase {
         case .incoming:
-            break // presentIncoming already reported the ring
+            break // the ring was reported when it arrived (presentPush)
         case .calling:
             guard var call = current, call.owner == owner, call.outgoing,
                   !call.connectingReported else { return }
@@ -321,8 +302,22 @@ final class CallKitController: NSObject, CXProviderDelegate {
             current = call
             provider.reportOutgoingCall(with: call.uuid, startedConnectingAt: Date())
         case .inCall:
-            guard var call = current, call.owner == owner, call.outgoing,
-                  !call.connectedReported else { return }
+            guard var call = current, call.owner == owner else { return }
+            guard call.outgoing else {
+                // Answered in-app while the system call rings: request the
+                // matching CXAnswerCallAction so the unified UX follows —
+                // without it the system UI rings forever on an answered call.
+                guard !call.answeredBySystem, !call.answerMirrored else { return }
+                call.answerMirrored = true
+                current = call
+                callController.request(CXTransaction(action: CXAnswerCallAction(call: call.uuid))) { error in
+                    if let error {
+                        idfonError("idfon callkit: answer mirror failed: \(error.localizedDescription)")
+                    }
+                }
+                return
+            }
+            guard !call.connectedReported else { return }
             if !call.connectingReported {
                 call.connectingReported = true
                 provider.reportOutgoingCall(with: call.uuid, startedConnectingAt: Date())
@@ -386,12 +381,16 @@ final class CallKitController: NSObject, CXProviderDelegate {
 
     private func perform(_ action: CXAction, gate: ActionOnce) {
         switch action {
-        case let start as CXStartCallAction:
+        case is CXStartCallAction:
             let body = startBody
             startBody = nil
             body?() // the machine's dial: publish + invite
             gate.fulfill()
-        case let answer as CXAnswerCallAction:
+        case is CXAnswerCallAction:
+            if var call = current {
+                call.answeredBySystem = true // the system answered; don't mirror back
+                current = call
+            }
             // Answer whichever machine holds the invite: the push's has_video
             // (owner) can disagree with the envelope's media line, and a
             // wrong-owner answer used to vanish silently (#51 E2E).
@@ -407,7 +406,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
                 return
             }
             gate.fulfill()
-        case let end as CXEndCallAction:
+        case is CXEndCallAction:
             // The user's end must reset the push-first state even when the
             // machines never saw the call (the invite never arrived): nothing
             // else clears `current`/`pendingAnswer`, and the UI then hangs
@@ -417,21 +416,25 @@ final class CallKitController: NSObject, CXProviderDelegate {
             if var call = current {
                 call.endedBySystem = true // the end is the system's; don't report back
                 current = call
-                let machineIdle: Bool
-                switch call.owner {
-                case .live:
-                    machineIdle = LiveCall.shared.state == .idle
-                    if case .incoming = LiveCall.shared.state { LiveCall.shared.decline() }
-                    else { LiveCall.shared.hangUp() }
-                case .video:
-                    machineIdle = VideoCall.shared.state == .idle
-                    if VideoCall.shared.state == .incoming { VideoCall.shared.decline() }
-                    else { VideoCall.shared.hangUp() }
+                // Act on whichever machine holds the call — the answer
+                // action's dispatch rule: `owner` (the push's has_video) can
+                // disagree with the envelope's media line, and a wrong-owner
+                // end declined an idle machine while the ring lived on
+                // ("reject does nothing").
+                if VideoCall.shared.state == .incoming {
+                    VideoCall.shared.decline()
+                } else if case .incoming = LiveCall.shared.state {
+                    LiveCall.shared.decline()
+                } else if call.owner == .video {
+                    VideoCall.shared.hangUp()
+                } else {
+                    LiveCall.shared.hangUp()
                 }
-                if machineIdle {
-                    current = nil
-                    AudioIO.shared.callKitDidEnd()
-                }
+                // Clear in this turn regardless: the mirror can miss a call
+                // whose `owner` disagrees with the holder, and a stale
+                // `current` blocks every later ring.
+                current = nil
+                AudioIO.shared.callKitDidEnd()
             }
             gate.fulfill()
         case let muted as CXSetMutedCallAction:
@@ -449,7 +452,8 @@ final class CallKitController: NSObject, CXProviderDelegate {
 
     /// Settles a CXAction exactly once: the main-actor path and the deadline
     /// fallback race for it (double-settling a CXAction is undefined).
-    private final class ActionOnce {
+    /// @unchecked Sendable: state is NSLock-guarded.
+    private final class ActionOnce: @unchecked Sendable {
         private let lock = NSLock()
         private var action: CXAction?
         init(_ action: CXAction) { self.action = action }

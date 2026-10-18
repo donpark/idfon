@@ -145,9 +145,10 @@ true, so every call publishes them. The host fills them from the active machine'
 - `hitTest` returns `nil` when the hit lands on the transparent root view (anything not a
   bar), so the app underneath stays fully interactive. `isHidden = true` when there are no
   models, so an empty overlay costs nothing.
-- Incoming-call surface lives **inside the Bar** (§7 PROPOSAL 1); no second ringing window,
-  so the CallKit path trivially cannot double-present — the host simply never produces
-  `.incoming` for CallKit-mode channels.
+- Incoming-call surface lives **inside the Bar** (§7 PROPOSAL 1); no second ringing window.
+  The arrival transport decides which bar: a ring push → the CallKit bar (the Bar stays out
+  of `.incoming` while that call is up); a ring over iroh → no CallKit bar exists, so the Bar
+  rings it. At most one incoming bar is ever on screen.
 
 ## 7. Resolved open decisions (PROPOSALs)
 

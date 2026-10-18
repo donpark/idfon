@@ -128,6 +128,12 @@ final class LiveCall {
         }
     }
 
+    /// The current call's generation ticket (the dialer's publish ticket),
+    /// nil when no call exists — lets a ring push recognize a call the
+    /// machines already own (the envelope is queued before the push is sent,
+    /// so on a live app it arrives first and the Bar owns the ring, #7).
+    var callGeneration: String? { callTicket }
+
     /// Records the call generation's identity (persisted so a crash can name
     /// it in `recoverStaleCall`).
     private func setCallTicket(_ ticket: String) {
@@ -236,7 +242,7 @@ final class LiveCall {
                     for: peerId, route: CapabilityTickets.voiceRoute(for: peerId))
                 // Reset the model history before the call: the session log is the
                 // medium, never the model's context (docs/session-context.md).
-                try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
+                _ = try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
                 let inviteOperation = try await client.sendText(
                     to: peerId,
                     "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)\nreturn_addr=\(encodedAddr)\(ContactVoiceSelection.inviteLines(for: peerId, context: inviteContext))"
@@ -380,7 +386,7 @@ final class LiveCall {
             media_live_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false))
+            _ = try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false))
         }
     }
 

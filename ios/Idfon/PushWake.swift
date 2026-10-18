@@ -148,9 +148,14 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         }
     }
 
+    // The SDK imports this requirement with a `completion:` label; the Swift
+    // name must match it exactly or the delegate never receives classic
+    // pushes (the "nearly matches" selector mismatch). The @objc selector
+    // pins the ObjC name older runtimes dispatch.
+    @objc(pushRegistry:didReceiveIncomingPushWithPayload:forType:withCompletionHandler:)
     func pushRegistry(
         _ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload,
-        for type: PKPushType, withCompletionHandler completion: @escaping () -> Void
+        for type: PKPushType, completion: @escaping () -> Void
     ) {
         idfonLog("idfon push: incoming (classic) type=\(type.rawValue)")
         handlePush(payload.dictionaryPayload, mustReport: true, completion)
@@ -203,9 +208,23 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
             } else {
                 let callerId = dict["caller_id"] as? String ?? ""
                 let hasVideo = (dict["has_video"] as? Bool) ?? false
-                // The callee's own channel mode decides who owns the ring —
-                // the sender's view of the channel may disagree (#47).
-                if IncomingCallRouter.shared.ringsViaSystem(for: callerId) {
+                // The arrival transport decides the surface (#7): the invite
+                // envelope is queued before the ring push is sent, so on a
+                // live app it arrives first and the Bar owns that ring — a
+                // system bar must never appear over it. A push for a call the
+                // machines do not own yet reports the system bar (the
+                // suspended-phone case): the app can be deactivated at any
+                // moment, so the system ring must exist before that happens.
+                let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
+                func ownedByBar(_ generation: String?) -> Bool {
+                    guard let generation else { return false }
+                    return CallUUID.from(ticket: generation) == uuid
+                }
+                let barOwnsCall = ownedByBar(LiveCall.shared.callGeneration)
+                    || ownedByBar(VideoCall.shared.callGeneration)
+                if barOwnsCall, !mustReport {
+                    idfonLog("idfon push: ring already arrived over iroh; the Bar owns it — no system bar")
+                } else if IncomingCallRouter.shared.ringsViaSystem(for: callerId) {
                     CallKitController.shared.presentPush(
                         callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
                 } else if mustReport {

@@ -191,7 +191,7 @@ So the mode is chosen when a channel is set up, by how reachable its person is e
 Both modes funnel into the **same call state machine** — the mode only selects who owns incoming-ring presentation. The routing point sits in front of `VideoCall`/`CallSession` `handleEnvelope`, keyed by the sending channel's configuration.
 
 * **Default: Live Activity Bar.** CallKit integration has landed (`docs/callkit-integration.md`): `bar` remains the default and `call_kit` is opt-in per channel. A channel never silently switches modes at runtime — a failed CallKit presentation falls back to the Bar explicitly (`forceBarFallback`).
-* **CallKit path must not double-present.** When CallKit owns the ring, the Bar stays out of the incoming state entirely (no second ringing surface) and reflects only the answered/active call.
+* **One incoming bar at a time, by arrival transport.** A ring push is always reported to CallKit (the app can be deactivated at any moment) and that system bar is the ring — the Bar stays out of `.incoming` while it is up. A ring that arrived over iroh never gets a system bar (the envelope beats the push on a live app), so the Bar rings it. Both answer routes land on the same machines; the ringtone stays single.
 * **An unreachable or disabled CallKit mode must not affect the Bar path.** The two are independent; the Bar is fully functional without PushKit, APNs, or VoIP entitlements.
 
 Incoming surface is **inline Answer/Decline in the Bar** (decided, implemented — no fullscreen
