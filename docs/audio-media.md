@@ -246,6 +246,11 @@ callback is registered — macOS keeps it).
 | `.voiceAgent` | `.playAndRecord` / `.voiceChat` | on-device cascade |
 | `.recording` | `.playAndRecord` / `.default` (+ speaker) | voice memos |
 
+On `call_kit` channels there is no profile pick: the same `.liveCall` config
+(`applyVoiceSessionConfig`) is set on the *inactive* session before the call is
+reported, and CallKit owns activation from there (docs/callkit-integration.md
+§6).
+
 Two reasons this is load-bearing, not tidiness:
 
 - **AEC needs one graph.** Voice processing cancels only audio played on the

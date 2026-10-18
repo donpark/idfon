@@ -148,10 +148,19 @@ final class AudioIO: AudioSource, AudioSink {
     }
 
     /// CallKit is taking over the session for a call (before the report).
+    ///
+    /// Configure the session now, on the inactive session — Apple's CallKit
+    /// checklist: the app sets `PlayAndRecord` + `VoiceChat`, CallKit does the
+    /// activation. Left unset, the system can hand back a session that is not
+    /// a voice session and the AEC tuning is wrong on the speakerphone path
+    /// (docs/callkit-integration.md §6). Never *activate* here: starting audio
+    /// before `didActivate` is the documented one-way-audio bug.
     func callKitWillStart() {
         runOnAudio { [self] in
             callKitOwnsSession = true
             callKitActivated = false
+            applyVoiceSessionConfig()
+            markOutput("output at callkit willStart")
         }
     }
 
@@ -159,10 +168,9 @@ final class AudioIO: AudioSource, AudioSink {
     func callKitDidActivate() {
         runOnAudio { [self] in
             callKitActivated = true
-            // Category/mode are the system's on this path (session
-            // configuration is the documented one-way-audio bug here) — log
-            // what CallKit actually activated so a device check can confirm
-            // it is a voice session.
+            // The pre-report config was ours; activation is the system's —
+            // log what CallKit actually activated so a device check can
+            // confirm the voice session survived (or show what replaced it).
             markOutput("output at callkit didActivate")
             guard let pending = pendingStart else { return }
             pendingStart = nil
@@ -277,19 +285,16 @@ final class AudioIO: AudioSource, AudioSink {
     private func configureSession(_ profile: Profile) {
         if sessionOwnerIsCallKit {
             // CallKit's activated session is in control (category, route,
-            // activation): configuring here is the one-way-audio bug.
+            // activation): the category/mode were set on the inactive session
+            // in `callKitWillStart`; configuring or activating here is the
+            // one-way-audio bug.
             Automation.mark("audio: session owned by callkit — not configuring")
             return
         }
         let session = AVAudioSession.sharedInstance()
         switch profile {
         case .liveCall:
-            // Set the mode in the category call; move the route override last
-            // (setMode(.voiceChat) after the override re-evaluates the route).
-            try? session.setCategory(
-                .playAndRecord, mode: .voiceChat,
-                options: [.allowBluetoothHFP, .defaultToSpeaker])
-            try? session.setPreferredIOBufferDuration(0.01)
+            applyVoiceSessionConfig()
         case .voiceAgent:
             try? session.setCategory(
                 .playAndRecord, mode: .voiceChat,
@@ -310,6 +315,20 @@ final class AudioIO: AudioSource, AudioSink {
         Automation.mark(
             "audio: session category=\(session.category.rawValue) mode=\(session.mode.rawValue)"
         )
+    }
+
+    /// The voice-call session shape: `.playAndRecord` + `.voiceChat` (VPIO's
+    /// AEC mode) with the speaker default. Set on the *inactive* session;
+    /// activation belongs to the owner — the app on the Bar path, CallKit on
+    /// `call_kit` channels (where this runs before the report).
+    private func applyVoiceSessionConfig() {
+        let session = AVAudioSession.sharedInstance()
+        // Set the mode in the category call; move the route override last
+        // (setMode(.voiceChat) after the override re-evaluates the route).
+        try? session.setCategory(
+            .playAndRecord, mode: .voiceChat,
+            options: [.allowBluetoothHFP, .defaultToSpeaker])
+        try? session.setPreferredIOBufferDuration(0.01)
     }
 
     private func installSessionObservers() {
