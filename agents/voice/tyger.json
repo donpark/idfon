@@ -1,0 +1,5 @@
+{
+  "_comment": "Live config for the TYGER relay (docs/voice-tyger.md, P0a / Shape 1): the holder runs backend=relay (caller frames over the bridge SSE, agent audio back via /live/audio); integrations/eve-idfon-voice/tyger-relay.mjs bridges them to a tyger-s2s stack over its /ws, which owns turn-taking (EARS), the reply and the speech (MOUTH). Serve with EVE_LIVE_CONFIG=agents/voice/tyger.json scripts/voice-serve.sh, then scripts/tyger-live-relay.sh. The Relay backend does no STT/TTS itself, so no engine block is needed here; tyger-side knobs are relay env vars (TYGER_URL, TYGER_API_SECRET, TYGER_VOICE, TYGER_SET, TYGER_TAG_LAG_MS).",
+  "backend": "relay",
+  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" }
+}
