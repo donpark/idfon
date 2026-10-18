@@ -53,12 +53,13 @@ final class IncomingCallRouter {
     /// Display name for the system call UI, or nil when no named peer matches.
     func name(for ref: String) -> String? { names[ref] }
 
-    /// CallKit owns incoming-ring presentation for this channel (strict: an
-    /// explicit `call_kit` record — gates dials, where `bar` is the product
-    /// default for anything unknown).
+    /// CallKit owns incoming-ring presentation — always, per platform
+    /// design (iOS: the system call UI is THE surface; macOS has no CallKit
+    /// and uses the app's Bar instead). The only demotion is the fallback:
+    /// a failed CallKit report hands the channel to the Bar
+    /// (`forceBarFallback`, an explicit switch, never a silent mode change).
     func ownsPresentation(for peerId: String) -> Bool {
-        mode(for: peerId) == .callKit
-            && CallKitIncomingPresenter.isAvailable
+        CallKitIncomingPresenter.isAvailable
             && !barFallback.contains(peerId)
     }
 

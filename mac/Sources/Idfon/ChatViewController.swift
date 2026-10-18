@@ -1589,13 +1589,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         turnMode.target = self
         turnMode.action = #selector(turnModePicked(_:))
 
-        // Incoming-call presentation for this channel (`Peer.call_mode`): the
-        // Bar in-app, or the system call screen (docs/callkit-integration.md).
-        let ringMode = NSPopUpButton()
-        ringMode.addItems(withTitles: ["Bar", "System ring"])
-        ringMode.target = self
-        ringMode.action = #selector(ringModePicked(_:))
-
         let stack = NSStackView(views: [
             NSTextField(labelWithString: peer.displayName),
             endpoint,
@@ -1605,8 +1598,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             NSTextField(labelWithString: "Generation"), generation,
             NSTextField(labelWithString: "Voice turns"),
             NSTextField(labelWithString: "Mode"), turnMode,
-            NSTextField(labelWithString: "Calls"),
-            NSTextField(labelWithString: "Incoming ring"), ringMode,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -1623,11 +1614,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         Task { @MainActor in
             self.voiceCatalog = await VoiceCatalog.options(for: peerID, client: client)
             self.rebuildSpeech()
-            if let list = try? await client.request(method: "peers"),
-                let mode = list["peers"]?.asArray?.first(where: { $0["id"]?.stringValue == peerID })?["call_mode"]?.stringValue
-            {
-                ringMode.selectItem(at: mode == "call_kit" ? 1 : 0)
-            }
         }
     }
 
@@ -1693,21 +1679,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let mode = modes[sender.indexOfSelectedItem]
         ContactVoiceTurnModes.set(mode, for: peer.id)
         showBanner("Voice turns: \(mode.title)")
-    }
-
-    @objc private func ringModePicked(_ sender: NSPopUpButton) {
-        let systemRing = sender.indexOfSelectedItem == 1
-        let peerID = peer.id
-        let client = self.client
-        Task { @MainActor in
-            let identity = ((try? await client.request(method: "status"))?["identity"]?["id"]?.stringValue) ?? "default"
-            _ = try? await client.request(method: "peer.update", params: [
-                "ref": AnyEncodable(peerID),
-                "identity": AnyEncodable(identity),
-                "call_mode": AnyEncodable(systemRing ? "call_kit" : "bar"),
-            ])
-        }
-        showBanner("Calls: \(systemRing ? "System ring" : "Bar")")
     }
 
     @objc private func copyEndpointTapped() {

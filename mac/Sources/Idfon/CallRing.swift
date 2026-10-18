@@ -18,20 +18,22 @@ enum CallRing {
     /// `ref` resolves to the canonical peer id (ring URLs and ticket keys are
     /// id-keyed); `inviteTicket` is the media ticket the invite carries, so
     /// the callee's push report and the envelope land on one system call.
-    /// Non-`call_kit` channels get no wake.
+    /// Every call ring-pushes per platform design: iOS callees get the system
+    /// call UI (and the wake when terminated); macOS callees register no VoIP
+    /// token and simply ring in their app's Bar.
     static func ring(peer ref: String, inviteTicket: String, hasVideo: Bool) async {
         guard EdgeClient.shared.baseURL != nil else {
             idfonLog("idfon ring: no edge configured; skipping")
             return
         }
-        guard let match = await peerRecord(for: ref), match.usesWake else {
-            idfonLog("idfon ring: \(ref) is not a call_kit channel; no wake")
+        guard let id = await peerRecord(for: ref) else {
+            idfonLog("idfon ring: \(ref) is not a known peer; no wake")
             return
         }
         let callUUID = CallUUID.from(ticket: inviteTicket).uuidString
-        idfonLog("idfon ring: peer=\(match.id) call=\(callUUID)")
-        pendingRing = (match.id, callUUID)
-        send(peer: match.id, action: "ring", callUUID: callUUID, hasVideo: hasVideo)
+        idfonLog("idfon ring: peer=\(id) call=\(callUUID)")
+        pendingRing = (id, callUUID)
+        send(peer: id, action: "ring", callUUID: callUUID, hasVideo: hasVideo)
     }
 
     /// Retract the unanswered ring (caller hung up before answer).
@@ -47,10 +49,8 @@ enum CallRing {
     /// ring-over (its machine is already in call).
     static func callConnected() { cancelRing() }
 
-    /// The peer record behind a ref: canonical id and whether the channel
-    /// selects the system-call wake (`call_mode` on the record — the Bar is
-    /// for people who are already here, docs/ui-design-notes.md §6).
-    private static func peerRecord(for ref: String) async -> (id: String, usesWake: Bool)? {
+    /// The peer record behind a ref: canonical id.
+    private static func peerRecord(for ref: String) async -> String? {
         guard let list = try? await client.request(method: "peers"),
             let peers = list["peers"]?.asArray
         else { return nil }
@@ -58,7 +58,7 @@ enum CallRing {
             $0["id"]?.stringValue == ref || $0["name"]?.stringValue == ref
                 || $0["aliases"]?.asArray?.contains { $0.stringValue == ref } == true
         }), let id = match["id"]?.stringValue, !id.isEmpty else { return nil }
-        return (id, match["call_mode"]?.stringValue == "call_kit")
+        return id
     }
 
     private static func send(peer: String, action: String, callUUID: String, hasVideo: Bool) {
