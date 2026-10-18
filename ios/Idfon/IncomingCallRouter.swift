@@ -13,14 +13,13 @@ import Foundation
 final class IncomingCallRouter {
     static let shared = IncomingCallRouter()
 
-    /// The CallKit presentation gate (docs/callkit-integration.md).
+    /// The CallKit platform gate (docs/callkit-integration.md): iOS can
+    /// present system rings at all. Presentation happens only on the ring-push
+    /// path (`presentPush`) — a ring that arrived over iroh never gets a
+    /// system bar.
     @MainActor
     enum CallKitIncomingPresenter {
         static let isAvailable = true
-
-        static func present(peerId: String, name: String?, invite: LiveInvite) {
-            CallKitController.shared.presentIncoming(peerId: peerId, name: name, invite: invite)
-        }
     }
 
     private let client = IdfonClient()
@@ -105,37 +104,19 @@ final class IncomingCallRouter {
         UserDefaults.standard.set(modes.mapValues(\.wireValue), forKey: Self.modesKey)
     }
 
-    /// Routes an invite envelope from `peerId`: a fresh incoming invite on a
-    /// `call_kit` channel is reported to CallKit in the same turn and then
-    /// handed to the machines — the mode governs presentation, not transport.
-    /// Only invites go through here; `call_started`/`call_stopped` stay direct
-    /// to both machines.
+    /// Routes an invite envelope from `peerId` and hands it to the machines.
+    /// The arrival transport decides the surface (docs/callkit-integration.md
+    /// #7): a ring that arrived over iroh never gets a CallKit bar — only the
+    /// ring-push path reports one — so the Bar may ring it. Only invites go
+    /// through here; `call_started`/`call_stopped` stay direct to both
+    /// machines.
     func route(peerId: String, envelope text: String) {
-        let viaSystem = ownsPresentation(for: peerId)
-        idfonLog("idfon incoming-call route peer=\(peerId) mode=\(mode(for: peerId).rawValue) callkit=\(viaSystem)")
-        if viaSystem,
-           let invite = LiveInvite.parse(text),
-           invite.isStart, !invite.isReturn, !invite.ticket.isEmpty,
-           machineWouldAccept(invite: invite, from: peerId) {
-            CallKitIncomingPresenter.present(peerId: peerId, name: name(for: peerId), invite: invite)
-        }
+        idfonLog("idfon incoming-call route peer=\(peerId) mode=\(mode(for: peerId).rawValue)")
         LiveCall.shared.handleEnvelope(peer: peerId, text)
         VideoCall.shared.handleEnvelope(peer: peerId, text)
         // A push-first wake answered while the invite was in flight completes
         // now that a machine can answer (docs/callkit-integration.md, P2).
         CallKitController.shared.envelopeArrived()
-    }
-
-    /// Mirrors the machines' accept condition (they remain the source of
-    /// truth; this only avoids reporting a ring the machines would drop).
-    private func machineWouldAccept(invite: LiveInvite, from peerId: String) -> Bool {
-        if invite.isCall {
-            return VideoCall.shared.state == .idle
-                || (VideoCall.shared.state == .incoming && VideoCall.shared.activePeer == peerId)
-        }
-        guard invite.media == nil else { return false } // file-share invites are not calls
-        return LiveCall.shared.state == .idle
-            || LiveCall.shared.state == .incoming(peer: peerId)
     }
 
     /// Sets a channel's incoming-call mode and refreshes the cache.

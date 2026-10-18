@@ -112,8 +112,15 @@ instance at app start. Flipping
    capture + playback start only in `provider(_:didActivate:)` and stop in
    `provider(_:didDeactivate:)`. Starting audio earlier is the documented
    one-way-audio bug. `CallTones` is silent on this path (the system ringtone).
-7. **No double-presentation** (ui-design-notes §6): when CallKit owns the ring the
-   Bar never enters `.incoming`; it renders only the answered/active call. The
+7. **One incoming bar at a time, by arrival transport** (ui-design-notes §6): a
+   ring **push** is always reported to CallKit — the app can be deactivated at
+   any moment, so the system bar must exist before it does — and while that
+   system call is up it IS the ring (the Bar stays out of `.incoming`). A ring
+   that arrived over **iroh** never gets a system bar: the envelope is queued
+   before the push is sent, so on a live app it wins the race and the Bar rings
+   it (a late push for that generation is ignored). The Bar's appearance is
+   thus fully ours: it rings exactly when no system bar exists. The
+   in-progress Bar after an answer is unaffected. Exactly one ringtone. The
    deferral behavior for unavailable CallKit stays exactly as-is.
 8. **Races to design against** (the verified bug list below): serialize all
    `CXTransaction` requests on one queue and never touch a call UUID before its
@@ -219,7 +226,7 @@ iOS 27.0.1, sandbox APNs): token registration, mac→phone ring with the app
 force-quit on the lock screen (cold launch → system call UI), cancel →
 same-turn dismiss, stale cancel → no-op, caller names resolve. Remaining:
 answer → two-way audio in the same flow, a video ring, and the
-ring-with-app-alive double-present check.
+ring-with-app-alive both-surfaces check (Bar answer + system UI stay coherent).
 
 ### Open threads (updated 2026-10-17 — pick up here)
 

@@ -7,8 +7,9 @@ struct LiveActivityBarModel: Equatable {
     /// §3 phases. There is no staging phase: a call is started from the
     /// idle chrome's `Call` button and always begins mic-only, so idle has no
     /// stream toggles to derive a staging state from.
-    /// `.incoming` is only ever set on the Bar path — when CallKit owns the
-    /// ring the host never produces it (§6 "must not double-present").
+    /// `.incoming` renders on one surface at a time: the Bar only when no
+    /// CallKit call is up (the host suppresses it while the system bar is the
+    /// ring); both answer routes land on the machines.
     enum Phase: Equatable { case idle, calling, incoming, inCall }
     enum Density: Equatable { case expanded, compact }
 

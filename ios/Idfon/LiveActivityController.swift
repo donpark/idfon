@@ -285,16 +285,15 @@ final class LiveActivityController: NSObject {
         let previous = phase
         let machine = ActiveMachine.current
         if machine != nil { pendingCall = nil }
+        // One incoming bar at a time, by arrival transport
+        // (docs/callkit-integration.md #7): a ring push is always reported to
+        // CallKit (the app can be deactivated at any moment) and that system
+        // bar IS the ring — the Bar stays out of `.incoming` while the call is
+        // up. A ring that arrived over iroh never gets a system bar, so the
+        // Bar rings it — its appearance is fully ours to control. The
+        // in-progress Bar after an answer is unaffected.
         let next: LiveActivityBarModel.Phase
-        if machine?.phase == .incoming, let peer = machine?.peer,
-           CallKitController.shared.isRinging(peer),
-           UIApplication.shared.applicationState != .active {
-            // Backgrounded/locked: the system call UI owns the ring (the
-            // #51 E2E double-present rule). Foregrounded, the app overlay IS
-            // the answer surface even while CallKit rings: the system banner
-            // auto-hides into the status bar after a few seconds, so a
-            // suppressed Bar leaves the user with no way to answer (observed:
-            // unlock into Contacts with no answer surface anywhere).
+        if machine?.phase == .incoming, CallKitController.shared.current?.outgoing == false {
             next = .idle
         } else {
             next = machine?.phase ?? (pendingCall != nil ? .calling : .idle)
@@ -325,9 +324,8 @@ final class LiveActivityController: NSObject {
         // Switching to the call's chat happens when the user ANSWERS, not when
         // the call arrives (the ring lives on whatever screen is up). The
         // machine enters .inCall only via answer(); .calling → .inCall is the
-        // remote side answering our dial (already in its chat). The Bar's own
-        // previous phase may be .idle — a CallKit ring keeps the Bar out of
-        // .incoming (the suppression above) — so key on the machine states.
+        // remote side answering our dial (already in its chat) — from either
+        // answer surface, the Bar or the system call UI.
         if next == .inCall, previous != .inCall, previous != .calling,
            let peer = machine?.peer, !peer.isEmpty {
             openPeerThreadIfNeeded(peer)
@@ -383,15 +381,12 @@ final class LiveActivityController: NSObject {
             model.rows = transfers.rows(for: callPeer)
             // The in-call surface shows on all non-modal screens (the
             // floating-panel design): expanded whenever a call is live, on
-            // whatever screen is up — not just the call's own thread.
-            // Compact exceptions: D19's passive minimize on the call's own
-            // thread, and while CallKit owns the ring — there the system
-            // banner/lock-screen UI is the answer surface and the Bar is a
-            // status pill only (no duplicated answer/reject, #51 E2E).
-            let callKitRings = phase == .incoming
-                && CallKitController.shared.isRinging(callPeer)
-            model.density = (visibleIsCallPeer && passiveMinimize) || callKitRings
-                ? .compact : .expanded
+            // whatever screen is up — not just the call's own thread. The one
+            // compact exception is D19's passive minimize on the call's own
+            // thread. The incoming panel renders only when no system call is
+            // up (sync() suppresses it while the CallKit bar is the ring), so
+            // its Answer/Decline are never a second answer surface.
+            model.density = (visibleIsCallPeer && passiveMinimize) ? .compact : .expanded
             // The visible thread's own call shows identity in the nav title
             // (D8), so the panel drops it and keeps stats + controls (D2).
             model.statusOnly = visibleIsCallPeer && (phase == .calling || phase == .inCall)

@@ -29,4 +29,38 @@ RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-miphoneos-version-min=17.0" CARGO_PROFILE
   cargo build --release -p idfon-director --features afm --target aarch64-apple-ios
 cp target/aarch64-apple-ios/release/libidfon_director.a "$ios_dir/Vendor/device/"
 
+# The fm-rs Swift layer (FoundationModels bindings) is compiled with min
+# iOS 26 and rides inside this archive, so ld warns per object when the app
+# links at 17.0. The app weak-links FoundationModels and only runs the agent
+# on iOS 26+, so rewrite those members' LC_BUILD_VERSION minos to the link
+# target — load-command metadata only, bytes otherwise untouched.
+staged="$ios_dir/Vendor/device/libidfon_director.a"
+tmp=$(mktemp -d)
+( cd "$tmp" && ar x "$staged" )
+python3 - "$tmp" <<'PY'
+import glob, os, struct, sys
+patched = 0
+for path in glob.glob(os.path.join(sys.argv[1], "*.o")):
+    data = bytearray(open(path, "rb").read())
+    if len(data) < 32 or struct.unpack_from("<I", data, 0)[0] != 0xfeedfacf:
+        continue  # not a 64-bit Mach-O object
+    ncmds = struct.unpack_from("<I", data, 16)[0]
+    off, changed = 32, False
+    for _ in range(ncmds):
+        cmd, cmdsize = struct.unpack_from("<II", data, off)
+        if cmd == 0x32 and cmdsize >= 16:  # LC_BUILD_VERSION
+            minos = struct.unpack_from("<I", data, off + 12)[0]
+            if minos >> 16 >= 26:
+                struct.pack_into("<I", data, off + 12, 17 << 16)  # 17.0
+                changed = True
+        off += cmdsize
+    if changed:
+        open(path, "wb").write(data)
+        patched += 1
+print(f"minos-patched {patched} fm-rs objects to iOS 17.0")
+PY
+( cd "$tmp" && ar r "$staged" ./*.o >/dev/null )
+ranlib "$staged"
+rm -rf "$tmp"
+
 echo "staged $ios_dir/Vendor/device/libidfon_director.a"

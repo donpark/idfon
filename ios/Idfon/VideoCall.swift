@@ -115,8 +115,19 @@ final class VideoCall: NSObject {
     private(set) var peer: String?
     /// The peer of the call in flight, including an unanswered incoming call —
     /// where only `pendingInvite` knows the caller. UI and message routing must
-    /// read this, not `peer`: during `.incoming`, `peer` is still nil.
-    var activePeer: String? { peer ?? pendingInvite?.peer }
+    /// read this, not `peer`: during `.incoming`, `peer` is still nil. Falls
+    /// back to the persisted peer (the #51 wedge: `.incoming` with the invite
+    /// tuple missing must not render as "no call" and make Decline a no-op).
+    var activePeer: String? {
+        peer ?? pendingInvite?.peer
+            ?? UserDefaults.standard.string(forKey: "idfon.video-call.peer")
+    }
+
+    /// The current call's generation ticket (the dialer's publish ticket),
+    /// nil when no call exists — lets a ring push recognize a call the
+    /// machines already own (the envelope is queued before the push is sent,
+    /// so on a live app it arrives first and the Bar owns the ring, #7).
+    var callGeneration: String? { callTicket }
     private(set) var lastError: String?
     private var pendingInvite: (peer: String, ticket: String)?
     /// The call generation's identity: the dialer's publish ticket (the
@@ -348,7 +359,7 @@ final class VideoCall: NSObject {
         // The invite tuple can be missing while the state is .incoming (the
         // #51 E2E "the CallKit answer had no effect"): fall back to the
         // stored generation so the answer never silently vanishes.
-        let pending = pendingInvite ?? (peer: peer ?? "", ticket: callTicket ?? "")
+        let pending = pendingInvite ?? (peer: activePeer ?? "", ticket: callTicket ?? "")
         guard !pending.ticket.isEmpty, !pending.peer.isEmpty else {
             idfonLog("idfon video: answer ignored — no call generation")
             return
@@ -399,7 +410,11 @@ final class VideoCall: NSObject {
     }
 
     func decline() {
-        guard state == .incoming, let pending = pendingInvite else { return }
+        guard state == .incoming else { return }
+        // The invite tuple can be missing while the state is .incoming (the
+        // #51 wedge); `activePeer` still knows the caller, so Decline must
+        // work — a silently dead decline leaves the ring alive everywhere.
+        guard let peer = activePeer else { return }
         pendingInvite = nil
         state = .idle
         notify()
@@ -407,7 +422,7 @@ final class VideoCall: NSObject {
         // The ring brought the shared audio up; a decline must release it.
         AudioIO.shared.stop()
         let ticket = callTicket ?? ""
-        Task { try? await client.sendText(to: pending.peer, LiveInvite.build(action: "stop", ticket: ticket, call: true)) }
+        Task { try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true)) }
         clearCallTicket()
         UserDefaults.standard.removeObject(forKey: "idfon.video-call.peer")
     }
@@ -428,7 +443,7 @@ final class VideoCall: NSObject {
             media_video_stop()
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
-            try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true))
+            _ = try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: true))
         }
     }
 
