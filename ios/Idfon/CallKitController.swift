@@ -213,11 +213,13 @@ final class CallKitController: NSObject, CXProviderDelegate {
         pendingAnswerWork?.cancel()
         AudioIO.shared.callKitDidEnd()
         provider.reportCall(with: call.uuid, endedAt: Date(), reason: reason)
-        switch call.owner {
-        case .live:
-            if case .incoming = LiveCall.shared.state { LiveCall.shared.decline() }
-        case .video:
-            if VideoCall.shared.state == .incoming { VideoCall.shared.decline() }
+        // Decline whichever machine holds the ringing call (holder dispatch,
+        // like the answer action): `owner` can disagree with the envelope's
+        // media line, and a wrong-owner decline left the ring alive.
+        if VideoCall.shared.state == .incoming {
+            VideoCall.shared.decline()
+        } else if case .incoming = LiveCall.shared.state {
+            LiveCall.shared.decline()
         }
     }
 
@@ -233,6 +235,12 @@ final class CallKitController: NSObject, CXProviderDelegate {
             VideoCall.shared.answer()
         } else if case .incoming = LiveCall.shared.state {
             LiveCall.shared.answer()
+        }
+        // The deferred accept completes here too — same landing as an
+        // immediate accept (the accept handler owns the navigation).
+        if let ref = current?.peerId, !ref.isEmpty {
+            NotificationCenter.default.post(
+                name: .init("idfon.callkit.answered"), object: nil, userInfo: ["ref": ref])
         }
     }
 
@@ -356,12 +364,33 @@ final class CallKitController: NSObject, CXProviderDelegate {
 
     // MARK: - CXProviderDelegate (system queue → main actor)
 
-    nonisolated func provider(_ provider: CXProvider, didPerform action: CXAction) {
-        // Settle the action on a deadline: CXAction times out in ~5s and an
-        // unsettled answer hangs the system UI ("froze when I pressed answer",
-        // #61 — the same main-actor starvation as the push completion, #55).
-        // End always completes (the user's hang-up wins), anything else fails
-        // so CallKit rolls back and the call stays answerable.
+    // The SDK dispatches call actions through `provider(_:perform:)` overloads
+    // typed per action (Apple docs, CXProviderDelegate "Handling Call
+    // Actions"): a single `perform action: CXAction`/`didPerform` method
+    // matches none of the optional requirements and is silently never called
+    // (the E2E where the system Accept/Reject did nothing in-app).
+    nonisolated func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        dispatch(action)
+    }
+
+    nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        dispatch(action)
+    }
+
+    nonisolated func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        dispatch(action)
+    }
+
+    nonisolated func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        dispatch(action)
+    }
+
+    /// Settle the action on a deadline: CXAction times out in ~5s and an
+    /// unsettled answer hangs the system UI ("froze when I pressed answer",
+    /// #61 — the same main-actor starvation as the push completion, #55).
+    /// End always completes (the user's hang-up wins), anything else fails
+    /// so CallKit rolls back and the call stays answerable.
+    private nonisolated func dispatch(_ action: CXAction) {
         let gate = ActionOnce(action)
         DispatchQueue.global().asyncAfter(deadline: .now() + 3) { gate.timeout() }
         Task { @MainActor in self.perform(action, gate: gate) }
@@ -404,6 +433,13 @@ final class CallKitController: NSObject, CXProviderDelegate {
             } else {
                 gate.fail()
                 return
+            }
+            // Accepting lands on the caller's chat (docs/callkit-integration.md
+            // #7): hide the incoming bar, show the in-progress overlay, and
+            // navigate — the accept handler owns the navigation.
+            if let ref = current?.peerId, !ref.isEmpty {
+                NotificationCenter.default.post(
+                    name: .init("idfon.callkit.answered"), object: nil, userInfo: ["ref": ref])
             }
             gate.fulfill()
         case is CXEndCallAction:

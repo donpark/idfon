@@ -119,9 +119,11 @@ instance at app start. Flipping
    that arrived over **iroh** never gets a system bar: the envelope is queued
    before the push is sent, so on a live app it wins the race and the Bar rings
    it (a late push for that generation is ignored). The Bar's appearance is
-   thus fully ours: it rings exactly when no system bar exists. The
-   in-progress Bar after an answer is unaffected. Exactly one ringtone. The
-   deferral behavior for unavailable CallKit stays exactly as-is.
+   thus fully ours: it rings exactly when no system bar exists. Accepting from
+   either surface hides the incoming bar, shows the in-progress overlay, and
+   navigates to the caller's chat — the CallKit accept handler owns the
+   navigation. Exactly one ringtone. The deferral behavior for unavailable
+   CallKit stays exactly as-is.
 8. **Races to design against** (the verified bug list below): serialize all
    `CXTransaction` requests on one queue and never touch a call UUID before its
    start/answer action completed (unknownCallUUID, code 4); a superseded invite or
@@ -225,8 +227,10 @@ Checks/tests: edge unit tests landed (above). Device E2E proven (2026-10-17,
 iOS 27.0.1, sandbox APNs): token registration, mac→phone ring with the app
 force-quit on the lock screen (cold launch → system call UI), cancel →
 same-turn dismiss, stale cancel → no-op, caller names resolve. Remaining:
-answer → two-way audio in the same flow, a video ring, and the
-ring-with-app-alive both-surfaces check (Bar answer + system UI stay coherent).
+answer → two-way audio in the same flow, a video ring, the
+ring-with-app-alive both-surfaces check, and the system-UI action legs
+(accept lands in the caller's chat, reject ends the ring everywhere, mute
+syncs).
 
 ### Open threads (updated 2026-10-17 — pick up here)
 
@@ -268,13 +272,21 @@ these:
 - **#56 (open):** contact-ticket `account_id` vs `sender.peer_id` — pairing
   from the advertised ticket can never pass the message gate. Workaround:
   pair with `account_id` overridden to the sender's `sender.peer_id`.
+- **Delegate dispatch (landed 2026-10-17):** system-UI Accept/Reject/Mute
+  never reached the app — `provider(_:didPerform action: CXAction)` matches
+  none of `CXProviderDelegate`'s typed `provider(_:perform:)` overloads and
+  no warning fires. Verify fixes like this with `strings` on the binary
+  (troubleshooting.md).
 
 **Wake chain status (verified on hardware):** registration, push → system
 ring (survives — the five ring-killers are fixed: report-then-end race #58,
 mode-cache regression #57, stale-ring block #59, phantom cancels (test
 tooling), straggler stop #60 ticket-correlation), cancel → same-turn dismiss,
-stale-cancel no-op, caller names. Remaining: the answer-side freeze (#61)
-and then the audio leg (#51).
+stale-cancel no-op, caller names. The system-UI action path is fixed too
+(2026-10-17, `onebar2`): Accept/Reject/Mute were silent no-ops because the
+provider delegate's typed `provider(_:perform:)` overloads were missing —
+see troubleshooting.md for the silent-mismatch trap. Remaining: re-verify
+the system-UI action legs on device, then the audio leg (#51).
 - **Ring semantics (settled the hard way):** the **sender's** `call_mode`
   opt-in is the gate for system rings; the receiver-side gate was reverted
   (#47) because the wire collapses an unset `call_mode` into `bar`

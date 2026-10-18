@@ -250,6 +250,11 @@ final class LiveActivityController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(callkitBarFallback),
             name: .init("idfon.callkit.barFallback"), object: nil)
+        // A CallKit accept lands on the caller's chat (the accept handler's
+        // job — never a phase-transition heuristic downstream).
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(callkitAnswered),
+            name: .init("idfon.callkit.answered"), object: nil)
         // The incoming ring can start in the background (suppressed while the
         // system call UI owns the screen): re-derive on activation so the
         // overlay appears the moment the app comes forward (#51 E2E).
@@ -547,6 +552,11 @@ final class LiveActivityController: NSObject {
 
     @objc private func callkitBarFallback() {
         sync()
+    }
+
+    @objc private func callkitAnswered(_ note: Notification) {
+        guard let ref = note.userInfo?["ref"] as? String, !ref.isEmpty else { return }
+        openThread(peerRef: ref)
     }
 
     private func markPassivelyMinimized() {
