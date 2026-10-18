@@ -21,8 +21,8 @@ enum LiveCallHarness {
     /// Configure the audio session before any daemon audio starts.
     static func activateAudioSession() {
         // The single audio owner configures the session (`liveCall` profile:
-        // `.default` + speaker, AEC from `setVoiceProcessingEnabled`;
-        // docs/troubleshooting.md, "audio too quiet").
+        // `.voiceChat` + speaker, remote audio on its playback bus = the
+        // AEC reference; docs/audio-media.md, docs/troubleshooting.md).
         AudioIO.shared.start(profile: .liveCall)
     }
 

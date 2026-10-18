@@ -410,10 +410,13 @@ dependent amount (StackOverflow 17528057, 13502293, 57612695).
   quiet receiver.
 - Playback gain (`native/vendor/iroh-c-ffi/src/media.rs`, iOS-only via
   `cfg!(target_os = "ios")`): compensate for the VoiceProcessingIO drop in
-  software — `PLAYBACK_GAIN_DB_DEFAULT` (+12 dB) with a `tanh` soft-clip so
-  loud passages limit instead of wrapping. Override with
-  `IDFON_PLAYBACK_GAIN_DB`. macOS is deliberately left at unity (no VPIO; it
-  has the media-volume slider, and a pre-slider soft-clip could not be undone).
+  software — a `tanh` soft-clip so loud passages limit instead of wrapping.
+  The 2026-09-25 device measurement was `PLAYBACK_GAIN_DB_DEFAULT = +12 dB`;
+  the default is unity again now that playback renders on the shells'
+  `AVAudioEngine` bus at normal level (2026-10-07 verification). Override
+  with `IDFON_PLAYBACK_GAIN_DB` if a device is quiet again. macOS is
+  deliberately left at unity (no VPIO; it has the media-volume slider, and a
+  pre-slider soft-clip could not be undone).
 
 **Verified** (2026-09-25): with the route log showing `Speaker` and the
 playback log showing `gain=3.98x`, GPT-Live's voice is at a normal level on

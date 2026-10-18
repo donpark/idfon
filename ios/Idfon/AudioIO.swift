@@ -44,8 +44,11 @@ final class AudioIO: AudioSource, AudioSink {
 
     /// Session/routing profile for the active call.
     enum Profile {
-        /// Core-streamed call audio. `.default` keeps VoiceProcessingIO from
-        /// attenuating playback (docs/troubleshooting.md).
+        /// Core-streamed call audio. `.voiceChat` is VPIO's native AEC mode:
+        /// remote call audio renders on this engine's playback bus
+        /// (`AudioPlaybackSink`), the echo reference (docs/audio-media.md).
+        /// (`.default` was tried to avoid VPIO's output-gain drop — it
+        /// silently disables echo cancellation, docs/troubleshooting.md.)
         case liveCall
         /// On-device cascade. `.voiceChat` is VPIO's native AEC mode.
         case voiceAgent
@@ -156,6 +159,11 @@ final class AudioIO: AudioSource, AudioSink {
     func callKitDidActivate() {
         runOnAudio { [self] in
             callKitActivated = true
+            // Category/mode are the system's on this path (session
+            // configuration is the documented one-way-audio bug here) — log
+            // what CallKit actually activated so a device check can confirm
+            // it is a voice session.
+            markOutput("output at callkit didActivate")
             guard let pending = pendingStart else { return }
             pendingStart = nil
             Automation.mark("audio: callkit didActivate — starting deferred profile=\(pending)")
@@ -279,7 +287,7 @@ final class AudioIO: AudioSource, AudioSink {
             // Set the mode in the category call; move the route override last
             // (setMode(.voiceChat) after the override re-evaluates the route).
             try? session.setCategory(
-                .playAndRecord, mode: .default,
+                .playAndRecord, mode: .voiceChat,
                 options: [.allowBluetoothHFP, .defaultToSpeaker])
             try? session.setPreferredIOBufferDuration(0.01)
         case .voiceAgent:
@@ -485,6 +493,27 @@ final class AudioIO: AudioSource, AudioSink {
         let pending = pendingPlays
         pendingPlays.removeAll()
         for continuation in pending.values { continuation.resume() }
+    }
+
+    /// Schedule one stream chunk (remote call audio from the media playback
+    /// callback) without awaiting: chunks queue back to back on the playback
+    /// bus and must never wait on a previous chunk's completion callback.
+    /// This bus is the AEC reference — remote audio anywhere else cannot be
+    /// echo-cancelled (docs/audio-media.md).
+    func playStream(_ buffer: AVAudioPCMBuffer) {
+        runOnAudio { [self] in
+            guard running else {
+                Automation.mark("audio: stream play dropped engine idle")
+                return
+            }
+            guard let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))
+            else {
+                Automation.mark("audio: stream play dropped convert failed")
+                return
+            }
+            playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: nil)
+            if !playbackPlayer.isPlaying { playbackPlayer.play() }
+        }
     }
 
     func playLooping(_ buffer: AVAudioPCMBuffer) {

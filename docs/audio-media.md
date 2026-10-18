@@ -231,14 +231,18 @@ Consumers (no `AVAudioEngine`, tap, or session of their own): `AudioPusher`
 `AppleSpeechTranscriber`, `OnDeviceVoice` (SFSpeech), and `VoiceMemo` (writes
 the captured buffers to an `AVAudioFile`). Producers on the sink:
 `KokoroTtsEngine`, `AppleTtsEngine` (rendered to PCM via
-`write(_:toBufferCallback:)` rather than the synthesizer's private output), and
-`CallTonePlayer` (ringback/answered/ended cues).
+`write(_:toBufferCallback:)` rather than the synthesizer's private output),
+`CallTonePlayer` (ringback/answered/ended cues), and remote call audio
+(`AudioPlaybackSink`: decoded PCM from `media_audio_set_playback_cb`, paced
+through `seam::PacedPlayback`'s jitter buffer and scheduled via
+`AudioIO.playStream`; the bundled moq `DevicePlayback` is the fallback when no
+callback is registered — macOS keeps it).
 
 `AudioIO.Profile` picks the session/routing per call type:
 
 | profile | category / mode | used by |
 |---|---|---|
-| `.liveCall` | `.playAndRecord` / `.default` (+ speaker) | daemon-streamed live/video calls |
+| `.liveCall` | `.playAndRecord` / `.voiceChat` (+ speaker) | daemon-streamed live/video calls |
 | `.voiceAgent` | `.playAndRecord` / `.voiceChat` | on-device cascade |
 | `.recording` | `.playAndRecord` / `.default` (+ speaker) | voice memos |
 
@@ -249,7 +253,10 @@ Two reasons this is load-bearing, not tidiness:
   outside the AEC reference — the self-bleed documented in
   [troubleshooting.md](troubleshooting.md). A second engine (or a mid-call
   `setCategory`) also re-negotiates the shared VoiceProcessingIO unit and can
-  silently drop AEC. Playback therefore renders on the capture engine's bus.
+  silently drop AEC. Playback therefore renders on the capture engine's bus —
+  including remote call audio, which is why the live subscribe path feeds the
+  shell playback callback instead of moq's output device. `.voiceChat` (not
+  `.default`) is the mode VPIO's AEC is tuned for.
 - **Testability.** With one source and one sink behind protocols, a test
   injects a fake source (synthetic buffers) and a fake sink (records playback)
   instead of the hardware. Every consumer takes its source/sink with

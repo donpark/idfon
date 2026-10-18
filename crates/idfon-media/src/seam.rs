@@ -7,7 +7,9 @@
 //! Capture adapters are constructed once and consumed into a source; render
 //! adapters are live sinks invoked per decoded frame.
 
+use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use moq_audio::{Format, Frame as AudioFrame};
@@ -57,6 +59,164 @@ pub trait AudioPlayback: Send {
 }
 
 /// A frame-stream audio source (shell push or file decode).
+/// Jitter-buffered playout in front of a raw emit closure — the "real jitter
+/// buffer" a shell playback adapter needs (docs/media-adapter-seam.md): the
+/// per-frame adapter that was tried and reverted handed frames to the shell as
+/// they arrived, and arrival jitter crackled.
+///
+/// `write` queues interleaved PCM; a pacing thread emits it to `emit` in
+/// `PLAYOUT_CHUNK`-sized pieces at media rate after a `PLAYOUT_TARGET`
+/// prebuffer. `buffered` reports the queue so the caller can trim after a
+/// stall. On overflow the oldest audio drops back to `PLAYOUT_TARGET`, so
+/// latency cannot ratchet after a burst.
+pub struct PacedPlayback {
+    input: AudioInput,
+    shared: Arc<PacedState>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+struct PacedState {
+    queue: std::sync::Mutex<VecDeque<u8>>,
+    wake: std::sync::Condvar,
+    done: std::sync::atomic::AtomicBool,
+    /// f32 bits; applied at emit so `set_volume` is safe mid-stream.
+    volume: std::sync::atomic::AtomicU32,
+    emit: Box<dyn Fn(&[u8]) + Send + Sync>,
+}
+
+/// Prebuffer before the first emit (and after an underrun): enough to ride
+/// out arrival jitter without adding perceptible latency.
+const PLAYOUT_TARGET: Duration = Duration::from_millis(50);
+/// How much audio one emit carries; the pacing granularity.
+const PLAYOUT_CHUNK: Duration = Duration::from_millis(20);
+/// Queue ceiling: after a stall plus a burst, drop the oldest audio back to
+/// `PLAYOUT_TARGET` instead of playing it seconds late.
+const PLAYOUT_MAX: Duration = Duration::from_millis(250);
+
+impl PacedPlayback {
+    /// `emit` is called on the pacing thread with borrowed interleaved PCM;
+    /// copy before returning.
+    pub fn new(input: AudioInput, emit: Box<dyn Fn(&[u8]) + Send + Sync>) -> Self {
+        let shared = Arc::new(PacedState {
+            queue: std::sync::Mutex::new(VecDeque::new()),
+            wake: std::sync::Condvar::new(),
+            done: std::sync::atomic::AtomicBool::new(false),
+            volume: std::sync::atomic::AtomicU32::new(1f32.to_bits()),
+            emit,
+        });
+        let thread_shared = shared.clone();
+        let bytes_per_ms = Self::bytes_per_ms(input);
+        let thread = std::thread::spawn(move || Self::drain(&thread_shared, bytes_per_ms));
+        Self {
+            input,
+            shared,
+            thread: Some(thread),
+        }
+    }
+
+    /// Interleaved f32 PCM, matching [`AudioInput::format`] (the only layout
+    /// the decode loop produces).
+    fn bytes_per_ms(input: AudioInput) -> usize {
+        input.sample_rate as usize * input.channels as usize * 4 / 1000
+    }
+
+    fn drain(shared: &PacedState, bytes_per_ms: usize) {
+        let target = PLAYOUT_TARGET.as_millis() as usize * bytes_per_ms;
+        let chunk = PLAYOUT_CHUNK.as_millis() as usize * bytes_per_ms;
+        let mut started = false;
+        let mut next = std::time::Instant::now();
+        loop {
+            let mut queue = shared.queue.lock().unwrap();
+            while !started && queue.len() < target {
+                if shared.done.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                queue = shared.wake.wait(queue).unwrap();
+            }
+            if shared.done.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            started = true;
+            let now = std::time::Instant::now();
+            if now < next {
+                // Wakes early on new data or shutdown; the deadline is re-checked.
+                let (guard, _) = shared.wake.wait_timeout(queue, next - now).unwrap();
+                queue = guard;
+                continue;
+            }
+            let take = queue.len().min(chunk);
+            let data: Vec<u8> = queue.drain(..take).collect();
+            drop(queue);
+            if take == 0 {
+                // Underrun: re-prebuffer instead of burst-catching-up.
+                started = false;
+                next = std::time::Instant::now();
+                continue;
+            }
+            next += PLAYOUT_CHUNK;
+            if next < std::time::Instant::now() {
+                next = std::time::Instant::now();
+            }
+            let volume = f32::from_bits(shared.volume.load(std::sync::atomic::Ordering::Relaxed));
+            if volume == 1.0 {
+                (shared.emit)(&data);
+            } else {
+                let mut scaled = Vec::with_capacity(data.len());
+                for sample in data.chunks_exact(4) {
+                    let value = f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
+                    scaled.extend_from_slice(&(value * volume).to_le_bytes());
+                }
+                (shared.emit)(&scaled);
+            }
+        }
+    }
+}
+
+impl Drop for PacedPlayback {
+    fn drop(&mut self) {
+        self.shared
+            .done
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.shared.wake.notify_all();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl AudioPlayback for PacedPlayback {
+    fn input(&self) -> AudioInput {
+        self.input
+    }
+
+    fn write(&mut self, pcm: &[u8], _pts_us: u64) -> anyhow::Result<()> {
+        let mut queue = self.shared.queue.lock().unwrap();
+        queue.extend(pcm.iter().copied());
+        let per_ms = Self::bytes_per_ms(self.input);
+        let max = PLAYOUT_MAX.as_millis() as usize * per_ms;
+        if queue.len() > max {
+            let keep = PLAYOUT_TARGET.as_millis() as usize * per_ms;
+            let excess = queue.len() - keep;
+            queue.drain(..excess);
+        }
+        drop(queue);
+        self.shared.wake.notify_one();
+        Ok(())
+    }
+
+    fn buffered(&self) -> Duration {
+        let queued = self.shared.queue.lock().unwrap().len();
+        let per_ms = Self::bytes_per_ms(self.input).max(1);
+        Duration::from_millis((queued / per_ms) as u64)
+    }
+
+    fn set_volume(&mut self, volume: f32) {
+        self.shared
+            .volume
+            .store(volume.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub fn audio_frames(input: AudioInput, frames: BoxStream<AudioFrame>) -> AudioSource {
     AudioSource::Frames {
         input: moq_audio::encode::Input {
@@ -167,5 +327,65 @@ mod tests {
         let path = dir.join("nope.bin");
         std::fs::write(&path, b"not video").unwrap();
         assert!(FileVideoCapture::annexb(&path).is_err());
+    }
+
+    fn f32_mono() -> AudioInput {
+        AudioInput {
+            format: Format::F32,
+            sample_rate: 48_000,
+            channels: 1,
+        }
+    }
+
+    #[test]
+    fn paced_playback_drains_in_order_with_lead() {
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_out = emitted.clone();
+        let mut sink = PacedPlayback::new(
+            f32_mono(),
+            Box::new(move |data| sink_out.lock().unwrap().extend_from_slice(data)),
+        );
+        // 200 ms of f32 mono @ 48 kHz, in one burst.
+        let pcm = vec![7u8; 38_400];
+        sink.write(&pcm, 0).unwrap();
+        // The burst must park as lead, not play at once.
+        assert!(
+            sink.buffered() >= Duration::from_millis(150),
+            "buffered = {:?}",
+            sink.buffered()
+        );
+        // Prebuffer 50 ms + 200 ms of paced emits.
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(*emitted.lock().unwrap(), pcm);
+        assert!(
+            sink.buffered() <= Duration::from_millis(20),
+            "buffered = {:?}",
+            sink.buffered()
+        );
+    }
+
+    #[test]
+    fn paced_playback_applies_volume() {
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_out = emitted.clone();
+        let mut sink = PacedPlayback::new(
+            f32_mono(),
+            Box::new(move |data| sink_out.lock().unwrap().extend_from_slice(data)),
+        );
+        sink.set_volume(0.5);
+        // 100 ms of 1.0 samples.
+        let pcm: Vec<u8> = 1.0f32
+            .to_le_bytes()
+            .iter()
+            .copied()
+            .cycle()
+            .take(38_400 / 2)
+            .collect();
+        sink.write(&pcm, 0).unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+        let out = emitted.lock().unwrap();
+        assert_eq!(out.len(), pcm.len());
+        let first = f32::from_le_bytes(out[0..4].try_into().unwrap());
+        assert_eq!(first, 0.5);
     }
 }

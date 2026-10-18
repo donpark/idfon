@@ -18,14 +18,22 @@
   route `start_live`; the render loop takes a `Box<dyn VideoRender>` with a
   `DiskRender` fallback (`video-frame.jpg`, used only when no callback is set).
 - New FFI: `media_video_set_render_cb` / `media_video_clear_render_cb`
-  (`CallbackRender` hands decoded RGBA straight to the shell; `len == 0` = clear).
-- Audio playback stays on the bundled moq engine (`DevicePlayback` behind the
-  `AudioPlayback` seam). A shell playback callback was tried and removed: the
-  per-frame AVAudioEngine path lacked the engine's jitter buffer and crackled
-  in live calls, and moq already drives the platform output device correctly.
+  (`CallbackRender` hands decoded RGBA straight to the shell; `len == 0` = clear),
+  and `media_audio_set_playback_cb` / `media_audio_clear_playback_cb` (decoded
+  interleaved f32 PCM to the shell). The live subscribe path picks the shell
+  playback callback when registered, else the bundled `DevicePlayback` (moq
+  output device).
+- Audio playback is paced: `seam::PacedPlayback` is the real jitter buffer a
+  shell playback adapter needs (the per-frame adapter without one crackled and
+  was reverted; keep the buffer or do not bring the callback back). iOS
+  registers `AudioPlaybackSink`, which renders on `AudioIO`'s playback bus —
+  the VoiceProcessingIO echo reference (docs/audio-media.md). macOS/native
+  keep the bundled device.
 - iOS/mac Swift register the callback unconditionally and render frames in
   memory; they no longer read `video-frame.jpg`. The Native SDK GUI does not
-  register one, so it keeps using the artifact. **Not device-tested.**
+  register one, so it keeps using the artifact. **Device-tested** (2026-10-18:
+  iPhone ↔ mac video calls, live video both ways; camera-off clear and
+  rotation cases not separately reported).
 
 ## Motivation
 
@@ -131,9 +139,13 @@ adapter function. idfon code references the traits.
 3. **Native GUI render.** Requires a Native SDK image path from memory, or an
    agreed file/cache handoff. Deferred until the Native SDK supports it.
 4. **Device I/O adapter.** Capture routes through `DeviceAudioCapture`; live
-   subscribe plays through the bundled `DevicePlayback` (moq output device,
-   own thread, jitter-buffered). A shell audio-playback callback was tried and
-   removed — see the note above; re-add only with a real jitter buffer.
+   subscribe plays through the shell playback callback (iOS: `AudioPlaybackSink`
+   on the AEC-reference bus) or the bundled `DevicePlayback` (moq output device,
+   own thread) when no callback is set. Shell playback is paced through
+   `seam::PacedPlayback`'s jitter buffer — the per-frame adapter that crackled
+   is not to come back without one. **Device-tested** (2026-10-18: live call
+   audio/video, `.voiceChat` mode; call volume normal at unity gain — audio
+   and video calls both verified on device).
 5. **Codec adapter.** Only if a platform needs it; gated by capability
    negotiation. Opus stays bundled unless the codec fork is taken.
 
