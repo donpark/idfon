@@ -108,10 +108,21 @@ instance at app start. Flipping
    with a live call, report the call ended (`recoverStaleCall` already exists as the
    startup-side recovery).
 6. **Audio handoff**: `AudioIO` gets an "external session owner" mode — on the
-   CallKit path it skips `setCategory`/`setActive`/interruption handling entirely;
-   capture + playback start only in `provider(_:didActivate:)` and stop in
-   `provider(_:didDeactivate:)`. Starting audio earlier is the documented
-   one-way-audio bug. `CallTones` is silent on this path (the system ringtone).
+   CallKit path it skips `setActive`/interruption handling entirely and
+   activates nothing itself. It *configures* the inactive session before the
+   report/transaction (`.playAndRecord` / `.voiceChat`, Apple's CallKit audio
+   checklist), then hands over: capture + playback start only in
+   `provider(_:didActivate:)` and stop in `provider(_:didDeactivate:)`.
+   Starting audio, calling `setActive`, or reconfiguring the session after
+   activation is the documented one-way-audio bug (see the bug list below —
+   the race is about activation timing, not about `setCategory` on an
+   inactive session). **Verified 2026-10-18 on device:** CallKit activates
+   the session with the app's pre-set config intact — the `willStart` and
+   `didActivate` markers both showed `PlayAndRecord` / `VoiceChat` (on the
+   push-ring video-call path too). The `output at callkit willStart` / `output at callkit
+   didActivate` markers log category/mode on both sides of the handover — a
+   device console shows exactly what the system activated. `CallTones` is
+   silent on this path (the system ringtone).
 7. **One incoming bar at a time, by arrival transport** (ui-design-notes §6): a
    ring **push** is always reported to CallKit — the app can be deactivated at
    any moment, so the system bar must exist before it does — and while that
