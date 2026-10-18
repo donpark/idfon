@@ -47,6 +47,35 @@ renders on the app's single playback bus (`AudioIO`, see
 other-audio ducking is minimized. Verified on device (ringback and reply volume
 normal, no self-bleed).
 
+## CallKit Accept/Reject (and every system-UI call button) do nothing (2026-10-17, FIXED)
+
+**Symptom.** The CallKit ring appears, but Accept only dismisses the system
+bar (no navigation, no in-app call state) and Reject does nothing at all —
+while answering from the app's own UI works. The build warns about nothing.
+
+**Root cause.** A silent delegate-method mismatch — the third of its kind in
+this project. `CXProviderDelegate` dispatches call actions through *typed*
+`provider(_:perform:)` overloads (`CXAnswerCallAction`, `CXEndCallAction`, … —
+Apple docs, "Handling Call Actions"); the app implemented a single
+`provider(_:didPerform action: CXAction)`, which satisfies none of the
+optional requirements. Swift's "nearly matches" lint does not fire at that
+rename distance, so the method is simply never called. Same class as the
+PushKit `…withCompletionHandler:` → `…completion:` rename (which at least
+warned). Related trap: a *second* `CXProvider` initialized later silently
+hijacks the first one's delegate (the delegate is held weakly).
+
+**How it was found.** The per-run app log (`devicectl device copy from …
+--source tmp/idfon-app-<pid>.log`) showed `reporting push ring …` and the
+invite envelope, but **no `answer action` line at all** after Accept was
+pressed — proving the action never reached the app.
+
+**Fix / verification.** Implement the documented overloads
+(`provider(_:perform action: CXAnswerCallAction)` etc.). A wrong name compiles
+fine, so verify dispatch at the binary level:
+`strings <binary> | grep provider:performAnswerCallAction:` must find the
+selector. Accept then also navigates to the caller's chat from the accept
+handler (never a phase-transition heuristic downstream).
+
 ## `pnpm pair` fails silently; device-test markers missing from the console (2026-10-14, FIXED)
 
 **Symptom.** `pnpm pair` exits 1 with *no output at all*. `scripts/ios-device-test.sh`
