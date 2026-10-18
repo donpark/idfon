@@ -206,6 +206,10 @@ importers:
       '@native-sdk/core':
         specifier: 0.10.1
         version: 0.10.1
+    devDependencies:
+      '@native-sdk/cli':
+        specifier: ^0.10.1
+        version: 0.10.1
 
 packages:
 
@@ -224,6 +228,55 @@ packages:
   '@ai-sdk/provider@4.0.27':
     resolution: {integrity: sha512-TtWwm6SxFiPomlMIbTQa+yhJte+w4/oCsW+wJrJzMC3MqHpAY9e5dJF1Y4HxyKt3W2Csac0KiI76Ckio11TFYw==}
     engines: {node: '>=22'}
+
+  '@native-sdk/cli-darwin-arm64@0.10.1':
+    resolution: {integrity: sha512-LtOccjbJndvQHvRKUiWswFPb2HxRtKidCl+GHJXyKdCq+pn4qMOFbiJvpd1uACk1H1+jWHM6F/iTPYacpVfO5Q==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@native-sdk/cli-darwin-x64@0.10.1':
+    resolution: {integrity: sha512-dw5EeEY3ybOP8hB94UA2JxhAjLQ5+XTcwUhpIW9ccBWdQsDoutdUBNdxIUk8uNuCwN2+EY4s7rQCxgtiXCoNGA==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@native-sdk/cli-linux-arm64-gnu@0.10.1':
+    resolution: {integrity: sha512-4ggEI/ggiNNEHIPbfnCO8FKmnbXfgR7ahG43FTebmn6DjwYZJ2sm7FRgwGcRRqznKdCXlR4ukEiRWP886GkH1w==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@native-sdk/cli-linux-arm64-musl@0.10.1':
+    resolution: {integrity: sha512-WyY22GBrFNq1UmwWZ6+E+wGDcX5VG6woHpg1u3brTrFaQrAkfKtu/JBP1MnChmdOEp3WpwsSvFpnp+Liv3RPHQ==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@native-sdk/cli-linux-x64-gnu@0.10.1':
+    resolution: {integrity: sha512-53jrCj9J54vNl5Sb11In4fCMvBVLzGi3/9GnioqJrxjGvXtEHY6duYcZmwFJbSac8QdTymyoxz51hxWtutfKkA==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@native-sdk/cli-linux-x64-musl@0.10.1':
+    resolution: {integrity: sha512-0uy6wIj1+2eP61g+HZn5y5sbf2Gz/s4EMAb9gS9/TdxC2nvBZFwnIzqR4cFyFfnUfN0YA08jowI3o2AdhYJWdQ==}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@native-sdk/cli-win32-arm64@0.10.1':
+    resolution: {integrity: sha512-3TzSETRBLrR1//5XGY4VxUqxeL9vjZ8qt7sBGTPPfBZiyTKLA/KWW1gW/4Ms3zZvGkKFBREixgUZ4jjXOOCQFA==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@native-sdk/cli-win32-x64@0.10.1':
+    resolution: {integrity: sha512-+K9f+J+Daxo52LyTsCn7Gp0uw+kgcjbnJ0hCD01SkkU3bSZV65WfRVODFTcEm+6A0XQTvOWky/L9esC6BtfJFw==}
+    cpu: [x64]
+    os: [win32]
+
+  '@native-sdk/cli@0.10.1':
+    resolution: {integrity: sha512-1s1Fvn217UzHUjzK0YBziHTLX8D6yDGyIIQhr7r0WGX0Cxxjl06rH6LIdSrg3dDrRGBNaUIjE/QrzAot1dkwyg==}
+    engines: {node: '>=24'}
+    hasBin: true
 
   '@native-sdk/core@0.10.1':
     resolution: {integrity: sha512-2hchCrv8xeB7rHYyHGjKWmieAZkIyzdceNhEktvfN4BxOy9+FGtB4kO4LqzggsKrp+93HhQKckZae7tGyyofbQ==}
@@ -591,6 +644,11 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
@@ -637,6 +695,44 @@ snapshots:
   '@ai-sdk/provider@4.0.27':
     dependencies:
       json-schema: 0.4.0
+
+  '@native-sdk/cli-darwin-arm64@0.10.1':
+    optional: true
+
+  '@native-sdk/cli-darwin-x64@0.10.1':
+    optional: true
+
+  '@native-sdk/cli-linux-arm64-gnu@0.10.1':
+    optional: true
+
+  '@native-sdk/cli-linux-arm64-musl@0.10.1':
+    optional: true
+
+  '@native-sdk/cli-linux-x64-gnu@0.10.1':
+    optional: true
+
+  '@native-sdk/cli-linux-x64-musl@0.10.1':
+    optional: true
+
+  '@native-sdk/cli-win32-arm64@0.10.1':
+    optional: true
+
+  '@native-sdk/cli-win32-x64@0.10.1':
+    optional: true
+
+  '@native-sdk/cli@0.10.1':
+    dependencies:
+      '@typescript/old': typescript@6.0.3
+      scriptc: 0.0.35
+    optionalDependencies:
+      '@native-sdk/cli-darwin-arm64': 0.10.1
+      '@native-sdk/cli-darwin-x64': 0.10.1
+      '@native-sdk/cli-linux-arm64-gnu': 0.10.1
+      '@native-sdk/cli-linux-arm64-musl': 0.10.1
+      '@native-sdk/cli-linux-x64-gnu': 0.10.1
+      '@native-sdk/cli-linux-x64-musl': 0.10.1
+      '@native-sdk/cli-win32-arm64': 0.10.1
+      '@native-sdk/cli-win32-x64': 0.10.1
 
   '@native-sdk/core@0.10.1':
     dependencies:
@@ -869,6 +965,8 @@ snapshots:
   srvx@1.0.5: {}
 
   typescript@5.9.3: {}
+
+  typescript@6.0.3: {}
 
   typescript@7.0.2:
     optionalDependencies:
