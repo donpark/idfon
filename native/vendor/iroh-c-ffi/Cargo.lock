@@ -3353,6 +3353,7 @@ dependencies = [
  "once_cell",
  "rand 0.10.2",
  "safer-ffi",
+ "serde_json",
  "socket2",
  "tokio",
  "tracing",
