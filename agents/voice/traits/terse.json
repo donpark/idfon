@@ -1,0 +1,6 @@
+{
+  "name": "terse",
+  "comment": "Minimal backchannels, fast turn ends, no preamble filler.",
+  "decider": { "ep_thr": 0.85, "ep_deb": 2, "barge_thr": 0.4, "barge_deb": 2, "bc_thr": 0.6, "bc_deb": 3, "bc_refractory": 25 },
+  "mouth": { "preamble": "", "backchannels": [], "clause_start": true }
+}

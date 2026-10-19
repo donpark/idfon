@@ -1,0 +1,6 @@
+{
+  "name": "attentive-listener",
+  "comment": "Waits through your pauses, yields the floor the moment you push back, reacts while you talk. The 'attentive listener with heavy lips' point in trait space: high endpoint bar, low barge bar, moderate backchannels.",
+  "decider": { "ep_thr": 0.95, "ep_deb": 3, "barge_thr": 0.3, "barge_deb": 2, "bc_thr": 0.45, "bc_deb": 2, "bc_refractory": 12 },
+  "mouth": { "preamble": "Let me think about that", "backchannels": ["mm-hm", "go on", "right"], "clause_start": true }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "chatty",
+  "comment": "Heavy lips: frequent backchannels, quick to answer, quick to give the floor back.",
+  "decider": { "ep_thr": 0.85, "ep_deb": 2, "barge_thr": 0.3, "barge_deb": 2, "bc_thr": 0.35, "bc_deb": 2, "bc_refractory": 8 },
+  "mouth": { "preamble": "Oh, one sec", "backchannels": ["mm-hm", "oh nice", "right", "yeah", "go on"], "clause_start": true }
+}
