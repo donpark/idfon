@@ -190,11 +190,27 @@ the score budget still fails, and **ep is flat at 0.030–0.041 across every los
 config (even fp16)** — a lossy-encoding floor on that head. Core ML's quantisation
 layouts cannot express the one config that passed in MLX (per-output-unit group-16
 asymmetric: CoreML `per_channel`+block degrades to per-row scales and got worse).
-Open next candidates: 8-bit k-means palettisation on the tail (`--kind palettize8`,
-~45 min/pass), fp16 tail + fp32 front (re-export tail at float16), or calibrating
-the heads on quantised features. Shipping stance unchanged: **fp32 default**; best
-lossy = split-Q8 (0.57 GB) / fp16 — gated on *decision agreement* (6/6 in every
-run), not the score budget.
+
+**Shipping tier decided (user, 2026-10-19): CoreML fp16 encoder on ANE + fp32 step
+(the GRU/heads).** ANE power and consistency with the app's other models win over the
+MLX stack's better score-guard; the fp16 drift is accepted under a *decision*
+guard. The shipping pair's acceptance record (parity6, 648 frames):
+
+| | value |
+| --- | --- |
+| per-head max\|Δ\| | 0.62 (state logits); hazard 0.048, yield 0.019, bc 0.037, ep 0.031; p50 0.0067 |
+| **rules decisions** | **6/6 identical** |
+| per hop (both windows) | **23.4 ms** (budget 320) |
+| footprint | ~0.8 GB (enc fp16) + 0.06 GB (step fp32) |
+
+The fp32 step does not reduce the state-logit drift (it enters through the encoder) —
+keeping it is still right: the calibration-sensitive heads get no *additional*
+noise. **Guard conditions** (the tier's evidence base): the scaled eval on real calls
+(GPU box) must confirm decision agreement beyond the 60-s sample, and one battery
+measurement (fp16-ANE vs an MLX prototype). **Fallback if the guard fails:** the MLX
+chain (Swift translation of already-accepted Python) with the int8 g16 config that
+alone passed ≤0.02 — it is the precision tier on standby, kept as the oracle for
+re-exports meanwhile.
 
 Reading: the export is provably faithful (fp32 zero-delta), and the whole fp16 gap is
 precision — amplified on the latent state-logits, the calibration-sensitive heads
