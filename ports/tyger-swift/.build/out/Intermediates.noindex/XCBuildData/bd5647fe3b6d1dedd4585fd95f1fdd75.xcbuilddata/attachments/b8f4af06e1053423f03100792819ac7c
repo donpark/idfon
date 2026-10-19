@@ -1,0 +1,39 @@
+{
+  "" : {
+    "diagnostics" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TygerVoiceTests-primary.dia",
+    "emit-module-dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TygerVoiceTests-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TygerVoiceTests-primary-emit-module.dia",
+    "pch" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TygerVoiceTests-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TygerVoiceTests-primary.swiftdeps"
+  },
+  "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/DerivedSources/test_entry_point.swift" : {
+    "const-values" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/test_entry_point.swiftconstvalues",
+    "dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/test_entry_point.d",
+    "diagnostics" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/test_entry_point.dia",
+    "index-unit-output-path" : "/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/test_entry_point.o",
+    "llvm-bc" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/test_entry_point.bc",
+    "object" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/test_entry_point.o",
+    "swift-dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/test_entry_point.swiftdeps",
+    "swiftmodule" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/test_entry_point~partial.swiftmodule"
+  },
+  "/Users/don/dev/idfon/ports/tyger-swift/Tests/TygerVoiceTests/DebugTests.swift" : {
+    "const-values" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/DebugTests.swiftconstvalues",
+    "dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/DebugTests.d",
+    "diagnostics" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/DebugTests.dia",
+    "index-unit-output-path" : "/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/DebugTests.o",
+    "llvm-bc" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/DebugTests.bc",
+    "object" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/DebugTests.o",
+    "swift-dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/DebugTests.swiftdeps",
+    "swiftmodule" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/DebugTests~partial.swiftmodule"
+  },
+  "/Users/don/dev/idfon/ports/tyger-swift/Tests/TygerVoiceTests/MelFeaturesTests.swift" : {
+    "const-values" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests.swiftconstvalues",
+    "dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests.d",
+    "diagnostics" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests.dia",
+    "index-unit-output-path" : "/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests.o",
+    "llvm-bc" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests.bc",
+    "object" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests.o",
+    "swift-dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests.swiftdeps",
+    "swiftmodule" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests~partial.swiftmodule"
+  }
+}
