@@ -47,7 +47,8 @@ def pcm(b64):
 
 def serve(rline, send):
     torch.set_num_threads(os.cpu_count() or 8)
-    ears = ReferenceEars(os.environ["TYGER_BUNDLE"], device="cpu")
+    # mps: Apple GPU, real-time on M-series (~222 ms/hop vs ~730 on cpu); cpu is the fallback.
+    ears = ReferenceEars(os.environ["TYGER_BUNDLE"], device=os.environ.get("TYGER_EARS_DEVICE", "cpu"))
     sess = None
     for line in rline:
         req = json.loads(line)
