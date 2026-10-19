@@ -1,0 +1,120 @@
+# On-device port brief: TYGER on Apple silicon
+
+Status: **brief (2026-10-18), no code.** Porting the `nineninesix/tyger` bundle
+(encoder-to-L15 features + the 14M turn-taker) to Apple silicon so the on-device voice
+agent gets the same decision layer the GPU tier runs. Prerequisite: the GPU box produces
+the **parity reference** (per-frame head outputs on the eval corpora) — a port is only
+trustworthy diffed against the original (see `docs/voice-tyger.md`, the calibration
+history). Companion to that doc and `docs/voice-decisions.md`.
+
+## What must run per hop (measured, from the bundle's `model.safetensors`)
+
+| part | params | needed for |
+| --- | ---: | --- |
+| Nemotron encoder → **layer 15** | 378.0M | the decision features (the heads read L15 only) |
+| encoder front (embeddings/conv) | 5.1M | input |
+| turn-taker GRU + heads | 14.0M | the decisions |
+| encoder L16–24 | 226.7M | transcripts only |
+| RNN-T decoder | 28.2M | transcripts only |
+| **decision path** | **≈ 397M** | endpoint / barge / backchannel |
+| full bundle | 652M | decisions + ASR transcripts |
+
+So the port has a natural first cut: **decisions at 397M**, transcripts later (or never —
+the on-device tier can keep an existing STT and use this purely as the turn-taker; the
+heads never see transcripts). Audio front-end: 128 mel bins, 80 ms frames, 12.5 Hz —
+straightforward in Accelerate/Metal.
+
+Per hop today their runtime re-encodes an **8 s window per stream** (two streams) every
+320 ms. That is the number the port must beat.
+
+## The lever: incremental encoding
+
+The encoder is **sliding-window attention** (window 57 frames ≈ 4.6 s, 3-token lookahead,
+causal). Re-encoding the whole 8 s window every hop is their simplicity, not a
+requirement: with per-layer KV caching, a hop encodes **4 new frames instead of ~100** —
+roughly a 20–25× compute cut on the dominant term. This is what moves iPhone from
+"borderline" to "plausible with headroom", and could make the Apple port *faster* than
+their GPU runtime per conversation.
+
+Risk it carries: parity. Their validated path is re-encode-everything in fp32; cached
+incremental encoding accumulates numeric drift. The mitigation is the parity harness
+below — and pruning the cache every N minutes (the 8 s window bounds the drift anyway).
+
+## Runtime choice
+
+| | verdict |
+| --- | --- |
+| **MLX** (Python first, Swift MLX for app) | **do this first** — fastest path to parity + timing numbers on Mac; unified memory; one framework for Mac and iOS |
+| Core ML / ANE | the *shipping* battery tier for iPhone later; stateful KV caches + flexible window shapes are fiddly; revisit when MLX numbers exist |
+| ONNX Runtime mobile | fallback if MLX-on-iOS hits a wall |
+
+## Precision plan (the heads are calibration-sensitive)
+
+fp32 reference → fp16 activations → int8 weights for the encoder; **keep the GRU + heads
+fp32** (14M — free, and they are the calibrated part). We watched `p_end` swing 0.85→0.95
+from pause acoustics alone, so quantization is validated **per head**, not just by loss:
+
+- per-frame |Δscore| vs the GPU reference ≤ 0.02 (all three heads);
+- decision agreement ≥ 99% (fires within ±1 frame) on the eval corpora;
+- harness metrics (`scripts/tyger-eval.py`) within noise: endpoint latency/early/miss,
+  barge catch/false, bc precision/recall.
+
+## The validation loop already exists
+
+`scripts/tyger-eval.py` runs the same corpora (OtoSpeech/Switchboard val slices) through
+`ReferenceEars` today; the port plugs in as a second runner and diffs per-frame scores +
+decisions against the GPU reference dump. tyger-s2s ships the same pattern
+(`scripts/validate/reference.py` vs `ears_batched.py`) — copy their shape.
+
+## Integration (nothing new needed above the seam)
+
+- The tier-neutral decider module (`idfon-voice`, already planned) hosts it; the rules
+  guards live in Rust either way.
+- On-device tier: `crates/idfon-director` / `OnDeviceAgentRunner` / `VoiceAgentSession`
+  consume it through the same seam the GPU sidecar speaks.
+- The second ear becomes *exact* on-device — the app owns the playback clock, better than
+  the send-side tags the hosted tier uses today.
+- Escape hatch stays open: path C (Parakeet features + retrained 14M via DualTurn's
+  public training code) if the Nemotron port slips or the encoder proves unportable.
+
+## Milestones
+
+| | what | effort |
+| --- | --- | --- |
+| S1 spike | MLX encoder → L15 on fixed clips; parity vs reference; hop timing on M-series | ≤ 1 week |
+| S2 | GRU + rules + eval-harness parity on a val slice | days |
+| S3 | streaming: incremental KV, window cache, real-time target with headroom | 1–2 weeks |
+| S4 | iPhone: Swift MLX or Core ML/ANE + power/thermal budget | 2–3 weeks |
+
+≈ 4–6 engineer-weeks to real-time on Mac; +2–3 for the iPhone shipping tier. S1's output
+tells us whether to proceed — it is the only milestone that can kill the project cheaply.
+
+## Risks
+
+1. **Incremental-cache parity drift** — the whole speed lever; contained by the parity
+   harness and bounded caches.
+2. **Quantization drift on calibrated heads** — mitigated by keeping the GRU fp32 and
+   per-head acceptance.
+3. **ANE shape flexibility** (sliding window, stateful KV) — fallback to MLX on the GPU
+   core, at a battery cost; decided after S4's measurements.
+4. **Thermal/battery on iPhone** — 397M int8 at one hop per 320 ms is light for the GPU
+   but continuous; the budget is part of S4's exit criteria.
+5. Scope creep: transcripts (the extra 255M) are explicitly out of S1–S3.
+
+## Definition of done
+
+- Parity: the three acceptance numbers above hold on held-out eval sessions.
+- Real time: 320 ms hops with ≥ 2× headroom on an M-series Mac; iPhone meets its budget.
+- The GPU-tier gate metrics are preserved (the port is not a downgrade in decisions).
+- The decision log schema records which engine produced each decision (`engine: mlx|gpu`)
+  — the fine-tuning data stays comparable across tiers.
+
+## References
+
+- `docs/voice-tyger.md` — the tier design, the calibration history, the traits/adaptation
+  loop this plugs into.
+- `docs/voice-decisions.md` — the decision inventory and guardrails.
+- tyger-s2s: `app/plugins/ears/tyger/` (`asr.py`, `rnnt.py`, `controller.py`,
+  `rules.py`) and `scripts/validate/` (the parity pattern).
+- Bundle: `huggingface.co/nineninesix/tyger` (OpenMDW 1.1 — ports and derived weights
+  allowed; keep attribution).
