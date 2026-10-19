@@ -32,3 +32,21 @@ runtime -> torch comparison (expect max|Δ| = 0.0).
   direct URL (from apple/coreai-models' uv.lock).
 - `xcrun coreai-build compile` does the AOT device build (Metal toolchain
   component: `xcodebuild -downloadComponent MetalToolchain`).
+
+## Export facts (2026-10-19, export_turn.py)
+
+- `reference_inputs` keys must match `forward`'s parameter names; `input_names`
+  renames the graph's external I/O (use long descriptive names).
+- Dynamic shapes work: `dynamic_shapes={"feats": {1: 8*Dim("_mel",5,101)-7}}`
+  exports the startup contract (true growing windows) in one asset.
+- **transformers 5.20.1** is required (the bundle's `nemotron3_5_asr` arch).
+- Gates: step exact on GPU (max|Δ| 0.0); encoder ~1e-4 (cos 1.0) on both GPU
+  and CPU, real fixture audio.
+- **CPU specialization fails on the big step graph** (`AIModel.load` with
+  `cpu_only` errors; GPU loads fine). Gate on GPU; per-unit load failures are
+  reported as SKIP.
+- **ANE compiler internal error** appears at load of the dynamic-shape encoder
+  ("Plist name mapping doesn't contain name: ..._constin_liveout_dummy_pool",
+  ANECCompile code 22) and falls back to GPU. The NE path is not usable for
+  this graph yet — same posture as the zoo's diarization gate (NE below bar →
+  ship GPU).
