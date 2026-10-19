@@ -228,6 +228,17 @@ missing backchannels (~6 per 72 min). No divergence was found away from a thresh
 tiers: whether MLX int8 g16 (drift 0.007) clears the 99% bar in the same harness, or
 whether every lossy tier lands ~97–98% and the bar is only met by exact arithmetic.
 
+**MLX fallback in the same harness (2026-10-19, `parity7.py --cand mlx`): PASS** —
+99.5% within ±160 ms, 97.8% at the identical frame, 99.8% saturated. 3 genuinely
+divergent events in 917 (all backchannels, all sub-0.01 flips at the 0.50 boundary);
+zero endpoint-structure differences; 19 of 24 sessions exact. The margin analysis
+settles the open question: boundary jitter is a property of every lossy tier
+(thresholds sitting exactly at 0.50 flip under any arithmetic difference), but the
+drift size sets the rate — fp16's 0.02–0.06 envelope produced 21 divergent events
+including split/merged turns; int8 g16's 0.007 produced 3 mild ones. By the
+tier's pre-agreed rule ("fp16 decisions drift at scale → switch to MLX"), the
+fallback tier is now the shipping tier.
+
 ## Product work (2026-10-19)
 
 **Startup semantics — measured, two shortcuts rejected.** The steady-state contract is
