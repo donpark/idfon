@@ -15,13 +15,17 @@ and acts on the decisions.
     -> {"op": "close"}
     <- {"ok": true}
 
-Events are rules.py's (FRAME noise dropped): PARTIAL, ENDPOINT (transcript filled),
-BARGE (onset_s), BACKCHANNEL (partial hint). `mode` is the app's floor state — the
-model is never asked to guess it. Env: TYGER_S2S (tyger-s2s clone), TYGER_BUNDLE.
+Also `--listen <port>`: the same JSON-lines protocol over a TCP socket instead of stdio,
+so the sidecar can run on a GPU box while the relay stays beside the bridge
+(`TYGER_EARS_CMD=tcp://host:port`). Events are rules.py's (FRAME noise dropped):
+PARTIAL, ENDPOINT (transcript filled), BARGE (onset_s), BACKCHANNEL (partial hint).
+`mode` is the app's floor state — the model is never asked to guess it. Env: TYGER_S2S
+(tyger-s2s clone), TYGER_BUNDLE.
 """
 import base64
 import json
 import os
+import socket
 import sys
 
 S2S = os.environ.get("TYGER_S2S", os.path.expanduser("~/dev/tyger-s2s"))
@@ -41,26 +45,39 @@ def pcm(b64):
     return np.frombuffer(base64.b64decode(b64), "<i2").astype(np.float32) / 32768.0
 
 
-def main():
+def serve(rline, send):
     torch.set_num_threads(os.cpu_count() or 8)
     ears = ReferenceEars(os.environ["TYGER_BUNDLE"], device="cpu")
     sess = None
-    out = lambda m: (print(json.dumps(m), flush=True))  # noqa: E731
-    for line in sys.stdin:
+    for line in rline:
         req = json.loads(line)
         op = req.get("op")
         if op == "open":
             thresholds = {k: v for k, v in (req.get("thresholds") or {}).items() if k in KNOWN}
             sess = EarsSession(0, **thresholds)
-            out({"ok": True})
+            send({"ok": True})
         elif op == "feed":
             events = [e for e in ears.feed(sess, pcm(req["user"]), pcm(req["agent"]), req["mode"]) if e["kind"] != "FRAME"]
-            out({"ok": True, "events": events})
+            send({"ok": True, "events": events})
         elif op == "close":
-            out({"ok": True})
+            send({"ok": True})
             return
         else:
-            out({"ok": False, "error": f"unknown op {op!r}"})
+            send({"ok": False, "error": f"unknown op {op!r}"})
+
+
+def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--listen":
+        port = int(sys.argv[2])
+        with socket.create_server(("127.0.0.1", port)) as server:
+            print(json.dumps({"listening": port}), flush=True)
+            conn, _ = server.accept()  # one sidecar, one relay
+            rfile = conn.makefile("r")
+            send = lambda m: (conn.sendall((json.dumps(m) + "\n").encode()))  # noqa: E731
+            serve(rfile, send)
+        return
+    send = lambda m: (print(json.dumps(m), flush=True))  # noqa: E731
+    serve(sys.stdin, send)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { exec } from "node:child_process";
 import { spawn } from "node:child_process";
+import net from "node:net";
 import { readFileSync, writeFileSync, unlinkSync, appendFileSync } from "node:fs";
 
 const bridge = process.env.IDFON_BRIDGE_URL || "http://127.0.0.1:18766";
@@ -358,11 +359,9 @@ function i16(arr) {
 // The real bundle + rules.py behind stdio JSON lines (tyger-ears.py).
 class Ears {
   constructor(cmd) {
-    const [bin, ...args] = cmd.split(" ");
-    this.child = spawn(bin, args, { stdio: ["pipe", "pipe", "inherit"], env: process.env });
     this.pending = null;
     this.buf = "";
-    this.child.stdout.on("data", (d) => {
+    const onData = (d) => {
       this.buf += d;
       let i;
       while ((i = this.buf.indexOf("\n")) >= 0) {
@@ -373,17 +372,32 @@ class Ears {
         this.pending = null;
         r?.(JSON.parse(line));
       }
-    });
-    this.child.on("exit", (code) => {
+    };
+    const onGone = (why) => {
       const r = this.pending;
       this.pending = null;
-      r?.({ ok: false, error: `ears exited ${code}` });
-    });
+      r?.({ ok: false, error: why });
+    };
+    if (cmd.startsWith("tcp://")) {
+      // The sidecar on another host (e.g. the GPU box): same protocol over a socket.
+      const [host, port] = cmd.slice("tcp://".length).split(":");
+      this.sock = net.connect(Number(port), host, () => log.info("ears connected", { cmd }));
+      this.sock.on("data", onData);
+      this.sock.on("error", (e) => onGone(`ears socket: ${e}`));
+      this.sock.on("close", () => onGone("ears connection closed"));
+      this.write = (s) => this.sock.write(s);
+    } else {
+      const [bin, ...args] = cmd.split(" ");
+      this.child = spawn(bin, args, { stdio: ["pipe", "pipe", "inherit"], env: process.env });
+      this.child.stdout.on("data", onData);
+      this.child.on("exit", (code) => onGone(`ears exited ${code}`));
+      this.write = (s) => this.child.stdin.write(s);
+    }
   }
   request(req) {
     return new Promise((resolve) => {
       this.pending = resolve;
-      this.child.stdin.write(JSON.stringify(req) + "\n");
+      this.write(JSON.stringify(req) + "\n");
     });
   }
   open(thresholds) {

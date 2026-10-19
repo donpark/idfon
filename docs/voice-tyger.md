@@ -176,6 +176,28 @@ slow rate, call-start-only, fail open to the trait, full attribution (every nudg
 `adapt` record with old → new), per-contact pin/reset is the user control. Outcomes are
 always recorded — the same log later trains a per-user model (the moat rung above).
 
+## GPU box runbook (the turnkey part)
+
+The box is the only missing piece; everything below runs today. Provision with their
+documented recipe: the public image `ylankgz/tyger-s2s-vllm:36da1bd` (or their
+Dockerfile), ≥ 28 GB VRAM class, ~60 GB disk, CUDA 13 driver; env `HF_TOKEN` (free
+account — their fetch insists), optional `OPENAI_API_KEY`. Three deliverables, in order:
+
+1. **Real-time Shape 2 (our stack, their model).** On the box, run our sidecar with the
+   image's venv + models: `TYGER_S2S=/app TYGER_BUNDLE=<hf cache>/... python tyger-ears.py
+   --listen 19999` (the sidecar speaks its JSON-lines protocol over TCP now). Locally,
+   the existing runbook with `TYGER_EARS_CMD=tcp://<box>:19999` — same relay, traits,
+   decision log, adaptation; decisions at real time, `say` or a real provider for TTS.
+   This is the **live-feel verdict**.
+2. **Scaled eval + the parity reference.** Run `scripts/tyger-eval.py` on the box
+   (`pip install datasets` into the venv) across val sessions — freeze the `default`
+   trait from the trait sweep, get real barge numbers, and keep the
+   `--dump-scores bench-results/parity-ref/` output: **that dump is the acceptance
+   corpus for the on-device port** (`docs/voice-tyger-ondevice.md`).
+3. **The tyger-s2s experience (P0b-ii).** Their stack as-is (`run.sh`, real config) +
+   our Shape 1 relay (`TYGER_URL=ws://<box>:7860/ws`) — Gemma + VoxCPM2 speaking, for
+   the comparison against our Shape 2 brain/TTS.
+
 ## Measuring it
 
 A/B harness (2026-10-18, runs on the Mac against the real bundle via `ReferenceEars`):
