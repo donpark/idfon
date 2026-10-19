@@ -24,6 +24,7 @@ let package = Package(
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "TygerVoice", package: "tyger-swift"),
                 .product(name: "TygerVoiceMLX", package: "tyger-swift"),
+                .product(name: "TygerVoiceCoreAI", package: "tyger-swift"),
             ],
             linkerSettings: [
                 .linkedLibrary("iroh_c_ffi"),
