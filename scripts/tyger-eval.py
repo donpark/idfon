@@ -42,6 +42,8 @@ SR = 16_000
 FRAME_MS = 80
 HOP_FRAMES = 4  # 320 ms per ReferenceEars hop
 DATASET = "anyreach-ai/dualturn-otospeech-turn-taking"
+BARGE_THRS = (0.2, 0.3, 0.5)
+BARGE_WINDOW = 8  # 640 ms at 80 ms frames: their "caught within" window
 
 
 def resample16k(x24, rate=24_000):
@@ -73,6 +75,25 @@ def ap(pos, neg):
     labels = labels[order]
     hits = np.cumsum(labels)
     return float((hits[labels == 1] / np.arange(1, len(labels) + 1)[labels == 1]).mean())
+
+
+def floor_series(lab, T):
+    """Who holds the floor per frame (0: none, 1: ch0, 2: ch1): last bot without its eot.
+    The model's state input must be the app's floor, not mere VAD activity — the other
+    side's backchannels must not flip it to SPEAK."""
+    floor = np.zeros(T, np.int8)
+    cur = 0
+    for f in range(T):
+        if lab["bot_ch0"][f]:
+            cur = 1
+        elif lab["bot_ch1"][f]:
+            cur = 2
+        if lab["eot_ch0"][f] and cur == 1:
+            cur = 0
+        if lab["eot_ch1"][f] and cur == 2:
+            cur = 0
+        floor[f] = cur
+    return floor
 
 
 def baseline_endpoints(pcm16, thr=300.0):
@@ -122,6 +143,9 @@ def main():
     ap_.add_argument("--max-minutes", type=float, default=5.0)
     ap_.add_argument("--split", default="val")
     ap_.add_argument("--ep-sweep", default="0.80,0.85,0.91,0.95")
+    ap_.add_argument("--dataset", default=DATASET)
+    ap_.add_argument("--min-interrupts", type=int, default=0, help="skip slices with fewer interrupting turn onsets")
+    ap_.add_argument("--max-scan", type=int, default=25, help="max sessions to scan for qualifying slices")
     ap_.add_argument("--out", default=None)
     args = ap_.parse_args()
 
@@ -133,18 +157,28 @@ def main():
     ears = ReferenceEars(BUNDLE, device="cpu")
     thr_sweep = [float(x) for x in args.ep_sweep.split(",")]
 
-    rows = iter(load_dataset(DATASET, split=args.split, streaming=True))
+    rows = iter(load_dataset(args.dataset, split=args.split, streaming=True))
     for _ in range(args.skip):
         next(rows)
-    report = {"dataset": DATASET, "split": args.split, "skip": args.skip, "sessions": []}
+    report = {"dataset": args.dataset, "split": args.split, "skip": args.skip, "sessions": []}
+    scanned = 0
     for row in rows:
         if len(report["sessions"]) >= args.sessions:
+            break
+        scanned += 1
+        if scanned > args.max_scan:
+            print(f"scan limit ({args.max_scan}) reached", flush=True)
             break
         T = int(row["num_frames"])
         limit = min(T, int(args.max_minutes * 60 * 12.5))
         codes = {ch: np.array(row[f"codes_{ch}"], dtype=np.int16).reshape(T, 8)[:limit] for ch in ("ch0", "ch1")}
         labels = {f"{k}_{ch}": np.array(row[f"{k}_{ch}"], dtype=np.int8)[:limit] for k in ("vad", "eot", "hold", "bot", "bc") for ch in ("ch0", "ch1")}
-        print(f"\n== {row['session_id']} ({row.get('dataset', '?')}): {limit / 12.5:.0f}s of {row['duration_s']:.0f}s", flush=True)
+        floor = floor_series(labels, len(labels["bot_ch0"]))
+        n_int = int(((labels["bot_ch0"] == 1) & (floor == 2)).sum())
+        if n_int < args.min_interrupts:
+            print(f"skip {row['session_id']}: {n_int} interrupting onsets in slice", flush=True)
+            continue
+        print(f"\n== {row['session_id']} ({row.get('dataset', '?')}): {limit / 12.5:.0f}s of {row['duration_s']:.0f}s, {n_int} interrupting onsets", flush=True)
 
         wavs = {ch: resample16k(decode_channel(mimi, codes[ch])) for ch in ("ch0", "ch1")}
         print(f"decoded to 16 kHz: {len(wavs['ch0']) / SR:.1f}s per channel", flush=True)
@@ -158,7 +192,7 @@ def main():
             s = h * HOP_FRAMES * SR * FRAME_MS // 1000
             user = wavs["ch0"][s : s + HOP_FRAMES * SR * FRAME_MS // 1000]
             agent = wavs["ch1"][s : s + HOP_FRAMES * SR * FRAME_MS // 1000]
-            mode = "speaking" if labels["vad_ch1"][h * HOP_FRAMES : (h + 1) * HOP_FRAMES].mean() > 0.5 else "listen"
+            mode = "speaking" if floor[h * HOP_FRAMES : (h + 1) * HOP_FRAMES].mean() >= 1.5 else "listen"
             for ev in ears.feed(sess, user, agent, mode):
                 if ev["kind"] == "FRAME":
                     scores["p_end"].append(ev.get("p_end", 0.0))
@@ -172,15 +206,34 @@ def main():
         eot_frames = np.flatnonzero(lab["eot_ch0"])
         turn_frames = np.flatnonzero((lab["vad_ch0"] == 1) & (lab["eot_ch0"] == 0))
         hold_frames = np.flatnonzero(lab["hold_ch0"] == 1)
-        bot_int = np.flatnonzero((lab["bot_ch0"] == 1) & (lab["vad_ch1"] == 1))
+        bot_int = np.flatnonzero((lab["bot_ch0"] == 1) & (floor[:L] == 2))
+        overlap_neg = np.flatnonzero((lab["vad_ch0"] == 1) & (lab["vad_ch1"] == 1) & (lab["bot_ch0"] == 0))
+        barge_neg = overlap_neg if len(overlap_neg) else turn_frames
         bc_frames = np.flatnonzero(lab["bc_ch0"] == 1)
 
         res = {"session_id": row["session_id"], "frames": L, "eot": int(len(eot_frames)),
                "endpoint_auc": round(auc(sc["p_end"][eot_frames], sc["p_end"][turn_frames]), 4),
                "endpoint_ap": round(ap(sc["p_end"][eot_frames], sc["p_end"][turn_frames]), 4),
-               "barge_auc": round(auc(sc["yield"][bot_int], sc["yield"][turn_frames]), 4) if len(bot_int) else None,
+               "barge_auc": round(auc(sc["yield"][bot_int], sc["yield"][barge_neg]), 4) if len(bot_int) else None,
+               "barge_ap": round(ap(sc["yield"][bot_int], sc["yield"][barge_neg]), 4) if len(bot_int) else None,
                "bc_auc": round(auc(sc["bc"][bc_frames], sc["bc"][turn_frames]), 4) if len(bc_frames) else None,
                "holds": int(len(hold_frames)), "interrupting_bots": int(len(bot_int)), "bc": int(len(bc_frames))}
+        if len(bot_int):
+            run_all = {thr: sc["yield"] >= thr for thr in BARGE_THRS}
+            caught_in = {thr: set() for thr in BARGE_THRS}
+            for f in bot_int:
+                for thr in BARGE_THRS:
+                    if run_all[thr][f : f + BARGE_WINDOW].any():
+                        caught_in[thr].add(int(f))
+            res["barge_sweep"] = {}
+            for thr in BARGE_THRS:
+                r = run_all[thr]
+                crossings = [f for f in range(1, L) if r[f] and not r[f - 1]]
+                false = sum(1 for f in crossings if not any(b <= f < b + BARGE_WINDOW for b in bot_int))
+                res["barge_sweep"][str(thr)] = {
+                    "catch_640ms": round(len(caught_in[thr]) / len(bot_int), 2),
+                    "false_fires": false,
+                }
 
         eot_s = (eot_frames * FRAME_MS / 1000).tolist()
         res["ep_sweep"] = {}

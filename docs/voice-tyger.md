@@ -218,6 +218,18 @@ Metrics, on the model card's definitions, so numbers compare:
   reproduces on real audio); endpoint AUC 0.90/0.92; baseline 0 early/0 miss but always
   late; TYGER 1 early cut-in per slice. Sample is still small — scaling needs their
   `EarsEngine` or a GPU box (`ReferenceEars` ≈ 2 s per 320 ms hop on CPU).
+- **Switchboard follow-up (2026-10-18, `dualturn-switchboard-turn-taking`):** telephone-
+  band conversations are a *hard* domain for TYGER — endpoint AUC 0.55 (vs 0.88–0.90 on
+  wideband OtoSpeech), latency/early/miss ≈ the energy baseline. The advantage is
+  domain-dependent: wideband conversational audio (like our calls) is its good regime;
+  phone-line audio is not. Also fixed a real eval bug: the floor state must come from
+  `bot`/`eot` (who holds the floor), not VAD activity — the other side's backchannels
+  must not flip the model's LISTEN/SPEAK input (their docs: "never the model's guess").
+  True floor-grabbing interruptions are sparse in Switchboard labels (0 in 24 min of
+  scanned slices; its overlaps are backchannels) — for barge numbers use
+  `MUGEN-Benchmark/Interruption_Detection` (raw audio) or longer GPU slices. First
+  barge read (VAD-based, 2 onsets): catch within 640 ms = 0.5 at `barge_thr` 0.2 with
+  92 false fires, 0 at 0.3+ — barge-in stays the weak axis, matching their own eval.
 - **Calibration on synthetic material (2026-10-18):** the heads' scores are
   sensitive to synthetic material in both directions. `p_end` saturates 0.85–0.88 (never
   crossing 0.91) on room-tone pauses but hit 0.95 on digital silence; `yield_prob` reached
