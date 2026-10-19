@@ -235,9 +235,17 @@ zero endpoint-structure differences; 19 of 24 sessions exact. The margin analysi
 settles the open question: boundary jitter is a property of every lossy tier
 (thresholds sitting exactly at 0.50 flip under any arithmetic difference), but the
 drift size sets the rate — fp16's 0.02–0.06 envelope produced 21 divergent events
-including split/merged turns; int8 g16's 0.007 produced 3 mild ones. By the
-tier's pre-agreed rule ("fp16 decisions drift at scale → switch to MLX"), the
-fallback tier is now the shipping tier.
+including split/merged turns; int8 g16's 0.007 produced 3 mild ones.
+
+**Ruling (user, 2026-10-19): the shipping tier is now platform-split.** Mac =
+MLX int8 g16 (no battery constraint, takes the guard-passing tier); iOS = CoreML
+fp16 / ANE (battery over precision — accepts the measured ~2.3% decision divergence:
+split/merged turns ~1 per 10 min of conversation, wrong/missing backchannels ~6 per
+72 min). Supersedes the single-tier fp16 decision. Remaining work for the mac tier:
+Swift MLX translation of `ports/tyger-mlx/` (the accepted Python chain, ~450 lines:
+encoder.py, turn_taker.py) behind the existing feed loop; acceptance = the same
+harnesses (TurnRuntimeTests fixtures + parity7). Still pending for both tiers: the
+battery measurement on a live call and the GPU-box runbook.
 
 ## Product work (2026-10-19)
 
