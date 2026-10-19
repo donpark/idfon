@@ -226,6 +226,20 @@ construction: **dynamic-shape export** (`torch.export` + `ct.EnumeratedShapes` o
 33·h+1 mel lengths) — a single mlpackage with shared weights covering all startup
 shapes; the per-shape trace route is impossible (24 × 1.5 GB).
 
+**Startup solved (2026-10-19): `TygerEncoderDyn.mlpackage`.** `export.py --only
+enc-dyn` exports the encoder with dynamic mel length via `torch.export` — the shape
+guard itself is the finding: mel lengths must be **8k−7** (33, 41, …, 801), so the
+dim is derived (`8 * Dim("_mel", 5, 101) - 7`). Conversion notes: the exported program
+needs `.run_decompositions({})` (EDGE dialect); the decomposed mask builder hits a
+float-met-bool `bitwise_and` (coercing override registered); and the **symbolic
+`rel_shift` reshape defeats MPS type inference** — the model must be *loaded*
+`compute_units=CPU_ONLY` (conversion-time CPU_ONLY is not enough). Acceptance
+(`parity6 --startup --enc TygerEncoderDyn`): oracle growing windows vs the dynamic
+model from hop 1 — **max|Δ| = 0.0000 on every head, decisions 6/6**, 205 ms/hop on
+CPU (inside budget even unaccelerated). **The startup contract**: first 8 s on
+TygerEncoderDyn (CPU, ~100 frames per call), steady state on TygerEncoder fp16
+(ANE).
+
 **Rust rules module — done.** `crates/idfon-voice/src/turns.rs` is the tier-neutral
 port of tyger's `rules.py`/`session.py`/`constants.py` (frame-in → events-out:
 ENDPOINT/BARGE/BACKCHANNEL/FRAME, warmup + MIN_SPEECH gates, barge onset tracking,
