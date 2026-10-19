@@ -1,7 +1,8 @@
 //! The turn rules: what one conversation's audio and the turn-taker's per-frame
 //! outputs mean for the turn. Ported 1:1 from tyger-s2s
 //! `app/plugins/ears/tyger/{rules,session,constants}.py` — the tier-neutral decision
-//! core behind the voice loop (daemon, apps via `apple_ffi`, tests).
+//! core behind the voice loop (daemon, apps via the `idfon_voice_turn_*` C ABI in
+//! iroh-c-ffi's voice.rs, tests).
 //!
 //! Parity: `scripts/tyger-rules-fixtures.py` runs the Python rules over scripted
 //! frame streams and writes `tests/data/turns-fixtures.json`; `tests/turns_fixtures.rs`
