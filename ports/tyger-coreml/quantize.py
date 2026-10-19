@@ -29,12 +29,14 @@ def main():
     ap.add_argument("--kind", default="linear8", choices=["linear8", "palettize8"])
     ap.add_argument("--src", default="TygerEncoder.mlpackage")
     ap.add_argument("--out", default="TygerEncoderQ8.mlpackage")
+    ap.add_argument("--granularity", default="per_block", choices=["per_block", "per_channel"],
+                    help="per_channel + block 16 = per-output-unit group-16 along the contraction axis (the MLX-PASS layout)")
     args = ap.parse_args()
 
     m = ct.models.MLModel(str(MODELS / args.src))
     if args.kind == "linear8":
         cfg = OpLinearQuantizerConfig(mode="linear", dtype="int8",
-                                      granularity="per_block", block_size=16)
+                                      granularity=args.granularity, block_size=16)
         q = linear_quantize_weights(m, config=OptimizationConfig(global_config=cfg))
     else:
         cfg = OpPalettizerConfig(mode="kmeans", nbits=8, granularity="per_grouped_channel", group_size=32)
