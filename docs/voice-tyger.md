@@ -162,6 +162,20 @@ Next: sweep full trait sets over the eval harness (objective metrics per set →
 `default` for most users), then short A/B listening runs between candidate traits —
 which trait people *like* is a listening question the metrics only bound.
 
+**Adaptive calibration (2026-10-18, `TYGER_ADAPT=<state file>`).** The trait is the
+prior; the user's behavior nudges the parameters between calls. Observables, judged
+from stream-position history (pacing-independent): `early_cut_in` (speech resumes
+< 0.5 s after our reply starts), `late_endpoint` (dead air > 1.2 s),
+`real_barge`/`false_barge`/`missed_barge` (speech onset over our playback, whether the
+yield fired within 640 ms, and whether they kept the floor ≥ 1 s),
+`bc_ok`/`bc_intrusive`. Each outcome bumps a counter; at call start the effective
+thresholds = trait ± clamped drift (±0.15, one step per knob per call) toward what
+this user's pattern asks for — a habitual interrupter drifts to a fast-yielding agent,
+a polite user to one unperturbed by their noise. Guardrails per `docs/voice-decisions.md`:
+slow rate, call-start-only, fail open to the trait, full attribution (every nudge is an
+`adapt` record with old → new), per-contact pin/reset is the user control. Outcomes are
+always recorded — the same log later trains a per-user model (the moat rung above).
+
 ## Measuring it
 
 A/B harness (2026-10-18, runs on the Mac against the real bundle via `ReferenceEars`):
