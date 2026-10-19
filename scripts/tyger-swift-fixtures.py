@@ -20,6 +20,7 @@ S2S = os.environ.get("TYGER_S2S", os.path.expanduser("~/dev/tyger-s2s"))
 BUNDLE = os.environ.get("TYGER_BUNDLE", os.path.expanduser(
     "~/.cache/huggingface/hub/models--nineninesix--tyger/snapshots/a5d4d73bb74fa4a7082dcd4387e44a1e5ac151b6"))
 sys.path.insert(0, S2S)
+sys.path.insert(0, os.path.join(S2S, "scripts"))
 
 ROOT = Path(__file__).resolve().parents[1]
 FILT_SWIFT = ROOT / "ports/tyger-swift/Sources/TygerVoice/MelFilters.generated.swift"
@@ -63,6 +64,54 @@ def main():
     FIXTURES.parent.mkdir(parents=True, exist_ok=True)
     FIXTURES.write_text(json.dumps(out))
     print(f"wrote {FIXTURES} ({FIXTURES.stat().st_size / 1e6:.2f} MB)")
+
+    if "--runtime" in sys.argv:
+        gen_runtime_fixtures()
+
+
+def gen_runtime_fixtures():
+    """Per-frame 8-vectors from the torch oracle (prev_state held at 0: the numeric
+    chain in isolation — rules threading is covered by the Rust fixtures)."""
+    import importlib.machinery
+    import soundfile as sf
+    import torch
+    from app.plugins.ears.tyger.constants import SR
+    from validate.reference import ReferenceEars
+
+    torch.set_num_threads(4)
+    te = importlib.machinery.SourceFileLoader(
+        "te", str(ROOT / "scripts/tyger-eval.py")).load_module()
+    from datasets import load_dataset
+    from transformers import AutoModel
+
+    rows = iter(load_dataset(te.DATASET, split="val", streaming=True))
+    row = next(rows)
+    T = int(row["num_frames"])
+    limit = min(T, 250)  # 20 s
+    codes = {ch: np.array(row[f"codes_{ch}"], dtype=np.int16).reshape(T, 8)[:limit] for ch in ("ch0", "ch1")}
+    mimi = AutoModel.from_pretrained("kyutai/mimi", dtype=torch.float32).eval()
+    wavs = {ch: te.resample16k(te.decode_channel(mimi, codes[ch])) for ch in ("ch0", "ch1")}
+
+    ears = ReferenceEars(BUNDLE, device="cpu")
+    outdir = FIXTURES.parent / "runtime"
+    outdir.mkdir(parents=True, exist_ok=True)
+    for ch in ("ch0", "ch1"):
+        sf.write(outdir / f"{ch}.wav", wavs[ch], SR, subtype="FLOAT")
+
+    hop = 5120
+    n_hops = min(len(wavs["ch0"]), len(wavs["ch1"])) // hop
+    frames = []
+    for h in range(n_hops):
+        s = (h + 1) * hop
+        wins = {ch: wavs[ch][max(0, s - 8 * SR):s] for ch in ("ch0", "ch1")}
+        hu, ha = ears.encode_l15(wins["ch0"]), ears.encode_l15(wins["ch1"])
+        from app.plugins.ears.tyger import rules
+        act = rules.frame_energy(wins["ch0"])
+        for i in range(-min(4, len(hu), len(ha), len(act)), 0):
+            out = ears.head_step(hu[i], ha[i], float(act[i]), 0)
+            frames.append([round(float(v), 5) for v in np.asarray(out)])
+    (outdir / "expectations.json").write_text(json.dumps({"hop_samples": hop, "frames": frames}))
+    print(f"wrote runtime fixtures: {n_hops} hops, {len(frames)} frames")
 
 
 if __name__ == "__main__":

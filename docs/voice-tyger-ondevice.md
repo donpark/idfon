@@ -250,6 +250,21 @@ extractor's output (5 scripted cases) and `swift test` asserts ≤ 2e-3 — pass
 Trap worth remembering: use `vDSP_fft_zop` (classic C API), not the `vDSP.FFT` Swift
 wrapper — the wrapper's forward returned 2×/garbage on the impulse probe.
 
+**Swift runtime, part 2 — the feed loop done.** `TurnRuntime.swift` (same package):
+growing windows to 8 s then sliding, mel features, the dynamic encoder at startup
+and fp16 at steady state, four `TygerStep` calls per hop threading the carried GRU
+state — mirroring `ReferenceEars.feed` exactly. Rules stay at a seam: the caller
+supplies `prevState` per frame and calls `reset()` where the oracle's rules say the
+context restarts. Acceptance (`TurnRuntimeTests`, 248 frames of a real conversation
+slice): the Swift chain reproduces the **accepted fp16 tier's record** — maxima
+inside parity6's envelope (state ≤ 0.7, probability heads ≤ 0.06) with means tight
+(state ≤ 0.05, probs ≤ 0.02) — the wiring-vs-tier split: a wiring bug is O(1), the
+tier's drift is not. Model I/O names are trace-generated (`input_665`, `var_114`/…)
+so outputs bind by shape (8 vs 3·768), which survives re-exports. mlpackages load
+only compiled (`MLModel.compileModel`) — the apps should precompile. Remaining: the
+rules FFI at the seam (idfon-voice), app wiring against the media pipeline, and the
+GPU-box runbook.
+
 **Rust rules module — done.** `crates/idfon-voice/src/turns.rs` is the tier-neutral
 port of tyger's `rules.py`/`session.py`/`constants.py` (frame-in → events-out:
 ENDPOINT/BARGE/BACKCHANNEL/FRAME, warmup + MIN_SPEECH gates, barge onset tracking,

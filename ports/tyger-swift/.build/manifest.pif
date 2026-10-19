@@ -5,11 +5,11 @@
       "name" : "TygerVoice",
       "path" : "/Users/don/dev/idfon/ports/tyger-swift",
       "projects" : [
-        "5346438d305b0f5d0ad2ec9cf20eaaaa0d571bca9546048183f72c4b4658bbda",
+        "d948ab3512de2e880a1e04f7dd8f43de5c20d83da9065a4ee3f3ef8585faf872",
         "56dc8f2793edc0a3dfb8c1414b3e7472d1f1b6db6622b3c17122806428ce7b1c"
       ]
     },
-    "signature" : "a47bdbe41a4f9a9cf23e8efe1f143576c3f0201e28f986bb801167853a8dd066",
+    "signature" : "600e59834adda525c4e6bee5f2178587dafa8e302b535f01da299245f541026d",
     "type" : "workspace"
   },
   {
@@ -211,6 +211,14 @@
                 "path" : "MelFeaturesTests.swift",
                 "sourceTree" : "<group>",
                 "type" : "file"
+              },
+              {
+                "fileType" : "sourcecode.swift",
+                "guid" : "PACKAGE:tyger-swift::MAINGROUP::REF_2::REF_1",
+                "name" : "TurnRuntimeTests.swift",
+                "path" : "TurnRuntimeTests.swift",
+                "sourceTree" : "<group>",
+                "type" : "file"
               }
             ],
             "guid" : "PACKAGE:tyger-swift::MAINGROUP::REF_2",
@@ -234,6 +242,14 @@
                 "guid" : "PACKAGE:tyger-swift::MAINGROUP::REF_3::REF_1",
                 "name" : "MelFilters.generated.swift",
                 "path" : "MelFilters.generated.swift",
+                "sourceTree" : "<group>",
+                "type" : "file"
+              },
+              {
+                "fileType" : "sourcecode.swift",
+                "guid" : "PACKAGE:tyger-swift::MAINGROUP::REF_3::REF_2",
+                "name" : "TurnRuntime.swift",
+                "path" : "TurnRuntime.swift",
                 "sourceTree" : "<group>",
                 "type" : "file"
               }
@@ -261,6 +277,14 @@
                 "path" : "MelFilters.generated.swift",
                 "sourceTree" : "<group>",
                 "type" : "file"
+              },
+              {
+                "fileType" : "sourcecode.swift",
+                "guid" : "PACKAGE:tyger-swift::MAINGROUP::REF_4::REF_2",
+                "name" : "TurnRuntime.swift",
+                "path" : "TurnRuntime.swift",
+                "sourceTree" : "<group>",
+                "type" : "file"
               }
             ],
             "guid" : "PACKAGE:tyger-swift::MAINGROUP::REF_4",
@@ -282,15 +306,15 @@
       "projectIsPackage" : "true",
       "projectName" : "TygerVoice",
       "targets" : [
-        "e5acf2e9c9792c30009fe658f20bb3611f1d469243ad50d19d86c8c50ba3b77c",
+        "cb2992782756de2ddf2b29206d5a529599611ed619a356e4b3af7e42e7169ac7",
         "c2170f128607362181b7c547ab1199c76b6fa9a50fab120f4f7ed4fce55ec7d5",
         "e87a9993cb29caf780010ea78aca8e5ef1ea9d6e5ff0daa3ec07e95891116466",
-        "2d7787f6f585171ef9b85dcf426edf9129705878ed45b4d37c13003df535cbbc",
-        "0b4ac8029ce50b9940599ca478a932d81b25108413fc99b7251971ff7b19ffda",
+        "3f048aa4e51e2fe19461ba724e478654a19910e90a4239341eda950723f4cf91",
+        "6e0eb9a46562b16ba62aa66bd4a9db91ce2057220a142b6640d3ab185523854e",
         "00a252b682c43b56ee7cd2f85789adab052cd09e3014184da2b111a1f6dfbab7"
       ]
     },
-    "signature" : "5346438d305b0f5d0ad2ec9cf20eaaaa0d571bca9546048183f72c4b4658bbda",
+    "signature" : "d948ab3512de2e880a1e04f7dd8f43de5c20d83da9065a4ee3f3ef8585faf872",
     "type" : "project"
   },
   {
@@ -473,6 +497,15 @@
 
               ],
               "removeHeadersOnCopy" : "false"
+            },
+            {
+              "codeSignOnCopy" : "false",
+              "fileReference" : "PACKAGE:tyger-swift::MAINGROUP::REF_2::REF_1",
+              "guid" : "PACKAGE-PRODUCT:tyger-swift_TygerVoiceTests.TygerVoiceTests::BUILDPHASE_0::1",
+              "platformFilters" : [
+
+              ],
+              "removeHeadersOnCopy" : "false"
             }
           ],
           "guid" : "PACKAGE-PRODUCT:tyger-swift_TygerVoiceTests.TygerVoiceTests::BUILDPHASE_0",
@@ -516,7 +549,7 @@
       "productTypeIdentifier" : "com.apple.product-type.bundle.unit-test",
       "type" : "standard"
     },
-    "signature" : "e5acf2e9c9792c30009fe658f20bb3611f1d469243ad50d19d86c8c50ba3b77c",
+    "signature" : "cb2992782756de2ddf2b29206d5a529599611ed619a356e4b3af7e42e7169ac7",
     "type" : "target"
   },
   {
@@ -859,6 +892,15 @@
 
               ],
               "removeHeadersOnCopy" : "false"
+            },
+            {
+              "codeSignOnCopy" : "false",
+              "fileReference" : "PACKAGE:tyger-swift::MAINGROUP::REF_3::REF_2",
+              "guid" : "PACKAGE-TARGET:TygerVoice::BUILDPHASE_0::2",
+              "platformFilters" : [
+
+              ],
+              "removeHeadersOnCopy" : "false"
             }
           ],
           "guid" : "PACKAGE-TARGET:TygerVoice::BUILDPHASE_0",
@@ -885,7 +927,7 @@
       "productTypeIdentifier" : "org.swift.product-type.library.static",
       "type" : "standard"
     },
-    "signature" : "2d7787f6f585171ef9b85dcf426edf9129705878ed45b4d37c13003df535cbbc",
+    "signature" : "3f048aa4e51e2fe19461ba724e478654a19910e90a4239341eda950723f4cf91",
     "type" : "target"
   },
   {
@@ -1074,6 +1116,15 @@
 
               ],
               "removeHeadersOnCopy" : "false"
+            },
+            {
+              "codeSignOnCopy" : "false",
+              "fileReference" : "PACKAGE:tyger-swift::MAINGROUP::REF_4::REF_2",
+              "guid" : "PACKAGE-TARGET:TygerVoice-4CF4C451CF08930B-dynamic::BUILDPHASE_0::2",
+              "platformFilters" : [
+
+              ],
+              "removeHeadersOnCopy" : "false"
             }
           ],
           "guid" : "PACKAGE-TARGET:TygerVoice-4CF4C451CF08930B-dynamic::BUILDPHASE_0",
@@ -1099,7 +1150,7 @@
       "productTypeIdentifier" : "com.apple.product-type.library.dynamic",
       "type" : "standard"
     },
-    "signature" : "0b4ac8029ce50b9940599ca478a932d81b25108413fc99b7251971ff7b19ffda",
+    "signature" : "6e0eb9a46562b16ba62aa66bd4a9db91ce2057220a142b6640d3ab185523854e",
     "type" : "target"
   },
   {
