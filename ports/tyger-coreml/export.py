@@ -64,6 +64,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--precision", default="float16", choices=["float16", "float32"])
     ap.add_argument("--only", default="both", choices=["both", "enc", "step"])
+    ap.add_argument("--target", default="ios18", choices=["ios17", "ios18"],
+                    help="ios18 unlocks per-block/per-grouped-channel quantization")
     args = ap.parse_args()
 
     import coremltools as ct
@@ -90,6 +92,7 @@ def main():
     tt.eval()
     OUT.mkdir(parents=True, exist_ok=True)
     prec = ct.precision.FLOAT16 if args.precision == "float16" else ct.precision.FLOAT32
+    target = ct.target.iOS18 if args.target == "ios18" else ct.target.iOS17
     print(f"precision: {args.precision}, out: {OUT}")
 
     if args.only in ("both", "enc"):
@@ -100,7 +103,8 @@ def main():
         print(f"encoder: feats (1, {MEL_FRAMES}, 128) -> {tuple(ref.shape)}")
         ml = ct.convert(torch.jit.trace(enc, ex),
                         inputs=[ct.TensorType(name="feats", shape=ex.shape)],
-                        compute_precision=prec, compute_units=ct.ComputeUnit.ALL)
+                        compute_precision=prec, compute_units=ct.ComputeUnit.ALL,
+                        minimum_deployment_target=target)
         ml.save(OUT / "TygerEncoder.mlpackage")
 
     if args.only in ("both", "step"):
@@ -118,7 +122,8 @@ def main():
                                 ct.TensorType(name="act_db", shape=act.shape),
                                 ct.TensorType(name="prev_state", shape=prev.shape, dtype=np.int32),
                                 ct.TensorType(name="state", shape=state.shape)],
-                        compute_precision=prec, compute_units=ct.ComputeUnit.ALL)
+                        compute_precision=prec, compute_units=ct.ComputeUnit.ALL,
+                        minimum_deployment_target=target)
         ml.save(OUT / "TygerStep.mlpackage")
 
     for p in sorted(OUT.glob("*.mlpackage")):

@@ -164,6 +164,21 @@ steady-state 8 s windows, shared carried state).
 | --- | --- | --- | --- |
 | **fp32** | **0.0000** — exact | 6/6 identical | 82 ms (budget 320) |
 | fp16 | 0.62 (state logits; yield 0.018, ep 0.030; p50 0.0069) | 6/6 identical | 22 ms |
+| **Q8** (`quantize.py --kind linear8`: block-16 asymmetric, iOS18 target) | 0.63 (state logits; hazard 0.016, yield 0.009, bc 0.015, **ep 0.033**; p50 0.0034) | 6/6 identical | 160 ms — **0.486 GB** |
+
+Quantisation verdict (2026-10-18, sizes cross-checked against Parakeet-0.6B GGUF
+community artifacts — the Q8 tier is ~1.23 B/param there; our 0.486 GB for 397M
+lands exactly on their curve): every "quantise everything" config — fp16, block-16
+int8 — drifts on the latent state-logits the same way, while the *decisions* stayed
+identical 6/6 in all runs. The only measured PASS at ≤0.02 was the MLX study's
+int8 per-unit group-16 **with stem + layers.0 exempt** (0.007) — exemptions are the
+untested variable on Core ML. Blocking detail: coremltools' granularities that would
+match (PER_BLOCK, PER_GROUPED_CHANNEL) need `minimum_deployment_target=iOS18`, and
+the converted program's ops are anonymous (no torch module names), so exempting
+stem/layers.0 needs a split export (front fp32 / tail quantised) — the open next
+experiment. Shipping stance: **fp32 default** (exact, real-time, 1.48 GB); fp16 or
+Q8 as the footprint/battery tier gated on *decision agreement* (held 6/6 in every
+run), not the score budget, until the exemption experiment lands.
 
 Reading: the export is provably faithful (fp32 zero-delta), and the whole fp16 gap is
 precision — amplified on the latent state-logits, the calibration-sensitive heads
