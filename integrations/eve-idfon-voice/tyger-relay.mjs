@@ -47,6 +47,7 @@ import { readFileSync, writeFileSync, unlinkSync, appendFileSync } from "node:fs
 
 const bridge = process.env.IDFON_BRIDGE_URL || "http://127.0.0.1:18766";
 const secret = process.env.IDFON_BRIDGE_SECRET || "m2-test-secret";
+const engine = process.env.IDFON_VOICE_ENGINE ? JSON.parse(process.env.IDFON_VOICE_ENGINE) : {}; // stt/tts/wrap config (live-relay.mjs's shape)
 const tygerUrl = process.env.TYGER_URL || "ws://127.0.0.1:7860/ws";
 const RATE = 24_000, EARS_RATE = 16_000, BLOCK = 320; // 20 ms at 16 kHz
 const LEAD_IN_MS = 40; // the browser client's play lead-in
