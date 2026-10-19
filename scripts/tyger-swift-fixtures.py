@@ -67,6 +67,38 @@ def main():
 
     if "--runtime" in sys.argv:
         gen_runtime_fixtures()
+    if "--mlx" in sys.argv:
+        gen_mlx_fixtures()
+
+
+def gen_mlx_fixtures():
+    """Per-frame 8-vectors from the ACCEPTED MLX chain (TYGER_MLX_PRECISION=int8 —
+    the export_swift.py artifact's arithmetic) over the runtime audio, prev_state
+    held at 0: the Swift MLX runtime test's expectations. Requires --runtime first."""
+    import soundfile as sf
+    os.environ["TYGER_MLX_PRECISION"] = "int8"
+    sys.path.insert(0, str(ROOT / "ports" / "tyger-mlx"))
+    from mlx_ears import MlxEars
+    from app.plugins.ears.tyger import rules
+    from app.plugins.ears.tyger.constants import SR
+
+    outdir = FIXTURES.parent / "runtime"
+    wavs = {ch: sf.read(outdir / f"{ch}.wav", dtype="float32")[0] for ch in ("ch0", "ch1")}
+    ears = MlxEars(BUNDLE)
+    hop = 5120
+    n_hops = min(len(wavs["ch0"]), len(wavs["ch1"])) // hop
+    frames = []
+    for h in range(n_hops):
+        s = (h + 1) * hop
+        wins = {ch: wavs[ch][max(0, s - 8 * SR):s] for ch in ("ch0", "ch1")}
+        hu, ha = ears.encode_l15(wins["ch0"]), ears.encode_l15(wins["ch1"])
+        act = rules.frame_energy(wins["ch0"])
+        for i in range(-min(4, len(hu), len(ha), len(act)), 0):
+            out = ears.head_step(hu[i], ha[i], float(act[i]), 0)
+            frames.append([round(float(v), 5) for v in np.asarray(out)])
+    (outdir / "expectations-mlx.json").write_text(json.dumps({"hop_samples": hop, "frames": frames}))
+    print(f"wrote MLX runtime fixtures: {n_hops} hops, {len(frames)} frames")
+
 
 
 def gen_runtime_fixtures():

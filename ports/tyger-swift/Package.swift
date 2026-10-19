@@ -3,12 +3,37 @@ import PackageDescription
 
 let package = Package(
     name: "TygerVoice",
-    platforms: [.macOS(.v13), .iOS(.v16)],
+    platforms: [.macOS(.v14), .iOS(.v16)],
     products: [
         .library(name: "TygerVoice", targets: ["TygerVoice"]),
+        // The mac tier's MLX int8-g16 runtime (the platform-split ruling in
+        // docs/voice-tyger-ondevice.md). Separate product so the iOS/CoreML
+        // build never links MLX.
+        .library(name: "TygerVoiceMLX", targets: ["TygerVoiceMLX"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.32.3"),
     ],
     targets: [
         .target(name: "TygerVoice", path: "Sources/TygerVoice"),
-        .testTarget(name: "TygerVoiceTests", dependencies: ["TygerVoice"], path: "Tests/TygerVoiceTests"),
+        .target(
+            name: "TygerVoiceMLX",
+            dependencies: [
+                "TygerVoice",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+            ],
+            path: "Sources/TygerVoiceMLX"
+        ),
+        .testTarget(
+            name: "TygerVoiceTests",
+            dependencies: ["TygerVoice"],
+            path: "Tests/TygerVoiceTests"
+        ),
+        .testTarget(
+            name: "TygerVoiceMLXTests",
+            dependencies: ["TygerVoiceMLX"],
+            path: "Tests/TygerVoiceMLXTests"
+        ),
     ]
 )

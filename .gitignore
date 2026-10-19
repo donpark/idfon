@@ -54,3 +54,6 @@ agents/*/invites.ndjson
 
 # Benchmark result history (scripts/relay-bench.sh)
 /bench-results/
+/ports/tyger-swift/.build/
+/scripts/__pycache__/
+/ports/*/__pycache__/
