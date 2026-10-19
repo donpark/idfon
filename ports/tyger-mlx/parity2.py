@@ -94,7 +94,7 @@ def main():
     hop = x[1000:1000 + 5120].copy() if len(x) > 6120 else x[:5120].copy()
     hu_t = ears.encode_l15(hop)  # (frames, 1024) torch
     ha_t = ears.encode_l15(np.zeros(5120, np.float32))
-    enc_m = EncoderL15(BUNDLE, layers=L15)
+    enc_m = EncoderL15(BUNDLE, layers=L15, precision=os.environ.get("TYGER_MLX_PRECISION", "fp32"))
     f_u = proc(hop, sampling_rate=SR, return_tensors="pt")["input_features"]
     f_a = proc(np.zeros(5120, np.float32), sampling_rate=SR, return_tensors="pt")["input_features"]
     hu_m1 = enc_m(mx.array(f_u.numpy()))[0]

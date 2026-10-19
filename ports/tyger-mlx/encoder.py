@@ -61,6 +61,39 @@ def load_encoder_weights(bundle_dir, layers=15):
     return out
 
 
+def prep_weights(w, precision):
+    """fp16: weight compute dtype (norm params stay fp32).
+    int8: per-group(64) symmetric quantise->dequantise of weight *storage* — measures
+    quantisation error; the runtime GEMM stays fp32 (fused int8 GEMM is a shipping
+    concern for the Swift/MLX tier, not for the accuracy study)."""
+    if precision not in ("fp16", "int8"):
+        return w
+    out = {}
+    for k, v in w.items():
+        if v.ndim < 2 or ".norm." in k or k.startswith("norm."):
+            out[k] = v
+        elif precision == "fp16":
+            out[k] = v.astype(mx.float16)
+        else:
+            if k.startswith("subsampling.") or k.startswith("layers.0."):
+                out[k] = v  # stem + first block stay fp32: small/early tensors, outsized error
+                continue
+            # per-output-unit group-16 asymmetric affine along the contraction axis
+            # (mlx Linear (in,out), conv (o,kh,kw,i)) — symmetric 64-groups failed the
+            # per-head budget (8-vector delta 0.91); this is the standard shape
+            v32 = v.astype(mx.float32)
+            t = v32.T if v.ndim == 2 else v32.reshape(v.shape[0], -1)
+            u, kk = t.shape
+            pad = (-kk) % 16
+            g = mx.pad(t, ((0, 0), (0, pad))).reshape(u, -1, 16)
+            lo = g.min(axis=2, keepdims=True)
+            s = (g.max(axis=2, keepdims=True) - lo) / 255
+            q = mx.clip(mx.round((g - lo) / mx.where(s == 0, 1, s)), 0, 255)
+            d = (q * s + lo).reshape(u, kk + pad)[:, :kk]
+            out[k] = (d.T if v.ndim == 2 else d.reshape(v.shape)).astype(mx.float32)
+    return out
+
+
 class FeedForward:
     def __init__(self, w, p):
         self.w1 = w[f"{p}.linear1.weight"]
@@ -97,11 +130,11 @@ class Attention:
         q = (x @ self.q).reshape(b, t, HEADS, HEAD_DIM).transpose(0, 2, 1, 3)
         k = (x @ self.k).reshape(b, t, HEADS, HEAD_DIM).transpose(0, 2, 1, 3)
         v = (x @ self.v).reshape(b, t, HEADS, HEAD_DIM).transpose(0, 2, 1, 3)
-        rel_k = (pos_emb @ self.rel_k).reshape(b, -1, HEADS, HEAD_DIM).transpose(0, 2, 3, 1)  # (B,H,D,2T-1)
+        rel_k = (pos_emb.astype(self.rel_k.dtype) @ self.rel_k).reshape(b, -1, HEADS, HEAD_DIM).transpose(0, 2, 3, 1)  # (B,H,D,2T-1)
         bd = self._rel_shift((q + self.bias_v) @ rel_k)[:, :, :, : t] * self.scaling
         bd = mx.where(mask, bd, mx.array(-mx.inf, bd.dtype))
         scores = (q + self.bias_u) @ k.transpose(0, 1, 3, 2) * self.scaling + bd
-        out = mx.softmax(scores.astype(mx.float32), axis=-1) @ v
+        out = mx.softmax(scores.astype(mx.float32), axis=-1).astype(v.dtype) @ v
         return (out.transpose(0, 2, 1, 3).reshape(b, t, HIDDEN)) @ self.o
 
 
@@ -123,7 +156,7 @@ class ConvModule:
         h = h[..., :HIDDEN] * mx.sigmoid(h[..., HIDDEN:])  # GLU
         h = mx.pad(h, [(0, 0), (CONV_K - 1, 0), (0, 0)])  # causal: left pad only
         h = self.dw(h)
-        h = mx.fast.layer_norm(h, self.nw, self.nb, 1e-5)
+        h = mx.fast.layer_norm(h.astype(mx.float32), self.nw, self.nb, 1e-5).astype(h.dtype)
         h = nn.silu(h)
         return h @ self.pw2
 
@@ -139,7 +172,7 @@ class Block:
                       ("norm_feed_forward1", "norm_self_att", "norm_conv", "norm_feed_forward2", "norm_out")}
 
     def _norm(self, name, x):
-        return mx.fast.layer_norm(x, *self.norms[name], 1e-5)
+        return mx.fast.layer_norm(x.astype(mx.float32), *self.norms[name], 1e-5).astype(x.dtype)
 
     def __call__(self, x, pos_emb, mask):
         x = x + 0.5 * self.ff1(self._norm("norm_feed_forward1", x))
@@ -178,8 +211,9 @@ class Subsampling:
 class EncoderL15:
     """The decision path: features (B, T_mel, 128) -> hidden_states[15] (B, T', 1024)."""
 
-    def __init__(self, bundle_dir, layers=15):
-        self.w = load_encoder_weights(bundle_dir, layers)
+    def __init__(self, bundle_dir, layers=15, precision="fp32"):
+        self.dtype = mx.float16 if precision == "fp16" else mx.float32
+        self.w = prep_weights(load_encoder_weights(bundle_dir, layers), precision)
         self.sub = Subsampling(self.w)
         self.blocks = [Block(self.w, i) for i in range(layers)]
         self.inv_freq = 1.0 / (REL_BASE ** (mx.arange(0, HIDDEN, 2).astype(mx.float32) / HIDDEN))
@@ -190,7 +224,7 @@ class EncoderL15:
         return mx.stack([mx.sin(freqs), mx.cos(freqs)], axis=-1).reshape(t * 2 - 1, HIDDEN)
 
     def __call__(self, features, lookahead=0):
-        h = self.sub(features)
+        h = self.sub(features.astype(self.dtype))
         t = h.shape[1]
         pos_emb = self.positions(t)[None]
         idx = mx.arange(t)
@@ -201,4 +235,4 @@ class EncoderL15:
         x = h
         for block in self.blocks:
             x = block(x, pos_emb, mask)
-        return x
+        return x.astype(mx.float32)
