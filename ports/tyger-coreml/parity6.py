@@ -98,6 +98,8 @@ def main():
     ap.add_argument("--skip", type=int, default=0)
     ap.add_argument("--dataset", default="anyreach-ai/dualturn-otospeech-turn-taking")
     ap.add_argument("--split", default="val")
+    ap.add_argument("--enc", default="TygerEncoder.mlpackage",
+                    help="encoder model under bench-results/coreml (e.g. TygerEncoderQ8.mlpackage)")
     args = ap.parse_args()
 
     import coremltools as ct
@@ -106,7 +108,7 @@ def main():
         "te", os.path.join(HERE, "..", "..", "scripts", "tyger-eval.py")).load_module()
     torch.set_num_threads(4)
     ears = ReferenceEars(BUNDLE, device="cpu")
-    enc = ct.models.MLModel(str(MODELS / "TygerEncoder.mlpackage"))
+    enc = ct.models.MLModel(str(MODELS / args.enc))
     step = ct.models.MLModel(str(MODELS / "TygerStep.mlpackage"))
 
     def feats(wav):
