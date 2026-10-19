@@ -151,6 +151,31 @@ or recalibrating/fine-tuning the heads on incremental-encoded features (the deci
 log → adaptation story). On Mac it is unnecessary: the re-encode is comfortably
 inside the 320 ms hop.
 
+**S4 done (2026-10-18): the Core ML port exports and is accepted.** Runtime decision
+(user): **Core ML / ANE first** — the app's other models are ANE; Swift MLX audio
+packages are the documented fallback. `ports/tyger-coreml/export.py` exports two
+static graphs mirroring the Python chain: **TygerEncoder** (mel window (1,801,128) →
+hidden L15 (1,101,1024); 801 = 8 s × 16 kHz / 160 + 1) and **TygerStep** (hu, ha,
+act_db, prev_state, state → 8-vector + new state; energy normalisation baked in).
+`parity6.py` accepts them against the torch oracle on real conversation (648 frames,
+steady-state 8 s windows, shared carried state).
+
+| config | per-head max\|Δ\| | decisions | per hop (both windows) |
+| --- | --- | --- | --- |
+| **fp32** | **0.0000** — exact | 6/6 identical | 82 ms (budget 320) |
+| fp16 | 0.62 (state logits; yield 0.018, ep 0.030; p50 0.0069) | 6/6 identical | 22 ms |
+
+Reading: the export is provably faithful (fp32 zero-delta), and the whole fp16 gap is
+precision — amplified on the latent state-logits, the calibration-sensitive heads
+(its history repeats). Shipping: **fp32 is already real-time** (14× headroom) and
+exact — ship it for correctness; fp16/ANE is the battery tier (52× faster, decisions
+agreed on this sample) to pair with the decision-agreement guard, not the score guard.
+Export gotchas: coremltools needs `new_ones` registered by hand (mask builders,
+cast to bool); Builder ops take keyword args (`mb.cast(x=…)`); `state` is a reserved
+Core ML name (renamed `state_workaround`); the processor yields 801 mel frames for
+8 s. Follow-ups: enumerated startup shapes (growing windows), Swift runtime wiring
+into the apps (media pipeline), the rules module in Rust.
+
 **S1 done (2026-10-18):** `ports/tyger-mlx/` — the encoder→L15 port (faithful
 translation of transformers' `NemotronAsrStreamingEncoder`, offline mode) with
 `parity.py`. **Parity PASS**: max|Δ| = 9.7e-5 (noise) / 6.9e-5 (speech) vs the torch
