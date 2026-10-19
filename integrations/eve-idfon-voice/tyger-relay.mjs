@@ -27,9 +27,23 @@
 //      TYGER_URL (default ws://127.0.0.1:7860/ws), TYGER_API_SECRET (omit when unset there);
 //      TYGER_VOICE — voice:<name> at start; TYGER_SET — "ep_thr:0.91,barge_thr:0.5";
 //      TYGER_TAG_LAG_MS (default 0).
+//
+// Shape 2 (docs/voice-tyger.md): set TYGER_EARS_CMD to run integrations/eve-idfon-voice/
+// tyger-ears.py (the real bundle + rules.py, CPU) and this process becomes MOUTH —
+// the reply comes from our own agent (the bridge's wrapped agent, or transcript echo),
+// spoken by our TTS, with tyger-s2s's behaviors: a spoken line before the (slow) agent
+// hop, backchannels that never enter history, and a barge stopping the reply at once
+// keeping only what the caller heard. Then TYGER_URL is unused.
+//      TYGER_EARS_CMD — e.g. `.venv/bin/python integrations/eve-idfon-voice/tyger-ears.py`
+//        (needs TYGER_S2S + TYGER_BUNDLE in the env);
+//      TYGER_TTS_CMD — shell command with the text in IDFON_TTS_TEXT that writes a
+//        24 kHz mono s16 WAV to IDFON_TTS_OUT (e.g. macOS `say` + `afconvert`); without
+//        it the OpenAI-compatible engine.tts config is used.
 
 import { createHmac, randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 
 const bridge = process.env.IDFON_BRIDGE_URL || "http://127.0.0.1:18766";
 const secret = process.env.IDFON_BRIDGE_SECRET || "m2-test-secret";
@@ -247,11 +261,351 @@ function writeWav(path, pcm) {
   writeFileSync(path, Buffer.concat([header, pcm]));
 }
 
+// ================= Shape 2: TYGER EARS decides, we are MOUTH =================
+// The audio clock (seconds of mic fed) is the timeline; wall clock only paces posting.
+const HOP_16K = 5120; // 320 ms at 16 kHz: one decision hop
+const LEAD_S = 0.04;
+
+function i16(arr) {
+  const b = Buffer.alloc(arr.length * 2);
+  for (let i = 0; i < arr.length; i++) b.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(arr[i]))), i * 2);
+  return b;
+}
+
+// The real bundle + rules.py behind stdio JSON lines (tyger-ears.py).
+class Ears {
+  constructor(cmd) {
+    const [bin, ...args] = cmd.split(" ");
+    this.child = spawn(bin, args, { stdio: ["pipe", "pipe", "inherit"], env: process.env });
+    this.pending = null;
+    this.buf = "";
+    this.child.stdout.on("data", (d) => {
+      this.buf += d;
+      let i;
+      while ((i = this.buf.indexOf("\n")) >= 0) {
+        const line = this.buf.slice(0, i);
+        this.buf = this.buf.slice(i + 1);
+        if (!line.trim()) continue;
+        const r = this.pending;
+        this.pending = null;
+        r?.(JSON.parse(line));
+      }
+    });
+    this.child.on("exit", (code) => {
+      const r = this.pending;
+      this.pending = null;
+      r?.({ ok: false, error: `ears exited ${code}` });
+    });
+  }
+  request(req) {
+    return new Promise((resolve) => {
+      this.pending = resolve;
+      this.child.stdin.write(JSON.stringify(req) + "\n");
+    });
+  }
+  open(thresholds) {
+    return this.request({ op: "open", thresholds });
+  }
+  feed(mode, user, agent) {
+    return this.request({ op: "feed", mode, user: user.toString("base64"), agent: agent.toString("base64") });
+  }
+  close() {
+    return this.request({ op: "close" });
+  }
+}
+
+async function ttsAny(text) {
+  const cmd = process.env.TYGER_TTS_CMD;
+  if (cmd) {
+    const out = `/tmp/tyger-tts-${process.pid}-${Date.now()}.wav`;
+    await new Promise((resolve, reject) =>
+      exec(cmd, { env: { ...process.env, IDFON_TTS_TEXT: text, IDFON_TTS_OUT: out } }, (err) => (err ? reject(err) : resolve())),
+    );
+    const wav = readFileSync(out);
+    unlinkSync(out);
+    return wav.subarray(44);
+  }
+  return synthesize(text); // OpenAI-compatible pcm: 24 kHz mono s16
+}
+
+// The reply pipeline (tyger-s2s's MOUTH behaviors): announcement before a slow agent
+// hop, clause-paced playback a barge can stop, backchannels that never enter history.
+class Mouth {
+  constructor({ play, ears, wrap, preamble, pace }) {
+    this.play = play; // (samples24, backchannel) -> void
+    this.ears = ears;
+    this.wrap = wrap; // async (text) -> reply text; null = echo the transcript
+    this.preamble = preamble || "One moment";
+    this.pace = pace || "wall"; // "audio": post when the fed stream reaches t0 (slow-CPU replay)
+    this.userResample = makeResampler();
+    this.agentResample = makeResampler();
+    this.hopUser = [];
+    this.hopS = 0; // stream position of the hop being fed (feeds may lag the mic)
+    this.chain = Promise.resolve();
+    this.curText = "";
+    this.curTotal = 0;
+    this.curPosted = 0;
+    this.pieces = []; // playback: {id, t0, t1, samples, pcm16, bc, posted, timer}
+    this.audioS = 0; // seconds of mic fed
+    this.nextPlay = 0;
+    this.replyId = 0;
+    this.replyText = "";
+    this.replyStartS = 0;
+    this.stats = { turns: 0, barges: 0, backchannels: 0, spokenSamples: 0, droppedSamples: 0 };
+  }
+
+  pushMic(pcm24) {
+    this.hopUser.push(...this.userResample(pcm24));
+    this.audioS += pcm24.length / RATE;
+    this.chain = this.chain.then(() => this.drainHops()); // feeds run one at a time
+    return this.chain;
+  }
+
+  async drainHops() {
+    while (this.hopUser.length >= HOP_16K) {
+      const hop = this.hopUser.splice(0, HOP_16K);
+      this.hopS += 0.32;
+      if (this.pace === "audio") this.pump();
+      const lag = TAG_LAG_MS / 1000;
+      const agent = this.agentWindow(this.hopS - 0.32 - lag, this.hopS - lag);
+      const res = await this.ears.feed(this.speaking() ? "speaking" : "listen", i16(hop), i16(agent));
+      if (!res.ok) throw new Error(`ears feed: ${res.error}`);
+      for (const ev of res.events || []) await this.onEvent(ev);
+    }
+  }
+
+  // Audio pace: post what the stream has reached (t0 order), so truncation is exact.
+  pump() {
+    for (const p of [...this.pieces].sort((a, b) => a.t0 - b.t0)) {
+      if (p.posted || p.t0 > this.hopS) continue;
+      p.posted = true;
+      if (p.timer) clearTimeout(p.timer);
+      if (!p.bc) {
+        this.curPosted += p.samples.length;
+        this.stats.spokenSamples += p.samples.length;
+      }
+      this.play(p.samples, p.bc);
+    }
+  }
+
+  // End of stream: whatever was scheduled still plays, in order.
+  flush() {
+    if (this.pace === "audio") {
+      this.hopS = Infinity;
+      this.pump();
+    }
+  }
+
+  speaking() {
+    return this.pieces.some((p) => !p.bc && p.t1 > this.hopS - 0.32 && p.t0 < this.hopS);
+  }
+
+  // The second ear: what the caller was hearing in [t0, t1), backchannels left out.
+  agentWindow(t0, t1) {
+    const out = new Array(HOP_16K).fill(0);
+    for (const p of this.pieces) {
+      if (p.bc) continue;
+      const s = Math.max(p.t0, t0), e = Math.min(p.t1, t1);
+      if (e <= s) continue;
+      const rate = p.pcm16.length / (p.t1 - p.t0);
+      let o = Math.round(((s - t0) / (t1 - t0)) * HOP_16K);
+      for (let i = Math.round((s - p.t0) * rate); i < Math.round((e - p.t0) * rate) && o < HOP_16K; i++, o++) out[o] = p.pcm16[i];
+    }
+    this.pieces = this.pieces.filter((p) => p.t1 > t0 - 10);
+    return out;
+  }
+
+  // Speak text: TTS now, posted when the caller should hear it — so a barge drops
+  // whatever has not played yet.
+  async speak(text, { bc = false } = {}) {
+    const pcm24 = await ttsAny(text);
+    if (!pcm24?.length) return;
+    const id = bc ? 0 : ++this.replyId;
+    if (!bc) {
+      this.curText = text;
+      this.curTotal = 0;
+      this.curPosted = 0;
+    }
+    const frame = (RATE / 50) * 2; // 20 ms of s16
+    for (let off = 0; off + frame <= pcm24.length; off += frame) {
+      const samples = Array.from({ length: frame / 2 }, (_, i) => pcm24.readInt16LE(off + i * 2));
+      this.schedule(id, samples, bc);
+    }
+    if (this.pace === "audio") this.pump();
+  }
+
+  schedule(id, samples, bc) {
+    // The reply starts where the stream is being consumed (the hop that ended the turn),
+    // not where the mic feed has reached — feeds may run ahead of the model.
+    const t0 = Math.max(this.nextPlay, (this.pace === "audio" ? this.hopS : this.audioS) + LEAD_S);
+    const t1 = t0 + samples.length / RATE;
+    this.nextPlay = t1;
+    if (!bc) this.curTotal += samples.length;
+    const piece = { id, t0, t1, samples, pcm16: this.agentResample(samples), bc, posted: false, timer: null };
+    if (this.pace === "wall") {
+      piece.timer = setTimeout(() => {
+        piece.posted = true;
+        if (!bc) this.curPosted += samples.length;
+        this.play(samples, bc);
+      }, Math.max(0, (t0 - TAG_LAG_MS / 1000 - this.audioS) * 1000));
+    }
+    this.pieces.push(piece);
+  }
+
+  stopPlayback({ barged = false } = {}) {
+    for (const p of this.pieces) {
+      if (p.timer) clearTimeout(p.timer);
+      if (!p.posted && !p.bc) this.stats.droppedSamples += p.samples.length;
+    }
+    if (barged && this.curText) {
+      const heard = this.heardRatio();
+      log.info("barge: keeping only what the caller heard", {
+        heard_ratio: +heard.toFixed(2),
+        heard_text: this.curText.slice(0, Math.round(this.curText.length * heard)),
+      });
+      this.stats.barges++;
+    }
+    this.pieces = this.pieces.filter((p) => p.posted); // what played stays in the 2nd ear
+    this.nextPlay = 0;
+  }
+
+  heardRatio() {
+    return this.curTotal ? Math.min(1, this.curPosted / this.curTotal) : 0;
+  }
+
+  async onEvent(ev) {
+    switch (ev.kind) {
+      case "PARTIAL":
+        return; // the page's live words; nothing to do here
+      case "ENDPOINT":
+        this.stopPlayback(); // a new reply never overlaps the last
+        log.info("endpoint", { transcript: ev.transcript, turn_s: ev.turn_s, by: ev.by });
+        await this.reply(ev.transcript || "");
+        return;
+      case "BARGE":
+        log.info("barge", { onset_s: ev.onset_s, yield_prob: ev.yield_prob });
+        this.stopPlayback({ barged: true });
+        return;
+      case "BACKCHANNEL": {
+        const hint = (ev.partial || "").trim();
+        const text = hint && hint.length <= 24 ? hint : "mm-hm";
+        this.stats.backchannels++;
+        log.info("backchannel", { text, bc_prob: ev.bc_prob });
+        await this.speak(text, { bc: true });
+        return;
+      }
+      default:
+        log.info("ears event", ev);
+    }
+  }
+
+  async reply(transcript) {
+    this.stats.turns++;
+    let text;
+    if (this.wrap) {
+      await this.speak(this.preamble, {}); // a short line before the slow hop
+      text = (await this.wrap(transcript)) || "";
+    } else {
+      text = transcript; // no wrapped agent: echo the transcript back (a connectivity check)
+    }
+    if (!text.trim()) return;
+    this.replyText = text;
+    this.replyStartS = this.audioS + LEAD_S;
+    await this.speak(text, {});
+    log.info("reply", { text, turns: this.stats.turns });
+  }
+}
+
+async function mainShape2({ smoke, outPath }) {
+  const ears = new Ears(process.env.TYGER_EARS_CMD);
+  const thresholds = {};
+  for (const pair of (process.env.TYGER_SET || "").split(",")) {
+    const [attr, value] = pair.split(":");
+    if (attr && value) thresholds[attr.trim()] = Number(value);
+  }
+  const opened = await ears.open(thresholds);
+  if (!opened.ok) throw new Error(`ears open: ${opened.error}`);
+  log.info("ears open", { cmd: process.env.TYGER_EARS_CMD, thresholds });
+
+  if (smoke) {
+    const heard = [];
+    const mouth = new Mouth({ play: (samples, bc) => heard.push(Buffer.from(Int16Array.from(samples).buffer)), ears, wrap: null, pace: "audio" });
+    const pcm = readWav(smoke);
+    const frame = (RATE / 50) * 2;
+    log.info("smoke: playing", { path: smoke, seconds: (pcm.length / 2 / RATE).toFixed(1) });
+    for (let off = 0; off + frame <= pcm.length; off += frame) {
+      mouth.pushMic(Array.from({ length: frame / 2 }, (_, i) => pcm.readInt16LE(off + i * 2)));
+    }
+    await mouth.chain;
+    while (mouth.hopUser.length >= HOP_16K) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await mouth.chain;
+    mouth.flush();
+    await new Promise((r) => setTimeout(r, 2000));
+    const out = Buffer.concat(heard);
+    writeWav(outPath, out);
+    log.info("smoke: done", { out: outPath, out_seconds: (out.length / 2 / RATE).toFixed(2), ...mouth.stats });
+    await ears.close();
+    process.exit(0);
+  }
+
+  let peerId = null;
+  const mouth = new Mouth({
+    play: async (samples) => {
+      const pcm = Buffer.from(Int16Array.from(samples).buffer);
+      const response = await fetch(`${bridge}/live/audio`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
+        body: JSON.stringify({ peer_id: peerId, pcm_base64: pcm.toString("base64") }),
+      });
+      if (!response.ok) log.error("live audio HTTP", { status: response.status });
+    },
+    ears,
+    wrap: engine.wrap ? forward : null,
+    preamble: process.env.TYGER_PREAMBLE || "One moment",
+  });
+  log.info("listening", { bridge });
+  const response = await fetch(`${bridge}/live/stream`, { headers: { accept: "text/event-stream" } });
+  if (!response.ok || !response.body) throw new Error(`stream HTTP ${response.status}`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let index;
+    while ((index = buffer.indexOf("\n\n")) >= 0) {
+      const event = buffer.slice(0, index);
+      buffer = buffer.slice(index + 2);
+      const line = event.split("\n").find((l) => l.startsWith("data: "));
+      if (!line) continue;
+      let frame;
+      try {
+        frame = JSON.parse(line.slice(6));
+      } catch {
+        continue;
+      }
+      if (frame.type !== "audio.frame") continue;
+      if (peerId && frame.peer_id !== peerId) continue; // one call per relay
+      peerId = frame.peer_id;
+      const raw = Buffer.from(frame.pcm_base64, "base64");
+      mouth.pushMic(Array.from({ length: raw.length / 2 }, (_, i) => raw.readInt16LE(i * 2)));
+    }
+  }
+  await ears.close();
+}
+
 async function main() {
-  const smoke = (() => { const i = process.argv.indexOf("--smoke"); return i >= 0 ? process.argv[i + 1] : null; })();
+  const smoke = (() => {
+    const i = process.argv.indexOf("--smoke");
+    return i >= 0 ? process.argv[i + 1] : null;
+  })();
   const outIndex = process.argv.indexOf("--out");
   const outPath = outIndex >= 0 ? process.argv[outIndex + 1] : "tyger-out.wav";
   if (smoke && !smoke.endsWith(".wav")) throw new Error("--smoke needs a 24 kHz mono s16 WAV");
+  if (process.env.TYGER_EARS_CMD) return mainShape2({ smoke, outPath });
 
   let play, call;
   if (smoke) {

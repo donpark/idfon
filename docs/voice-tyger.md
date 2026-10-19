@@ -193,11 +193,28 @@ Metrics, on the model card's definitions, so numbers compare:
   the `docs/voice-decisions.md` training-record schema from day one, and keep the P1
   rules/decider module tier-neutral in `idfon-voice` — that log is the training data an
   on-device port will need, and the loop contract stays identical across tiers.
-- **P1 — EARS in our loop (Shape 2).** Sidecar + rules in Rust behind `live.json`
-  (`decider: { kind, url, ep_thr, barge_thr, bc_thr }`), server-cascade only. Keep the
-  configured STT for transcripts (the A/B must measure decisions, not ASR).
-- **P2 — MOUTH behaviors.** Turn pipeline: chunker + announcements + backchannel channel
-  + barged-round trimming around the Eve agent's loop.
+- **P1/P2 — built (2026-10-18): Shape 2 in one pass.**
+  - `integrations/eve-idfon-voice/tyger-ears.py` — EARS sidecar: the real bundle through
+    their `ReferenceEars` + `rules.py` (CPU), stdio JSON lines: feed a 320 ms hop of mic +
+    second ear + the app's floor state, get `ENDPOINT`/`BARGE`/`BACKCHANNEL`/`PARTIAL`.
+  - `tyger-relay.mjs` shape 2 (TYGER_EARS_CMD set) is MOUTH: replies from our agent (the
+    bridge's wrapped agent or echo) spoken by our TTS (TYGER_TTS_CMD or engine.tts), with
+    the MOUTH behaviors — a spoken line before a slow agent hop, paced playback a barge
+    stops at once (only what the caller heard is kept; the unheard tail is dropped before
+    it is ever posted), backchannels that never enter history or the second ear. The
+    second ear is built from our own playback timeline (their `AgentPlayback` analog).
+  - Demonstrated end to end on the smoke harness: endpoint → exact transcript → spoken
+    reply → truncation machinery. **Open:** bridge mode against a served agent + live
+    call; BARGE/BACKCHANNEL *triggering* on synthetic material (below).
+  - Caveat: `ReferenceEars` on CPU runs ~1–2 s per 320 ms hop — correct for replay and
+    demos, not real time. Live calls need the GPU box or their engine path (`EarsEngine`).
+- **P0b-i measurements (2026-10-18) — the calibration finding:** the heads' scores are
+  sensitive to synthetic material in both directions. `p_end` saturates 0.85–0.88 (never
+  crossing 0.91) on room-tone pauses but hit 0.95 on digital silence; `yield_prob` reached
+  **0.947 with a silent second ear but only ~0.32 with any agent speech in the ear**
+  (same-voice TTS overlap reads as echo — their ISSUES I-26, materialized). On synthetic
+  audio, working thresholds were `ep_thr≈0.85`, `barge_thr≈0.2–0.3` — but **the gate must
+  tune thresholds on real call recordings**, not on `say` output.
 - **P3 — report**, then decide about the on-device tier (Apple port) and about letting
   Nemotron's transcript replace the per-contact STT pickers.
 
