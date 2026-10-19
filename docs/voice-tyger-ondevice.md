@@ -48,6 +48,15 @@ below — and pruning the cache every N minutes (the 8 s window bounds the drift
 | Core ML / ANE | the *shipping* battery tier for iPhone later; stateful KV caches + flexible window shapes are fiddly; revisit when MLX numbers exist |
 | ONNX Runtime mobile | fallback if MLX-on-iOS hits a wall |
 
+**Shipping form (settled 2026-10-18).** The Python port is *scaffolding and oracle*, not
+the product: its job was to pin every semantic trap cheaply (gate order, the `pad((1,0))`
+left-pad, asymmetric conv padding, energy normalisation outside the model) and to be
+the executable spec the real port is diffed against. Python overhead is not the hot
+path (measured: the Metal kernels do the math; 30 ms/hop vs 320 ms budget). The
+product forms: **Swift MLX (or Core ML/ANE) for both tiers** — Mac and iOS apps share
+it, and iOS cannot ship Python at all — and **Rust for the rules/guards only** (the
+tier-neutral `idfon-voice` module). Migration moment: S4.
+
 ## Precision plan (the heads are calibration-sensitive)
 
 fp32 reference → fp16 activations → int8 weights for the encoder; **keep the GRU + heads
@@ -90,7 +99,11 @@ construction (both paths feed the same `rules.py`). Probe lessons: `head_step`
 normalises energy (`(db+50)/25` clamped) *outside* the model — callers must do the
 same; Linear/GRU weights need the (out,in)→(in,out) flip at load. Remaining S2→S3
 bridge: plug the MLX chain into `tyger-eval.py` as an engine for the val-slice
-harness run against the `--dump-scores` reference.
+harness run against the `--dump-scores` reference. **Bridge done (2026-10-18):**
+`mlx_ears.py` (ReferenceEars-compatible) + `tyger-eval.py --engine mlx` — the same
+val slice through the ported chain scores **max|Δ| = 0.0** vs the torch reference
+across p_end/yield/bc over 372 frames (1e-5 resolution); decisions identical by
+construction (shared rules.py).
 
 **S1 done (2026-10-18):** `ports/tyger-mlx/` — the encoder→L15 port (faithful
 translation of transformers' `NemotronAsrStreamingEncoder`, offline mode) with
