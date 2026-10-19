@@ -79,6 +79,19 @@ decisions against the GPU reference dump. tyger-s2s ships the same pattern
 
 ## Milestones
 
+**S2 done (2026-10-18):** `ports/tyger-mlx/turn_taker.py` — the 14M decision model
+(fuse → 3-layer GRU → five heads) ported with torch's GRU equations and the bundle's
+names 1:1. `parity2.py`: **GRU batch + stepped parity max|Δ| = 2.6e-6** (stepped ==
+batch: the carried-state live path is exact), **full chain (MLX encoder + MLX GRU)
+per-frame 8-vector max|Δ| = 5.7e-6 vs the 0.02 budget — PASS** with 3 orders of
+margin. GRU step 0.038 ms/frame; total hop ≈ 30 ms (2 encodes + 4 frames) vs the
+320 ms budget, ~10× headroom before the KV lever. Decision parity follows by
+construction (both paths feed the same `rules.py`). Probe lessons: `head_step`
+normalises energy (`(db+50)/25` clamped) *outside* the model — callers must do the
+same; Linear/GRU weights need the (out,in)→(in,out) flip at load. Remaining S2→S3
+bridge: plug the MLX chain into `tyger-eval.py` as an engine for the val-slice
+harness run against the `--dump-scores` reference.
+
 **S1 done (2026-10-18):** `ports/tyger-mlx/` — the encoder→L15 port (faithful
 translation of transformers' `NemotronAsrStreamingEncoder`, offline mode) with
 `parity.py`. **Parity PASS**: max|Δ| = 9.7e-5 (noise) / 6.9e-5 (speech) vs the torch
