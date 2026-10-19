@@ -35,7 +35,8 @@ HOP_FRAMES = 4
 class MlxEars:
     def __init__(self, bundle_dir, layers=L15):
         _asr, self.proc, _tt, _cfg = bundle_load(Path(bundle_dir))
-        self.enc = EncoderL15(bundle_dir, layers=min(layers, 15))
+        self.enc = EncoderL15(bundle_dir, layers=min(layers, 15),
+                          precision=os.environ.get("TYGER_MLX_PRECISION", "fp32"))
         self.tt = TurnTaker(bundle_dir)
         self.cache = None
 
