@@ -212,6 +212,22 @@ chain (Swift translation of already-accepted Python) with the int8 g16 config th
 alone passed ≤0.02 — it is the precision tier on standby, kept as the oracle for
 re-exports meanwhile.
 
+**Scaled eval (2026-10-19, `parity7.py`: 24 sessions × 3 min real conversation,
+920 decisions, shipping chain vs fp32 reference through the same rules): FAIL as
+defined** — 95.9% decision agreement within ±160 ms (bar: ≥99%); 88.9% fire at the
+identical frame, 98.5% at ±2.6 s, leaving 21 genuinely divergent events (~2.3%, 13
+of 24 sessions; the other 11 are exact). Margin analysis on the divergent frames
+puts every flip **at the decision boundary**: the driving prob differs between tiers
+by 0.01–0.03 exactly where it straddles its threshold (bc 0.49 vs 0.50; ep 0.91 vs
+0.92 against 0.9146) — the accepted drift envelope itself, amplified by the
+debounce (a 2-consecutive-frame rule turns a 0.01 bias into a whole missed ENDPOINT)
+and by gate-state cascades after a flip. Consequences seen: endpoint timing jitter
+80 ms–2.5 s, occasional split/merged turns (~1 episode per 10 min), spurious or
+missing backchannels (~6 per 72 min). No divergence was found away from a threshold
+— this is boundary jitter, not a new failure mode. Open question before switching
+tiers: whether MLX int8 g16 (drift 0.007) clears the 99% bar in the same harness, or
+whether every lossy tier lands ~97–98% and the bar is only met by exact arithmetic.
+
 ## Product work (2026-10-19)
 
 **Startup semantics — measured, two shortcuts rejected.** The steady-state contract is
