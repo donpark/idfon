@@ -212,6 +212,31 @@ chain (Swift translation of already-accepted Python) with the int8 g16 config th
 alone passed ≤0.02 — it is the precision tier on standby, kept as the oracle for
 re-exports meanwhile.
 
+## Product work (2026-10-19)
+
+**Startup semantics — measured, two shortcuts rejected.** The steady-state contract is
+the 8 s window; the first 8 s of a call use *growing* windows in the oracle. (1) A
+fixed 8 s buffer prefilled with digital silence (the app's natural implementation) is
+**rejected**: vs growing windows the scores diverge hard at startup hops (state logits
+up to 3.27, ep 0.49). (2) A zero-padded fixed window with an attention mask is
+**broken as measured** (max|Δ| ~128 at both mel- and frame-level masks — the model's
+mask path does not exclude the padded prefix as assumed; hypothesis: the
+`_get_output_attention_mask` mapping). (3) The size-sane route that works by
+construction: **dynamic-shape export** (`torch.export` + `ct.EnumeratedShapes` on the
+33·h+1 mel lengths) — a single mlpackage with shared weights covering all startup
+shapes; the per-shape trace route is impossible (24 × 1.5 GB).
+
+**Rust rules module — done.** `crates/idfon-voice/src/turns.rs` is the tier-neutral
+port of tyger's `rules.py`/`session.py`/`constants.py` (frame-in → events-out:
+ENDPOINT/BARGE/BACKCHANNEL/FRAME, warmup + MIN_SPEECH gates, barge onset tracking,
+backchannel refractory, mode switching, barge-seeded resets). Parity by fixtures:
+`scripts/tyger-rules-fixtures.py` *runs the Python rules* over scripted streams and
+writes `crates/idfon-voice/tests/data/turns-fixtures.json`; `cargo test -p idfon-voice`
+asserts identical events — **8 cases / 1386 frames pass byte-identical**, including a
+400-hop random stream over every branch. Rounding note: Python's `round` is
+ties-to-even — the port rounds via `format!` (IEEE, same behavior). Next: expose via
+`apple_ffi` for the apps, and port the relay's guards/adaptation into the same module.
+
 Reading: the export is provably faithful (fp32 zero-delta), and the whole fp16 gap is
 precision — amplified on the latent state-logits, the calibration-sensitive heads
 (its history repeats). Shipping: **fp32 is already real-time** (14× headroom) and
