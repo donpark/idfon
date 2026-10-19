@@ -111,7 +111,7 @@ class StepWrap(nn.Module):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--precision", default="float16", choices=["float16", "float32"])
-    ap.add_argument("--only", default="both", choices=["both", "enc", "step", "front", "tail", "check"])
+    ap.add_argument("--only", default="both", choices=["both", "enc", "step", "front", "tail", "check", "enc-dyn"])
     ap.add_argument("--target", default="ios18", choices=["ios17", "ios18"],
                     help="ios18 unlocks per-block/per-grouped-channel quantization")
     args = ap.parse_args()
@@ -121,6 +121,17 @@ def main():
     from coremltools.converters.mil.frontend.torch.ops import _cast_to, _get_inputs
     from coremltools.converters.mil.frontend.torch.utils import NUM_TO_DTYPE_STRING
     from coremltools.converters.mil.frontend.torch.torch_op_registry import register_torch_op
+
+    @register_torch_op(override=True)
+    def bitwise_and(context, node):
+        # the decomposed mask builder meets a float const where a bool belongs
+        inputs = _get_inputs(context, node)
+        a, b = inputs
+        if a.dtype != "bool":
+            a = mb.cast(x=a, dtype="bool")
+        if b.dtype != "bool":
+            b = mb.cast(x=b, dtype="bool")
+        context.add(mb.logical_and(x=a, y=b), node.name)
 
     @register_torch_op
     def new_ones(context, node):
@@ -152,6 +163,28 @@ def main():
         d = float((ref - got).abs().max())
         print(f"split == full over {tuple(ref.shape)}: max|Δ| {d:.3e}  ({'PASS' if d < 1e-5 else 'FAIL'})")
         sys.exit(0 if d < 1e-5 else 1)
+
+    if args.only == "enc-dyn":
+        # Dynamic mel length = the startup contract: the app feeds true growing
+        # windows (33·h+1 frames), matching the oracle exactly — no padding tricks.
+        enc = EncWrap(asr).eval()
+        ex = torch.zeros(1, 33, 128)
+        _mel = torch.export.Dim("_mel", min=5, max=101)  # mel lengths are 8k-7 (33, 41, ..., 801)
+        dim = 8 * _mel - 7
+        ep = torch.export.export(enc, (ex,), dynamic_shapes={"feats": {1: dim}}).run_decompositions({})
+        # the symbolic reshape in rel_shift defeats MPS shape inference; enumerated
+        # hop lengths give concrete shapes (32h+1 mel = 33, 65, ..., 801 -> frames/8+1)
+        mels = [32 * h + 1 for h in range(1, 26)]
+        outs = [(m + 7) // 8 for m in mels]
+        ml = ct.convert(ep,
+                        inputs=[ct.TensorType(name="feats", shape=ct.EnumeratedShapes(
+                            shapes=[[1, m, 128] for m in mels], default=[1, MEL_FRAMES, 128]))],
+                        outputs=[ct.TensorType(name="hu")],
+                        compute_precision=prec, compute_units=ct.ComputeUnit.CPU_ONLY,
+                        minimum_deployment_target=target)
+        ml.save(OUT / "TygerEncoderDyn.mlpackage")
+        print("encoder-dyn saved")
+        return
 
     if args.only in ("both", "front"):
         front = EncFrontWrap(asr).eval()

@@ -104,6 +104,8 @@ def main():
                     help="split export: fp32 front (stem + layers.0)")
     ap.add_argument("--enc-tail", default="",
                     help="split export: tail (layers.1..14), optionally quantised")
+    ap.add_argument("--startup", action="store_true",
+                    help="growing windows from hop 1 (the dynamic-shape startup contract)")
     args = ap.parse_args()
 
     import coremltools as ct
@@ -112,9 +114,12 @@ def main():
         "te", os.path.join(HERE, "..", "..", "scripts", "tyger-eval.py")).load_module()
     torch.set_num_threads(4)
     ears = ReferenceEars(BUNDLE, device="cpu")
+    # the dynamic startup graph's symbolic rel_shift reshape defeats MPS type
+    # inference at runtime too — bind it to CPU (only ~100 startup frames per call)
+    cu = ct.ComputeUnit.CPU_ONLY if args.startup else ct.ComputeUnit.ALL
     if args.enc_tail:
-        enc_front = ct.models.MLModel(str(MODELS / args.enc_front))
-        enc_tail = ct.models.MLModel(str(MODELS / args.enc_tail))
+        enc_front = ct.models.MLModel(str(MODELS / args.enc_front), compute_units=cu)
+        enc_tail = ct.models.MLModel(str(MODELS / args.enc_tail), compute_units=cu)
 
         class TwoPart:
             def predict(self, d):
@@ -122,12 +127,13 @@ def main():
                 return {"hidden_out": list(enc_tail.predict({"hidden": h}).values())[0]}
         enc = TwoPart()
     else:
-        enc = ct.models.MLModel(str(MODELS / args.enc))
-    step = ct.models.MLModel(str(MODELS / "TygerStep.mlpackage"))
+        enc = ct.models.MLModel(str(MODELS / args.enc), compute_units=cu)
+    step = ct.models.MLModel(str(MODELS / "TygerStep.mlpackage"), compute_units=cu)
 
     def feats(wav):
         w = np.asarray(wav, dtype=np.float32)
-        w = np.concatenate([w, np.zeros(WIN_S * SR - len(w), np.float32)]) if len(w) < WIN_S * SR else w[-WIN_S * SR:]
+        if not args.startup:
+            w = np.concatenate([w, np.zeros(WIN_S * SR - len(w), np.float32)]) if len(w) < WIN_S * SR else w[-WIN_S * SR:]
         f = ears.proc(w, sampling_rate=SR, return_tensors="pt")["input_features"].numpy()
         return f.astype(np.float32)
 
@@ -141,7 +147,7 @@ def main():
     wavs = {ch: te.resample16k(te.decode_channel(AutoModel.from_pretrained(
         "kyutai/mimi", dtype=torch.float32).eval(), codes[ch])) for ch in ("ch0", "ch1")}
     n_hops = min(len(wavs["ch0"]), len(wavs["ch1"])) // HOP
-    warm = WIN_S * SR // HOP  # steady-state: window full
+    warm = 0 if args.startup else WIN_S * SR // HOP  # steady-state: window full
     print(f"session {row['session_id'][:12]}…: {limit / 12.5:.0f}s, {n_hops} hops, comparing from hop {warm}")
 
     a = Chain("torch", ears=ears)
@@ -150,7 +156,10 @@ def main():
     compared = 0
     for h in range(warm, n_hops):
         s = (h + 1) * HOP
-        win = {ch: wavs[ch][s - WIN_S * SR:s] for ch in ("ch0", "ch1")}
+        if args.startup:
+            win = {ch: wavs[ch][max(0, s - WIN_S * SR):s] for ch in ("ch0", "ch1")}
+        else:
+            win = {ch: wavs[ch][s - WIN_S * SR:s] for ch in ("ch0", "ch1")}
         a.feed(win["ch0"], win["ch1"], "response")
         b.feed(win["ch0"], win["ch1"], "response")
         compared += 1
