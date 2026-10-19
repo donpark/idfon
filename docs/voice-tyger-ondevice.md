@@ -124,6 +124,33 @@ Note: int8 here is a *storage* study (dequantised at load, GEMM in FP32); fused
 int8 GEMM is a Swift/MLX shipping concern. Footprint at L15: FP32 1.5 GB → FP16
 756 MB → int8-with-FP32-exemptions ≈ 380 MB.
 
+**S3 incremental-KV study done (2026-10-18) — naive incremental FAILS the budget,
+and the brief's caveat is confirmed quantitatively.** `encoder_incr.py` (per-layer
+K/V + causal-conv caches, blocks stepped over new frames only; conv stem re-run per
+hop so the isolated variable is the context semantics) + `parity5.py` (A/B stream of
+a real 60 s conversation slice through both schemes with identical windows/mel/GRU/
+rules; `--self-test` proves the incremental math against batch).
+
+| measure | result |
+| --- | --- |
+| stepped == batch, identical context (self-test) | max\|Δ\| 6.1e-5 — exact |
+| per-frame 8-vector vs re-encode (748 frames) | p50 **0.074**, p95 0.89, max 6.23 — **FAIL** (budget 0.02) |
+| rules decisions | 5/8 aligned; 1 spurious BACKCHANNEL in the incremental scheme |
+| encoder time per hop (both streams) | 53.5 ms → **1.8 ms** (30×) |
+
+Why: with the math exact, the divergence is semantic — deep-layer attention context
+is stream history instead of 8 s-window-truncated, cached frames keep their
+frontier-computed representations (the stem's 11-mel-frame right-lookahead is frozen
+in) while the reference recomputes them with real future, and the GRU's carried state
+compounds small score drift into regime divergence (median delta already 3.7× the
+budget). **Conclusion: do not ship naive incremental for the calibrated heads.**
+Mitigations to measure if the lever is ever needed (iPhone battery, S4): periodic
+resync (full re-encode every N hops — bounds drift; needs an N-vs-delta curve),
+split-tier decisions (incremental for backchannel/gates, re-encode for p_end/yield),
+or recalibrating/fine-tuning the heads on incremental-encoded features (the decision-
+log → adaptation story). On Mac it is unnecessary: the re-encode is comfortably
+inside the 320 ms hop.
+
 **S1 done (2026-10-18):** `ports/tyger-mlx/` — the encoder→L15 port (faithful
 translation of transformers' `NemotronAsrStreamingEncoder`, offline mode) with
 `parity.py`. **Parity PASS**: max|Δ| = 9.7e-5 (noise) / 6.9e-5 (speech) vs the torch
