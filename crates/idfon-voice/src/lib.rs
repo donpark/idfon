@@ -25,6 +25,7 @@ use anyhow::Result;
 
 #[cfg(feature = "apple-ffi")]
 pub mod apple_ffi;
+pub mod adapt;
 pub mod arbiter;
 pub mod turns;
 pub mod audit;
