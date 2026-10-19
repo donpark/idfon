@@ -96,6 +96,30 @@ def floor_series(lab, T):
     return floor
 
 
+def sim_fires(scores, thr, deb):
+    """Decisions a debounce rule makes from per-frame scores: one fire per run of `deb`
+    frames at/above `thr`. Approximates rules.py closely enough to compare traits from a
+    single model pass (the heads' scores do not depend on the thresholds)."""
+    run, fires = 0, []
+    for f, s in enumerate(scores):
+        run = run + 1 if s >= thr else 0
+        if run == deb:
+            fires.append(f)
+    return fires
+
+
+def bc_score(fires_frames, bc_frames, window=8, refractory=15):
+    kept = []
+    for f in fires_frames:
+        if not kept or f - kept[-1] >= refractory:
+            kept.append(f)
+    hits = sum(1 for f in kept if any(abs(f - b) <= window for b in bc_frames))
+    matched = sum(1 for b in bc_frames if any(abs(f - b) <= window for f in kept))
+    return {"fires": len(kept), "hits": hits,
+            "precision": round(hits / len(kept), 2) if kept else None,
+            "recall": round(matched / len(bc_frames), 2) if len(bc_frames) else None}
+
+
 def baseline_endpoints(pcm16, thr=300.0):
     """The relay's energy endpointer (live-relay.mjs): |s16| > 300, 800 ms quiet tail,
     turns under 1 s dropped. Returns fire times in seconds."""
@@ -146,6 +170,7 @@ def main():
     ap_.add_argument("--dataset", default=DATASET)
     ap_.add_argument("--min-interrupts", type=int, default=0, help="skip slices with fewer interrupting turn onsets")
     ap_.add_argument("--max-scan", type=int, default=25, help="max sessions to scan for qualifying slices")
+    ap_.add_argument("--traits", default=None, help="directory of trait JSONs to compare on every session")
     ap_.add_argument("--out", default=None)
     args = ap_.parse_args()
 
@@ -250,6 +275,27 @@ def main():
         lat, early, miss = sweep(base_s, eot_s)
         res["baseline"] = {"latency_med": round(float(np.median(lat)), 2) if lat else None, "early": early, "miss": miss,
                            "fires": len(base_s)}
+        if args.traits:
+            import glob
+
+            res["traits"] = {}
+            for path in sorted(glob.glob(os.path.join(args.traits, "*.json"))):
+                t = json.load(open(path))
+                d = t.get("decider", {})
+                name = t.get("name", os.path.basename(path))
+                ef = sim_fires(sc["p_end"], d.get("ep_thr", 0.9146), max(1, int(d.get("ep_deb", 2))))
+                lat, early, miss = sweep([f * FRAME_MS / 1000 for f in ef], eot_s)
+                row = {"endpoint": {"latency_med": round(float(np.median(lat)), 2) if lat else None, "early": early, "miss": miss}}
+                if len(bot_int):
+                    bf = sim_fires(sc["yield"], d.get("barge_thr", 0.5), max(1, int(d.get("barge_deb", 2))))
+                    caught = sum(1 for b in bot_int if any(b <= f < b + BARGE_WINDOW for f in bf))
+                    false = sum(1 for f in bf if not any(b <= f < b + BARGE_WINDOW for b in bot_int))
+                    row["barge"] = {"catch_640ms": round(caught / len(bot_int), 2), "false_fires": false}
+                if len(bc_frames):
+                    row["backchannel"] = bc_score(
+                        sim_fires(sc["bc"], d.get("bc_thr", 0.5), max(1, int(d.get("bc_deb", 2)))),
+                        bc_frames, refractory=int(d.get("bc_refractory", 15)))
+                res["traits"][name] = row
         report["sessions"].append(res)
         print(json.dumps(res, indent=2), flush=True)
 
@@ -258,6 +304,20 @@ def main():
     with open(out, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nwrote {out}")
+    if args.traits and report["sessions"]:
+        names = sorted({n for s in report["sessions"] for n in s.get("traits", {})})
+        print("\n== trait summary (mean over sessions) ==")
+        print(f"{'trait':<20} {'ep latency':>10} {'early':>6} {'miss':>5} {'barge catch':>11} {'barge false':>11} {'bc prec':>8} {'bc rec':>7}")
+        for name in names:
+            rows = [s["traits"][name] for s in report["sessions"] if name in s.get("traits", {})]
+            lat = [r["endpoint"]["latency_med"] for r in rows if r["endpoint"]["latency_med"] is not None]
+            catch = [r["barge"]["catch_640ms"] for r in rows if "barge" in r]
+            false = [r["barge"]["false_fires"] for r in rows if "barge" in r]
+            prec = [r["backchannel"]["precision"] for r in rows if r.get("backchannel", {}).get("precision") is not None]
+            rec = [r["backchannel"]["recall"] for r in rows if r.get("backchannel", {}).get("recall") is not None]
+            mean = lambda xs: round(sum(xs) / len(xs), 2) if xs else "-"  # noqa: E731
+            print(f"{name:<20} {mean(lat):>10} {sum(r['endpoint']['early'] for r in rows):>6} "
+                  f"{sum(r['endpoint']['miss'] for r in rows):>5} {mean(catch):>11} {mean(false):>11} {mean(prec):>8} {mean(rec):>7}")
 
 
 if __name__ == "__main__":
