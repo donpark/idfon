@@ -105,6 +105,25 @@ val slice through the ported chain scores **max|Δ| = 0.0** vs the torch referen
 across p_end/yield/bc over 372 frames (1e-5 resolution); decisions identical by
 construction (shared rules.py).
 
+**S3 precision pass done (2026-10-18), judged on the real-data slice (372 frames,
+per-head ≤0.02):**
+
+| config | p_end | yield | bc | verdict |
+| --- | --- | --- | --- | --- |
+| fp16 encoder (norms/softmax FP32, GRU/heads FP32) | 0.007 | 0.004 | 0.010 | **PASS** |
+| int8 weights: per-unit group-16 asymmetric, stem + layers.0 FP32 | 0.007 | 0.002 | 0.005 | **PASS** |
+| int8: per-unit group-32 asymmetric, stem FP32 | 0.033 | 0.004 | 0.007 | FAIL (p_end) |
+| int8: flat/symmetric group-64 | — | — | — | FAIL (8-vector 0.91) |
+
+Lessons: the endpoint head pays for crude quantisation first (it is the
+calibration-sensitive one — its pause-texture history repeats); real quantisation
+layouts matter (per-output-unit groups along the contraction axis; flat global
+groups crush small rows); early/stem tensors are outsized contributors and keeping
+them FP32 is cheap. `TYGER_MLX_PRECISION=fp32|fp16|int8` selects the config.
+Note: int8 here is a *storage* study (dequantised at load, GEMM in FP32); fused
+int8 GEMM is a Swift/MLX shipping concern. Footprint at L15: FP32 1.5 GB → FP16
+756 MB → int8-with-FP32-exemptions ≈ 380 MB.
+
 **S1 done (2026-10-18):** `ports/tyger-mlx/` — the encoder→L15 port (faithful
 translation of transformers' `NemotronAsrStreamingEncoder`, offline mode) with
 `parity.py`. **Parity PASS**: max|Δ| = 9.7e-5 (noise) / 6.9e-5 (speech) vs the torch
