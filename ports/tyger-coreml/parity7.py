@@ -232,8 +232,8 @@ def main():
         total_frames += n
         if args.dump:
             os.makedirs(args.dump, exist_ok=True)
-            ref.dump(os.path.join(args.dump, f"s{s:02d}_ref.npz"))
-            cand.dump(os.path.join(args.dump, f"s{s:02d}_cand.npz"))
+            ref.dump(os.path.join(args.dump, f"s{args.skip + s:02d}_ref.npz"))
+            cand.dump(os.path.join(args.dump, f"s{args.skip + s:02d}_cand.npz"))
         ea, eb = ref.events, cand.events
         m = min(len(ea), len(eb))
         same = sum(1 for i in range(m) if ea[i][1] == eb[i][1])

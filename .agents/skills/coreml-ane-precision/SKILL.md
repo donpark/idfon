@@ -176,6 +176,12 @@ gate) — read it before any incremental/streaming work here.
 - Gate ladder per model: eager fp32 per-chunk (embeds + caches + per-layer
   hidden vs oracle) → fp16 export → engine per-chunk cosine on cpu/gpu.
   Per-layer hidden-state dumps catch drift location, not just magnitude.
+- **The runtime leaks ~1 IOSurface per inference call** (Python binding AND
+  possibly core — plain NDArray churn is fine, `fn(...)` calls are not; GC and
+  model reloads don't release it; ~8–9k calls per process hits a fatal
+  `NDArray+SharedStorage` allocation error). Harness fix: shard runs by
+  process. **Product flag: the Swift runtime shares the core — soak-test a
+  long call (30 min ≈ 28k calls) before trusting Core AI on long sessions.**
 - Acceptance bar for end-to-end ASR ports: token-exact vs oracle.
 
 ### Their streaming-cache design for our encoder (the S3 lever)
