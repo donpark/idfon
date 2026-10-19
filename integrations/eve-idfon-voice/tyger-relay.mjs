@@ -43,7 +43,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { exec } from "node:child_process";
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, appendFileSync } from "node:fs";
 
 const bridge = process.env.IDFON_BRIDGE_URL || "http://127.0.0.1:18766";
 const secret = process.env.IDFON_BRIDGE_SECRET || "m2-test-secret";
@@ -52,9 +52,35 @@ const RATE = 24_000, EARS_RATE = 16_000, BLOCK = 320; // 20 ms at 16 kHz
 const LEAD_IN_MS = 40; // the browser client's play lead-in
 const TAG_LAG_MS = Number(process.env.TYGER_TAG_LAG_MS || 0);
 
+// ---- Traits: one named parameter set per call (agents/voice/traits/*.json) ----
+// Every log line and decision record is stamped with the trait, so outcomes stay
+// attributable to the parameters that produced them (docs/voice-tyger.md).
+const TRAIT = (() => {
+  const path = process.env.TYGER_TRAIT;
+  const base = path ? JSON.parse(readFileSync(path, "utf8")) : { name: "ad-hoc", decider: {}, mouth: {} };
+  const decider = { ...(base.decider || {}) };
+  for (const pair of (process.env.TYGER_SET || "").split(",")) {
+    // env overrides the file, one knob at a time
+    const [attr, value] = pair.split(":");
+    if (attr && value) decider[attr.trim()] = Number(value);
+  }
+  return { ...base, decider };
+})();
+
+// The decision log: one JSON line per decision, the training-record shape of
+// docs/voice-decisions.md. The trait + params ride every record.
+function recordDecision(entry) {
+  const path = process.env.TYGER_DECISION_LOG;
+  if (!path) return;
+  appendFileSync(
+    path,
+    JSON.stringify({ ts: new Date().toISOString(), trait: TRAIT.name, params: TRAIT.decider, ...entry }) + "\n",
+  );
+}
+
 const log = ((service) => {
   const emit = (level, message, fields) => {
-    const record = { ts: new Date().toISOString(), level, service, target: "idfon.tyger-relay", message };
+    const record = { ts: new Date().toISOString(), level, service, target: "idfon.tyger-relay", trait: TRAIT.name, message };
     if (fields) for (const [k, v] of Object.entries(fields)) if (v != null && v !== "") record[k] = v;
     process.stderr.write(JSON.stringify(record) + "\n");
   };
@@ -136,25 +162,26 @@ class Call {
       case "ready":
         log.info("tyger ready", { voices: (m.voices || []).join(","), max_session_s: m.max_session_s });
         if (process.env.TYGER_VOICE && (m.voices || []).includes(process.env.TYGER_VOICE)) this.send(`voice:${process.env.TYGER_VOICE}`);
-        for (const pair of (process.env.TYGER_SET || "").split(",")) {
-          const [attr, value] = pair.split(":");
-          if (attr && value) this.send(`set:${attr.trim()}:${value.trim()}`);
-        }
+        for (const [attr, value] of Object.entries(TRAIT.decider)) this.send(`set:${attr}:${value}`);
         break;
       case "endpoint": // a new reply never overlaps the last: stop playing it
         this.stopPlayback();
         log.info("endpoint", { transcript: m.transcript });
+        recordDecision({ kind: "endpoint", via: "ws", transcript: m.transcript });
         break;
       case "barge": // the caller cut in: stop playing at once
         this.stopPlayback();
         log.info("barge", { played_s: m.played_s });
+        recordDecision({ kind: "barge", via: "ws", played_s: m.played_s });
         break;
       case "turn_done":
         log.info("turn_done", { barged: !!m.barged, ...this.stats });
+        recordDecision({ kind: "turn_done", via: "ws", barged: !!m.barged });
         break;
       case "backchannel":
       case "backchannel_done":
         log.info(m.type, { text: m.text, aborted: m.aborted });
+        recordDecision({ kind: m.type, via: "ws", text: m.text });
         break;
       case "busy":
       case "error":
@@ -345,6 +372,7 @@ class Mouth {
     this.curText = "";
     this.curTotal = 0;
     this.curPosted = 0;
+    this.bcIndex = 0;
     this.pieces = []; // playback: {id, t0, t1, samples, pcm16, bc, posted, timer}
     this.audioS = 0; // seconds of mic fed
     this.nextPlay = 0;
@@ -463,6 +491,7 @@ class Mouth {
         heard_ratio: +heard.toFixed(2),
         heard_text: this.curText.slice(0, Math.round(this.curText.length * heard)),
       });
+      recordDecision({ kind: "truncation", heard_ratio: +heard.toFixed(2), heard_text: this.curText.slice(0, Math.round(this.curText.length * heard)) });
       this.stats.barges++;
     }
     this.pieces = this.pieces.filter((p) => p.posted); // what played stays in the 2nd ear
@@ -480,18 +509,22 @@ class Mouth {
       case "ENDPOINT":
         this.stopPlayback(); // a new reply never overlaps the last
         log.info("endpoint", { transcript: ev.transcript, turn_s: ev.turn_s, by: ev.by });
+        recordDecision({ kind: "endpoint", via: "ears", transcript: ev.transcript, p_end: ev.p_end, turn_s: ev.turn_s });
         await this.reply(ev.transcript || "");
         return;
       case "BARGE":
         log.info("barge", { onset_s: ev.onset_s, yield_prob: ev.yield_prob });
+        recordDecision({ kind: "barge", via: "ears", onset_s: ev.onset_s, yield_prob: ev.yield_prob });
         this.stopPlayback({ barged: true });
         return;
       case "BACKCHANNEL": {
         const hint = (ev.partial || "").trim();
-        const text = hint && hint.length <= 24 ? hint : "mm-hm";
+        const list = TRAIT.mouth.backchannels ?? ["mm-hm"];
+        const text = hint && hint.length <= 24 ? hint : list[this.bcIndex++ % list.length];
         this.stats.backchannels++;
         log.info("backchannel", { text, bc_prob: ev.bc_prob });
-        await this.speak(text, { bc: true });
+        recordDecision({ kind: "backchannel", via: "ears", text, bc_prob: ev.bc_prob });
+        if (text) await this.speak(text, { bc: true });
         return;
       }
       default:
@@ -513,19 +546,17 @@ class Mouth {
     this.replyStartS = this.audioS + LEAD_S;
     await this.speak(text, {});
     log.info("reply", { text, turns: this.stats.turns });
+    recordDecision({ kind: "reply", text, turns: this.stats.turns });
   }
 }
 
 async function mainShape2({ smoke, outPath }) {
   const ears = new Ears(process.env.TYGER_EARS_CMD);
-  const thresholds = {};
-  for (const pair of (process.env.TYGER_SET || "").split(",")) {
-    const [attr, value] = pair.split(":");
-    if (attr && value) thresholds[attr.trim()] = Number(value);
-  }
+  const thresholds = { ...TRAIT.decider };
   const opened = await ears.open(thresholds);
   if (!opened.ok) throw new Error(`ears open: ${opened.error}`);
   log.info("ears open", { cmd: process.env.TYGER_EARS_CMD, thresholds });
+  recordDecision({ kind: "call_start", via: "ears", thresholds });
 
   if (smoke) {
     const heard = [];
@@ -563,7 +594,7 @@ async function mainShape2({ smoke, outPath }) {
     },
     ears,
     wrap: engine.wrap ? forward : null,
-    preamble: process.env.TYGER_PREAMBLE || "One moment",
+    preamble: process.env.TYGER_PREAMBLE || TRAIT.mouth.preamble || "",
   });
   log.info("listening", { bridge });
   const response = await fetch(`${bridge}/live/stream`, { headers: { accept: "text/event-stream" } });

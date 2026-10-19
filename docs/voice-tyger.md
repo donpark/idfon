@@ -139,6 +139,29 @@ the GRU to Core ML / MLX is the cost. Options:
 | In-process Rust | no runtime exists; porting Nemotron is a project of its own |
 | MLX/CoreML port | later, only if the experiment wins *and* we want it in the on-device tier |
 
+## Parameters and traits
+
+One named, versioned parameter set is the unit of "character": `agents/voice/traits/*.json`
+seeds the space — `default` (the shipped model-card values, the comparison baseline),
+`attentive-listener` (waits through pauses, yields fast, reacts while you talk — the
+"attentive listener with heavy lips" point), `chatty` (heavy lips: frequent backchannels,
+quick turns), `terse`. A trait carries `decider` (`ep_thr/ep_deb`, `barge_thr/barge_deb`,
+`bc_thr/bc_deb`, `bc_refractory`) and `mouth` (preamble, backchannel phrases,
+`clause_start`).
+
+Wiring and attribution (2026-10-18): `TYGER_TRAIT=<file>` (with `TYGER_SET` env overrides
+per knob) feeds the sidecar thresholds / the `/ws` `set:` commands; **every log line and
+every decision record is stamped with the trait name and full params**, and
+`TYGER_DECISION_LOG=<path>` appends one JSON line per decision (the
+`docs/voice-decisions.md` training-record shape) — outcomes stay attributable to the
+parameters that produced them. First demonstration: the `chatty` trait's lower `bc_thr`
+fired the experiment's first backchannel ("mm-hm") where `default` would have stayed
+silent.
+
+Next: sweep full trait sets over the eval harness (objective metrics per set → the
+`default` for most users), then short A/B listening runs between candidate traits —
+which trait people *like* is a listening question the metrics only bound.
+
 ## Measuring it
 
 A/B harness (2026-10-18, runs on the Mac against the real bundle via `ReferenceEars`):

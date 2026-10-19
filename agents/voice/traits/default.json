@@ -1,0 +1,6 @@
+{
+  "name": "default",
+  "comment": "The shipped model-card values (nineninesix/tyger). Baseline every trait is compared against; superseded by the swept defaults once step 2 runs.",
+  "decider": { "ep_thr": 0.9146, "ep_deb": 2, "barge_thr": 0.5, "barge_deb": 2, "bc_thr": 0.5, "bc_deb": 2, "bc_refractory": 15 },
+  "mouth": { "preamble": "One moment", "backchannels": ["mm-hm"], "clause_start": true }
+}
