@@ -133,6 +133,29 @@ void idfon_director_free_string(char *ptr);
 uint8_t idfon_voice_is_cancellable(const char *text, uint8_t playing, uint8_t in_tool_window);
 uint8_t idfon_voice_is_echo(const char *spoken, const char *heard);
 
+// Turn rules (idfon_voice::turns via native/vendor/iroh-c-ffi src/voice.rs): the
+// voice loop's decision seam, one session per conversation. JSON results are
+// freed with rust_free_string, turn audio with idfon_voice_turn_free_audio.
+// mode is "listen" or "speaking" (NULL = "listen"); audio is 16 kHz mono f32.
+void *idfon_voice_turn_new(const char *thresholds_json); // NULL/empty = defaults, invalid = NULL
+void idfon_voice_turn_free(void *sess);
+void idfon_voice_turn_reset(void *sess); // heads' context restarts before the next hop
+int32_t idfon_voice_turn_prev_state(const void *sess); // 0=LISTEN 1=HOLD 2=SPEAK 3=BACKCHANNEL
+// Before a hop's frames (window sliding + turn audio); returns 1 when the
+// heads' context must start over.
+uint8_t idfon_voice_turn_begin_hop(void *sess, const float *user, const float *agent,
+                                   size_t samples, const char *mode);
+uint8_t idfon_voice_turn_switch_mode(void *sess, const char *mode);
+void idfon_voice_turn_set_words(void *sess, const char *words); // user's words so far (ASR thread)
+char *idfon_voice_turn_words_event(void *sess, const char *mode); // PARTIAL event JSON, or NULL
+// One frame's decision: JSON {"events":[...],"final":bool,"reset":bool} (NULL
+// on bad args). outputs = the 8-vector (state logits x4, hazard, yield, bc,
+// p_end); left = the hop's frames after this one. When a turn ended, its audio
+// goes to *out_audio/*out_audio_len (NULL/0 when none).
+char *idfon_voice_turn_on_frame(void *sess, const float *outputs, double act_db, size_t left,
+                                const char *mode, float **out_audio, size_t *out_audio_len);
+void idfon_voice_turn_free_audio(float *ptr, size_t len);
+
 #define IDFON_OK 0
 #define IDFON_EARG -1
 #define IDFON_EREQUEST -2
