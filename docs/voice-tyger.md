@@ -208,7 +208,17 @@ Metrics, on the model card's definitions, so numbers compare:
     call; BARGE/BACKCHANNEL *triggering* on synthetic material (below).
   - Caveat: `ReferenceEars` on CPU runs ~1–2 s per 320 ms hop — correct for replay and
     demos, not real time. Live calls need the GPU box or their engine path (`EarsEngine`).
-- **P0b-i measurements (2026-10-18) — the calibration finding:** the heads' scores are
+- **P0b-i measurements — real conversations (2026-10-18):** the gate instrument is
+  `scripts/tyger-eval.py` over `anyreach-ai/dualturn-otospeech-turn-taking` (DualTurn /
+  OtoSpeech: 287 h of real dual-channel conversations, per-frame `eot`/`hold`/`bot`/`bc`
+  labels at 12.5 Hz — the model's own grid; audio is Mimi codes, decoded via
+  `kyutai/mimi`; dataset license is `other` — internal evaluation only until checked).
+  First two val sessions (2 min slices, ~4 turns total): **endpoint latency 0.16–0.24 s
+  vs the energy baseline's 0.80–0.92 s** at `ep_thr` 0.85–0.91 (the synthetic speed win
+  reproduces on real audio); endpoint AUC 0.90/0.92; baseline 0 early/0 miss but always
+  late; TYGER 1 early cut-in per slice. Sample is still small — scaling needs their
+  `EarsEngine` or a GPU box (`ReferenceEars` ≈ 2 s per 320 ms hop on CPU).
+- **Calibration on synthetic material (2026-10-18):** the heads' scores are
   sensitive to synthetic material in both directions. `p_end` saturates 0.85–0.88 (never
   crossing 0.91) on room-tone pauses but hit 0.95 on digital silence; `yield_prob` reached
   **0.947 with a silent second ear but only ~0.32 with any agent speech in the ear**
