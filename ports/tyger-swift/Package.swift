@@ -25,6 +25,13 @@ let package = Package(
             ],
             path: "Sources/TygerVoiceMLX"
         ),
+        // The OS 27+ tier (Core AI .aimodel); availability-gated in source.
+        .target(
+            name: "TygerVoiceCoreAI",
+            dependencies: ["TygerVoice"],
+            path: "Sources/TygerVoiceCoreAI",
+            linkerSettings: [.linkedFramework("CoreAI")]
+        ),
         .testTarget(
             name: "TygerVoiceTests",
             dependencies: ["TygerVoice"],
@@ -34,6 +41,11 @@ let package = Package(
             name: "TygerVoiceMLXTests",
             dependencies: ["TygerVoiceMLX"],
             path: "Tests/TygerVoiceMLXTests"
+        ),
+        .testTarget(
+            name: "TygerVoiceCoreAITests",
+            dependencies: ["TygerVoiceCoreAI"],
+            path: "Tests/TygerVoiceCoreAITests"
         ),
     ]
 )
