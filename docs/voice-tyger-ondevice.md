@@ -171,14 +171,30 @@ community artifacts — the Q8 tier is ~1.23 B/param there; our 0.486 GB for 397
 lands exactly on their curve): every "quantise everything" config — fp16, block-16
 int8 — drifts on the latent state-logits the same way, while the *decisions* stayed
 identical 6/6 in all runs. The only measured PASS at ≤0.02 was the MLX study's
-int8 per-unit group-16 **with stem + layers.0 exempt** (0.007) — exemptions are the
-untested variable on Core ML. Blocking detail: coremltools' granularities that would
-match (PER_BLOCK, PER_GROUPED_CHANNEL) need `minimum_deployment_target=iOS18`, and
-the converted program's ops are anonymous (no torch module names), so exempting
-stem/layers.0 needs a split export (front fp32 / tail quantised) — the open next
-experiment. Shipping stance: **fp32 default** (exact, real-time, 1.48 GB); fp16 or
-Q8 as the footprint/battery tier gated on *decision agreement* (held 6/6 in every
-run), not the score budget, until the exemption experiment lands.
+int8 per-unit group-16 **with stem + layers.0 exempt** (0.007).
+
+**Split-export experiment done (2026-10-18)** — the exemption variable, isolated:
+`export.py --only front|tail|check` exports the encoder as **TygerFront** (stem +
+layers.0, fp32) + **TygerTail** (layers.1..14); the tail recomputes the mask/position
+embeddings (verified shape-only), and `--check` proves **split == full at 0.0**
+(bug it caught: the tail must cut at layers[1:15], not [1:]). Results on
+`parity6 --enc-front/--enc-tail` (front fp32 + tail Q8, 0.12 + 0.45 = 0.57 GB):
+
+| tail config | state logits | ep | p50 | decisions |
+| --- | --- | --- | --- | --- |
+| Q8 per_block-16 (exempt front) | **0.145** (was 0.63) | 0.032 | 0.002 | 6/6 |
+| Q8 per_channel+block-16 | 0.45 | 0.041 | 0.003 | 6/6 |
+
+Reading: exemptions cut the state-logit drift **4×** — the MLX finding reproduced — but
+the score budget still fails, and **ep is flat at 0.030–0.041 across every lossy
+config (even fp16)** — a lossy-encoding floor on that head. Core ML's quantisation
+layouts cannot express the one config that passed in MLX (per-output-unit group-16
+asymmetric: CoreML `per_channel`+block degrades to per-row scales and got worse).
+Open next candidates: 8-bit k-means palettisation on the tail (`--kind palettize8`,
+~45 min/pass), fp16 tail + fp32 front (re-export tail at float16), or calibrating
+the heads on quantised features. Shipping stance unchanged: **fp32 default**; best
+lossy = split-Q8 (0.57 GB) / fp16 — gated on *decision agreement* (6/6 in every
+run), not the score budget.
 
 Reading: the export is provably faithful (fp32 zero-delta), and the whole fp16 gap is
 precision — amplified on the latent state-logits, the calibration-sensitive heads

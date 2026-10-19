@@ -100,6 +100,10 @@ def main():
     ap.add_argument("--split", default="val")
     ap.add_argument("--enc", default="TygerEncoder.mlpackage",
                     help="encoder model under bench-results/coreml (e.g. TygerEncoderQ8.mlpackage)")
+    ap.add_argument("--enc-front", default="",
+                    help="split export: fp32 front (stem + layers.0)")
+    ap.add_argument("--enc-tail", default="",
+                    help="split export: tail (layers.1..14), optionally quantised")
     args = ap.parse_args()
 
     import coremltools as ct
@@ -108,7 +112,17 @@ def main():
         "te", os.path.join(HERE, "..", "..", "scripts", "tyger-eval.py")).load_module()
     torch.set_num_threads(4)
     ears = ReferenceEars(BUNDLE, device="cpu")
-    enc = ct.models.MLModel(str(MODELS / args.enc))
+    if args.enc_tail:
+        enc_front = ct.models.MLModel(str(MODELS / args.enc_front))
+        enc_tail = ct.models.MLModel(str(MODELS / args.enc_tail))
+
+        class TwoPart:
+            def predict(self, d):
+                h = list(enc_front.predict({"feats": d["feats"]}).values())[0]
+                return {"hidden_out": list(enc_tail.predict({"hidden": h}).values())[0]}
+        enc = TwoPart()
+    else:
+        enc = ct.models.MLModel(str(MODELS / args.enc))
     step = ct.models.MLModel(str(MODELS / "TygerStep.mlpackage"))
 
     def feats(wav):

@@ -49,6 +49,54 @@ class EncWrap(nn.Module):
         return eo.hidden_states[L15]
 
 
+class EncFrontWrap(nn.Module):
+    """Stem + block 0 (the sensitive head of the encoder, kept fp32): mel -> hidden."""
+
+    def __init__(self, asr):
+        super().__init__()
+        self.enc = asr.encoder
+
+    def ctx(self, x):
+        from transformers.masking_utils import create_bidirectional_mask
+        from transformers.models.nemotron_asr_streaming.modeling_nemotron_asr_streaming import (
+            chunked_limited_mask_function)
+        e = self.enc
+        position_ids = torch.arange(x.shape[1], device=x.device).unsqueeze(0)
+        mask = create_bidirectional_mask(
+            config=e.config, inputs_embeds=x, attention_mask=None, past_key_values=None,
+            position_ids=position_ids,
+            and_mask_function=chunked_limited_mask_function(*e._resolve_attn_context(0)))
+        return mask, torch.all(~mask, dim=-1), e.encode_positions(x, cached_frames=0)
+
+    def forward(self, feats):
+        e = self.enc
+        x = e.subsampling(feats, None, padding_cache=None) * e.input_scale
+        mask, allm, pos = self.ctx(x)
+        return e.layers[0](x, attention_mask=mask, all_masked_rows=allm,
+                           position_embeddings=pos, past_key_values=None,
+                           padding_cache=None, use_cache=False)
+
+
+class EncTailWrap(nn.Module):
+    """Blocks 1..14 (the quantisable bulk): hidden -> hidden L15. Mask and position
+    embeddings are shape-derived (verified: encode_positions reads only shape[1]), so
+    the tail recomputes them from the hidden length — the split is value-exact."""
+
+    def __init__(self, asr, first=1, cut=15):
+        super().__init__()
+        self.front = EncFrontWrap(asr)
+        self.enc = asr.encoder
+        self.layers = nn.ModuleList(list(asr.encoder.layers[first:cut]))  # 1..14 = hidden_states[15]
+
+    def forward(self, x):
+        mask, allm, pos = self.front.ctx(x)
+        for layer in self.layers:
+            x = layer(x, attention_mask=mask, all_masked_rows=allm,
+                      position_embeddings=pos, past_key_values=None,
+                      padding_cache=None, use_cache=False)
+        return x
+
+
 class StepWrap(nn.Module):
     def __init__(self, tt):
         super().__init__()
@@ -63,7 +111,7 @@ class StepWrap(nn.Module):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--precision", default="float16", choices=["float16", "float32"])
-    ap.add_argument("--only", default="both", choices=["both", "enc", "step"])
+    ap.add_argument("--only", default="both", choices=["both", "enc", "step", "front", "tail", "check"])
     ap.add_argument("--target", default="ios18", choices=["ios17", "ios18"],
                     help="ios18 unlocks per-block/per-grouped-channel quantization")
     args = ap.parse_args()
@@ -94,6 +142,42 @@ def main():
     prec = ct.precision.FLOAT16 if args.precision == "float16" else ct.precision.FLOAT32
     target = ct.target.iOS18 if args.target == "ios18" else ct.target.iOS17
     print(f"precision: {args.precision}, out: {OUT}")
+
+    if args.only == "check":
+        enc_full, front, tail = EncWrap(asr).eval(), EncFrontWrap(asr).eval(), EncTailWrap(asr).eval()
+        ex = torch.zeros(1, MEL_FRAMES, 128)
+        with torch.no_grad():
+            ref = enc_full(ex)
+            got = tail(front(ex))
+        d = float((ref - got).abs().max())
+        print(f"split == full over {tuple(ref.shape)}: max|Δ| {d:.3e}  ({'PASS' if d < 1e-5 else 'FAIL'})")
+        sys.exit(0 if d < 1e-5 else 1)
+
+    if args.only in ("both", "front"):
+        front = EncFrontWrap(asr).eval()
+        ex = torch.zeros(1, MEL_FRAMES, 128)
+        with torch.no_grad():
+            ref = front(ex)
+        print(f"front: -> {tuple(ref.shape)}")
+        ml = ct.convert(torch.jit.trace(front, ex),
+                        inputs=[ct.TensorType(name="feats", shape=ex.shape)],
+                        outputs=[ct.TensorType(name="hidden")],
+                        compute_precision=prec, compute_units=ct.ComputeUnit.ALL,
+                        minimum_deployment_target=target)
+        ml.save(OUT / "TygerFront.mlpackage")
+
+    if args.only in ("both", "tail"):
+        tail = EncTailWrap(asr).eval()
+        ex = torch.zeros(1, 101, 1024)
+        with torch.no_grad():
+            ref = tail(ex)
+        print(f"tail: -> {tuple(ref.shape)}")
+        ml = ct.convert(torch.jit.trace(tail, ex),
+                        inputs=[ct.TensorType(name="hidden", shape=ex.shape)],
+                        outputs=[ct.TensorType(name="hidden_out")],
+                        compute_precision=prec, compute_units=ct.ComputeUnit.ALL,
+                        minimum_deployment_target=target)
+        ml.save(OUT / "TygerTail.mlpackage")
 
     if args.only in ("both", "enc"):
         enc = EncWrap(asr).eval()
