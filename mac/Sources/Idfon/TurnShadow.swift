@@ -1,5 +1,6 @@
 import Foundation
 import TygerVoice
+import TygerVoiceCoreAI
 import TygerVoiceMLX
 
 /// Shadow turn-taker: runs the mac tier's turn engine beside the text
@@ -11,6 +12,7 @@ import TygerVoiceMLX
 /// agent channel is silence — BARGE events are unreliable and 8 s windows miss
 /// the agent's preceding utterance; upgrade when a TTS tap lands):
 /// the user channel is real mic audio at 16 kHz; the agent channel is zeros.
+/// Tier: Core AI on macOS 27+ (oracle-exact), MLX below.
 final class TurnShadow {
     private let engine: TurnEngine
     private let tap: TurnTap
@@ -19,12 +21,20 @@ final class TurnShadow {
     private let queue = DispatchQueue(label: "idfon.turn-shadow")
     private var mode = "listen"
 
-    /// nil when the mac tier's weights are not exported yet.
+    /// nil when no turn model is available for this OS.
     static func start() -> TurnShadow? {
-        guard let model = try? MlxTurnModel() else {
-            Automation.mark("turn-shadow: MLX weights missing (ports/tyger-mlx/export_swift.py)")
+        var model: TurnModel?
+        if #available(macOS 27.0, *) {
+            model = try? CoreAITurnModel() // the OS 27+ tier (GPU, oracle-exact)
+        }
+        if model == nil {
+            model = try? MlxTurnModel() // legacy macOS 14-26 tier
+        }
+        guard let model else {
+            Automation.mark("turn-shadow: no turn model available")
             return nil
         }
+        Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))")
         return TurnShadow(model: model)
     }
 

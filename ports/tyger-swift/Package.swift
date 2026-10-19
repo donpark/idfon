@@ -10,6 +10,8 @@ let package = Package(
         // docs/voice-tyger-ondevice.md). Separate product so the iOS/CoreML
         // build never links MLX.
         .library(name: "TygerVoiceMLX", targets: ["TygerVoiceMLX"]),
+        // The OS 27+ Core AI runtime (the user ruling of 2026-10-19).
+        .library(name: "TygerVoiceCoreAI", targets: ["TygerVoiceCoreAI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.32.3"),
