@@ -1,4 +1,0 @@
-module TygerVoice {
-header "TygerVoice-Swift.h"
-export *
-}
