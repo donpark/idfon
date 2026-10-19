@@ -30,10 +30,14 @@ public final class TurnRuntime {
         model.reset()
     }
 
-    /// Feed one hop; returns the scored frames' 8-vectors (up to 4, oldest first).
-    /// `prevState` gets the caller's state for each frame (the oracle threads it
-    /// through its rules between frames of the same hop).
-    public func feed(userHop: [Float], agentHop: [Float], prevState: (Int) -> Int) -> [[Float]] {
+    /// Feed one hop; returns the scored frames' 8-vectors (up to 4, oldest
+    /// first). `onFrame` receives each frame's 8-vector, its energy and the
+    /// frames left in the hop, right after its step, and returns the prev_state
+    /// the NEXT frame's step consumes — the oracle's per-frame rules threading.
+    public func feed(
+        userHop: [Float], agentHop: [Float], firstState: Int,
+        onFrame: (_ frame: Int, _ outs: [Float], _ actDb: Double, _ left: Int) -> Int
+    ) -> [[Float]] {
         append(&winUser, userHop)
         append(&winAgent, agentHop)
         let hu = model.encode(winUser)
@@ -41,12 +45,22 @@ public final class TurnRuntime {
         let act = Self.frameEnergy(winUser)
         let n = min(4, hu.count, ha.count, act.count)
         var outs: [[Float]] = []
+        var prev = firstState
         for i in 0..<n {
-            outs.append(model.step(
+            let out = model.step(
                 hu: hu[hu.count - n + i], ha: ha[ha.count - n + i],
-                actDb: Double(act[act.count - n + i]), prevState: prevState(i)))
+                actDb: Double(act[act.count - n + i]), prevState: prev)
+            outs.append(out)
+            prev = onFrame(outs.count - 1, out, Double(act[act.count - n + i]), n - 1 - i)
         }
         return outs
+    }
+
+    /// Feed one hop with a per-frame state lookup and no interleaved rules.
+    public func feed(userHop: [Float], agentHop: [Float], prevState: (Int) -> Int) -> [[Float]] {
+        feed(userHop: userHop, agentHop: agentHop, firstState: prevState(0)) { i, _, _, _ in
+            prevState(i + 1)
+        }
     }
 
     private func append(_ win: inout [Float], _ hop: [Float]) {
