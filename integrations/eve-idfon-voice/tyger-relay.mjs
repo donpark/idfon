@@ -78,6 +78,61 @@ function recordDecision(entry) {
   );
 }
 
+// ---- Adaptive calibration: observe outcome labels, nudge the trait at call start ----
+// The trait is the prior; per-user drift is clamped to +-ADAPT_MAX with at most one
+// step per knob per call (docs/voice-decisions.md: slow learning rate, fail open, the
+// user can pin or reset). Outcomes are always recorded; counters/drift need a state
+// file (TYGER_ADAPT). Nudged params are per user's state file, not per trait.
+const ADAPT_MAX = 0.15;
+const ADAPT_STEP = 0.02;
+const adapt = (() => {
+  const path = process.env.TYGER_ADAPT;
+  const state = { counts: {}, delta: {} };
+  if (path) {
+    try {
+      Object.assign(state, JSON.parse(readFileSync(path, "utf8")));
+    } catch {}
+  }
+  const save = () => path && writeFileSync(path, JSON.stringify({ ...state, updated: new Date().toISOString() }, null, 2));
+  return {
+    bump(name) {
+      recordDecision({ kind: "outcome", outcome: name });
+      if (!path) return;
+      state.counts[name] = (state.counts[name] || 0) + 1;
+      save();
+    },
+    // Effective decider params: trait prior + bounded drift toward what this user's
+    // behavior asks for. Applied at call start only — never mid-call.
+    thresholds(base) {
+      const c = state.counts;
+      const d = (state.delta = state.delta || {});
+      const step = (k, dir) => {
+        d[k] = Math.max(-ADAPT_MAX, Math.min(ADAPT_MAX, (d[k] || 0) + dir * ADAPT_STEP));
+      };
+      const more = (a, b) => (c[a] || 0) > (c[b] || 0); // strictly more of one outcome than its opposite
+      if (more("early_cut_in", "late_endpoint")) step("ep_thr", +1); // cut off too often: wait more
+      if (more("late_endpoint", "early_cut_in")) step("ep_thr", -1); // dead air: answer sooner
+      if (more("missed_barge", "real_barge")) step("barge_thr", -1); // they interrupt: yield faster
+      if (more("false_barge", "real_barge")) step("barge_thr", +1); // noise was not a grab: hold
+      if (more("bc_intrusive", "bc_ok")) step("bc_thr", +1); // mm-hm stops them: fewer
+      if (more("bc_ok", "bc_intrusive")) step("bc_thr", -1); // they like it: more
+      const out = { ...base };
+      let moved = false;
+      for (const [k, v] of Object.entries(d)) {
+        if (v && typeof out[k] === "number") {
+          out[k] = +(out[k] + v).toFixed(4);
+          moved = true;
+        }
+      }
+      if (moved) {
+        save();
+        recordDecision({ kind: "adapt", delta: { ...d }, params_out: out });
+      }
+      return out;
+    },
+  };
+})();
+
 const log = ((service) => {
   const emit = (level, message, fields) => {
     const record = { ts: new Date().toISOString(), level, service, target: "idfon.tyger-relay", trait: TRAIT.name, message };
@@ -162,7 +217,7 @@ class Call {
       case "ready":
         log.info("tyger ready", { voices: (m.voices || []).join(","), max_session_s: m.max_session_s });
         if (process.env.TYGER_VOICE && (m.voices || []).includes(process.env.TYGER_VOICE)) this.send(`voice:${process.env.TYGER_VOICE}`);
-        for (const [attr, value] of Object.entries(TRAIT.decider)) this.send(`set:${attr}:${value}`);
+        for (const [attr, value] of Object.entries(adapt.thresholds(TRAIT.decider))) this.send(`set:${attr}:${value}`);
         break;
       case "endpoint": // a new reply never overlaps the last: stop playing it
         this.stopPlayback();
@@ -373,6 +428,13 @@ class Mouth {
     this.curTotal = 0;
     this.curPosted = 0;
     this.bcIndex = 0;
+    this.wasLoud = false;
+    this.lastUserSpeechS = -1;
+    this.speech = []; // user speech intervals in stream position: {start, end}
+    this.obsSpeech = 0; // first interval not yet judged
+    this.earlyJudged = true;
+    this.bargeFiredAtS = null;
+    this.pendingOutcomes = [];
     this.pieces = []; // playback: {id, t0, t1, samples, pcm16, bc, posted, timer}
     this.audioS = 0; // seconds of mic fed
     this.nextPlay = 0;
@@ -383,6 +445,14 @@ class Mouth {
   }
 
   pushMic(pcm24) {
+    const loud = pcm24.some((s) => s > 300 || s < -300);
+    const t = this.audioS;
+    if (loud) {
+      this.lastUserSpeechS = t;
+      const last = this.speech[this.speech.length - 1];
+      if (last && t - last.end < 0.2) last.end = t + pcm24.length / RATE; // one utterance
+      else this.speech.push({ start: t, end: t + pcm24.length / RATE });
+    }
     this.hopUser.push(...this.userResample(pcm24));
     this.audioS += pcm24.length / RATE;
     this.chain = this.chain.then(() => this.drainHops()); // feeds run one at a time
@@ -399,6 +469,7 @@ class Mouth {
       const res = await this.ears.feed(this.speaking() ? "speaking" : "listen", i16(hop), i16(agent));
       if (!res.ok) throw new Error(`ears feed: ${res.error}`);
       for (const ev of res.events || []) await this.onEvent(ev);
+      this.observe();
     }
   }
 
@@ -418,9 +489,37 @@ class Mouth {
 
   // End of stream: whatever was scheduled still plays, in order.
   flush() {
-    if (this.pace === "audio") {
-      this.hopS = Infinity;
-      this.pump();
+    this.hopS = Infinity;
+    this.observe();
+    if (this.pace === "audio") this.pump();
+  }
+
+  // Outcomes, judged from stream-position history so they are right whether frames
+  // arrive in real time (a call) or all at once (the smoke's fast replay).
+  observe() {
+    for (; this.obsSpeech < this.speech.length; this.obsSpeech++) {
+      const iv = this.speech[this.obsSpeech];
+      if (iv.end > this.hopS) break; // only judge utterances the stream has passed
+      if (!this.earlyJudged && iv.start >= this.replyStartS && iv.start - this.replyStartS < 0.5) {
+        this.earlyJudged = true; // they were still talking and we answered
+        adapt.bump("early_cut_in");
+      }
+      const over = this.pieces.find((p) => !p.bc && p.t0 <= iv.start && iv.start < p.t1);
+      if (!over) continue; // started over our playback: a barge question
+      const took = iv.end - iv.start >= 1.0; // kept the floor, or just made a sound
+      const started = iv.start;
+      this.pendingOutcomes.push({
+        atS: iv.end,
+        check: () => {
+          const fired = this.bargeFiredAtS != null && this.bargeFiredAtS - started >= 0 && this.bargeFiredAtS - started <= 0.64;
+          if (fired) return took ? "real_barge" : "false_barge";
+          return took ? "missed_barge" : null;
+        },
+      });
+    }
+    while (this.pendingOutcomes.length && this.pendingOutcomes[0].atS <= this.hopS) {
+      const name = this.pendingOutcomes.shift().check();
+      if (name) adapt.bump(name);
     }
   }
 
@@ -506,13 +605,23 @@ class Mouth {
     switch (ev.kind) {
       case "PARTIAL":
         return; // the page's live words; nothing to do here
-      case "ENDPOINT":
+      case "ENDPOINT": {
         this.stopPlayback(); // a new reply never overlaps the last
-        log.info("endpoint", { transcript: ev.transcript, turn_s: ev.turn_s, by: ev.by });
-        recordDecision({ kind: "endpoint", via: "ears", transcript: ev.transcript, p_end: ev.p_end, turn_s: ev.turn_s });
+        const lastEnd = this.speech.filter((iv) => iv.end <= this.hopS).pop()?.end;
+        const deadAir = lastEnd == null ? null : +(this.hopS - lastEnd).toFixed(2);
+        log.info("endpoint", { transcript: ev.transcript, turn_s: ev.turn_s, by: ev.by, dead_air_s: deadAir });
+        recordDecision({ kind: "endpoint", via: "ears", transcript: ev.transcript, p_end: ev.p_end, turn_s: ev.turn_s, dead_air_s: deadAir });
+        if (deadAir != null && deadAir > 1.2) {
+          adapt.bump("late_endpoint"); // they stopped and we made them wait
+        } else {
+          this.earlyJudged = false;
+          this.pendingOutcomes.push({ atS: this.hopS + 0.5, check: () => (this.earlyJudged ? null : "landed") });
+        }
         await this.reply(ev.transcript || "");
         return;
+      }
       case "BARGE":
+        this.bargeFiredAtS = this.hopS;
         log.info("barge", { onset_s: ev.onset_s, yield_prob: ev.yield_prob });
         recordDecision({ kind: "barge", via: "ears", onset_s: ev.onset_s, yield_prob: ev.yield_prob });
         this.stopPlayback({ barged: true });
@@ -525,6 +634,10 @@ class Mouth {
         log.info("backchannel", { text, bc_prob: ev.bc_prob });
         recordDecision({ kind: "backchannel", via: "ears", text, bc_prob: ev.bc_prob });
         if (text) await this.speak(text, { bc: true });
+        if (text) {
+          const at = this.hopS;
+          this.pendingOutcomes.push({ atS: at + 1.0, check: () => (this.speech.some((iv) => iv.start > at && iv.start <= at + 1.0) ? "bc_ok" : "bc_intrusive") });
+        }
         return;
       }
       default:
@@ -543,7 +656,7 @@ class Mouth {
     }
     if (!text.trim()) return;
     this.replyText = text;
-    this.replyStartS = this.audioS + LEAD_S;
+    this.replyStartS = (this.pace === "audio" ? this.hopS : this.audioS) + LEAD_S; // where the reply starts in the stream
     await this.speak(text, {});
     log.info("reply", { text, turns: this.stats.turns });
     recordDecision({ kind: "reply", text, turns: this.stats.turns });
@@ -552,7 +665,7 @@ class Mouth {
 
 async function mainShape2({ smoke, outPath }) {
   const ears = new Ears(process.env.TYGER_EARS_CMD);
-  const thresholds = { ...TRAIT.decider };
+  const thresholds = adapt.thresholds(TRAIT.decider);
   const opened = await ears.open(thresholds);
   if (!opened.ok) throw new Error(`ears open: ${opened.error}`);
   log.info("ears open", { cmd: process.env.TYGER_EARS_CMD, thresholds });
