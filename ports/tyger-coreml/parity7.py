@@ -52,8 +52,8 @@ class Enc:
 
 
 class Chain:
-    def __init__(self, enc, step, feats):
-        self.enc, self.step, self.feats = enc, step, feats
+    def __init__(self, enc=None, step=None, feats=None, ears=None):
+        self.enc, self.step, self.feats, self.ears = enc, step, feats, ears
         self.reset()
 
     def reset(self):
@@ -61,21 +61,30 @@ class Chain:
         self.state = np.zeros((3, 1, 768), dtype=np.float32)
         self.outs, self.events = [], []
         self.frame = 0
+        if self.ears is not None:
+            self.ears.cache = None
 
     def feed(self, win_u, win_a, mode):
-        hu, ha = self.enc.predict(self.feats(win_u)), self.enc.predict(self.feats(win_a))
+        if self.ears is not None:
+            hu, ha = self.ears.encode_l15(win_u), self.ears.encode_l15(win_a)  # mx arrays
+        else:
+            hu, ha = self.enc.predict(self.feats(win_u)), self.enc.predict(self.feats(win_a))
         act = rules.frame_energy(win_u)
         for i in range(-min(HOP_FRAMES, len(hu), len(ha), len(act)), 0):
             self.frame += 1
-            out = self.step.predict({
+            if self.ears is not None:
+                o = np.asarray(self.ears.head_step(hu[i], ha[i], float(act[i]), int(self.sess.prev_state)),
+                               dtype=np.float64)
+            else:
+                out = self.step.predict({
                 "hu": hu[i][None, None], "ha": ha[i][None, None],
                 "act_db": np.array([[float(act[i])]], dtype=np.float32),
                 "prev_state": np.array([[int(self.sess.prev_state)]], dtype=np.int32),
                 "state_workaround": self.state,
-            })
-            vals = list(out.values())
-            self.state = vals[1]
-            o = np.asarray(vals[0][0, 0], dtype=np.float64)
+                })
+                vals = list(out.values())
+                self.state = vals[1]
+                o = np.asarray(vals[0][0, 0], dtype=np.float64)
             evs, _final, _reset = rules.on_frame(self.sess, mode, o, float(act[i]), left=-i - 1)
             self.outs.append(o)
             for e in evs:
@@ -104,6 +113,8 @@ def main():
     ap.add_argument("--minutes", type=float, default=3.0)
     ap.add_argument("--skip", type=int, default=0)
     ap.add_argument("--tol", type=int, default=2, help="frames (80 ms) within which same-kind events count as one decision")
+    ap.add_argument("--cand", default="fp16", choices=["fp16", "mlx"],
+                    help="candidate chain: the shipping CoreML fp16 contract or the MLX int8-g16 config")
     ap.add_argument("--dump", default=None, help="directory to save per-session npz (outs + events) for margin analysis")
     ap.add_argument("--dataset", default="anyreach-ai/dualturn-otospeech-turn-taking")
     ap.add_argument("--split", default="val")
@@ -117,7 +128,14 @@ def main():
     # reference = the exact fp32 dynamic model at every size; candidate = the shipping
     # contract (dyn while the window grows, fp16 at steady state)
     ref = Chain(Enc(dyn), step, None)
-    cand = Chain(Enc(fp16, dyn), step, None)
+    if args.cand == "mlx":
+        os.environ["TYGER_MLX_PRECISION"] = "int8"
+        sys.path.insert(0, os.path.join(HERE, "..", "tyger-mlx"))
+        from mlx_ears import MlxEars
+        cand = Chain(ears=MlxEars(BUNDLE))
+    else:
+        # candidate = the shipping contract (dyn while the window grows, fp16 at steady state)
+        cand = Chain(Enc(fp16, dyn), step, None)
 
     def feats(wav):
         return _proc(np.asarray(wav, dtype=np.float32))
@@ -186,7 +204,7 @@ def main():
     print(f"rules decisions (non-FRAME), same kind within ±{args.tol} frames: "
           f"{ev_same}/{ev_total} = {agree_pct:.1f}%")
     ok = agree_pct >= 99.0
-    print(f"\nGUARD: {'PASS' if ok else 'FAIL'} (≥99% time-aligned decision agreement)")
+    print(f"\nGUARD: {'PASS' if ok else 'FAIL'} (≥99% time-aligned decision agreement, cand={args.cand})")
     sys.exit(0 if ok else 1)
 
 
