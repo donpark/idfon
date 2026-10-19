@@ -30,6 +30,9 @@ final class VoiceAgentSession: NSObject {
     private var asrBackend = SpeechEngines.asrBackend
     private let segmenter = VoicePromptSegmenter()
     private var asr: (any AsrEngine)?
+    /// Shadow turn-taker (decision-log diff only; see TurnShadow). Audio-thread
+    /// writes + main-thread create/teardown, like `stopRequested`.
+    nonisolated(unsafe) private var turnShadow: TurnShadow?
 
     private(set) var isActive = false
     /// Peer this voice call is with, so the shared call UI can title it.
@@ -186,6 +189,7 @@ final class VoiceAgentSession: NSObject {
 
     private func setState(_ next: State) {
         state = next
+        turnShadow?.setMode({ if case .speaking = next { "speaking" } else { "listen" } }())
         onState?(next)
     }
 
@@ -435,6 +439,9 @@ final class VoiceAgentSession: NSObject {
         isActive = false
         stopRequested = true
         segmenter.stop()
+        turnShadow?.stop()
+        turnShadow = nil
+        asr?.setSamplesHandler(nil)
         asr?.stop()
         asr = nil
         deliver(nil)
@@ -487,6 +494,15 @@ final class VoiceAgentSession: NSObject {
                 engine.stop()
                 asr = nil
                 continue
+            }
+            // Shadow turn-taker: same audio, decision-log diff only. Samples
+            // drop until the model has loaded; the load must not block the UI.
+            engine.setSamplesHandler { [weak self] samples, rate in
+                self?.turnShadow?.feed(samples, rate: rate)
+            }
+            Task { @MainActor [weak self] in
+                guard let self, self.turnShadow == nil else { return }
+                self.turnShadow = await Task.detached { TurnShadow.start() }.value
             }
             return
         }

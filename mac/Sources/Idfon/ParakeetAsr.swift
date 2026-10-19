@@ -20,6 +20,7 @@ final class ParakeetReduxAsr: AsrEngine {
     private var updatesTask: Task<Void, Never>?
     private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var onText: ((String, Bool) -> Void)?
+    private var onSamples: (([Float], Double) -> Void)?
     private var started = false
 
     // Single-flight warm task: download + CoreML-compile ahead of the first
@@ -104,7 +105,13 @@ final class ParakeetReduxAsr: AsrEngine {
 
         let input = engine.inputNode
         input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
-            guard let self, !self.isGated else { return }
+            guard let self else { return }
+            // Side analysis (the turn-taker) sees everything, gate or not —
+            // barge detection runs exactly while the gate is down.
+            if let onSamples = self.onSamples {
+                onSamples(Self.monoSamples(buffer), buffer.format.sampleRate)
+            }
+            guard !self.isGated else { return }
             self.bufferContinuation?.yield(buffer)
         }
         engine.prepare()
@@ -115,6 +122,16 @@ final class ParakeetReduxAsr: AsrEngine {
     }
 
     func pause() { setGated(true) }
+
+    func setSamplesHandler(_ handler: (([Float], Double) -> Void)?) {
+        onSamples = handler
+    }
+
+    /// Channel-0 f32 samples of a tap buffer (Float32 format at the input).
+    private static func monoSamples(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        guard let ch = buffer.floatChannelData else { return [] }
+        return Array(UnsafeBufferPointer(start: ch[0], count: Int(buffer.frameLength)))
+    }
 
     func resume() {
         setGated(false)
