@@ -10,6 +10,8 @@ let package = Package(
     dependencies: [
         // On-device speech models: Parakeet (ASR) + Kokoro (TTS).
         .package(url: "https://github.com/FluidInference/FluidAudio", .upToNextMinor(from: "0.17.5")),
+        // The turn-taker's Swift runtime (shared with iOS; MLX tier on mac).
+        .package(path: "../ports/tyger-swift"),
     ],
     targets: [
         // Hand-declared C ABI from native/vendor/iroh-c-ffi (same approach as
@@ -20,6 +22,8 @@ let package = Package(
             dependencies: [
                 "CIdfon",
                 .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "TygerVoice", package: "tyger-swift"),
+                .product(name: "TygerVoiceMLX", package: "tyger-swift"),
             ],
             linkerSettings: [
                 .linkedLibrary("iroh_c_ffi"),
