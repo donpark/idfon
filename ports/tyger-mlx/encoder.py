@@ -211,9 +211,9 @@ class Subsampling:
 class EncoderL15:
     """The decision path: features (B, T_mel, 128) -> hidden_states[15] (B, T', 1024)."""
 
-    def __init__(self, bundle_dir, layers=15, precision="fp32"):
+    def __init__(self, bundle_dir=None, layers=15, precision="fp32", weights=None):
         self.dtype = mx.float16 if precision == "fp16" else mx.float32
-        self.w = prep_weights(load_encoder_weights(bundle_dir, layers), precision)
+        self.w = weights if weights is not None else prep_weights(load_encoder_weights(bundle_dir, layers), precision)
         self.sub = Subsampling(self.w)
         self.blocks = [Block(self.w, i) for i in range(layers)]
         self.inv_freq = 1.0 / (REL_BASE ** (mx.arange(0, HIDDEN, 2).astype(mx.float32) / HIDDEN))

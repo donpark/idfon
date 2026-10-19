@@ -26,6 +26,20 @@ ENC_HIDDEN = 1024
 N_STATE = 4
 
 
+def load_turn_weights(bundle_dir):
+    """{name: mx.array} as the model uses them: torch Linear rows transposed to mlx
+    (in, out) except the GRU cell weights and state_emb."""
+    w = {}
+    with safe_open(Path(bundle_dir) / "model.safetensors", framework="np") as f:
+        for k in f.keys():
+            if k.startswith("turn_taker."):
+                w[k[len("turn_taker."):]] = mx.array(f.get_tensor(k))
+    for k in list(w):
+        if k.endswith(".weight") and not k.startswith("core.") and k != "state_emb.weight":
+            w[k] = w[k].T  # torch Linear (out, in) -> mlx rows (in, out)
+    return w
+
+
 class GRUCell:
     """One torch-GRU layer's weights, stepped frame by frame (or over a batch of frames)."""
 
@@ -64,15 +78,8 @@ def nn_silu(x):
 
 
 class TurnTaker:
-    def __init__(self, bundle_dir):
-        w = {}
-        with safe_open(Path(bundle_dir) / "model.safetensors", framework="np") as f:
-            for k in f.keys():
-                if k.startswith("turn_taker."):
-                    w[k[len("turn_taker."):]] = mx.array(f.get_tensor(k))
-        for k in list(w):
-            if k.endswith(".weight") and not k.startswith("core.") and k != "state_emb.weight":
-                w[k] = w[k].T  # torch Linear (out, in) -> mlx rows (in, out)
+    def __init__(self, bundle_dir=None, weights=None):
+        w = weights if weights is not None else load_turn_weights(bundle_dir)
         self.w = w
         self.cells = []
         for i in range(LAYERS):
