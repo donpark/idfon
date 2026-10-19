@@ -57,3 +57,4 @@ agents/*/invites.ndjson
 /ports/tyger-swift/.build/
 /scripts/__pycache__/
 /ports/*/__pycache__/
+/ports/tyger-coreai/.venv/
