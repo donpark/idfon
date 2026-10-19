@@ -343,6 +343,48 @@ depthwise-separable layer, not between the convs; mlx `conv1d` weight layout is
 ≈ 4–6 engineer-weeks to real-time on Mac; +2–3 for the iPhone shipping tier. S1's output
 tells us whether to proceed — it is the only milestone that can kill the project cheaply.
 
+## Core AI tier (2026-10-19, OS 27+)
+
+**User ruling**: voice features target Apple's Core AI runtime (`.aimodel`) on
+iOS/macOS 27+; older OSes keep today's stack (mac = MLX int8-g16, iOS = CoreML
+fp16/ANE). Core AI runs GPU-or-NE and unifies mac + iOS under one export stack.
+Reference collection: `github.com/john-rocky/coreai-model-zoo` (its
+`conversion/nemotron_asr/` is a port of this exact encoder).
+
+**Toolchain** (`ports/tyger-coreai/`, env recipe + landmines in its README):
+python 3.12, coreai-core 1.0.0b3 + coreai-torch 0.4.3 + coreai-opt 0.2.0 +
+apple/coreai-models checkout; `export_turn.py` exports the two graphs
+(encoder with `dynamic_shapes` = the startup contract in ONE asset; step) and
+gates them via `coreai.runtime` on this Mac.
+
+**The record** (gate transcripts: `ports/tyger-coreai/GATES.md`):
+
+| Gate | Result |
+|---|---|
+| export_step vs torch (gpu) | max\|Δ\| 0.0 |
+| export_encoder vs torch (gpu+cpu, real audio) | max\|Δ\| 1e-4, cos 1.0 |
+| Swift `CoreAITurnModel` vs the oracle (248 frames) | exact |
+| Swift soak: 30k step calls, one process | clean (the Python binding's leak is harness-only) |
+| decision guard vs the fp32 reference (interim, 15 sessions / 33,720 frames) | **548/548 decisions at the identical frame**; per-head max\|Δ\| 6e-5 |
+
+Posture: **GPU** — the ANE compiler hits an internal error on the dynamic
+encoder (`dummy_pool` mapping failure) and the CPU specialization fails on the
+step graph; the zoo's gates show the same NE posture (below bar → ship GPU).
+
+**Landmines** (all in `.agents/skills/coreml-ane-precision`):
+`expectFrequentReshapes=true` corrupts dynamic-model GPU execution (exact with
+it off — Apple's guidance is wrong here); the Python binding leaks ~1 IOSurface
+per inference call and the drain is system-wide (harness runs must be sequential
+and process-sharded; the Swift runtime does not leak); `reference_inputs` keys
+must match `forward`'s parameter names; transformers 5.20.1; b1/0.4.0 pinned
+pair crashes in the compiler (use b3/0.4.3); device loader landmines from the
+zoo: >2 GB multi-I/O bundles fail to load (split) and terse input names are
+rejected.
+
+Remaining: the final 24-session guard record, the fp16 rung (size play:
+1.53 GB → ~0.77 GB), device AOT gates (`xcrun coreai-build compile` + an
+on-device run in the transcript discipline).
+
 ## Risks
 
 1. **Incremental-cache parity drift** — the whole speed lever; contained by the parity
