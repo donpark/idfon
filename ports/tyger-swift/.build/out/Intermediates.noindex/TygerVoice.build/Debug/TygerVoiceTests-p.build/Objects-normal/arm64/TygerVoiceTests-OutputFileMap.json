@@ -25,5 +25,15 @@
     "object" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests.o",
     "swift-dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests.swiftdeps",
     "swiftmodule" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/MelFeaturesTests~partial.swiftmodule"
+  },
+  "/Users/don/dev/idfon/ports/tyger-swift/Tests/TygerVoiceTests/TurnRuntimeTests.swift" : {
+    "const-values" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TurnRuntimeTests.swiftconstvalues",
+    "dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TurnRuntimeTests.d",
+    "diagnostics" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TurnRuntimeTests.dia",
+    "index-unit-output-path" : "/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TurnRuntimeTests.o",
+    "llvm-bc" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TurnRuntimeTests.bc",
+    "object" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TurnRuntimeTests.o",
+    "swift-dependencies" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TurnRuntimeTests.swiftdeps",
+    "swiftmodule" : "/Users/don/dev/idfon/ports/tyger-swift/.build/out/Intermediates.noindex/TygerVoice.build/Debug/TygerVoiceTests-p.build/Objects-normal/arm64/TurnRuntimeTests~partial.swiftmodule"
   }
 }
