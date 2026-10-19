@@ -79,6 +79,17 @@ decisions against the GPU reference dump. tyger-s2s ships the same pattern
 
 ## Milestones
 
+**S1 done (2026-10-18):** `ports/tyger-mlx/` — the encoder→L15 port (faithful
+translation of transformers' `NemotronAsrStreamingEncoder`, offline mode) with
+`parity.py`. **Parity PASS**: max|Δ| = 9.7e-5 (noise) / 6.9e-5 (speech) vs the torch
+`hidden_states[15]` — the exact tensor the heads read. **Timing: 14–15 ms per full-window
+encode vs 359 ms torch-CPU (and ~111 ms MPS)** — a hop (2 encodes + GRU) ≈ 35–40 ms
+against the 320 ms budget, ~8× headroom *without* the incremental-KV lever. The spike's
+cheap kill point is decisively passed. Debug notes worth keeping: torch `pad((1,0))` is
+*left* padding (the `_rel_shift` bug that cost an hour); ReLU sits after the whole
+depthwise-separable layer, not between the convs; mlx `conv1d` weight layout is
+`(C_out, K, C_in/g)` and `layer_norm` lives in `mx.fast`.
+
 | | what | effort |
 | --- | --- | --- |
 | S1 spike | MLX encoder → L15 on fixed clips; parity vs reference; hop timing on M-series | ≤ 1 week |
