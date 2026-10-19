@@ -168,6 +168,8 @@ def main():
     ap_.add_argument("--split", default="val")
     ap_.add_argument("--ep-sweep", default="0.80,0.85,0.91,0.95")
     ap_.add_argument("--dataset", default=DATASET)
+    ap_.add_argument("--engine", default="torch", choices=["torch", "mlx"],
+                     help="decision chain: torch ReferenceEars, or the MLX port (ports/tyger-mlx)")
     ap_.add_argument("--min-interrupts", type=int, default=0, help="skip slices with fewer interrupting turn onsets")
     ap_.add_argument("--max-scan", type=int, default=25, help="max sessions to scan for qualifying slices")
     ap_.add_argument("--traits", default=None, help="directory of trait JSONs to compare on every session")
@@ -180,7 +182,12 @@ def main():
 
     torch.set_num_threads(4)  # their plugin's default: more threads mostly spin-wait
     mimi = AutoModel.from_pretrained("kyutai/mimi", dtype=torch.float32).eval()
-    ears = ReferenceEars(BUNDLE, device="cpu")
+    if args.engine == "mlx":
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ports", "tyger-mlx"))
+        from mlx_ears import MlxEars
+        ears = MlxEars(BUNDLE)
+    else:
+        ears = ReferenceEars(BUNDLE, device="cpu")
     thr_sweep = [float(x) for x in args.ep_sweep.split(",")]
 
     rows = iter(load_dataset(args.dataset, split=args.split, streaming=True))
