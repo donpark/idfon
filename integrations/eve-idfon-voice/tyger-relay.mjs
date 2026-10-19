@@ -711,35 +711,43 @@ async function mainShape2({ smoke, outPath }) {
     preamble: process.env.TYGER_PREAMBLE || TRAIT.mouth.preamble || "",
   });
   log.info("listening", { bridge });
-  const response = await fetch(`${bridge}/live/stream`, { headers: { accept: "text/event-stream" } });
-  if (!response.ok || !response.body) throw new Error(`stream HTTP ${response.status}`);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+  // The bridge SSE may drop (the fetch body terminates); reconnect instead of dying.
   for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let index;
-    while ((index = buffer.indexOf("\n\n")) >= 0) {
-      const event = buffer.slice(0, index);
-      buffer = buffer.slice(index + 2);
-      const line = event.split("\n").find((l) => l.startsWith("data: "));
-      if (!line) continue;
-      let frame;
-      try {
-        frame = JSON.parse(line.slice(6));
-      } catch {
-        continue;
+    try {
+      const response = await fetch(`${bridge}/live/stream`, { headers: { accept: "text/event-stream" } });
+      if (!response.ok || !response.body) throw new Error(`stream HTTP ${response.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let index;
+        while ((index = buffer.indexOf("\n\n")) >= 0) {
+          const event = buffer.slice(0, index);
+          buffer = buffer.slice(index + 2);
+          const line = event.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          let frame;
+          try {
+            frame = JSON.parse(line.slice(6));
+          } catch {
+            continue;
+          }
+          if (frame.type !== "audio.frame") continue;
+          if (peerId && frame.peer_id !== peerId) continue; // one call per relay
+          peerId = frame.peer_id;
+          const raw = Buffer.from(frame.pcm_base64, "base64");
+          mouth.pushMic(Array.from({ length: raw.length / 2 }, (_, i) => raw.readInt16LE(i * 2)));
+        }
       }
-      if (frame.type !== "audio.frame") continue;
-      if (peerId && frame.peer_id !== peerId) continue; // one call per relay
-      peerId = frame.peer_id;
-      const raw = Buffer.from(frame.pcm_base64, "base64");
-      mouth.pushMic(Array.from({ length: raw.length / 2 }, (_, i) => raw.readInt16LE(i * 2)));
+      log.warn("bridge stream ended; reconnecting");
+    } catch (error) {
+      log.warn("bridge stream failed; retrying", { error: String(error) });
     }
+    await new Promise((r) => setTimeout(r, 1000));
   }
-  await ears.close();
 }
 
 async function main() {
