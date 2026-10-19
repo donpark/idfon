@@ -40,6 +40,54 @@ HOP = HOP_FRAMES * SR * 80 // 1000
 HEADS8 = ("state0", "state1", "state2", "state3", "hazard", "yield", "bc", "ep")
 
 
+class CoreAITyger:
+    """The exported Core AI chain (export_turn.py) behind the ears interface.
+    Runs the .aimodel graphs in-process via coreai.runtime (gpu; the cpu
+    specialization fails on the step graph and ANE falls back — see the
+    ports/tyger-coreai README)."""
+
+    def __init__(self, precision="float32", unit="gpu"):
+        import asyncio
+        import coreai.runtime as rt
+        from app.plugins.ears.tyger.bundle import load as bundle_load
+        self.rt = rt
+        self.loop = asyncio.new_event_loop()
+        _asr, self.proc, _tt, _cfg = bundle_load(Path(BUNDLE))
+        out = Path(HERE).resolve().parents[1] / "bench-results" / "coreai"
+        opts = (rt.SpecializationOptions.cpu_only() if unit == "cpu"
+                else rt.SpecializationOptions.from_preferred_compute_unit_kind(
+                    getattr(rt.ComputeUnitKind, unit)()))
+        self.enc = self._run(rt.AIModel.load(str(out / f"tyger_encoder_{precision}.aimodel"), opts))
+        self.step_model = self._run(rt.AIModel.load(str(out / f"tyger_step_{precision}.aimodel"), opts))
+        self.enc_fn = self._run(self.enc.load_function("main"))
+        self.step_fn = self._run(self.step_model.load_function("main"))
+        self.cache = None  # the carried GRU state (3, 1, 768)
+
+    def _run(self, coro):
+        import inspect
+        if not inspect.isawaitable(coro):
+            return coro
+        return self.loop.run_until_complete(coro)
+
+    def encode_l15(self, wav):
+        feats = self.proc(np.asarray(wav, dtype=np.float32), sampling_rate=SR,
+                          return_tensors="pt")["input_features"].numpy().astype(np.float32)
+        res = self._run(self.enc_fn({"mel_features": self.rt.NDArray(feats)}))
+        return res["encoder_hidden_state"].numpy().astype(np.float32)[0]
+
+    def head_step(self, hu, ha, act_db, prev_state):
+        state = self.cache if self.cache is not None else np.zeros((3, 1, 768), np.float32)
+        res = self._run(self.step_fn({
+            "hidden_user": self.rt.NDArray(np.asarray(hu, np.float32)[None, None]),
+            "hidden_agent": self.rt.NDArray(np.asarray(ha, np.float32)[None, None]),
+            "energy_db": self.rt.NDArray(np.array([[float(act_db)]], np.float32)),
+            "state_id": self.rt.NDArray(np.array([[int(prev_state)]], np.int32)),
+            "gru_state": self.rt.NDArray(state),
+        }))
+        self.cache = res["gru_state_next"].numpy().astype(np.float32)
+        return np.asarray(res["decision_vector"].numpy()[0, 0], dtype=np.float64)
+
+
 class Enc:
     """fp32 reference encoder, or the shipping contract (dyn while the window grows)."""
 
@@ -113,8 +161,8 @@ def main():
     ap.add_argument("--minutes", type=float, default=3.0)
     ap.add_argument("--skip", type=int, default=0)
     ap.add_argument("--tol", type=int, default=2, help="frames (80 ms) within which same-kind events count as one decision")
-    ap.add_argument("--cand", default="fp16", choices=["fp16", "mlx"],
-                    help="candidate chain: the shipping CoreML fp16 contract or the MLX int8-g16 config")
+    ap.add_argument("--cand", default="fp16", choices=["fp16", "mlx", "coreai"],
+                    help="candidate chain: the shipping CoreML fp16 contract, the MLX int8-g16 config, or the Core AI .aimodel chain")
     ap.add_argument("--dump", default=None, help="directory to save per-session npz (outs + events) for margin analysis")
     ap.add_argument("--dataset", default="anyreach-ai/dualturn-otospeech-turn-taking")
     ap.add_argument("--split", default="val")
@@ -133,6 +181,8 @@ def main():
         sys.path.insert(0, os.path.join(HERE, "..", "tyger-mlx"))
         from mlx_ears import MlxEars
         cand = Chain(ears=MlxEars(BUNDLE))
+    elif args.cand == "coreai":
+        cand = Chain(ears=CoreAITyger())
     else:
         # candidate = the shipping contract (dyn while the window grows, fp16 at steady state)
         cand = Chain(Enc(fp16, dyn), step, None)
