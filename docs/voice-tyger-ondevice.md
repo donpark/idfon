@@ -240,6 +240,16 @@ CPU (inside budget even unaccelerated). **The startup contract**: first 8 s on
 TygerEncoderDyn (CPU, ~100 frames per call), steady state on TygerEncoder fp16
 (ANE).
 
+**Swift runtime, part 1 — mel features done.** `ports/tyger-swift/` (SwiftPM package
+`TygerVoice`, consumable by both apps via an SPM path dependency). `MelFeatures.swift`
+ports the extractor exactly: audio preemphasis, centered STFT (512/160, symmetric
+Hann(400) in 512), power spectrum, slaney mel as a generated constant,
+`log(mel + 2^-24)`, and the extractor's masked rows zeroed (it "never normalizes" —
+its own comment). Parity: `scripts/tyger-swift-fixtures.py` dumps the Python
+extractor's output (5 scripted cases) and `swift test` asserts ≤ 2e-3 — passing.
+Trap worth remembering: use `vDSP_fft_zop` (classic C API), not the `vDSP.FFT` Swift
+wrapper — the wrapper's forward returned 2×/garbage on the impulse probe.
+
 **Rust rules module — done.** `crates/idfon-voice/src/turns.rs` is the tier-neutral
 port of tyger's `rules.py`/`session.py`/`constants.py` (frame-in → events-out:
 ENDPOINT/BARGE/BACKCHANNEL/FRAME, warmup + MIN_SPEECH gates, barge onset tracking,
