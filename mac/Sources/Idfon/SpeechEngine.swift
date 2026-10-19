@@ -55,11 +55,16 @@ protocol AsrEngine: AnyObject {
     func pause()
     func resume()
     func stop()
+    /// Raw capture samples (mono f32 at the input device's rate) for side
+    /// analysis — the turn-taker's user channel. Fires even while gated
+    /// (barge detection needs the mic during playback).
+    func setSamplesHandler(_ handler: (([Float], Double) -> Void)?)
 }
 
 extension AsrEngine {
     var lastLatencyMs: Int? { nil }
     func prepare() async {}
+    func setSamplesHandler(_ handler: (([Float], Double) -> Void)?) {}
     /// Whether recent input loudness is enough to count as barge-in on a
     /// no-AEC platform (macOS gated mode). Defaults to true (AEC platforms).
     var bargeInEngages: Bool { true }
