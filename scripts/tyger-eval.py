@@ -171,6 +171,7 @@ def main():
     ap_.add_argument("--min-interrupts", type=int, default=0, help="skip slices with fewer interrupting turn onsets")
     ap_.add_argument("--max-scan", type=int, default=25, help="max sessions to scan for qualifying slices")
     ap_.add_argument("--traits", default=None, help="directory of trait JSONs to compare on every session")
+    ap_.add_argument("--dump-scores", default=None, help="write per-frame head scores + labels per session here (the port parity reference)")
     ap_.add_argument("--out", default=None)
     args = ap_.parse_args()
 
@@ -297,6 +298,13 @@ def main():
                         bc_frames, refractory=int(d.get("bc_refractory", 15)))
                 res["traits"][name] = row
         report["sessions"].append(res)
+        if args.dump_scores:
+            os.makedirs(args.dump_scores, exist_ok=True)
+            with open(os.path.join(args.dump_scores, f"{row['session_id']}.json"), "w") as f:
+                json.dump({"session_id": row["session_id"], "frames": L,
+                           "scores": {k: [round(float(x), 5) for x in v] for k, v in sc.items()},
+                           "labels": {k: v.tolist() for k, v in lab.items()}}, f)
+            print(f"  scores dumped to {args.dump_scores}/{row['session_id']}.json", flush=True)
         print(json.dumps(res, indent=2), flush=True)
 
     out = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bench-results", "tyger-eval.json")
