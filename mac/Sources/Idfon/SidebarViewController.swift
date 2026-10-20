@@ -389,6 +389,9 @@ final class AudioSettingsViewController: NSViewController {
     func apply() {
         let volume = UInt8(max(0, min(100, slider.integerValue)))
         let kbps = Int(bitrate.stringValue) ?? 32
+        // Shell-rendered call audio has no device playback control to hold the
+        // volume; the sink applies this gain instead.
+        AudioPlaybackSink.gain = Float(volume) / 100
         Task.detached(priority: .userInitiated) {
             _ = media_audio_set_volume(volume)
             if (8...510).contains(kbps) {

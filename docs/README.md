@@ -57,7 +57,7 @@ kept because it records decisions; **design** = not all implemented.
 
 | Doc | Covers |
 | --- | --- |
-| `audio-media.md` | audio capture/playback status; the single in-app audio owner (`AudioIO`: one mic tap + one playback bus, one session), the capture-ownership rule |
+| `audio-media.md` | audio capture/playback status; the single in-app audio owner (`AudioIO`: one mic tap + one playback bus, one session), the capture-ownership rule; macOS echo reference (call audio on `AudioMeter`'s engine + voice processing, `IDFON_MACOS_AEC`) |
 | `video-media.md` | video capture/encode status |
 | `media-adapter-seam.md` | `video-frame.jpg` polling, seams, bundled playback / shell playback callback |
 
