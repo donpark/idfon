@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		4EDE359CCB42920BD36539D5 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */; };
 		4EDE359CCB42920BD36539E1 /* TygerVoice in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9E1 /* TygerVoice */; };
+		4EDE359CCB42920BD36539E2 /* TygerVoiceCoreAI in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9E2 /* TygerVoiceCoreAI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -67,6 +68,7 @@
 			files = (
 				4EDE359CCB42920BD36539D5 /* FluidAudio in Frameworks */,
 				4EDE359CCB42920BD36539E1 /* TygerVoice in Frameworks */,
+				4EDE359CCB42920BD36539E2 /* TygerVoiceCoreAI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -120,6 +122,7 @@
 			packageProductDependencies = (
 				FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */,
 				FBED5B9B4DCF10AFC62DA9E1 /* TygerVoice */,
+				FBED5B9B4DCF10AFC62DA9E2 /* TygerVoiceCoreAI */,
 			);
 			productName = Idfon;
 			productReference = 1A000001000000000000001A /* Idfon.app */;
@@ -457,6 +460,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 54D511937386577BC39C56A1 /* XCLocalSwiftPackageReference "tyger-swift" */;
 			productName = TygerVoice;
+		};
+		FBED5B9B4DCF10AFC62DA9E2 /* TygerVoiceCoreAI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 54D511937386577BC39C56A1 /* XCLocalSwiftPackageReference "tyger-swift" */;
+			productName = TygerVoiceCoreAI;
 		};
 		FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */ = {
 			isa = XCSwiftPackageProductDependency;

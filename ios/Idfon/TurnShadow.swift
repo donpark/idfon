@@ -1,16 +1,18 @@
 import AVFAudio
 import Foundation
 import TygerVoice
+import TygerVoiceCoreAI
 
 /// Shadow turn-taker (iOS): runs the turn engine beside the text Segmenter and
 /// marks its events for a decision-log diff. It changes NO behavior — the
 /// segmenter's commit stays authoritative until the diff says otherwise (the
 /// swap-over convention; `docs/voice-tyger-option.md` P3).
 ///
-/// Tier: CoreML (TygerEncoder fp16 on ANE, TygerEncoderDyn at startup, TygerStep
-/// fp32) — the accepted iOS tier. Models are side-loaded for development into
-/// `Documents/tyger-models/` (`devicectl device copy to`); with no models there
-/// the shadow stays off and says so in the Automation log.
+/// Tier: Core AI (iOS 27+, fp32 GPU — the oracle-exact tier) when its
+/// `.aimodel`s are side-loaded in `Documents/tyger-models/coreai/`; otherwise
+/// CoreML (TygerEncoder fp16 on ANE, TygerEncoderDyn at startup, TygerStep
+/// fp32) — the accepted pre-27 iOS tier — from `Documents/tyger-models/`.
+/// With no models there the shadow stays off and says so in the Automation log.
 ///
 /// Phase-1 note: the agent channel is now REAL (AudioIO's playback observers —
 /// `audioPlayback` — feed a second tap), so echo suppression and BARGE see the
@@ -31,6 +33,11 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     static func start() -> TurnShadow? {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("tyger-models")
+        if #available(iOS 27.0, *),
+           let coreai = try? CoreAITurnModel(directory: dir.appendingPathComponent("coreai")) {
+            Automation.mark("turn-shadow: tier CoreAI (fp32 GPU)")
+            return TurnShadow(model: coreai)
+        }
         let enc = dir.appendingPathComponent("TygerEncoder.mlpackage")
         let dyn = dir.appendingPathComponent("TygerEncoderDyn.mlpackage")
         let step = dir.appendingPathComponent("TygerStep.mlpackage")
