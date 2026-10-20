@@ -1,9 +1,10 @@
 #!/bin/bash
 # Run the TYGER relay against a served voice agent's bridge (docs/voice-tyger.md, P0a).
 #
-# The voice agent must be serving with the relay backend
-# (`EVE_LIVE_CONFIG=agents/voice/tyger.json scripts/voice-serve.sh`);
+# The voice agent must be serving with the relay backend (its live.json does
+# by default; `EVE_LIVE_CONFIG=<file> scripts/voice-serve.sh` overrides);
 # that script writes the bridge URL to $home/bridge-url, which we read here.
+# Start this AFTER the agent: a restart moves the bridge port.
 # A tyger-s2s stack must be up (their run.sh, or the Docker image); its address
 # and knobs are env vars — see integrations/eve-idfon-voice/tyger-relay.mjs.
 #
