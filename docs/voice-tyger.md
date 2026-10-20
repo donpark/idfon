@@ -1,6 +1,14 @@
 # TYGER as the voice layer
 
-Status: **P0a implemented (2026-10-18); P0b (the gate) waits on a GPU box.** Premise: adopt
+Status: **P0a implemented (2026-10-18); P0b-i done on the Mac, P0b-ii (the
+full-duplex experience) waits on a GPU box.** 2026-10-20: the decision layer
+(model + rules) also runs **in-process in the eve TS agent**
+(`integrations/eve-idfon-voice/src/tyger/`, ONNX; 99.89% decision agreement vs
+the fp32 oracle on 72 min of conversation) and ships as the `tyger` option
+alongside the named `classic` behavior — see `docs/voice-tyger-option.md`.
+The sidecar "shapes" below are scaffolding history: the end state is the model
+inside our own agent, and the tyger-s2s stack stays as the reference oracle.
+Premise: adopt
 [tyger-s2s](https://github.com/nineninesix-ai/tyger-s2s)'s way of working **as a whole**
 for the eve-format voice agent — its turn-taker, its turn pipeline, its behaviors — keeping
 only what is idfon-specific. Gate on evidence: if P0 replay shows it does **not** work as
@@ -8,7 +16,8 @@ advertised on our calls, we keep our thresholds and only steal the behaviors.
 
 Companion to `docs/voice-decisions.md` (the decision inventory this replaces at runtime),
 `docs/voice-agent.md` (the eve voice agent's backends and routing),
-`docs/voice-agent-loop-contract.md` (the shared trace), `docs/voice-agent-modes.md`.
+`docs/voice-agent-loop-contract.md` (the shared trace), `docs/voice-agent-modes.md`,
+`docs/voice-tyger-option.md` (classic vs tyger as product options).
 
 ## Verdict: what is worth keeping
 
