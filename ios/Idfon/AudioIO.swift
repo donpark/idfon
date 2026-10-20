@@ -7,6 +7,14 @@ protocol AudioCaptureObserver: AnyObject {
     func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime)
 }
 
+/// A consumer of what the playback bus is about to play — the second ear for
+/// the turn-taker (the agent's own voice, so its echo is not mistaken for the
+/// caller). Fed at schedule time: the tag timeline is the post timeline (the
+/// same stand-in as the tyger relay's TYGER_TAG_LAG_MS).
+protocol AudioPlaybackObserver: AnyObject {
+    func audioPlayback(_ buffer: AVAudioPCMBuffer)
+}
+
 /// The microphone seam. One concrete implementation owns the hardware; tests
 /// inject a source that yields synthetic buffers, so consumers never touch an
 /// `AVAudioEngine` or the `AVAudioSession`.
@@ -61,6 +69,7 @@ final class AudioIO: AudioSource, AudioSink {
     private var playbackPlayer = AVAudioPlayerNode()
     private let observerLock = NSLock()
     private let captureObservers = NSHashTable<AnyObject>.weakObjects()
+    private let playbackObservers = NSHashTable<AnyObject>.weakObjects()
     private var profile: Profile?
     private(set) var running = false
     /// True while a queued buffer is playing (cues, TTS). Read by the barge-in
@@ -453,6 +462,34 @@ final class AudioIO: AudioSource, AudioSink {
         }
     }
 
+    // MARK: - playback observers (the second ear)
+
+    func addPlaybackObserver(_ observer: AudioPlaybackObserver) {
+        runOnAudio { [self] in
+            observerLock.lock()
+            playbackObservers.add(observer as AnyObject)
+            observerLock.unlock()
+        }
+    }
+
+    func removePlaybackObserver(_ observer: AudioPlaybackObserver) {
+        runOnAudio { [self] in
+            observerLock.lock()
+            playbackObservers.remove(observer as AnyObject)
+            observerLock.unlock()
+        }
+    }
+
+    /// Copy-under-lock, call outside it (an observer must not deadlock the audio thread).
+    private func fanOutPlayback(_ buffer: AVAudioPCMBuffer) {
+        observerLock.lock()
+        let observers = playbackObservers.allObjects
+        observerLock.unlock()
+        for observer in observers {
+            (observer as? AudioPlaybackObserver)?.audioPlayback(buffer)
+        }
+    }
+
     // MARK: - playback (AudioSink)
 
     func play(wav: Data) async {
@@ -488,6 +525,7 @@ final class AudioIO: AudioSource, AudioSink {
             return
         }
         let id = UUID()
+        fanOutPlayback(converted) // the second ear: what the bus is about to play
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             pendingPlays[id] = continuation
             isPlaying = true
@@ -530,6 +568,7 @@ final class AudioIO: AudioSource, AudioSink {
                 Automation.mark("audio: stream play dropped convert failed")
                 return
             }
+            fanOutPlayback(converted) // the second ear
             playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: nil)
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
         }
@@ -554,6 +593,7 @@ final class AudioIO: AudioSource, AudioSink {
             return
         }
         playbackPlayer.scheduleBuffer(converted, at: nil, options: [.loops], completionHandler: nil)
+        fanOutPlayback(converted) // the second ear (a looping ring: fed once)
         activeLoop = converted
         isPlaying = true
         if !playbackPlayer.isPlaying { playbackPlayer.play() }

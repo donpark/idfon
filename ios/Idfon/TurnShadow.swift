@@ -12,12 +12,17 @@ import TygerVoice
 /// `Documents/tyger-models/` (`devicectl device copy to`); with no models there
 /// the shadow stays off and says so in the Automation log.
 ///
-/// Phase-1 limitation (same as the mac's TurnShadow): no TTS PCM tap exists yet,
-/// so the agent channel is silence — BARGE events are unreliable and the 8 s
-/// window misses the agent's preceding utterance. Upgrade when a TTS tap lands.
-final class TurnShadow: AudioCaptureObserver {
+/// Phase-1 note: the agent channel is now REAL (AudioIO's playback observers —
+/// `audioPlayback` — feed a second tap), so echo suppression and BARGE see the
+/// agent's own voice. The tag timeline is the schedule time (the same stand-in
+/// as the tyger relay's TYGER_TAG_LAG_MS), and hops pair 1:1 from the two taps'
+/// queues.
+final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     private let engine: TurnEngine
     private let tap: TurnTap
+    private let agentTap: TurnTap
+    /// Agent-channel hops waiting for their user hop (paired 1:1 in consume).
+    private var agentHops: [[Float]] = []
     /// Serial, off the audio render thread: inference never runs in a tap callback.
     private let queue = DispatchQueue(label: "idfon.turn-shadow")
     private var mode = "listen"
@@ -46,10 +51,15 @@ final class TurnShadow: AudioCaptureObserver {
     private init(model: TurnModel) {
         engine = TurnEngine(model: model, rules: TurnRulesCABI())
         tap = TurnTap(hopSize: TurnRuntime.hopSamples)
+        agentTap = TurnTap(hopSize: TurnRuntime.hopSamples)
         tap.onHop = { [weak self] samples in
             self?.consume(samples)
         }
+        agentTap.onHop = { [weak self] samples in
+            self?.agentHops.append(samples) // already on the serial queue (tap.feed is)
+        }
         AudioIO.shared.addCaptureObserver(self)
+        AudioIO.shared.addPlaybackObserver(self)
     }
 
     /// The single mic source's raw buffers (the iOS seam; mac taps the ASR engine).
@@ -63,6 +73,15 @@ final class TurnShadow: AudioCaptureObserver {
         queue.async { self.tap.feed(samples, rate: rate) }
     }
 
+    /// What the playback bus is about to play (TTS + remote call audio) — the
+    /// agent channel. Hop timing pairs 1:1 with the user's in `consume`.
+    func audioPlayback(_ buffer: AVAudioPCMBuffer) {
+        guard let ch = buffer.floatChannelData else { return }
+        let samples = Array(UnsafeBufferPointer(start: ch[0], count: Int(buffer.frameLength)))
+        let rate = buffer.format.sampleRate
+        queue.async { self.agentTap.feed(samples, rate: rate) }
+    }
+
     /// "listen" while the caller speaks, "speaking" while the agent plays.
     func setMode(_ mode: String) {
         queue.async { self.mode = mode }
@@ -70,12 +89,16 @@ final class TurnShadow: AudioCaptureObserver {
 
     func stop() {
         AudioIO.shared.removeCaptureObserver(self)
-        queue.sync { engine.reset() }
+        AudioIO.shared.removePlaybackObserver(self)
+        queue.sync {
+            engine.reset()
+            agentHops.removeAll()
+        }
     }
 
     private func consume(_ hop: [Float]) {
-        let zeros = [Float](repeating: 0, count: hop.count)
-        let events = engine.feed(userHop: hop, agentHop: zeros, mode: mode)
+        let agent = agentHops.isEmpty ? [Float](repeating: 0, count: hop.count) : agentHops.removeFirst()
+        let events = engine.feed(userHop: hop, agentHop: agent, mode: mode)
         for e in events where e.kind != "FRAME" {
             let turn = (e.dict["turn_s"] as? Double).map { String(format: "%.2f", $0) } ?? "-"
             let onset = (e.dict["onset_s"] as? Double).map { String(format: "%.2f", $0) } ?? "-"
