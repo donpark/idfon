@@ -200,7 +200,7 @@ if [ -n "${AGENCY_URL:-}" ]; then
     fi
   fi
 fi
-IDFON_ENDPOINT_PORT="$endpoint_port" "$root/target/release/$holder_bin" --key-file "$key" serve \
+IDFON_ENDPOINT_PORT="$endpoint_port" RUST_LOG="${RUST_LOG:-info}" "$root/target/release/$holder_bin" --key-file "$key" serve \
   --socket "$home/holder.sock" "${allow_args[@]}" --allow-file "$home/allowed-peers" \
   --blob-dir "$home/blobs" \
   ${live_args[@]+"${live_args[@]}"} \
@@ -246,7 +246,7 @@ if [ "$(jq -r '.backend // empty' "$live_config_path" 2>/dev/null)" = "relay" ];
     engine=$(jq -nc --arg pid "$self_id" --argjson ticket "$wrap_ticket" '{
       stt: {provider: "deepgram", api_key_env: "DEEPGRAM_API_KEY"},
       tts: {provider: "elevenlabs", voice: "EXAVITQu4vr4xnSDxMaL", api_key_env: "ELEVENLABS_API_KEY"},
-      wrap: {peer_id: $pid, endpoint_id: $pid, ticket: $ticket}}')
+      wrap: {peer_id: $pid, endpoint_id: $pid, ticket: $ticket, local: true}}')
     IDFON_BRIDGE_URL="$IDFON_BRIDGE_URL" IDFON_BRIDGE_SECRET="$IDFON_BRIDGE_SECRET" \
     IDFON_VOICE_ENGINE="$engine" \
       nohup node "$root/integrations/eve-idfon-voice/live-relay.mjs" \

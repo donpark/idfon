@@ -200,16 +200,50 @@ const server = createServer(async (request, response) => {
     let replyPromise = null;
     if (awaitReply) {
       const timeoutMs = Number(body.reply_timeout_ms) || 60_000;
+      // `local: true` — the voice engine wraps THIS instance's agent: the
+      // carrier refuses "Connecting to ourself is not supported", so the turn
+      // goes to the local agent and the reply resolves here when it POSTs
+      // /reply (keyed by the agent's in_reply_to compound).
+      const local = body.local === true;
+      const localId = `local-${nextRequestId++}`;
+      const replyKey = local ? `${localId}|${localId}|${body.peer_id}` : replyTo;
       replyPromise = new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
-          pendingReplies.delete(replyTo);
+          pendingReplies.delete(replyKey);
           reject(new Error("timed out waiting for reply"));
         }, timeoutMs);
-        pendingReplies.set(replyTo, {
+        pendingReplies.set(replyKey, {
           resolve: (value) => { clearTimeout(timer); resolve(value); },
           reject: (error) => { clearTimeout(timer); reject(error); },
         });
       });
+      if (local) {
+        try {
+          await fetch(`${targetUrl}/idfon/turn`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
+            body: JSON.stringify({
+              message_id: localId, peer_id: body.peer_id, endpoint_id: body.endpoint_id,
+              idempotency_key: localId, text: body.text, trace: body.trace,
+              context: body.context,
+            }),
+          }).then(async (r) => {
+            if (!r.ok) log.error("local turn rejected", { status: r.status, body: (await r.text()).slice(0, 300) });
+          });
+        } catch (error) {
+          log.error("local turn delivery failed", { error: String(error) });
+        }
+        try {
+          const reply = await replyPromise;
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ok: true, reply }));
+        } catch (error) {
+          pendingReplies.delete(replyKey);
+          response.writeHead(504, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: String(error) }));
+        }
+        return;
+      }
     }
     try {
       await write({
@@ -462,6 +496,16 @@ const server = createServer(async (request, response) => {
   // Boundary wide event: the agent produced a reply for a turn. Absence of
   // this line after a `forwarding to agent` is "the agent never finished".
   log.info("agent replied", { in_reply_to: body.in_reply_to, chars: body.text.length });
+  // A local turn (a voice engine wrapping this instance's agent) waits on the
+  // /reply itself — resolve it here and skip the holder round trip.
+  const localWaiter = pendingReplies.get(body.in_reply_to);
+  if (localWaiter) {
+    pendingReplies.delete(body.in_reply_to);
+    localWaiter.resolve({ text: body.text });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+    return;
+  }
   const ack = new Promise((resolve, reject) => pending.set(body.in_reply_to, { resolve, reject }));
   try {
     await write({ type: "reply.out", in_reply_to: body.in_reply_to, text: body.text });
