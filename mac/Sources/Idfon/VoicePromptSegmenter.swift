@@ -62,6 +62,13 @@ final class VoicePromptSegmenter {
         commit(latest, viaFinal: false)
     }
 
+    /// The turn model's ENDPOINT (the tyger option): commit the current text
+    /// now. The classic signals stay live as the fail-open net.
+    func forceCommit() {
+        guard enabled, !latest.isEmpty else { return }
+        commit(latest, viaFinal: false)
+    }
+
     private func commit(_ text: String, viaFinal: Bool) {
         lastCommitGapMs = Int(Date().timeIntervalSince(lastChange) * 1000)
         lastCommitFinal = viaFinal

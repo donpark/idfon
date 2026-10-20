@@ -28,6 +28,9 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     /// Serial, off the audio render thread: inference never runs in a tap callback.
     private let queue = DispatchQueue(label: "idfon.turn-shadow")
     private var mode = "listen"
+    /// The active-mode sink (the tyger option): non-FRAME decisions as they
+    /// fire. The Automation marks stay either way (the diff log).
+    var onDecision: ((String) -> Void)?
 
     /// nil when no models are available.
     static func start() -> TurnShadow? {
@@ -110,6 +113,7 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
             let turn = (e.dict["turn_s"] as? Double).map { String(format: "%.2f", $0) } ?? "-"
             let onset = (e.dict["onset_s"] as? Double).map { String(format: "%.2f", $0) } ?? "-"
             Automation.mark("turn-shadow: \(e.kind) frame=\(e.frame) turn_s=\(turn) onset_s=\(onset)")
+            onDecision?(e.kind)
         }
     }
 }
