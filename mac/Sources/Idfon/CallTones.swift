@@ -53,6 +53,7 @@ final class CallTonePlayer {
         if current == tone, player?.isPlaying == true { return }
         stopLocked()
         guard ensureStartedLocked(), let player, let buffer = toneBuffer(tone) else { return }
+        PlaybackBus.notify(buffer) // the second ear (a looping ring: fed once)
         current = tone
         switch tone {
         case .ringback, .ringtone:

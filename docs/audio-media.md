@@ -296,7 +296,13 @@ the 1s RMS log shows it immediately). The audio-settings volume slider feeds
 
 Not covered on macOS: call tones, `OnDeviceVoice`/`SpeechEngine` TTS and the
 STT engines still run on their own graphs (self-bleed into the mic is handled
-by their echo-trim/segmenter paths, not AEC).
+by their echo-trim/segmenter paths, not AEC). The **second ear** (the turn
+taker's agent channel) is covered anyway: `PlaybackBus` fans in at play time —
+Kokoro TTS wavs (`AVAudioPlayer` has no tap, so the PCM is fanned before play),
+remote call audio (`AudioMeter.playStream`), and call tones (a looping ring
+feeds once). Still outside it: the Apple-TTS fallback (AVSpeechSynthesizer
+plays system-side), and the single-owner convergence of the five graphs (the
+port of iOS `AudioIO`'s shape).
 
 **Engine self-stop recovery (iOS).** The engine stops itself on hardware
 format/channel changes (`AVAudioEngineConfigurationChangeNotification`;
