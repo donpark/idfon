@@ -47,11 +47,29 @@ function wavWrap(pcm) {
 async function transcribe(pcm) {
   const cfg = engine.stt || {};
   const base = (cfg.base_url || "https://ai-gateway.vercel.sh/v1").replace(/\/$/, "");
+  // the language knob (IDFON_VOICE_LANG, BCP-47); unset = provider auto-detect
+  const lang = process.env.IDFON_VOICE_LANG;
+
+  if ((cfg.provider || "openai-compatible") === "deepgram") {
+    // Deepgram's listen API (the cascade preset's provider).
+    const host = (cfg.base_url || "https://api.deepgram.com").replace(/\/$/, "");
+    const params = new URLSearchParams({ model: cfg.stt_model || "nova-3", smart_format: "true" });
+    if (lang) params.set("language", lang.split("-")[0]);
+    const response = await fetch(`${host}/v1/listen?${params}`, {
+      method: "POST",
+      headers: {
+        authorization: `Token ${apiKey({ ...cfg, api_key_env: cfg.api_key_env || "DEEPGRAM_API_KEY" })}`,
+        "content-type": "audio/wav",
+      },
+      body: wavWrap(pcm),
+    });
+    if (!response.ok) throw new Error(`stt HTTP ${response.status}: ${await response.text()}`);
+    return (await response.json()).results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "";
+  }
+
   const form = new FormData();
   form.append("file", new Blob([wavWrap(pcm)], { type: "audio/wav" }), "audio.wav");
   form.append("model", cfg.stt_model || "openai/whisper-1");
-  // the language knob (IDFON_VOICE_LANG, BCP-47); unset = provider auto-detect
-  const lang = process.env.IDFON_VOICE_LANG;
   if (lang) form.append("language", lang.split("-")[0]);
   const key = apiKey(cfg);
   const response = await fetch(`${base}/audio/transcriptions`, {

@@ -12,8 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const here = fileURLToPath(new URL(".", import.meta.url));
-const relay = new URL("../../integrations/eve-idfon-voice/live-relay.mjs", here);
+const relay = fileURLToPath(new URL("../../integrations/eve-idfon-voice/live-relay.mjs", import.meta.url));
 const args = process.argv.slice(2);
 const argOf = (f) => (args.includes(f) ? args[args.indexOf(f) + 1] : undefined);
 const text = argOf("--text") ?? "Hello, this is a test of the tyger endpointer.";
@@ -74,7 +73,10 @@ const child = spawn(process.execPath, [relay], {
     ...process.env,
     IDFON_BRIDGE_URL: bridge,
     IDFON_BRIDGE_SECRET: "e2e",
-    IDFON_VOICE_ENGINE: JSON.stringify({ stt: {}, tts: {} }), // gateway defaults, echo mode
+    IDFON_VOICE_ENGINE: JSON.stringify({
+      stt: { provider: "deepgram", api_key_env: "DEEPGRAM_API_KEY" },
+      tts: { provider: "elevenlabs", voice: "EXAVITQu4vr4xnSDxMaL", api_key_env: "ELEVENLABS_API_KEY" },
+    }), // real providers (the gateway serves neither /audio/transcriptions nor /audio/speech)
     ...(lang ? { IDFON_VOICE_LANG: lang } : {}),
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -98,7 +100,9 @@ console.log(`reply audio: ${audio.length} posts, ${(bytes / 24000 / 2).toFixed(2
 const kind = /"message":"endpointer","kind":"([^"]*)"/.exec(log)?.[1] ?? "?";
 console.log(`endpointer: ${kind}`);
 const okKind = kind === "tyger";
-const okTranscript = heard.toLowerCase().includes("tyger") || heard.toLowerCase().includes("endpointer");
+// speech-tolerant: STT hears "tyger" as "tiger" and "endpointer" as two words
+const flat = heard.toLowerCase().replace(/[^a-z]/g, "");
+const okTranscript = flat.includes("endpointer") && (flat.includes("tyger") || flat.includes("tiger"));
 const okAudio = bytes > 24000 * 2 * 0.5;
 const pass = okKind && okTranscript && okAudio;
 console.log(`checks: endpointer=${okKind} transcript=${okTranscript} audio=${okAudio}`);
