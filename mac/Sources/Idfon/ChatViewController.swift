@@ -1589,6 +1589,13 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         turnMode.target = self
         turnMode.action = #selector(turnModePicked(_:))
 
+        // How turns are decided (the tyger option, `docs/voice-tyger-option.md`).
+        let turnModel = NSPopUpButton()
+        turnModel.addItems(withTitles: TurnTakerMode.allCases.map { $0.rawValue.capitalized })
+        turnModel.selectItem(at: TurnTakerMode.allCases.firstIndex(of: TurnTakerSetting.mode(for: peer.id)) ?? 0)
+        turnModel.target = self
+        turnModel.action = #selector(turnModelPicked(_:))
+
         let stack = NSStackView(views: [
             NSTextField(labelWithString: peer.displayName),
             endpoint,
@@ -1598,6 +1605,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             NSTextField(labelWithString: "Generation"), generation,
             NSTextField(labelWithString: "Voice turns"),
             NSTextField(labelWithString: "Mode"), turnMode,
+            NSTextField(labelWithString: "Turn model"), turnModel,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -1679,6 +1687,14 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let mode = modes[sender.indexOfSelectedItem]
         ContactVoiceTurnModes.set(mode, for: peer.id)
         showBanner("Voice turns: \(mode.title)")
+    }
+
+    @objc private func turnModelPicked(_ sender: NSPopUpButton) {
+        let modes = TurnTakerMode.allCases
+        guard sender.indexOfSelectedItem >= 0, sender.indexOfSelectedItem < modes.count else { return }
+        let mode = modes[sender.indexOfSelectedItem]
+        TurnTakerSetting.setOverride(mode == .auto ? nil : mode, for: peer.id)
+        showBanner("Turn model: \(mode.rawValue.capitalized)")
     }
 
     @objc private func copyEndpointTapped() {

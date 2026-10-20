@@ -324,6 +324,7 @@ final class VoiceAgentSession: NSObject {
         }
         noSpeechTurns = 0
         silencePrompted = false
+        Automation.mark("turn-taker: \(TurnTakerSetting.usesModel(for: activePeerId, modelAvailable: turnShadow != nil) ? "tyger" : "classic")")
         Automation.mark("voice-agent: heard=\(heard)")
         if let asrReference, !asrReference.isEmpty {
             let wer = AsrScore.wer(reference: asrReference, hypothesis: heard)

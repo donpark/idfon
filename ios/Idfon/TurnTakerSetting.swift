@@ -5,7 +5,7 @@ import Foundation
 /// the turn model's decisions; `auto` = tyger when the model is available.
 /// Global default + per-contact override. Fail-open everywhere: without a
 /// loaded model a session keeps classic behavior whatever the setting says.
-enum TurnTakerMode: String {
+enum TurnTakerMode: String, CaseIterable {
     case auto
     case classic
     case tyger
