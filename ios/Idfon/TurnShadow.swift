@@ -25,6 +25,8 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     private let engine: TurnEngine
     private let tap: TurnTap
     private let agentTap: TurnTap
+    /// Two-stream capture (mic + agent) for the voice-agent-trainer.
+    private let capture: TurnCapture
     /// Agent-channel hops waiting for their user hop (paired 1:1 in consume).
     private var agentHops: [[Float]] = []
     /// Serial, off the audio render thread: inference never runs in a tap callback.
@@ -64,6 +66,8 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         engine = TurnEngine(model: model, rules: TurnRulesCABI())
         tap = TurnTap(hopSize: TurnRuntime.hopSamples)
         agentTap = TurnTap(hopSize: TurnRuntime.hopSamples)
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        capture = TurnCapture(dir: base.appendingPathComponent("turn-captures"))
         tap.onHop = { [weak self] samples in
             self?.consume(samples)
         }
@@ -106,10 +110,14 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
             engine.reset()
             agentHops.removeAll()
         }
+        if let url = capture.finish() {
+            Automation.mark("turn-capture: \(url.path)")
+        }
     }
 
     private func consume(_ hop: [Float]) {
         let agent = agentHops.isEmpty ? [Float](repeating: 0, count: hop.count) : agentHops.removeFirst()
+        capture.append(userHop: hop, agentHop: agent)
         let events = engine.feed(userHop: hop, agentHop: agent, mode: mode)
         for e in events where e.kind != "FRAME" {
             let turn = (e.dict["turn_s"] as? Double).map { String(format: "%.2f", $0) } ?? "-"
