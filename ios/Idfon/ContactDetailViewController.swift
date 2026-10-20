@@ -20,6 +20,8 @@ final class ContactDetailViewController: UIViewController {
     private let kindButton = UIButton(type: .system)
     private let voiceSwitch = UISwitch()
     private let turnModeCaption = UILabel()
+    private let turnModelButton = UIButton(type: .system)
+    private let turnModelCaption = UILabel()
     private var catalog: [VoiceOption] = []
     /// §6 primary actions: Call starts the call, Message opens the chat. Both
     /// push the chat (the room surface) so back returns here.
@@ -122,6 +124,13 @@ final class ContactDetailViewController: UIViewController {
         turnModeCaption.textColor = .secondaryLabel
         turnModeCaption.numberOfLines = 0
         rebuildTurnMode()
+        turnModelCaption.font = .preferredFont(forTextStyle: .caption1)
+        turnModelCaption.textColor = .secondaryLabel
+        turnModelCaption.numberOfLines = 0
+        rebuildTurnModel()
+        turnModelButton.showsMenuAsPrimaryAction = true
+        turnModelButton.contentHorizontalAlignment = .leading
+        turnModelButton.titleLabel?.font = .preferredFont(forTextStyle: .body)
         turnModeButton.showsMenuAsPrimaryAction = true
         turnModeButton.contentHorizontalAlignment = .leading
         turnModeButton.titleLabel?.font = .preferredFont(forTextStyle: .body)
@@ -143,6 +152,8 @@ final class ContactDetailViewController: UIViewController {
             sectionLabel("Voice turns"),
             voiceRow("Mode", turnModeButton),
             turnModeCaption,
+            voiceRow("Turn model", turnModelButton),
+            turnModelCaption,
             delete,
         ])
         stack.axis = .vertical
@@ -328,6 +339,51 @@ final class ContactDetailViewController: UIViewController {
             return "The agent hears your words and answers. Nothing runs in front of it."
         case .proxy:
             return "The on-device director hears the turn first and either answers or forwards it. Adds an on-device turn to every remote one."
+        }
+    }
+
+    /// Per-contact turn model (the tyger option, `docs/voice-tyger-option.md`):
+    /// how turns are decided. `auto` = tyger when the model is available, and
+    /// is the default (an override of `auto` clears back to the global).
+    private func rebuildTurnModel() {
+        let mode = TurnTakerSetting.mode(for: peer.id)
+        turnModelButton.setTitle(modelName(mode), for: .normal)
+        turnModelButton.menu = UIMenu(title: "Turn model", children: TurnTakerMode.allCases.map { option in
+            UIAction(title: self.modelName(option),
+                     subtitle: self.modelSubtitle(option),
+                     state: option == mode ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                TurnTakerSetting.setOverride(option == .auto ? nil : option, for: self.peer.id)
+                self.rebuildTurnModel()
+            }
+        })
+        turnModelCaption.text = modelCaption(mode)
+    }
+
+    private func modelName(_ mode: TurnTakerMode) -> String {
+        switch mode {
+        case .auto: return "Auto"
+        case .classic: return "Classic"
+        case .tyger: return "Tyger"
+        }
+    }
+
+    private func modelSubtitle(_ mode: TurnTakerMode) -> String {
+        switch mode {
+        case .auto: return "Tyger when its model is available"
+        case .classic: return "The segmenter's timing (always available)"
+        case .tyger: return "The turn model's decisions"
+        }
+    }
+
+    private func modelCaption(_ mode: TurnTakerMode) -> String {
+        switch mode {
+        case .auto:
+            return "The turn model decides turns when it is loaded; the classic segmenter is the fallback."
+        case .classic:
+            return "Turns commit on recognizer finals or the 1.2 s gap. No model needed."
+        case .tyger:
+            return "Turns commit at the model's endpoint. Without a loaded model the call falls back to classic."
         }
     }
 

@@ -295,6 +295,7 @@ final class VoiceAgentSession: NSObject {
         }
         noSpeechTurns = 0
         silencePrompted = false
+        Automation.mark("turn-taker: \(TurnTakerSetting.usesModel(for: activePeerId, modelAvailable: turnShadow != nil) ? "tyger" : "classic")")
         Automation.mark("voice-agent: heard=\(heard)")
         // Show the caller's spoken turn in the chat, not just the agent's reply.
         ChatStore.shared.recordSpokenTurn(
