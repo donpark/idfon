@@ -52,7 +52,7 @@ pub extern "C" fn idfon_voice_turn_free(sess: *mut c_void) {
 /// Ask for the heads' context to start over before the next hop (rules.reset).
 #[no_mangle]
 pub extern "C" fn idfon_voice_turn_reset(sess: *mut c_void) {
-    if let Some(s) = (unsafe { (sess as *mut TurnSession).as_mut() }) {
+    if let Some(s) = unsafe { (sess as *mut TurnSession).as_mut() } {
         s.reset();
     }
 }
