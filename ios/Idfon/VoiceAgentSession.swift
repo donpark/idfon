@@ -45,6 +45,8 @@ final class VoiceAgentSession: NSObject {
     /// Latest state, readable by the call UI (the `onState` callback is single-
     /// owner, so the LiveActivityController owns it).
     private(set) var state: State = .idle
+    /// Shadow turn-taker (decision-log diff only; see TurnShadow).
+    nonisolated(unsafe) private var turnShadow: TurnShadow?
     /// One-line live model/latency readout for the call bar, e.g.
     /// "Whistle 100 ms · Kokoro 0.7 s".
     private(set) var stats: String?
@@ -493,6 +495,8 @@ final class VoiceAgentSession: NSObject {
         stopRequested = true
         DirectorRuntime.shared.endCall()
         segmenter.stop()
+        turnShadow?.stop()
+        turnShadow = nil
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver) }
         routeObserver = nil
         tts.playback = nil
@@ -521,6 +525,7 @@ final class VoiceAgentSession: NSObject {
     private func setState(_ next: State) {
         state = next
         onState?(next)
+        turnShadow?.setMode({ if case .speaking = next { "speaking" } else { "listen" } }())
     }
 
     /// Builds the bar's live readout from the active engines' last latency.
@@ -568,6 +573,13 @@ final class VoiceAgentSession: NSObject {
         // starts capture/playback; this class only re-asserts the caller's
         // speaker preference after route changes.
         AudioIO.shared.start(profile: .voiceAgent)
+        // Shadow turn-taker: load the models off the main path; TurnShadow then
+        // feeds itself from the capture observer.
+        if turnShadow == nil {
+            Task.detached { [weak self] in
+                self?.turnShadow = TurnShadow.start()
+            }
+        }
         // Track route changes: enabling voice processing (and other session
         // reconfigurations) can drop `.voiceChat` back to the receiver after
         // the initial override, so the guard re-asserts the caller's choice.
