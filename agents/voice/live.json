@@ -1,9 +1,8 @@
 {
-  "_comment": "Default voice config: streaming cascade — Deepgram WebSocket STT (nova-3, env DEEPGRAM_API_KEY) + ElevenLabs /stream TTS (env ELEVENLABS_API_KEY). True streaming on both halves: partials + incremental synthesis, no batch/endpointer faking. Point EVE_LIVE_CONFIG at a providers/*.json to try another ASR/TTS service. voice_route.mode=server-cascade tells callers the holder terminates audio over a live session.",
-  "backend": "cascade",
-  "voice_route": { "mode": "server-cascade", "audio": "pcm24k" },
-  "engine": {
-    "stt": { "provider": "deepgram", "model": "nova-3", "stream": true },
-    "tts": { "provider": "elevenlabs", "voice": "EXAVITQu4vr4xnSDxMaL", "model": "eleven_turbo_v2_5" }
+  "_comment": "Default voice config: the TYGER relay (docs/voice-tyger.md, Shape 2) — the holder runs backend=relay (caller frames over the bridge SSE, agent audio back via /live/audio), and the companion relay (scripts/tyger-live-relay.sh) bridges them to the tyger stack, which owns turn-taking (EARS), the reply and the speech (MOUTH). Tyger-side knobs are relay env vars (TYGER_URL, TYGER_EARS_CMD, TYGER_TTS_CMD, TYGER_VOICE, TYGER_SET, TYGER_TRAIT, TYGER_TAG_LAG_MS) — see integrations/eve-idfon-voice/tyger-relay.mjs. voice_route.mode=server-cascade tells callers the holder terminates audio over a live session. The streaming Deepgram/ElevenLabs cascade preset lives in providers/deepgram-elevenlabs.json (scripts/voice-serve.sh <file> to try it).",
+  "backend": "relay",
+  "voice_route": {
+    "mode": "server-cascade",
+    "audio": "pcm24k"
   }
 }
