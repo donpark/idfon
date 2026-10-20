@@ -108,6 +108,20 @@ class StepWrap(nn.Module):
         return out, state
 
 
+class EncMaskWrap(nn.Module):
+    """The encoder WITH the extractor's attention mask (ReferenceEars passes it;
+    EncWrap's mask-less form drifts ~0.06 on p_end vs the masked oracle)."""
+
+    def __init__(self, asr):
+        super().__init__()
+        self.enc = asr.encoder
+
+    def forward(self, feats, mask):
+        eo = self.enc(input_features=feats, attention_mask=mask,
+                      num_lookahead_tokens=0, output_hidden_states=True)
+        return eo.hidden_states[L15]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--precision", default="float16", choices=["float16", "float32"])
