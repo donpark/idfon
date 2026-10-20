@@ -105,6 +105,7 @@ async function forward(text) {
     body: JSON.stringify({
       peer_id: wrap.peer_id, endpoint_id: wrap.endpoint_id, capability_ticket: wrap.ticket,
       text, a2a_depth: 1, await_reply: true, reply_to: replyTo, reply_timeout_ms: 60_000,
+      local: wrap.local === true, // wrap = this instance's own agent: bridge routes locally
     }),
   });
   if (!response.ok) throw new Error(`send HTTP ${response.status}`);
@@ -167,6 +168,7 @@ function isLoud(pcm) {
 let speaking = false;
 let quiet = 0;
 let utterance = Buffer.alloc(0);
+let frames = 0;
 
 // The tyger chain is the authoritative endpointer (src/tyger/endpointer.ts);
 // the energy path above stays as the fail-open fallback. IDFON_ENDPOINTER=energy opts out.
@@ -174,6 +176,8 @@ let tyger = null;
 
 async function onFrame(frame) {
   const pcm = Buffer.from(frame.pcm_base64, "base64");
+  frames += 1;
+  if (frames === 1 || frames % 500 === 0) log.info("frames", { count: frames, peer_id: frame?.peer_id });
   utterance = Buffer.concat([utterance, pcm]);
   const decisions = tyger ? await tyger.push(pcm) : [];
   const tygerEnd = decisions.includes("endpoint");
