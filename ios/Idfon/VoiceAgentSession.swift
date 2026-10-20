@@ -579,7 +579,10 @@ final class VoiceAgentSession: NSObject {
         if turnShadow == nil {
             Task.detached { [weak self] in
                 let shadow = TurnShadow.start()
-                shadow?.onDecision = { [weak self] kind in self?.turnDecision(kind) }
+                shadow?.onDecision = { [weak self] kind in
+                    // the shadow queue calls this; the session is MainActor
+                    Task { @MainActor in self?.turnDecision(kind) }
+                }
                 self?.turnShadow = shadow
             }
         }
