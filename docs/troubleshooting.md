@@ -191,7 +191,8 @@ codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 The Apple apps bundle their own copies (`ios/build-deps.sh` device staticlib,
 `mac/build-deps.sh` dylib) — rebuild the app too. The codesign line is
 mandatory: a stale ad-hoc signature on a relinked dylib is SIGKILLed at exec
-(`DiagnosticReports`: "Code Signature Invalid").
+(`DiagnosticReports`: "Code Signature Invalid"). `pnpm build` runs this whole
+chain now.
 
 ## iOS call is mute from the first second (2026-10-14, FIXED)
 
@@ -266,6 +267,48 @@ with the holder's `bridge.log`/`eve.log`; one `trace` id joins them):
 **Still open.** The greet turn is still sent after engine prep (the send-first
 reorder is not done), and model latency up to ~14 s remains — a "connecting"
 fill or a canned-greeting timeout would cover that case.
+
+## Agent contact never answers — calls ring forever, sends fail (2026-10-19, DIAGNOSED)
+
+**Symptom.** Calling or texting an agent contact (`eve`, `Agency`) from the
+phone does nothing: the call rings until the caller gives up, and the phone's
+daemon log shows `transport send failed … invalid acknowledgment: frame is
+truncated` / `read error: connection lost` instead of a reply.
+
+Two independent causes, identical from the phone:
+
+**1. The caller holds no (or a subject-stale) capability ticket.** The holder
+rejects any message without a holder-signed, subject-bound `message.receive`
+ticket — and a reject is *silent*: `handle_message` returns `Err`, the
+connection closes without an ack, so the caller sees a truncated
+acknowledgment and rings forever. `holder.log` stays empty (no `RUST_LOG`), so
+the phone is the only witness.
+
+- Check: pull the app prefs
+  (`devicectl device copy from … --source Library/Preferences/com.idfon.ios.plist`)
+  and read `idfon.capabilityTickets` — every holder contact needs an entry whose
+  `subject` matches the phone's current peer id (`state.json` → `identities[0]`).
+  A missing entry also changes the call plan: with no ticket the app treats the
+  peer as human and logs `call: plan classic (audio/video)` instead of the
+  holder's advertised mode (`onDevice (client cascade)` etc.).
+- Fix: install the ticket (`-pair-ticket <agent-peer> <json>`, see
+  `scripts/pair-apple-channels.sh`). `pnpm pair --eve-ticket` takes the
+  *contact* ticket (`holder.ticket` line 1), not the capability ticket — the
+  capability JSON has no id and would add a null-endpoint peer (the script now
+  rejects it). Re-pair whenever the phone's identity changes: a reinstall or
+  profile migration moves the daemon key, and every old ticket is subject-stale.
+
+**2. The agents were restarted mid-build.** `pnpm agent restart all` kills the
+agents instantly and each serve script then rebuilds stale Rust binaries before
+serving (docs/build.md → “Build before `pnpm agent restart all`”). A call in
+that window times out (`connect timed out after 10s`), and the queued greet
+turns arrive after the app gave up (`voice-agent-greet: FAIL no reply` — the
+greet-timing variant is the 2026-10-15 section above).
+
+Healthy end-to-end check without the phone: mint a ticket for a test caller
+(`eve-idfon-voice --key-file ~/.idfon/<instance>/holder.key ticket --subject
+<caller-id> --live-config agents/<instance>/live.json`), then
+`idfon send <peer> --text … --capability-ticket "$T"` and expect a reply event.
 
 ## iOS voice call aborts (SIGABRT) in setVoiceProcessingEnabled (2026-10-07, FIXED)
 

@@ -45,6 +45,7 @@ fingerprint and recompiles the whole ~550-crate graph — see
 | `mac/Sources/*` (Swift) | `pnpm mac build`, or `mac/Idfon.xcodeproj` (same sources; run-script phases build + embed the Rust deps) |
 | `native/src/*`, `native/build.zig`, `native/app.json` | `pnpm native build` |
 | `integrations/eve-idfon` or `agents/*` | `pnpm eve build` or `pnpm agent build <name>` |
+| `crates/idfon-voice`, `crates/idfon-voice-agent` | `pnpm voice build` (dylib + the `eve-idfon-voice` holder + the `agents/voice` bundle) |
 | docs only | nothing |
 
 Note: `idfond` is a workspace member whose `build.rs` links the vendored dylib,
@@ -56,6 +57,9 @@ with `vendored dylib ... missing`.
 
 | Command | Entry | Produces |
 | --- | --- | --- |
+| `pnpm build` | `scripts/build.sh` | everything host-side for the daemons/agents: voice stack → `idfond` + `idfon-cli` → `pnpm eve build` |
+| `pnpm clean` | `scripts/build.sh clean` | every package's clean + agent bundles + the voice crates' cargo artifacts |
+| `pnpm voice build` / `pnpm voice clean` | `scripts/voice.sh` | the voice stack alone: iroh dylib + `eve-idfon-voice` (signed) + `agents/voice` bundle |
 | `pnpm cli build [TARGET]` | `scripts/build-cli.sh` | dylib + `idfond` + `idfon` → `cli/<platform>/bin/` |
 | `pnpm mac build` | `mac/build.sh` → `mac/build-deps.sh` + `swift build` | `mac/build/Idfon.app` |
 | `pnpm native build` | `native/build-mac.sh` → `zig build` | `native/zig-out/bin/Idfon` + `Idfon.app` |
@@ -68,3 +72,13 @@ with `vendored dylib ... missing`.
 Typical call sites pass `[TARGET]` for cross builds (e.g.
 `scripts/build-cli.sh aarch64-apple-darwin`); cross targets need the toolchains
 noted in the script headers.
+
+## Build before `pnpm agent restart all`
+
+`pnpm agent restart` stops an agent immediately (the serve script's `EXIT`
+trap kills holder + bridge + eve), and the new serve script only starts serving
+after its own rebuild of any Rust binary older than `crates/` — minutes when
+you just changed code, and `pnpm agent restart all` returns long before
+anything answers. Run `pnpm build` first so the guard is a no-op and each agent
+is down for ~1–2 s. (`pnpm eve build` is not enough: it builds only the Eve
+bundles, never `idfond`/`eve-idfon-voice`.)

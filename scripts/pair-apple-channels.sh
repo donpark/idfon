@@ -21,9 +21,9 @@ usage() {
 }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --eve-ticket) eve_ticket="$2"; shift 2 ;;
-    --device) device="$2"; shift 2 ;;
-    --socket) socket="$2"; shift 2 ;;
+    --eve-ticket) eve_ticket="${2:?--eve-ticket requires JSON|FILE}"; shift 2 ;;
+    --device) device="${2:?--device requires ID_OR_NAME}"; shift 2 ;;
+    --socket) socket="${2:?--socket requires PATH}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -31,6 +31,11 @@ done
 if [ -n "$eve_ticket" ]; then
   if [ -f "$eve_ticket" ]; then eve_ticket=$(<"$eve_ticket"); fi
   printf '%s' "$eve_ticket" | jq -e . >/dev/null || { echo "invalid Eve ticket JSON" >&2; exit 2; }
+  # A contact/endpoint ticket carries an id; a capability ticket does not and
+  # would add a peer with a null endpoint. Capability tickets install through
+  # the app's `-pair-ticket <peer> <json>` instead.
+  printf '%s' "$eve_ticket" | jq -e '.account_id // .endpoint_id // .id' >/dev/null \
+    || { echo "--eve-ticket needs a contact ticket (holder.ticket line 1), not a capability ticket" >&2; exit 2; }
 fi
 
 if [ -z "$device" ]; then
