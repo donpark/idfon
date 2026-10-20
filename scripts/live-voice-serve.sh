@@ -223,6 +223,40 @@ done
 printf '%s' "$IDFON_BRIDGE_URL" > "$home/bridge-url" 2>/dev/null || true
 export IDFON_BRIDGE_SECRET=m2-test-secret
 
+# Companion: OUR voice engine (live-relay: the tyger endpointer + STT + TTS)
+# for backend=relay configs, wrapping THIS instance's eve agent as the brain.
+# It binds the bridge URL at ITS start, so it must restart with the agent (the
+# stale-relay outage class). ENGINE=harness runs the tyger-s2s reference stack
+# instead (A/B oracle; needs its own run.sh + TYGER_URL).
+relay_pid=""
+if [ "$(jq -r '.backend // empty' "$live_config_path" 2>/dev/null)" = "relay" ]; then
+  if [ "${ENGINE:-voice}" = "harness" ]; then
+    TYGER_URL="${TYGER_URL:-ws://127.0.0.1:7860/ws}" \
+    IDFON_BRIDGE_URL="$IDFON_BRIDGE_URL" IDFON_BRIDGE_SECRET="$IDFON_BRIDGE_SECRET" \
+    ${TYGER_API_SECRET:+TYGER_API_SECRET="$TYGER_API_SECRET"} \
+      nohup node "$root/integrations/eve-idfon-voice/tyger-relay.mjs" \
+        > "$home/tyger-relay.log" 2>&1 &
+    relay_pid=$!
+    echo "$relay_pid" > "$home/tyger-relay.pid"
+    echo "companion: tyger relay ($relay_pid -> $TYGER_URL)"
+  else
+    self_id=$(head -1 "$home/holder.ticket" | jq -r .id)
+    wrap_ticket=$(cat "$home/capability-ticket-$self_id.json" 2>/dev/null \
+      || cat "$home/capability-ticket.json" 2>/dev/null || echo null)
+    engine=$(jq -nc --arg pid "$self_id" --argjson ticket "$wrap_ticket" '{
+      stt: {provider: "deepgram", api_key_env: "DEEPGRAM_API_KEY"},
+      tts: {provider: "elevenlabs", voice: "EXAVITQu4vr4xnSDxMaL", api_key_env: "ELEVENLABS_API_KEY"},
+      wrap: {peer_id: $pid, endpoint_id: $pid, ticket: $ticket}}')
+    IDFON_BRIDGE_URL="$IDFON_BRIDGE_URL" IDFON_BRIDGE_SECRET="$IDFON_BRIDGE_SECRET" \
+    IDFON_VOICE_ENGINE="$engine" \
+      nohup node "$root/integrations/eve-idfon-voice/live-relay.mjs" \
+        > "$home/live-relay.log" 2>&1 &
+    relay_pid=$!
+    echo "$relay_pid" > "$home/live-relay.pid"
+    echo "companion: live-relay ($relay_pid, tyger endpointer, brain=self agent)"
+  fi
+fi
+
 # Optional self-registration: when AGENCY_URL is set, this agent issues a
 # card bound to the agency (subject = agency peer id) with its OWN holder
 # and registers it. The agency signs nothing and never reads our key.
@@ -298,7 +332,7 @@ holder_pid=$(printf '%s' "$contact" | jq -r .id)
   echo "  (iOS: devicectl launch ... -- -pair-ticket $holder_pid \"\$(cat $home/capability-ticket-<ios-endpoint-id>.json)\")"
 } | tee "$home/pairing.txt"
 
-trap 'kill "$(cat "$home/holder.pid" 2>/dev/null)" "$(cat "$home/bridge.pid" 2>/dev/null)" "$(cat "$home/eve.pid" 2>/dev/null)" 2>/dev/null || true' EXIT
+trap 'kill "$(cat "$home/holder.pid" 2>/dev/null)" "$(cat "$home/bridge.pid" 2>/dev/null)" "$(cat "$home/eve.pid" 2>/dev/null)" "$(cat "$home/tyger-relay.pid" 2>/dev/null)" "$(cat "$home/live-relay.pid" 2>/dev/null)" 2>/dev/null || true' EXIT
 echo
 echo "serving; Ctrl-C to stop"
 wait
