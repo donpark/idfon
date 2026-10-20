@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		4EDE359CCB42920BD36539D5 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */; };
+		4EDE359CCB42920BD36539E1 /* TygerVoice in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9E1 /* TygerVoice */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -65,6 +66,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4EDE359CCB42920BD36539D5 /* FluidAudio in Frameworks */,
+				4EDE359CCB42920BD36539E1 /* TygerVoice in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -117,6 +119,7 @@
 			name = Idfon;
 			packageProductDependencies = (
 				FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */,
+				FBED5B9B4DCF10AFC62DA9E1 /* TygerVoice */,
 			);
 			productName = Idfon;
 			productReference = 1A000001000000000000001A /* Idfon.app */;
@@ -172,6 +175,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				54D511937386577BC39C5690 /* XCRemoteSwiftPackageReference "FluidAudio" */,
+				54D511937386577BC39C56A1 /* XCLocalSwiftPackageReference "tyger-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1A000004000000000000004D /* Products */;
@@ -441,7 +445,19 @@
 		};
 /* End XCRemoteSwiftPackageReference section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		54D511937386577BC39C56A1 /* XCLocalSwiftPackageReference "tyger-swift" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../ports/tyger-swift";
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
+		FBED5B9B4DCF10AFC62DA9E1 /* TygerVoice */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 54D511937386577BC39C56A1 /* XCLocalSwiftPackageReference "tyger-swift" */;
+			productName = TygerVoice;
+		};
 		FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 54D511937386577BC39C5690 /* XCRemoteSwiftPackageReference "FluidAudio" */;
