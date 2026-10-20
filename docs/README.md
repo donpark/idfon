@@ -32,6 +32,7 @@ kept because it records decisions; **design** = not all implemented.
 | `ios-ui-design.md` | structural UX design for the iOS app (tabs, rows, chat timeline, sessions, identity) — design, for implementation |
 | `ui-design-notes.md` | UX/visual system spec (live activity bar, session tray) |
 | `custom-app-launch.md` | launching a custom idfon app |
+| `app-icon.md` | the app icon: final neu-neutral design, iOS/macOS asset wiring, the mask + retint pipeline for recoloring the handset (as-built) |
 
 ## Networking, addressing, transport
 

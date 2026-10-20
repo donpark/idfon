@@ -6,6 +6,7 @@
     <key>CFBundleDisplayName</key><string>Idfon</string>
     <key>CFBundleIdentifier</key><string>com.idfon.mac</string>
     <key>CFBundleExecutable</key><string>Idfon</string>
+    <key>CFBundleIconFile</key><string>AppIcon.icns</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>

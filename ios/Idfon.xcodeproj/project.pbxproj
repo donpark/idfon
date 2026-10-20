@@ -265,6 +265,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Idfon/Idfon.entitlements;
 				CODE_SIGN_STYLE = Automatic;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ENABLE_DEBUG_DYLIB = NO;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				CURRENT_PROJECT_VERSION = 1;
@@ -356,6 +357,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "Idfon/Idfon-Bridging.h";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
