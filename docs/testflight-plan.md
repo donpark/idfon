@@ -7,10 +7,9 @@ Code references are to `ios/` as of that review.
 
 ## Hard blockers (upload/validation fails)
 
-- [ ] **No app icon.** No `Assets.xcassets`, no `ASSETCATALOG_COMPILER_APPICON_NAME`
-      in `Idfon.xcodeproj/project.pbxproj`, no `CFBundleIcons` in
-      `Idfon/Info.plist` — nothing icon-shaped exists in the repo. Needs an
-      AppIcon set including the 1024×1024 marketing icon (no alpha channel).
+- [x] **App icon — done (2026-10-19).** AppIcon set + 1024×1024 marketing
+      icon (RGB, no alpha channel) shipped, `ASSETCATALOG_COMPILER_APPICON_NAME`
+      set, `CFBundleIconName` in `Idfon/Info.plist` — see `app-icon.md`.
 - [ ] **No `PrivacyInfo.xcprivacy`.** Required-reason APIs in use:
       - `UserDefaults` in 15 files → `NSPrivacyAccessedAPICategoryUserDefaults`,
         reason `CA92.1`.

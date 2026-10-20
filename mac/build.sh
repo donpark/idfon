@@ -16,6 +16,9 @@ swift build -c release
 APP=build/Idfon.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/Resources"
+# App icon: squircle-masked PNGs in Assets/AppIcon.iconset -> .icns (mac/Info.plist CFBundleIconFile)
+iconutil -c icns Assets/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
 cp .build/release/Idfon "$APP/Contents/MacOS/Idfon"
 cp "$ROOT/target/release/idfond" "$APP/Contents/MacOS/idfond"
 cp Vendor/libiroh_c_ffi.dylib "$APP/Contents/MacOS/"
