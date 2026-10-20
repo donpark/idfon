@@ -33,15 +33,18 @@ tensors, and <2-D tensors stay fp32. Storage study only — the GEMM stays fp32
   0.155 (mean 0.025)**. vs int8-g16 ≈ 0.007 everywhere and fp16 ≈ 0.058 max on
   p_end — int4 is meaningfully driftier than both; p_end (the
   calibration-sensitive head) ~2.7× the fp16 rung.
-- **Decision guard: FAIL.** Snapshot at 15/24 sessions (ref 584 / cand 604):
-  **aligned ±2 = 87.9%, same-frame 66.2%**, 53 missed + 73 spurious decisions —
-  far below the ≥99% bar. (The run continued to 24 for the record; final
-  numbers: `grep -E "\[1/1\]" /tmp/parity7-int4-guard.log` and sum the fields.)
+- **Decision guard: FAIL (final, 22/24 sessions — s22/s23 did not complete;
+  the run was ended mid-flight, irrelevant to the verdict):** ref 794 / cand
+  814, **aligned ±2 = 725/814 = 89.07%**, same-frame 70.15%, 69 missed + 89
+  spurious decisions — far below the ≥99% bar. The smoke predicted it: p_end
+  drift 0.155 is ~2.7× the fp16 rung's. (Full log:
+  `/tmp/parity7-int4-guard.log`; dumps `/tmp/parity7-dump-mlx-int4/`.)
 
 ## Verdict
 
-**int4-g16 fails the guard.** The size win (~190 MB weights) does not survive
-the flip rate: ~126 divergent decisions in 584 vs int8-g16's 3 in 917.
+**int4-g16 fails the guard (89.07% aligned over 22 sessions).** The size win
+(~190 MB weights) does not survive the flip rate: 158 divergent decisions in
+794 vs int8-g16's 3 in 917.
 **int8-g16 remains the compromise rung** (99.5%, ~380 MB weights) and the
 pre-27 mac tier; the tier table (`docs/voice-tyger-ondevice.md`) is unchanged.
 
