@@ -36,7 +36,7 @@ public final class CoreAITurnModel: TurnModel {
     private var gruIn: NDArray
     private var gruOut: NDArray
 
-    /// The tier's default artifacts (export_turn.py, fp32).
+    /// The tier's default artifacts (export_turn.py).
     public convenience init() throws {
         let pkg = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -45,8 +45,17 @@ public final class CoreAITurnModel: TurnModel {
     }
 
     public init(directory: URL) throws {
-        let encURL = directory.appendingPathComponent("tyger_encoder_float32.aimodel")
-        let stepURL = directory.appendingPathComponent("tyger_step_float32.aimodel")
+        // The shipping rung is **fp16** (2026-10-21 decision; the parity7 guard:
+        // 99.67% aligned ±2 frames, 4 boundary flips in 917, half the fp32
+        // size). fp32 stays the exact tier and the fallback when the fp16 pair
+        // is absent.
+        let fp16 = (directory.appendingPathComponent("tyger_encoder_float16.aimodel"),
+                    directory.appendingPathComponent("tyger_step_float16.aimodel"))
+        let fp32 = (directory.appendingPathComponent("tyger_encoder_float32.aimodel"),
+                    directory.appendingPathComponent("tyger_step_float32.aimodel"))
+        let hasFP16 = FileManager.default.fileExists(atPath: fp16.0.path)
+            && FileManager.default.fileExists(atPath: fp16.1.path)
+        let (encURL, stepURL) = hasFP16 ? fp16 : fp32
         for u in [encURL, stepURL] where !FileManager.default.fileExists(atPath: u.path) {
             throw LoadError.missingArtifact(u.lastPathComponent)
         }

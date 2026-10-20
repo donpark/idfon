@@ -8,11 +8,13 @@ import TygerVoiceCoreAI
 /// segmenter's commit stays authoritative until the diff says otherwise (the
 /// swap-over convention; `docs/voice-tyger-option.md` P3).
 ///
-/// Tier: Core AI (iOS 27+, fp32 GPU — the oracle-exact tier) when its
-/// `.aimodel`s are side-loaded in `Documents/tyger-models/coreai/`; otherwise
-/// CoreML (TygerEncoder fp16 on ANE, TygerEncoderDyn at startup, TygerStep
-/// fp32) — the accepted pre-27 iOS tier — from `Documents/tyger-models/`.
-/// With no models there the shadow stays off and says so in the Automation log.
+/// Tier: Core AI (iOS 27+) — the shipping rung is fp16 (2026-10-21 ruling;
+/// `CoreAITurnModel` prefers the float16 assets and falls back to fp32) — when
+/// its `.aimodel`s are side-loaded in `Documents/tyger-models/coreai/`;
+/// otherwise CoreML (TygerEncoder fp16 on ANE, TygerEncoderDyn at startup,
+/// TygerStep fp32) — the accepted pre-27 iOS tier — from
+/// `Documents/tyger-models/`. With no models there the shadow stays off and
+/// says so in the Automation log.
 ///
 /// Phase-1 note: the agent channel is now REAL (AudioIO's playback observers —
 /// `audioPlayback` — feed a second tap), so echo suppression and BARGE see the

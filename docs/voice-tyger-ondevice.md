@@ -237,7 +237,8 @@ settles the open question: boundary jitter is a property of every lossy tier
 drift size sets the rate — fp16's 0.02–0.06 envelope produced 21 divergent events
 including split/merged turns; int8 g16's 0.007 produced 3 mild ones.
 
-**Ruling (user, 2026-10-19): the shipping tier is now platform-split.** Mac =
+**Ruling (user, 2026-10-19): the shipping tier is now platform-split**
+(superseded on OS 27+ by the 2026-10-21 CoreAI fp16 ruling below). Mac =
 MLX int8 g16 (no battery constraint, takes the guard-passing tier); iOS = CoreML
 fp16 / ANE (battery over precision — accepts the measured ~2.3% decision divergence:
 split/merged turns ~1 per 10 min of conversation, wrong/missing backchannels ~6 per
@@ -370,6 +371,17 @@ gates them via `coreai.runtime` on this Mac.
 Posture: **GPU** — the ANE compiler hits an internal error on the dynamic
 encoder (`dummy_pool` mapping failure) and the CPU specialization fails on the
 step graph; the zoo's gates show the same NE posture (below bar → ship GPU).
+
+**Ruling (user, 2026-10-21): the OS 27+ shipping tier is CoreAI fp16** (encoder
++ step, fp16 compute behind fp32 I/O — `EncIO32`/`StepIO32` in
+`export_turn.py`). The decision guard on the fp16 pair: 917/919 aligned ±2
+frames = **99.67%**, 96.95% same-frame, 4 boundary-flip decisions (1 missed +
+3 spurious) over the 24-session corpus — passes the ≥99% bar at half the fp32
+size (~0.77 GB), and slightly better aligned than the MLX int8-g16 tier
+(99.5%). `CoreAITurnModel` prefers the float16 assets and falls back to the
+float32 pair (the exact tier). Full tier state: **macOS 27+/iOS 27+ = CoreAI
+fp16** (fp32 available as the exact tier); pre-27 mac = MLX int8-g16; pre-27
+iOS = CoreML fp16/ANE (accepted jitter).
 
 **Landmines** (all in `.agents/skills/coreml-ane-precision`):
 `expectFrequentReshapes=true` corrupts dynamic-model GPU execution (exact with
