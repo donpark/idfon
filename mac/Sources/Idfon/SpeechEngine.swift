@@ -312,6 +312,11 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
     private func play(_ wav: Data) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             do {
+                // The second ear: the wav is the agent's voice, and AVAudioPlayer
+                // has no tap — fan the PCM out at play time.
+                if let pcm = PlaybackBus.wavSamples(wav) {
+                    PlaybackBus.notify(samples: pcm.samples, rate: pcm.rate)
+                }
                 let player = try AVAudioPlayer(data: wav)
                 player.delegate = self
                 finish = { continuation.resume() }

@@ -559,6 +559,7 @@ final class AudioMeter {
                 log("idfon audio meter: stream play dropped convert failed")
                 return
             }
+            PlaybackBus.notify(converted) // the second ear
             playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: nil)
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
         }
