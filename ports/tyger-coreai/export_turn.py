@@ -46,9 +46,34 @@ import coreai.runtime as rt  # noqa: E402
 from coreai_models.export.macos import export_to_coreai  # noqa: E402
 
 
+class EncIO32(torch.nn.Module):
+    """fp16 compute behind fp32 I/O — the fp16 rung's boundary ergonomics (the
+    app and the gates keep feeding fp32, like the CoreML fp16 pair)."""
+
+    def __init__(self, inner):
+        super().__init__()
+        self.inner = inner
+
+    def forward(self, feats):
+        return self.inner(feats.to(torch.float16)).to(torch.float32)
+
+
+class StepIO32(torch.nn.Module):
+    def __init__(self, inner):
+        super().__init__()
+        self.inner = inner
+
+    def forward(self, hu, ha, act_db, prev_state, state):
+        out, nxt = self.inner(hu.to(torch.float16), ha.to(torch.float16),
+                              act_db.to(torch.float16), prev_state, state.to(torch.float16))
+        return out.to(torch.float32), nxt.to(torch.float32)
+
+
 def export_encoder(asr, dtype, prec):
     enc = CE.EncWrap(asr).to(dtype).eval()
-    ex = {"feats": torch.zeros(1, 33, 128, dtype=dtype)}
+    if prec == "float16":
+        enc = EncIO32(enc)  # fp16 compute behind fp32 I/O
+    ex = {"feats": torch.zeros(1, 33, 128)}
     # mel lengths are 8k-7 (33, 41, ..., 801): the derived dim the startup
     # contract needs (same expression as the Core ML enc-dyn export)
     mel = torch.export.Dim("_mel", min=5, max=101)
@@ -65,12 +90,14 @@ def export_encoder(asr, dtype, prec):
 
 def export_step(tt, dtype, prec):
     step = CE.StepWrap(tt).to(dtype).eval()
+    if prec == "float16":
+        step = StepIO32(step)  # fp16 compute behind fp32 I/O
     ex = {
-        "hu": torch.zeros(1, 1, 1024, dtype=dtype),
-        "ha": torch.zeros(1, 1, 1024, dtype=dtype),
-        "act_db": torch.zeros(1, 1, dtype=dtype),
+        "hu": torch.zeros(1, 1, 1024),
+        "ha": torch.zeros(1, 1, 1024),
+        "act_db": torch.zeros(1, 1),
         "prev_state": torch.zeros(1, 1, dtype=torch.int32),
-        "state": torch.zeros(3, 1, 768, dtype=dtype),
+        "state": torch.zeros(3, 1, 768),
     }
     print("[export] step -> Core AI ...", flush=True)
     prog = export_to_coreai(

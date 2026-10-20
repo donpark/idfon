@@ -43,3 +43,25 @@ Reference chain: the torch oracle (tyger bundle, `nineninesix/tyger` snapshot
 Known non-issues recorded elsewhere: the Python binding's per-call IOSurface
 leak (harness must shard by process and run sequentially — system-wide Metal
 resource drain under concurrency); `expectFrequentReshapes=true` corruption.
+
+## The fp16 rung (2026-10-21, tyger_encoder_float16.aimodel + tyger_step_float16.aimodel)
+
+fp16 compute behind **fp32 I/O** (the `EncIO32`/`StepIO32` wrappers in
+`export_turn.py` — the app and the gates keep feeding fp32, like the CoreML
+fp16 pair). Export gates (`export_turn.py --precision float16`):
+
+| Gate | Result |
+| --- | --- |
+| step vs torch, gpu | max\|Δ\| 0.000977 (~1 fp16 quantum), cos 1.000000 |
+| encoder vs torch, gpu+cpu | max\|Δ\| 1.06, cos 0.999975 (the known fp16 encoder drift class) |
+
+Decision guard (parity7 --cand coreai --coreai-precision float16, 24 sessions ×
+3 min, one session per process):
+
+| Sessions | Frames | Decisions (ref/cand) | Aligned ±2 | Same-frame | Divergent |
+| --- | --- | --- | --- | --- | --- |
+| **24** | **53,952** | **917 / 919** | **916/919 = 99.67%** | 891/919 = 96.95% | 4 (1 missed + 3 spurious, all boundary flips) |
+
+**PASS** against the ≥99% bar — marginally better aligned than the MLX int8-g16
+tier (99.5%), marginally worse same-frame (97.8% there). Size ≈ half of fp32
+(~0.77 GB vs 1.53 GB). Dumps: /tmp/parity7-dump-coreai-fp16/.
