@@ -164,6 +164,8 @@ def main():
     ap.add_argument("--cand", default="fp16", choices=["fp16", "mlx", "coreai"],
                     help="candidate chain: the shipping CoreML fp16 contract, the MLX int8-g16 config, or the Core AI .aimodel chain")
     ap.add_argument("--dump", default=None, help="directory to save per-session npz (outs + events) for margin analysis")
+    ap.add_argument("--coreai-precision", default="float32", choices=["float32", "float16"],
+                    help="Core AI .aimodel precision (--cand coreai)")
     ap.add_argument("--dataset", default="anyreach-ai/dualturn-otospeech-turn-taking")
     ap.add_argument("--split", default="val")
     args = ap.parse_args()
@@ -182,7 +184,7 @@ def main():
         from mlx_ears import MlxEars
         cand = Chain(ears=MlxEars(BUNDLE))
     elif args.cand == "coreai":
-        cand = Chain(ears=CoreAITyger())
+        cand = Chain(ears=CoreAITyger(precision=args.coreai_precision))
     else:
         # candidate = the shipping contract (dyn while the window grows, fp16 at steady state)
         cand = Chain(Enc(fp16, dyn), step, None)
