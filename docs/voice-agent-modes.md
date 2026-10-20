@@ -65,6 +65,13 @@ may replace the heuristics for the few fast judgments (backchannel, urgency,
 did-they-finish, escalate). It runs beside the content path, never in front of
 it, and must fail open. ~230–444 ms remote, ~tens of ms local logprobs.
 
+## Turn-taking options (classic vs tyger)
+
+Where the loop runs (above) is one axis; **how turns are decided** is another:
+`classic` (today's endpointing / segmenter behavior — always available, the
+fallback) vs `tyger` (the tyger decision model as the turn-taker). Selection,
+fallback and rollout: `voice-tyger-option.md`.
+
 ## Rules of thumb
 
 - Never put an LLM turn in front of another LLM turn for a passive call.
