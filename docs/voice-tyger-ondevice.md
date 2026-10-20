@@ -365,7 +365,7 @@ gates them via `coreai.runtime` on this Mac.
 | export_encoder vs torch (gpu+cpu, real audio) | max\|Δ\| 1e-4, cos 1.0 |
 | Swift `CoreAITurnModel` vs the oracle (248 frames) | exact |
 | Swift soak: 30k step calls, one process | clean (the Python binding's leak is harness-only) |
-| decision guard vs the fp32 reference (interim, 15 sessions / 33,720 frames) | **548/548 decisions at the identical frame**; per-head max\|Δ\| 6e-5 |
+| decision guard vs the fp32 reference (24 sessions / 72 min, 53,952 frames) | **917/917 decisions at the identical frame (100%)**; per-head max\|Δ\| 6e-5 |
 
 Posture: **GPU** — the ANE compiler hits an internal error on the dynamic
 encoder (`dummy_pool` mapping failure) and the CPU specialization fails on the
@@ -381,7 +381,7 @@ pair crashes in the compiler (use b3/0.4.3); device loader landmines from the
 zoo: >2 GB multi-I/O bundles fail to load (split) and terse input names are
 rejected.
 
-Remaining: the final 24-session guard record, the fp16 rung (size play:
+Remaining: the fp16 rung (size play:
 1.53 GB → ~0.77 GB), device AOT gates (`xcrun coreai-build compile` + an
 on-device run in the transcript discipline).
 

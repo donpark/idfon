@@ -38,8 +38,7 @@ Reference chain: the torch oracle (tyger bundle, `nineninesix/tyger` snapshot
 
 | Sessions | Frames | Decisions | Per-head drift |
 |---|---|---|---|
-| 15 (interim) | 33,720 | **548/548 at the identical frame** | max 6e-5, mean ≈ 0 |
-| 24 (final) | pending the sequential driver run | | |
+| **24 (final)** | **53,952** | **917/917 at the identical frame = 100.0%** | max 6e-5, mean ≈ 0 |
 
 Known non-issues recorded elsewhere: the Python binding's per-call IOSurface
 leak (harness must shard by process and run sequentially — system-wide Metal
