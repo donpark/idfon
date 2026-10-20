@@ -65,3 +65,6 @@ Decision guard (parity7 --cand coreai --coreai-precision float16, 24 sessions ×
 **PASS** against the ≥99% bar — marginally better aligned than the MLX int8-g16
 tier (99.5%), marginally worse same-frame (97.8% there). Size ≈ half of fp32
 (~0.77 GB vs 1.53 GB). Dumps: /tmp/parity7-dump-coreai-fp16/.
+
+**Chosen as the OS 27+ shipping rung (user, 2026-10-21).** `CoreAITurnModel`
+prefers the float16 pair and falls back to the float32 assets (the exact tier).
