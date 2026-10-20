@@ -236,7 +236,8 @@ the captured buffers to an `AVAudioFile`). Producers on the sink:
 (`AudioPlaybackSink`: decoded PCM from `media_audio_set_playback_cb`, paced
 through `seam::PacedPlayback`'s jitter buffer and scheduled via
 `AudioIO.playStream`; the bundled moq `DevicePlayback` is the fallback when no
-callback is registered — macOS keeps it).
+callback is registered — the macOS shell registers its own sink at launch, so
+the fallback is for the other platforms).
 
 `AudioIO.Profile` picks the session/routing per call type:
 
@@ -269,9 +270,33 @@ Two reasons this is load-bearing, not tidiness:
 
 Invariant, checked by inspection (`grep`): `AVAudioEngine()`, `installTap`, and
 `setCategory` appear only in `AudioIO.swift`. `AVAudioRecorder` is no longer
-used. Not yet ported: the macOS shell still owns its own pipeline, and the
-memo *review* player stays an `AVAudioPlayer` because it needs transport
-(pause/seek/progress) that `AudioSink` does not model.
+used. The memo *review* player stays an `AVAudioPlayer` because it needs
+transport (pause/seek/progress) that `AudioSink` does not model.
+
+### macOS: one echo reference, kept minimal
+
+The macOS shell has no `AudioIO` merge (its mic owners stay split: `AudioMeter`
+for calls, the STT engines for the voice-agent loop), but the load-bearing
+half of the iOS fix is ported: remote call audio renders on the **call capture
+engine's playback bus** — `AudioPlaybackSink` (mac) registers
+`media_audio_set_playback_cb` at launch and schedules the paced chunks via
+`AudioMeter.playStream` on the shared `AVAudioEngine` (`WaveformView.swift`).
+Voice processing is enabled on that engine's input node at tap-install time —
+*before* the playback bus connects, the iOS ordering lesson (connecting first
+materializes the pre-VPIO output graph and `setVoiceProcessingEnabled` then
+raises an uncatchable ObjC exception) — so the bus is the VoiceProcessingIO
+echo reference, with the same other-audio ducking posture as iOS
+(`voiceProcessingOtherAudioDuckingConfiguration`, min ducking; macOS 14.2+
+only — below that VPIO keeps its default ducking and just that posture is
+missing, not the echo cancellation). Default on;
+`IDFON_MACOS_AEC=0` opts out for devices whose mic
+delivers silence through VPIO (e.g. the LG UltraFine Display Audio USB mic —
+the 1s RMS log shows it immediately). The audio-settings volume slider feeds
+`AudioPlaybackSink.gain` (the shell path has no `moq` playback control).
+
+Not covered on macOS: call tones, `OnDeviceVoice`/`SpeechEngine` TTS and the
+STT engines still run on their own graphs (self-bleed into the mic is handled
+by their echo-trim/segmenter paths, not AEC).
 
 **Engine self-stop recovery (iOS).** The engine stops itself on hardware
 format/channel changes (`AVAudioEngineConfigurationChangeNotification`;

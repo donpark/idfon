@@ -32,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let ticket { EdgeClient.configure(url: launchArgs[i + 1], ticket: ticket) }
         }
         ChatStore.shared.start()
+        // Route decoded call audio onto the capture engine's playback bus (the
+        // VoiceProcessingIO echo reference) instead of the bundled device.
+        AudioPlaybackSink.shared.register()
         Task { await DaemonClient().startSharedProvider() }
         // Warm the selected reply voice early, so the first call's greeting is
         // not blocked by a cold Kokoro download/compile.

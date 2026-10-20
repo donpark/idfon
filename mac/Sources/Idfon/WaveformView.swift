@@ -160,6 +160,12 @@ private extension WaveformView.Mode {
 /// waveform via a closure. Port of the iOS AudioMeter minus AVAudioSession
 /// (which does not exist on macOS).
 ///
+/// This engine is also the playback bus for remote call audio
+/// (`AudioPlaybackSink` -> `playStream`): with voice processing on the input
+/// node it is the VoiceProcessingIO echo reference (docs/audio-media.md) —
+/// remote audio on any other graph cannot be echo-cancelled (the iOS AEC fix,
+/// c3871b0, ported).
+///
 /// With `pushToEncoder` set, the same tap also feeds the live publisher's
 /// generic audio ingest (`media_audio_push_samples`) at the selected mono f32
 /// rate. The live-call meter is the sole mic capture in the dylib's "push"
@@ -201,6 +207,10 @@ final class AudioMeter {
     private var startGeneration = 0
     private static weak var activeInputMeter: AudioMeter?
     private static var inputTapInstalled = false
+    // Remote call audio renders on this engine's playback bus (see playStream).
+    private static let playbackPlayer = AVAudioPlayerNode()
+    private static var playbackAttached = false
+    private static var voiceProcessingTried = false
 
     /// Opt in to feeding the call's encoder as well as the waveform. In the
     /// dylib's "push" mode the Rust side does not open the mic, so this tap is
@@ -320,6 +330,44 @@ final class AudioMeter {
                 input.removeTap(onBus: 0)
                 Self.inputTapInstalled = false
                 self.tapInstalled = false
+                // Voice processing once per process, and before the playback
+                // bus below connects: enable it while the engine is stopped —
+                // connecting first materializes the output graph at the
+                // pre-VPIO format and `setVoiceProcessingEnabled` then raises
+                // an ObjC exception Swift cannot catch (the iOS lesson,
+                // docs/troubleshooting.md "SIGABRT"). On by default (the iOS
+                // AEC fix); `IDFON_MACOS_AEC=0` opts out for devices whose mic
+                // delivers silence through VPIO (e.g. the LG UltraFine Display
+                // Audio USB mic) — the 1s RMS log shows that immediately.
+                if !Self.voiceProcessingTried {
+                    Self.voiceProcessingTried = true
+                    if ProcessInfo.processInfo.environment["IDFON_MACOS_AEC"] == "0" {
+                        Self.log("idfon audio meter: voice-processing off (IDFON_MACOS_AEC=0)")
+                    } else {
+                        do {
+                            try input.setVoiceProcessingEnabled(true)
+                            // Same ducking posture as iOS `AudioIO`: VPIO must
+                            // not duck or pump the app's own playback. The
+                            // knob is macOS 14.2+; below that VPIO keeps its
+                            // default ducking — only that posture is missing,
+                            // echo cancellation itself is unaffected.
+                            if #available(macOS 14.2, *) {
+                                input.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                                    enableAdvancedDucking: false, duckingLevel: .min)
+                            }
+                            Self.log("idfon audio meter: voice-processing enabled")
+                        } catch {
+                            Self.log("idfon audio meter: voice-processing unsupported: \(error.localizedDescription)")
+                        }
+                    }
+                }
+                // Playback bus: attach the player, then connect it after voice
+                // processing (see above). One node per process, like the tap.
+                if !Self.playbackAttached {
+                    Self.playbackAttached = true
+                    Self.inputEngine.attach(Self.playbackPlayer)
+                    Self.inputEngine.connect(Self.playbackPlayer, to: Self.inputEngine.mainMixerNode, format: nil)
+                }
                 let format = input.outputFormat(forBus: 0)
                 if self.pushToEncoder {
                     let outputFormat = self.pipelineFormat()
@@ -494,6 +542,54 @@ final class AudioMeter {
             Self.log("idfon audio meter push buffer=\(pushedBuffers) samples=\(count) rms=\(rawRMS) peak=\(rawPeak)")
         }
         media_audio_push_samples(channel, count)
+    }
+
+    /// Schedule one decoded remote-call chunk (`AudioPlaybackSink`) on the
+    /// shared engine's playback bus without awaiting: chunks queue back to
+    /// back and must never wait on a previous chunk's completion callback.
+    /// This bus is the AEC reference — remote audio anywhere else cannot be
+    /// echo-cancelled (docs/audio-media.md).
+    static func playStream(_ buffer: AVAudioPCMBuffer) {
+        DispatchQueue.main.async {
+            guard inputEngine.isRunning else {
+                log("idfon audio meter: stream play dropped engine idle")
+                return
+            }
+            guard let converted = convert(buffer, to: playbackPlayer.outputFormat(forBus: 0)) else {
+                log("idfon audio meter: stream play dropped convert failed")
+                return
+            }
+            playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: nil)
+            if !playbackPlayer.isPlaying { playbackPlayer.play() }
+        }
+    }
+
+    /// Convert `buffer` to `target`; returns it unchanged when it already matches.
+    private static func convert(_ buffer: AVAudioPCMBuffer, to target: AVAudioFormat) -> AVAudioPCMBuffer? {
+        if buffer.format.sampleRate == target.sampleRate,
+           buffer.format.channelCount == target.channelCount,
+           buffer.format.commonFormat == target.commonFormat {
+            return buffer
+        }
+        guard let converter = AVAudioConverter(from: buffer.format, to: target) else { return nil }
+        let ratio = target.sampleRate / buffer.format.sampleRate
+        // One second of headroom so the converter's output buffer never fills.
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+            + AVAudioFrameCount(target.sampleRate)
+        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
+        var fed = false
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error) { _, outStatus in
+            if fed {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            fed = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error else { return nil }
+        return output
     }
 
     /// RMS of the first channel.
