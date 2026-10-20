@@ -1,11 +1,36 @@
 # On-device port brief: TYGER on Apple silicon
 
-Status: **brief (2026-10-18), no code.** Porting the `nineninesix/tyger` bundle
-(encoder-to-L15 features + the 14M turn-taker) to Apple silicon so the on-device voice
-agent gets the same decision layer the GPU tier runs. Prerequisite: the GPU box produces
-the **parity reference** (per-frame head outputs on the eval corpora) — a port is only
-trustworthy diffed against the original (see `docs/voice-tyger.md`, the calibration
-history). Companion to that doc and `docs/voice-decisions.md`.
+Status: **as-built (2026-10-21).** The port exists and is gated: the numeric
+chain in three runtimes (`ports/tyger-swift`: `CoreMLTurnModel`,
+`MlxTurnModel`, `CoreAITurnModel`), the exports (`ports/tyger-{coreml,coreai,
+mlx}`), the decision guards (`parity6`/`parity7`), and both apps' `TurnShadow`
+shadows. The brief below records the reasoning that produced it; the dated
+rulings are the history — **the tier table is the current state.**
+
+## Tier state (current)
+
+The shipping decision layer by platform. This table is authoritative; the
+rulings and measurements further down are the record that produced it.
+
+| Platform | Tier | Decision guard (24 × 3 min, 72 min corpus) | Size |
+| --- | --- | --- | --- |
+| **macOS 27+ / iOS 27+** | **CoreAI fp16** (fp16 compute, fp32 I/O) — `ports/tyger-coreai` | **99.67%** aligned ±2 frames (916/919; 4 boundary flips in 917) | ~0.77 GB |
+| — same platforms, exact tier | CoreAI fp32 | **100%** (917/917 identical frames) | 1.53 GB |
+| macOS 14–26 | MLX int8-g16 (stem + layers.0 fp32) — `TygerVoiceMLX` | 99.5% (3 flips in 917) | 1.58 GB on disk¹ |
+| iOS 18–26 | CoreML fp16 encoder (ANE) + fp32 step — `TygerVoice` | 95.9% (21 flips; accepted jitter) | ~0.86 GB |
+
+¹ the artifact stores dequantized fp32 weights ("380 MB" is the quantized
+weight estimate, not the file).
+
+- **Loading**: `CoreAITurnModel` prefers the float16 assets
+  (`tyger_encoder_float16.aimodel` + `tyger_step_float16.aimodel`) and falls
+  back to the float32 pair — drop the fp16 pair to run the exact tier.
+- **Guard metric**: agreement with the fp32 reference through the same rules
+  (same-kind decisions within ±2 frames = one) over the `dualturn-otospeech`
+  corpus, `ports/tyger-coreml/parity7.py`; the bar is **≥99%**.
+- **Superseded rulings**: the S4 single-tier CoreML fp16 lock and the
+  2026-10-19 platform-split ruling below both predate the CoreAI tiers; their
+  measurements stand.
 
 ## What must run per hop (measured, from the bundle's `model.safetensors`)
 
@@ -191,7 +216,8 @@ config (even fp16)** — a lossy-encoding floor on that head. Core ML's quantisa
 layouts cannot express the one config that passed in MLX (per-output-unit group-16
 asymmetric: CoreML `per_channel`+block degrades to per-row scales and got worse).
 
-**Shipping tier decided (user, 2026-10-19): CoreML fp16 encoder on ANE + fp32 step
+**Shipping tier decided (user, 2026-10-19; superseded — see Tier state above):
+CoreML fp16 encoder on ANE + fp32 step
 (the GRU/heads).** ANE power and consistency with the app's other models win over the
 MLX stack's better score-guard; the fp16 drift is accepted under a *decision*
 guard. The shipping pair's acceptance record (parity6, 648 frames):
