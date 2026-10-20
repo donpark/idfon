@@ -63,11 +63,13 @@ def load_encoder_weights(bundle_dir, layers=15):
 
 def prep_weights(w, precision):
     """fp16: weight compute dtype (norm params stay fp32).
-    int8: per-group(64) symmetric quantise->dequantise of weight *storage* — measures
-    quantisation error; the runtime GEMM stays fp32 (fused int8 GEMM is a shipping
-    concern for the Swift/MLX tier, not for the accuracy study)."""
-    if precision not in ("fp16", "int8"):
+    int8/int4: per-group(16) asymmetric quantise->dequantise of weight *storage* —
+    measures quantisation error (15 vs 255 levels); the runtime GEMM stays fp32
+    (fused quantised GEMM is a shipping concern for the Swift/MLX tier, not for
+    the accuracy study)."""
+    if precision not in ("fp16", "int8", "int4"):
         return w
+    levels = 15 if precision == "int4" else 255
     out = {}
     for k, v in w.items():
         if v.ndim < 2 or ".norm." in k or k.startswith("norm."):
@@ -87,8 +89,8 @@ def prep_weights(w, precision):
             pad = (-kk) % 16
             g = mx.pad(t, ((0, 0), (0, pad))).reshape(u, -1, 16)
             lo = g.min(axis=2, keepdims=True)
-            s = (g.max(axis=2, keepdims=True) - lo) / 255
-            q = mx.clip(mx.round((g - lo) / mx.where(s == 0, 1, s)), 0, 255)
+            s = (g.max(axis=2, keepdims=True) - lo) / levels
+            q = mx.clip(mx.round((g - lo) / mx.where(s == 0, 1, s)), 0, levels)
             d = (q * s + lo).reshape(u, kk + pad)[:, :kk]
             out[k] = (d.T if v.ndim == 2 else d.reshape(v.shape)).astype(mx.float32)
     return out

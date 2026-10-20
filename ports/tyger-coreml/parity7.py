@@ -166,6 +166,8 @@ def main():
     ap.add_argument("--dump", default=None, help="directory to save per-session npz (outs + events) for margin analysis")
     ap.add_argument("--coreai-precision", default="float32", choices=["float32", "float16"],
                     help="Core AI .aimodel precision (--cand coreai)")
+    ap.add_argument("--mlx-precision", default="int8", choices=["fp32", "fp16", "int8", "int4"],
+                    help="MLX chain precision (--cand mlx)")
     ap.add_argument("--dataset", default="anyreach-ai/dualturn-otospeech-turn-taking")
     ap.add_argument("--split", default="val")
     args = ap.parse_args()
@@ -179,7 +181,7 @@ def main():
     # contract (dyn while the window grows, fp16 at steady state)
     ref = Chain(Enc(dyn), step, None)
     if args.cand == "mlx":
-        os.environ["TYGER_MLX_PRECISION"] = "int8"
+        os.environ["TYGER_MLX_PRECISION"] = args.mlx_precision
         sys.path.insert(0, os.path.join(HERE, "..", "tyger-mlx"))
         from mlx_ears import MlxEars
         cand = Chain(ears=MlxEars(BUNDLE))
