@@ -20,7 +20,8 @@ const tol = Number(args[args.indexOf("--tol") + 1]) || 1.5;
 function parse(lines) {
   const shadow = [];
   const commits = [];
-  let modelCommit = false;
+  let modelCommit = false; // the turn-taker: tyger endpoint -> commit mark
+  let modelTrace = null;   // the per-turn trace line (turn-taker: classic|tyger)
   for (const line of lines) {
     const m = /^(\S+Z)\s+\S+:\s+(.*)$/.exec(line);
     if (!m) continue;
@@ -31,11 +32,14 @@ function parse(lines) {
       shadow.push({ t, kind: s[1] });
       continue;
     }
+    const trace = /^turn-taker: (classic|tyger)$/.exec(body);
+    if (trace) { modelTrace = trace[1] === "tyger"; continue; }
     if (/^turn-taker: tyger endpoint/.test(body)) modelCommit = true;
     const heard = /^voice-agent: heard=/.test(body);
     if (heard) {
-      commits.push({ t, model: modelCommit });
+      commits.push({ t, model: modelTrace ?? modelCommit });
       modelCommit = false;
+      modelTrace = null;
     }
   }
   return { shadow, commits };
