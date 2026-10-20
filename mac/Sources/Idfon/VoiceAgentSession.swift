@@ -502,7 +502,9 @@ final class VoiceAgentSession: NSObject {
             }
             Task { @MainActor [weak self] in
                 guard let self, self.turnShadow == nil else { return }
-                self.turnShadow = await Task.detached { TurnShadow.start() }.value
+                let shadow = await Task.detached { TurnShadow.start() }.value
+                shadow?.onDecision = { [weak self] kind in self?.turnDecision(kind) }
+                self.turnShadow = shadow
             }
             return
         }
@@ -665,6 +667,28 @@ final class VoiceAgentSession: NSObject {
 
     /// A committed utterance: normally it ends the listen turn; while the agent
     /// speaks it may cancel playback (barge-in).
+    /// The turn model's decisions (the tyger option): ENDPOINT commits the
+    /// turn now, BARGE stops playback. Fail-open: the Segmenter's classic
+    /// signals stay live; nothing here can block a call.
+    private func turnDecision(_ kind: String) {
+        // The shadow queue calls this; the segmenter, TTS and barge state are
+        // main-thread. Marshal the whole handler.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, TurnTakerSetting.usesModel(for: self.activePeerId, modelAvailable: true) else { return }
+            switch kind {
+            case "ENDPOINT":
+                Automation.mark("turn-taker: tyger endpoint -> commit")
+                self.segmenter.forceCommit()
+            case "BARGE":
+                guard self.bargeInArmed else { return }
+                Automation.mark("turn-taker: tyger barge -> stop playback")
+                self.tts.stop()
+            default:
+                break // BACKCHANNEL: logged by the shadow; the speak hook is future work
+            }
+        }
+    }
+
     private func handleCommit(_ text: String) {
         guard bargeInArmed else {
             deliver(text)
