@@ -50,6 +50,9 @@ async function transcribe(pcm) {
   const form = new FormData();
   form.append("file", new Blob([wavWrap(pcm)], { type: "audio/wav" }), "audio.wav");
   form.append("model", cfg.stt_model || "openai/whisper-1");
+  // the language knob (IDFON_VOICE_LANG, BCP-47); unset = provider auto-detect
+  const lang = process.env.IDFON_VOICE_LANG;
+  if (lang) form.append("language", lang.split("-")[0]);
   const key = apiKey(cfg);
   const response = await fetch(`${base}/audio/transcriptions`, {
     method: "POST", headers: key ? { authorization: `Bearer ${key}` } : {}, body: form,
@@ -147,17 +150,26 @@ let speaking = false;
 let quiet = 0;
 let utterance = Buffer.alloc(0);
 
+// The tyger chain is the authoritative endpointer (src/tyger/endpointer.ts);
+// the energy path above stays as the fail-open fallback. IDFON_ENDPOINTER=energy opts out.
+let tyger = null;
+
 async function onFrame(frame) {
   const pcm = Buffer.from(frame.pcm_base64, "base64");
   utterance = Buffer.concat([utterance, pcm]);
+  const decisions = tyger ? await tyger.push(pcm) : [];
+  const tygerEnd = decisions.includes("endpoint");
+  if (decisions.includes("backchannel") || decisions.includes("barge")) {
+    log.info("tyger", { decisions: decisions.join(",") });
+  }
   if (isLoud(pcm)) {
     if (!speaking) { speaking = true; utterance = pcm; }
     quiet = 0;
-    return;
+    if (!tygerEnd) return;
   }
-  if (!speaking) { utterance = Buffer.alloc(0); return; }
+  if (!speaking && !tygerEnd) { utterance = Buffer.alloc(0); return; }
   quiet += pcm.length / 2;
-  if (quiet < QUIET_FRAMES) return;
+  if (quiet < QUIET_FRAMES && !tygerEnd) return;
   speaking = false;
   quiet = 0;
   const speech = utterance;
@@ -177,6 +189,17 @@ async function onFrame(frame) {
 }
 
 async function main() {
+  if (process.env.IDFON_ENDPOINTER !== "energy") {
+    try {
+      const { createTygerEndpointer } = await import("./src/tyger/endpointer.ts");
+      tyger = await createTygerEndpointer();
+      log.info("endpointer", { kind: "tyger" });
+    } catch (error) {
+      log.warn("endpointer", { kind: "energy", reason: String(error) });
+    }
+  } else {
+    log.info("endpointer", { kind: "energy" });
+  }
   log.info("listening", { bridge });
   const response = await fetch(`${bridge}/live/stream`, { headers: { accept: "text/event-stream" } });
   if (!response.ok || !response.body) throw new Error(`stream HTTP ${response.status}`);

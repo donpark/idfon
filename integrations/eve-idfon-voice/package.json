@@ -25,6 +25,7 @@
     "./tools": "./src/tools/index.ts"
   },
   "dependencies": {
+    "onnxruntime-node": "^1.20.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
