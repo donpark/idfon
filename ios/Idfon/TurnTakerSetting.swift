@@ -49,3 +49,28 @@ enum TurnTakerSetting {
         UserDefaults.standard.dictionary(forKey: overridesKey) as? [String: String] ?? [:]
     }
 }
+
+/// Picker labels, shared by the person screen and the on-device agent editor.
+extension TurnTakerMode {
+    var title: String { rawValue.capitalized }
+
+    var subtitle: String {
+        switch self {
+        case .auto: return "Tyger when its model is available"
+        case .classic: return "The segmenter's timing (always available)"
+        case .tyger: return "The turn model's decisions"
+        }
+    }
+
+    /// What the mode means for the call, in one line.
+    var caption: String {
+        switch self {
+        case .auto:
+            return "The turn model decides turns when it is loaded; the classic segmenter is the fallback."
+        case .classic:
+            return "Turns commit on recognizer finals or the 1.2 s gap. No model needed."
+        case .tyger:
+            return "Turns commit at the model's endpoint. Without a loaded model the call falls back to classic."
+        }
+    }
+}

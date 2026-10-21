@@ -63,34 +63,48 @@ Consequences:
   borrow on-device ASR/TTS/sensors to cut its own cost while staying in
   control of the conversation, and the free tier never has to leave the phone.
 
-## Contact screens show the truth (2026-10-21)
+## Contact screens: pickers only (2026-10-21)
 
-A contact screen must display **what is actually being used** for that contact,
-even when it differs from the user's preference — truth over preference, so a
-support question ("what is my call running on?") is answerable at a glance.
+**Contact ≠ agent.** One person screen (`ContactDetailViewController`) serves
+every contact — humans, agent-backed peers (eve), and on-device agents (AFM 3,
+user-created) alike. It holds **contact settings** only: name, speech engines,
+voice turns, call profile. For an agent contact those settings are **passed to
+the agent as call parameters** — the per-contact selection rides the invite to
+a remote agent's engine; an on-device agent's picks resolve in
+`VoiceAgentSession` for its `local:` peer id. The agent's own content (name,
+prompt) lives in the **agent editor** (`OnDeviceAgentEditorViewController`),
+entered from the contact screen — only for agents the user has editor write to
+(user-created agents; not the built-in AFM 3). Likely end state of the editor:
+an ACP window with a coding agent (fx `acp`, pi-pocket) rather than a form.
 
-What every voice-capable contact's screen shows:
+The screen has **view and edit modes** (iOS Contacts style): view shows the
+primary actions (Call / Message / Shared Artifacts) plus read-only rows; edit
+turns every setting into a control and commits on **Save** in one go (Cancel
+discards) — one save path, nothing applies mid-edit.
 
-| fact | values | source |
-| --- | --- | --- |
-| **voice agent name** | the agent speaking for the contact — `wrapped`: the wrapping voice agent's name (e.g. "eve") · `native`: the agent itself (e.g. "AFM 3") | the wrap config / the on-device agent record |
-| **voice source** | `native` — the contact answers voice itself (e.g. AFM 3, an on-device agent with its own voice loop) · `wrapped` — a voice agent speaks for it (the wrap config) · `none` | the contact model: a contact is voice-enabled either by implementation or by being wrappable **without conflict** — both read as voice-capable, and the screen says which |
-| **active pipeline** | the engines a call actually uses, **named as ASR and TTS** (e.g. `ASR: Deepgram nova-3 · TTS: ElevenLabs` server-side, or `ASR: Parakeet · TTS: Kokoro` on-device) | the live engine's declaration (`/voice/info` — server options) + the call plan (`serverCascade` vs on-device); the client-side options the holder lists are shown as *capabilities*, labeled `side: client` |
-| **turn model** | `classic` / `tyger` (the `Voice turns` row, `voice-tyger-option.md`) | the per-contact override, else the resolved default |
+Settings are **pickers only** — no status rows. Each picker names what is
+active itself: it shows the effective value (the stored pick, else the app
+default), never "Automatic".
 
-The screen shows the pipeline resolved **for that contact now** (plan + engine
-+ turn model), not the global defaults; if the app is offline from its engine
-it says so rather than showing a stale preference. Two rules from the first
-implementation (2026-10-21): the row **never repeats the Speech pickers**
-(client-side capabilities are shown as `on-device engines (see Speech)`, since
-the picker above already names them), and **`side: server` options are the
-active pipeline** — client-side entries are capabilities only.
+| picker | what it chooses |
+| --- | --- |
+| **Recognition / Generation** (Speech) | the ASR / TTS engine per contact: the app's on-device backends first, then the agent's fetched `idfon.json` options (`side: client`/`server`) |
+| **Mode** (Voice turns) | `passive` — the agent answers · `proxy` — the on-device director decides first (cost table above) |
+| **Turn model** | `auto` / `classic` / `tyger` (`voice-tyger-option.md`) |
+
+The same person screen is the mac's detail pane
+(`mac/Sources/Idfon/PersonViewController.swift`) — parity with iOS; the old
+mac peer-details popover is gone.
+
+History (2026-10-21): the first implementation added read-only "truth rows"
+(voice agent name, active pipeline) beside the pickers. Retired the same day —
+the rows repeated the pickers and went stale; the pickers are the truth.
 
 Known plumbing gap (2026-10-21): the live engine declares its pipeline to the
 **bridge's** `/voice/info`, but the phone reads the peer's advertised
 `/idfon.json` catalog (served by the holder) — the two are not connected, so a
 remote engine's server-side engines (e.g. Deepgram/ElevenLabs) do not reach
-the screen yet. Closing it = the engine's declaration flowing into the
+the pickers yet. Closing it = the engine's declaration flowing into the
 holder's advertised catalog (one hop; fits the bridge→library refactor).
 
 ## On-device agents are app-local contacts

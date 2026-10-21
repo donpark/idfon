@@ -89,10 +89,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private var composer: NSStackView!
 
     // popovers
-    private var peerPopover: NSPopover?
-    private var voiceCatalog: [VoiceOption] = []
-    private weak var recognitionPopup: NSPopUpButton?
-    private weak var generationPopup: NSPopUpButton?
+    /// The person screen's entry (the header's contact button).
+    var onOpenPerson: (() -> Void)?
 
     init(peer: Peer, app: AppModel) {
         self.peer = peer
@@ -232,10 +230,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                     // mode: client-cascade starts the on-device voice call, which
                     // uses the same call Bar/End UI as a live call.
                     // The codec is the holder's signed `voice.audio`; the
-                    // engines live in Peer details, so no separate Audio control.
+                    // engines live in the contact screen, so no separate Audio control.
                     buttons = [headerSymbolButton("phone.arrow.up.right", #selector(callTapped), "Start call"),
                                headerSymbolButton("arrow.down.doc", #selector(shareVideoTapped), "Share a video file"),
-                               headerSymbolButton("person.crop.circle", #selector(peerDetailsTapped), "Peer details")]
+                               headerSymbolButton("person.crop.circle", #selector(openPersonTapped), "Contact screen")]
                 }
             }
         }
@@ -1562,146 +1560,18 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     // MARK: - Peer details
 
-    @objc private func peerDetailsTapped() {
-        let popover = NSPopover()
-        let content = NSViewController()
-        let endpoint = NSTextField(wrappingLabelWithString: peer.endpointId ?? peer.id)
-        endpoint.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-        endpoint.isSelectable = true
-        let copy = NSButton(title: "Copy endpoint ID", target: self, action: #selector(copyEndpointTapped))
-        copy.bezelStyle = .rounded
-
-        // One "Speech" section: each picker spans the app's on-device backends
-        // and the agent's fetched `idfon.json` options.
-        let recognition = speechPopup(for: .recognition)
-        let generation = speechPopup(for: .generation)
-        recognitionPopup = recognition
-        generationPopup = generation
-        voiceCatalog = []
-        rebuildSpeech()
-
-        // How a client-cascade call handles each turn: passive (the agent
-        // answers) or proxy (the on-device director decides first). Per contact,
-        // like the speech picks above (`docs/voice-agent-modes.md`).
-        let turnMode = NSPopUpButton()
-        turnMode.addItems(withTitles: VoiceTurnMode.allCases.map(\.title))
-        turnMode.selectItem(at: VoiceTurnMode.allCases.firstIndex(of: ContactVoiceTurnModes.mode(for: peer.id)) ?? 0)
-        turnMode.target = self
-        turnMode.action = #selector(turnModePicked(_:))
-
-        // How turns are decided (the tyger option, `docs/voice-tyger-option.md`).
-        let turnModel = NSPopUpButton()
-        turnModel.addItems(withTitles: TurnTakerMode.allCases.map { $0.rawValue.capitalized })
-        turnModel.selectItem(at: TurnTakerMode.allCases.firstIndex(of: TurnTakerSetting.mode(for: peer.id)) ?? 0)
-        turnModel.target = self
-        turnModel.action = #selector(turnModelPicked(_:))
-
-        let stack = NSStackView(views: [
-            NSTextField(labelWithString: peer.displayName),
-            endpoint,
-            copy,
-            NSTextField(labelWithString: "Speech"),
-            NSTextField(labelWithString: "Recognition"), recognition,
-            NSTextField(labelWithString: "Generation"), generation,
-            NSTextField(labelWithString: "Voice turns"),
-            NSTextField(labelWithString: "Mode"), turnMode,
-            NSTextField(labelWithString: "Turn model"), turnModel,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
-        content.view = stack
-        popover.contentViewController = content
-        popover.behavior = .transient
-        popover.show(relativeTo: callLabel.bounds, of: callLabel, preferredEdge: .minY)
-        peerPopover = popover
-
-        let peerID = peer.id
-        let client = self.client
-        Task { @MainActor in
-            self.voiceCatalog = await VoiceCatalog.options(for: peerID, client: client)
-            self.rebuildSpeech()
-        }
+    /// The contact screen (the person screen, `PersonViewController`): the
+    /// pane's detail surface (docs/ios-ui-design.md §13). Replaces the old
+    /// peer-details popover — contact settings are the person screen's rows.
+    @objc private func openPersonTapped() {
+        onOpenPerson?()
     }
 
-    private func speechPopup(for slot: SpeechSlot) -> NSPopUpButton {
-        let popup = NSPopUpButton()
-        popup.target = self
-        popup.action = #selector(speechChanged(_:))
-        popup.identifier = NSUserInterfaceItemIdentifier(slot == .recognition ? "recognition" : "generation")
-        return popup
+    /// The person screen's Call verb: the same routing as this header's call.
+    func startCall() {
+        callTapped()
     }
 
-    private func popup(for slot: SpeechSlot) -> NSPopUpButton? {
-        slot == .recognition ? recognitionPopup : generationPopup
-    }
-
-    /// On-device backends first, then the agent's catalog options for the slot.
-    private func choices(for slot: SpeechSlot) -> [SpeechChoice] {
-        let onDevice: [SpeechChoice] = slot == .recognition
-            ? AsrBackend.allCases.map { SpeechChoice(store: .onDevice, id: $0.rawValue, title: $0.title) }
-            : TtsBackend.allCases.map { SpeechChoice(store: .onDevice, id: $0.rawValue, title: $0.title) }
-        let kind: VoiceOption.Kind = slot == .recognition ? .stt : .tts
-        let advertised = voiceCatalog
-            .filter { $0.kind == kind || $0.fillsBothSlots }
-            .map { SpeechChoice(store: .catalog, id: $0.id, title: $0.label) }
-        return onDevice + advertised
-    }
-
-    /// The effective pick: the stored choice, else the app-global backend for
-    /// the slot, so the popup always shows a real engine (never "Automatic").
-    private func effectiveChoice(for slot: SpeechSlot) -> SpeechChoice {
-        ContactSpeech.stored(for: peer.id, slot: slot) ?? SpeechChoice(
-            store: .onDevice,
-            id: slot == .recognition ? SpeechEngines.asrBackend.rawValue : SpeechEngines.ttsBackend.rawValue,
-            title: "")
-    }
-
-    private func rebuildSpeech() {
-        for slot in [SpeechSlot.recognition, .generation] {
-            guard let popup = popup(for: slot) else { continue }
-            let effective = effectiveChoice(for: slot)
-            popup.removeAllItems()
-            var selectedIndex = 0
-            for (index, choice) in choices(for: slot).enumerated() {
-                popup.addItem(withTitle: choice.title)
-                popup.lastItem?.representedObject = choice
-                if effective.store == choice.store && effective.id == choice.id { selectedIndex = index }
-            }
-            popup.selectItem(at: selectedIndex)
-        }
-    }
-
-    @objc private func speechChanged(_ sender: NSPopUpButton) {
-        guard let choice = sender.selectedItem?.representedObject as? SpeechChoice,
-              let slot: SpeechSlot = sender.identifier?.rawValue == "recognition" ? .recognition : .generation
-        else { return }
-        ContactSpeech.set(choice, catalog: voiceCatalog, for: peer.id, slot: slot)
-        rebuildSpeech()
-    }
-
-    @objc private func turnModePicked(_ sender: NSPopUpButton) {
-        let modes = VoiceTurnMode.allCases
-        guard sender.indexOfSelectedItem >= 0, sender.indexOfSelectedItem < modes.count else { return }
-        let mode = modes[sender.indexOfSelectedItem]
-        ContactVoiceTurnModes.set(mode, for: peer.id)
-        showBanner("Voice turns: \(mode.title)")
-    }
-
-    @objc private func turnModelPicked(_ sender: NSPopUpButton) {
-        let modes = TurnTakerMode.allCases
-        guard sender.indexOfSelectedItem >= 0, sender.indexOfSelectedItem < modes.count else { return }
-        let mode = modes[sender.indexOfSelectedItem]
-        TurnTakerSetting.setOverride(mode == .auto ? nil : mode, for: peer.id)
-        showBanner("Turn model: \(mode.rawValue.capitalized)")
-    }
-
-    @objc private func copyEndpointTapped() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(peer.endpointId ?? peer.id, forType: .string)
-        peerPopover?.close()
-    }
 
     // MARK: - Memo recording (shell-side AVAudioRecorder, real metering)
 

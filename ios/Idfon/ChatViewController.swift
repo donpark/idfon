@@ -643,11 +643,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// dedicated hub exists; on-device agents keep their editor, and identity
     /// labels (A8) wait on the identity data model.
     func openPersonScreen() {
-        if let id = OnDeviceAgent.id(fromPeerId: peer.id) {
-            let editor = OnDeviceAgentEditorViewController(agent: OnDeviceAgents.shared.agent(id: id)) { }
-            navigationController?.pushViewController(editor, animated: true)
-            return
-        }
+        // ONE person screen for every contact — humans, agent-backed peers,
+        // and on-device agents alike (docs/voice-agent-modes.md: contact ≠
+        // agent; the agent editor is reached from the contact screen).
         let detail = ContactDetailViewController(peer: peer)
         detail.onChanged = { [weak self] in
             guard let self else { return }
