@@ -1707,9 +1707,7 @@ async fn handle_reply_inner(
             .a2a_depth
             .map(|depth| encode_a2a_envelope(depth.saturating_add(1), &text, target.trace.as_deref(), Some(idfon_telemetry::mode())))
             .unwrap_or(text);
-        let reply_ticket = reply_ticket
-            .filter(|ticket| ticket.issuer == target.peer_id)
-            .cloned();
+        let reply_ticket = ticket_for_target(&target.peer_id, reply_ticket.cloned());
         let mut envelope = sign_message_with_ticket(
             key,
             peer_id(key),
@@ -2018,6 +2016,18 @@ fn parse_input_response(text: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&payload).ok()
 }
 
+/// A capability ticket is the receiver's ("holder-signed") grant, so it is
+/// only meaningful to its issuer: attach it only when sending to the issuer.
+/// A mismatched ticket is strictly worse than none — receivers like the
+/// phone's daemon reject a foreign-issued ticket outright, while a ticketless
+/// message rides the signature + known-peer gate.
+fn ticket_for_target(
+    target_peer_id: &str,
+    ticket: Option<CapabilityTicket>,
+) -> Option<CapabilityTicket> {
+    ticket.filter(|ticket| ticket.issuer == target_peer_id)
+}
+
 async fn handle_peer_send(
     request_id: String,
     target_peer_id: String,
@@ -2042,6 +2052,10 @@ async fn handle_peer_send(
                 .context("decode outbound capability ticket")?,
         )
     };
+    // The bridge forwards whatever ticket its caller supplied — e.g. the live
+    // engine's per-contact files are this holder's own grants (eve-issued),
+    // useless to the peer they name. Only the issuer's own grant rides.
+    let ticket = ticket_for_target(&target_peer_id, ticket);
     let message_id = next_message_id("eve_peer_");
     let text = encode_a2a_envelope(a2a_depth, &text, Some(&trace), Some(idfon_telemetry::mode()));
     let mut envelope = sign_message_with_ticket(
@@ -2620,6 +2634,34 @@ mod tests {
             .find(|option| option["id"] == "server:deepgram")
             .expect("agent override wins");
         assert_eq!(stt["label"], "My STT");
+    }
+
+    #[test]
+    fn capability_tickets_ride_only_to_their_issuer() {
+        let eve = generate_identity();
+        let phone = generate_identity();
+        let eve_id = peer_id(&eve);
+        let phone_id = peer_id(&phone);
+        // This holder's grant FOR the phone is not a credential when this
+        // holder sends TO the phone (the phone wants its own grant) — dropped.
+        let eve_issued = issue_capability_ticket(
+            &eve,
+            Some(phone_id.clone()),
+            vec![Capability::MessageReceive],
+            None,
+            "eve-for-phone",
+        );
+        assert!(ticket_for_target(&phone_id, Some(eve_issued)).is_none());
+        // The phone's grant for eve does ride to the phone.
+        let phone_issued = issue_capability_ticket(
+            &phone,
+            Some(eve_id.clone()),
+            vec![Capability::MessageReceive],
+            None,
+            "phone-for-eve",
+        );
+        assert!(ticket_for_target(&phone_id, Some(phone_issued)).is_some());
+        assert!(ticket_for_target(&phone_id, None).is_none());
     }
 
     #[test]
