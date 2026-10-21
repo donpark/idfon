@@ -134,7 +134,12 @@ export default defineChannel({
         return Response.json({ error: "invalid turn" }, { status: 400 });
       }
       const completeTurn = turn as TurnIn;
+      log.info("turn received", {
+        message_id: turn.message_id, peer_id: turn.peer_id, conversation: turn.conversation,
+        a2a_depth: turn.a2a_depth, source: turn.source, chars: turn.text.length,
+      });
       if (completeTurn.a2a_depth !== undefined && completeTurn.a2a_depth > 1) {
+        log.warn("turn ignored: a2a_loop_guard", { message_id: turn.message_id, a2a_depth: turn.a2a_depth });
         return Response.json({ ignored: true, reason: "a2a_loop_guard" });
       }
       // Session control (`IDFON-SESSION/1`): not a turn. `rotate` clears the
@@ -299,7 +304,13 @@ export default defineChannel({
     },
     async "message.completed"(event, _channel, ctx) {
       const target = sessionTargets.get(ctx.session.id);
-      if (!target || !event.message) return;
+      if (!target || !event.message) {
+        // A dropped reply is invisible otherwise: the caller just hears silence.
+        log.warn("reply dropped: no session target", {
+          session: ctx.session.id, has_message: !!event.message,
+        });
+        return;
+      }
       // Client-facing envelopes emitted by tools (speak/point/show) ride the
       // reply in tool-call order, so delivery never depends on the model
       // echoing them (docs/voice-multimodal.md).
@@ -317,6 +328,11 @@ export default defineChannel({
             }] as const)
           )
         : target.members;
+      if (roomMembers.size === 0) {
+        log.warn("reply dropped: no members", {
+          session: ctx.session.id, conversation: target.conversation, turn: target.turnMessageId,
+        });
+      }
       const delivery = replyTail.then(async () => {
         for (const member of roomMembers.values()) {
           await bridgeRetry("/reply", {
