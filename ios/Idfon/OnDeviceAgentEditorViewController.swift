@@ -49,13 +49,19 @@ final class OnDeviceAgentEditorViewController: UIViewController {
         if let id = existing?.id {
             Task {
                 // The truth row (voice-agent-modes.md): who speaks and which
-                // engines the calls use — from this agent's advertised catalog.
+                // engines the calls use. On-device agents advertise no remote
+                // catalog — fall back to the app's effective engines
+                // (per-contact pick, else the global backends).
                 let options = await VoiceCatalog.options(for: "\(id)", client: IdfonClient())
                 let stt = options.first { $0.kind == .stt }
                 let tts = options.first { $0.kind == .tts }
                 let side: (VoiceOption?) -> String = { ($0?.side == .server) ? "server" : "on-device" }
-                let asr = stt.map { "ASR: \($0.label) (\(side(stt)))" } ?? "ASR: —"
-                let ttsLine = tts.map { "TTS: \($0.label) (\(side(tts)))" } ?? "TTS: —"
+                let storedASR = ContactSpeech.stored(for: "\(id)", slot: .recognition)?.title
+                let storedTTS = ContactSpeech.stored(for: "\(id)", slot: .generation)?.title
+                let asrName = stt?.label ?? ((storedASR?.isEmpty == false) ? storedASR! : SpeechEngines.asrBackend.title)
+                let ttsName = tts?.label ?? ((storedTTS?.isEmpty == false) ? storedTTS! : SpeechEngines.backend.title)
+                let asr = stt.map { "ASR: \($0.label) (\(side(stt)))" } ?? "ASR: \(asrName) (on-device)"
+                let ttsLine = tts.map { "TTS: \($0.label) (\(side(tts)))" } ?? "TTS: \(ttsName) (on-device)"
                 voiceLabel.text = "Voice agent: \(agentName) (on-device) · \(asr) · \(ttsLine)"
             }
         }
