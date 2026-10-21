@@ -78,6 +78,9 @@ final class AudioIO: AudioSource, AudioSink {
     /// One continuation per queued `play`, so overlapping callers (a cue and a
     /// TTS reply) each resume exactly once instead of clobbering one slot.
     private var pendingPlays: [UUID: CheckedContinuation<Void, Never>] = [:]
+    /// One-shots scheduled but not yet finished: a restart must re-arm them or
+    /// the audio vanishes silently (the tone-silence regression).
+    private var inFlightOneShots: [UUID: AVAudioPCMBuffer] = [:]
     private var sessionObservers: [NSObjectProtocol] = []
     private var restartAfterInterruption = false
     /// The looping cue (ringback/ringtone) currently on the bus, re-armed when
@@ -256,13 +259,9 @@ final class AudioIO: AudioSource, AudioSink {
             running = true
             Automation.mark("audio: started profile=\(String(describing: profile))")
             markOutput("output at start")
-            // Re-arm the looping cue the rebuild dropped (the ring must not
-            // die with one interruption).
-            if let loop = activeLoop {
-                playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
-                if !playbackPlayer.isPlaying { playbackPlayer.play() }
-                Automation.mark("audio: loop re-armed after engine restart")
-            }
+            // Re-arm what the rebuild dropped (the ring must not die with one
+            // interruption; a dropped one-shot resumes its caller silently).
+            rearmPlayback()
         } catch {
             // Marker as well as os_log error: every later cue/TTS drop is a
             // consequence of this, and console captures must show the cause.
@@ -422,12 +421,9 @@ final class AudioIO: AudioSource, AudioSink {
         do {
             try engine.start()
             playbackPlayer.stop()
-            resumePendingPlays()
-            if let loop = activeLoop {
-                playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
-                if !playbackPlayer.isPlaying { playbackPlayer.play() }
-                Automation.mark("audio: loop re-armed after engine restart")
-            }
+            // Re-arm everything the stop dropped (loop AND one-shots) instead
+            // of resuming the callers silently.
+            rearmPlayback()
         } catch {
             Automation.mark("audio: engine restart FAILED \(error.localizedDescription)")
         }
@@ -528,6 +524,7 @@ final class AudioIO: AudioSource, AudioSink {
         fanOutPlayback(converted) // the second ear: what the bus is about to play
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             pendingPlays[id] = continuation
+            inFlightOneShots[id] = converted
             isPlaying = true
             playbackPlayer.scheduleBuffer(
                 converted, at: nil, options: [], completionCallbackType: .dataPlayedBack
@@ -541,8 +538,30 @@ final class AudioIO: AudioSource, AudioSink {
 
     /// Resume exactly once per play: whichever of stop/flush or the completion
     /// callback arrives first wins; the other finds nothing.
+    /// Re-schedule what a restart dropped: `playbackPlayer.stop()` (or a fresh
+    /// player in a rebuild) discards scheduled buffers. The loop and in-flight
+    /// one-shots re-arm; their callers resume when the re-armed audio finishes.
+    private func rearmPlayback() {
+        if let loop = activeLoop {
+            playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
+            Automation.mark("audio: loop re-armed after engine restart")
+        }
+        for (id, buffer) in inFlightOneShots {
+            playbackPlayer.scheduleBuffer(
+                buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack
+            ) { _ in
+                Self.queue.async { AudioIO.shared.finishPlay(id) }
+            }
+            Automation.mark("audio: one-shot re-armed after engine restart")
+        }
+        if (activeLoop != nil || !inFlightOneShots.isEmpty), !playbackPlayer.isPlaying {
+            playbackPlayer.play()
+        }
+    }
+
     private func finishPlay(_ id: UUID) {
         isPlaying = false
+        inFlightOneShots.removeValue(forKey: id)
         pendingPlays.removeValue(forKey: id)?.resume()
     }
 
