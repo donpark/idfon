@@ -578,6 +578,12 @@ final class VoiceAgentSession: NSObject {
         // feeds itself from the capture observer.
         if turnShadow == nil {
             Task.detached { [weak self] in
+                // Deferred past the call-start audio churn: compiling/loading
+                // the models in the first second contends with the session
+                // setup and aggravates the engine's config-change self-stop
+                // (the tone-silence regression). The shadow is decision-log
+                // only — a few seconds late costs nothing.
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
                 let shadow = TurnShadow.start()
                 shadow?.onDecision = { [weak self] kind in
                     // the shadow queue calls this; the session is MainActor
