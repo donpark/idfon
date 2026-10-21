@@ -317,10 +317,6 @@ pub enum IpcFrame {
     /// pipeline, POSTed to the bridge's `/voice/info`), merged into the
     /// advertised `idfon.json` catalog — the phone's Speech pickers read that
     /// catalog. Replaces the previous declaration wholesale.
-    // shortcut: an old holder treats this unknown frame as fatal IPC
-    // (read_frames breaks on parse errors) — bridge and holder ship together,
-    // so version skew is not reachable today; if they ever ship independently,
-    // make read_frames skip unknown frame types.
     #[serde(rename = "voice.options")]
     VoiceOptionsUpdate {
         #[serde(default)]
@@ -367,6 +363,12 @@ pub enum IpcFrame {
     },
     #[serde(rename = "error")]
     Error { code: String, message: String },
+    /// Catch-all for frame types this build does not know
+    /// (`#[serde(other)]`): a version-skewed peer's frame decodes here instead
+    /// of failing, so one unknown frame cannot kill the IPC stream
+    /// (`read_frames` stops on parse errors). The dispatcher skips it.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone)]
@@ -1222,6 +1224,12 @@ async fn serve(
                 // The live engine's real pipeline, forwarded by the bridge —
                 // it becomes the advertised catalog the phone's pickers read.
                 *engine_options.write().await = options;
+                Ok(())
+            }
+            IpcFrame::Unknown => {
+                // Forward compatibility: skip what this build does not know
+                // instead of dropping the consumer connection.
+                tracing::warn!(target: "idfon.holder", "unknown IPC frame skipped");
                 Ok(())
             }
             _ => Err(anyhow!("unexpected IPC frame from consumer")),
@@ -2612,6 +2620,17 @@ mod tests {
             .find(|option| option["id"] == "server:deepgram")
             .expect("agent override wins");
         assert_eq!(stt["label"], "My STT");
+    }
+
+    #[test]
+    fn unknown_ipc_frame_types_decode_instead_of_killing_the_stream() {
+        // A version-skewed consumer's frame parses to the catch-all rather
+        // than a decode error (which would end read_frames and the IPC).
+        let frame: IpcFrame = serde_json::from_value(serde_json::json!({
+            "type": "voice.future", "options": []
+        }))
+        .expect("unknown frame types decode");
+        assert!(matches!(frame, IpcFrame::Unknown));
     }
 
     #[test]
