@@ -221,7 +221,7 @@ async function onFrame(frame) {
     const greeting = process.env.IDFON_VOICE_GREETING || "Hello! I'm here whenever you're ready.";
     log.info("greet", { text: greeting });
     speak(greeting, frame?.peer_id).catch((error) => log.error("greet failed", { error: String(error) }));
-    sendTranscript(frame?.peer_id, "agent", greeting, true).catch(() => {});
+    sendTranscript(frame?.peer_id, "agent", greeting, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
   }
   utterance = Buffer.concat([utterance, pcm]);
   const decisions = tyger ? await tyger.push(pcm) : [];
@@ -246,11 +246,11 @@ async function onFrame(frame) {
     const transcript = (await transcribe(speech)).trim();
     if (!transcript) return;
     log.info("heard", { transcript });
-    sendTranscript(frame?.peer_id, "caller", transcript, true).catch(() => {});
+    sendTranscript(frame?.peer_id, "caller", transcript, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
     const reply = (await forward(transcript)).trim();
     if (!reply) return;
     log.info("reply", { reply, peer_id: frame?.peer_id, trace: frame?.trace });
-    sendTranscript(frame?.peer_id, "agent", spokenText(reply), true).catch(() => {});
+    sendTranscript(frame?.peer_id, "agent", spokenText(reply), true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
     await speak(reply, frame.peer_id);
   } catch (error) {
     log.error("turn failed", { peer_id: frame?.peer_id, trace: frame?.trace, error: String(error) });
@@ -270,6 +270,19 @@ async function main() {
     log.info("endpointer", { kind: "energy" });
   }
   log.info("listening", { bridge });
+  // Declare the real pipeline: the holder's startup info lists the client's
+  // on-device options; the info screen should show what this engine uses.
+  fetch(`${bridge}/voice/info`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
+    body: JSON.stringify({
+      engine: { stt: engine.stt?.provider ?? "?", tts: engine.tts?.provider ?? "?" },
+      options: [
+        { id: `server:${engine.stt?.provider ?? "?"}`, kind: "stt", label: `Deepgram ${engine.stt?.stt_model || "nova-3"}`, side: "server" },
+        { id: `server:${engine.tts?.provider ?? "?"}`, kind: "tts", label: engine.tts?.provider === "elevenlabs" ? "ElevenLabs" : "TTS", side: "server" },
+      ],
+    }),
+  }).catch((error) => log.warn("voice info post failed", { error: String(error) }));
   const response = await fetch(`${bridge}/live/stream`, { headers: { accept: "text/event-stream" } });
   if (!response.ok || !response.body) throw new Error(`stream HTTP ${response.status}`);
   const reader = response.body.getReader();

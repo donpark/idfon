@@ -456,7 +456,12 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (request.url === "/voice/info") {
-    // Cached from the holder's startup push; `{}` until it arrives.
+    // The holder's startup push lists the CLIENT's on-device options; the live
+    // engine POSTs its real pipeline here so the info screen is the truth.
+    if (body && (body.options || body.engine)) {
+      voiceInfo = { ...(voiceInfo ?? {}), ...body };
+      log.info("voice pipeline updated by engine", { engine: body.engine });
+    }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(voiceInfo ?? {}));
     return;
