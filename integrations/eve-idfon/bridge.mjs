@@ -218,6 +218,11 @@ const server = createServer(async (request, response) => {
         });
       });
       if (local) {
+        // No holder request is made for local sends: drop the unused waiter
+        // (a later holder error frame rejects every pending waiter — an
+        // orphan here was an unhandled rejection that killed the bridge).
+        pending.delete(requestId)
+        resultPromise.catch(() => {})
         try {
           await fetch(`${targetUrl}/idfon/turn`, {
             method: "POST",
