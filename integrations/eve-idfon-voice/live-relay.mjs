@@ -11,6 +11,7 @@
 // echoes the transcript (a connectivity check).
 
 const bridge = process.env.IDFON_BRIDGE_URL || "http://127.0.0.1:18766";
+import { readFile } from "node:fs/promises";
 const secret = process.env.IDFON_BRIDGE_SECRET || "m2-test-secret";
 const engine = process.env.IDFON_VOICE_ENGINE ? JSON.parse(process.env.IDFON_VOICE_ENGINE) : {};
 const RATE = 24_000;
@@ -148,10 +149,43 @@ async function speakElevenLabs(cfg, text, peerId) {
 /** Speak text on the call, streaming when the TTS provider supports it. */
 async function speak(text, peerId) {
   const cfg = engine.tts || {};
+  const spoken = spokenText(text);
   if ((cfg.provider || "openai-compatible") === "elevenlabs") {
-    return speakElevenLabs(cfg, text, peerId);
+    return speakElevenLabs(cfg, spoken, peerId);
   }
-  await play(peerId, await synthesize(text));
+  await play(peerId, await synthesize(spoken));
+}
+
+/// The spoken form of a reply: `IDFON-SPEAK/1` carries it in its `text` field
+/// (docs/voice-multimodal.md); every other IDFON-*/1 envelope block is markup
+/// that must never be read aloud (hearing it read is the 'countdown' gibberish).
+function spokenText(reply) {
+  const speak = /IDFON-SPEAK\/1\s*\n(\{[^\n]*\})/.exec(reply);
+  if (speak) {
+    try {
+      const t = JSON.parse(speak[1]).text;
+      if (t) return String(t).trim();
+    } catch { /* fall through to stripping */ }
+  }
+  return reply.replace(/IDFON-[A-Z-]+\/1\s*\n\{[^\n]*\}/g, "").trim();
+}
+
+/// The caller's chat shows spoken turns as bubbles: each transcript rides a
+/// plain message as an IDFON-CALL/1 envelope (Models.MessageKind.callTranscript).
+async function sendTranscript(peerId, role, text, isFinal) {
+  const home = process.env.IDFON_VOICE_HOME || "";
+  const ticketPath = `${home}/capability-ticket-${peerId}.json`;
+  let ticket = null;
+  try { ticket = JSON.parse(await readFile(ticketPath, "utf8")); } catch { return; }
+  const body = JSON.stringify({ role, text, final: isFinal });
+  await fetch(`${bridge}/send`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
+    body: JSON.stringify({
+      peer_id: peerId, endpoint_id: peerId, capability_ticket: ticket,
+      text: `IDFON-CALL/1\n${body}`, await_reply: false,
+    }),
+  });
 }
 
 // Energy endpointer (|s16| > 300, 800 ms quiet tail), mirroring idfon-voice.
@@ -187,6 +221,7 @@ async function onFrame(frame) {
     const greeting = process.env.IDFON_VOICE_GREETING || "Hello! I'm here whenever you're ready.";
     log.info("greet", { text: greeting });
     speak(greeting, frame?.peer_id).catch((error) => log.error("greet failed", { error: String(error) }));
+    sendTranscript(frame?.peer_id, "agent", greeting, true).catch(() => {});
   }
   utterance = Buffer.concat([utterance, pcm]);
   const decisions = tyger ? await tyger.push(pcm) : [];
@@ -211,9 +246,11 @@ async function onFrame(frame) {
     const transcript = (await transcribe(speech)).trim();
     if (!transcript) return;
     log.info("heard", { transcript });
+    sendTranscript(frame?.peer_id, "caller", transcript, true).catch(() => {});
     const reply = (await forward(transcript)).trim();
     if (!reply) return;
     log.info("reply", { reply, peer_id: frame?.peer_id, trace: frame?.trace });
+    sendTranscript(frame?.peer_id, "agent", spokenText(reply), true).catch(() => {});
     await speak(reply, frame.peer_id);
   } catch (error) {
     log.error("turn failed", { peer_id: frame?.peer_id, trace: frame?.trace, error: String(error) });
