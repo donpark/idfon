@@ -100,12 +100,15 @@ History (2026-10-21): the first implementation added read-only "truth rows"
 (voice agent name, active pipeline) beside the pickers. Retired the same day —
 the rows repeated the pickers and went stale; the pickers are the truth.
 
-Known plumbing gap (2026-10-21): the live engine declares its pipeline to the
-**bridge's** `/voice/info`, but the phone reads the peer's advertised
-`/idfon.json` catalog (served by the holder) — the two are not connected, so a
-remote engine's server-side engines (e.g. Deepgram/ElevenLabs) do not reach
-the pickers yet. Closing it = the engine's declaration flowing into the
-holder's advertised catalog (one hop; fits the bridge→library refactor).
+Plumbing (closed 2026-10-21): the live engine POSTs its pipeline to the
+bridge's `/voice/info`; the bridge forwards the options to the holder
+(`voice.options` over the IPC), whose advertised `idfon.json` merges them over
+the derived defaults by `id` (the agent manifest merges last and keeps the
+final word per option). The phone's pickers therefore see the server-side
+engines as soon as the engine declares them. Call resolution still runs on the
+config-derived catalog (`idfon-voice-agent::apply_voice_selection`):
+engine-declared options carry no backend/model fields to resolve, and a
+server pick is the config's pipeline.
 
 ## On-device agents are app-local contacts
 

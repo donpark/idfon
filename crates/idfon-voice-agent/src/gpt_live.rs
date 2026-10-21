@@ -100,7 +100,7 @@ impl GptLiveConfig {
     /// Build from the opaque channel metadata handed to the backend.
     pub fn from_params(params: &Value) -> Self {
         let mut config: Self = serde_json::from_value(params.clone()).unwrap_or_default();
-        config.pipeline = eve_idfon::voice_info(params);
+        config.pipeline = eve_idfon::voice_info(params, &[]);
         // Fold in the caller's pushed context (e.g. client-side engines) so the
         // full-duplex model can answer from what is actually running.
         if let Some(caller) = params
