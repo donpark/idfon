@@ -208,6 +208,8 @@ let quiet = 0;
 let utterance = Buffer.alloc(0);
 let frames = 0;
 let greeted = false;
+// Turn work runs off the frame loop, in order (see handleTurn).
+let turnChain = Promise.resolve();
 
 // The tyger chain is the authoritative endpointer (src/tyger/endpointer.ts);
 // the energy path above stays as the fail-open fallback. IDFON_ENDPOINTER=energy opts out.
@@ -246,18 +248,37 @@ async function onFrame(frame) {
   const speech = utterance;
   utterance = Buffer.alloc(0);
   if (speech.length < RATE) return; // ignore blips
+  // Turn processing must not block frame intake: while STT + the agent + TTS
+  // run, caller audio keeps arriving and the endpointer must see it in real
+  // time. (Awaiting here compounded seconds of lag per turn — 500 frames of
+  // ~10 s audio took 14-20 s wall.) Turns stay in order on a chain.
+  const peerId = frame?.peer_id;
+  const trace = frame?.trace;
+  turnChain = turnChain.then(() => handleTurn(speech, peerId, trace));
+}
+
+async function handleTurn(speech, peerId, trace) {
+  const started = Date.now();
   try {
     const transcript = (await transcribe(speech)).trim();
     if (!transcript) return;
-    log.info("heard", { transcript });
-    sendTranscript(frame?.peer_id, "caller", transcript, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
+    const sttMs = Date.now() - started;
+    log.info("heard", {
+      transcript,
+      stt_ms: sttMs,
+      capture_ms: Math.round((speech.length / 2 / RATE) * 1000),
+    });
+    sendTranscript(peerId, "caller", transcript, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
+    const replyStart = Date.now();
     const reply = (await forward(transcript)).trim();
     if (!reply) return;
-    log.info("reply", { reply, peer_id: frame?.peer_id, trace: frame?.trace });
-    sendTranscript(frame?.peer_id, "agent", spokenText(reply), true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
-    await speak(reply, frame.peer_id);
+    const replyMs = Date.now() - replyStart;
+    log.info("reply", { reply, peer_id: peerId, trace, reply_ms: replyMs });
+    sendTranscript(peerId, "agent", spokenText(reply), true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
+    await speak(reply, peerId);
+    log.info("turn timing", { stt_ms: sttMs, reply_ms: replyMs, total_ms: Date.now() - started });
   } catch (error) {
-    log.error("turn failed", { peer_id: frame?.peer_id, trace: frame?.trace, error: String(error) });
+    log.error("turn failed", { peer_id: peerId, trace, error: String(error) });
   }
 }
 
