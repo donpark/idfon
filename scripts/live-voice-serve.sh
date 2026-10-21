@@ -248,7 +248,7 @@ if [ "$(jq -r '.backend // empty' "$live_config_path" 2>/dev/null)" = "relay" ];
       tts: {provider: "elevenlabs", voice: "EXAVITQu4vr4xnSDxMaL", api_key_env: "ELEVENLABS_API_KEY"},
       wrap: {peer_id: $pid, endpoint_id: $pid, ticket: $ticket, local: true}}')
     IDFON_BRIDGE_URL="$IDFON_BRIDGE_URL" IDFON_BRIDGE_SECRET="$IDFON_BRIDGE_SECRET" \
-    IDFON_VOICE_ENGINE="$engine" \
+    IDFON_VOICE_ENGINE="$engine" IDFON_VOICE_HOME="$home" \
       nohup node "$root/integrations/eve-idfon-voice/live-relay.mjs" \
         > "$home/live-relay.log" 2>&1 &
     relay_pid=$!
