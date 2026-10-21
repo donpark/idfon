@@ -584,7 +584,7 @@ final class VoiceAgentSession: NSObject {
                 // (the tone-silence regression). The shadow is decision-log
                 // only — a few seconds late costs nothing.
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
-                let shadow = TurnShadow.start()
+                let shadow = await TurnShadow.start()
                 shadow?.onDecision = { [weak self] kind in
                     // the shadow queue calls this; the session is MainActor
                     Task { @MainActor in self?.turnDecision(kind) }

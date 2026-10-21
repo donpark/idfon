@@ -49,8 +49,18 @@ agents/*/.eve/
 # directory provisioner invite audit log
 agents/*/invites.ndjson
 
-# Built speech-model packs (scripts/build-speech-pack.sh)
-/dist/speech-packs/
+# Built speech-model packs (scripts/build-speech-pack.sh) + packed model
+# artifacts (scripts/pack-tyger-models.mjs). Weights live on the model host
+# (HF donpark/tyger-models), NEVER in git — an oversized pack is also what
+# makes GitHub reject a push with "remote unpack failed".
+/dist/
+*.mlpackage/
+*.aimodel/
+*.mlirb
+*.onnx
+*.onnx.data
+*.safetensors
+weight.bin
 
 # Benchmark result history (scripts/relay-bench.sh)
 /bench-results/

@@ -89,8 +89,11 @@ bundle's exact behavior.
 
 - UI naming: one "Turn model: Classic / Tyger" row vs a "Tyger turn-taking"
   toggle.
-- Bundle hosting (the manifest `url_base`): HF repo of ours, GitHub releases,
-  or the idfon CDN. Weights stay out of git either way.
+- Bundle hosting (the manifest `url_base`): resolved for the Swift tiers
+  (2026-10-21) — download-on-first-use from the **`donpark/tyger-models`
+  HuggingFace repo** (`scripts/pack-tyger-models.mjs` packs/pins;
+  `TygerModelStore` fetches per-device tier; the `tyger-models-v1` GitHub
+  release is a mirror). The ONNX bundle host is still open.
 - Whether MOUTH behaviors land per option or are folded into classic as they
   prove out (the plan assumes: tyger first, fold in pure wins).
 - Backchannel *speak* behavior (the model can request "mm-hm") needs the TTS
