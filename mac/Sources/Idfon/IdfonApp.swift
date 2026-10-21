@@ -700,12 +700,28 @@ final class DetailContainerViewController: NSViewController {
     private func show(_ peer: Peer?) {
         if let peer {
             let next = ChatViewController(peer: peer, app: app)
+            next.onOpenPerson = { [weak self] in self?.showPerson(peer) }
             chat = next
             replace(with: next)
         } else if app.selectedRoom == nil {
             chat = nil
             replace(with: PlaceholderViewController())
         }
+    }
+
+    /// The person screen (contact ≠ agent, `docs/voice-agent-modes.md`): a
+    /// real detail surface in this pane — never a popover or sheet.
+    func showPerson(_ peer: Peer) {
+        let person = PersonViewController(peer: peer, app: app)
+        person.onOpenChat = { [weak self] in self?.show(peer) }
+        person.onCall = { [weak self] in
+            self?.show(peer)
+            self?.chat?.startCall()
+        }
+        person.onChanged = { [weak self] in
+            Task { await self?.app.refresh() }
+        }
+        replace(with: person)
     }
 
     private func show(_ room: Room?) {

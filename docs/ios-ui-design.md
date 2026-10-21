@@ -161,6 +161,11 @@ Derived from the ledger (marked for review at implementation):
 - Shared artifacts/transfers with this contact: reachable from here.
 - The person screen already exists in code (`ContactDetailViewController`) and
   carries rename, speech-engine and turn-mode settings — those stay here.
+- **The person screen is a pushed detail screen, never a modal sheet**
+  (2026-10-21 decision): it lives in the navigation stack (chat title tap, the
+  list) so Back returns where you were, and its edit mode is inline (nav-bar
+  Edit → Save/Cancel), not an edit sheet. A modal contact sheet breaks the
+  converge-on-chat model.
 
 ## 7. Chat screen
 

@@ -1,8 +1,14 @@
 import UIKit
 
-/// Name + prompt editor for an on-device agent: the built-in `AFM 3`, or a
-/// user agent. The prompt is the whole customization — the same local model
-/// plays the role the name describes.
+/// The agent editor: the agent's own content — name + prompt (`instructions`).
+/// Entered from the agent contact's screen (`ContactDetailViewController`),
+/// and only for agents the user has editor write to (user-created agents); the
+/// contact's settings stay on the contact screen (contact ≠ agent — they ride
+/// the call as parameters to the agent, `docs/voice-agent-modes.md`).
+/// `agent: nil` is the add-agent flow from the contacts list.
+///
+/// Likely end state: an ACP window with a coding agent (fx `acp`, pi-pocket)
+/// instead of a form — see `docs/ios-ui-design.md` §10 agent sessions.
 final class OnDeviceAgentEditorViewController: UIViewController {
     private let existing: OnDeviceAgent?
     private let onChanged: () -> Void
@@ -22,7 +28,7 @@ final class OnDeviceAgentEditorViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        title = existing == nil ? "Add On-Device Agent" : "On-Device Agent"
+        title = existing == nil ? "Add On-Device Agent" : "Agent Editor"
 
         nameField.borderStyle = .roundedRect
         nameField.placeholder = "Name (the role)"
@@ -40,32 +46,7 @@ final class OnDeviceAgentEditorViewController: UIViewController {
         promptLabel.text = "Prompt"
         promptLabel.font = .preferredFont(forTextStyle: .headline)
 
-        let agentName = existing?.name ?? nameField.text ?? "agent"
-        let voiceLabel = UILabel()
-        voiceLabel.font = .preferredFont(forTextStyle: .footnote)
-        voiceLabel.textColor = .secondaryLabel
-        voiceLabel.numberOfLines = 0
-        voiceLabel.text = "Voice agent: \(agentName) (on-device)"
-        if let id = existing?.id {
-            Task {
-                // The truth row (voice-agent-modes.md): who speaks and which
-                // engines the calls use. On-device agents advertise no remote
-                // catalog — fall back to the app's effective engines
-                // (per-contact pick, else the global backends).
-                let options = await VoiceCatalog.options(for: "\(id)", client: IdfonClient())
-                let stt = options.first { $0.kind == .stt }
-                let tts = options.first { $0.kind == .tts }
-                let side: (VoiceOption?) -> String = { ($0?.side == .server) ? "server" : "on-device" }
-                let storedASR = ContactSpeech.stored(for: "\(id)", slot: .recognition)?.title
-                let storedTTS = ContactSpeech.stored(for: "\(id)", slot: .generation)?.title
-                let asrName = stt?.label ?? ((storedASR?.isEmpty == false) ? storedASR! : SpeechEngines.asrBackend.title)
-                let ttsName = tts?.label ?? ((storedTTS?.isEmpty == false) ? storedTTS! : SpeechEngines.backend.title)
-                let asr = stt.map { "ASR: \($0.label) (\(side(stt)))" } ?? "ASR: \(asrName) (on-device)"
-                let ttsLine = tts.map { "TTS: \($0.label) (\(side(tts)))" } ?? "TTS: \(ttsName) (on-device)"
-                voiceLabel.text = "Voice agent: \(agentName) (on-device) · \(asr) · \(ttsLine)"
-            }
-        }
-        let stack = UIStackView(arrangedSubviews: [nameField, promptLabel, voiceLabel, instructionsView])
+        let stack = UIStackView(arrangedSubviews: [nameField, promptLabel, instructionsView])
         stack.axis = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
