@@ -73,8 +73,9 @@ What every voice-capable contact's screen shows:
 
 | fact | values | source |
 | --- | --- | --- |
+| **voice agent name** | the agent speaking for the contact — `wrapped`: the wrapping voice agent's name (e.g. "eve") · `native`: the agent itself (e.g. "AFM 3") | the wrap config / the on-device agent record |
 | **voice source** | `native` — the contact answers voice itself (e.g. AFM 3, an on-device agent with its own voice loop) · `wrapped` — a voice agent speaks for it (the wrap config) · `none` | the contact model: a contact is voice-enabled either by implementation or by being wrappable **without conflict** — both read as voice-capable, and the screen says which |
-| **active pipeline** | the engines a call actually uses (e.g. `Deepgram + ElevenLabs` server-side, or `Parakeet + Kokoro` on-device) | the live engine's declaration (`/voice/info` — server options) + the call plan (`serverCascade` vs on-device); the client-side options the holder lists are shown as *capabilities*, labeled `side: client` |
+| **active pipeline** | the engines a call actually uses, **named as ASR and TTS** (e.g. `ASR: Deepgram nova-3 · TTS: ElevenLabs` server-side, or `ASR: Parakeet · TTS: Kokoro` on-device) | the live engine's declaration (`/voice/info` — server options) + the call plan (`serverCascade` vs on-device); the client-side options the holder lists are shown as *capabilities*, labeled `side: client` |
 | **turn model** | `classic` / `tyger` (the `Voice turns` row, `voice-tyger-option.md`) | the per-contact override, else the resolved default |
 
 The screen shows the pipeline resolved **for that contact now** (plan + engine
