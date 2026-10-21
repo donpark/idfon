@@ -33,6 +33,36 @@ trained on (and can see an attached image on 27). Use it for a private/offline
 assistant, not for a knowledge agent. Added as a contact in the app
 (`OnDeviceAgents`); the launch flags below are probes only.
 
+## Cost and the free tier
+
+Cost is a first-class axis of the mode choice (2026-10-21): **every off-device
+turn costs money** — hosted ASR, the wrapped agent's LLM, hosted TTS, and the
+server running the engine — while an on-device turn costs only battery.
+On-device voice agents are what make a free tier possible.
+
+| Mode | Cost per turn |
+| --- | --- |
+| On-device agent | none (battery only) |
+| Passive remote / Proxy | hosted ASR + the wrapped agent's LLM + hosted TTS |
+
+Consequences:
+
+- **The free tier runs the on-device cascade** — on-device ASR/TTS
+  (Parakeet/Kokoro/Apple) + the on-device decision model (the tyger port) + an
+  on-device agent or a local wrap. No marginal cost per turn; the tyger
+  turn-taker is what makes the free tier's experience good rather than merely
+  cheap.
+- **Off-device voice is the paid tier** — the quality of its models and its
+  wrapped agents' knowledge justify the per-turn cost.
+- Engine selection is therefore **tier-aware** alongside the
+  `auto|classic|tyger` knobs (`voice-tyger-option.md`): `auto` prefers
+  on-device services whenever they are available and only routes a turn
+  off-device when the tier calls for it (or a contact's Mode demands a wrapped
+  remote agent).
+- The iroh voice pipe keeps both directions open: a paid off-device agent can
+  borrow on-device ASR/TTS/sensors to cut its own cost while staying in
+  control of the conversation, and the free tier never has to leave the phone.
+
 ## On-device agents are app-local contacts
 
 The built-in **AFM 3** is seeded when the OS ships that model (**iOS/macOS
