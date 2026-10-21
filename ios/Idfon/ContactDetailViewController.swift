@@ -22,6 +22,11 @@ final class ContactDetailViewController: UIViewController {
     private let turnModeCaption = UILabel()
     private let turnModelButton = UIButton(type: .system)
     private let turnModelCaption = UILabel()
+    /// The truth rows: who speaks for this contact, and which engines a call
+    /// actually uses (labeled ASR/TTS — voice-agent-modes.md, "Contact screens
+    /// show the truth").
+    private let voiceAgentValue = UILabel()
+    private let voicePipelineValue = UILabel()
     private var catalog: [VoiceOption] = []
     /// §6 primary actions: Call starts the call, Message opens the chat. Both
     /// push the chat (the room surface) so back returns here.
@@ -128,6 +133,7 @@ final class ContactDetailViewController: UIViewController {
         turnModelCaption.textColor = .secondaryLabel
         turnModelCaption.numberOfLines = 0
         rebuildTurnModel()
+        rebuildVoiceInfo()
         turnModelButton.showsMenuAsPrimaryAction = true
         turnModelButton.contentHorizontalAlignment = .leading
         turnModelButton.titleLabel?.font = .preferredFont(forTextStyle: .body)
@@ -154,6 +160,8 @@ final class ContactDetailViewController: UIViewController {
             turnModeCaption,
             voiceRow("Turn model", turnModelButton),
             turnModelCaption,
+            voiceValueRow("Voice agent", voiceAgentValue),
+            voiceValueRow("Voices", voicePipelineValue),
             delete,
         ])
         stack.axis = .vertical
@@ -250,6 +258,7 @@ final class ContactDetailViewController: UIViewController {
         // the menus fill in once it lands; nothing blocks on it.
         Task { @MainActor in
             catalog = await VoiceCatalog.options(for: peer.id, client: client)
+            rebuildVoiceInfo()
             rebuildSpeech()
         }
     }
@@ -385,6 +394,45 @@ final class ContactDetailViewController: UIViewController {
         case .tyger:
             return "Turns commit at the model's endpoint. Without a loaded model the call falls back to classic."
         }
+    }
+
+    private func voiceValueRow(_ title: String, _ value: UILabel) -> UIStackView {
+        let label = UILabel()
+        label.text = title
+        label.font = .preferredFont(forTextStyle: .footnote)
+        label.textColor = .secondaryLabel
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        value.font = .preferredFont(forTextStyle: .body)
+        value.numberOfLines = 0
+        let stack = UIStackView(arrangedSubviews: [label, value])
+        stack.axis = .horizontal
+        stack.spacing = 12
+        stack.alignment = .firstBaseline
+        return stack
+    }
+
+    /// What this contact's calls actually use — truth over preference: the
+    /// voice agent's NAME (native: the agent itself; wrapped/remote: the peer's
+    /// agent) and the engines labeled ASR and TTS, with their side.
+    private func rebuildVoiceInfo() {
+        let profile = ContactCallProfiles.profile(for: peer.id)
+        if let native = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
+            voiceAgentValue.text = "\(native.name) (on-device)"
+        } else {
+            voiceAgentValue.text = "\(peer.displayName) (voice agent)"
+        }
+        guard profile.voiceEnabled else {
+            voicePipelineValue.text = "Voice off"
+            return
+        }
+        let stt = catalog.first(where: { $0.kind == .stt })
+        let tts = catalog.first(where: { $0.kind == .tts })
+        let side: (VoiceOption?) -> String = { ($0?.side == .server) ? "server" : "on-device" }
+        let sttName = stt.map { "\($0.label) (\(side(stt)))" }
+            ?? resolvedTitle(effectiveChoice(for: .recognition), in: choices(for: .recognition), slot: .recognition)
+        let ttsName = tts.map { "\($0.label) (\(side(tts)))" }
+            ?? resolvedTitle(effectiveChoice(for: .generation), in: choices(for: .generation), slot: .generation)
+        voicePipelineValue.text = "ASR: \(sttName) · TTS: \(ttsName)"
     }
 
     private func voiceRow(_ title: String, _ button: UIButton) -> UIStackView {
