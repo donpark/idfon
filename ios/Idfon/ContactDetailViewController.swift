@@ -425,13 +425,17 @@ final class ContactDetailViewController: UIViewController {
             voicePipelineValue.text = "Voice off"
             return
         }
-        let stt = catalog.first(where: { $0.kind == .stt })
-        let tts = catalog.first(where: { $0.kind == .tts })
+        let stt = catalog.first(where: { $0.kind == .stt && $0.side == .server })
+        let tts = catalog.first(where: { $0.kind == .tts && $0.side == .server })
+        if stt == nil && tts == nil {
+            // Only client-side capabilities are advertised — those ARE the
+            // Speech pickers above; the row must not repeat them.
+            voicePipelineValue.text = "on-device engines (see Speech)"
+            return
+        }
         let side: (VoiceOption?) -> String = { ($0?.side == .server) ? "server" : "on-device" }
-        let sttName = stt.map { "\($0.label) (\(side(stt)))" }
-            ?? resolvedTitle(effectiveChoice(for: .recognition), in: choices(for: .recognition), slot: .recognition)
-        let ttsName = tts.map { "\($0.label) (\(side(tts)))" }
-            ?? resolvedTitle(effectiveChoice(for: .generation), in: choices(for: .generation), slot: .generation)
+        let sttName = stt.map { "\($0.label) (\(side(stt)))" } ?? "—"
+        let ttsName = tts.map { "\($0.label) (\(side(tts)))" } ?? "—"
         voicePipelineValue.text = "ASR: \(sttName) · TTS: \(ttsName)"
     }
 
