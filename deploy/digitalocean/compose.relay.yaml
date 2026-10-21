@@ -4,7 +4,7 @@
 # The relay reuses the edge's wildcard cert and serves relay.<domain>:8443.
 services:
   iroh-relay:
-    image: n0computer/iroh-relay:v1.3.0
+    image: n0computer/iroh-relay:v1.4.0
     restart: unless-stopped
     command: ["--config-path", "/config/config.toml"]
     ports:

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Relay access auth service for a self-hosted iroh relay (docs/relay-auth.md).
 //
-// The relay's `access.http.url` callout hits POST /check with X-Iroh-NodeId;
+// The relay's `access.http.url` callout hits POST /check with X-Iroh-Endpoint-Id
+// (iroh-relay >= 1.4; older relays send the deprecated X-Iroh-NodeId);
 // we answer "true" iff that endpoint id holds a live admission. Two kinds of
 // stateful, random, endpoint-bound tokens sit in front of that:
 //
@@ -248,11 +249,12 @@ export function createApp(config) {
       // Relay callout: the only answer the relay accepts is 200 "true".
       if (route === "POST /check") {
         if (!config.relayBearer || bearer(req) !== config.relayBearer) return deny("bad bearer");
-        // Wire name is X-Iroh-NodeId -> lowercase "x-iroh-nodeid" (iroh-relay
-        // main.rs X_IROH_ENDPOINT_ID). The hyphenated spelling is accepted as
-        // an alias; pinned against the real relay in docs/relay-test-plan.md L2.
+        // Wire name is X-Iroh-Endpoint-Id (iroh-relay >= 1.4) -> lowercase
+        // "x-iroh-endpoint-id". Deprecated X-Iroh-NodeId spellings still arrive
+        // from older relays and are accepted as aliases; pinned against the
+        // real relay in docs/relay-test-plan.md L2.
         const id = normalizeEndpoint(
-          req.headers["x-iroh-nodeid"] ?? req.headers["x-iroh-node-id"],
+          req.headers["x-iroh-endpoint-id"] ?? req.headers["x-iroh-nodeid"] ?? req.headers["x-iroh-node-id"],
         );
         const allowed = Boolean(id && admitted(state, id));
         console.log(`check ${id || "<no id>"} ${allowed ? "allow" : "deny"}`);

@@ -82,7 +82,7 @@ enable_relay = true
 access = { http = { url = "http://host.docker.internal:9090/check", bearer_token = "dev-bearer" } }
 EOF
 docker run --rm -p 3340:3340 -v /tmp/relay-dev.toml:/config/config.toml \
-  n0computer/iroh-relay:v1.3.0 --dev --config-path /config/config.toml
+  n0computer/iroh-relay:v1.4.0 --dev --config-path /config/config.toml
 # then any idfon daemon homed on it (its home-relay connection alone trips /check):
 IDFON_RELAY_URLS=http://127.0.0.1:3340 idfond --data-dir /tmp/idfon-test
 ```
@@ -108,10 +108,11 @@ IDFON_RELAY_URLS=http://127.0.0.1:3340 idfond --data-dir /tmp/idfon-test
 
 ## Gotchas from the first full run (all hit, all fixed — do not re-derive)
 
-- **Wire header name is `x-iroh-nodeid`**, not `x-iroh-node-id` (i.e.
-  `X-Iroh-NodeId` lowercased). Tests originally set the wrong name on *both*
-  sides and stayed green — only a live relay caught it. Service accepts both
-  spellings now.
+- **Wire header name is `x-iroh-endpoint-id`** (iroh-relay ≥ 1.4; older
+  relays send `x-iroh-nodeid` = `X-Iroh-NodeId` lowercased, kept as a
+  deprecated alias). Tests originally set the wrong name on *both*
+  sides and stayed green — only a live relay caught it. Service accepts
+  all three spellings now.
 - **Docker Desktop does not share `/var/folders`** (where `mktemp -d` lands).
   A `-v` mount from there silently yields no file, and iroh-relay's
   `Config::load` then falls back to **defaults (`access: AllowAll`)** instead

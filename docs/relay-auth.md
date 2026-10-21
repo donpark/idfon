@@ -17,7 +17,7 @@ Relayed traffic is carried by the **callee's** relay: the caller connects to
 the relay URL in the callee's `EndpointAddr` and sends through it
 (`iroh/src/socket/transports.rs` — "we take the relay URL of the remote
 address"). Each endpoint keeps a persistent connection to its *home* relay.
-There is no relay↔relay forwarding in iroh-relay v1.3.0.
+There is no relay↔relay forwarding in iroh-relay v1.4.0.
 
 Consequences:
 
@@ -97,7 +97,8 @@ Stock `n0computer/iroh-relay` (no fork) with
 access = { http = { url = "http://relay-auth:9090/check", bearer_token = "…" } }
 ```
 
-The callout sends `X-Iroh-NodeId`; the only accepted answer is `200 true`.
+The callout sends `X-Iroh-Endpoint-Id` (iroh-relay ≥ 1.4; older relays send
+the deprecated `X-Iroh-NodeId`); the only accepted answer is `200 true`.
 Everything else (grant verification, tokens, revocation) lives in the auth
 service beside the relay. Wire format detail that matters: the signed bytes
 of a grant are serde's canonical JSON of
@@ -160,7 +161,7 @@ C revoke --token $TOKEN --endpoint <caller-id>      # 403 again
 ```
 
 The server logs every decision (`check <id> allow|deny`). Against a real
-relay: run stock `n0computer/iroh-relay:v1.3.0 --dev` with
+relay: run stock `n0computer/iroh-relay:v1.4.0 --dev` with
 `access = { http = { url = "http://host.docker.internal:9090/check",
 bearer_token = "dev-bearer" } }` in the config and point one daemon at it
 (`IDFON_RELAY_URLS=http://127.0.0.1:3340`) — its home-relay connection alone

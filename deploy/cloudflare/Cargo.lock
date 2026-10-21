@@ -1209,7 +1209,7 @@ checksum = "dfdd7caa900436d8f13b2346fe10257e0c05c1f1f9e351f4f5d57c03bd5f45da"
 
 [[package]]
 name = "idfon-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-edge-worker"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "console_error_panic_hook",
  "futures-lite",
@@ -1249,8 +1249,9 @@ dependencies = [
 
 [[package]]
 name = "idfon-protocol"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
+ "base64 0.23.1",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

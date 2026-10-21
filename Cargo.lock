@@ -194,9 +194,9 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arc-swap"
-version = "1.9.2"
+version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
 dependencies = [
  "rustversion",
 ]
@@ -845,9 +845,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.8.0"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
+checksum = "877bf67ac8e52449eb2f9e98a344ea163beb70dd1f9eebe3cc5357dcfeaee4df"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1307,9 +1307,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.2"
+version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
+checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
 dependencies = [
  "cfg-if",
 ]
@@ -1917,7 +1917,7 @@ dependencies = [
 
 [[package]]
 name = "eve-idfon"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2052,9 +2052,9 @@ checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.14"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "fixed-resample"
@@ -3042,7 +3042,7 @@ checksum = "dfdd7caa900436d8f13b2346fe10257e0c05c1f1f9e351f4f5d57c03bd5f45da"
 
 [[package]]
 name = "idfon-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "idfon-client",
@@ -3053,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-client"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "idfon-protocol",
  "serde_json",
@@ -3062,7 +3062,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -3082,7 +3082,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-daemon"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-director"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3127,7 +3127,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-edge"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3151,7 +3151,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-gateway"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "bytes",
@@ -3173,7 +3173,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-h3"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "http",
@@ -3187,7 +3187,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-live-media"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3208,7 +3208,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-mcp"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-mcp-server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3239,7 +3239,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-media"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3263,7 +3263,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-protocol"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -3273,7 +3273,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-telemetry"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -3286,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-voice"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -3301,7 +3301,7 @@ dependencies = [
 
 [[package]]
 name = "idfon-voice-agent"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3324,7 +3324,7 @@ dependencies = [
 
 [[package]]
 name = "idfond"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "serde_json",
 ]
@@ -3463,9 +3463,9 @@ dependencies = [
 
 [[package]]
 name = "iroh"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "885787b892b5e2507c701f132ecbd45d2bad4bbb75157a19427087c16dadb833"
+checksum = "a11e776f1bf36f140e465133ff4108e46bd37a3d10ecdf5b1ea8dfb3bd35a7d2"
 dependencies = [
  "backon",
  "blake3",
@@ -3513,9 +3513,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-base"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ae9092be76c9f5429776ab3394f5a5a78dc19dc2524267e884a5b9781546c3f"
+checksum = "b931226024503c916ff5b96f9d376933bc23314f0fecdbf1e03a52d8eacbb70b"
 dependencies = [
  "curve25519-dalek",
  "data-encoding",
@@ -3573,9 +3573,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-dns"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80276761b56e904e26ea71d0863beef0bb8d5ab6b639cbd1338e4b615209e3a1"
+checksum = "6993b105283f0350770c06486c27b9283cdc5dc2846e49641cc57dd5dfb0b718"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -3780,9 +3780,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-relay"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee116a8233f84980574bb8d11e4517503080cd2c3605bafca04ee9c35d708bd9"
+checksum = "99f1da3af46c3bca658076e47fea877f38108dae664507a1fb35d276314363c8"
 dependencies = [
  "blake3",
  "bytes",
@@ -3803,6 +3803,7 @@ dependencies = [
  "noq",
  "noq-proto",
  "num_enum",
+ "percent-encoding",
  "pin-project",
  "postcard",
  "rand 0.10.3",
@@ -4172,9 +4173,9 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "libc"
-version = "0.2.190"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libloading"
@@ -4761,13 +4762,14 @@ dependencies = [
 
 [[package]]
 name = "n0-watcher"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbc618745ad0b7414b149d0517ad8b5573b2fb4d4e2717add3d2446ce1fdd826"
+checksum = "64bf1ecb076a87e0e3f5edcf726e7d29e788c273bb0161ba30666b53f085906c"
 dependencies = [
  "derive_more",
  "n0-error",
  "n0-future",
+ "slotmap",
 ]
 
 [[package]]
@@ -5053,9 +5055,9 @@ dependencies = [
 
 [[package]]
 name = "noq"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b78be567e796cfa74bb9bdc4117790af2d505eb887019cf8803244353eb09d89"
+checksum = "6249a065adc1edbc1704a95436f38dd60476064dbc3b7c47cf279e02d1590eb5"
 dependencies = [
  "bytes",
  "cfg_aliases",
@@ -5075,9 +5077,9 @@ dependencies = [
 
 [[package]]
 name = "noq-proto"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c1e5b6fe668491eca022f745a0a9402585626c73a7b839b3424ace15d6a9c8f"
+checksum = "c01a35be3ed37558c8db69554419f24eff8a63599b54f711bbe3863ec727c47d"
 dependencies = [
  "aes-gcm",
  "aws-lc-rs",
@@ -5105,9 +5107,9 @@ dependencies = [
 
 [[package]]
 name = "noq-udp"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dc50afea61aff926e150a36c31f06094608848e114a3fe667d76ec233163b1c"
+checksum = "8d0160422832eea1cc11c34be04ee6d5a046452b0b46cfb14695d55a1f24c954"
 dependencies = [
  "cfg_aliases",
  "libc",
@@ -5601,9 +5603,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openh264"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcc9071a0b5f9c501ddd01066c2600d922cc799dc450a52975222bcda7755a08"
+checksum = "e54411f498088327bf5c45d2de7e5b0ed25875ee3be5800485afe45da7206bff"
 dependencies = [
  "openh264-sys2",
  "wide",
@@ -5611,9 +5613,9 @@ dependencies = [
 
 [[package]]
 name = "openh264-sys2"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ada29a4cadc13d4d326737af87c13e224210d7d99fe47594e9f3f9b0102fd70"
+checksum = "414f5bd53da84e126dc9449eb6f0003bb6994b2de63c48119b0c9b7a8b28086a"
 dependencies = [
  "cc",
  "nasm-rs",
@@ -5869,9 +5871,9 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plist"
-version = "1.10.1"
+version = "1.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2896bade328c13f7042a297ea5ac5b0951f6cf989dea5f32c2fd98da398195cb"
+checksum = "65dca778f41c79ebbe8b2b2139fee86f01b766b67130d108c7c2b8ffbd949f77"
 dependencies = [
  "base64 0.23.1",
  "indexmap 2.14.2",
@@ -6727,9 +6729,9 @@ checksum = "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -6769,9 +6771,9 @@ dependencies = [
 
 [[package]]
 name = "schannel"
-version = "0.1.29"
+version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
+checksum = "9cb23c424d8ee841bb4d813677ca237e2a610067d594fec130f87d6093495ab5"
 dependencies = [
  "windows-sys 0.61.2",
 ]
@@ -7206,9 +7208,9 @@ dependencies = [
 
 [[package]]
 name = "smol_str"
-version = "0.3.6"
+version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aaa7368fcf4852a4c2dd92df0cace6a71f2091ca0a23391ce7f3a31833f1523"
+checksum = "eeb7109d23f319619d4cc0de5464613c8b7b1a09db2774a58101459cf6be2f10"
 dependencies = [
  "borsh",
  "serde_core",
@@ -7694,9 +7696,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.3"
+version = "1.54.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
+checksum = "a0c168a474b95bfecfe908a65d4bdffc523144b649a74c09c286afb35d53e0bc"
 dependencies = [
  "bytes",
  "libc",
@@ -8319,18 +8321,18 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -8971,9 +8973,9 @@ dependencies = [
 
 [[package]]
 name = "yoagent"
-version = "0.25.4"
+version = "0.25.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9793731a60357c056b899dedaee4b906b99acbd222e322ecb0496c4808a0063"
+checksum = "b9400ce8faccf4a219693a8f0baa78812184a0260360b5bf5bade96448ead64f"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
