@@ -2057,7 +2057,15 @@ async fn handle_peer_send(
     // useless to the peer they name. Only the issuer's own grant rides.
     let ticket = ticket_for_target(&target_peer_id, ticket);
     let message_id = next_message_id("eve_peer_");
-    let text = encode_a2a_envelope(a2a_depth, &text, Some(&trace), Some(idfon_telemetry::mode()));
+    // The A2A envelope marks an agent-chain hop. A plain send (depth 0 — e.g.
+    // the live engine's transcripts) must reach the peer as its own text:
+    // phones display message bodies verbatim and only parse the IDFON-*/1
+    // envelopes, so wrapping here turns bubbles into base64 blobs.
+    let text = if a2a_depth > 0 {
+        encode_a2a_envelope(a2a_depth, &text, Some(&trace), Some(idfon_telemetry::mode()))
+    } else {
+        text
+    };
     let mut envelope = sign_message_with_ticket(
         key,
         peer_id(key),

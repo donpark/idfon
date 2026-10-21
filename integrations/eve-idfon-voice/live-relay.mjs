@@ -171,12 +171,17 @@ function spokenText(reply) {
 
 /// The caller's chat shows spoken turns as bubbles: each transcript rides a
 /// plain message as an IDFON-CALL/1 envelope (Models.MessageKind.callTranscript).
-/// No capability ticket: the old per-contact ticket files are this holder's
-/// own grants, and the holder now attaches only grants whose issuer is the
-/// target — a ticketless message rides the phone's signature + known-peer
-/// gate (the same as every ordinary chat message).
+/// `call_id`/`turn_id` are required by the app's decoder (it upserts streaming
+/// snapshots per turn); `role` is "caller" | "agent". No capability ticket:
+/// the holder attaches only grants whose issuer is the target — a ticketless
+/// message rides the phone's signature + known-peer gate.
+// shortcut: one call per relay process (the greet-once and frame counters are
+// process-global) — mint a new call id when the relay learns call boundaries.
+let callId = `call-${Date.now().toString(36)}`;
+let turnSeq = 0;
 async function sendTranscript(peerId, role, text, isFinal) {
-  const body = JSON.stringify({ role, text, final: isFinal });
+  const turnId = `${callId}-t${turnSeq++}`;
+  const body = JSON.stringify({ call_id: callId, turn_id: turnId, role, text, final: isFinal });
   await fetch(`${bridge}/send`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
