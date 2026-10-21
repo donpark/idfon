@@ -37,8 +37,12 @@ The handset can be recolored without re-rendering (scripts need `python3` with
   handset surface lands on the exact hex (e.g. `retint.py 73BAC4` for the
   Western Electric teal alternate)
 - `finalize.py` — visual centering (mass centroid of the pieces, not the bbox)
-  + export into both apps' asset targets; idempotent, so re-run freely after a
-  retint (run `make_mask.py` first if the mask was regenerated)
+  + export into both apps' asset targets; idempotent — it re-derives the mask
+  from `mask/gpt-mask-raw.png` (`make_mask.py`) on every run, because the
+  centering shift is written back to `mask/handset-mask.png` in place and a
+  re-run on an already-shifted mask would drift it out of the render's frame
+  (this happened once: the tint spilled onto the D stem until the mask was
+  re-derived)
 
 The mask came from GPT-Image-2 asked for a black/white shape mask of the
 render (it masks all three pieces; `make_mask.py` keeps the rightmost blob).
