@@ -7,4 +7,5 @@ packages:
   - 'integrations/eve-idfon-voice'
   
 allowBuilds:
+  onnxruntime-node: true
   scriptc: true
