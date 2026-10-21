@@ -9,10 +9,9 @@ import FluidAudio
 /// stream: we push mic buffers and it emits volatile/confirmed
 /// `transcriptionUpdates`, which map onto the loop's partial/final model.
 @available(macOS 15.0, *)
-final class ParakeetReduxAsr: AsrEngine {
+final class ParakeetReduxAsr: AsrEngine, AudioCaptureObserver {
     let name = "parakeet-redux"
 
-    private let engine = AVAudioEngine()
     private let gateLock = NSLock()
     private var gated = false
     private var manager: SlidingWindowAsrManager?
@@ -103,22 +102,23 @@ final class ParakeetReduxAsr: AsrEngine {
             }
         }
 
-        let input = engine.inputNode
-        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
-            guard let self else { return }
-            // Side analysis (the turn-taker) sees everything, gate or not —
-            // barge detection runs exactly while the gate is down.
-            if let onSamples = self.onSamples {
-                onSamples(Self.monoSamples(buffer), buffer.format.sampleRate)
-            }
-            guard !self.isGated else { return }
-            self.bufferContinuation?.yield(buffer)
-        }
-        engine.prepare()
-        try engine.start()
+        // The shared VPIO tap (single input owner): subscribe instead of
+        // running a private AVAudioEngine (docs/audio-media.md).
+        AudioMeter.addCaptureObserver(self)
         started = true
         Automation.mark("voice: parakeet ready")
         _ = onError
+    }
+
+    /// The shared mic stream (AudioCaptureObserver).
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        // Side analysis (the turn-taker) sees everything, gate or not —
+        // barge detection runs exactly while the gate is down.
+        if let onSamples = onSamples {
+            onSamples(Self.monoSamples(buffer), buffer.format.sampleRate)
+        }
+        guard !isGated else { return }
+        bufferContinuation?.yield(buffer)
     }
 
     func pause() { setGated(true) }
@@ -135,10 +135,6 @@ final class ParakeetReduxAsr: AsrEngine {
 
     func resume() {
         setGated(false)
-        if started, !engine.isRunning {
-            engine.prepare()
-            try? engine.start()
-        }
     }
 
     func stop() {
@@ -150,8 +146,7 @@ final class ParakeetReduxAsr: AsrEngine {
         feedTask = nil
         bufferContinuation?.finish()
         bufferContinuation = nil
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
+        AudioMeter.removeCaptureObserver(self)
         let manager = self.manager
         self.manager = nil
         Task { await manager?.cleanup() }

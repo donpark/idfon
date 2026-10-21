@@ -3,6 +3,14 @@ import AVFoundation
 import CoreAudio
 import CIdfon
 
+/// A consumer of the shared mic stream — the single-input-owner consolidation:
+/// STT/analysis components subscribe to the one VPIO tap instead of each
+/// starting an `AVAudioEngine` (separate input graphs collide on device
+/// switches and only the shared tap is echo-cancelled).
+protocol AudioCaptureObserver: AnyObject {
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime)
+}
+
 /// Messages-style dotted waveform. Port of ios/Idfon/LiveWaveformView.swift
 /// (UIKit UIView.draw -> AppKit NSView.draw). Low amplitudes render as small
 /// dots on the center line; louder ones grow into vertical bars around it.
@@ -173,6 +181,41 @@ private extension WaveformView.Mode {
 /// it off.
 final class AudioMeter {
     static let shared = AudioMeter()
+    /// Capture observers (the single-input-owner consolidation): consumers of
+    /// the mic subscribe here instead of starting their own AVAudioEngine —
+    /// separate input graphs collide on device switches and only the shared
+    /// tap is the VPIO/AEC-processed stream (docs/audio-media.md).
+    private static let captureObservers = NSHashTable<AnyObject>.weakObjects()
+    private static var headlessRunning = false
+
+    static func addCaptureObserver(_ observer: AudioCaptureObserver) {
+        DispatchQueue.main.async {
+            captureObservers.add(observer as AnyObject)
+            if activeInputMeter == nil && !headlessRunning {
+                headlessRunning = true
+                shared.start()
+            }
+        }
+    }
+
+    static func removeCaptureObserver(_ observer: AudioCaptureObserver) {
+        DispatchQueue.main.async {
+            captureObservers.remove(observer as AnyObject)
+            if captureObservers.allObjects.isEmpty, headlessRunning {
+                headlessRunning = false
+                shared.stop()
+            }
+        }
+    }
+
+    /// Copy-under-lock-equivalent (main queue): an observer must not deadlock
+    /// the audio thread.
+    private static func fanOutCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        let observers = captureObservers.allObjects
+        for observer in observers {
+            (observer as? AudioCaptureObserver)?.audioCapture(buffer, at: time)
+        }
+    }
     private static let logQueue = DispatchQueue(label: "idfon.audio-meter-log")
     private static func log(_ message: String) {
         idfonLog("\(message)")
@@ -409,7 +452,7 @@ final class AudioMeter {
                     }
                     return
                 }
-                input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak owner = self] buffer, _ in
+                input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak owner = self] buffer, time in
                     guard let owner else { return }
                     owner.callbackBuffers += 1
                     if owner.callbackBuffers <= 3 || owner.callbackBuffers % 100 == 0 {
@@ -418,6 +461,7 @@ final class AudioMeter {
                     let rms = Self.rms(buffer)
                     for wave in owner.views { wave.view?.add(amplitude: Float(min(rms * 12, 1))) }
                     if owner.pushToEncoder { owner.push(buffer) }
+                    Self.fanOutCapture(buffer, at: time)
                 }
                 self.tapInstalled = true
                 Self.inputTapInstalled = true
@@ -467,6 +511,13 @@ final class AudioMeter {
         removeAudioObservers()
         running = false
         settle() // pending start callers observe running=false
+        // Hand the shared tap to any remaining capture observers: a page's
+        // meter stopping must never starve the STT components (the
+        // single-input-owner consolidation).
+        if self !== Self.shared, !Self.captureObservers.allObjects.isEmpty {
+            Self.headlessRunning = true
+            Self.shared.start()
+        }
     }
 
     private func installAudioObservers() {

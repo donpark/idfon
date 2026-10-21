@@ -185,12 +185,12 @@ enum SpeechVoice {
 /// listens with voice processing (AEC) enabled, and engages on the first
 /// cancellable, non-echo partial. The barge-in/echo rules come from Rust over
 /// the CIdfon C ABI (`idfon_voice_is_cancellable` / `idfon_voice_is_echo`).
-final class OnDeviceVoice: NSObject {
+final class OnDeviceVoice: NSObject, AudioCaptureObserver {
     static let shared = OnDeviceVoice()
 
     private let queue = DispatchQueue(label: "app.idfon.mac.ondevicevoice")
     private var synthesizer: AVSpeechSynthesizer?
-    private var audioEngine: AVAudioEngine?
+    private var listenTapBuffers = 0
     private var listenTask: SFSpeechRecognitionTask?
     private var listenRequest: SFSpeechAudioBufferRecognitionRequest?
     private var listenDone: ((Result<String, Error>) -> Void)?
@@ -402,34 +402,10 @@ final class OnDeviceVoice: NSObject {
                 self.listenRequest = request
                 self.listenDone = completion
 
-                let engine = AVAudioEngine()
-                let input = engine.inputNode
-                if enableVoiceProcessing {
-                    do {
-                        try input.setVoiceProcessingEnabled(true)
-                        Automation.mark("voice: voice-processing enabled")
-                    } catch {
-                        Automation.mark("voice: voice-processing FAIL \(error.localizedDescription)")
-                    }
-                }
-                let format = input.outputFormat(forBus: 0)
-                Automation.mark("voice: input rate=\(format.sampleRate) ch=\(format.channelCount)")
-                var tapBuffers = 0
-                input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                    tapBuffers += 1
-                    if tapBuffers == 1 || tapBuffers % 500 == 0 {
-                        Automation.mark("voice: tap buffers=\(tapBuffers) frames=\(buffer.frameLength)")
-                    }
-                    request.append(buffer)
-                }
-                engine.prepare()
-                do {
-                    try engine.start()
-                } catch {
-                    completion(.failure(error))
-                    return
-                }
-                self.audioEngine = engine
+                // The shared VPIO tap (single input owner, docs/audio-media.md):
+                // the mic stream is already AEC-processed and fanned out.
+                Automation.mark("voice: input shared-tap rate=16k-fanout (voice processing on)")
+                AudioMeter.addCaptureObserver(self)
 
                 self.listenTask = recognizer.recognitionTask(with: request) { result, error in
                     if let result {
@@ -450,10 +426,18 @@ final class OnDeviceVoice: NSObject {
         }
     }
 
+    /// The shared mic stream (AudioCaptureObserver).
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        guard let request = listenRequest else { return }
+        listenTapBuffers += 1
+        if listenTapBuffers == 1 || listenTapBuffers % 500 == 0 {
+            Automation.mark("voice: tap buffers=\(listenTapBuffers) frames=\(buffer.frameLength)")
+        }
+        request.append(buffer)
+    }
+
     func stopListening() {
-        audioEngine?.stop()
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine = nil
+        AudioMeter.removeCaptureObserver(self)
         listenRequest?.endAudio()
         listenRequest = nil
         listenTask?.cancel()

@@ -294,15 +294,18 @@ delivers silence through VPIO (e.g. the LG UltraFine Display Audio USB mic —
 the 1s RMS log shows it immediately). The audio-settings volume slider feeds
 `AudioPlaybackSink.gain` (the shell path has no `moq` playback control).
 
-Not covered on macOS: the **input** side still runs per-purpose graphs
-(`ParakeetAsr`, `MacSpeechTranscriber`, `OnDeviceVoice`'s listen engine each
-tap the mic on their own `AVAudioEngine`; self-bleed into the mic is handled by
-their echo-trim/segmenter paths). Playback is consolidated: **every speaker
-renders on the shared `AudioMeter` playback bus** — remote call audio
+On macOS the audio is now single-owner on both sides. **Playback**: every
+speaker renders on the shared `AudioMeter` playback bus — remote call audio
 (`playStream`), Kokoro TTS wavs, Apple TTS (`AVSpeechSynthesizer.write`
 buffers), and call tones — so the bus is a complete AEC reference and every
-source also feeds the turn-taker's second ear (`PlaybackBus`). A single-engine
-input consolidation remains as cleanup, not as an AEC gap.
+source feeds the turn-taker's second ear (`PlaybackBus`). **Input**: one
+`AVAudioEngine` with one VPIO tap fans out to the waveforms and to
+`AudioCaptureObserver` subscribers (`ParakeetReduxAsr`,
+`MacSpeechTranscriber`, `OnDeviceVoice`'s listen engine — each dropped its
+private engine; separate input graphs collided on device switches and only the
+shared tap is echo-cancelled). The headless case (listening with no waveform
+attached) runs `AudioMeter.shared`; when a page's meter stops with subscribers
+still attached, the tap hands over to it.
 
 **Engine self-stop recovery (iOS).** The engine stops itself on hardware
 format/channel changes (`AVAudioEngineConfigurationChangeNotification`;

@@ -12,13 +12,14 @@ import Speech
 /// prepare the analyzer for a fixed format, feed `AnalyzerInput` buffers from
 /// an `AVAudioEngine` tap, consume `transcriber.results`.
 @available(macOS 26.0, *)
-final class MacSpeechTranscriber {
+final class MacSpeechTranscriber: AudioCaptureObserver {
     private let locale: Locale
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputBuilder: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
-    private var engine: AVAudioEngine?
+    private var targetFormat: AVAudioFormat?
+    private var tapBuffers = 0
     private var analyzerFormat: AVAudioFormat?
     private var lastPartial = ""
     private var fedFrames: AVAudioFramePosition = 0
@@ -124,81 +125,58 @@ final class MacSpeechTranscriber {
         }
         Automation.mark("voice: mic granted=\(granted)")
 
-        let engine = AVAudioEngine()
-        self.engine = engine
-        let input = engine.inputNode
-        // macOS AEC is opt-in: enabling voice processing on the input node
-        // hooks up the system VoiceProcessingIO (AEC + noise suppression).
-        // The tap below therefore uses `format: nil` so it follows whatever
-        // format the enabled node provides. It is off by default because some
-        // devices (e.g. the LG UltraFine Display Audio USB mic) accept the call
-        // but then deliver silence; set IDFON_MACOS_AEC=1 on a supported device.
-        if ProcessInfo.processInfo.environment["IDFON_MACOS_AEC"] == "1" {
-            do {
-                try input.setVoiceProcessingEnabled(true)
-                aecEnabled = true
-                Automation.mark("voice: voice-processing enabled")
-            } catch {
-                Automation.mark("voice: voice-processing unsupported: \(error.localizedDescription)")
-            }
-        } else {
-            Automation.mark("voice: voice-processing off (gated; set IDFON_MACOS_AEC=1 to enable)")
-        }
-        let hardware = input.outputFormat(forBus: 0)
-        Automation.mark(
-            "voice: analyzer rate=\(format.sampleRate) ch=\(format.channelCount) hw=\(hardware.sampleRate)/\(hardware.channelCount)"
-        )
-        // macOS 27 provides the official analyzer input converter, which turns
-        // an arbitrary AVAudioEngine buffer into format-correct AnalyzerInputs.
+        // The shared VPIO tap (single input owner, docs/audio-media.md): one
+        // AEC-processed mic stream fanned out to subscribers.
+        aecEnabled = true
+        targetFormat = format
+        Automation.mark("voice: analyzer rate=\(format.sampleRate) ch=\(format.channelCount) shared-tap")
         if #available(macOS 27.0, *), !aecEnabled {
             inputConverter = try await AnalyzerInputConverter.converter(
                 compatibleWith: [detector, transcriber]
             )
             Automation.mark("voice: analyzer input converter ready")
         }
-        var tapBuffers = 0
-        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, time in
-            guard let self, let builder = self.inputBuilder else { return }
-            guard self.isListening else { return }
-            self.recordPeak(buffer)
-            tapBuffers += 1
-            if tapBuffers == 1 || tapBuffers % 500 == 0 {
-                Automation.mark("voice: tap buffers=\(tapBuffers) frames=\(buffer.frameLength)")
-            }
-            if #available(macOS 27.0, *), !self.aecEnabled,
-               let converter = self.inputConverter as? AnalyzerInputConverter {
-                if let inputs = try? converter.convert(buffer, at: time) {
-                    if tapBuffers <= 3 || tapBuffers % 200 == 0 {
-                        Automation.mark("voice: analyzer inputs=\(inputs.count)")
-                    }
-                    for input in inputs { builder.yield(input) }
-                } else if tapBuffers <= 3 {
-                    Automation.mark("voice: analyzer convert nil")
-                }
-                return
-            }
-            // macOS 26 fallback: manual conversion + explicit timeline.
-            if let converted = self.convert(buffer, to: format) {
-                let start = CMTime(
-                    value: self.fedFrames,
-                    timescale: CMTimeScale(format.sampleRate)
-                )
-                self.fedFrames += AVAudioFramePosition(converted.frameLength)
-                builder.yield(AnalyzerInput(buffer: converted, bufferStartTime: start))
-            } else if tapBuffers <= 3 {
-                Automation.mark("voice: convert nil")
-            }
+        AudioMeter.addCaptureObserver(self)
+    }
+
+    /// The shared mic stream (AudioCaptureObserver) — the old private-tap body.
+    func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
+        guard let builder = inputBuilder, let format = targetFormat else { return }
+        guard isListening else { return }
+        recordPeak(buffer)
+        tapBuffers += 1
+        if tapBuffers == 1 || tapBuffers % 500 == 0 {
+            Automation.mark("voice: tap buffers=\(tapBuffers) frames=\(buffer.frameLength)")
         }
-        engine.prepare()
-        try engine.start()
+        if #available(macOS 27.0, *), !aecEnabled,
+           let converter = inputConverter as? AnalyzerInputConverter {
+            if let inputs = try? converter.convert(buffer, at: time) {
+                if tapBuffers <= 3 || tapBuffers % 200 == 0 {
+                    Automation.mark("voice: analyzer inputs=\(inputs.count)")
+                }
+                for input in inputs { builder.yield(input) }
+            } else if tapBuffers <= 3 {
+                Automation.mark("voice: analyzer convert nil")
+            }
+            return
+        }
+        // macOS 26 fallback: manual conversion + explicit timeline.
+        if let converted = convert(buffer, to: format) {
+            let start = CMTime(
+                value: fedFrames,
+                timescale: CMTimeScale(format.sampleRate)
+            )
+            fedFrames += AVAudioFramePosition(converted.frameLength)
+            builder.yield(AnalyzerInput(buffer: converted, bufferStartTime: start))
+        } else if tapBuffers <= 3 {
+            Automation.mark("voice: convert nil")
+        }
     }
 
     func stop() {
         resultsTask?.cancel()
         resultsTask = nil
-        engine?.stop()
-        engine?.inputNode.removeTap(onBus: 0)
-        engine = nil
+        AudioMeter.removeCaptureObserver(self)
         if #available(macOS 27.0, *),
            let converter = inputConverter as? AnalyzerInputConverter,
            let inputs = try? converter.flush() {
@@ -220,11 +198,7 @@ final class MacSpeechTranscriber {
 
     func resume() {
         setListening(true)
-        // Recover if the engine was stopped (interruption/route change) while
-        // gated; a normal resume does not restart it.
-        guard let engine, !engine.isRunning else { return }
-        engine.prepare()
-        try? engine.start()
+        // The shared tap's owner (AudioMeter) handles engine recovery.
     }
 
     /// Gated-mode barge-in: pass with AEC active, else require caller-level
