@@ -565,6 +565,64 @@ final class AudioMeter {
         }
     }
 
+    /// One-shot playback on the shared bus (cues, TTS chunks). This bus is the
+    /// AEC reference — anything played elsewhere (AVAudioPlayer,
+    /// AVSpeechSynthesizer's own output) is echo the mic cannot cancel.
+    static func play(_ buffer: AVAudioPCMBuffer, completion: (() -> Void)? = nil) {
+        DispatchQueue.main.async {
+            guard inputEngine.isRunning else {
+                log("idfon audio meter: play dropped engine idle")
+                completion?()
+                return
+            }
+            guard let converted = convert(buffer, to: playbackPlayer.outputFormat(forBus: 0)) else {
+                log("idfon audio meter: play dropped convert failed")
+                completion?()
+                return
+            }
+            PlaybackBus.notify(converted) // the second ear
+            playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: { completion?() })
+            if !playbackPlayer.isPlaying { playbackPlayer.play() }
+        }
+    }
+
+    /// A looping cue (the ring). Fed to the second ear once (its repeats are
+    /// the same samples).
+    static func playLooping(_ buffer: AVAudioPCMBuffer) {
+        DispatchQueue.main.async {
+            guard inputEngine.isRunning else {
+                log("idfon audio meter: loop dropped engine idle")
+                return
+            }
+            guard let converted = convert(buffer, to: playbackPlayer.outputFormat(forBus: 0)) else {
+                log("idfon audio meter: loop dropped convert failed")
+                return
+            }
+            PlaybackBus.notify(converted) // the second ear
+            playbackPlayer.scheduleBuffer(converted, at: nil, options: [.loops], completionHandler: nil)
+            if !playbackPlayer.isPlaying { playbackPlayer.play() }
+        }
+    }
+
+    /// Stop everything on the bus (a tone switch or barge).
+    static func stopPlayback() {
+        DispatchQueue.main.async {
+            playbackPlayer.stop()
+            if inputEngine.isRunning { playbackPlayer.play() } // ready for the next schedule
+        }
+    }
+
+    /// Decode wav bytes (PCM s16/float) into a buffer for the shared bus.
+    static func buffer(wav data: Data) -> AVAudioPCMBuffer? {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("idfon-audio-bus.wav")
+        guard (try? data.write(to: url)) != nil,
+              let file = try? AVAudioFile(forReading: url),
+              let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                           frameCapacity: AVAudioFrameCount(file.length)),
+              (try? file.read(into: input)) != nil else { return nil }
+        return input
+    }
+
     /// Convert `buffer` to `target`; returns it unchanged when it already matches.
     private static func convert(_ buffer: AVAudioPCMBuffer, to target: AVAudioFormat) -> AVAudioPCMBuffer? {
         if buffer.format.sampleRate == target.sampleRate,

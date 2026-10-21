@@ -202,12 +202,21 @@ final class AppleTtsEngine: NSObject, TtsEngine {
             Automation.mark("voice: speak id=\(utterance.voice?.identifier ?? "nil") assistive=false")
             completion.reset { continuation.resume() }
             synthesizer.delegate = completion
-            synthesizer.speak(utterance)
+            // Buffers onto the shared playback bus (the AEC reference):
+            // synthesizer.speak() plays system-side, outside echo cancellation.
+            synthesizer.write(utterance) { [weak self] buffer in
+                guard let pcm = buffer as? AVAudioPCMBuffer, pcm.frameLength > 0 else {
+                    self?.completion.complete() // the final empty buffer ends the utterance
+                    return
+                }
+                AudioMeter.play(pcm)
+            }
         }
     }
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+        AudioMeter.stopPlayback() // whatever is already scheduled on the bus
         // stopSpeaking cancels via `didCancel`, but resume here too so a hangup
         // can never leave `speak()` awaiting.
         completion.complete()
@@ -252,7 +261,6 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
     private let fallback = AppleTtsEngine()
     private var prepared = false
     private var prepareTask: Task<Void, Never>?
-    private var player: AVAudioPlayer?
     private var finish: (() -> Void)?
     /// Set by `stop()` so a cancel during ANE synthesis does not start playback.
     private var stopRequested = false
@@ -302,39 +310,28 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
 
     func stop() {
         stopRequested = true
-        player?.stop()
+        AudioMeter.stopPlayback()
         finish?()
         finish = nil
-        player = nil
         fallback.stop()
     }
 
     private func play(_ wav: Data) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            do {
-                // The second ear: the wav is the agent's voice, and AVAudioPlayer
-                // has no tap — fan the PCM out at play time.
-                if let pcm = PlaybackBus.wavSamples(wav) {
-                    PlaybackBus.notify(samples: pcm.samples, rate: pcm.rate)
-                }
-                let player = try AVAudioPlayer(data: wav)
-                player.delegate = self
-                finish = { continuation.resume() }
-                self.player = player
-                player.play()
-            } catch {
-                Automation.mark("voice: kokoro play failed \(error.localizedDescription)")
+            // The shared playback bus (the AEC reference) replaces AVAudioPlayer;
+            // PlaybackBus.notify (the second ear) rides inside AudioMeter.play.
+            guard let buffer = AudioMeter.buffer(wav: wav) else {
+                Automation.mark("voice: kokoro play failed (decode)")
                 continuation.resume()
+                return
+            }
+            finish = { continuation.resume() }
+            AudioMeter.play(buffer) { [weak self] in
+                guard let self else { return }
+                self.finish?()
+                self.finish = nil
             }
         }
-    }
-}
-
-extension KokoroTtsEngine: AVAudioPlayerDelegate {
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        finish?()
-        finish = nil
-        self.player = nil
     }
 }
 

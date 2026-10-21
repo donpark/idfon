@@ -33,8 +33,6 @@ final class CallTonePlayer {
 
     private let queue = DispatchQueue(label: "idfon.call-tones")
     private let sampleRate = 48_000.0
-    private var engine: AVAudioEngine?
-    private var player: AVAudioPlayerNode?
     private var current: Tone?
 
     /// Start (or switch to) a looping tone or one-shot cue. Idempotent.
@@ -50,47 +48,27 @@ final class CallTonePlayer {
     // MARK: - queue-confined
 
     private func startLocked(_ tone: Tone) {
-        if current == tone, player?.isPlaying == true { return }
+        if current == tone { return }
         stopLocked()
-        guard ensureStartedLocked(), let player, let buffer = toneBuffer(tone) else { return }
-        PlaybackBus.notify(buffer) // the second ear (a looping ring: fed once)
+        guard let buffer = toneBuffer(tone) else { return }
         current = tone
+        // The shared playback bus (AudioMeter) — the AEC reference. A private
+        // engine here would play outside echo cancellation (the single-owner
+        // audio consolidation, docs/audio-media.md).
         switch tone {
         case .ringback, .ringtone:
-            player.scheduleBuffer(buffer, at: nil, options: [.loops], completionHandler: nil)
+            AudioMeter.playLooping(buffer)
         case .answered, .ended:
-            player.scheduleBuffer(buffer, at: nil, options: []) { [weak self] in
+            AudioMeter.play(buffer) { [weak self] in
                 guard let self else { return }
                 self.queue.async { if self.current == tone { self.stopLocked() } }
             }
         }
     }
 
-    private func ensureStartedLocked() -> Bool {
-        if let engine, engine.isRunning { return true }
-        let engine = AVAudioEngine()
-        let player = AVAudioPlayerNode()
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format())
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            idfonError("idfon call tones: engine start failed: \(error)")
-            return false
-        }
-        player.play()
-        self.engine = engine
-        self.player = player
-        return true
-    }
-
     private func stopLocked() {
         current = nil
-        player?.stop()
-        engine?.stop()
-        engine = nil
-        player = nil
+        AudioMeter.stopPlayback()
     }
 
     private func format() -> AVAudioFormat {
