@@ -294,15 +294,15 @@ delivers silence through VPIO (e.g. the LG UltraFine Display Audio USB mic —
 the 1s RMS log shows it immediately). The audio-settings volume slider feeds
 `AudioPlaybackSink.gain` (the shell path has no `moq` playback control).
 
-Not covered on macOS: call tones, `OnDeviceVoice`/`SpeechEngine` TTS and the
-STT engines still run on their own graphs (self-bleed into the mic is handled
-by their echo-trim/segmenter paths, not AEC). The **second ear** (the turn
-taker's agent channel) is covered anyway: `PlaybackBus` fans in at play time —
-Kokoro TTS wavs (`AVAudioPlayer` has no tap, so the PCM is fanned before play),
-remote call audio (`AudioMeter.playStream`), and call tones (a looping ring
-feeds once). Still outside it: the Apple-TTS fallback (AVSpeechSynthesizer
-plays system-side), and the single-owner convergence of the five graphs (the
-port of iOS `AudioIO`'s shape).
+Not covered on macOS: the **input** side still runs per-purpose graphs
+(`ParakeetAsr`, `MacSpeechTranscriber`, `OnDeviceVoice`'s listen engine each
+tap the mic on their own `AVAudioEngine`; self-bleed into the mic is handled by
+their echo-trim/segmenter paths). Playback is consolidated: **every speaker
+renders on the shared `AudioMeter` playback bus** — remote call audio
+(`playStream`), Kokoro TTS wavs, Apple TTS (`AVSpeechSynthesizer.write`
+buffers), and call tones — so the bus is a complete AEC reference and every
+source also feeds the turn-taker's second ear (`PlaybackBus`). A single-engine
+input consolidation remains as cleanup, not as an AEC gap.
 
 **Engine self-stop recovery (iOS).** The engine stops itself on hardware
 format/channel changes (`AVAudioEngineConfigurationChangeNotification`;
