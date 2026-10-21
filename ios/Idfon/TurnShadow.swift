@@ -1,7 +1,115 @@
 import AVFAudio
+import CryptoKit
 import Foundation
 import TygerVoice
 import TygerVoiceCoreAI
+
+/// Model delivery for the turn engine — download-on-first-use (2026-10-21
+/// decision): the tier's artifacts come from a pinned manifest (`url_base` +
+/// per-file sha256/size — the `scripts/pack-tyger-models.mjs` shape) into
+/// `Documents/tyger-models/`, the same place side-loading uses, so either
+/// path works. Only the device's tier is fetched (CoreAI fp16 on iOS 27+,
+/// else the three CoreML packages). Fail-open: any failure just means classic
+/// turn-taking.
+enum TygerModelStore {
+    struct Manifest: Decodable {
+        struct Entry: Decodable {
+            /// Relative path under `Documents/tyger-models/` (bundles are
+            /// flattened to their files).
+            let name: String
+            /// Flat download filename (`/` -> `__`).
+            let asset: String
+            let sha256: String
+            let bytes: Int
+        }
+        let url_base: String
+        let files: [Entry]
+    }
+
+    /// The manifest URL: `IDFON_TYGER_MODELS` / `-tygermodels <url>` override
+    /// for testing; the default is the packed release
+    /// (`scripts/pack-tyger-models.mjs` uploads to one).
+    static var manifestURL: URL? {
+        if let override = overrideURL(), let url = URL(string: override) { return url }
+        return URL(string: "https://huggingface.co/donpark/tyger-models/resolve/main/manifest.json")
+    }
+
+    private static func overrideURL() -> String? {
+        if let env = ProcessInfo.processInfo.environment["IDFON_TYGER_MODELS"], !env.isEmpty { return env }
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "-tygermodels"), i + 1 < args.count { return args[i + 1] }
+        return nil
+    }
+
+    private static let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("tyger-models")
+    private static let lock = NSLock()
+    private static var tasks: [String: Task<Bool, Never>] = [:]
+
+    /// Download the tier's files once per process (already-present files are
+    /// kept: side-loading and earlier fetches both count). Returns whether
+    /// everything needed is on disk afterwards.
+    static func ensure(tier: String) async -> Bool {
+        let task: Task<Bool, Never> = lock.withLock {
+            if let existing = tasks[tier] { return existing }
+            let created = Task { await fetch(tier: tier) }
+            tasks[tier] = created
+            return created
+        }
+        return await task.value
+    }
+
+    private static func fetch(tier: String) async -> Bool {
+        guard let manifestURL else { return false }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: manifestURL)
+            let manifest = try JSONDecoder().decode(Manifest.self, from: data)
+            guard let base = URL(string: manifest.url_base) else { return false }
+            let wanted = manifest.files.filter { $0.name.hasPrefix("\(tier)/") }
+            guard !wanted.isEmpty else { return false }
+            for entry in wanted {
+                let dest = root.appendingPathComponent(installPath(for: entry.name))
+                if FileManager.default.fileExists(atPath: dest.path) { continue }
+                Automation.mark("tyger models: fetching \(entry.asset) \(entry.bytes / 1_000_000)MB")
+                let (tmp, _) = try await URLSession.shared.download(from: base.appendingPathComponent(entry.asset))
+                guard sha256(of: tmp) == entry.sha256 else {
+                    Automation.mark("tyger models: checksum mismatch \(entry.asset)")
+                    return false
+                }
+                try FileManager.default.createDirectory(
+                    at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                _ = try? FileManager.default.removeItem(at: dest)
+                try FileManager.default.moveItem(at: tmp, to: dest)
+                Automation.mark("tyger models: installed \(entry.name)")
+            }
+            return true
+        } catch {
+            Automation.mark("tyger models: fetch failed \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Install paths follow the loaders' expectations — and the side-load
+    /// layout they already document: CoreAI bundles live under `coreai/`, the
+    /// CoreML packages at the root of `Documents/tyger-models/`.
+    private static func installPath(for name: String) -> String {
+        name.hasPrefix("coreml/") ? String(name.dropFirst("coreml/".count)) : name
+    }
+
+    /// Streaming SHA-256 of a downloaded file (the bundles are hundreds of MB).
+    private static func sha256(of url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk: Data
+            do { chunk = try handle.read(upToCount: 1 << 20) ?? Data() } catch { return nil }
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+}
 
 /// Shadow turn-taker (iOS): runs the turn engine beside the text Segmenter and
 /// marks its events for a decision-log diff. It changes NO behavior — the
@@ -37,9 +145,18 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     var onDecision: ((String) -> Void)?
 
     /// nil when no models are available.
-    static func start() -> TurnShadow? {
+    static func start() async -> TurnShadow? {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("tyger-models")
+        // Download-on-first-use: fetch this device's tier before looking for
+        // the files (side-loaded files are kept). A late shadow costs nothing
+        // — classic drives until it appears — and a failed download just
+        // means classic for this call.
+        if #available(iOS 27.0, *) {
+            _ = await TygerModelStore.ensure(tier: "coreai")
+        } else {
+            _ = await TygerModelStore.ensure(tier: "coreml")
+        }
         if #available(iOS 27.0, *),
            let coreai = try? CoreAITurnModel(directory: dir.appendingPathComponent("coreai")) {
             Automation.mark("turn-shadow: tier CoreAI (fp32 GPU)")
