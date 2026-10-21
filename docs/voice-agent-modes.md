@@ -63,6 +63,24 @@ Consequences:
   borrow on-device ASR/TTS/sensors to cut its own cost while staying in
   control of the conversation, and the free tier never has to leave the phone.
 
+## Contact screens show the truth (2026-10-21)
+
+A contact screen must display **what is actually being used** for that contact,
+even when it differs from the user's preference — truth over preference, so a
+support question ("what is my call running on?") is answerable at a glance.
+
+What every voice-capable contact's screen shows:
+
+| fact | values | source |
+| --- | --- | --- |
+| **voice source** | `native` — the contact answers voice itself (e.g. AFM 3, an on-device agent with its own voice loop) · `wrapped` — a voice agent speaks for it (the wrap config) · `none` | the contact model: a contact is voice-enabled either by implementation or by being wrappable **without conflict** — both read as voice-capable, and the screen says which |
+| **active pipeline** | the engines a call actually uses (e.g. `Deepgram + ElevenLabs` server-side, or `Parakeet + Kokoro` on-device) | the live engine's declaration (`/voice/info` — server options) + the call plan (`serverCascade` vs on-device); the client-side options the holder lists are shown as *capabilities*, labeled `side: client` |
+| **turn model** | `classic` / `tyger` (the `Voice turns` row, `voice-tyger-option.md`) | the per-contact override, else the resolved default |
+
+The screen shows the pipeline resolved **for that contact now** (plan + engine
++ turn model), not the global defaults; if the app is offline from its engine
+it says so rather than showing a stale preference.
+
 ## On-device agents are app-local contacts
 
 The built-in **AFM 3** is seeded when the OS ships that model (**iOS/macOS
