@@ -8,11 +8,12 @@
 //
 //   node scripts/pack-tyger-models.mjs [--url-base URL] [--out DIR] [--all]
 //
-// Default set: the coreai fp16 pair (the iOS 27+ shipping tier) and the three
+// Default set: the coreai fp16 pair (the iOS 27+ shipping tier), the three
 // coreml packages the pre-27 loader needs (TygerEncoder, TygerEncoderDyn,
-// TygerStep). `--all` packs every bundle incl. fp32 fallbacks and bench
-// variants. Bundle directories become relative `name` paths (so the store can
-// recreate them); `asset` is the flat download filename (`/` -> `__`).
+// TygerStep), and the quantized MLX int8 chain (the pre-27 mac tier).
+// `--all` packs every bundle incl. fp32 fallbacks and bench variants (Q8/…).
+// Bundle directories become relative `name` paths (so the store can recreate
+// them); `asset` is the flat download filename (`/` -> `__`).
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -27,10 +28,11 @@ const out = resolve(arg("--out") ?? "dist/tyger-models");
 const all = args.includes("--all");
 const root = resolve("bench-results");
 
+const tiers = ["coreai", "coreml", "mlx"];
 const bundles = all
-  ? ["coreai", "coreml"].flatMap((tier) =>
+  ? tiers.flatMap((tier) =>
       readdirSync(join(root, tier), { withFileTypes: true })
-        .filter((e) => e.isDirectory())
+        .filter((e) => e.name !== ".DS_Store")
         .map((e) => `${tier}/${e.name}`))
   : [
       "coreai/tyger_encoder_float16.aimodel",
@@ -38,6 +40,7 @@ const bundles = all
       "coreml/TygerEncoder.mlpackage",
       "coreml/TygerEncoderDyn.mlpackage",
       "coreml/TygerStep.mlpackage",
+      "mlx/TygerChainInt8.safetensors",
     ];
 
 const walk = (dir, prefix, into) => {
@@ -54,12 +57,13 @@ mkdirSync(out, { recursive: true });
 const files = [];
 for (const bundle of bundles) {
   const dir = join(root, bundle);
-  if (!statSync(dir).isDirectory()) {
+  if (!statSync(dir).isDirectory() && !statSync(dir).isFile()) {
     console.error(`missing bundle: ${dir}`);
     process.exit(1);
   }
   const picked = [];
-  walk(dir, bundle, picked);
+  if (statSync(dir).isFile()) picked.push({ name: bundle, path: dir });
+  else walk(dir, bundle, picked);
   for (const f of picked) {
     const buf = readFileSync(f.path);
     const asset = f.name.replaceAll("/", "__");
