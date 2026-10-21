@@ -193,6 +193,49 @@ another agent is *not* implemented — wrapping happens above the holder.)
 Transcripts ride out as `IDFON-CALL/1` snapshots and into the durable record
 buffer (P0), exactly as the GPT-Live path does.
 
+## Architecture principle: one process by default (2026-10-21)
+
+A voice agent wraps another agent to voice-enable otherwise text-centric
+agents, and both on-device and off-device voice agents use the same cascade
+(ASR → turn → LLM → TTS), so ASR/TTS are plug-and-play providers. iroh pipes
+raw or processed voice, so an off-device agent can use on-device ASR/TTS — and
+on-device decision services like the tyger turn model — while staying in
+control of the conversation.
+
+**A voice agent must never need to spawn a process to do its job.** The iPhone
+shape is the reference: the holder is a static library inside the app, the
+Swift code binds the C ABI directly, ASR/TTS are in-process providers. Any
+multi-process layout on a server is a deployment split of interfaces that
+already exist — not architecture.
+
+What is architectural — the seams:
+
+| seam | what it is |
+| --- | --- |
+| the voice pipe | raw/processed audio over iroh (it can cross devices) |
+| the cascade | ASR → turn → LLM → TTS as swappable providers |
+| the wrap | turns in/out to a text agent (voice-enabling it) |
+
+Consequences for this codebase (the queued refactor):
+
+1. **`bridge.mjs` becomes a library** — turn correlation, reply fan-out and
+   live-audio fan-out as in-process code in the agent; the unix-socket
+   transport becomes one implementation behind a transport interface, with
+   in-process delivery the default.
+2. **The engine stays a pipe consumer** — `/live/stream`'s role passes to the
+   iroh voice pipe itself, so the engine can live on the phone (on-device
+   ASR/TTS/tyger for an off-device agent), on a Mac, or not at all.
+3. **Key isolation becomes a platform story** — the iOS sandbox/secure storage
+   provides it in-process; on a server a thin holder daemon remains the home
+   of keys behind the same interface.
+
+Until that refactor lands, the process split is justified only where the
+platform gives nothing better: key isolation and engine-swappability (the
+2026-10-21 engine swap needed zero holder changes — the seam working as
+intended). The 2026-10-21 bridge crash (an orphaned rejection in the
+transport layer) is the cost of the current blur; the refactor retires that
+class.
+
 ## Engine
 
 `live.json`'s `backend` picks the call's audio shape, and the two shapes are

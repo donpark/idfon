@@ -70,7 +70,7 @@ kept because it records decisions; **design** = not all implemented.
 | `idfon-artifacts-testing.md` | manual artifact/reference test runbook |
 | `idfon-eve.md` | idfon as an Eve ingress channel (implemented) |
 | `live-voice.md` | the voice agent built on the Eve channel; transport + front-end decision |
-| `voice-agent.md` | voice agents that speak/listen for other agents (wrapped / injected) |
+| `voice-agent.md` | voice agents that speak/listen for other agents (wrapped / injected); the governing architecture: one process by default (the iPhone shape), seams over processes (voice pipe / cascade / wrap), bridge→library refactor (design) |
 | `voice-agent-modes.md` | on-device vs passive-remote vs proxy, and where the latency goes |
 | `voice-prompt-lab.md` | iterate voice-agent prompts headlessly (`scripts/voice-prompt-lab.sh`, scoring + variants) |
 | `reply-blocks.md` | what a reply is: the named block set (`Text`/`Speak`/`Artifact`/`View`/`JsonRender`/`Reference`/`Unparsed`) over the `IDFON-*/1` envelopes, ids and replacement, fail-open parsing, render-spec limits, where each piece lives (as-built) |
