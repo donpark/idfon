@@ -461,6 +461,12 @@ const server = createServer(async (request, response) => {
     if (body && (body.options || body.engine)) {
       voiceInfo = { ...(voiceInfo ?? {}), ...body };
       log.info("voice pipeline updated by engine", { engine: body.engine });
+      // One hop to the truth: forward the declaration to the holder, whose
+      // advertised `idfon.json` is what the phone's Speech pickers read.
+      if (Array.isArray(body.options)) {
+        write({ type: "voice.options", options: body.options }).catch((error) =>
+          log.warn("voice options forward failed", { error: String(error) }));
+      }
     }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(voiceInfo ?? {}));

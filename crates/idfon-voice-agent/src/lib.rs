@@ -382,7 +382,10 @@ fn apply_voice_selection(
     if stt.is_none() && tts.is_none() && stt_side.is_none() && tts_side.is_none() {
         return params.clone();
     }
-    let catalog = eve_idfon::voice_options(params);
+    // The engine-declared options (bridge `voice.options`) are advertisement
+    // for the phone's pickers and carry no backend/model fields to resolve
+    // here — a server pick IS this config's pipeline, so the defaults answer.
+    let catalog = eve_idfon::voice_options(params, &[]);
     let option = |id: &str| {
         catalog
             .iter()
@@ -586,7 +589,7 @@ async fn handle_call(
     // that is actually running (plus the caller's pushed context).
     let instructions = params.get("instructions").and_then(Value::as_str);
     let call_context = live_call_context(
-        &eve_idfon::voice_info(&params),
+        &eve_idfon::voice_info(&params, &[]),
         invite.context.as_deref(),
         instructions,
     );

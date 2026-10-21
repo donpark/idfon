@@ -313,6 +313,19 @@ pub enum IpcFrame {
     /// bridge caches it and serves `/voice/info` to the Eve extension.
     #[serde(rename = "voice.info")]
     VoiceInfo { info: serde_json::Value },
+    /// Bridge → holder: the live engine's declared voice options (its real
+    /// pipeline, POSTed to the bridge's `/voice/info`), merged into the
+    /// advertised `idfon.json` catalog — the phone's Speech pickers read that
+    /// catalog. Replaces the previous declaration wholesale.
+    // shortcut: an old holder treats this unknown frame as fatal IPC
+    // (read_frames breaks on parse errors) — bridge and holder ship together,
+    // so version skew is not reachable today; if they ever ship independently,
+    // make read_frames skip unknown frame types.
+    #[serde(rename = "voice.options")]
+    VoiceOptionsUpdate {
+        #[serde(default)]
+        options: Vec<serde_json::Value>,
+    },
     #[serde(rename = "live.publish")]
     LivePublish {
         request_id: String,
@@ -536,7 +549,8 @@ fn admit_caller_to(path: &str, subject: &str) {
 /// through verbatim so a backend's own fields stay visible. Returned to the
 /// agent over the bridge (`/voice/info`) and appended to a full-duplex
 /// session's instructions, so a caller can ask what is answering.
-pub fn voice_info(params: &serde_json::Value) -> serde_json::Value {
+/// `engine` is the live engine's declared options (empty at startup).
+pub fn voice_info(params: &serde_json::Value, engine: &[serde_json::Value]) -> serde_json::Value {
     use serde_json::{Map, Value};
     let mut info = Map::new();
     let mode = params
@@ -583,7 +597,7 @@ pub fn voice_info(params: &serde_json::Value) -> serde_json::Value {
     if let Some(engine) = params.get("engine") {
         info.insert("engine".into(), engine.clone());
     }
-    let options = voice_options(params);
+    let options = voice_options(params, engine);
     if !options.is_empty() {
         info.insert("options".into(), Value::Array(options));
     }
@@ -594,31 +608,47 @@ pub fn voice_info(params: &serde_json::Value) -> serde_json::Value {
 /// resolved voice pipeline merged in. Served as a resource at path
 /// `idfon.json` (`idfon://<holder>/idfon.json`) and mirrored by the bridge's
 /// `/voice/info`, so the Web/MCP view and the agent's own view never drift.
-pub fn idfon_manifest(params: &serde_json::Value) -> serde_json::Value {
+pub fn idfon_manifest(params: &serde_json::Value, engine: &[serde_json::Value]) -> serde_json::Value {
     let mut manifest = params
         .get("idfon_manifest")
         .cloned()
         .filter(serde_json::Value::is_object)
         .unwrap_or_else(|| serde_json::json!({}));
     if let Some(object) = manifest.as_object_mut() {
-        object.insert("voice".into(), voice_info(params));
+        object.insert("voice".into(), voice_info(params, engine));
     }
     manifest
 }
 
 /// The catalog of selectable voice options a holder advertises. Defaults are
-/// derived from the live config; an agent-supplied manifest
-/// (`params.idfon_manifest.voice.options`, injected by the serve tooling from
-/// the agent's `idfon.json`) is merged over them by `id`, so an agent can
-/// integrate (keep a default) or override (replace an entry) per option.
-pub fn voice_options(params: &serde_json::Value) -> Vec<serde_json::Value> {
-    let mut options = derived_voice_options(params);
+/// derived from the live config; the live engine's declaration (the bridge's
+/// `voice.options`, its real pipeline) merges over them by `id`; an
+/// agent-supplied manifest (`params.idfon_manifest.voice.options`, injected by
+/// the serve tooling from the agent's `idfon.json`) merges last, so an agent
+/// can integrate (keep a default) or override (replace an entry) per option.
+pub fn voice_options(
+    params: &serde_json::Value,
+    engine: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
     let agent = params
         .get("idfon_manifest")
         .and_then(|manifest| manifest.get("voice"))
         .and_then(|voice| voice.get("options"))
-        .and_then(serde_json::Value::as_array);
-    for option in agent.into_iter().flatten() {
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let options = merge_voice_options(derived_voice_options(params), engine);
+    merge_voice_options(options, &agent)
+}
+
+/// Merge `overlay` over `base` by `id`: an existing entry is replaced, a new
+/// one appended. Entries without an `id` are ignored.
+pub fn merge_voice_options(
+    base: Vec<serde_json::Value>,
+    overlay: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let mut options = base;
+    for option in overlay {
         let Some(id) = option.get("id").and_then(serde_json::Value::as_str) else {
             continue;
         };
@@ -788,17 +818,25 @@ async fn serve(
     .await;
     // The agent's `idfon.json` as a resource over `idfon/http3/1`, so
     // `idfon://<holder>/idfon.json` resolves through the gateway and the same
-    // object is available to MCP/Web consumers. Built once; the holder's
-    // pipeline is static for its lifetime.
+    // object is available to MCP/Web consumers. The holder's own pipeline is
+    // static for its lifetime; the live engine's declaration arrives later as
+    // `voice.options` and is merged in per request, so the phone's pickers
+    // see the server-side engines as soon as the engine declares them.
+    let engine_options = Arc::new(tokio::sync::RwLock::new(Vec::<serde_json::Value>::new()));
     let _manifest_h3 = idfon_h3::serve_router(
         &transport,
         axum::Router::new().route(
             "/idfon.json",
             axum::routing::get({
-                let manifest = idfon_manifest(&live_params);
+                let live_params = live_params.clone();
+                let engine_options = Arc::clone(&engine_options);
                 move || {
-                    let manifest = manifest.clone();
-                    async move { axum::Json(manifest) }
+                    let live_params = live_params.clone();
+                    let engine_options = Arc::clone(&engine_options);
+                    async move {
+                        let engine = engine_options.read().await.clone();
+                        axum::Json(idfon_manifest(&live_params, &engine))
+                    }
                 }
             }),
         ),
@@ -843,7 +881,7 @@ async fn serve(
     // a bridge that ignores the frame just gets no introspection.
     let _ = out_tx
         .send(IpcFrame::VoiceInfo {
-            info: voice_info(&live_params),
+            info: voice_info(&live_params, &[]),
         })
         .await;
     let delegate_allow_file = live_params
@@ -1179,6 +1217,12 @@ async fn serve(
                 )
                 .instrument(span)
                 .await
+            }
+            IpcFrame::VoiceOptionsUpdate { options } => {
+                // The live engine's real pipeline, forwarded by the bridge —
+                // it becomes the advertised catalog the phone's pickers read.
+                *engine_options.write().await = options;
+                Ok(())
             }
             _ => Err(anyhow!("unexpected IPC frame from consumer")),
         };
@@ -2515,7 +2559,7 @@ mod tests {
             "backend": "gpt-live",
             "model": "openai/gpt-live-1",
             "voice_route": { "mode": "native-duplex", "audio": "pcm24k" }
-        }));
+        }), &[]);
         assert_eq!(duplex["mode"], "native-duplex");
         assert_eq!(duplex["backend"], "gpt-live");
         assert_eq!(duplex["voice_model"], "openai/gpt-live-1");
@@ -2528,14 +2572,46 @@ mod tests {
             "backend": "cascade",
             "voice_route": { "mode": "server-cascade" },
             "engine": { "stt": { "provider": "deepgram", "model": "nova-3" } }
-        }));
+        }), &[]);
         assert_eq!(cascade["mode"], "server-cascade");
         assert_eq!(cascade["engine"]["stt"]["provider"], "deepgram");
 
         // No live config: on-device cascade, no engine.
-        let client = voice_info(&serde_json::Value::Null);
+        let client = voice_info(&serde_json::Value::Null, &[]);
         assert_eq!(client["mode"], "client-cascade");
         assert!(client.get("engine").is_none());
+    }
+
+    #[test]
+    fn engine_declaration_lands_in_the_advertised_catalog() {
+        // The live engine's POSTed pipeline reaches the holder as
+        // `voice.options` (bridge → holder) and shows up in the advertised
+        // options — the phone's Speech pickers read `idfon.json`.
+        let engine = [serde_json::json!({
+            "id": "server:deepgram", "kind": "stt", "label": "Deepgram nova-3", "side": "server"
+        })];
+        let options = voice_options(&serde_json::json!({}), &engine);
+        let stt = options
+            .iter()
+            .find(|option| option["id"] == "server:deepgram")
+            .expect("engine option advertised");
+        assert_eq!(stt["side"], "server");
+        assert_eq!(stt["label"], "Deepgram nova-3");
+
+        // The agent manifest keeps the final word per option (override by id).
+        let options = voice_options(
+            &serde_json::json!({
+                "idfon_manifest": { "voice": { "options": [
+                    { "id": "server:deepgram", "kind": "stt", "label": "My STT", "side": "server" }
+                ] } }
+            }),
+            &engine,
+        );
+        let stt = options
+            .iter()
+            .find(|option| option["id"] == "server:deepgram")
+            .expect("agent override wins");
+        assert_eq!(stt["label"], "My STT");
     }
 
     #[test]
@@ -2562,14 +2638,17 @@ mod tests {
 
     #[test]
     fn idfon_manifest_carries_agent_metadata_and_resolved_voice() {
-        let manifest = idfon_manifest(&serde_json::json!({
-            "backend": "gpt-live",
-            "model": "openai/gpt-live-1",
-            "idfon_manifest": {
-                "name": "GPT-6-Luna",
-                "voice": { "options": [ { "id": "on-device:parakeet", "kind": "stt", "label": "Parakeet", "side": "client" } ] }
-            }
-        }));
+        let manifest = idfon_manifest(
+            &serde_json::json!({
+                "backend": "gpt-live",
+                "model": "openai/gpt-live-1",
+                "idfon_manifest": {
+                    "name": "GPT-6-Luna",
+                    "voice": { "options": [ { "id": "on-device:parakeet", "kind": "stt", "label": "Parakeet", "side": "client" } ] }
+                }
+            }),
+            &[],
+        );
         assert_eq!(manifest["name"], "GPT-6-Luna");
         assert_eq!(manifest["voice"]["mode"], "native-duplex");
         assert_eq!(manifest["voice"]["voice_model"], "openai/gpt-live-1");
@@ -2582,10 +2661,13 @@ mod tests {
     #[test]
     fn voice_options_merge_agent_overrides_over_config_defaults() {
         // Split engine -> one option per half.
-        let split = voice_options(&serde_json::json!({
-            "engine": { "stt": { "provider": "deepgram", "model": "nova-3" },
-                        "tts": { "provider": "elevenlabs", "model": "eleven_turbo_v2_5" } }
-        }));
+        let split = voice_options(
+            &serde_json::json!({
+                "engine": { "stt": { "provider": "deepgram", "model": "nova-3" },
+                            "tts": { "provider": "elevenlabs", "model": "eleven_turbo_v2_5" } }
+            }),
+            &[],
+        );
         assert_eq!(split.len(), 2);
         assert_eq!(split[0]["kind"], "stt");
         assert_eq!(split[0]["id"], "deepgram:nova-3");
@@ -2594,17 +2676,23 @@ mod tests {
         assert_eq!(split[1]["label"], "eleven_turbo_v2_5 (cloud)");
 
         // One unsplit provider serves both halves.
-        let single = voice_options(&serde_json::json!({
-            "engine": { "provider": "openai-compatible", "model": "gpt-audio" }
-        }));
+        let single = voice_options(
+            &serde_json::json!({
+                "engine": { "provider": "openai-compatible", "model": "gpt-audio" }
+            }),
+            &[],
+        );
         assert_eq!(single.len(), 2);
         assert_eq!(single[0]["kind"], "stt");
         assert_eq!(single[1]["kind"], "tts");
 
         // A full-duplex model with no engine -> one full-duplex option.
-        let duplex = voice_options(&serde_json::json!({
-            "backend": "gpt-live", "model": "openai/gpt-live-1"
-        }));
+        let duplex = voice_options(
+            &serde_json::json!({
+                "backend": "gpt-live", "model": "openai/gpt-live-1"
+            }),
+            &[],
+        );
         assert_eq!(duplex.len(), 1);
         assert_eq!(duplex[0]["kind"], "full-duplex");
         assert_eq!(duplex[0]["backend"], "gpt-live");
@@ -2618,7 +2706,9 @@ mod tests {
                 { "id": "deepgram:nova-3", "kind": "stt", "label": "Deepgram (fast)" },
                 { "id": "on-device:parakeet", "kind": "stt", "label": "Parakeet", "side": "client" }
             ] } }
-        }));
+        }),
+            &[],
+        );
         assert_eq!(merged.len(), 3);
         let deepgram = merged.iter().find(|o| o["id"] == "deepgram:nova-3").unwrap();
         assert_eq!(deepgram["label"], "Deepgram (fast)");
