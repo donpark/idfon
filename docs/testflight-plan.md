@@ -10,27 +10,38 @@ Code references are to `ios/` as of that review.
 - [x] **App icon — done (2026-10-19).** AppIcon set + 1024×1024 marketing
       icon (RGB, no alpha channel) shipped, `ASSETCATALOG_COMPILER_APPICON_NAME`
       set, `CFBundleIconName` in `Idfon/Info.plist` — see `app-icon.md`.
-- [ ] **No `PrivacyInfo.xcprivacy`.** Required-reason APIs in use:
-      - `UserDefaults` in 15 files → `NSPrivacyAccessedAPICategoryUserDefaults`,
+- [x] **`PrivacyInfo.xcprivacy` — done (2026-10-21).**
+      `ios/Idfon/PrivacyInfo.xcprivacy` declares the two required-reason API
+      categories below (`CA92.1`, `C617.1`); the synchronized folder group
+      pulls it into the target, verified present in the built bundle. Without
+      the manifest this is ITMS-91053, a straight rejection since May 2024.
+      Required-reason APIs in use (re-verified 2026-10-21 — still exactly
+      these two):
+      - `UserDefaults` in 16 files → `NSPrivacyAccessedAPICategoryUserDefaults`,
         reason `CA92.1`.
       - `attributesOfItem(...)[.modificationDate]` at `Idfon/EdgeClient.swift:313`
         → `NSPrivacyAccessedAPICategoryFileTimestamp`, reason `C617.1`
         (app-container files).
-      Without the manifest this is ITMS-91053, a straight rejection since
-      May 2024.
 
 ## Shipping plumbing (does not exist yet)
 
-- [ ] **Archive → export → upload path.** `ios/build.sh` only does a device
-      `build`. Need `xcodebuild archive` + `-exportArchive`
-      (method `app-store-connect`) + `xcrun altool --upload-app` (or Transporter).
-      Natural home: an `upload.sh` sibling of `build.sh`. After archiving,
-      verify `codesign -d --entitlements` shows `aps-environment=production` —
-      the distribution profile rewrites the `development` value in
-      `Idfon/Idfon.entitlements` (the comment there is right), but the project
-      has never gone through an archive, so confirm on the first one.
-- [ ] **`CFBundleVersion` must be unique per upload.** `CURRENT_PROJECT_VERSION = 1`
-      is hardcoded in the pbxproj; the upload script needs a bump step.
+- [x] **Archive → export → upload path — done (2026-10-21).** `ios/upload.sh`
+      (sibling of `build.sh`): build-number bump → `xcodebuild archive` →
+      gates → `-exportArchive` (method `app-store-connect`, team
+      `RV27HPQNMF`) → `xcrun altool --upload-app` when
+      `APPLE_ID`+`APPLE_APP_SPECIFIC_PASSWORD` are set, else the IPA is left
+      for Transporter. **First submission: manual in Xcode** (human preference,
+      2026-10-21); the script is for the ones after. First archive+export ran
+      2026-10-21: export re-signs with the distribution profile and the
+      archived IPA shows `aps-environment=production` / `get-task-allow=false`
+      — the plan's open first-archive question is answered; `upload.sh` gates
+      on it. (The `.xcarchive` lands outside Organizer's
+      `~/Library/Developer/Xcode/Archives`; copy it there to Distribute from
+      Xcode, or upload `build/export/Idfon.ipa` via Transporter.)
+- [x] **`CFBundleVersion` must be unique per upload — done (2026-10-21).**
+      `upload.sh` bumps `CURRENT_PROJECT_VERSION` (pbxproj, all configs) on
+      every run. On the manual Xcode path, bump Build (target → General) by
+      hand before archiving — and commit the bump either way.
 
 ## App Store Connect side (not code, but blocking)
 
@@ -64,13 +75,13 @@ Code references are to `ios/` as of that review.
 
 ## Smaller decisions
 
-- **iPad**: `TARGETED_DEVICE_FAMILY = "1,2"` with an iPhone-only UI means ASC
-  demands iPad screenshots and, on current iPadOS, multitasking compliance
-  (`UIRequiresFullScreen` is deprecated in the Xcode 27 SDK). Simplest: set
-  device family to `1`.
-- **Pre-submit residue**: run the rules in `edge-deploy-checklist.md` before
-  archiving — no test `-edgeurl`/`-edgeticket`, staging edge, or test APNs
-  `.p8` in the shipping build (issue #54's half).
+- **iPad — done (2026-10-21):** `TARGETED_DEVICE_FAMILY = "1"` (all configs);
+  verified `UIDeviceFamily = [1]` in the built Info.plist, so ASC no longer
+  demands iPad screenshots or multitasking compliance.
+- **Pre-submit residue — gated (2026-10-21):** `upload.sh` scans the archived
+  binary for rig markers (`e2etoken`, sandbox APNs URL, `:8090`, RFC1918 IPs)
+  and for a bundled `.p8`, and fails hard. For the manual first archive, run
+  the rules in `edge-deploy-checklist.md` by hand first (issue #54's half).
 
 ## Not covered here
 

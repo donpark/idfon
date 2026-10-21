@@ -68,3 +68,9 @@ weight.bin
 /scripts/__pycache__/
 /ports/*/__pycache__/
 /ports/tyger-coreai/.venv/
+
+# xcodebuild/xcode per-user and build output (ios/upload.sh, mac/build.sh)
+ios/build/
+mac/build/
+xcuserdata/
+.swiftpm/
