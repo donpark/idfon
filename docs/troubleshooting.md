@@ -25,7 +25,11 @@ Most triage starts by joining one flow across processes. See
   over **without root**: `xcrun devicectl device copy from --device <UDID>
   --domain-type appDataContainer --domain-identifier com.idfon.ios --source
   tmp/idfon-app-<pid>.log` (stale logs from earlier runs are deleted at app
-  startup; it pairs by pid with the daemon's `tmp/idfon-<pid>.log`). Every app
+  startup; it pairs by pid with the daemon's `tmp/idfon-<pid>.log`). Pull
+  **per file**: a whole-directory copy (`--source tmp`) silently omits
+  `idfon-app-*.log` — observed 2026-10-21, the dir pull showed only the daemon
+  log while the per-file pull of the same pid's log succeeded, and the lost
+  window cost a whole debugging round. Every app
   line is also mirrored to stderr, so `devicectl … --console` captures show
   them too. `log collect --device` works too but needs sudo.
 - **Verbosity.** `IDFON_LOG` > `RUST_LOG` > `IROH_C_LOG` (default `info`);

@@ -169,6 +169,7 @@ let speaking = false;
 let quiet = 0;
 let utterance = Buffer.alloc(0);
 let frames = 0;
+let greeted = false;
 
 // The tyger chain is the authoritative endpointer (src/tyger/endpointer.ts);
 // the energy path above stays as the fail-open fallback. IDFON_ENDPOINTER=energy opts out.
@@ -178,6 +179,15 @@ async function onFrame(frame) {
   const pcm = Buffer.from(frame.pcm_base64, "base64");
   frames += 1;
   if (frames === 1 || frames % 500 === 0) log.info("frames", { count: frames, peer_id: frame?.peer_id });
+  // Greet on connect: the live server-cascade plan has no greet turn — the
+  // engine's greeting IS the "answer" the caller hears. Without it the call
+  // is silent until the caller speaks (the "no sound at all" report).
+  if (frames === 1 && !greeted) {
+    greeted = true;
+    const greeting = process.env.IDFON_VOICE_GREETING || "Hello! I'm here whenever you're ready.";
+    log.info("greet", { text: greeting });
+    speak(greeting, frame?.peer_id).catch((error) => log.error("greet failed", { error: String(error) }));
+  }
   utterance = Buffer.concat([utterance, pcm]);
   const decisions = tyger ? await tyger.push(pcm) : [];
   const tygerEnd = decisions.includes("endpoint");

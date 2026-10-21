@@ -254,6 +254,15 @@ final class AudioMeter {
     private static let playbackPlayer = AVAudioPlayerNode()
     private static var playbackAttached = false
     private static var voiceProcessingTried = false
+    /// Playback state that must survive a stop/start cycle: the looping cue and
+    /// one-shots mid-flight are dropped by engine.stop() (their completions
+    /// fire, so callers resume while the audio silently vanishes — the iOS
+    /// tone-silence class). `dropping` marks the stop window so completions
+    /// route into `pendingRearm` instead of finishing.
+    private static var activeLoop: AVAudioPCMBuffer?
+    private static var inFlightOneShots: [UUID: (buffer: AVAudioPCMBuffer, completion: (() -> Void)?)] = [:]
+    private static var pendingRearm: [UUID: (buffer: AVAudioPCMBuffer, completion: (() -> Void)?)] = [:]
+    private static var dropping = false
 
     /// Opt in to feeding the call's encoder as well as the waveform. In the
     /// dylib's "push" mode the Rust side does not open the mic, so this tap is
@@ -357,6 +366,7 @@ final class AudioMeter {
                     Self.activeInputMeter = self
                     do {
                         if !self.engine.isRunning { try self.engine.start() }
+                        Self.rearmAfterRestart()
                         self.running = true
                         self.startInFlight = false
                         self.settle()
@@ -469,6 +479,7 @@ final class AudioMeter {
                 do {
                     try self.engine.start()
                     self.installAudioObservers()
+                    Self.rearmAfterRestart() // playback dropped by a recovery stop
                     self.running = true
                     self.startInFlight = false
                     Self.log("idfon audio meter engine started")
@@ -524,6 +535,7 @@ final class AudioMeter {
         let center = NotificationCenter.default
         interruptionObserver = center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             guard let self, self.running else { return }
+            Self.dropping = true // a recovery stop: playback re-arms on restart
             self.stop()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 guard let self else { return }
@@ -632,8 +644,36 @@ final class AudioMeter {
                 return
             }
             PlaybackBus.notify(converted) // the second ear
-            playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: { completion?() })
+            let id = UUID()
+            inFlightOneShots[id] = (converted, completion)
+            scheduleOneShot(id: id, buffer: converted, completion: completion)
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
+        }
+    }
+
+    private static func scheduleOneShot(id: UUID, buffer: AVAudioPCMBuffer, completion: (() -> Void)?) {
+        playbackPlayer.scheduleBuffer(buffer, at: nil, options: [], completionHandler: {
+            if dropping { return } // a recovery stop: keep it for re-arm
+            inFlightOneShots.removeValue(forKey: id)
+            completion?()
+        })
+    }
+
+    /// Re-arm what a recovery stop discarded (the engine self-stop class).
+    /// Deliberate stops keep their complete-and-drop semantics.
+    static func rearmAfterRestart() {
+        guard dropping else { return }
+        dropping = false
+        if let loop = activeLoop {
+            playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
+            log("idfon audio meter: loop re-armed after engine restart")
+        }
+        for (id, entry) in inFlightOneShots {
+            scheduleOneShot(id: id, buffer: entry.buffer, completion: entry.completion)
+            log("idfon audio meter: one-shot re-armed after engine restart")
+        }
+        if (activeLoop != nil || !inFlightOneShots.isEmpty), !playbackPlayer.isPlaying {
+            playbackPlayer.play()
         }
     }
 
@@ -650,6 +690,7 @@ final class AudioMeter {
                 return
             }
             PlaybackBus.notify(converted) // the second ear
+            activeLoop = converted
             playbackPlayer.scheduleBuffer(converted, at: nil, options: [.loops], completionHandler: nil)
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
         }
@@ -658,6 +699,8 @@ final class AudioMeter {
     /// Stop everything on the bus (a tone switch or barge).
     static func stopPlayback() {
         DispatchQueue.main.async {
+            activeLoop = nil
+            inFlightOneShots.removeAll() // deliberate stop: callers complete, audio is dropped
             playbackPlayer.stop()
             if inputEngine.isRunning { playbackPlayer.play() } // ready for the next schedule
         }
