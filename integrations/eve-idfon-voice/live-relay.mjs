@@ -11,7 +11,6 @@
 // echoes the transcript (a connectivity check).
 
 const bridge = process.env.IDFON_BRIDGE_URL || "http://127.0.0.1:18766";
-import { readFile } from "node:fs/promises";
 const secret = process.env.IDFON_BRIDGE_SECRET || "m2-test-secret";
 const engine = process.env.IDFON_VOICE_ENGINE ? JSON.parse(process.env.IDFON_VOICE_ENGINE) : {};
 const RATE = 24_000;
@@ -172,17 +171,17 @@ function spokenText(reply) {
 
 /// The caller's chat shows spoken turns as bubbles: each transcript rides a
 /// plain message as an IDFON-CALL/1 envelope (Models.MessageKind.callTranscript).
+/// No capability ticket: the old per-contact ticket files are this holder's
+/// own grants, and the holder now attaches only grants whose issuer is the
+/// target — a ticketless message rides the phone's signature + known-peer
+/// gate (the same as every ordinary chat message).
 async function sendTranscript(peerId, role, text, isFinal) {
-  const home = process.env.IDFON_VOICE_HOME || "";
-  const ticketPath = `${home}/capability-ticket-${peerId}.json`;
-  let ticket = null;
-  try { ticket = JSON.parse(await readFile(ticketPath, "utf8")); } catch { return; }
   const body = JSON.stringify({ role, text, final: isFinal });
   await fetch(`${bridge}/send`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
     body: JSON.stringify({
-      peer_id: peerId, endpoint_id: peerId, capability_ticket: ticket,
+      peer_id: peerId, endpoint_id: peerId, capability_ticket: null,
       text: `IDFON-CALL/1\n${body}`, await_reply: false,
     }),
   });

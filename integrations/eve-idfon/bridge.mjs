@@ -185,9 +185,13 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (request.url === "/send") {
+    // The capability ticket is optional: holders attach only grants whose
+    // issuer is the target, and a ticketless message rides the receiver's
+    // signature + known-peer gate. When present it must be an object.
     if (typeof body.peer_id !== "string" || typeof body.endpoint_id !== "string" ||
-        typeof body.text !== "string" || !body.text || body.capability_ticket == null ||
-        typeof body.capability_ticket !== "object" || Array.isArray(body.capability_ticket)) {
+        typeof body.text !== "string" || !body.text ||
+        (body.capability_ticket != null &&
+         (typeof body.capability_ticket !== "object" || Array.isArray(body.capability_ticket)))) {
       response.writeHead(400); response.end("invalid peer send\n"); return;
     }
     const requestId = `peer-${nextRequestId++}`;
