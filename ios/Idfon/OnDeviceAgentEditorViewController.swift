@@ -40,7 +40,26 @@ final class OnDeviceAgentEditorViewController: UIViewController {
         promptLabel.text = "Prompt"
         promptLabel.font = .preferredFont(forTextStyle: .headline)
 
-        let stack = UIStackView(arrangedSubviews: [nameField, promptLabel, instructionsView])
+        let agentName = existing?.name ?? nameField.text ?? "agent"
+        let voiceLabel = UILabel()
+        voiceLabel.font = .preferredFont(forTextStyle: .footnote)
+        voiceLabel.textColor = .secondaryLabel
+        voiceLabel.numberOfLines = 0
+        voiceLabel.text = "Voice agent: \(agentName) (on-device)"
+        if let id = existing?.id {
+            Task {
+                // The truth row (voice-agent-modes.md): who speaks and which
+                // engines the calls use — from this agent's advertised catalog.
+                let options = await VoiceCatalog.options(for: "\(id)", client: IdfonClient())
+                let stt = options.first { $0.kind == .stt }
+                let tts = options.first { $0.kind == .tts }
+                let side: (VoiceOption?) -> String = { ($0?.side == .server) ? "server" : "on-device" }
+                let asr = stt.map { "ASR: \($0.label) (\(side(stt)))" } ?? "ASR: —"
+                let ttsLine = tts.map { "TTS: \($0.label) (\(side(tts)))" } ?? "TTS: —"
+                voiceLabel.text = "Voice agent: \(agentName) (on-device) · \(asr) · \(ttsLine)"
+            }
+        }
+        let stack = UIStackView(arrangedSubviews: [nameField, promptLabel, voiceLabel, instructionsView])
         stack.axis = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
