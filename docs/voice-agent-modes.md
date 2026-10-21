@@ -80,7 +80,18 @@ What every voice-capable contact's screen shows:
 
 The screen shows the pipeline resolved **for that contact now** (plan + engine
 + turn model), not the global defaults; if the app is offline from its engine
-it says so rather than showing a stale preference.
+it says so rather than showing a stale preference. Two rules from the first
+implementation (2026-10-21): the row **never repeats the Speech pickers**
+(client-side capabilities are shown as `on-device engines (see Speech)`, since
+the picker above already names them), and **`side: server` options are the
+active pipeline** — client-side entries are capabilities only.
+
+Known plumbing gap (2026-10-21): the live engine declares its pipeline to the
+**bridge's** `/voice/info`, but the phone reads the peer's advertised
+`/idfon.json` catalog (served by the holder) — the two are not connected, so a
+remote engine's server-side engines (e.g. Deepgram/ElevenLabs) do not reach
+the screen yet. Closing it = the engine's declaration flowing into the
+holder's advertised catalog (one hop; fits the bridge→library refactor).
 
 ## On-device agents are app-local contacts
 
