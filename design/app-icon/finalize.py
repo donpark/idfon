@@ -37,6 +37,10 @@ def shift(img, dx, dy):
     return out
 
 
+# re-derive the raw-frame mask first: the shift below overwrites handset-mask.png
+# in place, so a re-run would otherwise shift an already-shifted mask (drift)
+subprocess.run([sys.executable, "make_mask.py"], check=True)
+
 base = shift(Image.open("styled/styled-neu-neutral-v4-a.png").convert("RGB"), dx, dy)
 base.save("styled/styled-neu-neutral-v4-a-centered.png")
 shift(Image.open("mask/handset-mask.png").convert("L"), dx, dy).save("mask/handset-mask.png")
