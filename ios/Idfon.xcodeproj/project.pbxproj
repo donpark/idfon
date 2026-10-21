@@ -282,7 +282,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.8.0;
+				MARKETING_VERSION = 0.9.0;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(SRCROOT)/Vendor/device/libiroh_c_ffi.a",
 					"$(SRCROOT)/Vendor/device/libidfon_director.a",
@@ -331,7 +331,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.8.0;
+				MARKETING_VERSION = 0.9.0;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"$(SRCROOT)/Vendor/device/libiroh_c_ffi.a",
 					"$(SRCROOT)/Vendor/device/libidfon_director.a",
@@ -378,7 +378,7 @@
 				DEVELOPMENT_TEAM = RV27HPQNMF;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.8.0;
+				MARKETING_VERSION = 0.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.idfon.ios.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -396,7 +396,7 @@
 				DEVELOPMENT_TEAM = RV27HPQNMF;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.8.0;
+				MARKETING_VERSION = 0.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.idfon.ios.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;

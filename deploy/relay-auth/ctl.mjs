@@ -170,7 +170,7 @@ switch (command) {
       method: "POST",
       headers: {
         authorization: `Bearer ${opt("bearer", "")}`,
-        "x-iroh-node-id": endpoint,
+        "x-iroh-endpoint-id": endpoint,
       },
     });
     console.log(`${res.status} ${await res.text()}`);

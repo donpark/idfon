@@ -55,7 +55,7 @@ Toggle (for benchmarking against the public/N0 relays):
 
 Switch between the two and compare; no config edits needed.
 
-That starts `n0computer/iroh-relay:v1.3.0` beside the edge from
+That starts `n0computer/iroh-relay:v1.4.0` beside the edge from
 `relay/config.toml` + `compose.relay.yaml`, reusing the wildcard cert, serving
 `8443/tcp` (WSS) and `7842/udp` (QUIC address discovery), and writes
 `IDFON_RELAY_URLS=https://relay.<domain>:8443` into the edge's env. The firewall
@@ -122,11 +122,11 @@ for public repos. `donpark/idfon` is public, so GHCR works on a Free account.
 for an `edge-v*` tag:
 
 ```sh
-git tag edge-v0.8.0
-git push origin edge-v0.8.0
+git tag edge-v0.9.0
+git push origin edge-v0.9.0
 ```
 
-That publishes `:edge-v0.8.0` and `:latest`. New GHCR packages default to
+That publishes `:edge-v0.9.0` and `:latest`. New GHCR packages default to
 private, so make it public once: GitHub → Packages → `idfon-edge` → Package
 settings → Change visibility → Public. Public packages cost nothing to store or
 pull. (To keep it private instead, log the droplet in with a classic PAT that

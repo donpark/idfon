@@ -110,10 +110,10 @@ function testConfig(overrides = {}) {
 }
 
 const asBearer = (token) => ({ authorization: `Bearer ${token}` });
-// The wire name is X-Iroh-NodeId, which HTTP lowercases to "x-iroh-nodeid"
-// (observed from a live iroh-relay callout — see docs/relay-test-plan.md L2).
+// The wire name is X-Iroh-Endpoint-Id (iroh-relay >= 1.4), which HTTP lowercases
+// to "x-iroh-endpoint-id" (see docs/relay-test-plan.md L2).
 const check = (base, id, token = "relay-callout-bearer") =>
-  call(base, "/check", { method: "POST", headers: { ...asBearer(token), "x-iroh-nodeid": id } });
+  call(base, "/check", { method: "POST", headers: { ...asBearer(token), "x-iroh-endpoint-id": id } });
 
 async function bootstrapOwner(base, owner, endpoint) {
   const challenge = await call(base, "/owner/challenge", {
@@ -196,12 +196,14 @@ test("check: fail closed, owner admits and revokes callers", async () => {
 
     const ownerToken = JSON.parse(first.text).token;
     assert.equal((await check(base, SUBJECT)).status, 200);
-    // The hyphenated spelling is accepted as an alias for hand-written calls.
-    const alias = await call(base, "/check", {
-      method: "POST",
-      headers: { ...asBearer("relay-callout-bearer"), "x-iroh-node-id": SUBJECT },
-    });
-    assert.equal(alias.status, 200);
+    // Deprecated X-Iroh-NodeId spellings are accepted as aliases.
+    for (const header of ["x-iroh-nodeid", "x-iroh-node-id"]) {
+      const alias = await call(base, "/check", {
+        method: "POST",
+        headers: { ...asBearer("relay-callout-bearer"), [header]: SUBJECT },
+      });
+      assert.equal(alias.status, 200);
+    }
 
     // Owner admits a caller (owner authority, no grant needed).
     const CALLER = "33".repeat(32);
