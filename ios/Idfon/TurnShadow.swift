@@ -1,5 +1,6 @@
 import AVFAudio
 import CryptoKit
+import FluidAudio
 import Foundation
 import TygerVoice
 import TygerVoiceCoreAI
@@ -116,7 +117,9 @@ enum TygerModelStore {
 /// segmenter's commit stays authoritative until the diff says otherwise (the
 /// swap-over convention; `docs/voice-tyger-option.md` P3).
 ///
-/// Tier: Core AI (iOS 27+) — the shipping rung is fp16 (2026-10-21 ruling;
+/// Tier: the path-C student first (Parakeet Redux tap + the distilled 56 MB
+/// step, `Documents/tyger-models/pathc/` download-on-first-use), else
+/// Core AI (iOS 27+) — the shipping rung is fp16 (2026-10-21 ruling;
 /// `CoreAITurnModel` prefers the float16 assets and falls back to fp32) — when
 /// its `.aimodel`s are side-loaded in `Documents/tyger-models/coreai/`;
 /// otherwise CoreML (TygerEncoder fp16 on ANE, TygerEncoderDyn at startup,
@@ -148,14 +151,16 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     static func start() async -> TurnShadow? {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("tyger-models")
-        // Download-on-first-use: fetch this device's tier before looking for
-        // the files (side-loaded files are kept). A late shadow costs nothing
-        // — classic drives until it appears — and a failed download just
-        // means classic for this call.
-        if #available(iOS 27.0, *) {
-            _ = await TygerModelStore.ensure(tier: "coreai")
-        } else {
-            _ = await TygerModelStore.ensure(tier: "coreml")
+        // Download-on-first-use: the path-C tier (56 MB — the Parakeet tap is
+        // the ASR's own cache, nothing else to fetch). The legacy tiers below
+        // load only when already present — the student is the shipping tier,
+        // and an ASR-warmup race must never pull a 0.8 GB tier. A late shadow
+        // costs nothing — classic drives until it appears — and a failed
+        // download just means classic for this call.
+        _ = await TygerModelStore.ensure(tier: "pathc")
+        if #available(iOS 18.0, *), let student = studentModel(in: dir) {
+            Automation.mark("turn-shadow: tier ParakeetStudent")
+            return TurnShadow(model: student)
         }
         if #available(iOS 27.0, *),
            let coreai = try? CoreAITurnModel(directory: dir.appendingPathComponent("coreai")) {
@@ -177,6 +182,17 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         }
         Automation.mark("turn-shadow: tier CoreML (fp16/ANE)")
         return TurnShadow(model: model)
+    }
+
+    /// The path-C tier: the shipped Parakeet Redux tap (the FluidAudio ASR
+    /// cache has the bundles) + the distilled student step.
+    @available(iOS 18.0, *)
+    private static func studentModel(in dir: URL) -> ParakeetStudentTurnModel? {
+        let tap = AsrModels.defaultCacheDirectory(for: .redux)
+        return try? ParakeetStudentTurnModel(
+            preprocessorURL: tap.appendingPathComponent("Preprocessor.mlmodelc"),
+            encoderURL: tap.appendingPathComponent("Encoder.mlmodelc"),
+            stepURL: dir.appendingPathComponent("pathc/TygerStepStudent.mlpackage"))
     }
 
     private init(model: TurnModel) {

@@ -32,7 +32,7 @@ final class ParakeetReduxAsr: AsrEngine, AudioCaptureObserver {
 
     /// `~/.idfon/models/<parakeet repo>`, migrating FluidAudio's old
     /// `~/Library/Application Support/FluidAudio/Models` copy on first use.
-    private static func modelDirectory() -> URL {
+    static func modelDirectory() -> URL {
         let legacy = AsrModels.defaultCacheDirectory(for: .redux)
         let directory = ModelStore.directory(named: legacy.lastPathComponent)
         if let moved = ModelStore.migrate(from: legacy, to: directory) {
