@@ -22,8 +22,7 @@ cd "$root"
 
 # The daemon core is reached through the vendored dylib, so build it first (the
 # thin idfond links it); flags must match native/build.zig.
-RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
-  cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+  cargo build --release -p iroh-c-ffi
 cargo build --release -p idfond -p idfon-cli -p idfon-edge
 
 # A relink can leave an ad-hoc signature that no longer matches the pages; the

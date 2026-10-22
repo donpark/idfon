@@ -17,10 +17,8 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-# Build the vendored dylib first (the thin idfond links it); flags must match
-# native/build.zig so the dylib's install name stays @executable_path-relative.
-RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
-  cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+# Build the C-FFI dylib first (the thin idfond links it; crates/idfond/build.rs).
+  cargo build --release -p iroh-c-ffi
 cargo build --release -p idfond -p idfon-cli
 # A relink can leave an ad-hoc signature that no longer matches the pages;
 # the kernel then SIGKILLs the process at exec ("Code Signature Invalid").

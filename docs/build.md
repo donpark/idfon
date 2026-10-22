@@ -1,44 +1,46 @@
 # Build map: what to rebuild after a change
 
-This repo is one Cargo workspace plus a vendored, workspace-excluded
-`iroh-c-ffi` crate. Several projects consume the shared Rust core (the CLI, the
-daemon, the three apps, the eve agents). Each consumes it through its own
-entrypoint, and cargo/SwiftPM/Xcode cache per target dir — so a change only
+This repo is one Cargo workspace — all of `crates/*`, including the C-FFI
+crate `crates/iroh-c-ffi`. Several projects consume the shared Rust core (the
+CLI, the daemon, the three apps, the eve agents). Each consumes it through its
+own entrypoint, and cargo/SwiftPM/Xcode cache per target dir — so a change only
 needs the subprojects that actually link it. **When you change something shared,
 say which subprojects must be rebuilt.**
 
-## The three Rust target dirs
+## The two Rust target dirs
 
 | Dir | Holds | Built by |
 | --- | --- | --- |
-| `target/` | the workspace (`crates/*`) | `cargo build`/`cargo test` at the repo root |
-| `native/vendor/iroh-c-ffi/target/` | the vendored c-ffi crate (excluded from the workspace) | `cargo build --manifest-path native/vendor/iroh-c-ffi/Cargo.toml` |
+| `target/` | the whole workspace (`crates/*`, incl. `iroh-c-ffi`) | `cargo build`/`cargo test` at the repo root |
 | `deploy/cloudflare/target/` | the Cloudflare Worker (standalone wasm workspace) | `deploy/cloudflare/build.sh` |
 
-The vendored crate produces `libiroh_c_ffi.{dylib,so}` (macOS/Linux) or
+`crates/iroh-c-ffi` produces `libiroh_c_ffi.{dylib,so}` (macOS/Linux) or
 `.a` (iOS).
 
-**Hard ordering:** the vendored c-ffi artifact for a target must exist *before*
+**Hard ordering:** the c-ffi artifact for a target must exist *before*
 `idfond` for that target — `crates/idfond/build.rs` links it. Every consumer
 script already does this internally, so you rarely call cargo directly.
 
-**One RUSTFLAGS value:** every vendored build uses
-`RUSTFLAGS="-A unexpected_cfgs"`. A different value is a different cargo
-fingerprint and recompiles the whole ~550-crate graph — see
-`native/vendor/iroh-c-ffi/build.rs` for why the link args are not in RUSTFLAGS.
+**No per-script RUSTFLAGS.** The dylib's install name/soname and idfond's
+`$ORIGIN` rpath come from `build.rs` (`crates/iroh-c-ffi`, `crates/idfond`),
+and `-A unexpected_cfgs` lives in the root `.cargo/config.toml`. A RUSTFLAGS
+value set in a script overrides that config and is a different cargo
+fingerprint — a full ~550-crate recompile. One exception:
+`ios/build-deps.sh` sets it (byte-identically on both its cargo lines) for
+the iOS link args.
 
 ## Change → rebuild
 
 | You changed | Rebuild |
 | --- | --- |
 | `crates/*` library logic | `cargo test -p <crate>`; add the consumer build below only if you need its artifact |
-| `crates/idfon-core` | the workspace, plus `deploy/cloudflare/build.sh` (the Worker uses only the wasm-gated security helpers). A change to `transport` (e.g. the `IDFON_RELAY_*` knob) also needs the vendored libs rebuilt — `ios/build-deps.sh` (device staticlib) and the `iroh-c-ffi` dylib, then `idfond` — or the apps won't pick it up. |
-| `crates/idfon-daemon` (feature functions) | `cargo test -p idfon-daemon`, then the vendored libs rebuilt (`ios/build-deps.sh`, the `iroh-c-ffi` dylib, then `idfond`) — every app links the feature core through `libiroh_c_ffi`, whether it reaches it over the RPC socket or in-process (`idfon_request`). |
+| `crates/idfon-core` | the workspace, plus `deploy/cloudflare/build.sh` (the Worker uses only the wasm-gated security helpers). A change to `transport` (e.g. the `IDFON_RELAY_*` knob) also needs the c-FFI libs rebuilt — `ios/build-deps.sh` (device staticlib) and the `iroh-c-ffi` dylib, then `idfond` — or the apps won't pick it up. |
+| `crates/idfon-daemon` (feature functions) | `cargo test -p idfon-daemon`, then the c-FFI libs rebuilt (`ios/build-deps.sh`, the `iroh-c-ffi` dylib, then `idfond`) — every app links the feature core through `libiroh_c_ffi`, whether it reaches it over the RPC socket or in-process (`idfon_request`). |
 | `crates/idfon-director` (voice-agent harness) | `cargo test -p idfon-director`; the Apple staticlib is `cargo build -p idfon-director --features afm --target aarch64-apple-ios --release` (produces `libidfon_director.a`). `ios/build-deps.sh` builds and stages it into `ios/Vendor/device/`, and the Xcode project links it, so `pnpm ios build` covers it. `--features afm` links Apple Foundation Models via `fm-rs` and is Apple-only; the crate builds without it everywhere. It wraps `yoagent` (decision #31); the portable contract is `docs/voice-agent-loop-contract.md`. The mac app does **not** link it yet. |
 | `deploy/cloudflare/*` | `deploy/cloudflare/build.sh`, then `wrangler dev`/`deploy` |
 | `deploy/idfon-edge/Dockerfile` | rebuild/push the `idfon-edge` image (`edge-v*` tag or local build) |
 | `deploy/digitalocean/*` | nothing to build; follows the image (runbook in its README) |
-| `native/vendor/iroh-c-ffi/src/*` | the c-ffi artifact, then every consumer that links it: cli, mac, native, ios (staticlib) |
+| `crates/iroh-c-ffi/src/*` | the c-ffi artifact, then every consumer that links it: cli, mac, native, ios (staticlib) |
 | `crates/idfond` (daemon) | `pnpm cli build`, `pnpm mac build`, `pnpm native build` (all bundle `idfond`) |
 | `crates/idfon-cli` (CLI binary) | `pnpm cli build` |
 | `ios/Idfon/*` (Swift) | `pnpm ios build` |
@@ -48,10 +50,11 @@ fingerprint and recompiles the whole ~550-crate graph — see
 | `crates/idfon-voice`, `crates/idfon-voice-agent` | `pnpm voice build` (dylib + the `eve-idfon-voice` holder + the `agents/voice` bundle) |
 | docs only | nothing |
 
-Note: `idfond` is a workspace member whose `build.rs` links the vendored dylib,
-so `cargo build --release` / `cargo test --workspace` at the root implicitly need
-the vendored artifact first. Build it first if a bare workspace command fails
-with `vendored dylib ... missing`.
+Note: `idfond` is a workspace member whose `build.rs` links the release c-FFI
+dylib (even for debug builds), so `cargo build --release` /
+`cargo test --workspace` at the root implicitly need
+`cargo build --release -p iroh-c-ffi` first. Build it first if a bare workspace
+command fails with `iroh-c-ffi dylib ... missing`.
 
 ## Consumer entrypoints
 

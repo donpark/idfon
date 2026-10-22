@@ -1,0 +1,5 @@
+[build]
+# Allow (not deny) unexpected_cfgs: the legacy objc/cocoa crates in the
+# nokhwa camera stack use the old #[cfg(feature = "cargo-clippy")] idiom
+# ~300x per pass. One value for every build keeps cargo fingerprints stable.
+rustflags = ["-A", "unexpected_cfgs"]

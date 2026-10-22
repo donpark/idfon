@@ -14,7 +14,7 @@ let package = Package(
         .package(path: "../ports/tyger-swift"),
     ],
     targets: [
-        // Hand-declared C ABI from native/vendor/iroh-c-ffi (same approach as
+        // Hand-declared C ABI from crates/iroh-c-ffi (same approach as
         // the iOS bridging header: the library is the single source of truth).
         .target(name: "CIdfon"),
         .executableTarget(

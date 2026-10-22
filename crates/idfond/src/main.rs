@@ -1,6 +1,6 @@
 //! Thin `idfond` launcher. All daemon logic lives in the shared
 //! `libiroh_c_ffi.dylib` (entry: `idfon_daemon_run`, implemented in
-//! `native/vendor/iroh-c-ffi/src/daemon.rs` over the `idfon-daemon` crate);
+//! `crates/iroh-c-ffi/src/daemon.rs` over the `idfon-daemon` crate);
 //! this binary only parses arguments and calls into the dylib.
 
 use std::ffi::CString;

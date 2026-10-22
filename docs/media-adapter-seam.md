@@ -54,16 +54,16 @@ moq changes, every shell changes.
 | Current binding | Location | Intended adapter |
 |---|---|---|
 | `AudioSource::Device(AudioCaptureConfig::default())` | `crates/idfon-media/src/service.rs` (`start_publisher`) | `DeviceAudioCapture` (platform) |
-| `AudioSource::Device(… capture::Source::Microphone(INPUT_DEVICE))` | `native/vendor/iroh-c-ffi/src/media.rs` (`start_live`) | `DeviceAudioCapture` |
-| `AudioSource::Frames { audio_stream(queue) }` (shell push) | `native/vendor/iroh-c-ffi/src/media.rs` | `ShellAudioCapture` — already adapter-shaped |
+| `AudioSource::Device(… capture::Source::Microphone(INPUT_DEVICE))` | `crates/iroh-c-ffi/src/media.rs` (`start_live`) | `DeviceAudioCapture` |
+| `AudioSource::Frames { audio_stream(queue) }` (shell push) | `crates/iroh-c-ffi/src/media.rs` | `ShellAudioCapture` — already adapter-shaped |
 | `AudioSource::Frames { AudioFile }` | `crates/idfon-media/src/live.rs` | `FileAudioCapture` (bundled, stays) |
-| `VideoSource::Frames(video_stream())` (shell push) | `native/vendor/iroh-c-ffi/src/media.rs` | `ShellVideoCapture` — already adapter-shaped |
+| `VideoSource::Frames(video_stream())` (shell push) | `crates/iroh-c-ffi/src/media.rs` | `ShellVideoCapture` — already adapter-shaped |
 | `VideoSource::AnnexB(stream)` | `crates/idfon-media/src/video.rs` (`annexb_source`) | `FileVideoCapture` (bundled, stays) |
 | `broadcast.audio().set_with(..)` / `video().set_renditions(..)` | `media.rs`, `service.rs`, `live.rs`, `video.rs` | behind `audio_source()` / `video_source()` |
-| `moq_audio::capture::devices()` / `playback::devices()` | `native/vendor/iroh-c-ffi/src/media.rs` | `AudioCapture::devices` / `AudioPlayback::devices` |
-| `PLAYBACK_CONTROL` volume | `native/vendor/iroh-c-ffi/src/media.rs` | `AudioPlayback::set_volume` |
+| `moq_audio::capture::devices()` / `playback::devices()` | `crates/iroh-c-ffi/src/media.rs` | `AudioCapture::devices` / `AudioPlayback::devices` |
+| `PLAYBACK_CONTROL` volume | `crates/iroh-c-ffi/src/media.rs` | `AudioPlayback::set_volume` |
 | `AudioConsumer::read()` → `write_wav` | `crates/idfon-media/src/live.rs` (`record_remote`) | decode bundled; live sink becomes `AudioPlayback::play` |
-| `track.recv()` → JPEG encode → `video-frame.jpg` → GUI timer | `native/vendor/iroh-c-ffi/src/video.rs` | `VideoRender::present` |
+| `track.recv()` → JPEG encode → `video-frame.jpg` → GUI timer | `crates/iroh-c-ffi/src/video.rs` | `VideoRender::present` |
 | `track.recv()` → re-encode → file | `crates/idfon-media/src/video.rs` (`record_video_track`) | stays (headless recording, not render) |
 
 The FFI push entry points (`media_audio_push_samples`,

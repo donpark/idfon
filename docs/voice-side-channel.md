@@ -472,7 +472,7 @@ to the cascade.
   `VoiceService::speak_turn` (the audit keeps the original agent text), and
   `scripts/voice-pipeline-check.sh` asserts the normalization.
 - **Rust seam bridge** (`idfon-voice/src/apple_ffi.rs` +
-  `native/vendor/iroh-c-ffi/src/voice.rs` + `ios/Idfon/OnDeviceVoiceBridge.swift`):
+  `crates/iroh-c-ffi/src/voice.rs` + `ios/Idfon/OnDeviceVoiceBridge.swift`):
   the app registers its Swift engine's C functions with `idfon_voice_set_bindings`,
   and `AppleVoiceEngine` implements the Rust `VoiceEngine` by calling them
   (whole-utterance; s16 mono PCM). `idfon_voice_apple_selftest` runs the Rust

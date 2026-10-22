@@ -4,7 +4,7 @@ import Foundation
 /// C ABI that lets the Rust `idfon-voice` seam drive the Swift on-device
 /// provider (`OnDeviceVoice`). Symbols are declared `extern "C"` in
 /// `crates/idfon-voice/src/apple_ffi.rs` and referenced by
-/// `native/vendor/iroh-c-ffi/src/voice.rs`.
+/// `crates/iroh-c-ffi/src/voice.rs`.
 ///
 /// Contract: s16 little-endian mono PCM. The Rust side frees every pointer with
 /// the matching `idfon_apple_voice_free*` function.

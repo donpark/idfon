@@ -6,7 +6,7 @@
   "scripts": {
     "build": "bash ./scripts/build.sh",
     "clean": "bash ./scripts/build.sh clean",
-    "clean:build-cache": "rm -rf native/vendor/iroh-c-ffi/target ~/.cargo/registry/src",
+    "clean:build-cache": "rm -rf target ~/.cargo/registry/src",
     "native": "pnpm --filter @idfon/native",
     "all": "pnpm --filter @idfon/*",
     "cli": "pnpm --filter @idfon/cli",

@@ -4,7 +4,7 @@ Native macOS client — Swift + AppKit (no SwiftUI, no Native SDK). Programmatic
 UI, mirroring how the iOS app is programmatic UIKit. The app logic is the iOS
 app's Swift core (`DaemonClient`, `ChatStore`, `VideoCall`, `VoiceMemo`,
 `BlobTransfer`) adapted for the desktop; the Rust media pipeline is the shared
-`native/vendor/iroh-c-ffi` dylib, and `idfond` runs as a sibling subprocess
+`crates/iroh-c-ffi` dylib, and `idfond` runs as a sibling subprocess
 (same default profile/socket as the CLI and the Native SDK GUI:
 `/tmp/idfon/idfond.sock`).
 

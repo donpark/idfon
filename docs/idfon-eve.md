@@ -318,7 +318,7 @@ lifetime does. Three shapes, in order of preference:
    deploy.
 3. **Native addon (later, optional).** Drop the Rust binary by exposing
    `idfon-core` through a Node N-API addon. True in-process single process.
-   Deferred: no Node iroh binding exists today (`native/vendor/iroh-c-ffi` is
+   Deferred: no Node iroh binding exists today (`crates/iroh-c-ffi` is
    a C API oriented at the daemon/client), and building one is speculative
    until the semantics are proven.
 

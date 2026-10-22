@@ -14,7 +14,7 @@ kept because it records decisions; **design** = not all implemented.
 | `daemon.md` | why there is a daemon at all; the daemon as packaging of the feature functions | questioning the process model |
 | `protocol.md` | daemon JSON IPC methods/params | adding/changing an RPC or a client |
 | `interaction-parameters.md` | CLI vs GUI responsibility split | where a policy/feature belongs |
-| `build.md` | which subprojects to rebuild after a change; the Rust/FFI target dirs; `pnpm build`/`pnpm voice build` orchestration | touching a shared crate or the vendored c-ffi, unsure what needs rebuilding, or building/cleaning everything |
+| `build.md` | which subprojects to rebuild after a change; the Rust/FFI target dirs; `pnpm build`/`pnpm voice build` orchestration | touching a shared crate or the c-ffi crate, unsure what needs rebuilding, or building/cleaning everything |
 
 ## Platforms and apps
 

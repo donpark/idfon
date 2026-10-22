@@ -15,9 +15,8 @@ native/
 │   │                          #   Elm-style update(), Cmd.request / Sub.timer
 │   └── iroh_ffi.zig           # Zig host: idfond.request bridge, media audio
 │                              #   worker, auto-spawns idfond (fork), Unix socket
-├── build.zig                  # Zig build: cargo-builds vendor/iroh-c-ffi
+├── build.zig                  # Zig build: cargo-builds ../crates/iroh-c-ffi
 │                              #   (static + dylib), links the Zig core
-├── vendor/iroh-c-ffi/         # Rust C-ABI lib (same crate the mac/iOS apps use)
 ├── assets/icons/              # app icons
 └── zig-out/bin/               # build output (+ bundled libiroh_c_ffi.dylib)
 ```

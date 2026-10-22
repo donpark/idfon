@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// C ABI from native/vendor/iroh-c-ffi. Hand-declared (same approach as the
+// C ABI from crates/iroh-c-ffi. Hand-declared (same approach as the
 // iOS bridging header) instead of including irohnet.h; the library is the
 // single source of truth.
 
@@ -128,12 +128,12 @@ char *idfon_director_turn_input(void *director, const char *input_json);
 void idfon_director_free(void *director);
 void idfon_director_free_string(char *ptr);
 
-// P5 barge-in/echo filters (native/vendor/iroh-c-ffi src/voice.rs) so the mac
+// P5 barge-in/echo filters (crates/iroh-c-ffi src/voice.rs) so the mac
 // shell reuses the Rust rules instead of reimplementing them.
 uint8_t idfon_voice_is_cancellable(const char *text, uint8_t playing, uint8_t in_tool_window);
 uint8_t idfon_voice_is_echo(const char *spoken, const char *heard);
 
-// Turn rules (idfon_voice::turns via native/vendor/iroh-c-ffi src/voice.rs): the
+// Turn rules (idfon_voice::turns via crates/iroh-c-ffi src/voice.rs): the
 // voice loop's decision seam, one session per conversation. JSON results are
 // freed with rust_free_string, turn audio with idfon_voice_turn_free_audio.
 // mode is "listen" or "speaking" (NULL = "listen"); audio is 16 kHz mono f32.

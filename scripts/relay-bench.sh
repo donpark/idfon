@@ -35,12 +35,11 @@ fi
 # Ad-hoc sign after relink — a stale signature gets SIGKILLed at exec.
 if [ -z "${IDFON_CLI:-}" ]; then
   if [ "$(uname)" = Darwin ]; then
-    RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
-      cargo build --release --quiet --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+          cargo build --release --quiet -p iroh-c-ffi
     cargo build --release --quiet -p idfon-cli -p idfond
     codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
   else
-    cargo build --release --quiet --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+    cargo build --release --quiet -p iroh-c-ffi
     cargo build --release --quiet -p idfon-cli -p idfond
   fi
 fi

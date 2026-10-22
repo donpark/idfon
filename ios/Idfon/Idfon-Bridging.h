@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 
-// C ABI from native/vendor/iroh-c-ffi. Keep in sync with src/client.rs and
+// C ABI from crates/iroh-c-ffi. Keep in sync with src/client.rs and
 // src/daemon.rs; the library is the single source of truth.
 
 // Runs the daemon to completion on the calling thread ("ctrl_c" clean
@@ -33,7 +33,7 @@ void idfon_client_result_free(uint8_t *ptr, uintptr_t len);
 // idfon_client_socket_path(profile, out, cap) exists too; the app passes its
 // own sandboxed socket path instead.
 
-// Media pipeline (native/vendor/iroh-c-ffi src/media.rs + src/video.rs).
+// Media pipeline (crates/iroh-c-ffi src/media.rs + src/video.rs).
 // Declared here instead of including irohnet.h (1338 lines); the static lib
 // is the single source of truth. String results are heap-owned and freed
 // with rust_free_string. Empty string return = failure (see
@@ -74,7 +74,7 @@ void media_shutdown(void);
 void iroh_enable_tracing(void);              // tracing -> /tmp/idfon-<pid>.log (IROH_C_LOG filter)
 void rust_free_string(char *ptr);
 
-// Apple on-device voice seam (native/vendor/iroh-c-ffi src/voice.rs +
+// Apple on-device voice seam (crates/iroh-c-ffi src/voice.rs +
 // idfon-voice apple-ffi). The app registers its Swift engine once, then the
 // Rust VoiceEngine drives it. selftest returns a transcript or "error:...";
 // free with rust_free_string. PCM is s16 little-endian mono.
@@ -91,7 +91,7 @@ uint8_t idfon_voice_is_cancellable(const char *text, uint8_t playing, uint8_t in
 // Text-layer echo check (P5): nonzero when `heard` is our own `spoken` text.
 uint8_t idfon_voice_is_echo(const char *spoken, const char *heard);
 
-// Turn rules (idfon_voice::turns via native/vendor/iroh-c-ffi src/voice.rs): the
+// Turn rules (idfon_voice::turns via crates/iroh-c-ffi src/voice.rs): the
 // voice loop's decision seam, one session per conversation. JSON results are
 // freed with rust_free_string, turn audio with idfon_voice_turn_free_audio.
 // mode is "listen" or "speaking" (NULL = "listen"); audio is 16 kHz mono f32.

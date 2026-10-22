@@ -53,7 +53,7 @@ cannot say which path won. (b) The bare FFI (`irohnet.h`) is not enough to
 build this benchmark in TS on top of iroh directly: its `EndpointConfig` has
 only `RELAY_MODE_DISABLED|DEFAULT` (no custom relay map, no auth token, no
 relay-only) and no path query. Extending it is platform work in
-`native/vendor/iroh-c-ffi`, not vertical work.
+`crates/iroh-c-ffi`, not vertical work.
 
 ## 2. Voice-turn stages — `voice-report` tool / `scripts/voice-latency-report.sh`
 

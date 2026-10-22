@@ -10,9 +10,9 @@
 #                                   x86_64-unknown-linux-gnu / aarch64-unknown-linux-gnu
 #                                     (cargo zigbuild; brew install zig cargo-zigbuild)
 #
-# RUSTFLAGS keep the dylib's install name @executable_path-relative (macOS) or
-# give idfond an $ORIGIN rpath (Linux) so the daemon finds the dylib shipped
-# next to it in bin/.
+# The dylib's install name/soname and idfond's $ORIGIN rpath are emitted by
+# the crates' build.rs (crates/iroh-c-ffi, crates/idfond) — no RUSTFLAGS here,
+# so every script shares one cargo fingerprint.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
@@ -58,16 +58,12 @@ fi
 # 1. Vendored dylib (the thin idfond links it; see crates/idfond/build.rs).
 case "$target" in
   *apple-darwin)
-    # /usr/lib/swift rpath: x86_64 capture-stack deps autolink @rpath/libswift*;
-    # dyld resolves them from the dyld shared cache. Harmless on arm64.
-    RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib -C link-arg=-Wl,-rpath,/usr/lib/swift" \
-      $build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml $cross_flag
+    $build --release -p iroh-c-ffi $cross_flag
     ;;
   *linux-gnu)
     # ponytail: release CLI omits Linux VAAPI; the Ubuntu libva headers do not
     # match cros-libva's generated bindings. Native Linux builds keep VAAPI.
-    RUSTFLAGS="-C link-arg=-Wl,-soname,libiroh_c_ffi.so" \
-      $build --release --no-default-features --manifest-path native/vendor/iroh-c-ffi/Cargo.toml $cross_flag
+    $build --release --no-default-features -p iroh-c-ffi $cross_flag
     ;;
 esac
 
@@ -85,8 +81,7 @@ case "$target" in
     codesign --force -s - "$out/$dylib" "$out/idfond"
     ;;
   *linux-gnu)
-    RUSTFLAGS='-C link-arg=-Wl,-rpath,$ORIGIN' \
-      $build --release -p idfond -p idfon-cli $cross_flag
+    $build --release -p idfond -p idfon-cli $cross_flag
     ;;
 esac
 

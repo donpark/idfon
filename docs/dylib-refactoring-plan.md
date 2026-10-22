@@ -24,7 +24,7 @@ One artifact, two phases. No second, smaller dylib is created at any point.
 |---|---|---|
 | `Idfon.app/Contents/MacOS/Idfon` | 46MB | 15.2MB |
 | `Idfon.app/Contents/MacOS/idfond` | 37MB | 13.2MB |
-| `vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib` (already built) | 38MB | 13.5MB |
+| `target/release/libiroh_c_ffi.dylib` (already built) | 38MB | 13.5MB |
 
 Both binaries statically compile the same Rust stack (iroh 1.4, iroh-blobs
 0.103, tokio, opus/cpal): ~40MB of Idfon's 46MB and nearly all of idfond's
@@ -56,13 +56,13 @@ app bundle carries `libiroh_c_ffi.dylib` instead of statically linking the
 
 ### 1.1 Extend `iroh-c-ffi` with the client API
 
-File: `native/vendor/iroh-c-ffi/src/lib.rs` (new `client.rs` module).
+File: `crates/iroh-c-ffi/src/lib.rs` (new `client.rs` module).
 
 Add a path dependency on the protocol crate so framing types have one source
 of truth:
 
 ```toml
-# native/vendor/iroh-c-ffi/Cargo.toml
+# crates/iroh-c-ffi/Cargo.toml
 [dependencies]
 idfon-protocol = { path = "../../../crates/idfon-protocol" }
 ```
