@@ -424,11 +424,12 @@ final class PocketTtsEngine: NSObject, TtsEngine {
         }
         do {
             let start = Date()
-            let wav: Data
-            if let clonedVoice {
-                wav = try await manager.synthesize(text: text, voiceData: clonedVoice)
-            } else {
-                wav = try await manager.synthesize(text: text)
+            let cloned = clonedVoice
+            let wav = try await Self.synthesizeGuarded {
+                if let cloned {
+                    return try await manager.synthesize(text: text, voiceData: cloned)
+                }
+                return try await manager.synthesize(text: text)
             }
             if stopRequested { return }  // cancelled while synthesizing
             lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
@@ -474,6 +475,30 @@ final class PocketTtsEngine: NSObject, TtsEngine {
     private static func env(_ key: String) -> String? {
         guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else { return nil }
         return value
+    }
+
+    /// FluidAudio 0.17.x can silently lose a session's producer task and hang
+    /// synthesis forever (upstream patch: patches/FluidAudio-pocket-session-
+    /// lifetime.md). Race a deadline and retry once before giving up (the
+    /// caller falls back to Apple TTS).
+    private static func synthesizeGuarded(
+        _ body: @escaping @Sendable () async throws -> Data
+    ) async throws -> Data {
+        for attempt in 1...2 {
+            let winner: Data? = try await withThrowingTaskGroup(of: Data?.self) { group in
+                group.addTask { try await body() }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 10_000_000_000)
+                    return nil
+                }
+                let first = try await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
+            if let winner { return winner }
+            Automation.mark("voice: pocket synth deadline (attempt \(attempt))")
+        }
+        throw NSError(domain: "pocket-tts", code: 1)
     }
 
     /// Cloned-voice pack directory (side-loaded or fetched; see
