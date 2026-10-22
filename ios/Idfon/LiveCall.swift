@@ -107,11 +107,23 @@ final class LiveCall {
         notify()
     }
 
-    /// The panel picked an audio mode (docs/stereo-calls.md): unmute, and when
-    /// the mode changes the stream layout (2D ↔ mono) re-publish the mic leg
-    /// and re-send the invite — the peer's handler re-joins on a fresh invite.
+    /// The panel picked an audio route (docs/stereo-calls.md): unmute, and when
+    /// the route changes the stream layout (stereo ↔ mono) re-publish the mic
+    /// leg and re-send the invite — the peer's handler re-joins on a fresh
+    /// invite.
     func setAudioMode(_ mode: CallAudioMode) {
         setAudioEnabled(true)
+        guard published, let peer = activePeer else { return }
+        let want = ContactAudioProfiles.profile(for: peer) == .pcm24k
+            ? 1
+            : AudioIO.captureChannelsForCall()
+        guard want != publishedChannels else { return }
+        Task { [weak self] in await self?.republishAudio(channels: want, peer: peer) }
+    }
+
+    /// The panel's Stereo toggle: re-publish the mic leg when it changes the
+    /// stream layout (silence at the new layout keeps a muted leg simple).
+    func setStereo(_ on: Bool) {
         guard published, let peer = activePeer else { return }
         let want = ContactAudioProfiles.profile(for: peer) == .pcm24k
             ? 1

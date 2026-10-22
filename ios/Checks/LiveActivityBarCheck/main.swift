@@ -25,6 +25,7 @@ check(LiveActivityBar.clock(222) == "03:42", "clock m:ss")
 check(LiveActivityBar.clock(3723) == "1:02:03", "clock h:mm:ss")
 var m = LiveActivityBarModel(peerId: "p1", handle: "@janedoe")
 m.audioModes = CallAudioMode.displayOrder
+m.stereoAvailable = true
 m.phase = .inCall; m.elapsed = 222
 m.rows = [.init(id: "r1", name: "Archive.zip", kind: .transfer(fraction: 0.42, bytesPerSecond: 12_000_000))]
 m.density = .compact
@@ -60,7 +61,7 @@ bar.onIntent = { intents.append($0) }
 func buttons(_ v: UIView) -> [UIButton] { v.subviews.flatMap { ($0 as? UIButton).map { [$0] } ?? buttons($0) } }
 let visible = buttons(bar).filter { !$0.isHidden && $0.window == nil ? !$0.isHidden : true }.filter { b in var v: UIView? = b; while let x = v { if x.isHidden { return false }; v = x.superview }; return true }
 print("visible buttons:", visible.map { $0.accessibilityLabel ?? $0.configuration?.title ?? "?" })
-check(visible.count == 8, "4 audio modes cam + cancel + pause stop") // 5 media row, transfer: cancel, stream: pause+stop
+check(visible.count == 9, "4 segments stereo cam + cancel + pause stop") // 6 media row, transfer: cancel, stream: pause+stop
 func fire(_ b: UIButton) { for t in b.allTargets { for a in b.actions(forTarget: t, forControlEvent: .touchUpInside) ?? [] { _ = (t as AnyObject).perform(NSSelectorFromString(a), with: b) } } }
 fire(visible.first { $0.accessibilityLabel == "Camera" }!)
 fire(visible.first { $0.configuration?.title == "Cancel" }!)
@@ -130,17 +131,17 @@ check(videoLess.contains("Built-in") && !videoLess.contains("Camera"), "video-le
 m.audioAvailable = true; m.videoAvailable = true; bar.apply(m); host.layoutIfNeeded()
 let bothTracks = visibleLabels()
 check(bothTracks.contains("Built-in") && bothTracks.contains("Camera"), "modes and cam visible with both tracks: \(bothTracks)")
-// Present *and* wired: the audio mode buttons and cam emit their intents.
-// Tapping the active mode unsets it (radio with deselect).
+// Present *and* wired: the radio group, the Stereo toggle and cam emit their
+// intents — plain radio (Mute is a segment), so there is no deselect dance.
 intents.removeAll()
-m.selectedAudioMode = .builtIn; bar.apply(m); host.layoutIfNeeded()
-fire(visibleButtons().first { $0.accessibilityLabel == "Earphone 2D" }!)
+m.selectedAudioMode = .mute; m.stereo = false; bar.apply(m); host.layoutIfNeeded()
+fire(visibleButtons().first { $0.accessibilityLabel == "Speaker" }!)
+fire(visibleButtons().first { $0.accessibilityLabel == "Stereo" }!)
 fire(visibleButtons().first { $0.accessibilityLabel == "Camera" }!)
-check(intents == [.setAudioMode(.earphone2D), .toggleCam], "in-call mode/cam emit intents: \(intents)")
+check(intents == [.setAudioMode(.speaker), .setStereo(true), .toggleCam], "media row emits intents: \(intents)")
 intents.removeAll()
-m.selectedAudioMode = .earphone2D; bar.apply(m); host.layoutIfNeeded()
-fire(visibleButtons().first { $0.accessibilityLabel == "Earphone 2D" }!)
-check(intents == [.setAudioMode(nil)], "active mode click unsets: \(intents)")
+fire(visibleButtons().first { $0.accessibilityLabel == "Mute" }!)
+check(intents == [.setAudioMode(.mute)], "mute segment mutes: \(intents)")
 
 // §4 Session Tray registry (TransferCenter): begin/update/finish, per-peer rows,
 // cancel routing, fraction clamping. The registry is @MainActor; the check runs

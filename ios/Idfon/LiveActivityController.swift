@@ -85,7 +85,8 @@ final class LiveActivityController: NSObject {
     /// call is really sending (and hides toggles for absent tracks). The audio
     /// mode selection is ours (the radio group); nothing is selected while the
     /// audio stream is off.
-    private var selectedAudioMode: CallAudioMode?
+    private var selectedAudioMode: CallAudioMode = .mute
+    private var stereoOn = false
     private var camOn = false
 
     private var elapsed: TimeInterval = 0
@@ -178,7 +179,7 @@ final class LiveActivityController: NSObject {
             }
         }
 
-        /// The panel picked an audio mode: unmute and, when the mode changes
+        /// The panel picked an audio route: unmute and, when the route changes
         /// the stream layout, re-publish the leg (the machines' own concern).
         func setAudioMode(_ mode: CallAudioMode) {
             switch self {
@@ -187,6 +188,15 @@ final class LiveActivityController: NSObject {
             case .voice(let session):
                 session.setAudioEnabled(true)
                 session.setSpeakerphone(mode == .speaker)
+            }
+        }
+
+        /// The panel's Stereo toggle: re-publish when the stream layout changes.
+        func setStereo(_ on: Bool) {
+            switch self {
+            case .audio(let call): call.setStereo(on)
+            case .video(let call): call.setStereo(on)
+            case .voice: break
             }
         }
 
@@ -324,7 +334,8 @@ final class LiveActivityController: NSObject {
         if next != previous, next != .idle {
             // A pending call has no machine yet; it begins mic-only, like a dial.
             let audioOn = machine?.audioEnabled ?? (pendingCall != nil)
-            selectedAudioMode = audioOn ? defaultAudioMode(for: machine?.peer ?? pendingCall) : nil
+            selectedAudioMode = audioOn ? defaultAudioMode(for: machine?.peer ?? pendingCall) : .mute
+            stereoOn = AudioIO.stereoStreamForCall()
             camOn = machine?.videoEnabled ?? false
         }
         phase = next
@@ -385,8 +396,10 @@ final class LiveActivityController: NSObject {
         if phase != .idle, let callPeer {
             var model = LiveActivityBarModel(peerId: callPeer, handle: barHandle(for: callPeer))
             model.phase = phase
-            model.audioModes = ContactAudioModes.available(for: callPeer)
+            model.audioModes = ContactAudioModes.availableRoutes(for: callPeer)
             model.selectedAudioMode = selectedAudioMode
+            model.stereoAvailable = ContactAudioModes.stereoAllowed(for: callPeer)
+            model.stereo = stereoOn
             model.camOn = camOn
             model.audioAvailable = machine?.audioAvailable ?? true
             // No machine yet (pending placeholder): no cam toggle — it would be
@@ -525,6 +538,7 @@ final class LiveActivityController: NSObject {
                 openPeerThread(peerId)
             }
         case .setAudioMode(let mode): applyAudioMode(mode, peerId: peerId)
+        case .setStereo(let on): applyStereo(on, peerId: peerId)
         case .toggleCam: toggleSendState(peerId: peerId)
         // Session Tray actions (§4): Cancel aborts the transfer; pause/Stop is
         // for media streams, which have no producer yet.
@@ -605,12 +619,12 @@ final class LiveActivityController: NSObject {
 
     // MARK: - Audio modes (the media-stream group)
 
-    /// The mode a fresh call starts in: the route the device is already on,
+    /// The route a fresh call starts in: the route the device is already on,
     /// clamped to the modes this contact offers — the pre-panel auto rule as
     /// the default selection (docs/stereo-calls.md). With no explicit pick the
     /// machines run this same rule (`AudioIO.preferredMode` nil = auto).
     private func defaultAudioMode(for peerID: String?) -> CallAudioMode {
-        let available = peerID.map(ContactAudioModes.available(for:)) ?? CallAudioMode.displayOrder
+        let available = peerID.map(ContactAudioModes.availableRoutes(for:)) ?? CallAudioMode.displayOrder
         let session = AVAudioSession.sharedInstance()
         let preferred: CallAudioMode
         if session.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
@@ -618,28 +632,37 @@ final class LiveActivityController: NSObject {
         } else if session.currentRoute.outputs.contains(where: {
             $0.portType == .headphones || $0.portType == .usbAudio
         }) {
-            preferred = AudioIO.stereoCaptureAllowed() ? .earphone2D : .earphone
+            preferred = .earphone
         } else {
             preferred = .builtIn
         }
         return available.contains(preferred) ? preferred : (available.first ?? .builtIn)
     }
 
-    /// The radio group: pick the call's audio path (nil = the audio stream is
-    /// off). Route and mute apply immediately; the machines re-publish when the
-    /// mode changes the stream layout (2D ↔ mono).
-    private func applyAudioMode(_ mode: CallAudioMode?, peerId: String) {
+    /// The radio group: the call's audio state — a route (audio live there) or
+    /// `.mute` (the stream is off). Applies immediately; the machines
+    /// re-publish when the stream layout changes (stereo ↔ mono).
+    private func applyAudioMode(_ mode: CallAudioMode, peerId: String) {
         guard let machine = ActiveMachine.current, peerId == (machine.peer ?? nil) else { return }
-        if let mode {
-            AudioIO.preferredMode = mode
-            applyRoute(for: mode)
-            machine.setAudioMode(mode)
-            selectedAudioMode = mode
-        } else {
-            // Tapping the active mode unsets it: the audio stream stops.
+        selectedAudioMode = mode
+        guard mode != .mute else {
             machine.setAudioEnabled(false)
-            selectedAudioMode = nil
+            render()
+            return
         }
+        AudioIO.preferredMode = mode
+        applyRoute(for: mode)
+        machine.setAudioMode(mode)
+        render()
+    }
+
+    /// The Stereo toggle: armed even while muted (it configures the stream);
+    /// the machines re-publish when it changes the stream layout.
+    private func applyStereo(_ on: Bool, peerId: String) {
+        guard let machine = ActiveMachine.current, peerId == (machine.peer ?? nil) else { return }
+        AudioIO.preferredStereo = on
+        stereoOn = on
+        machine.setStereo(on)
         render()
     }
 
@@ -654,6 +677,8 @@ final class LiveActivityController: NSObject {
         let session = AVAudioSession.sharedInstance()
         do {
             switch mode {
+            case .mute:
+                return
             case .builtIn:
                 try session.overrideOutputAudioPort(.none)
                 if let builtIn = (session.availableInputs ?? []).first(where: { $0.portType == .builtInMic }) {
@@ -664,7 +689,7 @@ final class LiveActivityController: NSObject {
                 if let builtIn = (session.availableInputs ?? []).first(where: { $0.portType == .builtInMic }) {
                     try session.setPreferredInput(builtIn)
                 }
-            case .earphone, .earphone2D:
+            case .earphone:
                 // The headset is assumed available: prefer its input when one
                 // is present, else leave the route alone.
                 if let headset = (session.availableInputs ?? []).first(where: { $0.portType != .builtInMic }) {

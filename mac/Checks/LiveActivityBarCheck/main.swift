@@ -50,22 +50,24 @@ MainActor.assumeIsolated {
         button.performClick(nil)
     }
 
-    // In a call: the audio media group + cam present and wired.
+    // In a call: the audio radio group + Stereo + cam present and wired.
     m.phase = .inCall; m.density = .expanded; m.audioAvailable = true; m.videoAvailable = true
-    m.audioModes = CallAudioMode.displayOrder; m.selectedAudioMode = nil; m.camOn = false
+    m.audioModes = CallAudioMode.displayOrder; m.selectedAudioMode = .mute
+    m.stereoAvailable = true; m.stereo = false; m.camOn = false
     bar.apply(m)
     let inCall = visibleIds()
     print("in-call:", inCall)
-    check(inCall.contains("audio-builtIn") && inCall.contains("audio-earphone2D") && inCall.contains("cam"),
-          "in-call shows audio modes/cam: \(inCall)")
+    check(inCall.contains("audio-builtIn") && inCall.contains("audio-mute")
+            && inCall.contains("stereo") && inCall.contains("cam"),
+          "in-call shows modes/stereo/cam: \(inCall)")
     intents.removeAll()
-    click("audio-builtIn"); click("cam")
-    check(intents == [.setAudioMode(.builtIn), .toggleCam], "in-call mode/cam emit intents: \(intents)")
-    // Radio with deselect: clicking the active mode unsets it (audio stream off).
-    m.selectedAudioMode = .builtIn; bar.apply(m)
+    click("audio-builtIn"); click("stereo"); click("cam")
+    check(intents == [.setAudioMode(.builtIn), .setStereo(true), .toggleCam],
+          "media row emits intents: \(intents)")
+    // Plain radio: the Mute segment mutes — no deselect gesture exists.
     intents.removeAll()
-    click("audio-builtIn")
-    check(intents == [.setAudioMode(nil)], "active mode click unsets: \(intents)")
+    click("audio-mute")
+    check(intents == [.setAudioMode(.mute)], "mute segment mutes: \(intents)")
 
     // Idle and the ringing Bar have no stream toggles.
     m.phase = .idle; bar.apply(m)

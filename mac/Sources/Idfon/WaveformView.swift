@@ -341,16 +341,29 @@ final class AudioMeter {
     /// The call audio mode picked on the live panel's media group (nil = the
     /// auto rule above). Drives the VPIO decision and the capture channel count
     /// (docs/stereo-calls.md).
+    /// The route picked on the live panel's radio group (nil = the auto rule
+    /// above).
     static var preferredMode: CallAudioMode?
 
-    /// Stereo capture: the picked mode, or on auto the headset route.
-    static func stereoCaptureForCall() -> Bool {
-        if let preferredMode { return preferredMode == .earphone2D }
+    /// The panel's Stereo toggle (nil = the auto rule: stereo on the headset
+    /// route). Drives the capture channel count (docs/stereo-calls.md).
+    static var preferredStereo: Bool?
+
+    /// The stereo stream: the toggle, or on auto the headset route.
+    static func stereoStreamForCall() -> Bool {
+        if let preferredStereo { return preferredStereo }
         return stereoCaptureAllowed()
     }
 
     /// The channel count the call's mic leg publishes.
-    static func captureChannelsForCall() -> Int { stereoCaptureForCall() ? 2 : 1 }
+    static func captureChannelsForCall() -> Int { stereoStreamForCall() ? 2 : 1 }
+
+    /// Voice processing is skipped only where stereo can actually be captured:
+    /// stereo + a headset route (echo is moot there). Everywhere else VPIO
+    /// stays on — stereo on a speaker route must not become a howl.
+    static func skipVoiceProcessing() -> Bool {
+        stereoStreamForCall() && stereoCaptureAllowed()
+    }
 
     func configureForCall(sampleRate: Int, channels: Int? = nil) {
         guard sampleRate == 24_000 || sampleRate == 48_000 else { return }
@@ -455,7 +468,7 @@ final class AudioMeter {
                     // is fixed here. Skipped on the stereo (headset) route —
                     // VPIO would mono-downmix the tap (docs/stereo-calls.md).
                     Self.voiceProcessingTried = true
-                    if Self.stereoCaptureForCall() {
+                    if Self.skipVoiceProcessing() {
                         Self.log("idfon audio meter: voice-processing skipped (headset route, stereo capture)")
                     } else if ProcessInfo.processInfo.environment["IDFON_MACOS_AEC"] == "0" {
                         Self.log("idfon audio meter: voice-processing off (IDFON_MACOS_AEC=0)")

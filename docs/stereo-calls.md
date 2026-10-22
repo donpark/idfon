@@ -1,7 +1,7 @@
 # Stereo calls
 
 > Status: **as-built** for the call path (transport seam, shells, the panel's
-> media group, mode-driven re-publish). **Design/remaining**: stereo voice
+> media row, stereo-driven re-publish). **Design/remaining**: stereo voice
 > messages (phase 3) and the device E2E pass.
 
 The hook: almost nobody has ever heard a stereo phone call. Carrier telephony
@@ -25,18 +25,19 @@ the benefit with no setup at all.
 2. **Stereo voice messages** (recording + envelope + playback) — cheap, visible.
 3. Mono peers keep working unchanged in both directions.
 4. **Stereo is a per-call, sender-side choice** (the 2026-10-22 decision): the
-   live panel's media group — **Built-in / Earphone / Earphone 2D / Speaker** —
-   picks the call's audio mode; **Earphone 2D** is the stereo call. The modes
-   are offered per contact (user preference ∩ what the contact is willing to
-   make available), never gated on the hardware that happens to be plugged in
-   (earphone modes are assumed available). The headset route is where echo is
-   moot — which is what makes phase 1 cheap (see the gate section below).
+   live panel's media row — a radio group **Built-in / Earphone / Speaker /
+   Mute** plus a **Stereo** toggle — picks the call's audio state; Stereo sends
+   the 2-channel stream. The buttons are offered per contact (user preference ∩
+   what the contact is willing to make available), never gated on the hardware
+   that happens to be plugged in (the earphone route is assumed available).
+   The headset route is where echo is moot — which is what makes phase 1 cheap
+   (see the gate section below).
 
 ## As-built: the seam carries channels end to end (2026-10-22)
 
 | Layer | Where | Now |
 | --- | --- | --- |
-| Capture (iOS) | `ios/Idfon/AudioPusher.swift` | converts to the call mode's channel count (mono sources upmixed on 2D) and pushes interleaved f32 via `media_audio_push_frames`; `retarget(channels:)` switches a live push |
+| Capture (iOS) | `ios/Idfon/AudioPusher.swift` | converts to the call's channel count (mono sources upmixed when Stereo is on) and pushes interleaved f32 via `media_audio_push_frames`; `retarget(channels:)` switches a live push |
 | Capture (mac) | `mac/Sources/Idfon/WaveformView.swift` (`AudioMeter`) | same, lazily rebuilt converter per push |
 | FFI push | `crates/iroh-c-ffi/src/media.rs` | `media_audio_push_frames(pcm, frames, channels)`; `media_audio_push_samples` is the mono shorthand; mismatched pushes are dropped; frame = `rate/50 * channels` |
 | Publish | `media_live_start_with_profile(…, channels)` | `ShellAudioCapture` declares the layout; Opus bitrate is per channel (32 kbps default → 64 kbps stereo); pcm24k rejects stereo |
@@ -94,7 +95,7 @@ invite is re-sent unchanged when a mode change re-publishes the leg.
   channel count. Metering reads channel 0 (acceptable).
 - Optional follow-up: a holder-signed `voice.audio_modes` capability field so
   “what the contact is willing to make available” is signed rather than derived
-  (today: `pcm24k` ⇒ no 2D, else willing; `ContactAudioModes` holds the user's
+  (today: `pcm24k` ⇒ no stereo, else willing; `ContactAudioModes` holds the user's
   per-contact override).
 
 ### 3. Voice messages — **remaining (phase 3, independent)**
@@ -105,9 +106,9 @@ invite is re-sent unchanged when a mode change re-publishes the leg.
 
 ## The real gate: capture hardware + echo cancellation — resolved by routing
 
-Decision: stereo is a headset/earphone feature — chosen per call on the live
-panel's media group (**Earphone 2D**), with the route-gated rule below as the
-default selection when the user has not picked. That collapses the hard part:
+Decision: stereo is a headset/earphone feature — sent per call via the live
+panel's **Stereo** toggle, with the route rule below deciding capture. That
+collapses the hard part:
 
 - **iOS built-in mic is mono for third-party apps.** The iPhone's stereo mic
   pair is consumed by system beamforming; `AVAudioSession` hands apps a
@@ -122,13 +123,15 @@ default selection when the user has not picked. That collapses the hard part:
   logs `fmt=…Hz/Nch` in `Automation` marks, so the probe is ~20 minutes).
   With a wired/USB headset the echo path is attenuated enough that VPIO is not
   needed, so the design is:
-  - **Earphone 2D (the stereo mode)**: plain input tap, no voice
-    processing, capture 2 channels (mono devices upmixed);
-  - **Built-in / Earphone / Speaker**: today's VPIO mono path unchanged.
-  - Shortcut: the mode fixes the channel count at publish; switching 2D ↔ mono
-    mid-call re-publishes the mic leg and re-sends the invite, and the peer's
+  - **Stereo on, headset route**: plain input tap, no voice processing,
+    capture 2 channels (mono devices upmixed);
+  - **everything else** (mono stream, or Stereo on a speaker/built-in route):
+    today's VPIO mono path — echo safety wins over the channel count there, so
+    Stereo on a speaker route sends 2 channels of VPIO-processed audio.
+  - Shortcut: the stream layout is fixed at publish; toggling Stereo mid-call
+    re-publishes the mic leg and re-sends the invite, and the peer's
     `.calling/.inCall` handler re-joins on the fresh invite. A route change
-    that does not switch the mode keeps the call's layout.
+    alone keeps the call's layout.
 
 Downlink stereo has no such gate: once the far end publishes stereo, both apps
 render it, and earphones/headsets give real separation. Rendering stereo to a
@@ -139,7 +142,7 @@ mono-ish speaker is harmless.
 | Phase | Content | Status |
 | --- | --- | --- |
 | 1 | Stereo transport + render: FFI seam, subscribe, Swift capture/render honoring channels | **landed** (unit tests above) |
-| 2 | Mode-driven capture: the panel's media group picks the layout; 2D = plain tap (no VPIO) at 2 channels; mono modes keep VPIO | **landed** (re-publish on 2D ↔ mono) |
+| 2 | Stereo-driven capture: the panel's Stereo toggle picks the layout; stereo + headset = plain tap (no VPIO) at 2 channels; everything else keeps VPIO | **landed** (re-publish on stereo ↔ mono) |
 | 3 | Stereo voice messages + envelope + playback | remaining, ~1 day |
 
 Bandwidth is a non-issue: Opus stereo speech ≈ 48–64 kbps vs ≈ 24–32 kbps mono
@@ -154,7 +157,7 @@ libopus's auto default.
   programs (per-mode availability, set/unset intents).
 - E2E (remaining): two instances, L=440 Hz / R=880 Hz test tone, verify channel
   separation at the far end (the `Automation` marks log channel counts);
-  mixed test: stereo publisher ↔ old mono build; mid-call 2D ↔ mono re-publish.
+  mixed test: stereo publisher ↔ old mono build; mid-call stereo ↔ mono re-publish.
 - Probe: VPIO with 2-channel input format on iOS and macOS — no longer
   blocking (the mode-gated design works either way) but decides whether
   Bluetooth/speaker routes can ever carry stereo.
