@@ -12,7 +12,7 @@ ROOT="$(cd .. && pwd)"
 export MACOSX_DEPLOYMENT_TARGET=14.0
 
 echo "== libiroh_c_ffi.dylib"
-(cd "$ROOT/native/vendor/iroh-c-ffi" && RUSTFLAGS="-A unexpected_cfgs" cargo build --release)
+(cd "$ROOT" && cargo build --release -p iroh-c-ffi)
 
 echo "== idfond"
 (cd "$ROOT" && cargo build --release -p idfond)
@@ -21,7 +21,7 @@ echo "== libidfon_director.dylib (on-device AFM voice-agent loop)"
 (cd "$ROOT" && cargo build --release -p idfon-director --features afm --target aarch64-apple-darwin)
 
 mkdir -p Vendor
-cp "$ROOT/native/vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib" Vendor/
+cp "$ROOT/target/release/libiroh_c_ffi.dylib" Vendor/
 # rustc bakes the build-machine deps/ path in as the dylib's install name, so
 # a linked app would load THAT file and ignore the bundled copy (fine on this
 # machine, a missing-dylib crash everywhere else). Rewrite the id and re-sign:

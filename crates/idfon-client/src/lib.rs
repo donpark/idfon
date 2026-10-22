@@ -5,7 +5,7 @@
 //!
 //! This is the single source of truth for client-side framing, socket-path
 //! resolution, connect-retry policy, and response validation. Consumers:
-//! the FFI wrapper in `native/vendor/iroh-c-ffi/src/client.rs` (used by the
+//! the FFI wrapper in `crates/iroh-c-ffi/src/client.rs` (used by the
 //! Zig app host) and the `idfon` CLI.
 
 use std::env;

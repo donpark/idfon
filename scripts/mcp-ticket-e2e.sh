@@ -11,8 +11,7 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
-  cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+  cargo build --release -p iroh-c-ffi
 cargo build --release -p idfond -p idfon-cli -p idfon-mcp
 codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 

@@ -14,20 +14,18 @@ fn appCode(exe: *std.Build.Step.Compile) AppCode {
 fn hostModule(b: *std.Build, parent: *std.Build.Module, sdk: *std.Build.Module) *std.Build.Module {
     const module = b.createModule(.{ .root_source_file = b.path("src/iroh_ffi.zig"), .target = parent.resolved_target.?, .optimize = parent.optimize.? });
     module.addImport("native_sdk", sdk);
-    module.addIncludePath(b.path("vendor/iroh-c-ffi"));
+    module.addIncludePath(b.path("../crates/iroh-c-ffi"));
     module.link_libc = true;
     return module;
 }
 
 pub fn build(b: *std.Build) void {
     const artifacts = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{ .name = "Idfon", .manifest = "app.json" });
-    const cargo = b.addSystemCommand(&.{ "cargo", "build", "--release", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml" });
+    const cargo = b.addSystemCommand(&.{ "cargo", "build", "--release", "--manifest-path", "../crates/iroh-c-ffi/Cargo.toml" });
     // The app loads the dylib from its own directory (bundle MacOS/, zig-out/bin/).
-    // -A unexpected_cfgs: the legacy objc/cocoa crates in the nokhwa camera
-    // stack use the old `#[cfg(feature = "cargo-clippy")]` idiom ~300x per
-    // pass (see .cargo/config.toml); env RUSTFLAGS overrides config rustflags,
-    // so the lint is silenced in both places.
-    cargo.setEnvironmentVariable("RUSTFLAGS", "-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib -A unexpected_cfgs");
+    // The dylib's install name and the lint allowance come from
+    // crates/iroh-c-ffi/build.rs and the repo-root .cargo/config.toml — no
+    // RUSTFLAGS here, so all consumers share one cargo fingerprint.
     const daemon = b.addSystemCommand(&.{ "cargo", "build", "--release", "-p", "idfond" });
     // The thin idfond links the dylib (see crates/idfond/build.rs), so it
     // must only be linked once the dylib exists.
@@ -41,13 +39,13 @@ pub fn build(b: *std.Build) void {
     const test_sdk = artifacts.tests.root_module.import_table.get("native_sdk") orelse @panic("Native SDK test module missing");
     artifacts.tests.root_module.addImport("iroh_host", hostModule(b, artifacts.tests.root_module, test_sdk));
 
-    const dylib = b.path("vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib");
+    const dylib = b.path("../target/release/libiroh_c_ffi.dylib");
     artifacts.exe.root_module.addObjectFile(dylib);
     // Tests (and the SDK's model-contract helper, which imports the same
     // module) link the static archive: a dylib load command with an
     // @executable_path install name aborts any helper run from its
     // zig-cache dir, where no dylib sits next to the binary.
-    const archive = b.path("vendor/iroh-c-ffi/target/release/libiroh_c_ffi.a");
+    const archive = b.path("../target/release/libiroh_c_ffi.a");
     artifacts.tests.root_module.addObjectFile(archive);
     // Ship the dylib next to the executable for direct runs; the packager
     // gets it into the bundle via --binary-dir or a manual copy (see README).

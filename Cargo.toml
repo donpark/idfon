@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/idfon-protocol", "crates/idfon-telemetry", "crates/idfon-core", "crates/idfon-media", "crates/idfon-voice", "crates/idfon-gateway", "crates/idfon-h3", "crates/idfon-edge", "crates/idfon-mcp", "crates/idfon-mcp-server", "crates/eve-idfon", "crates/idfon-live-media", "crates/idfon-voice-agent", "crates/idfon-director", "crates/idfond", "crates/idfon-cli", "crates/idfon-client", "crates/idfon-daemon"]
-exclude = ["native/vendor/iroh-c-ffi"]
+members = ["crates/idfon-protocol", "crates/idfon-telemetry", "crates/idfon-core", "crates/idfon-media", "crates/idfon-voice", "crates/idfon-gateway", "crates/idfon-h3", "crates/idfon-edge", "crates/idfon-mcp", "crates/idfon-mcp-server", "crates/eve-idfon", "crates/idfon-live-media", "crates/idfon-voice-agent", "crates/idfon-director", "crates/idfond", "crates/idfon-cli", "crates/idfon-client", "crates/idfon-daemon", "crates/iroh-c-ffi"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
@@ -20,3 +19,5 @@ moq-mux = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
 moq-net = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
 moq-video = { git = "https://github.com/Frando/moq", branch = "iroh-live-3" }
 moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2" }
+# Match the MoQ development snapshot selected by the current iroh-live rev.
+iroh-moq = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2" }

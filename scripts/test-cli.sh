@@ -19,8 +19,7 @@ cd "$root"
 
 # Same build/sign preamble as test-e2e.sh: the thin idfond links the vendored
 # dylib, and a relink can leave a stale ad-hoc signature the kernel kills.
-RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
-  cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+  cargo build --release -p iroh-c-ffi
 cargo build --release -p idfond -p idfon-cli
 codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 

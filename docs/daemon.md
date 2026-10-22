@@ -63,7 +63,7 @@ Two properties the code enforces:
 
 - **No real-time media path.** Live audio/video capture, publish, subscribe,
   and decode run in the client process with client-owned iroh endpoints
-  (`native/vendor/iroh-c-ffi/src/media.rs`); peers connect directly via live
+  (`crates/iroh-c-ffi/src/media.rs`); peers connect directly via live
   tickets. The daemon is signaling-only for calls.
 - **No UI, no mediation of interactive traffic.** It is signaling + storage +
   liveness, thin by design.

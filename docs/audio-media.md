@@ -153,8 +153,8 @@ Typical checks:
 scripts/test-rust.sh
 scripts/test-media.sh
 scripts/test-e2e.sh
-cargo fmt --manifest-path native/vendor/iroh-c-ffi/Cargo.toml -- --check
-cargo test --manifest-path native/vendor/iroh-c-ffi/Cargo.toml --lib
+cargo fmt -p iroh-c-ffi -- --check
+cargo test -p iroh-c-ffi --lib
 native check native
 native build native
 native test native
@@ -337,7 +337,7 @@ cannot be the outgoing source without editing Rust. Plug-and-play was blocked at
 the boundary, not in the core ([issue #12](https://github.com/donpark/idfon/issues/12)).
 
 The boundary now takes a **source handle**. Implemented in
-`native/vendor/iroh-c-ffi/src/media.rs` (mirroring the video push path):
+`crates/iroh-c-ffi/src/media.rs` (mirroring the video push path):
 
 ```c
 void  media_audio_push_samples(float const *pcm, size_t samples); // mono 48 kHz f32

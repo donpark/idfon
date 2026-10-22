@@ -8,14 +8,16 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ios_dir="$root/ios"
 
 mkdir -p "$ios_dir/Vendor/device"
-cd "$root/native/vendor/iroh-c-ffi"
+cd "$root"
 
 echo "== aarch64-apple-ios"
 # Deployment target >= 12: openh264's ___chkstk_darwin needs it, and the
 # default (10.0) makes the final lib un-linkable.
+# RUSTFLAGS (not config) wins here; keep both cargo lines below byte-identical
+# so the aarch64-apple-ios fingerprint stays stable.
 SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path) IPHONEOS_DEPLOYMENT_TARGET=17.0 \
-RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-miphoneos-version-min=17.0" CARGO_PROFILE_RELEASE_LTO=off \
-  cargo build --release --target aarch64-apple-ios
+RUSTFLAGS="-A unexpected_cfgs -C link-arg=-miphoneos-version-min=17.0" CARGO_PROFILE_RELEASE_LTO=off \
+  cargo build --release -p iroh-c-ffi --target aarch64-apple-ios
 cp target/aarch64-apple-ios/release/libiroh_c_ffi.a "$ios_dir/Vendor/device/"
 
 echo "staged $ios_dir/Vendor/device/libiroh_c_ffi.a"
@@ -23,9 +25,8 @@ echo "staged $ios_dir/Vendor/device/libiroh_c_ffi.a"
 # The voice-agent harness (docs/build.md). `--features afm` links Apple
 # Foundation Models via fm-rs; it is Apple-only. The app links the staticlib.
 echo "== idfon-director (afm) aarch64-apple-ios"
-cd "$root"
 SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path) IPHONEOS_DEPLOYMENT_TARGET=17.0 \
-RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-miphoneos-version-min=17.0" CARGO_PROFILE_RELEASE_LTO=off \
+RUSTFLAGS="-A unexpected_cfgs -C link-arg=-miphoneos-version-min=17.0" CARGO_PROFILE_RELEASE_LTO=off \
   cargo build --release -p idfon-director --features afm --target aarch64-apple-ios
 cp target/aarch64-apple-ios/release/libidfon_director.a "$ios_dir/Vendor/device/"
 

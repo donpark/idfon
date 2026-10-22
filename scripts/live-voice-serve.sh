@@ -108,16 +108,15 @@ stale=0
 if [ ! -x "$holder_bin_path" ]; then
   stale=1
 elif [ -n "$(
-  find "$root/crates" "$root/native/vendor/iroh-c-ffi/src" \
+  find "$root/crates" "$root/crates/iroh-c-ffi/src" \
     "$root/Cargo.toml" "$root/Cargo.lock" \
-    "$root/native/vendor/iroh-c-ffi/Cargo.toml" \
+    "$root/crates/iroh-c-ffi/Cargo.toml" \
     -newer "$holder_bin_path" -print -quit 2>/dev/null
 )" ]; then
   stale=1
 fi
 if [ "$stale" = 1 ] || [ "${FORCE_BUILD:-}" = 1 ]; then
-  RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
-    cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+      cargo build --release -p iroh-c-ffi
   cargo build --release -p idfond -p idfon-cli
   cargo build --release -p "$holder_pkg" ${holder_features:+--features "$holder_features"}
   codesign --force -s - "$root/target/release/libiroh_c_ffi.dylib" \

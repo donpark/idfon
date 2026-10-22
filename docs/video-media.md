@@ -15,7 +15,7 @@ Rust side does not open a second camera or microphone on Apple platforms.
 iOS captures through `ios/Idfon/CameraPusher.swift`: a headless
 `AVCaptureSession` (no preview layer) delivers BGRA frames on a serial
 delegate queue and pushes each frame over the `media_video_push_frame` FFI
-into `PushFrameSource` (`native/vendor/iroh-c-ffi/src/media.rs`), which feeds
+into `PushFrameSource` (`crates/iroh-c-ffi/src/media.rs`), which feeds
 the same H.264 encoder ladder / MoQ broadcast as the file path. `VideoCall`
 starts/stops the pusher around `media_live_video_start()`/`media_live_stop()`.
 
@@ -42,7 +42,7 @@ Key invariants (break these and capture silently stops or distorts):
   backing up capture).
 
 The receiver renders by subscribing to the adaptive decoded track
-(`media_video_start` in `native/vendor/iroh-c-ffi/src/video.rs` writes
+(`media_video_start` in `crates/iroh-c-ffi/src/video.rs` writes
 `video-frame.jpg` atomically ~15fps; the GUI re-loads it on a timer through
 the image registry with dynamic width/height binding).
 
@@ -149,7 +149,7 @@ hardware and falls back to software openh264.
 
 Hardware and software encoders advertise plain H.264 on the wire
 (`config_for` → `h264_video_config`), so the choice affects CPU/battery, not
-interop. The features are target-gated in `native/vendor/iroh-c-ffi/Cargo.toml`
+interop. The features are target-gated in `crates/iroh-c-ffi/Cargo.toml`
 and `crates/idfon-media/Cargo.toml` (`vaapi` pulls `cros-codecs`, which does not
 build off Linux). VAAPI is unverified on this machine (no Linux toolchain).
 

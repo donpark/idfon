@@ -177,7 +177,7 @@ daemons with `RUST_LOG=idfon=debug`.
 
 `idfond` is a **launcher**: the daemon core lives in `libiroh_c_ffi.dylib`,
 which embeds `idfon-daemon` → `idfon-core` and is built separately
-(`native/vendor/iroh-c-ffi` is excluded from the workspace). `cargo build -p
+(`crates/iroh-c-ffi` links the daemon core into the dylib). `cargo build -p
 idfond` reports `Fresh` with a one-node graph and silently ignores every
 crates/ change; tests then see the new code while every runtime observation
 is stale. (`strings` cannot confirm binary content either — tracing literals
@@ -186,8 +186,7 @@ don't surface.)
 Rebuild chain (docs/build.md; built into `scripts/relay-bench.sh`):
 
 ```sh
-RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
-  cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+cargo build --release -p iroh-c-ffi
 cargo build --release -p idfond -p idfon-cli
 codesign --force -s - target/release/libiroh_c_ffi.dylib target/release/idfond
 ```
@@ -455,7 +454,7 @@ dependent amount (StackOverflow 17528057, 13502293, 57612695).
   override **last**; calling `setMode(.voiceChat)` *after*
   `overrideOutputAudioPort()` re-evaluates the route and drops back to the
   quiet receiver.
-- Playback gain (`native/vendor/iroh-c-ffi/src/media.rs`, iOS-only via
+- Playback gain (`crates/iroh-c-ffi/src/media.rs`, iOS-only via
   `cfg!(target_os = "ios")`): compensate for the VoiceProcessingIO drop in
   software — a `tanh` soft-clip so loud passages limit instead of wrapping.
   The 2026-09-25 device measurement was `PLAYBACK_GAIN_DB_DEFAULT = +12 dB`;
@@ -544,7 +543,7 @@ answered every turn — transcripts confirmed the model was replying.
   realigns `media_origin_pts` when the input queue is empty and the cursor
   is ahead (stale bookkeeping, not backlog). Pacing extracted into a pure
   `CallerPacer` with regression tests.
-- Return leg (`native/vendor/iroh-c-ffi/src/media.rs`): the subscribe loop
+- Return leg (`crates/iroh-c-ffi/src/media.rs`): the subscribe loop
   treats two signals as transient while the call is active and re-subscribes
   (fresh Live endpoint, up to 5 attempts, 250 ms backoff): an explicit early
   track end (`Ok(None)`) and a ≥4s frame stall (the holder publishes
@@ -581,7 +580,7 @@ operation was created in the daemon store.
 **Diagnosis path.**
 
 1. GUI trace logs (`/tmp/idfon-<pid>.log`, written by the FFI tracing
-   subscriber in `native/vendor/iroh-c-ffi/src/util.rs`, enabled from
+   subscriber in `crates/iroh-c-ffi/src/util.rs`, enabled from
    `native/src/iroh_ffi.zig`) showed the daemon's response to `message.send`:
    `{"ok":false,"error":{"code":"idempotency_key_conflict",...}}`.
 2. The daemon store (`/tmp/idfon*/state.json`) contained operations from
@@ -645,7 +644,7 @@ failure reason. The banner length was correct; only the contents were garbage.
    `ok=false bytes=24` — 24 bytes matches the real error
    "input stream not running", so the failure text itself was fine.
 2. That text comes from `media_live_last_error()` (Rust,
-   `native/vendor/iroh-c-ffi/src/media.rs`), fetched by `last_live_error()`
+   `crates/iroh-c-ffi/src/media.rs`), fetched by `last_live_error()`
    in `native/src/iroh_ffi.zig`.
 
 **Root cause.** Use-after-free. `last_live_error()` had
@@ -662,7 +661,7 @@ consumer runs after the return.
 
 **Symptom.** After migrating iOS camera capture from vendored-nokhwa to Swift
 AVCaptureSession (`ios/Idfon/CameraPusher.swift` -> `media_video_push_frame`
-FFI -> `PushFrameSource` in `native/vendor/iroh-c-ffi/src/media.rs`), iPhone->
+FFI -> `PushFrameSource` in `crates/iroh-c-ffi/src/media.rs`), iPhone->
 Mac video calls published audio but no video: the Swift session looked
 healthy by every observable (running, connection active+enabled, TCC
 authorized, no error/interruption notifications) yet `captureOutput` never
@@ -773,7 +772,7 @@ transient but **gave up after 5 attempts**, so once it exhausted them the rest
 of the call was silent. Each attempt also reconnects a fresh `Live` endpoint,
 so recovery is audible as a gap.
 
-**Fix** (`native/vendor/iroh-c-ffi/src/media.rs`): re-subscribe for as long as
+**Fix** (`crates/iroh-c-ffi/src/media.rs`): re-subscribe for as long as
 the call is active (stop on `thread_stop`) with a capped backoff, instead of a
 5-attempt cap; lower the frame-stall detection from 4s to 2s so recovery is
 faster; log each retry (`[media] subscribe ended early attempt=… decoded=…`)

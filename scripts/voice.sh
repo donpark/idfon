@@ -13,14 +13,13 @@ action=${1:-}
 case "$action" in
   build)
     # dylib first (install_name keeps it resolvable next to the executable)
-    RUSTFLAGS="-C link-arg=-Wl,-install_name,@executable_path/libiroh_c_ffi.dylib" \
-      cargo build --release --manifest-path native/vendor/iroh-c-ffi/Cargo.toml
+          cargo build --release -p iroh-c-ffi
     cargo build --release -p idfon-voice-agent --features gpt-live
     # ad-hoc sign after relink, or the kernel SIGKILLs at exec. The dylib
     # lives in the vendored crate's own target/ (workspace-excluded); idfond's
     # build.rs copies it into target/release/ later, so sign the source copy.
     codesign --force -s - \
-      native/vendor/iroh-c-ffi/target/release/libiroh_c_ffi.dylib \
+      target/release/libiroh_c_ffi.dylib \
       target/release/eve-idfon-voice
     bash scripts/agent.sh build voice
     ;;

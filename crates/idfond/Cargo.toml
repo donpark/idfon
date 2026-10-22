@@ -6,7 +6,7 @@ license.workspace = true
 build = "build.rs"
 
 # No runtime [dependencies]: the daemon core is reached through
-# libiroh_c_ffi.dylib (see build.rs and native/vendor/iroh-c-ffi/src/daemon.rs).
+# libiroh_c_ffi.dylib (see build.rs and crates/iroh-c-ffi/src/daemon.rs).
 
 [dev-dependencies]
 serde_json = "1"

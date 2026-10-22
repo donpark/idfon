@@ -11,14 +11,14 @@ on:
     branches: [main]
     paths:
       - "crates/**"
-      - "native/vendor/iroh-c-ffi/**"
+      - "crates/iroh-c-ffi/**"
       - "cli/**"
       - "scripts/build-cli.sh"
       - ".github/workflows/cli.yml"
   pull_request:
     paths:
       - "crates/**"
-      - "native/vendor/iroh-c-ffi/**"
+      - "crates/iroh-c-ffi/**"
       - "cli/**"
       - "scripts/build-cli.sh"
       - ".github/workflows/cli.yml"
