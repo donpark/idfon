@@ -68,26 +68,44 @@ enum TygerModelStore {
             guard let base = URL(string: manifest.url_base) else { return false }
             let wanted = manifest.files.filter { $0.name.hasPrefix("\(tier)/") }
             guard !wanted.isEmpty else { return false }
-            for entry in wanted {
-                let dest = root.appendingPathComponent(installPath(for: entry.name))
-                if FileManager.default.fileExists(atPath: dest.path) { continue }
-                Automation.mark("tyger models: fetching \(entry.asset) \(entry.bytes / 1_000_000)MB")
-                let (tmp, _) = try await URLSession.shared.download(from: base.appendingPathComponent(entry.asset))
-                guard sha256(of: tmp) == entry.sha256 else {
-                    Automation.mark("tyger models: checksum mismatch \(entry.asset)")
-                    return false
+            // Parallel fetches: a tier is a handful of large files and the
+            // host is a CDN — the wall time drops roughly with the width.
+            return await withTaskGroup(of: Bool.self) { group in
+                for entry in wanted {
+                    let dest = root.appendingPathComponent(installPath(for: entry.name))
+                    if FileManager.default.fileExists(atPath: dest.path) { continue }
+                    group.addTask { await fetchOne(entry, base: base) }
                 }
-                try FileManager.default.createDirectory(
-                    at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
-                _ = try? FileManager.default.removeItem(at: dest)
-                try FileManager.default.moveItem(at: tmp, to: dest)
-                Automation.mark("tyger models: installed \(entry.name)")
+                var ok = true
+                for await fetched in group { ok = ok && fetched }
+                return ok
             }
-            return true
         } catch {
             Automation.mark("tyger models: fetch failed \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// One manifest entry: download, verify, install. Never throws.
+    private static func fetchOne(_ entry: Manifest.Entry, base: URL) async -> Bool {
+        let dest = root.appendingPathComponent(installPath(for: entry.name))
+        Automation.mark("tyger models: fetching \(entry.asset) \(entry.bytes / 1_000_000)MB")
+        guard let (tmp, _) = try? await URLSession.shared.download(from: base.appendingPathComponent(entry.asset)),
+              sha256(of: tmp) == entry.sha256 else {
+            Automation.mark("tyger models: checksum mismatch \(entry.asset)")
+            return false
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            _ = try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.moveItem(at: tmp, to: dest)
+        } catch {
+            Automation.mark("tyger models: install failed \(entry.asset)")
+            return false
+        }
+        Automation.mark("tyger models: installed \(entry.name)")
+        return true
     }
 
     /// Install paths follow the loaders' expectations — and the side-load

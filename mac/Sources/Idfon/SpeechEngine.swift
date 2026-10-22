@@ -8,7 +8,9 @@ import FluidAudio
 /// Kokoro (FluidAudio, ANE) is the default for English and Apple's
 /// `AVSpeechSynthesizer` is the default for every other system language (and
 /// the offline fallback, and the explicit alternative). Selection:
-/// `IDFON_TTS=kokoro|apple` (env) or `-ttsbackend <name>` (launch arg).
+/// `IDFON_TTS=kokoro|pocket|apple` (env) or `-ttsbackend <name>` (launch arg).
+/// `pocket` is the Pocket TTS trial (voice cloning; `IDFON_TTS_VOICE`,
+/// `IDFON_TTS_CLONE` — see `PocketTtsEngine`).
 @MainActor
 protocol TtsEngine: AnyObject {
     var name: String { get }
@@ -28,11 +30,13 @@ extension TtsEngine {
 /// Reply-speech backend choice, persisted across launches.
 enum TtsBackend: String, CaseIterable {
     case kokoro
+    case pocket
     case apple
 
     var title: String {
         switch self {
         case .kokoro: return "Kokoro (on-device)"
+        case .pocket: return "Pocket TTS (on-device)"
         case .apple: return "Apple Built-in"
         }
     }
@@ -158,13 +162,14 @@ enum SpeechEngines {
         switch backend {
         case .apple: return AppleTtsEngine()
         case .kokoro: return KokoroTtsEngine()
+        case .pocket: return PocketTtsEngine()
         }
     }
 
     private static func overrideTts() -> TtsBackend? {
         let value = ProcessInfo.processInfo.environment["IDFON_TTS"] ?? ttsLaunchArg()
         guard let value, !value.isEmpty else { return nil }
-        return value.lowercased() == "apple" ? .apple : .kokoro
+        return TtsBackend(rawValue: value.lowercased())
     }
 
     private static func ttsLaunchArg() -> String? {
@@ -332,6 +337,118 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
                 self.finish = nil
             }
         }
+    }
+}
+
+/// Pocket TTS (Kyutai via FluidAudio) — the v4 reward-tuned small model
+/// (`english_18m_refl_2026-10`; `scripts/fetch-pocket-v4.sh` provisions the
+/// pack into the store root below). Trial backend (`IDFON_TTS=pocket`):
+/// `IDFON_TTS_VOICE=<name>` picks a catalog voice (default alba),
+/// `IDFON_TTS_CLONE=/path/voice.wav` clones a voice from a clip and speaks
+/// with it. Falls back to Apple per-utterance when the model cannot load.
+@MainActor
+final class PocketTtsEngine: NSObject, TtsEngine {
+    let name = "pocket"
+    private var manager: PocketTtsManager?
+    private let fallback = AppleTtsEngine()
+    private var prepared = false
+    private var prepareTask: Task<Void, Never>?
+    private var clonedVoice: PocketTtsVoiceData?
+    private var finish: (() -> Void)?
+    /// Set by `stop()` so a cancel during synthesis does not start playback.
+    private var stopRequested = false
+    private(set) var lastLatencyMs: Int?
+
+    func prepare() async {
+        if prepared { return }
+        if prepareTask == nil {
+            prepareTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    Automation.mark("voice: pocket initializing")
+                    guard #available(macOS 15.0, *) else {
+                        Automation.mark("voice: pocket needs macOS 15+")
+                        return
+                    }
+                    let voice = Self.env("IDFON_TTS_VOICE") ?? PocketTtsConstants.defaultVoice
+                    let manager = PocketTtsManager(
+                        defaultVoice: voice,
+                        language: .english,
+                        // The v4 pack lands at <root>/Models/pocket-tts-coreml/
+                        // v2.1/english (the store's languageRoot for .english),
+                        // so the store finds it present and downloads nothing.
+                        directory: ModelStore.root.appendingPathComponent("pocket"),
+                        placement: .aneState)
+                    try await manager.initialize()
+                    if let path = Self.env("IDFON_TTS_CLONE") {
+                        let wav = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+                        self.clonedVoice = try await manager.cloneVoice(from: wav)
+                        Automation.mark("voice: pocket cloned voice <- \(wav.lastPathComponent)")
+                    }
+                    self.manager = manager
+                    self.prepared = true
+                    Automation.mark("voice: pocket ready (voice=\(voice))")
+                } catch {
+                    Automation.mark("voice: pocket init failed \(error.localizedDescription)")
+                }
+            }
+        }
+        await prepareTask?.value
+    }
+
+    func speak(_ text: String) async {
+        stopRequested = false
+        await prepare()
+        guard prepared, let manager else {
+            Automation.mark("voice: pocket unavailable, using apple")
+            await fallback.speak(text)
+            return
+        }
+        do {
+            let start = Date()
+            let wav: Data
+            if let clonedVoice {
+                wav = try await manager.synthesize(text: text, voiceData: clonedVoice)
+            } else {
+                wav = try await manager.synthesize(text: text)
+            }
+            if stopRequested { return }  // cancelled while synthesizing
+            lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
+            Automation.mark("voice: pocket wav bytes=\(wav.count) in \(lastLatencyMs ?? 0)ms")
+            await play(wav)
+        } catch {
+            Automation.mark("voice: pocket synth failed \(error.localizedDescription); using apple")
+            await fallback.speak(text)
+        }
+    }
+
+    func stop() {
+        stopRequested = true
+        AudioMeter.stopPlayback()
+        finish?()
+        finish = nil
+        fallback.stop()
+    }
+
+    private func play(_ wav: Data) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            guard let buffer = AudioMeter.buffer(wav: wav) else {
+                Automation.mark("voice: pocket play failed (decode)")
+                continuation.resume()
+                return
+            }
+            finish = { continuation.resume() }
+            AudioMeter.play(buffer) { [weak self] in
+                guard let self else { return }
+                self.finish?()
+                self.finish = nil
+            }
+        }
+    }
+
+    private static func env(_ key: String) -> String? {
+        guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else { return nil }
+        return value
     }
 }
 
