@@ -107,6 +107,45 @@ final class LiveCall {
         notify()
     }
 
+    /// The panel picked an audio mode (docs/stereo-calls.md): unmute, and when
+    /// the mode changes the stream layout (2D ↔ mono) re-publish the mic leg
+    /// and re-send the invite — the peer's handler re-joins on a fresh invite.
+    func setAudioMode(_ mode: CallAudioMode) {
+        setAudioEnabled(true)
+        guard published, let peer = activePeer else { return }
+        let want = ContactAudioProfiles.profile(for: peer) == .pcm24k
+            ? 1
+            : AudioIO.captureChannelsForCall()
+        guard want != publishedChannels else { return }
+        Task { [weak self] in await self?.republishAudio(channels: want, peer: peer) }
+    }
+
+    /// Re-publish the mic leg at a new channel count and re-invite the peer.
+    private func republishAudio(channels: Int, peer: String) async {
+        let profile = ContactAudioProfiles.profile(for: peer)
+        AudioPusher.shared.retarget(channels: channels)
+        await Task.detached(priority: .userInitiated) { media_live_stop() }.value
+        let ticket = await ffiString {
+            media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate), UInt32(channels))
+        }
+        guard !ticket.isEmpty else {
+            idfonError("idfon live: re-publish failed for \(channels)ch")
+            return
+        }
+        publishedChannels = channels
+        setCallTicket(ticket)
+        do {
+            try await client.sendText(
+                to: peer,
+                "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+            )
+            idfonLog("idfon live: re-published mic leg channels=\(channels)")
+        } catch {
+            idfonError("idfon live: re-publish invite failed: \(error)")
+        }
+        notify()
+    }
+
     /// Observed on the main queue whenever state (or error) changed.
     var onState: (() -> Void)?
 
@@ -118,6 +157,8 @@ final class LiveCall {
     /// call cannot terminate this one (#60).
     private var callTicket: String?
     private var published = false
+    /// The channel count the mic leg publishes (1 mono, 2 = the 2D mode).
+    private var publishedChannels = 1
     private var operationGeneration = 0
     private var operation: Task<Void, Never>?
 
@@ -208,13 +249,17 @@ final class LiveCall {
                 ])
                 let profile = ContactAudioProfiles.profile(for: peerId)
                 LiveCallHarness.activateAudioSession()
-                guard await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate) else {
+                // Stereo (docs/stereo-calls.md): the panel's audio mode picks
+                // the stream layout; pcm24k voice-agent calls stay mono —
+                // that plane is 20 ms mono PCM frames into ASR/TTS.
+                let channels = profile.sampleRate == 48_000 ? AudioIO.captureChannelsForCall() : 1
+                guard await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate, channels: channels) else {
                     fail("microphone unavailable")
                     return
                 }
                 guard operationGeneration == generation, !Task.isCancelled else { return }
                 let ticket = await ffiString {
-                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate))
+                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate), UInt32(channels))
                 }
                 guard operationGeneration == generation, !Task.isCancelled, !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -229,6 +274,7 @@ final class LiveCall {
                     return
                 }
                 published = true
+                publishedChannels = channels
                 idfonLog("idfon live call: caller audio published profile=\(profile.rawValue)")
                 applySendState() // a toggle during `.calling` may predate the publish
                 UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
@@ -312,14 +358,17 @@ final class LiveCall {
             do {
                 let profile = ContactAudioProfiles.profile(for: pending.peer)
                 LiveCallHarness.activateAudioSession()
-                var micReady = await AudioPusher.shared.startForCall()
+                // Stereo as on the caller leg (see `dial`); the profile rate
+                // must match the publisher below.
+                let channels = profile.sampleRate == 48_000 ? AudioIO.captureChannelsForCall() : 1
+                var micReady = await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate, channels: channels)
                 if !micReady {
                     // The CallKit session may still be activating (the
                     // didActivate handoff): the engine start then fails with
                     // avfaudio 561017449 and the call must not die on it (#51).
                     idfonLog("idfon live: mic start failed; retrying after the session settles")
                     try? await Task.sleep(nanoseconds: 700_000_000)
-                    micReady = await AudioPusher.shared.startForCall()
+                    micReady = await AudioPusher.shared.startForCall(sampleRate: profile.sampleRate, channels: channels)
                 }
                 guard micReady else {
                     fail("microphone unavailable")
@@ -335,7 +384,7 @@ final class LiveCall {
                 // Publish our own mic so audio is two-way, then send the
                 // return-leg invite (own ticket) that makes the caller join us.
                 let own = await ffiString {
-                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate))
+                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate), UInt32(channels))
                 }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -343,6 +392,7 @@ final class LiveCall {
                     return
                 }
                 published = true
+                publishedChannels = channels
                 idfonLog("idfon live call: callee audio published profile=\(profile.rawValue)")
                 applySendState() // the mic toggle drives a real published session now
                 // Audio invite: no media line (audio is the default).

@@ -428,8 +428,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 /// never drops, so each chunk is scheduled as it arrives.
 final class AudioPlaybackSink {
     static let shared = AudioPlaybackSink()
-    /// The bridge's decode format: interleaved f32 mono @ 48 kHz.
-    private let format = AVAudioFormat(
+    /// The bridge's decode format: interleaved f32 @ 48 kHz, mono or stereo —
+    /// the channel count rides the callback (docs/stereo-calls.md).
+    private var format = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 48_000,
         channels: 1,
@@ -440,16 +441,29 @@ final class AudioPlaybackSink {
         _ = media_audio_set_playback_cb(nil, audioPlaybackCallback)
     }
 
-    fileprivate func enqueue(_ data: Data) {
-        let frames = data.count / 4
+    fileprivate func enqueue(_ data: Data, channels: Int) {
+        let channelCount = AVAudioChannelCount(max(1, min(2, channels)))
+        if format.channelCount != channelCount {
+            format = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 48_000,
+                channels: channelCount,
+                interleaved: false
+            )!
+        }
+        let frames = data.count / (4 * Int(channelCount))
         guard frames > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))
         else { return }
         buffer.frameLength = AVAudioFrameCount(frames)
-        if let dst = buffer.floatChannelData?[0] {
-            data.withUnsafeBytes { raw in
-                guard let src = raw.bindMemory(to: Float.self).baseAddress else { return }
-                dst.update(from: src, count: frames)
+        data.withUnsafeBytes { raw in
+            guard let src = raw.bindMemory(to: Float.self).baseAddress,
+                  let dst = buffer.floatChannelData else { return }
+            // Interleaved on the wire, planar in AVAudioPCMBuffer.
+            for frame in 0..<frames {
+                for channel in 0..<Int(channelCount) {
+                    dst[channel][frame] = src[frame * Int(channelCount) + channel]
+                }
             }
         }
         AudioIO.shared.playStream(buffer)
@@ -460,7 +474,7 @@ final class AudioPlaybackSink {
 /// copy before returning (documented contract).
 private let audioPlaybackCallback: @convention(c) (
     UnsafeRawPointer?, UnsafePointer<UInt8>?, Int, UInt32, UInt32, UInt64
-) -> Void = { _, data, len, _, _, _ in
+) -> Void = { _, data, len, _, channels, _ in
     guard let data, len > 0 else { return }
-    AudioPlaybackSink.shared.enqueue(Data(bytes: data, count: len))
+    AudioPlaybackSink.shared.enqueue(Data(bytes: data, count: len), channels: Int(channels))
 }

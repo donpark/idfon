@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 
 /// Owns the Live Activity Bar's window host and translates call/transfer state
 /// into Bar models and intents (AppKit port of the iOS controller,
@@ -26,7 +27,7 @@ final class LiveActivityController {
     }
 
     private var phase: LiveActivityBarModel.Phase = .idle
-    private var micOn = false
+    private var selectedAudioMode: CallAudioMode?
     private var camOn = false
     private var elapsed: TimeInterval = 0
     private var startedAt: Date?
@@ -172,6 +173,16 @@ final class LiveActivityController {
             }
         }
 
+        /// The panel picked an audio mode: unmute and, when the mode changes
+        /// the stream layout, re-publish the leg (the machines' own concern).
+        func setAudioMode(_ mode: CallAudioMode) {
+            switch self {
+            case .audio(let call): call.setAudioMode(mode)
+            case .video(let call): call.setAudioMode(mode)
+            case .voice(let session): session.setAudioEnabled(true)
+            }
+        }
+
         func setVideoEnabled(_ enabled: Bool) {
             switch self {
             case .audio: break
@@ -217,7 +228,10 @@ final class LiveActivityController {
         // Entering a phase (re)initialises the toggles from the machine's real
         // send state (a call starts mic-only), so the Bar reads the truth.
         if next != previous, next != .idle {
-            micOn = machine?.audioEnabled ?? false
+            // Entering a phase (re)initialises the toggles from the machine's real
+            // send state (a call starts mic-only), so the Bar reads the truth.
+            let audioOn = machine?.audioEnabled ?? false
+            selectedAudioMode = audioOn ? defaultAudioMode(for: machine?.peer) : nil
             camOn = machine?.videoEnabled ?? false
         }
         phase = next
@@ -247,7 +261,8 @@ final class LiveActivityController {
         if let callPeer {
             var model = LiveActivityBarModel(peerId: callPeer, handle: barHandle(for: callPeer))
             model.phase = phase
-            model.micOn = micOn
+            model.audioModes = ContactAudioModes.available(for: callPeer)
+            model.selectedAudioMode = selectedAudioMode
             model.camOn = camOn
             model.audioAvailable = machine?.audioAvailable ?? true
             model.videoAvailable = machine?.videoAvailable ?? true
@@ -298,8 +313,8 @@ final class LiveActivityController {
         case .decline: Machine.current?.decline()
         case .end: Machine.current?.hangUp()
         case .open: onOpenPeer?(peerId)
-        case .toggleMic: toggle(peerId: peerId, mic: true)
-        case .toggleCam: toggle(peerId: peerId, mic: false)
+        case .setAudioMode(let mode): applyAudioMode(mode, peerId: peerId)
+        case .toggleCam: toggleCam(peerId: peerId)
         case .ping: Task { try? await client.sendText(to: peerId, Self.pingMessage) }
         // Session Tray actions (§4): Cancel aborts the transfer; pause/Stop is
         // for media streams, which have no producer yet.
@@ -308,13 +323,99 @@ final class LiveActivityController {
         }
     }
 
-    /// In-call toggles gate the active machine's outgoing streams (send/no-send
-    /// — §3 State 3). The machine reports back, so a toggle for an absent track
-    /// cannot desync the Bar.
-    private func toggle(peerId: String, mic: Bool) {
+    // MARK: - Audio modes (the media-stream group)
+
+    /// The mode a fresh call starts in: the route the device is already on,
+    /// clamped to the modes this contact offers — the pre-panel auto rule as
+    /// the default selection (`AudioMeter.preferredMode` nil = auto).
+    private func defaultAudioMode(for peerID: String?) -> CallAudioMode {
+        let available = peerID.map(ContactAudioModes.available(for:)) ?? CallAudioMode.displayOrder
+        let preferred: CallAudioMode
+        if AudioMeter.stereoCaptureAllowed() {
+            preferred = available.contains(.earphone2D) ? .earphone2D : .earphone
+        } else {
+            preferred = .builtIn
+        }
+        return available.contains(preferred) ? preferred : (available.first ?? .builtIn)
+    }
+
+    /// The radio group: pick the call's audio path (nil = the audio stream is
+    /// off). Input device and mute apply immediately; the machines re-publish
+    /// when the mode changes the stream layout (2D ↔ mono).
+    private func applyAudioMode(_ mode: CallAudioMode?, peerId: String) {
         guard let machine = Machine.current, peerId == machine.peer else { return }
-        if mic { machine.setAudioEnabled(!machine.audioEnabled) } else { machine.setVideoEnabled(!machine.videoEnabled) }
-        micOn = machine.audioEnabled
+        if let mode {
+            AudioMeter.preferredMode = mode
+            applyRoute(for: mode)
+            machine.setAudioMode(mode)
+            selectedAudioMode = mode
+        } else {
+            // Clicking the active mode unsets it: the audio stream stops.
+            machine.setAudioEnabled(false)
+            selectedAudioMode = nil
+        }
+        render()
+    }
+
+    /// Best-effort input device for the picked mode (the modes are assumed
+    /// available; a missing device leaves the input where it is): the built-in
+    /// mic for Built-in/Speaker, the first external input (headset/interface)
+    /// for the earphone modes.
+    private func applyRoute(for mode: CallAudioMode) {
+        let wantBuiltIn = mode == .builtIn || mode == .speaker
+        var devicesAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &devicesAddress, 0, nil, &size) == noErr else {
+            return
+        }
+        var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &devicesAddress, 0, nil, &size, &devices) == noErr else {
+            return
+        }
+        var target: AudioDeviceID?
+        for device in devices {
+            var streams = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreams,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: kAudioObjectPropertyElementMain)
+            var streamsSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(device, &streams, 0, nil, &streamsSize) == noErr,
+                  streamsSize > 0 else { continue }
+            var transport: UInt32 = 0
+            var transportSize = UInt32(MemoryLayout<UInt32>.size)
+            var transportAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyTransportType,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            guard AudioObjectGetPropertyData(
+                device, &transportAddress, 0, nil, &transportSize, &transport) == noErr else { continue }
+            if (transport == kAudioDeviceTransportTypeBuiltIn) == wantBuiltIn {
+                target = device
+                break
+            }
+        }
+        guard let target else { return }
+        var setAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var value = target
+        AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &setAddress, 0, nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size), &value)
+    }
+
+    /// In-call toggle gating the active machine's outgoing video stream
+    /// (send/no-send — §3 State 3). The machine reports back, so a toggle for
+    /// an absent track cannot desync the Bar.
+    private func toggleCam(peerId: String) {
+        guard let machine = Machine.current, peerId == machine.peer else { return }
+        machine.setVideoEnabled(!machine.videoEnabled)
         camOn = machine.videoEnabled
         render()
     }

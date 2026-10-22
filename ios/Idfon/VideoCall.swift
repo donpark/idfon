@@ -168,6 +168,8 @@ final class VideoCall: NSObject {
     private(set) var videoEnabled = false
     /// The own-media publish exists (set after `media_live_start` succeeds).
     private var published = false
+    /// The channel count the audio leg publishes (1 mono, 2 = the 2D mode).
+    private var publishedChannels = 1
 
     /// Enable/disable outgoing audio. Disabling sends silence (capture stays
     /// open); enabling brings capture up on demand when the call started
@@ -199,6 +201,40 @@ final class VideoCall: NSObject {
         } else {
             CameraPusher.shared.stop()
             idfonLog("idfon video: disabling camera capture; published=\(published)")
+        }
+        notify()
+    }
+
+    /// The panel picked an audio mode (docs/stereo-calls.md): unmute, and when
+    /// the mode changes the stream layout (2D ↔ mono) re-publish and re-invite
+    /// — the peer's handler re-joins on a fresh invite.
+    func setAudioMode(_ mode: CallAudioMode) {
+        setAudioEnabled(true)
+        guard published, let peer = activePeer, !peer.isEmpty else { return }
+        let want = AudioIO.captureChannelsForCall()
+        guard want != publishedChannels else { return }
+        Task { [weak self] in await self?.republish(channels: want, peer: peer) }
+    }
+
+    /// Re-publish both tracks at a new audio channel count and re-invite.
+    private func republish(channels: Int, peer: String) async {
+        AudioPusher.shared.retarget(channels: channels)
+        await Task.detached(priority: .userInitiated) { media_live_stop() }.value
+        let ticket = await ffiString {
+            media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(channels))
+        }
+        guard !ticket.isEmpty else {
+            idfonError("idfon video: re-publish failed for \(channels)ch")
+            return
+        }
+        publishedChannels = channels
+        setCallTicket(ticket)
+        applySendState()
+        do {
+            try await client.sendText(to: peer, LiveInvite.build(action: "start", ticket: ticket, call: true))
+            idfonLog("idfon video: re-published tracks channels=\(channels)")
+        } catch {
+            idfonError("idfon video: re-publish invite failed: \(error)")
         }
         notify()
     }
@@ -320,14 +356,19 @@ final class VideoCall: NSObject {
                 }
                 if video && cameraOn { CameraPusher.shared.start() }
                 // Publish both tracks regardless of the staged stream set so
-                // either stream can be toggled on later in the call.
-                let ticket = await ffiString { media_live_start_with_source(1, 1, "push") }
+                // either stream can be toggled on later in the call. The
+                // panel's audio mode picks the audio layout (docs/stereo-calls.md).
+                let channels = AudioIO.captureChannelsForCall()
+                let ticket = await ffiString {
+                    media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(channels))
+                }
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
                     return
                 }
                 published = true
+                publishedChannels = channels
                 setCallTicket(ticket)
                 applySendState() // a toggle during `.calling` may predate the publish
                 try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
@@ -393,13 +434,17 @@ final class VideoCall: NSObject {
                 }
                 if cameraOn { CameraPusher.shared.start() }
                 await join(ticket: pending.ticket)
-                let own = await ffiString { media_live_start_with_source(1, 1, "push") }
+                let channels = AudioIO.captureChannelsForCall()
+                let own = await ffiString {
+                    media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(channels))
+                }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
                     return
                 }
                 published = true
+                publishedChannels = channels
                 applySendState()
                 idfonLog("idfon video answer media started audio=1 video=\(cameraOn ? 1 : 0)")
                 try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true))

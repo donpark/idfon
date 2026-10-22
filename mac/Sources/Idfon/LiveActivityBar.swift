@@ -1,5 +1,39 @@
 import AppKit
 
+/// The live panel's call audio modes: which audio path the call runs on.
+/// `earphone2D` is the stereo call (docs/stereo-calls.md). Lives with the Bar
+/// model because the panel check compiles the view standalone.
+enum CallAudioMode: String, CaseIterable {
+    case builtIn
+    case earphone
+    case earphone2D
+    case speaker
+
+    /// Left-to-right order on the panel.
+    static let displayOrder: [CallAudioMode] = [.builtIn, .earphone, .earphone2D, .speaker]
+
+    var symbolName: String {
+        switch self {
+        case .builtIn: "iphone"
+        case .earphone: "headphones"
+        case .earphone2D: "waveform"
+        case .speaker: "speaker.wave.2.fill"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .builtIn: "Built-in"
+        case .earphone: "Earphone"
+        case .earphone2D: "Earphone 2D"
+        case .speaker: "Speaker"
+        }
+    }
+
+    /// The stream layout this mode publishes (docs/stereo-calls.md).
+    var channels: Int { self == .earphone2D ? 2 : 1 }
+}
+
 /// Display model for one contact's Live Activity Bar (docs/ui-design-notes.md
 /// §3 states, §4 tray, §6 densities). Pure value: the host maps call/transfer
 /// state into it and re-renders on every change.
@@ -25,8 +59,12 @@ struct LiveActivityBarModel: Equatable {
     let peerId: String
     var handle: String
     var phase: Phase = .idle
-    var micOn = false
     var camOn = false
+    /// Audio modes the panel offers right now (display order) + the one the
+    /// call runs. None selected = the audio stream is off (mute). Presence is
+    /// preference/capability-gated (ContactAudioModes), never hardware-gated.
+    var audioModes: [CallAudioMode] = []
+    var selectedAudioMode: CallAudioMode?
     /// What the session carries (§3 State 3): a toggle for an absent track is
     /// hidden rather than shown as if it worked. Watch-only sessions publish
     /// nothing, so both are false there.
@@ -63,7 +101,9 @@ struct LiveActivityBarModel: Equatable {
 }
 
 enum LiveActivityBarIntent: Equatable {
-    case toggleMic, toggleCam, ping, end, answer, decline
+    /// Pick the call's audio mode; nil turns the audio stream off. Clicking
+    /// the active mode emits nil (a radio group that allows no selection).
+    case setAudioMode(CallAudioMode?), toggleCam, ping, end, answer, decline
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill clicked: reveal the owning thread.
     case open
@@ -80,7 +120,10 @@ final class LiveActivityBar: NSView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private let onDeviceButton = NSButton()
-    private let micButton = NSButton()
+    private let audioGroup = NSView()
+    private let audioGroupStack = NSStackView()
+    private let mediaStack = NSStackView()
+    private var audioModeButtons: [CallAudioMode: NSButton] = [:]
     private let camButton = NSButton()
     private let declineButton = NSButton()
     private let answerButton = NSButton()
@@ -133,7 +176,7 @@ final class LiveActivityBar: NSView {
         titleStack.alignment = .leading
         titleStack.spacing = 0
 
-        configure(micButton, symbol: "mic.slash.fill", id: "mic", label: "Microphone", action: #selector(micTapped))
+        buildAudioGroup()
         configure(camButton, symbol: "video.slash.fill", id: "cam", label: "Camera", action: #selector(camTapped))
         configure(declineButton, symbol: "phone.down.fill", id: "decline", label: "Decline", action: #selector(declineTapped))
         configure(answerButton, symbol: "phone.fill", id: "answer", label: "Answer", action: #selector(answerTapped))
@@ -145,7 +188,7 @@ final class LiveActivityBar: NSView {
         declineButton.contentTintColor = .systemRed
         answerButton.contentTintColor = .systemGreen
 
-        let header = NSStackView(views: [dot, titleStack, onDeviceButton, micButton, camButton, declineButton, answerButton, verbButton])
+        let header = NSStackView(views: [dot, titleStack, onDeviceButton, declineButton, answerButton, verbButton])
         header.orientation = .horizontal
         header.spacing = 8
         header.alignment = .centerY
@@ -154,11 +197,19 @@ final class LiveActivityBar: NSView {
 
         separator.boxType = .separator
 
+        // The media stream buttons are their own row, in the spec's order: the
+        // audio mode group then the camera.
+        mediaStack.orientation = .horizontal
+        mediaStack.spacing = 8
+        mediaStack.alignment = .centerY
+        mediaStack.translatesAutoresizingMaskIntoConstraints = false
+        [audioGroup, camButton].forEach(mediaStack.addArrangedSubview)
+
         trayStack.orientation = .vertical
         trayStack.alignment = .leading
         trayStack.spacing = 0
 
-        rootStack = NSStackView(views: [header, separator, trayStack])
+        rootStack = NSStackView(views: [header, mediaStack, separator, trayStack])
         rootStack.orientation = .vertical
         rootStack.alignment = .leading
         rootStack.spacing = 6
@@ -172,6 +223,54 @@ final class LiveActivityBar: NSView {
             rootStack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
         apply(model)
+    }
+
+    /// The audio modes are one segmented control: the shared container is the
+    /// group hint and selection is a tinted pill inside it (the verb button's
+    /// fill language). Custom buttons, not NSSegmentedControl — the group
+    /// allows no selection (the audio stream is off) and each mode is
+    /// available or not on its own.
+    private func buildAudioGroup() {
+        audioGroup.wantsLayer = true
+        audioGroup.layer?.cornerRadius = 14 // capsule of the 28pt group
+        audioGroup.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.08).cgColor
+        audioGroup.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            audioGroup.heightAnchor.constraint(equalToConstant: 28),
+        ])
+        // 2pt margins: the selected pill (radius 12) sits concentrically
+        // inside the container (radius 14).
+        audioGroupStack.orientation = .horizontal
+        audioGroupStack.spacing = 2
+        audioGroupStack.edgeInsets = NSEdgeInsets(top: 2, left: 2, bottom: 2, right: 2)
+        audioGroupStack.translatesAutoresizingMaskIntoConstraints = false
+        for mode in CallAudioMode.displayOrder {
+            let button = NSButton()
+            button.bezelStyle = .regularSquare
+            button.isBordered = false
+            button.image = NSImage(systemSymbolName: mode.symbolName, accessibilityDescription: mode.displayName)
+            button.imagePosition = .imageOnly
+            button.target = self
+            button.action = #selector(audioModeTapped(_:))
+            button.identifier = NSUserInterfaceItemIdentifier("audio-\(mode.rawValue)")
+            button.setAccessibilityLabel(mode.displayName)
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 12
+            button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(greaterThanOrEqualToConstant: 26),
+                button.heightAnchor.constraint(equalToConstant: 24),
+            ])
+            audioModeButtons[mode] = button
+            audioGroupStack.addArrangedSubview(button)
+        }
+        audioGroup.addSubview(audioGroupStack)
+        NSLayoutConstraint.activate([
+            audioGroupStack.topAnchor.constraint(equalTo: audioGroup.topAnchor),
+            audioGroupStack.bottomAnchor.constraint(equalTo: audioGroup.bottomAnchor),
+            audioGroupStack.leadingAnchor.constraint(equalTo: audioGroup.leadingAnchor),
+            audioGroupStack.trailingAnchor.constraint(equalTo: audioGroup.trailingAnchor),
+        ])
     }
 
     private func configure(_ button: NSButton, symbol: String, id: String, label: String, action: Selector) {
@@ -227,13 +326,21 @@ final class LiveActivityBar: NSView {
         // Stream toggles exist only once a call does: idle has nothing to stage
         // and the ringing Bar has nothing to answer with (§3 State 3).
         let togglesActive = model.phase == .calling || model.phase == .inCall
-        micButton.isHidden = compact || !togglesActive || !model.audioAvailable
+        mediaStack.isHidden = compact || !togglesActive
+        audioGroup.isHidden = compact || !togglesActive || !model.audioAvailable || model.audioModes.isEmpty
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
-        micButton.image = NSImage(systemSymbolName: model.micOn ? "mic.fill" : "mic.slash.fill", accessibilityDescription: "Microphone")
+        for (mode, button) in audioModeButtons {
+            button.isHidden = !model.audioModes.contains(mode)
+            let selected = model.selectedAudioMode == mode
+            button.image = NSImage(systemSymbolName: mode.symbolName, accessibilityDescription: mode.displayName)
+            button.contentTintColor = selected ? .controlAccentColor : .secondaryLabelColor
+            button.layer?.backgroundColor = selected
+                ? NSColor.controlAccentColor.withAlphaComponent(0.15).cgColor
+                : nil
+            button.setAccessibilityValue(selected ? "on" : "off")
+        }
         camButton.image = NSImage(systemSymbolName: model.camOn ? "video.fill" : "video.slash.fill", accessibilityDescription: "Camera")
-        micButton.contentTintColor = model.micOn ? .controlAccentColor : .secondaryLabelColor
         camButton.contentTintColor = model.camOn ? .controlAccentColor : .secondaryLabelColor
-        micButton.setAccessibilityValue(model.micOn ? "on" : "off")
         camButton.setAccessibilityValue(model.camOn ? "on" : "off")
 
         let incoming = model.phase == .incoming
@@ -295,7 +402,10 @@ final class LiveActivityBar: NSView {
         alert.runModal()
     }
 
-    @objc private func micTapped() { onIntent?(.toggleMic) }
+    @objc private func audioModeTapped(_ sender: NSButton) {
+        guard let mode = audioModeButtons.first(where: { $0.value === sender })?.key else { return }
+        onIntent?(.setAudioMode(model.selectedAudioMode == mode ? nil : mode))
+    }
     @objc private func camTapped() { onIntent?(.toggleCam) }
     @objc private func declineTapped() { onIntent?(.decline) }
     @objc private func answerTapped() { onIntent?(.answer) }

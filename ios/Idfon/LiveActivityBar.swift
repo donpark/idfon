@@ -1,5 +1,39 @@
 import UIKit
 
+/// The live panel's call audio modes: which audio path the call runs on.
+/// `earphone2D` is the stereo call (docs/stereo-calls.md). Lives with the Bar
+/// model because the panel check compiles the view standalone.
+enum CallAudioMode: String, CaseIterable {
+    case builtIn
+    case earphone
+    case earphone2D
+    case speaker
+
+    /// Left-to-right order on the panel.
+    static let displayOrder: [CallAudioMode] = [.builtIn, .earphone, .earphone2D, .speaker]
+
+    var symbolName: String {
+        switch self {
+        case .builtIn: "iphone"
+        case .earphone: "headphones"
+        case .earphone2D: "waveform"
+        case .speaker: "speaker.wave.2.fill"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .builtIn: "Built-in"
+        case .earphone: "Earphone"
+        case .earphone2D: "Earphone 2D"
+        case .speaker: "Speaker"
+        }
+    }
+
+    /// The stream layout this mode publishes (docs/stereo-calls.md).
+    var channels: Int { self == .earphone2D ? 2 : 1 }
+}
+
 /// Display model for one contact's Live Activity Bar (docs/ui-design-notes.md
 /// §3 states, §4 tray, §6 densities). Pure value: the host maps call/transfer
 /// state into it and re-renders on every change; the view holds no other state.
@@ -27,12 +61,12 @@ struct LiveActivityBarModel: Equatable {
     let peerId: String
     var handle: String // "@janedoe"
     var phase: Phase = .idle
-    var micOn = false
     var camOn = false
-    /// Audio routes available right now + the one the call is on (D2's route
-    /// menu): routes change at runtime, so the host re-reads them per render.
-    var routes: [LiveActivityRoute] = []
-    var currentRoute = ""
+    /// Audio modes the panel offers right now (display order) + the one the
+    /// call runs. None selected = the audio stream is off (mute). Presence is
+    /// preference/capability-gated (ContactAudioModes), never hardware-gated.
+    var audioModes: [CallAudioMode] = []
+    var selectedAudioMode: CallAudioMode?
     /// Stream set the session actually carries (§3 State 3): a call can only
     /// toggle the tracks it was started with, so a toggle for an absent track
     /// is hidden rather than shown as if it worked. Calls publish both, so
@@ -73,14 +107,10 @@ struct LiveActivityBarModel: Equatable {
     }
 }
 
-/// One audio route the call can use right now (D2's route menu).
-struct LiveActivityRoute: Equatable {
-    let id: String // "earpiece", "speaker", or the port's uid
-    let name: String // "iPhone", "Speaker", "AirPods Pro", …
-}
-
 enum LiveActivityBarIntent: Equatable {
-    case toggleMic, toggleCam, selectRoute(String), answer, decline
+    /// Pick the call's audio mode; nil turns the audio stream off. Tapping
+    /// the active mode emits nil (a radio group that allows no selection).
+    case setAudioMode(CallAudioMode?), toggleCam, answer, decline
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill tapped: navigate to the owning thread.
     case open
@@ -93,7 +123,7 @@ enum LiveActivityBarIntent: Equatable {
 ///   rootStack (V)
 ///     headerStack (H; V at accessibility sizes)
 ///       identityStack (H): dot · textStack (V): titleLabel / statusLabel
-///       controlsStack (H): mic · route · cam · decline · answer
+///       controlsStack (H): audioGroup · cam · decline · answer
 ///     separator
 ///     trayStack (V): TrayRowView…
 final class LiveActivityBar: UIView {
@@ -103,15 +133,17 @@ final class LiveActivityBar: UIView {
     private let dot = UIView()
     private let titleLabel = UILabel()
     private let statusLabel = UILabel()
-    private let micButton = UIButton(configuration: .tinted())
+    private let audioGroup = UIView()
+    private let audioGroupStack = UIStackView()
+    private var audioModeButtons: [CallAudioMode: UIButton] = [:]
     private let camButton = UIButton(configuration: .tinted())
-    private let routeButton = UIButton(configuration: .tinted())
     private let declineButton = UIButton(configuration: .filled())
     private let answerButton = UIButton(configuration: .filled())
     private let onDeviceButton = UIButton(configuration: .plain())
     private let textStack = UIStackView()
     private let identityStack = UIStackView()
     private let controlsStack = UIStackView()
+    private let mediaStack = UIStackView()
     private let headerStack = UIStackView()
     private let separator = UIView()
     private let trayStack = UIStackView()
@@ -183,19 +215,8 @@ final class LiveActivityBar: UIView {
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
             button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         }
-        control(micButton, "mic.slash.fill", "Microphone", #selector(micTapped))
         control(camButton, "video.slash.fill", "Camera", #selector(camTapped))
-        // D2's route menu: the routes available right now, rebuilt at render
-        // from the host's AVAudioSession reads. No tap handler — the menu is
-        // the action.
-        // shortcut: no gear (D2 advanced A/V settings) — no settings surface
-        // exists for it to open yet, add the button when one lands.
-        routeButton.configuration?.cornerStyle = .capsule
-        routeButton.configuration?.image = UIImage(systemName: "airplayaudio")
-        routeButton.accessibilityLabel = "Audio route"
-        routeButton.showsMenuAsPrimaryAction = true
-        routeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-        routeButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        buildAudioGroup()
         control(declineButton, "phone.down.fill", "Decline", #selector(declineTapped))
         control(answerButton, "phone.fill", "Answer", #selector(answerTapped))
         // Ring actions: filled glyphs, white on systemRed / systemGreen.
@@ -206,8 +227,14 @@ final class LiveActivityBar: UIView {
         controlsStack.axis = .horizontal
         controlsStack.spacing = 8
         controlsStack.alignment = .center
-        [micButton, routeButton, camButton, declineButton, answerButton]
-            .forEach(controlsStack.addArrangedSubview)
+        [declineButton, answerButton].forEach(controlsStack.addArrangedSubview)
+        // The media stream buttons are their own row, in the spec's order: the
+        // audio mode group then the camera. Six controls cannot share the
+        // identity row at phone widths (the handle budget is ~179pt).
+        mediaStack.axis = .horizontal
+        mediaStack.spacing = 8
+        mediaStack.alignment = .center
+        [audioGroup, camButton].forEach(mediaStack.addArrangedSubview)
 
         headerStack.axis = .horizontal
         headerStack.spacing = 12
@@ -223,7 +250,7 @@ final class LiveActivityBar: UIView {
 
         rootStack.axis = .vertical
         rootStack.translatesAutoresizingMaskIntoConstraints = false
-        [headerStack, separator, trayStack].forEach(rootStack.addArrangedSubview)
+        [headerStack, mediaStack, separator, trayStack].forEach(rootStack.addArrangedSubview)
         addSubview(rootStack)
         NSLayoutConstraint.activate([
             rootStack.topAnchor.constraint(equalTo: topAnchor),
@@ -233,6 +260,42 @@ final class LiveActivityBar: UIView {
         ])
 
         apply(model)
+    }
+
+    /// The audio modes are one segmented control: a shared capsule container is
+    /// the group hint and selection is a filled pill inside it. Custom buttons,
+    /// not `UISegmentedControl` — the group allows no selection (the audio
+    /// stream is off) and each mode is available or not on its own.
+    private func buildAudioGroup() {
+        audioGroup.backgroundColor = .tertiarySystemFill
+        audioGroup.layer.cornerCurve = .continuous
+        audioGroup.layer.cornerRadius = 22 // capsule of the 44pt group
+        audioGroup.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        audioGroupStack.axis = .horizontal
+        audioGroupStack.spacing = 0
+        audioGroupStack.alignment = .center
+        // 2pt margins: the selected pill (radius 20) sits concentrically
+        // inside the container (radius 22).
+        audioGroupStack.isLayoutMarginsRelativeArrangement = true
+        audioGroupStack.layoutMargins = .init(top: 2, left: 2, bottom: 2, right: 2)
+        for mode in CallAudioMode.displayOrder {
+            let button = UIButton(type: .custom)
+            button.accessibilityLabel = mode.displayName
+            button.addTarget(self, action: #selector(audioModeTapped(_:)), for: .touchUpInside)
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 40).isActive = true
+            audioModeButtons[mode] = button
+            audioGroupStack.addArrangedSubview(button)
+        }
+        audioGroupStack.translatesAutoresizingMaskIntoConstraints = false
+        audioGroup.addSubview(audioGroupStack)
+        NSLayoutConstraint.activate([
+            audioGroupStack.topAnchor.constraint(equalTo: audioGroup.topAnchor),
+            audioGroupStack.bottomAnchor.constraint(equalTo: audioGroup.bottomAnchor),
+            audioGroupStack.leadingAnchor.constraint(equalTo: audioGroup.leadingAnchor),
+            audioGroupStack.trailingAnchor.constraint(equalTo: audioGroup.trailingAnchor),
+        ])
     }
 
     override func layoutSubviews() {
@@ -287,21 +350,20 @@ final class LiveActivityBar: UIView {
         // D2: the Bar row operates the call, so its controls survive statusOnly
         // (identity-only); only the compact pill drops them.
         controlsStack.isHidden = compact
-        micButton.isHidden = compact || !togglesActive || !model.audioAvailable
+        mediaStack.isHidden = compact || !togglesActive
+        audioGroup.isHidden = compact || !togglesActive || !model.audioAvailable || model.audioModes.isEmpty
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
-        routeButton.isHidden = compact || model.phase != .inCall || !model.audioAvailable
-        routeButton.menu = UIMenu(children: model.routes.map { route in
-            UIAction(title: route.name,
-                     image: route.id == model.currentRoute ? UIImage(systemName: "checkmark") : nil) { [weak self] _ in
-                self?.onIntent?(.selectRoute(route.id))
-            }
-        })
-        routeButton.accessibilityValue = model.routes.first { $0.id == model.currentRoute }?.name
-        micButton.configuration?.image = UIImage(systemName: model.micOn ? "mic.fill" : "mic.slash.fill")
+        for (mode, button) in audioModeButtons {
+            button.isHidden = !model.audioModes.contains(mode)
+            let selected = model.selectedAudioMode == mode
+            var config: UIButton.Configuration = selected ? .tinted() : .plain()
+            config.image = UIImage(systemName: mode.symbolName)
+            config.cornerStyle = .capsule
+            button.configuration = config
+            button.accessibilityValue = selected ? "on" : "off"
+        }
         camButton.configuration?.image = UIImage(systemName: model.camOn ? "video.fill" : "video.slash.fill")
-        micButton.configuration?.baseForegroundColor = model.micOn ? .tintColor : .secondaryLabel
         camButton.configuration?.baseForegroundColor = model.camOn ? .tintColor : .secondaryLabel
-        micButton.accessibilityValue = model.micOn ? "on" : "off"
         camButton.accessibilityValue = model.camOn ? "on" : "off"
 
         // Answer/Decline ring here; starting and stopping the call is the chat
@@ -336,7 +398,10 @@ final class LiveActivityBar: UIView {
 
     // MARK: - Intents
 
-    @objc private func micTapped() { onIntent?(.toggleMic) }
+    @objc private func audioModeTapped(_ sender: UIButton) {
+        guard let mode = audioModeButtons.first(where: { $0.value === sender })?.key else { return }
+        onIntent?(.setAudioMode(model.selectedAudioMode == mode ? nil : mode))
+    }
     @objc private func camTapped() { onIntent?(.toggleCam) }
     @objc private func declineTapped() { onIntent?(.decline) }
     @objc private func answerTapped() { onIntent?(.answer) }
