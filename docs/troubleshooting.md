@@ -51,6 +51,43 @@ renders on the app's single playback bus (`AudioIO`, see
 other-audio ducking is minimized. Verified on device (ringback and reply volume
 normal, no self-bleed).
 
+## Hangup "crashes" the app on an AFM contact (watchdog kill, not a crash) (2026-10-22, FIXED)
+
+Hanging up a voice call with an on-device agent (e.g. `AFM 3`) killed the app
+seconds later. No `.ips` crash report exists — the system's CPU-resource
+watchdog terminated it (`bug_type 202`, `Idfon.cpu_resource-*.ips`: the app
+burned CPU for ~155 s against a 180 s limit), which looks exactly like a crash
+to the user.
+
+Diagnosis. The report stays on the phone; pull it with
+`pymobiledevice3 crash pull <out> -m Idfon` (note the argument order: `out`
+first), then symbolicate the `Idfon + <offset>` frames with `nm -n` against
+`ios/.derived/Build/Products/Release-iphoneos/Idfon.app/Idfon`. The hot chain:
+
+```
+TurnTap.feed → TurnShadow.consume → TurnEngine.feed → TurnRuntime.feed
+→ ParakeetStudentTurnModel.encode (CoreML/Espresso/BNNS)
+```
+
+The tyger shadow turn-taker (the path-C student tier) was fed from the mic tap
+into an **unbounded** `queue.async` backlog. CPU-tier inference is slower than
+capture, so the backlog grew for the length of the call; at hangup
+`TurnShadow.stop()`'s `queue.sync` drained the whole backlog on the way out —
+main thread blocked, CPU pegged — and the watchdog fired.
+
+Fix (`TurnShadow.swift` + `TurnTap.swift`, both apps):
+
+- the feed pipeline is bounded (≥50 queued feeds ⇒ drop — a shadow may skip
+  buffers, never queue unbounded work);
+- `stop()` sets a `stopped` flag first, so queued feeds no-op and `queue.sync`
+  drains instantly;
+- `agentHops` is bounded, and `TurnTap.feed`'s converter loop is bounded (a
+  `.haveData`-with-no-frames converter must not spin).
+
+Remaining: the student encoder runs on the CPU tier (BNNS, not ANE), which is
+what made the backlog possible in the first place — it now only degrades the
+shadow's decision cadence, but is worth tuning (`docs/voice-tyger-ondevice.md`).
+
 ## VoIP pushes stop reaching a locked iPhone (ring never arrives; app log silent) (2026-10-18, HARDENED)
 
 **Symptom.** mac → iPhone calls work while the iPhone app is active; with the

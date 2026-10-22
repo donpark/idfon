@@ -160,6 +160,23 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     private var agentHops: [[Float]] = []
     /// Serial, off the audio render thread: inference never runs in a tap callback.
     private let queue = DispatchQueue(label: "idfon.turn-shadow")
+    /// Pipeline bookkeeping (tap thread vs this queue): `stopped` makes `stop`
+    /// prompt and idempotent; `queuedFeeds` bounds the backlog. Capture is
+    /// real-time and CPU-tier inference is not — a shadow may skip buffers, but
+    /// it must never queue unbounded work (the 2026-10-22 hangup watchdog kill:
+    /// stop()'s `queue.sync` drained minutes of backlogged hops while the CPU
+    /// burned until the system killed the app).
+    private let stateLock = NSLock()
+    private var stopped = false
+    private var queuedFeeds = 0
+    private static let maxQueuedFeeds = 50 // ~2 s of capture buffers
+
+    private var isStopped: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return stopped
+    }
+
     private var mode = "listen"
     /// The active-mode sink (the tyger option): non-FRAME decisions as they
     /// fire. The Automation marks stay either way (the diff log).
@@ -223,7 +240,13 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
             self?.consume(samples)
         }
         agentTap.onHop = { [weak self] samples in
-            self?.agentHops.append(samples) // already on the serial queue (tap.feed is)
+            guard let self else { return }
+            self.agentHops.append(samples) // already on the serial queue (tap.feed is)
+            // Bounded: consume() pairs these 1:1 with user hops, and dropped
+            // user feeds must not grow this queue forever.
+            if self.agentHops.count > 50 {
+                self.agentHops.removeFirst(self.agentHops.count - 50)
+            }
         }
         AudioIO.shared.addCaptureObserver(self)
         AudioIO.shared.addPlaybackObserver(self)
@@ -237,7 +260,20 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     }
 
     func feed(_ samples: [Float], rate: Double) {
-        queue.async { self.tap.feed(samples, rate: rate) }
+        stateLock.lock()
+        let run = !stopped && queuedFeeds < Self.maxQueuedFeeds
+        if run { queuedFeeds += 1 }
+        stateLock.unlock()
+        guard run else { return } // real-time: drop rather than backlog
+        queue.async {
+            defer {
+                self.stateLock.lock()
+                self.queuedFeeds -= 1
+                self.stateLock.unlock()
+            }
+            guard !self.isStopped else { return }
+            self.tap.feed(samples, rate: rate)
+        }
     }
 
     /// What the playback bus is about to play (TTS + remote call audio) — the
@@ -246,6 +282,7 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         guard let ch = buffer.floatChannelData else { return }
         let samples = Array(UnsafeBufferPointer(start: ch[0], count: Int(buffer.frameLength)))
         let rate = buffer.format.sampleRate
+        guard !isStopped else { return }
         queue.async { self.agentTap.feed(samples, rate: rate) }
     }
 
@@ -255,6 +292,9 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     }
 
     func stop() {
+        stateLock.lock()
+        stopped = true
+        stateLock.unlock()
         AudioIO.shared.removeCaptureObserver(self)
         AudioIO.shared.removePlaybackObserver(self)
         queue.sync {
@@ -267,6 +307,7 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     }
 
     private func consume(_ hop: [Float]) {
+        guard !isStopped else { return }
         let agent = agentHops.isEmpty ? [Float](repeating: 0, count: hop.count) : agentHops.removeFirst()
         capture.append(userHop: hop, agentHop: agent)
         let events = engine.feed(userHop: hop, agentHop: agent, mode: mode)

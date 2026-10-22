@@ -40,7 +40,10 @@ final class TurnTap {
             inBuf.floatChannelData![0].update(from: p.baseAddress!, count: samples.count)
         }
         var supplied = false
-        while true {
+        // Bounded: the converter drains its resampler tail in a few passes. A
+        // converter stuck returning `.haveData` must not spin this loop — it
+        // fed the 2026-10-22 hangup watchdog kill (CPU resource, bug 202).
+        for _ in 0..<32 {
             let capacity = AVAudioFrameCount(Double(samples.count) * 16000.0 / rate) + 64
             guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else {
                 return
@@ -68,6 +71,7 @@ final class TurnTap {
                 }
                 return
             }
+            if out.frameLength == 0 { return } // `.haveData` with nothing: done
         }
     }
 }
