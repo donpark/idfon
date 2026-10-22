@@ -2,6 +2,7 @@
 language:
 - en
 license: openmdw-1.1
+license_link: LICENSE.md
 pipeline_tag: audio-classification
 base_model:
 - nvidia/nemotron-3.5-asr-streaming-0.6b
@@ -134,7 +135,8 @@ The `coreai/`, `coreml/` and `mlx/` tiers are exports of
 [TYGER](https://huggingface.co/nineninesix/tyger), whose weights and files are
 **OpenMDW-1.1**; NVIDIA's original Nemotron card, figures and license terms
 travel with that repo (`upstream/`, `licenses/`). This repo's tiers and the
-`pathc/` student are distributed under the same **OpenMDW-1.1** terms.
+`pathc/` student are distributed under the same **OpenMDW-1.1** terms. See
+[LICENSE.md](LICENSE.md) and [NOTICE.md](NOTICE.md).
 
 `TYGER-Step-Student` was trained by distillation from TYGER on the
 dualturn-otospeech-turn-taking corpora; see that dataset's own terms for the
