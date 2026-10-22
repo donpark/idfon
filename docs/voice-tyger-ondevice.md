@@ -14,6 +14,7 @@ rulings and measurements further down are the record that produced it.
 
 | Platform | Tier | Decision guard (24 × 3 min, 72 min corpus) | Size |
 | --- | --- | --- | --- |
+| **All platforms (2026-10-22, shipping first)** | **path-C student**: Parakeet Redux tap + distilled 14M step — `ParakeetStudentTurnModel` | in-use: **91% turn-end catch vs the teacher's 87%** (`quality.py`, 24 val sessions) | **56 MB** + the Parakeet model the ASR needs anyway |
 | **macOS 27+ / iOS 27+** | **CoreAI fp16** (fp16 compute, fp32 I/O) — `ports/tyger-coreai` | **99.67%** aligned ±2 frames (916/919; 4 boundary flips in 917) | ~0.77 GB |
 | — same platforms, exact tier | CoreAI fp32 | **100%** (917/917 identical frames) | 1.53 GB |
 | macOS 14–26 | MLX int8-g16 (stem + layers.0 fp32) — `TygerVoiceMLX` | 99.5% (3 flips in 917) | 1.58 GB on disk¹ |
@@ -21,6 +22,14 @@ rulings and measurements further down are the record that produced it.
 
 ¹ the artifact stores dequantized fp32 weights ("380 MB" is the quantized
 weight estimate, not the file).
+
+The student tier is selected first in `TurnShadow.start()` on both apps
+(download-on-first-use from the `pathc` tier of the packed manifest, HF repo
+`donpark/tyger-models`); the rows below are fallbacks when it cannot load, and
+classic turn-taking when nothing loads. Its in-use numbers come from
+`~/dev/ml/pathc/quality.py`; the teacher-identity guard column does not apply
+to it (it is a different model, gated on in-use behavior — see
+`docs/voice-fast-track.md`).
 
 - **Loading**: `CoreAITurnModel` prefers the float16 assets
   (`tyger_encoder_float16.aimodel` + `tyger_step_float16.aimodel`) and falls

@@ -3,15 +3,21 @@
 // iOS/mac `TygerModelStore`): flattens `bench-results/{coreai,coreml}` bundles
 // into one asset per file plus a `manifest.json` pinning every byte
 // (sha256 + size) — the `ports/tyger-onnx/pack-bundle.mjs` manifest shape.
-// Upload the output dir to any static host or a GitHub release and point the
-// app at the manifest URL (`IDFON_TYGER_MODELS` / `-tygermodels` overrides).
+// Upload the output dir to the HuggingFace repo the app points at
+// (`donpark/tyger-models`; the store's default manifest URL) — models ship
+// via HuggingFace, never git — and point the app at the manifest URL
+// (`IDFON_TYGER_MODELS` / `-tygermodels` overrides).
 //
-//   node scripts/pack-tyger-models.mjs [--url-base URL] [--out DIR] [--all]
+//   node scripts/pack-tyger-models.mjs [--url-base URL] [--out DIR] [--all] [--only TIER]
 //
 // Default set: the coreai fp16 pair (the iOS 27+ shipping tier), the three
 // coreml packages the pre-27 loader needs (TygerEncoder, TygerEncoderDyn,
-// TygerStep), and the quantized MLX int8 chain (the pre-27 mac tier).
-// `--all` packs every bundle incl. fp32 fallbacks and bench variants (Q8/…).
+// TygerStep), the quantized MLX int8 chain (the pre-27 mac tier), and the
+// path-C student step (the distilled 56 MB turn heads — its Parakeet tap is
+// the ASR's own model, nothing else to fetch).
+// `--only TIER` packs just that tier's default set (when other bundles are
+// not on this machine). `--all` packs every bundle incl. fp32 fallbacks and
+// bench variants (Q8/…).
 // Bundle directories become relative `name` paths (so the store can recreate
 // them); `asset` is the flat download filename (`/` -> `__`).
 import { createHash } from "node:crypto";
@@ -28,8 +34,8 @@ const out = resolve(arg("--out") ?? "dist/tyger-models");
 const all = args.includes("--all");
 const root = resolve("bench-results");
 
-const tiers = ["coreai", "coreml", "mlx"];
-const bundles = all
+const tiers = ["coreai", "coreml", "mlx", "pathc"];
+let bundles = all
   ? tiers.flatMap((tier) =>
       readdirSync(join(root, tier), { withFileTypes: true })
         .filter((e) => e.name !== ".DS_Store")
@@ -41,7 +47,10 @@ const bundles = all
       "coreml/TygerEncoderDyn.mlpackage",
       "coreml/TygerStep.mlpackage",
       "mlx/TygerChainInt8.safetensors",
+      "pathc/TygerStepStudent.mlpackage",
     ];
+const only = arg("--only");
+if (only) bundles = bundles.filter((b) => b.startsWith(`${only}/`));
 
 const walk = (dir, prefix, into) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
