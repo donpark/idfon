@@ -3,7 +3,8 @@
 // running app, so this needs no window:
 //
 //   swiftc -o /tmp/mac-labcheck mac/Sources/Idfon/LiveActivityBar.swift \
-//     mac/Sources/Idfon/TransferCenter.swift mac/Checks/LiveActivityBarCheck/main.swift
+//     mac/Sources/Idfon/TransferCenter.swift mac/Sources/Idfon/IdfonLog.swift \
+//     mac/Checks/LiveActivityBarCheck/main.swift
 //   /tmp/mac-labcheck
 //
 // Prints "ALL OK" or the first failing assertion (exit 1).
@@ -49,33 +50,39 @@ MainActor.assumeIsolated {
         button.performClick(nil)
     }
 
-    // In a call: stream toggles present and wired.
+    // In a call: the audio media group + cam present and wired.
     m.phase = .inCall; m.density = .expanded; m.audioAvailable = true; m.videoAvailable = true
-    m.micOn = false; m.camOn = false
+    m.audioModes = CallAudioMode.displayOrder; m.selectedAudioMode = nil; m.camOn = false
     bar.apply(m)
     let inCall = visibleIds()
     print("in-call:", inCall)
-    check(inCall.contains("mic") && inCall.contains("cam"), "in-call shows mic/cam: \(inCall)")
+    check(inCall.contains("audio-builtIn") && inCall.contains("audio-earphone2D") && inCall.contains("cam"),
+          "in-call shows audio modes/cam: \(inCall)")
     intents.removeAll()
-    click("mic"); click("cam")
-    check(intents == [.toggleMic, .toggleCam], "in-call mic/cam emit toggles: \(intents)")
+    click("audio-builtIn"); click("cam")
+    check(intents == [.setAudioMode(.builtIn), .toggleCam], "in-call mode/cam emit intents: \(intents)")
+    // Radio with deselect: clicking the active mode unsets it (audio stream off).
+    m.selectedAudioMode = .builtIn; bar.apply(m)
+    intents.removeAll()
+    click("audio-builtIn")
+    check(intents == [.setAudioMode(nil)], "active mode click unsets: \(intents)")
 
     // Idle and the ringing Bar have no stream toggles.
     m.phase = .idle; bar.apply(m)
     let idle = visibleIds()
     print("idle:", idle)
-    check(!idle.contains("mic") && !idle.contains("cam"), "idle hides mic/cam: \(idle)")
+    check(!idle.contains("audio-builtIn") && !idle.contains("cam"), "idle hides mic/cam: \(idle)")
     m.phase = .incoming; bar.apply(m)
     let incoming = visibleIds()
     print("incoming:", incoming)
     check(incoming.contains("answer") && incoming.contains("decline"), "incoming shows answer/decline: \(incoming)")
-    check(!incoming.contains("mic") && !incoming.contains("cam"), "incoming hides mic/cam: \(incoming)")
+    check(!incoming.contains("audio-builtIn") && !incoming.contains("cam"), "incoming hides mic/cam: \(incoming)")
 
     // A watch-only session publishes nothing, so it has no toggles.
     m.phase = .watching; m.audioAvailable = false; m.videoAvailable = false; bar.apply(m)
     let watching = visibleIds()
     print("watching:", watching)
-    check(!watching.contains("mic") && !watching.contains("cam"), "watching hides mic/cam: \(watching)")
+    check(!watching.contains("audio-builtIn") && !watching.contains("cam"), "watching hides mic/cam: \(watching)")
     intents.removeAll()
     click("verb")
     check(intents == [.end], "watching verb stops: \(intents)")
@@ -83,10 +90,10 @@ MainActor.assumeIsolated {
     // A track the session doesn't carry is hidden even mid-call.
     m.phase = .inCall; m.audioAvailable = false; m.videoAvailable = true; bar.apply(m)
     let audioLess = visibleIds()
-    check(!audioLess.contains("mic") && audioLess.contains("cam"), "audio-less call hides mic: \(audioLess)")
+    check(!audioLess.contains("audio-builtIn") && audioLess.contains("cam"), "audio-less call hides modes: \(audioLess)")
     m.audioAvailable = true; m.videoAvailable = false; bar.apply(m)
     let videoLess = visibleIds()
-    check(videoLess.contains("mic") && !videoLess.contains("cam"), "video-less call hides cam: \(videoLess)")
+    check(videoLess.contains("audio-builtIn") && !videoLess.contains("cam"), "video-less call hides cam: \(videoLess)")
 
     // §4 Session Tray registry
     let center = TransferCenter.shared

@@ -8,7 +8,8 @@
 //     -I "$SDK/System/iOSSupport/usr/lib/swift" -o /tmp/labcheck \
 //     ios/Idfon/LiveActivityBar.swift ios/Idfon/OverlayWindow.swift \
 //     ios/Idfon/LiveWaveformView.swift ios/Idfon/TransferCenter.swift \
-//     ios/Idfon/IdfonLog.swift ios/Checks/LiveActivityBarCheck/main.swift
+//     ios/Idfon/IdfonLog.swift ios/Idfon/AudioIO.swift ios/Idfon/Automation.swift \
+//     ios/Idfon/CallTones.swift ios/Checks/LiveActivityBarCheck/main.swift
 //   /tmp/labcheck
 //
 // (Historically it ran through `simctl`; the Catalyst binary exercises the same
@@ -23,6 +24,7 @@ func check(_ cond: Bool, _ msg: String) { if !cond { print("FAIL:", msg); exit(1
 check(LiveActivityBar.clock(222) == "03:42", "clock m:ss")
 check(LiveActivityBar.clock(3723) == "1:02:03", "clock h:mm:ss")
 var m = LiveActivityBarModel(peerId: "p1", handle: "@janedoe")
+m.audioModes = CallAudioMode.displayOrder
 m.phase = .inCall; m.elapsed = 222
 m.rows = [.init(id: "r1", name: "Archive.zip", kind: .transfer(fraction: 0.42, bytesPerSecond: 12_000_000))]
 m.density = .compact
@@ -51,18 +53,18 @@ check(timer.frame.width >= timer.intrinsicContentSize.width, "timer not truncate
 check(handle.frame.minY < timer.frame.minY && handle.frame.minX == timer.frame.minX, "timer stacked under handle")
 let headerBottom = handle.superview!.superview!.superview!.frame.maxY // textStack → identityStack → headerStack
 print("header height:", headerBottom)
-check(headerBottom == 60, "header stays 44 control + 8/8 margins tall: \(headerBottom)")
+check(headerBottom <= 60, "header hugs identity (media row is its own row): \(headerBottom)")
 var intents: [LiveActivityBarIntent] = []
 bar.onIntent = { intents.append($0) }
 // tray row buttons exist
 func buttons(_ v: UIView) -> [UIButton] { v.subviews.flatMap { ($0 as? UIButton).map { [$0] } ?? buttons($0) } }
 let visible = buttons(bar).filter { !$0.isHidden && $0.window == nil ? !$0.isHidden : true }.filter { b in var v: UIView? = b; while let x = v { if x.isHidden { return false }; v = x.superview }; return true }
 print("visible buttons:", visible.map { $0.accessibilityLabel ?? $0.configuration?.title ?? "?" })
-check(visible.count == 7, "mic cam speaker end + cancel + pause stop") // 4 header, transfer: cancel, stream: pause+stop
-func fire(_ b: UIButton) { for t in b.allTargets { for a in b.actions(forTarget: t, forControlEvent: .touchUpInside) ?? [] { _ = (t as AnyObject).perform(NSSelectorFromString(a)) } } }
-fire(visible.first { $0.accessibilityLabel == "End" }!)
+check(visible.count == 8, "4 audio modes cam + cancel + pause stop") // 5 media row, transfer: cancel, stream: pause+stop
+func fire(_ b: UIButton) { for t in b.allTargets { for a in b.actions(forTarget: t, forControlEvent: .touchUpInside) ?? [] { _ = (t as AnyObject).perform(NSSelectorFromString(a), with: b) } } }
+fire(visible.first { $0.accessibilityLabel == "Camera" }!)
 fire(visible.first { $0.configuration?.title == "Cancel" }!)
-check(intents == [.end, .cancelRow("r1")], "intents \(intents)")
+check(intents == [.toggleCam, .cancelRow("r1")], "intents \(intents)")
 
 // compact pill hugs
 let pill = LiveActivityBar(); pill.translatesAutoresizingMaskIntoConstraints = false
@@ -79,8 +81,8 @@ m.phase = .incoming; m.density = .expanded; bar.apply(m); host.layoutIfNeeded()
 let inc = buttons(bar).filter { b in var v: UIView? = b; while let x = v { if x.isHidden { return false }; v = x.superview }; return true }.map { $0.accessibilityLabel ?? $0.configuration?.title ?? "?" }
 print("incoming buttons:", inc)
 check(inc.contains("Answer") && inc.contains("Decline") && !inc.contains("End"), "incoming shows Answer/Decline")
-check(!inc.contains("Microphone") && !inc.contains("Camera"), "incoming hides mic/cam: \(inc)")
-m.phase = .idle; m.micOn = false; m.camOn = false; bar.apply(m)
+check(!inc.contains("Built-in") && !inc.contains("Camera"), "incoming hides audio modes/cam: \(inc)")
+m.phase = .idle; m.camOn = false; bar.apply(m)
 check(bar.subviews.count > 0, "idle ok")
 
 // Idle expanded has no stream toggles and no Bar verb: a call starts from the
@@ -92,10 +94,10 @@ func visibleButtons() -> [UIButton] {
 func visibleLabels() -> [String] {
     visibleButtons().map { $0.accessibilityLabel ?? $0.configuration?.title ?? "?" }
 }
-m.phase = .idle; m.micOn = false; m.camOn = false; m.density = .expanded; bar.apply(m); host.layoutIfNeeded()
+m.phase = .idle; m.camOn = false; m.density = .expanded; bar.apply(m); host.layoutIfNeeded()
 let idleButtons = visibleLabels()
 print("idle buttons:", idleButtons)
-check(!idleButtons.contains("Microphone") && !idleButtons.contains("Camera")
+check(!idleButtons.contains("Built-in") && !idleButtons.contains("Camera")
       && !idleButtons.contains("End") && !idleButtons.contains("Answer")
       && !idleButtons.contains("Decline"),
       "idle expanded has no call controls: \(idleButtons)")
@@ -103,35 +105,42 @@ check(!idleButtons.contains("Microphone") && !idleButtons.contains("Camera")
 m.phase = .inCall; bar.apply(m); host.layoutIfNeeded()
 let callButtons = visibleLabels()
 print("in-call buttons:", callButtons)
-check(callButtons.contains("Microphone") && callButtons.contains("Camera"), "in-call shows mic/cam: \(callButtons)")
-// The visible thread's own call carries identity + controls in the nav bar, so
-// the Bar renders statusOnly: no controls, stats/tray only.
+check(callButtons.contains("Built-in") && callButtons.contains("Camera"), "in-call shows audio modes/cam: \(callButtons)")
+// The visible thread's own call carries identity in the nav bar, so the Bar
+// renders statusOnly: identity drops, but D2 keeps the operating controls.
 m.phase = .inCall; m.statusOnly = true; m.audioAvailable = true; m.videoAvailable = true
 m.rows = []; bar.apply(m); host.layoutIfNeeded()
 let statusButtons = visibleLabels()
 print("statusOnly buttons:", statusButtons)
-check(statusButtons.isEmpty, "statusOnly hides Bar controls: \(statusButtons)")
+check(statusButtons.contains("Built-in") && statusButtons.contains("Camera"),
+      "statusOnly keeps the media controls: \(statusButtons)")
 m.statusOnly = false
 
 // §3 State 3: a call only carries the tracks it was published with, so a
 // toggle for an absent track is hidden (both tracks shown otherwise).
-m.phase = .inCall; m.density = .expanded; m.micOn = false; m.camOn = true
+m.phase = .inCall; m.density = .expanded; m.camOn = true
 m.audioAvailable = false; m.videoAvailable = true; bar.apply(m); host.layoutIfNeeded()
 let audioLess = visibleLabels()
 print("audio-less buttons:", audioLess)
-check(!audioLess.contains("Microphone") && audioLess.contains("Camera"), "audio-less call hides mic, keeps cam: \(audioLess)")
+check(!audioLess.contains("Built-in") && audioLess.contains("Camera"), "audio-less call hides modes, keeps cam: \(audioLess)")
 m.audioAvailable = true; m.videoAvailable = false; bar.apply(m); host.layoutIfNeeded()
 let videoLess = visibleLabels()
 print("video-less buttons:", videoLess)
-check(videoLess.contains("Microphone") && !videoLess.contains("Camera"), "video-less call hides cam, keeps mic: \(videoLess)")
+check(videoLess.contains("Built-in") && !videoLess.contains("Camera"), "video-less call hides cam, keeps modes: \(videoLess)")
 m.audioAvailable = true; m.videoAvailable = true; bar.apply(m); host.layoutIfNeeded()
 let bothTracks = visibleLabels()
-check(bothTracks.contains("Microphone") && bothTracks.contains("Camera"), "both toggles visible with both tracks: \(bothTracks)")
-// Present *and* wired: the in-call Mic/Cam buttons emit their toggles.
+check(bothTracks.contains("Built-in") && bothTracks.contains("Camera"), "modes and cam visible with both tracks: \(bothTracks)")
+// Present *and* wired: the audio mode buttons and cam emit their intents.
+// Tapping the active mode unsets it (radio with deselect).
 intents.removeAll()
-fire(visibleButtons().first { $0.accessibilityLabel == "Microphone" }!)
+m.selectedAudioMode = .builtIn; bar.apply(m); host.layoutIfNeeded()
+fire(visibleButtons().first { $0.accessibilityLabel == "Earphone 2D" }!)
 fire(visibleButtons().first { $0.accessibilityLabel == "Camera" }!)
-check(intents == [.toggleMic, .toggleCam], "in-call mic/cam emit toggles: \(intents)")
+check(intents == [.setAudioMode(.earphone2D), .toggleCam], "in-call mode/cam emit intents: \(intents)")
+intents.removeAll()
+m.selectedAudioMode = .earphone2D; bar.apply(m); host.layoutIfNeeded()
+fire(visibleButtons().first { $0.accessibilityLabel == "Earphone 2D" }!)
+check(intents == [.setAudioMode(nil)], "active mode click unsets: \(intents)")
 
 // §4 Session Tray registry (TransferCenter): begin/update/finish, per-peer rows,
 // cancel routing, fraction clamping. The registry is @MainActor; the check runs

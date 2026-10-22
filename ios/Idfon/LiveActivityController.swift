@@ -82,9 +82,10 @@ final class LiveActivityController: NSObject {
     private var appliedInset: CGFloat = 0
     /// The in-call Bar's toggle state. Mirrored from the active machine on
     /// phase entry and after each toggle, so the Bar always shows what the
-    /// call is really sending (and hides toggles for absent tracks). The route
-    /// is not mirrored: it is read live from AVAudioSession (D2).
-    private var micOn = false
+    /// call is really sending (and hides toggles for absent tracks). The audio
+    /// mode selection is ours (the radio group); nothing is selected while the
+    /// audio stream is off.
+    private var selectedAudioMode: CallAudioMode?
     private var camOn = false
 
     private var elapsed: TimeInterval = 0
@@ -174,6 +175,18 @@ final class LiveActivityController: NSObject {
             case .audio(let call): call.setAudioEnabled(enabled)
             case .video(let call): call.setAudioEnabled(enabled)
             case .voice(let session): session.setAudioEnabled(enabled)
+            }
+        }
+
+        /// The panel picked an audio mode: unmute and, when the mode changes
+        /// the stream layout, re-publish the leg (the machines' own concern).
+        func setAudioMode(_ mode: CallAudioMode) {
+            switch self {
+            case .audio(let call): call.setAudioMode(mode)
+            case .video(let call): call.setAudioMode(mode)
+            case .voice(let session):
+                session.setAudioEnabled(true)
+                session.setSpeakerphone(mode == .speaker)
             }
         }
 
@@ -310,7 +323,8 @@ final class LiveActivityController: NSObject {
         // so the Bar reads the truth instead of assuming mic-on/cam-on.
         if next != previous, next != .idle {
             // A pending call has no machine yet; it begins mic-only, like a dial.
-            micOn = machine?.audioEnabled ?? (pendingCall != nil)
+            let audioOn = machine?.audioEnabled ?? (pendingCall != nil)
+            selectedAudioMode = audioOn ? defaultAudioMode(for: machine?.peer ?? pendingCall) : nil
             camOn = machine?.videoEnabled ?? false
         }
         phase = next
@@ -371,11 +385,9 @@ final class LiveActivityController: NSObject {
         if phase != .idle, let callPeer {
             var model = LiveActivityBarModel(peerId: callPeer, handle: barHandle(for: callPeer))
             model.phase = phase
-            model.micOn = micOn
+            model.audioModes = ContactAudioModes.available(for: callPeer)
+            model.selectedAudioMode = selectedAudioMode
             model.camOn = camOn
-            let (routes, current) = currentRoutes()
-            model.routes = routes
-            model.currentRoute = current
             model.audioAvailable = machine?.audioAvailable ?? true
             // No machine yet (pending placeholder): no cam toggle — it would be
             // dead (toggles need a machine) and voice calls never publish video.
@@ -512,9 +524,8 @@ final class LiveActivityController: NSObject {
             } else {
                 openPeerThread(peerId)
             }
-        case .toggleMic: toggleSendState(peerId: peerId, mic: true)
-        case .toggleCam: toggleSendState(peerId: peerId, mic: false)
-        case .selectRoute(let id): selectRoute(id)
+        case .setAudioMode(let mode): applyAudioMode(mode, peerId: peerId)
+        case .toggleCam: toggleSendState(peerId: peerId)
         // Session Tray actions (§4): Cancel aborts the transfer; pause/Stop is
         // for media streams, which have no producer yet.
         case .cancelRow(let id): TransferCenter.shared.cancel(id: id)
@@ -592,50 +603,86 @@ final class LiveActivityController: NSObject {
         navigationControllers.forEach { $0.applyContentInset(next) }
     }
 
-    // MARK: - Audio routes (D2)
+    // MARK: - Audio modes (the media-stream group)
 
-    /// The routes the call can use right now (D2: the menu lists reality —
-    /// headphones plug in and CarPlay comes and goes at runtime).
-    private func currentRoutes() -> (options: [LiveActivityRoute], current: String) {
+    /// The mode a fresh call starts in: the route the device is already on,
+    /// clamped to the modes this contact offers — the pre-panel auto rule as
+    /// the default selection (docs/stereo-calls.md). With no explicit pick the
+    /// machines run this same rule (`AudioIO.preferredMode` nil = auto).
+    private func defaultAudioMode(for peerID: String?) -> CallAudioMode {
+        let available = peerID.map(ContactAudioModes.available(for:)) ?? CallAudioMode.displayOrder
         let session = AVAudioSession.sharedInstance()
-        var options = [LiveActivityRoute(id: "earpiece", name: "iPhone"),
-                       LiveActivityRoute(id: "speaker", name: "Speaker")]
-        options += (session.availableInputs ?? []).map { LiveActivityRoute(id: $0.uid, name: $0.portName) }
-        let current: String
+        let preferred: CallAudioMode
         if session.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
-            current = "speaker"
-        } else if let input = session.currentRoute.inputs.first {
-            current = input.uid
+            preferred = .speaker
+        } else if session.currentRoute.outputs.contains(where: {
+            $0.portType == .headphones || $0.portType == .usbAudio
+        }) {
+            preferred = AudioIO.stereoCaptureAllowed() ? .earphone2D : .earphone
         } else {
-            current = "earpiece"
+            preferred = .builtIn
         }
-        return (options, current)
+        return available.contains(preferred) ? preferred : (available.first ?? .builtIn)
     }
 
-    private func selectRoute(_ id: String) {
-        let session = AVAudioSession.sharedInstance()
-        do {
-            if let port = (session.availableInputs ?? []).first(where: { $0.uid == id }) {
-                try session.setPreferredInput(port)
-            } else if case .voice(let voice)? = ActiveMachine.current {
-                // The voice session owns its route and re-asserts it.
-                voice.setSpeakerphone(id == "speaker")
-            } else {
-                try session.overrideOutputAudioPort(id == "speaker" ? .speaker : .none)
-            }
-        } catch {
-            idfonError("idfon audio route change failed: \(error.localizedDescription)")
+    /// The radio group: pick the call's audio path (nil = the audio stream is
+    /// off). Route and mute apply immediately; the machines re-publish when the
+    /// mode changes the stream layout (2D ↔ mono).
+    private func applyAudioMode(_ mode: CallAudioMode?, peerId: String) {
+        guard let machine = ActiveMachine.current, peerId == (machine.peer ?? nil) else { return }
+        if let mode {
+            AudioIO.preferredMode = mode
+            applyRoute(for: mode)
+            machine.setAudioMode(mode)
+            selectedAudioMode = mode
+        } else {
+            // Tapping the active mode unsets it: the audio stream stops.
+            machine.setAudioEnabled(false)
+            selectedAudioMode = nil
         }
         render()
     }
 
-    /// In-call toggles gate the active machine's outgoing streams (send/no-send
-    /// — §3 State 3). The machine reports back, so a toggle for an absent track
-    /// cannot desync the Bar.
-    private func toggleSendState(peerId: String, mic: Bool) {
+    /// Best-effort route for the picked mode (the modes are assumed available;
+    /// a missing device leaves the route where it is).
+    private func applyRoute(for mode: CallAudioMode) {
+        if case .voice(let voice)? = ActiveMachine.current {
+            // The voice session owns its route and re-asserts it.
+            voice.setSpeakerphone(mode == .speaker)
+            return
+        }
+        let session = AVAudioSession.sharedInstance()
+        do {
+            switch mode {
+            case .builtIn:
+                try session.overrideOutputAudioPort(.none)
+                if let builtIn = (session.availableInputs ?? []).first(where: { $0.portType == .builtInMic }) {
+                    try session.setPreferredInput(builtIn)
+                }
+            case .speaker:
+                try session.overrideOutputAudioPort(.speaker)
+                if let builtIn = (session.availableInputs ?? []).first(where: { $0.portType == .builtInMic }) {
+                    try session.setPreferredInput(builtIn)
+                }
+            case .earphone, .earphone2D:
+                // The headset is assumed available: prefer its input when one
+                // is present, else leave the route alone.
+                if let headset = (session.availableInputs ?? []).first(where: { $0.portType != .builtInMic }) {
+                    try session.setPreferredInput(headset)
+                }
+                try session.overrideOutputAudioPort(.none)
+            }
+        } catch {
+            idfonError("idfon audio route change failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// In-call toggle gating the active machine's outgoing video stream
+    /// (send/no-send — §3 State 3). The machine reports back, so a toggle for
+    /// an absent track cannot desync the Bar.
+    private func toggleSendState(peerId: String) {
         guard let machine = ActiveMachine.current, peerId == (machine.peer ?? nil) else { return }
-        if mic { machine.setAudioEnabled(!machine.audioEnabled) } else { machine.setVideoEnabled(!machine.videoEnabled) }
-        micOn = machine.audioEnabled
+        machine.setVideoEnabled(!machine.videoEnabled)
         camOn = machine.videoEnabled
         render()
     }

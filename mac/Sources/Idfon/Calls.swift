@@ -134,7 +134,11 @@ final class LiveCall {
             return
         }
         let profile = ContactAudioProfiles.profile(for: peerId)
-        AudioMeter.shared.configureForCall(sampleRate: profile.sampleRate)
+        // Stereo (docs/stereo-calls.md): the panel's audio mode picks the
+        // stream layout; pcm24k voice-agent calls stay mono — that plane is
+        // 20 ms mono PCM frames into ASR/TTS.
+        let channels = profile.sampleRate == 48_000 ? AudioMeter.captureChannelsForCall() : 1
+        AudioMeter.shared.configureForCall(sampleRate: profile.sampleRate, channels: channels)
         operation?.cancel()
         operationGeneration += 1
         audioEnabled = true // this session carries audio from the start
@@ -155,13 +159,13 @@ final class LiveCall {
                     "mode": AnyEncodable("record"),
                 ])
                 AudioMeter.shared.pushToEncoder = true
-                guard await AudioMeter.shared.startForCall(sampleRate: profile.sampleRate) else {
+                guard await AudioMeter.shared.startForCall(sampleRate: profile.sampleRate, channels: channels) else {
                     fail("microphone unavailable")
                     return
                 }
                 guard operationGeneration == generation, !Task.isCancelled else { return }
                 let ticket = await ffiString {
-                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate))
+                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate), UInt32(channels))
                 }
                 guard operationGeneration == generation, !Task.isCancelled, !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -205,7 +209,9 @@ final class LiveCall {
     func answer() {
         guard case .incoming(let peer) = state, let pending = pendingInvite else { return }
         let profile = ContactAudioProfiles.profile(for: pending.peer)
-        AudioMeter.shared.configureForCall(sampleRate: profile.sampleRate)
+        // Stereo as on the caller leg (see `dial`).
+        let channels = profile.sampleRate == 48_000 ? AudioMeter.captureChannelsForCall() : 1
+        AudioMeter.shared.configureForCall(sampleRate: profile.sampleRate, channels: channels)
         audioEnabled = true
         operation?.cancel()
         operationGeneration += 1
@@ -226,12 +232,12 @@ final class LiveCall {
                 // Publish our own mic so audio is two-way, then send the
                 // return-leg invite (own ticket) that makes the caller join us.
                 AudioMeter.shared.pushToEncoder = true
-                guard await AudioMeter.shared.startForCall(sampleRate: profile.sampleRate) else {
+                guard await AudioMeter.shared.startForCall(sampleRate: profile.sampleRate, channels: channels) else {
                     fail("microphone unavailable")
                     return
                 }
                 let own = await ffiString {
-                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate))
+                    media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate), UInt32(channels))
                 }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
@@ -357,6 +363,45 @@ final class LiveCall {
         notify()
     }
 
+    /// The panel picked an audio mode (docs/stereo-calls.md): unmute, and when
+    /// the mode changes the stream layout (2D ↔ mono) re-publish the mic leg
+    /// and re-send the invite — the peer's handler re-joins on a fresh invite.
+    func setAudioMode(_ mode: CallAudioMode) {
+        setAudioEnabled(true)
+        guard published, let peer = activePeer else { return }
+        let want = ContactAudioProfiles.profile(for: peer) == .pcm24k
+            ? 1
+            : AudioMeter.captureChannelsForCall()
+        guard want != publishedChannels else { return }
+        Task { [weak self] in await self?.republishAudio(channels: want, peer: peer) }
+    }
+
+    /// Re-publish the mic leg at a new channel count and re-invite the peer.
+    private func republishAudio(channels: Int, peer: String) async {
+        let profile = ContactAudioProfiles.profile(for: peer)
+        AudioMeter.shared.retarget(channels: channels)
+        await Task.detached(priority: .userInitiated) { media_live_stop() }.value
+        let ticket = await ffiString {
+            media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate), UInt32(channels))
+        }
+        guard !ticket.isEmpty else {
+            idfonError("idfon live: re-publish failed for \(channels)ch")
+            return
+        }
+        publishedChannels = channels
+        setCallTicket(ticket)
+        do {
+            try await client.sendText(
+                to: peer,
+                "IDFON-LIVE/1\naction=start\nticket=\(ticket)\naudio_codec=\(profile.codec)\naudio_sample_rate=\(profile.sampleRate)"
+            )
+            idfonLog("idfon live: re-published mic leg channels=\(channels)")
+        } catch {
+            idfonError("idfon live: re-publish invite failed: \(error)")
+        }
+        notify()
+    }
+
     /// Pushes the current send state to the published session (no-op while the
     /// publish is still in flight, or after it stopped).
     private func applySendState() {
@@ -376,6 +421,8 @@ final class LiveCall {
     /// call cannot terminate this one (#60).
     private var callTicket: String?
     private var published = false
+    /// The channel count the mic leg publishes (1 mono, 2 = the 2D mode).
+    private var publishedChannels = 1
     private var operationGeneration = 0
     private var operation: Task<Void, Never>?
 
@@ -591,6 +638,8 @@ final class VideoCall {
     private(set) var videoEnabled = false
     /// The own-media publish exists (set after `media_live_start` succeeds).
     private var published = false
+    /// The channel count the audio leg publishes (1 mono, 2 = the 2D mode).
+    private var publishedChannels = 1
 
     func recoverStaleCall() {
         guard let peer = UserDefaults.standard.string(forKey: "idfon.video-call.peer") else { return }
@@ -629,6 +678,40 @@ final class VideoCall {
         }
         videoEnabled = enabled
         applySendState()
+        notify()
+    }
+
+    /// The panel picked an audio mode (docs/stereo-calls.md): unmute, and when
+    /// the mode changes the stream layout (2D ↔ mono) re-publish and re-invite
+    /// — the peer's handler re-joins on a fresh invite.
+    func setAudioMode(_ mode: CallAudioMode) {
+        setAudioEnabled(true)
+        guard published, let peer = activePeer, !peer.isEmpty else { return }
+        let want = AudioMeter.captureChannelsForCall()
+        guard want != publishedChannels else { return }
+        Task { [weak self] in await self?.republish(channels: want, peer: peer) }
+    }
+
+    /// Re-publish both tracks at a new audio channel count and re-invite.
+    private func republish(channels: Int, peer: String) async {
+        AudioMeter.shared.retarget(channels: channels)
+        await Task.detached(priority: .userInitiated) { media_live_stop() }.value
+        let ticket = await ffiString {
+            media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(channels))
+        }
+        guard !ticket.isEmpty else {
+            idfonError("idfon video: re-publish failed for \(channels)ch")
+            return
+        }
+        publishedChannels = channels
+        setCallTicket(ticket)
+        applySendState()
+        do {
+            try await client.sendText(to: peer, LiveInvite.build(action: "start", ticket: ticket, call: true))
+            idfonLog("idfon video: re-published tracks channels=\(channels)")
+        } catch {
+            idfonError("idfon video: re-publish invite failed: \(error)")
+        }
         notify()
     }
 
@@ -714,13 +797,16 @@ final class VideoCall {
                     fail("microphone unavailable")
                     return
                 }
-                let ticket = await ffiString { media_live_start_with_source(1, 1, "push") } // shell-tap audio + camera
+                let ticket = await ffiString {
+                    media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(AudioMeter.captureChannelsForCall()))
+                } // shell-tap audio + camera
                 guard !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
                     return
                 }
                 published = true
+                publishedChannels = AudioMeter.captureChannelsForCall()
                 setCallTicket(ticket)
                 applySendState()
                 try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
@@ -771,13 +857,16 @@ final class VideoCall {
                     fail("microphone unavailable")
                     return
                 }
-                let own = await ffiString { media_live_start_with_source(1, 1, "push") }
+                let own = await ffiString {
+                    media_live_start_with_profile(1, 1, "push", "opus", 48_000, UInt32(AudioMeter.captureChannelsForCall()))
+                }
                 guard !own.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "video start failed" : err)
                     return
                 }
                 published = true
+                publishedChannels = AudioMeter.captureChannelsForCall()
                 applySendState()
                 try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true))
             } catch {

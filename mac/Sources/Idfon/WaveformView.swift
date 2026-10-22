@@ -271,12 +271,15 @@ final class AudioMeter {
 
     /// The ingest rate defaults to 48 kHz and is selected per call/contact.
     private var targetSampleRate = 48_000
+    /// 1 mono, 2 interleaved stereo; must match the publisher started with
+    /// `media_live_start_with_profile` (mismatched pushes are dropped there).
+    private var targetChannels = 1
     private var outputFormat: AVAudioFormat?
     /// Hardware format -> ingest format; keeps its resampler state across taps.
     private var converter: AVAudioConverter?
 
     private func pipelineFormat() -> AVAudioFormat {
-        AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(targetSampleRate), channels: 1, interleaved: false)!
+        AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(targetSampleRate), channels: AVAudioChannelCount(targetChannels), interleaved: false)!
     }
     private var interruptionObserver: NSObjectProtocol?
     private var pushedBuffers = 0
@@ -295,9 +298,64 @@ final class AudioMeter {
         if !views.contains(where: { $0.view === view }) { views.append(WeakWave(view: view)) }
     }
 
-    func configureForCall(sampleRate: Int) {
+    /// Wired/USB/headphone output route (docs/stereo-calls.md): stereo call
+    /// capture is allowed and the headset already attenuates the echo path, so
+    /// the tap keeps its channels (voice processing skipped). Speaker routes
+    /// keep the VPIO mono path; Bluetooth is excluded — its mic is mono HFP, so
+    /// stereo buys nothing there.
+    static func stereoCaptureAllowed() -> Bool {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil,
+            &size, &deviceID) == noErr, deviceID != 0 else { return false }
+        // Headphones in the built-in jack: same output device, jack connected.
+        var jack: UInt32 = 0
+        var jackSize = UInt32(MemoryLayout<UInt32>.size)
+        var jackAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyJackIsConnected,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain)
+        if AudioObjectGetPropertyData(
+            deviceID, &jackAddr, 0, nil, &jackSize, &jack) == noErr, jack == 1 {
+            return true
+        }
+        // USB headsets/interfaces are their own output device.
+        var transport: UInt32 = 0
+        var transportSize = UInt32(MemoryLayout<UInt32>.size)
+        var transportAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(
+            deviceID, &transportAddr, 0, nil, &transportSize, &transport) == noErr else {
+            return false
+        }
+        return transport == kAudioDeviceTransportTypeUSB
+    }
+
+    /// The call audio mode picked on the live panel's media group (nil = the
+    /// auto rule above). Drives the VPIO decision and the capture channel count
+    /// (docs/stereo-calls.md).
+    static var preferredMode: CallAudioMode?
+
+    /// Stereo capture: the picked mode, or on auto the headset route.
+    static func stereoCaptureForCall() -> Bool {
+        if let preferredMode { return preferredMode == .earphone2D }
+        return stereoCaptureAllowed()
+    }
+
+    /// The channel count the call's mic leg publishes.
+    static func captureChannelsForCall() -> Int { stereoCaptureForCall() ? 2 : 1 }
+
+    func configureForCall(sampleRate: Int, channels: Int? = nil) {
         guard sampleRate == 24_000 || sampleRate == 48_000 else { return }
         targetSampleRate = sampleRate
+        if let channels { targetChannels = max(1, min(2, channels)) }
     }
 
     func start(sampleRate: Int? = nil, completion: (() -> Void)? = nil) {
@@ -393,8 +451,13 @@ final class AudioMeter {
                 // delivers silence through VPIO (e.g. the LG UltraFine Display
                 // Audio USB mic) — the 1s RMS log shows that immediately.
                 if !Self.voiceProcessingTried {
+                    // Once per process: the tap is process-sticky, so the mode
+                    // is fixed here. Skipped on the stereo (headset) route —
+                    // VPIO would mono-downmix the tap (docs/stereo-calls.md).
                     Self.voiceProcessingTried = true
-                    if ProcessInfo.processInfo.environment["IDFON_MACOS_AEC"] == "0" {
+                    if Self.stereoCaptureForCall() {
+                        Self.log("idfon audio meter: voice-processing skipped (headset route, stereo capture)")
+                    } else if ProcessInfo.processInfo.environment["IDFON_MACOS_AEC"] == "0" {
                         Self.log("idfon audio meter: voice-processing off (IDFON_MACOS_AEC=0)")
                     } else {
                         do {
@@ -493,13 +556,24 @@ final class AudioMeter {
         }
     }
 
-    func startForCall(sampleRate: Int = 48_000) async -> Bool {
-        configureForCall(sampleRate: sampleRate)
+    func startForCall(sampleRate: Int = 48_000, channels: Int = 0) async -> Bool {
+        // 0 = follow the call's audio mode (the panel's radio group).
+        configureForCall(
+            sampleRate: sampleRate,
+            channels: channels == 0 ? Self.captureChannelsForCall() : channels)
         return await withCheckedContinuation { continuation in
             start(sampleRate: sampleRate) {
                 continuation.resume(returning: self.running)
             }
         }
+    }
+
+    /// Switch the push channel count (a mode change re-publishes the leg):
+    /// the converter rebuilds on the next buffer.
+    func retarget(channels: Int) {
+        targetChannels = max(1, min(2, channels))
+        converter = nil
+        outputFormat = nil
     }
 
     /// Calls queued start completions; they read `running` for the outcome.
@@ -558,6 +632,11 @@ final class AudioMeter {
     /// to the dylib. `.noDataNow` after one buffer lets the converter retain its
     /// resampler state for the next tap.
     private func push(_ buffer: AVAudioPCMBuffer) {
+        if converter == nil {
+            let format = pipelineFormat()
+            outputFormat = format
+            converter = AVAudioConverter(from: buffer.format, to: format)
+        }
         guard let converter, let outputFormat else { return }
         let ratio = Double(targetSampleRate) / buffer.format.sampleRate
         let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
@@ -573,7 +652,8 @@ final class AudioMeter {
             outStatus.pointee = .haveData
             return buffer
         }
-        guard status != .error, out.frameLength > 0, let channel = out.floatChannelData?[0] else { return }
+        guard status != .error, out.frameLength > 0, let planes = out.floatChannelData else { return }
+        let channel = planes[0]
         let count = Int(out.frameLength)
         var rawSum = 0.0
         var rawPeak = 0.0
@@ -604,7 +684,20 @@ final class AudioMeter {
         if pushedBuffers <= 5 || pushedBuffers % 100 == 0 {
             Self.log("idfon audio meter push buffer=\(pushedBuffers) samples=\(count) rms=\(rawRMS) peak=\(rawPeak)")
         }
-        media_audio_push_samples(channel, count)
+        if targetChannels == 1 {
+            media_audio_push_samples(channel, count)
+        } else {
+            // Interleaved f32: the encoder's native layout (`Format::F32`).
+            var interleaved = [Float](repeating: 0, count: count * targetChannels)
+            for frame in 0..<count {
+                for index in 0..<targetChannels {
+                    interleaved[frame * targetChannels + index] = planes[index][frame]
+                }
+            }
+            interleaved.withUnsafeBufferPointer { buffer in
+                media_audio_push_frames(buffer.baseAddress, count, UInt32(targetChannels))
+            }
+        }
     }
 
     /// Schedule one decoded remote-call chunk (`AudioPlaybackSink`) on the

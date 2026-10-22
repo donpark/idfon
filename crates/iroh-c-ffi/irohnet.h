@@ -761,6 +761,13 @@ media_audio_probe (
 
 /** <No documentation available> */
 void
+media_audio_push_frames (
+    float const * pcm,
+    size_t frames,
+    uint32_t channels);
+
+/** <No documentation available> */
+void
 media_audio_push_samples (
     float const * pcm,
     size_t samples);
@@ -848,7 +855,8 @@ media_live_start_with_profile (
     uint8_t video,
     char const * source,
     char const * codec,
-    uint32_t sample_rate);
+    uint32_t sample_rate,
+    uint32_t channels);
 
 /** <No documentation available> */
 char *

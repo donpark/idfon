@@ -109,6 +109,31 @@ final class AudioIO: AudioSource, AudioSink {
 
     private init() {}
 
+    /// Wired/USB headset route (docs/stereo-calls.md): stereo call capture is
+    /// allowed, and the headset already attenuates the echo path — so the
+    /// engine skips voice processing here, which is what keeps the tap at the
+    /// device's channel count. Speaker and Bluetooth routes keep VPIO mono.
+    static func stereoCaptureAllowed() -> Bool {
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+        return outputs.contains { output in
+            output.portType == .headphones || output.portType == .usbAudio
+        }
+    }
+
+    /// The call audio mode picked on the live panel's media group (nil = the
+    /// auto rule above). Drives the VPIO decision, the session mode, and the
+    /// capture channel count (docs/stereo-calls.md).
+    static var preferredMode: CallAudioMode?
+
+    /// Stereo capture: the picked mode, or on auto the headset route.
+    static func stereoCaptureForCall() -> Bool {
+        if let preferredMode { return preferredMode == .earphone2D }
+        return stereoCaptureAllowed()
+    }
+
+    /// The channel count the call's mic leg publishes.
+    static func captureChannelsForCall() -> Int { stereoCaptureForCall() ? 2 : 1 }
+
     // MARK: - lifecycle
 
     /// Configure the session and start the one engine. Idempotent per profile;
@@ -238,15 +263,20 @@ final class AudioIO: AudioSource, AudioSink {
         // then connect the playback bus. Connecting first materializes the
         // output graph at the pre-VPIO format and `setVoiceProcessingEnabled`
         // raises an ObjC exception Swift cannot catch (docs/troubleshooting.md,
-        // "SIGABRT").
-        do {
-            try input.setVoiceProcessingEnabled(true)
-            Automation.mark("audio: voice-processing enabled profile=\(String(describing: profile))")
-        } catch {
-            Automation.mark("audio: voice-processing unsupported: \(error.localizedDescription)")
+        // "SIGABRT"). Skipped entirely on the stereo (headset) route — see
+        // `stereoCaptureAllowed`.
+        if Self.stereoCaptureForCall() {
+            Automation.mark("audio: voice-processing skipped (headset route, stereo capture)")
+        } else {
+            do {
+                try input.setVoiceProcessingEnabled(true)
+                Automation.mark("audio: voice-processing enabled profile=\(String(describing: profile))")
+            } catch {
+                Automation.mark("audio: voice-processing unsupported: \(error.localizedDescription)")
+            }
+            input.voiceProcessingOtherAudioDuckingConfiguration = .init(
+                enableAdvancedDucking: false, duckingLevel: .min)
         }
-        input.voiceProcessingOtherAudioDuckingConfiguration = .init(
-            enableAdvancedDucking: false, duckingLevel: .min)
         engine.connect(playbackPlayer, to: engine.mainMixerNode, format: nil)
 
         input.removeTap(onBus: 0) // insurance: installTap aborts if one survived
@@ -319,22 +349,29 @@ final class AudioIO: AudioSource, AudioSink {
             // within a beat and a mute call that logs like a healthy one.
             Automation.mark("audio: setActive FAILED \(error.localizedDescription)")
         }
-        try? session.overrideOutputAudioPort(.speaker)
+        // With an explicit audio mode the panel owns the route; on auto, force
+        // the speaker only on the handset/speaker path.
+        if Self.preferredMode == nil, !Self.stereoCaptureAllowed() {
+            try? session.overrideOutputAudioPort(.speaker)
+        }
         Automation.mark(
             "audio: session category=\(session.category.rawValue) mode=\(session.mode.rawValue)"
         )
     }
 
     /// The voice-call session shape: `.playAndRecord` + `.voiceChat` (VPIO's
-    /// AEC mode) with the speaker default. Set on the *inactive* session;
-    /// activation belongs to the owner — the app on the Bar path, CallKit on
-    /// `call_kit` channels (where this runs before the report).
+    /// AEC mode) with the speaker default. On the stereo (headset) route the
+    /// mode is `.default`: `.voiceChat` would re-apply the voice tuning (and
+    /// its mono bias) that the VPIO skip just avoided (docs/stereo-calls.md).
+    /// Set on the *inactive* session; activation belongs to the owner — the
+    /// app on the Bar path, CallKit on `call_kit` channels (where this runs
+    /// before the report).
     private func applyVoiceSessionConfig() {
         let session = AVAudioSession.sharedInstance()
         // Set the mode in the category call; move the route override last
         // (setMode(.voiceChat) after the override re-evaluates the route).
         try? session.setCategory(
-            .playAndRecord, mode: .voiceChat,
+            .playAndRecord, mode: Self.stereoCaptureForCall() ? .default : .voiceChat,
             options: [.allowBluetoothHFP, .defaultToSpeaker])
         try? session.setPreferredIOBufferDuration(0.01)
     }

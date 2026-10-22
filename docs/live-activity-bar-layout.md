@@ -12,19 +12,39 @@ struct LiveActivityBarModel: Equatable {
     enum Density { case expanded, compact }                 // §6 densities
     struct Row { id; name; kind: .transfer(fraction, bytesPerSecond) | .stream(position, duration, paused) }
     let peerId: String; var handle: String                  // "@janedoe"
-    var phase; var micOn; var camOn; var elapsed: TimeInterval; var rows: [Row]; var density
+    var phase; var camOn; var elapsed: TimeInterval; var rows: [Row]; var density
+    var audioModes: [CallAudioMode]; var selectedAudioMode: CallAudioMode? // media group: radio, none = muted
     var audioAvailable: Bool; var videoAvailable: Bool      // tracks the session carries (§3 State 3)
     var onDevice: Bool; var statusOnly: Bool                // statusOnly = nav bar owns identity+controls
 }
 // The call entry is a nav-bar item, not a Bar intent.
-enum LiveActivityBarIntent { toggleMic, toggleCam, end, answer, decline,
+enum LiveActivityBarIntent { setAudioMode(CallAudioMode?), toggleCam, end, answer, decline,
                              cancelRow(id), togglePauseRow(id), open }
 ```
 
 The view is a pure function of the model: `bar.apply(model)`; it emits `onIntent`. It
 holds no timers — the host advances `elapsed` and re-renders (≤1 Hz; `apply` is cheap).
-No inline mic meter: the mic button's glyph is the mic state (§3 lists timer, toggles, End —
-nothing else); a meter would cost 52pt of the handle's width for no information.
+No inline mic meter: the audio group's selection is the mic state (§3 lists timer, toggles,
+End — nothing else); a meter would cost 52pt of the handle's width for no information.
+
+## 1a. The audio media group
+
+The mic toggle and the route menu are replaced by one **segmented radio group**:
+Built-in · Earphone · Earphone 2D · Speaker (left to right), then the camera
+toggle. The group is a custom segmented control (not `UISegmentedControl`: the
+group allows **no selection** and each mode is available on its own):
+
+- a shared capsule container is the visual "these are one group" hint;
+- tapping an unset mode sets it and unsets the others; tapping the active mode
+  unsets it — no selection = the audio stream is off (mute);
+- each mode is present only if available for this contact: user preference ∩
+  what the contact is willing to make available (`ContactAudioModes`), never
+  the hardware that happens to be plugged in;
+- selection is a filled pill inside the container (concentric radii: 2pt
+  margins, pill radius = container radius − 2).
+
+The mode drives the call's audio path (route, voice processing, stream layout —
+docs/stereo-calls.md); 2D ↔ mono mid-call re-publishes the leg.
 
 ## 2. View hierarchy
 
@@ -39,11 +59,17 @@ LiveActivityBar (UIView; .secondarySystemBackground, continuous corners, soft sh
 └ rootStack (V)
   ├ headerStack (H · margins 8/12/8/8 expanded, 4/16/4/4 compact)
   │ ├ identityStack (H, spacing 8)  dot(8×8) · textStack (V, .leading): titleLabel(headline) / statusLabel(mono digits)
-  │ └ controlsStack (H, spacing 8)  mic · cam · decline · answer · verb   (each ≥44×44, capsule)
+  │ └ controlsStack (H, spacing 8)  decline · answer · verb   (ring actions + End; each ≥44×44, capsule)
+  ├ mediaStack (H, spacing 8)  audioGroup · cam   ← the media stream buttons, spec order
   ├ separator (hairline, .separator)
   └ trayStack (V)
     └ TrayRowView (H, margins 0/12/0/4)  icon · label(footnote, 2 lines) · pause(≥44) · Cancel|Stop(≥44)
 ```
+
+The media buttons are their own row: six controls (4 modes + cam + an action)
+cannot share the identity row at phone widths — the handle budget would collapse
+from ~179pt to under 60pt. The media row keeps the spec's left-to-right order
+(audio group, then camera) and disappears with the other controls in compact.
 
 ## 3. Constraint intent
 
@@ -71,10 +97,11 @@ LiveActivityBar (UIView; .secondarySystemBackground, continuous corners, soft sh
 - `dot` 8×8 fixed.
 - Corner radius: expanded 16; compact `height/2` (set in `layoutSubviews`).
 
-**Measured (iPhone 393pt, default text size)**: expanded header + 2 tray rows = 377×148,
-header 60 tall. In-call header budget: margins 20 + controls 44·8·44·8·≈44 (End, icon only) +
-spacing 12 → identity ≈197 → **handle budget ≈179pt** (`@janedoe` = 78pt), timer 41pt on its
-own line. Compact pill for `03:42 @janedoe — 1 transfer, 1 stream` + End = 319×52.
+**Measured (iPhone 393pt, default text size)**: expanded header + media row + 2 tray
+rows ≈ 377×192, header 60 tall, media row 44. In-call header budget (identity row):
+margins 20 + ring actions only → identity ≈313 → **handle budget ≈295pt**
+(`@janedoe` = 78pt), timer 41pt on its own line. Compact pill for
+`03:42 @janedoe — 1 transfer, 1 stream` + End = 319×52.
 
 These are the **full-chrome** measurements (incoming rings and the Mac bar). On iOS the
 visible thread's own call renders `statusOnly`: the header is the status line alone
@@ -87,21 +114,22 @@ peer-id → name map has one, else a shortened id — never the raw public key.
 
 ## 4. State → layout mapping
 
-| Phase / density | dot | title / status | mic · cam | verb slot | tray |
+| Phase / density | dot | title / status | media row (modes · cam) | verb slot | tray |
 | --- | --- | --- | --- | --- | --- |
-| calling, status¹ | hidden | — / `Calling…` | hidden | hidden | rows if any |
-| inCall, status¹ | hidden | — / `03:42 · stats` | hidden | hidden | rows if any |
+| calling, status¹ | hidden | — / `Calling…` | modes · cam | hidden | rows if any |
+| inCall, status¹ | hidden | — / `03:42 · stats` | modes · cam | hidden | rows if any |
 | incoming, expanded | orange | `@janedoe` / `Incoming call` | hidden | **Decline** (red) **Answer** (green); verb hidden | rows if any |
 | any, compact | phase color | `● 03:42 @janedoe — 1 transfer` (one label; tap → `.open`) | hidden | End (icon only) or Decline/Answer; hidden when idle | hidden (summarised in label) |
 
-¹ The visible thread's own call carries identity (nav title) and controls
-(nav-bar right items: Mic/Cam/Speaker/End), so the Bar renders `statusOnly` —
-stats plus tray rows, no identity or controls. An idle visible thread with no
-activity renders no Bar; idle transfers stay compact pills.
+¹ The visible thread's own call carries the identity in the nav title, so the
+Bar renders `statusOnly`: identity drops, but the media row and call controls
+stay (D2 — the Bar row operates the call).
 
 Verb tap: calling/inCall → `.end` (one tap, compact and status
 alike); incoming → `.decline` / `.answer`. The call entry is a nav-bar item,
-not a Bar intent. Tray rows: transfer → `Cancel` → `.cancelRow(id)`;
+not a Bar intent. Media group: tap sets the mode and unsets the others; tap the
+active mode to unset it (audio stream off) — `.setAudioMode(mode?)`. Tray rows:
+transfer → `Cancel` → `.cancelRow(id)`;
 stream → play/pause → `.togglePauseRow(id)`, `Stop` → `.cancelRow(id)`.
 
 Row text: `Transferring "Archive.zip" (42%) - 12 MB/s` (ByteCountFormatter),

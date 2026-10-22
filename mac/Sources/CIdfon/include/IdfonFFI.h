@@ -35,9 +35,12 @@ char *media_live_start(uint8_t audio, uint8_t video); // publish the selected tr
 // Same, but selects the audio source: "mic" (default capture device) or
 // "push" (samples supplied through media_audio_push_samples).
 char *media_live_start_with_source(uint8_t audio, uint8_t video, char const *source);
-char *media_live_start_with_profile(uint8_t audio, uint8_t video, char const *source, char const *codec, uint32_t sample_rate);
+char *media_live_start_with_profile(uint8_t audio, uint8_t video, char const *source, char const *codec, uint32_t sample_rate, uint32_t channels);
 // Push mono f32 PCM at the active publisher's sample rate into the "push" source.
 void media_audio_push_samples(const float *pcm, size_t samples);
+// Push `frames` frames of `channels` interleaved f32 samples (1 or 2, matching
+// the publisher's channel count) into the "push" source.
+void media_audio_push_frames(const float *pcm, size_t frames, uint32_t channels);
 void media_live_stop(void);                  // stop own publish
 // Enable/disable the outgoing audio (0 = send silence) or video (0 = send no
 // frames) stream; the session and its negotiation stay intact.
