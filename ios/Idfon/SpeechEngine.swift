@@ -32,11 +32,13 @@ extension TtsEngine {
 /// Reply-speech backend choice, persisted across launches.
 enum TtsBackend: String, CaseIterable {
     case kokoro
+    case pocket
     case apple
 
     var title: String {
         switch self {
         case .kokoro: return "Kokoro (on-device)"
+        case .pocket: return "Pocket TTS (on-device)"
         case .apple: return "Apple Built-in"
         }
     }
@@ -78,13 +80,14 @@ enum SpeechEngines {
         switch backend {
         case .apple: return AppleTtsEngine()
         case .kokoro: return KokoroTtsEngine()
+        case .pocket: return PocketTtsEngine()
         }
     }
 
     private static func overrideBackend() -> TtsBackend? {
         let value = ProcessInfo.processInfo.environment["IDFON_TTS"] ?? launchArg()
         guard let value, !value.isEmpty else { return nil }
-        return value.lowercased() == "apple" ? .apple : .kokoro
+        return TtsBackend(rawValue: value.lowercased())
     }
 
     private static func launchArg() -> String? {
@@ -335,6 +338,141 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
                 continuation.resume()
             }
         }
+    }
+}
+
+/// Pocket TTS (Kyutai via FluidAudio) — the v4 reward-tuned small model
+/// trial (`IDFON_TTS=pocket`): `IDFON_TTS_VOICE=<name>` picks a catalog
+/// voice (default alba), `IDFON_TTS_CLONE=/path/voice.wav` clones a voice
+/// from a clip and speaks with it. Falls back to Apple per-utterance when
+/// the model cannot load.
+final class PocketTtsEngine: NSObject, TtsEngine {
+    let name = "pocket"
+    private var manager: PocketTtsManager?
+    private let fallback = AppleTtsEngine()
+    private var prepared = false
+    /// The model load is shared across engine instances (KokoroTtsEngine's
+    /// shared-manager pattern): a call builds its own engine on top of what
+    /// the prewarm warmed.
+    private static let warmLock = NSLock()
+    private static var warmTask: Task<PocketTtsManager?, Never>?
+    private var clonedVoice: PocketTtsVoiceData?
+    private var player: AVAudioPlayer?
+    private var finish: (() -> Void)?
+    /// The call's single playback sink (the recognizer's output bus), so TTS
+    /// audio is the echo-cancellation reference. Mirrored onto the fallback.
+    weak var playback: AudioSink? {
+        didSet { fallback.playback = playback }
+    }
+    /// Set by `stop()` so a cancel during synthesis does not start playback.
+    private var stopRequested = false
+    private(set) var lastLatencyMs: Int?
+
+    func prepare() async {
+        if prepared { return }
+        let task = Self.warmLock.withLock { () -> Task<PocketTtsManager?, Never> in
+            if let existing = Self.warmTask { return existing }
+            let created = Task {
+                Automation.mark("voice: pocket initializing")
+                if #available(iOS 18.0, *) {
+                    let voice = Self.env("IDFON_TTS_VOICE") ?? PocketTtsConstants.defaultVoice
+                    let manager = PocketTtsManager(defaultVoice: voice, language: .english, placement: .aneState)
+                    do {
+                        try await manager.initialize()
+                        Automation.mark("voice: pocket ready (voice=\(voice))")
+                        return manager
+                    } catch {
+                        Automation.mark("voice: pocket init failed \(error.localizedDescription)")
+                        return nil
+                    }
+                }
+                Automation.mark("voice: pocket needs iOS 18+")
+                return nil
+            }
+            Self.warmTask = created
+            return created
+        }
+        if let manager = await task.value {
+            self.manager = manager
+            prepared = true
+            if clonedVoice == nil, let path = Self.env("IDFON_TTS_CLONE") {
+                let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+                clonedVoice = try? await manager.cloneVoice(from: url)
+                if clonedVoice != nil {
+                    Automation.mark("voice: pocket cloned voice <- \(url.lastPathComponent)")
+                }
+            }
+        }
+    }
+
+    func speak(_ text: String) async {
+        stopRequested = false
+        await prepare()
+        guard prepared, let manager else {
+            Automation.mark("voice: pocket unavailable, using apple")
+            await fallback.speak(text)
+            return
+        }
+        do {
+            let start = Date()
+            let wav: Data
+            if let clonedVoice {
+                wav = try await manager.synthesize(text: text, voiceData: clonedVoice)
+            } else {
+                wav = try await manager.synthesize(text: text)
+            }
+            if stopRequested { return }  // cancelled while synthesizing
+            lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
+            Automation.mark("voice: pocket wav bytes=\(wav.count) in \(lastLatencyMs ?? 0)ms")
+            await play(wav)
+        } catch {
+            Automation.mark("voice: pocket synth failed \(error.localizedDescription); using apple")
+            await fallback.speak(text)
+        }
+    }
+
+    func stop() {
+        stopRequested = true
+        player?.stop()
+        finish?()
+        finish = nil
+        player = nil
+        playback?.stopPlayback()
+        fallback.stop()
+    }
+
+    private func play(_ wav: Data) async {
+        // Prefer the recognizer's VPIO engine: its output bus is the AEC
+        // reference (the KokoroTtsEngine pattern).
+        if let playback {
+            await playback.play(wav: wav)
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            do {
+                let player = try AVAudioPlayer(data: wav)
+                player.delegate = self
+                finish = { continuation.resume() }
+                self.player = player
+                player.play()
+            } catch {
+                Automation.mark("voice: pocket play failed \(error.localizedDescription)")
+                continuation.resume()
+            }
+        }
+    }
+
+    private static func env(_ key: String) -> String? {
+        guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+extension PocketTtsEngine: AVAudioPlayerDelegate {
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        finish?()
+        finish = nil
+        self.player = nil
     }
 }
 
