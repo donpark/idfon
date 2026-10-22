@@ -380,6 +380,16 @@ final class PocketTtsEngine: NSObject, TtsEngine {
                         directory: ModelStore.root.appendingPathComponent("pocket"),
                         placement: .aneState)
                     try await manager.initialize()
+                    // Named cloned voices: the voices pack
+                    // (scripts/fetch-pocket-voices.sh) drops
+                    // <name>_audio_prompt.bin files in the voices dir.
+                    if let voice = Self.env("IDFON_TTS_VOICE") {
+                        let url = Self.voicesDir.appendingPathComponent("\(voice)_audio_prompt.bin")
+                        if let data = try? manager.loadClonedVoice(from: url) {
+                            self.clonedVoice = data
+                            Automation.mark("voice: pocket voice '\(voice)' <- cloned pack")
+                        }
+                    }
                     if let path = Self.env("IDFON_TTS_CLONE") {
                         let wav = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
                         self.clonedVoice = try await manager.cloneVoice(from: wav)
@@ -449,6 +459,11 @@ final class PocketTtsEngine: NSObject, TtsEngine {
     private static func env(_ key: String) -> String? {
         guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else { return nil }
         return value
+    }
+
+    /// Cloned-voice pack directory (matches scripts/fetch-pocket-voices.sh).
+    private static var voicesDir: URL {
+        ModelStore.root.appendingPathComponent("pocket/voices")
     }
 }
 

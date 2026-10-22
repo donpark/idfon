@@ -395,6 +395,15 @@ final class PocketTtsEngine: NSObject, TtsEngine {
         if let manager = await task.value {
             self.manager = manager
             prepared = true
+            if clonedVoice == nil, let voice = Self.env("IDFON_TTS_VOICE") {
+                // Named cloned voices: the voices pack drops
+                // <name>_audio_prompt.bin files in the voices dir.
+                let url = Self.voicesDir.appendingPathComponent("\(voice)_audio_prompt.bin")
+                if let data = try? manager.loadClonedVoice(from: url) {
+                    clonedVoice = data
+                    Automation.mark("voice: pocket voice '\(voice)' <- cloned pack")
+                }
+            }
             if clonedVoice == nil, let path = Self.env("IDFON_TTS_CLONE") {
                 let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
                 clonedVoice = try? await manager.cloneVoice(from: url)
@@ -465,6 +474,13 @@ final class PocketTtsEngine: NSObject, TtsEngine {
     private static func env(_ key: String) -> String? {
         guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else { return nil }
         return value
+    }
+
+    /// Cloned-voice pack directory (side-loaded or fetched; see
+    /// scripts/fetch-pocket-voices.sh for the layout).
+    private static var voicesDir: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("pocket-voices")
     }
 }
 
