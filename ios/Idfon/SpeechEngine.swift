@@ -372,7 +372,9 @@ final class PocketTtsEngine: NSObject, TtsEngine {
         if prepared { return }
         let task = Self.warmLock.withLock { () -> Task<PocketTtsManager?, Never> in
             if let existing = Self.warmTask { return existing }
-            let created = Task {
+            // Explicit result type: multi-statement inference picks
+            // `PocketTtsManager` from the first `return manager` and rejects `return nil`.
+            let created: Task<PocketTtsManager?, Never> = Task {
                 Automation.mark("voice: pocket initializing")
                 if #available(iOS 18.0, *) {
                     let voice = Self.env("IDFON_TTS_VOICE") ?? PocketTtsConstants.defaultVoice
