@@ -205,11 +205,20 @@ final class VideoCall: NSObject {
         notify()
     }
 
-    /// The panel picked an audio mode (docs/stereo-calls.md): unmute, and when
-    /// the mode changes the stream layout (2D ↔ mono) re-publish and re-invite
-    /// — the peer's handler re-joins on a fresh invite.
+    /// The panel picked an audio route (docs/stereo-calls.md): unmute, and when
+    /// the route changes the stream layout (stereo ↔ mono) re-publish and
+    /// re-invite — the peer's handler re-joins on a fresh invite.
     func setAudioMode(_ mode: CallAudioMode) {
         setAudioEnabled(true)
+        guard published, let peer = activePeer, !peer.isEmpty else { return }
+        let want = AudioIO.captureChannelsForCall()
+        guard want != publishedChannels else { return }
+        Task { [weak self] in await self?.republish(channels: want, peer: peer) }
+    }
+
+    /// The panel's Stereo toggle: re-publish when it changes the stream layout
+    /// (silence at the new layout keeps a muted leg simple).
+    func setStereo(_ on: Bool) {
         guard published, let peer = activePeer, !peer.isEmpty else { return }
         let want = AudioIO.captureChannelsForCall()
         guard want != publishedChannels else { return }

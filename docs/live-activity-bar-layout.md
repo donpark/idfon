@@ -13,7 +13,7 @@ struct LiveActivityBarModel: Equatable {
     struct Row { id; name; kind: .transfer(fraction, bytesPerSecond) | .stream(position, duration, paused) }
     let peerId: String; var handle: String                  // "@janedoe"
     var phase; var camOn; var elapsed: TimeInterval; var rows: [Row]; var density
-    var audioModes: [CallAudioMode]; var selectedAudioMode: CallAudioMode? // media group: radio, none = muted
+    var audioModes: [CallAudioMode]; var selectedAudioMode: CallAudioMode // radio: route or .mute; stereoAvailable; var stereo
     var audioAvailable: Bool; var videoAvailable: Bool      // tracks the session carries (§3 State 3)
     var onDevice: Bool; var statusOnly: Bool                // statusOnly = nav bar owns identity+controls
 }
@@ -27,24 +27,27 @@ holds no timers — the host advances `elapsed` and re-renders (≤1 Hz; `apply`
 No inline mic meter: the audio group's selection is the mic state (§3 lists timer, toggles,
 End — nothing else); a meter would cost 52pt of the handle's width for no information.
 
-## 1a. The audio media group
+## 1a. The audio media row
 
-The mic toggle and the route menu are replaced by one **segmented radio group**:
-Built-in · Earphone · Earphone 2D · Speaker (left to right), then the camera
-toggle. The group is a custom segmented control (not `UISegmentedControl`: the
-group allows **no selection** and each mode is available on its own):
+The mic toggle and the route menu are replaced by a **segmented radio group**
+plus two toggles, left to right: Built-in · Earphone · Speaker · Mute (the
+group), **Stereo**, camera. Custom segments rather than `UISegmentedControl`
+(each segment is independently available):
 
 - a shared capsule container is the visual "these are one group" hint;
-- tapping an unset mode sets it and unsets the others; tapping the active mode
-  unsets it — no selection = the audio stream is off (mute);
-- each mode is present only if available for this contact: user preference ∩
-  what the contact is willing to make available (`ContactAudioModes`), never
-  the hardware that happens to be plugged in;
+- plain radio: exactly one segment is always selected — a route runs the audio
+  stream there, **Mute** turns the stream off. No deselect gesture exists, so
+  the current state is always visible;
+- each segment (and the Stereo toggle) is present only if available for this
+  contact: user preference ∩ what the contact is willing to make available
+  (`ContactAudioModes`), never the hardware that happens to be plugged in.
+  Mute is always offered (it is the off state, not an offering);
 - selection is a filled pill inside the container (concentric radii: 2pt
   margins, pill radius = container radius − 2).
 
-The mode drives the call's audio path (route, voice processing, stream layout —
-docs/stereo-calls.md); 2D ↔ mono mid-call re-publishes the leg.
+The route drives the call's audio path; Stereo drives the stream layout
+(2 channels — docs/stereo-calls.md). Stereo is armed even while muted, and
+stereo ↔ mono mid-call re-publishes the leg.
 
 ## 2. View hierarchy
 
@@ -60,7 +63,7 @@ LiveActivityBar (UIView; .secondarySystemBackground, continuous corners, soft sh
   ├ headerStack (H · margins 8/12/8/8 expanded, 4/16/4/4 compact)
   │ ├ identityStack (H, spacing 8)  dot(8×8) · textStack (V, .leading): titleLabel(headline) / statusLabel(mono digits)
   │ └ controlsStack (H, spacing 8)  decline · answer · verb   (ring actions + End; each ≥44×44, capsule)
-  ├ mediaStack (H, spacing 8)  audioGroup · cam   ← the media stream buttons, spec order
+  ├ mediaStack (H, spacing 8)  audioGroup (routes + Mute) · stereo · cam   ← the media stream buttons
   ├ separator (hairline, .separator)
   └ trayStack (V)
     └ TrayRowView (H, margins 0/12/0/4)  icon · label(footnote, 2 lines) · pause(≥44) · Cancel|Stop(≥44)
@@ -114,7 +117,7 @@ peer-id → name map has one, else a shortened id — never the raw public key.
 
 ## 4. State → layout mapping
 
-| Phase / density | dot | title / status | media row (modes · cam) | verb slot | tray |
+| Phase / density | dot | title / status | media row (modes · stereo · cam) | verb slot | tray |
 | --- | --- | --- | --- | --- | --- |
 | calling, status¹ | hidden | — / `Calling…` | modes · cam | hidden | rows if any |
 | inCall, status¹ | hidden | — / `03:42 · stats` | modes · cam | hidden | rows if any |
@@ -127,8 +130,8 @@ stay (D2 — the Bar row operates the call).
 
 Verb tap: calling/inCall → `.end` (one tap, compact and status
 alike); incoming → `.decline` / `.answer`. The call entry is a nav-bar item,
-not a Bar intent. Media group: tap sets the mode and unsets the others; tap the
-active mode to unset it (audio stream off) — `.setAudioMode(mode?)`. Tray rows:
+not a Bar intent. Media row: the radio picks the route or Mute (`.setAudioMode(mode)`); Stereo
+toggles (`.setStereo(on)`). Tray rows:
 transfer → `Cancel` → `.cancelRow(id)`;
 stream → play/pause → `.togglePauseRow(id)`, `Stop` → `.cancelRow(id)`.
 

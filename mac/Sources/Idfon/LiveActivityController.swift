@@ -27,7 +27,8 @@ final class LiveActivityController {
     }
 
     private var phase: LiveActivityBarModel.Phase = .idle
-    private var selectedAudioMode: CallAudioMode?
+    private var selectedAudioMode: CallAudioMode = .mute
+    private var stereoOn = false
     private var camOn = false
     private var elapsed: TimeInterval = 0
     private var startedAt: Date?
@@ -173,13 +174,22 @@ final class LiveActivityController {
             }
         }
 
-        /// The panel picked an audio mode: unmute and, when the mode changes
+        /// The panel picked an audio route: unmute and, when the route changes
         /// the stream layout, re-publish the leg (the machines' own concern).
         func setAudioMode(_ mode: CallAudioMode) {
             switch self {
             case .audio(let call): call.setAudioMode(mode)
             case .video(let call): call.setAudioMode(mode)
             case .voice(let session): session.setAudioEnabled(true)
+            }
+        }
+
+        /// The panel's Stereo toggle: re-publish when the stream layout changes.
+        func setStereo(_ on: Bool) {
+            switch self {
+            case .audio(let call): call.setStereo(on)
+            case .video(let call): call.setStereo(on)
+            case .voice: break
             }
         }
 
@@ -231,7 +241,8 @@ final class LiveActivityController {
             // Entering a phase (re)initialises the toggles from the machine's real
             // send state (a call starts mic-only), so the Bar reads the truth.
             let audioOn = machine?.audioEnabled ?? false
-            selectedAudioMode = audioOn ? defaultAudioMode(for: machine?.peer) : nil
+            selectedAudioMode = audioOn ? defaultAudioMode(for: machine?.peer) : .mute
+            stereoOn = AudioMeter.stereoStreamForCall()
             camOn = machine?.videoEnabled ?? false
         }
         phase = next
@@ -261,8 +272,10 @@ final class LiveActivityController {
         if let callPeer {
             var model = LiveActivityBarModel(peerId: callPeer, handle: barHandle(for: callPeer))
             model.phase = phase
-            model.audioModes = ContactAudioModes.available(for: callPeer)
+            model.audioModes = ContactAudioModes.availableRoutes(for: callPeer)
             model.selectedAudioMode = selectedAudioMode
+            model.stereoAvailable = ContactAudioModes.stereoAllowed(for: callPeer)
+            model.stereo = stereoOn
             model.camOn = camOn
             model.audioAvailable = machine?.audioAvailable ?? true
             model.videoAvailable = machine?.videoAvailable ?? true
@@ -314,6 +327,7 @@ final class LiveActivityController {
         case .end: Machine.current?.hangUp()
         case .open: onOpenPeer?(peerId)
         case .setAudioMode(let mode): applyAudioMode(mode, peerId: peerId)
+        case .setStereo(let on): applyStereo(on, peerId: peerId)
         case .toggleCam: toggleCam(peerId: peerId)
         case .ping: Task { try? await client.sendText(to: peerId, Self.pingMessage) }
         // Session Tray actions (§4): Cancel aborts the transfer; pause/Stop is
@@ -325,35 +339,39 @@ final class LiveActivityController {
 
     // MARK: - Audio modes (the media-stream group)
 
-    /// The mode a fresh call starts in: the route the device is already on,
+    /// The route a fresh call starts in: the route the device is already on,
     /// clamped to the modes this contact offers — the pre-panel auto rule as
     /// the default selection (`AudioMeter.preferredMode` nil = auto).
     private func defaultAudioMode(for peerID: String?) -> CallAudioMode {
-        let available = peerID.map(ContactAudioModes.available(for:)) ?? CallAudioMode.displayOrder
-        let preferred: CallAudioMode
-        if AudioMeter.stereoCaptureAllowed() {
-            preferred = available.contains(.earphone2D) ? .earphone2D : .earphone
-        } else {
-            preferred = .builtIn
-        }
+        let available = peerID.map(ContactAudioModes.availableRoutes(for:)) ?? CallAudioMode.displayOrder
+        let preferred: CallAudioMode = AudioMeter.stereoCaptureAllowed() ? .earphone : .builtIn
         return available.contains(preferred) ? preferred : (available.first ?? .builtIn)
     }
 
-    /// The radio group: pick the call's audio path (nil = the audio stream is
-    /// off). Input device and mute apply immediately; the machines re-publish
-    /// when the mode changes the stream layout (2D ↔ mono).
-    private func applyAudioMode(_ mode: CallAudioMode?, peerId: String) {
+    /// The radio group: the call's audio state — a route (audio live there) or
+    /// `.mute` (the stream is off). Applies immediately; the machines
+    /// re-publish when the stream layout changes (stereo ↔ mono).
+    private func applyAudioMode(_ mode: CallAudioMode, peerId: String) {
         guard let machine = Machine.current, peerId == machine.peer else { return }
-        if let mode {
-            AudioMeter.preferredMode = mode
-            applyRoute(for: mode)
-            machine.setAudioMode(mode)
-            selectedAudioMode = mode
-        } else {
-            // Clicking the active mode unsets it: the audio stream stops.
+        selectedAudioMode = mode
+        guard mode != .mute else {
             machine.setAudioEnabled(false)
-            selectedAudioMode = nil
+            render()
+            return
         }
+        AudioMeter.preferredMode = mode
+        applyRoute(for: mode)
+        machine.setAudioMode(mode)
+        render()
+    }
+
+    /// The Stereo toggle: armed even while muted (it configures the stream);
+    /// the machines re-publish when it changes the stream layout.
+    private func applyStereo(_ on: Bool, peerId: String) {
+        guard let machine = Machine.current, peerId == machine.peer else { return }
+        AudioMeter.preferredStereo = on
+        stereoOn = on
+        machine.setStereo(on)
         render()
     }
 
@@ -362,6 +380,7 @@ final class LiveActivityController {
     /// mic for Built-in/Speaker, the first external input (headset/interface)
     /// for the earphone modes.
     private func applyRoute(for mode: CallAudioMode) {
+        guard mode != .mute else { return }
         let wantBuiltIn = mode == .builtIn || mode == .speaker
         var devicesAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,

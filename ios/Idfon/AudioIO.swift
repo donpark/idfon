@@ -120,19 +120,29 @@ final class AudioIO: AudioSource, AudioSink {
         }
     }
 
-    /// The call audio mode picked on the live panel's media group (nil = the
-    /// auto rule above). Drives the VPIO decision, the session mode, and the
-    /// capture channel count (docs/stereo-calls.md).
+    /// The route picked on the live panel's radio group (nil = the auto rule
+    /// above); owns the speaker override in `configureSession`.
     static var preferredMode: CallAudioMode?
 
-    /// Stereo capture: the picked mode, or on auto the headset route.
-    static func stereoCaptureForCall() -> Bool {
-        if let preferredMode { return preferredMode == .earphone2D }
+    /// The panel's Stereo toggle (nil = the auto rule: stereo on the headset
+    /// route). Drives the capture channel count (docs/stereo-calls.md).
+    static var preferredStereo: Bool?
+
+    /// The stereo stream: the toggle, or on auto the headset route.
+    static func stereoStreamForCall() -> Bool {
+        if let preferredStereo { return preferredStereo }
         return stereoCaptureAllowed()
     }
 
     /// The channel count the call's mic leg publishes.
-    static func captureChannelsForCall() -> Int { stereoCaptureForCall() ? 2 : 1 }
+    static func captureChannelsForCall() -> Int { stereoStreamForCall() ? 2 : 1 }
+
+    /// Voice processing is skipped only where stereo can actually be captured:
+    /// stereo + a headset route (echo is moot there). Everywhere else VPIO
+    /// stays on — stereo on a speaker route must not become a howl.
+    static func skipVoiceProcessing() -> Bool {
+        stereoStreamForCall() && stereoCaptureAllowed()
+    }
 
     // MARK: - lifecycle
 
@@ -265,8 +275,8 @@ final class AudioIO: AudioSource, AudioSink {
         // raises an ObjC exception Swift cannot catch (docs/troubleshooting.md,
         // "SIGABRT"). Skipped entirely on the stereo (headset) route — see
         // `stereoCaptureAllowed`.
-        if Self.stereoCaptureForCall() {
-            Automation.mark("audio: voice-processing skipped (headset route, stereo capture)")
+        if Self.skipVoiceProcessing() {
+            Automation.mark("audio: voice-processing skipped (stereo capture, headset route)")
         } else {
             do {
                 try input.setVoiceProcessingEnabled(true)
@@ -371,7 +381,7 @@ final class AudioIO: AudioSource, AudioSink {
         // Set the mode in the category call; move the route override last
         // (setMode(.voiceChat) after the override re-evaluates the route).
         try? session.setCategory(
-            .playAndRecord, mode: Self.stereoCaptureForCall() ? .default : .voiceChat,
+            .playAndRecord, mode: Self.skipVoiceProcessing() ? .default : .voiceChat,
             options: [.allowBluetoothHFP, .defaultToSpeaker])
         try? session.setPreferredIOBufferDuration(0.01)
     }

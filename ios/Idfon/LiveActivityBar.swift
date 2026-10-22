@@ -1,23 +1,26 @@
 import UIKit
 
-/// The live panel's call audio modes: which audio path the call runs on.
-/// `earphone2D` is the stereo call (docs/stereo-calls.md). Lives with the Bar
-/// model because the panel check compiles the view standalone.
+/// The live panel's call audio routes: which audio path the call runs on.
+/// Stereo is an orthogonal toggle on the same media row (docs/stereo-calls.md).
+/// Lives with the Bar model because the panel check compiles the view
+/// standalone.
 enum CallAudioMode: String, CaseIterable {
     case builtIn
     case earphone
-    case earphone2D
     case speaker
+    /// Audio stream off. In the group so the radio always shows one state and
+    /// needs no deselect gesture.
+    case mute
 
     /// Left-to-right order on the panel.
-    static let displayOrder: [CallAudioMode] = [.builtIn, .earphone, .earphone2D, .speaker]
+    static let displayOrder: [CallAudioMode] = [.builtIn, .earphone, .speaker, .mute]
 
     var symbolName: String {
         switch self {
         case .builtIn: "iphone"
         case .earphone: "headphones"
-        case .earphone2D: "waveform"
         case .speaker: "speaker.wave.2.fill"
+        case .mute: "mic.slash.fill"
         }
     }
 
@@ -25,13 +28,10 @@ enum CallAudioMode: String, CaseIterable {
         switch self {
         case .builtIn: "Built-in"
         case .earphone: "Earphone"
-        case .earphone2D: "Earphone 2D"
         case .speaker: "Speaker"
+        case .mute: "Mute"
         }
     }
-
-    /// The stream layout this mode publishes (docs/stereo-calls.md).
-    var channels: Int { self == .earphone2D ? 2 : 1 }
 }
 
 /// Display model for one contact's Live Activity Bar (docs/ui-design-notes.md
@@ -63,10 +63,13 @@ struct LiveActivityBarModel: Equatable {
     var phase: Phase = .idle
     var camOn = false
     /// Audio modes the panel offers right now (display order) + the one the
-    /// call runs. None selected = the audio stream is off (mute). Presence is
+    /// call runs — exactly one is always selected (Mute = the stream is off).
+    /// Stereo is an orthogonal toggle on the same row. Presence is
     /// preference/capability-gated (ContactAudioModes), never hardware-gated.
     var audioModes: [CallAudioMode] = []
-    var selectedAudioMode: CallAudioMode?
+    var selectedAudioMode: CallAudioMode = .mute
+    var stereoAvailable = false
+    var stereo = false
     /// Stream set the session actually carries (§3 State 3): a call can only
     /// toggle the tracks it was started with, so a toggle for an absent track
     /// is hidden rather than shown as if it worked. Calls publish both, so
@@ -108,9 +111,9 @@ struct LiveActivityBarModel: Equatable {
 }
 
 enum LiveActivityBarIntent: Equatable {
-    /// Pick the call's audio mode; nil turns the audio stream off. Tapping
-    /// the active mode emits nil (a radio group that allows no selection).
-    case setAudioMode(CallAudioMode?), toggleCam, answer, decline
+    /// Pick the call's audio state: a route or `mute`. Plain radio — exactly
+    /// one is always selected; tapping the active one re-asserts it.
+    case setAudioMode(CallAudioMode), setStereo(Bool), toggleCam, answer, decline
     case cancelRow(String), togglePauseRow(String)
     /// Compact pill tapped: navigate to the owning thread.
     case open
@@ -136,6 +139,7 @@ final class LiveActivityBar: UIView {
     private let audioGroup = UIView()
     private let audioGroupStack = UIStackView()
     private var audioModeButtons: [CallAudioMode: UIButton] = [:]
+    private let stereoButton = UIButton(configuration: .tinted())
     private let camButton = UIButton(configuration: .tinted())
     private let declineButton = UIButton(configuration: .filled())
     private let answerButton = UIButton(configuration: .filled())
@@ -215,6 +219,7 @@ final class LiveActivityBar: UIView {
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
             button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         }
+        control(stereoButton, "waveform", "Stereo", #selector(stereoTapped))
         control(camButton, "video.slash.fill", "Camera", #selector(camTapped))
         buildAudioGroup()
         control(declineButton, "phone.down.fill", "Decline", #selector(declineTapped))
@@ -234,7 +239,7 @@ final class LiveActivityBar: UIView {
         mediaStack.axis = .horizontal
         mediaStack.spacing = 8
         mediaStack.alignment = .center
-        [audioGroup, camButton].forEach(mediaStack.addArrangedSubview)
+        [audioGroup, stereoButton, camButton].forEach(mediaStack.addArrangedSubview)
 
         headerStack.axis = .horizontal
         headerStack.spacing = 12
@@ -353,6 +358,10 @@ final class LiveActivityBar: UIView {
         mediaStack.isHidden = compact || !togglesActive
         audioGroup.isHidden = compact || !togglesActive || !model.audioAvailable || model.audioModes.isEmpty
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
+        stereoButton.isHidden = compact || !togglesActive || !model.audioAvailable || !model.stereoAvailable
+        stereoButton.configuration?.image = UIImage(systemName: "waveform")
+        stereoButton.configuration?.baseForegroundColor = model.stereo ? .tintColor : .secondaryLabel
+        stereoButton.accessibilityValue = model.stereo ? "on" : "off"
         for (mode, button) in audioModeButtons {
             button.isHidden = !model.audioModes.contains(mode)
             let selected = model.selectedAudioMode == mode
@@ -400,8 +409,10 @@ final class LiveActivityBar: UIView {
 
     @objc private func audioModeTapped(_ sender: UIButton) {
         guard let mode = audioModeButtons.first(where: { $0.value === sender })?.key else { return }
-        onIntent?(.setAudioMode(model.selectedAudioMode == mode ? nil : mode))
+        onIntent?(.setAudioMode(mode))
     }
+
+    @objc private func stereoTapped() { onIntent?(.setStereo(!model.stereo)) }
     @objc private func camTapped() { onIntent?(.toggleCam) }
     @objc private func declineTapped() { onIntent?(.decline) }
     @objc private func answerTapped() { onIntent?(.answer) }
