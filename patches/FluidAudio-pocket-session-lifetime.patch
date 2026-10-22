@@ -1,0 +1,14 @@
+diff --git a/Sources/FluidAudio/TTS/PocketTTS/Pipeline/PocketTtsSession.swift b/Sources/FluidAudio/TTS/PocketTTS/Pipeline/PocketTtsSession.swift
+index 58259ed5..dbfd9963 100644
+--- a/Sources/FluidAudio/TTS/PocketTTS/Pipeline/PocketTtsSession.swift
++++ b/Sources/FluidAudio/TTS/PocketTTS/Pipeline/PocketTtsSession.swift
+@@ -210,8 +210,7 @@ public actor PocketTtsSession {
+ 
+     /// Start the generation loop. Must be called once after init.
+     func start() {
+-        generationTask = Task { [weak self] in
+-            guard let self else { return }
++        generationTask = Task {
+             await self.generateLoop()
+         }
+         frameContinuation.onTermination = { [weak self] _ in
