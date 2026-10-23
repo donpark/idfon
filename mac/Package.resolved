@@ -26,15 +26,6 @@
         "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
         "version" : "1.1.1"
       }
-    },
-    {
-      "identity" : "xn-ptts",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/gradium-ai/xn-ptts.git",
-      "state" : {
-        "revision" : "f07d7952db0c6127d5e4bc3f41c82b3304b6b5aa",
-        "version" : "0.4.0"
-      }
     }
   ],
   "version" : 2

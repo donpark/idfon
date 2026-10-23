@@ -2,7 +2,8 @@ import Foundation
 import AVFAudio
 
 /// Shell-side voice-message recorder: consumes the single microphone source
-/// (`AudioIO`) and writes the contact-profile format (16 kHz mono s16 WAV),
+/// (`AudioIO`) and writes the contact-profile format (16 kHz s16 WAV — mono,
+/// or 2ch when the mic is),
 /// then hands the file to the daemon as a blob + `IDFON-RECORDING/1` envelope.
 ///
 /// It owns no `AVAudioEngine` or `AVAudioRecorder` and never configures the
@@ -12,6 +13,9 @@ final class VoiceMemo: AudioCaptureObserver {
     private var file: AVAudioFile?
     private(set) var fileURL: URL?
     private(set) var duration: TimeInterval = 0
+    /// The wav's channel count: the mic's, resolved from the first captured
+    /// buffer (2ch when the mic is — e.g. a USB stereo interface — else mono).
+    private(set) var channels: Int = 1
     private var framesWritten: AVAudioFramePosition = 0
 
     /// Live amplitude 0...1 while recording, computed from the captured buffers.
@@ -34,33 +38,51 @@ final class VoiceMemo: AudioCaptureObserver {
     func start() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("memo-\(Int(Date().timeIntervalSince1970 * 1000)).wav")
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: Self.sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-        ]
-        let file = try AVAudioFile(forWriting: url, settings: settings)
-        self.file = file
+        // The wav is created from the first captured buffer, so its channel
+        // count matches the mic instead of guessing before capture starts.
+        self.file = nil
         self.fileURL = url
+        self.channels = 1
         self.framesWritten = 0
         AudioIO.shared.start(profile: .recording)
         source.addCaptureObserver(self)
         return url
     }
 
-    /// Stops and returns (fileURL, duration seconds).
-    func stop() -> (url: URL, duration: TimeInterval)? {
-        guard file != nil, let url = fileURL else { return nil }
+    /// Creates the wav at `count` channels (clamped to mono/stereo).
+    @discardableResult
+    private func makeFile(channels count: Int) -> Bool {
+        guard let url = fileURL else { return false }
+        let channels = min(max(count, 1), 2)
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: Self.sampleRate,
+            AVNumberOfChannelsKey: channels,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+        ]
+        guard let file = try? AVAudioFile(forWriting: url, settings: settings) else {
+            idfonError("idfon memo: cannot create \(channels)ch wav")
+            return false
+        }
+        self.file = file
+        self.channels = channels
+        return true
+    }
+
+    /// Stops and returns (fileURL, duration seconds, channels).
+    func stop() -> (url: URL, duration: TimeInterval, channels: Int)? {
+        guard let url = fileURL else { return nil }
+        // No buffer ever arrived: still hand back an empty mono wav.
+        if file == nil, !makeFile(channels: 1) { return nil }
         source.removeCaptureObserver(self)
         AudioIO.shared.stop()
         duration = Double(framesWritten) / Self.sampleRate
         self.file = nil   // releases AVAudioFile, flushing the WAV to disk
         self.fileURL = nil
         onAmplitude?(0)
-        return (url, duration)
+        return (url, duration, channels)
     }
 
     func discard() {
@@ -79,6 +101,7 @@ final class VoiceMemo: AudioCaptureObserver {
 
     func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
         reportAmplitude(buffer)
+        if file == nil, !makeFile(channels: Int(buffer.format.channelCount)) { return }
         guard let file,
               let output = AudioIO.convert(buffer, to: file.processingFormat)
         else { return }

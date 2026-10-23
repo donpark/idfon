@@ -1043,6 +1043,57 @@ fn write_wav(
     Ok(())
 }
 
+/// The layout a WAV header declares: playback must honor it instead of
+/// assuming mono 48 kHz s16 (stereo memos and the shells' 16 kHz memos both
+/// arrive through the same file). Chunk walk, so extra chunks (e.g. `fact`)
+/// are skipped and `data` may precede `fmt `; a `data` length that overshoots
+/// the buffer is clamped so truncated captures still play what they have.
+struct WavFormat {
+    sample_rate: u32,
+    channels: u32,
+    bits_per_sample: u16,
+    data_offset: usize,
+    data_len: usize,
+}
+
+fn wav_format(data: &[u8]) -> Option<WavFormat> {
+    if data.len() < 44 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut format: Option<(u32, u32, u16)> = None;
+    let mut payload: Option<(usize, usize)> = None;
+    let mut pos = 12;
+    while pos + 8 <= data.len() {
+        let id = &data[pos..pos + 4];
+        let len = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().ok()?) as usize;
+        let body = pos + 8;
+        if id == b"fmt " {
+            if len < 16 || body + 16 > data.len() {
+                return None;
+            }
+            format = Some((
+                u32::from_le_bytes(data[body + 4..body + 8].try_into().ok()?),
+                u16::from_le_bytes(data[body + 2..body + 4].try_into().ok()?) as u32,
+                u16::from_le_bytes(data[body + 14..body + 16].try_into().ok()?),
+            ));
+        } else if id == b"data" {
+            payload = Some((body, len.min(data.len() - body)));
+        } else if body.checked_add(len)? > data.len() {
+            return None;
+        }
+        pos = body.checked_add(len)? + (len & 1);
+    }
+    let (sample_rate, channels, bits_per_sample) = format?;
+    let (data_offset, data_len) = payload?;
+    Some(WavFormat {
+        sample_rate,
+        channels,
+        bits_per_sample,
+        data_offset,
+        data_len,
+    })
+}
+
 #[ffi_export]
 pub fn media_live_unsubscribe() {
     media_recording_stop_playback();
@@ -1220,10 +1271,11 @@ pub fn media_recording_start() -> u8 {
             let mut decode = moq_audio::decode::Config::new();
             decode.format = Format::F32;
             decode.sample_rate = Some(48_000);
-            decode.channels = Some(1);
+            decode.channels = None; // catalog count: 2ch when the mic is
             let mut consumer =
                 moq_audio::decode::Consumer::new(broadcast.consumer(), &config, &name, decode)
                     .await?;
+            let channels = consumer.channels();
             let mut samples = Vec::new();
             let started = std::time::Instant::now();
             loop {
@@ -1236,7 +1288,7 @@ pub fn media_recording_start() -> u8 {
                     }
                 }
             }
-            write_wav(&media_path("recording.wav"), &samples, 1)?;
+            write_wav(&media_path("recording.wav"), &samples, channels)?;
             RECORDING_DURATION.store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
             drop(publication);
             live.shutdown().await;
@@ -1306,10 +1358,13 @@ pub fn media_recording_play(ticket: char_p::Ref<'_>) -> u8 {
     let Ok(data) = std::fs::read(&path) else {
         return 1;
     };
-    if data.len() < 44 || &data[0..4] != b"RIFF" {
+    let Some(format) = wav_format(&data) else {
+        return 1;
+    };
+    if format.bits_per_sample != 16 {
         return 1;
     }
-    let samples = data[44..].to_vec();
+    let samples = data[format.data_offset..format.data_offset + format.data_len].to_vec();
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
     let handle = std::thread::spawn(move || {
@@ -1319,13 +1374,15 @@ pub fn media_recording_play(ticket: char_p::Ref<'_>) -> u8 {
             let engine = moq_audio::playback::Engine::open(playback_config).await?;
             let mut input = moq_audio::playback::Input::default();
             input.format = Format::S16;
-            input.sample_rate = 48_000;
-            input.channels = 1;
+            input.sample_rate = format.sample_rate;
+            input.channels = format.channels;
             let mut sink = engine.sink(input)?;
             let control = sink.control();
             control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
             *PLAYBACK_CONTROL.lock().unwrap() = Some(control);
-            for chunk in samples.chunks(1_920) {
+            // 20 ms of interleaved s16 at the declared rate and channel count.
+            let chunk_bytes = (format.sample_rate / 50) as usize * format.channels as usize * 2;
+            for chunk in samples.chunks(chunk_bytes) {
                 if thread_stop.load(Ordering::Relaxed) {
                     break;
                 }
@@ -1447,9 +1504,23 @@ pub fn media_live_recording_samples() -> usize {
             media_path("recording.wav")
         }
     };
-    std::fs::metadata(path)
-        .map(|metadata| metadata.len().saturating_sub(44) as usize / 2)
+    std::fs::read(path)
+        .ok()
+        .and_then(|data| wav_format(&data))
+        // frames, not interleaved values: the waveform is a time axis
+        .map(|format| format.data_len / 2 / format.channels.max(1) as usize)
         .unwrap_or(0)
+}
+
+/// Channel count the local recording's WAV header declares (1 when there is
+/// no readable recording) — the voice-message envelope's `channels=` line.
+#[ffi_export]
+pub fn media_recording_channels() -> u32 {
+    std::fs::read(media_path("recording.wav"))
+        .ok()
+        .and_then(|data| wav_format(&data))
+        .map(|format| format.channels)
+        .unwrap_or(1)
 }
 #[ffi_export]
 pub fn media_live_recording_store() -> char_p::Box {
@@ -1572,6 +1643,42 @@ mod tests {
     }
 
     #[test]
+    fn wav_format_reads_the_declared_layout() {
+        // write_wav's own stereo output.
+        let path = std::env::temp_dir().join(format!("idfon-wavfmt-{}.wav", std::process::id()));
+        super::write_wav(&path, &[0.0; 960 * 2], 2).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let format = super::wav_format(&bytes).unwrap();
+        assert_eq!(format.channels, 2);
+        assert_eq!(format.sample_rate, 48_000);
+        assert_eq!(format.bits_per_sample, 16);
+        assert_eq!(format.data_len, 960 * 2 * 2);
+        // The shells' memos: canonical 16 kHz mono s16 (AVAudioFile output
+        // shape) must parse the same way — playback honors it.
+        let mut memo = Vec::new();
+        memo.extend_from_slice(b"RIFF");
+        memo.extend_from_slice(&36u32.to_le_bytes());
+        memo.extend_from_slice(b"WAVEfmt ");
+        memo.extend_from_slice(&16u32.to_le_bytes());
+        memo.extend_from_slice(&1u16.to_le_bytes());
+        memo.extend_from_slice(&1u16.to_le_bytes());
+        memo.extend_from_slice(&16_000u32.to_le_bytes());
+        memo.extend_from_slice(&32_000u32.to_le_bytes());
+        memo.extend_from_slice(&2u16.to_le_bytes());
+        memo.extend_from_slice(&16u16.to_le_bytes());
+        memo.extend_from_slice(b"data");
+        memo.extend_from_slice(&4u32.to_le_bytes());
+        memo.extend_from_slice(&[0, 0, 0, 0]);
+        let format = super::wav_format(&memo).unwrap();
+        assert_eq!(format.channels, 1);
+        assert_eq!(format.sample_rate, 16_000);
+        assert_eq!(format.data_offset, 44);
+        assert_eq!(format.data_len, 4);
+        assert!(super::wav_format(&[0u8; 44]).is_none());
+    }
+
+    #[test]
     fn relative_scope_stays_out_of_cwd() {
         let dir = super::scoped_media_dir(std::path::Path::new("peer-abc"));
         assert!(dir.is_absolute(), "bare scope must not be cwd-relative: {dir:?}");
@@ -1579,5 +1686,110 @@ mod tests {
         // An absolute scope is used verbatim (the mac app passes one).
         let abs = super::scoped_media_dir(std::path::Path::new("/var/tmp/x"));
         assert_eq!(abs, std::path::PathBuf::from("/var/tmp/x"));
+    }
+
+    /// The stereo E2E without hardware (docs/stereo-calls.md): a shell-pushed
+    /// L=440 / R=880 Hz tone through the real MoQ publish → decode path must
+    /// arrive with channel separation intact. Direct addressing keeps it
+    /// deterministic — a LiveTicket is id-only and resolves via pkarr/mDNS.
+    #[test]
+    fn stereo_tone_roundtrip_keeps_channel_separation() {
+        use std::f32::consts::PI;
+        use std::sync::atomic::Ordering;
+
+        // No speaker in CI: the shell render callback is a no-op sink.
+        unsafe extern "C" fn discard(
+            _: *const std::ffi::c_void,
+            _: *const u8,
+            _: usize,
+            _: u32,
+            _: u32,
+            _: u64,
+        ) {
+        }
+        assert_eq!(
+            super::media_audio_set_playback_cb(std::ptr::null(), discard),
+            0
+        );
+        let ticket_text =
+            super::start_live(true, false, true, None, AudioCodec::Opus, 48_000, 2).expect("publish");
+        let mut ticket = super::LiveTicket::deserialize(&ticket_text).expect("ticket");
+        // Talk to the in-process publisher's address directly.
+        ticket.endpoint = super::LIVE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .live
+            .endpoint()
+            .addr();
+
+        let pusher = std::thread::spawn(move || {
+            for frame_index in 0..120u32 {
+                let mut frame = vec![0f32; 960 * 2];
+                for (n, pair) in frame.chunks_exact_mut(2).enumerate() {
+                    let t = (frame_index as usize * 960 + n) as f32 / 48_000.0;
+                    pair[0] = (2.0 * PI * 440.0 * t).sin() * 0.5;
+                    pair[1] = (2.0 * PI * 880.0 * t).sin() * 0.5;
+                }
+                super::media_audio_push_frames(frame.as_ptr(), 960, 2);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watchdog = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(3_000));
+                stop.store(true, Ordering::Relaxed);
+            })
+        };
+        let mut samples = Vec::new();
+        let mut timing = String::new();
+        let mut decoded_total = 0;
+        let mut channels = 0u32;
+        let ended = super::tokio_executor(super::subscribe_decode_once(
+            ticket,
+            &stop,
+            &mut samples,
+            &mut timing,
+            &mut decoded_total,
+            std::time::Instant::now(),
+            1,
+            &mut channels,
+        ));
+        pusher.join().unwrap();
+        watchdog.join().unwrap();
+        super::media_live_stop();
+        super::media_audio_clear_playback_cb();
+        assert!(ended.expect("decode"), "watchdog should end the decode");
+        assert_eq!(channels, 2, "stereo catalog must decode as stereo");
+        assert!(samples.len() > 48_000, "capture too short: {}", samples.len());
+
+        // Single-frequency correlation per channel, skipping the encoder's
+        // first 0.2 s. 440 Hz must sit in ch0, 880 Hz in ch1 — and stay out
+        // of the other one.
+        let start = (48_000 / 5) as usize * 2;
+        let magnitude = |channel: usize, freq: f32| -> f64 {
+            let mut re = 0.0f64;
+            let mut im = 0.0f64;
+            let mut n = 0;
+            while start + channel + 2 * n < samples.len() {
+                let t = n as f64 / 48_000.0;
+                let x = samples[start + channel + 2 * n] as f64;
+                let phase = 2.0 * std::f64::consts::PI * freq as f64 * t;
+                re += x * phase.cos();
+                im += x * phase.sin();
+                n += 1;
+            }
+            (re * re + im * im).sqrt()
+        };
+        let low = magnitude(0, 440.0);
+        let high = magnitude(1, 880.0);
+        assert!(low > 5.0 * magnitude(0, 880.0), "ch0 must carry 440 Hz");
+        assert!(high > 5.0 * magnitude(1, 440.0), "ch1 must carry 880 Hz");
+        assert!(low > 5.0 * magnitude(1, 440.0), "440 Hz must stay out of ch1");
+        assert!(high > 5.0 * magnitude(0, 880.0), "880 Hz must stay out of ch0");
     }
 }

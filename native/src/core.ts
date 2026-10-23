@@ -107,6 +107,7 @@ export interface Model {
   readonly recordingActive: boolean;
   readonly recordingTicket: Uint8Array;
   readonly recordingDuration: Uint8Array;
+  readonly recordingChannels: Uint8Array;
   // Start invite stashed by the events drain (ticket EMPTY = none), rung by
   // the next poll tick which supplies host time for the freshness check.
   readonly drainInvitePeer: Uint8Array;
@@ -263,7 +264,7 @@ export type Msg =
 export const viewUnbound = [
   "replyRoute", "identityName", "identityInitials", "incomingLive", "copyIdentityTicket", "identityError", "chatOpen", "receiverTicket", "capabilityTicket", "endpointId", "audioActive", "pendingRecordingSend", "subscribedRecording", "showTicket", "liveAutoAccept", "eventCursor", "eventsReady",
   "receiverAvailable", "receiver_ready", "receiver_error", "receiver_event", "sender_ready", "sender_error", "daemon_ready", "daemon_error", "peers_loaded", "events_loaded", "events_sync_error", "poll_events", "tickAt",
-  "recordingStartedAt", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "events_sync_error", "chat_closed", "banner_dismiss", "bannerExpiresAt", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready", "bitrate_edit", "set_audio_bitrate", "bitrateInput",
+  "recordingStartedAt", "recordingChannels", "connect_receiver", "recording_persisted", "recording_persist_error", "identity_name_edit", "identity_pressed", "identities_loaded", "identity_created", "identity_create_error", "identity_used", "identity_use_error", "events_sync_error", "chat_closed", "banner_dismiss", "bannerExpiresAt", "capability_ticket_issued", "capability_ticket_error", "copy_endpoint_id", "peer_added", "peer_add_error", "audio_start", "audio_stop", "audio_started", "audio_stopped", "audio_error", "audio_probe_result", "live_started", "live_stopped", "live_error", "live_subscribed", "live_unsubscribed", "live_subscribe_error", "recording_started", "recording_stopped", "recording_error", "recording_store", "recording_stored", "recording_send", "attach_file", "open_link", "recording_store_error", "blob_fetched", "blob_fetch_error", "playback_started", "playback_stopped", "playback_error", "audio_toggle", "audio_emergency_stopped", "media_session_ready", "bitrate_edit", "set_audio_bitrate", "bitrateInput",
 "video_watch_started", "video_watch_error", "video_stopped", "video_frame_tick",
 "video_call_start", "video_media_session_ready", "video_call_started", "video_call_error", "video_image_event", "call_tone_ok", "call_tone_error",
 "videoWidth", "videoHeight",
@@ -360,6 +361,7 @@ export function initialModel(): Model | [Model, Cmd<Msg>] {
     recordingActive: false,
     recordingTicket: EMPTY,
     recordingDuration: utf8Bytes("0"),
+    recordingChannels: utf8Bytes("1"),
     recordingStartedAt: 0,
     recordingElapsed: utf8Bytes("0:00"),
     composerActive: false,
@@ -769,7 +771,8 @@ function parseLiveInvite(text: Uint8Array): { isStart: boolean; isStop: boolean;
 function recordingEnvelope(model: Model): Uint8Array {
   const seconds = digitsToNumber(model.recordingDuration);
   const ms = seconds > 0 ? seconds * 1000 : 0;
-  return concat(utf8Bytes("IDFON-RECORDING/1\nid="), concat(model.recordingTicket, concat(utf8Bytes("\ncodec=opus\nchannels=1\nsample_rate=48000\nduration_ms="), concat(utf8Bytes(`${ms}`), concat(utf8Bytes("\nsender_id="), concat(model.endpointId, concat(utf8Bytes("\nticket="), model.recordingTicket)))))));
+  const head = concat(utf8Bytes("IDFON-RECORDING/1\nid="), concat(model.recordingTicket, concat(utf8Bytes("\ncodec=opus\nchannels="), concat(model.recordingChannels, utf8Bytes(`\nsample_rate=48000\nduration_ms=${ms}\nsender_id=`)))));
+  return concat(head, concat(model.endpointId, concat(utf8Bytes("\nticket="), model.recordingTicket)));
 }
 
 function recordingPayload(model: Model): Uint8Array {
@@ -1524,10 +1527,14 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "recording_stored": {
       if (model.comms.recording) return model; // stale store from a superseded recording — never attach mid-recording
       const fields = routedFields(msg.data);
+      // fields[1] = "<ticket>\n<channels>" (channels falls back to mono).
+      const split = byteIndex(fields[1], 10, 0);
+      const ticket = split === -1 ? fields[1] : fields[1].slice(0, split);
+      const channels = split === -1 ? utf8Bytes("1") : fields[1].slice(split + 1);
       const settled = comUpdate(model, { recReady: true });
-      return [{ ...settled, senderDisabled: model.receiverId.length === 0, recordingDuration: fields[0], recordingStatus: utf8Bytes("Recording attached"), recordingTicket: fields[1] },
+      return [{ ...settled, senderDisabled: model.receiverId.length === 0, recordingDuration: fields[0], recordingChannels: channels, recordingStatus: utf8Bytes("Recording attached"), recordingTicket: ticket },
         // persist like the inbound path so preview playback can read the blob
-        Cmd.request("media.recording.persist", fields[1], { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" })];
+        Cmd.request("media.recording.persist", ticket, { key: "media-recording-persist", ok: "recording_persisted", err: "recording_persist_error" })];
     }
     case "recording_cancel":
       return { ...comUpdate(model, { recReady: false }), pendingRecordingSend: false, recordingTicket: EMPTY, recordingStatus: utf8Bytes("Recording discarded") };

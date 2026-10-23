@@ -1,6 +1,7 @@
 import Foundation
 import AVFAudio
 import AVFoundation
+import CoreAudio
 
 /// Shell-side recorder for voice messages and call captures. AVAudioRecorder
 /// owns the Apple microphone lifecycle; the resulting file is handed to Idfon
@@ -12,6 +13,8 @@ final class VoiceMemo: NSObject {
     private var recorder: AVAudioRecorder?
     private(set) var fileURL: URL?
     private(set) var duration: TimeInterval = 0
+    /// The wav's channel count: the mic's at start (2ch when the mic is).
+    private(set) var channels: Int = 1
 
     /// Live amplitude 0...1 while recording (recorder metering).
     var onAmplitude: ((Float) -> Void)?
@@ -32,10 +35,11 @@ final class VoiceMemo: NSObject {
         if recorder != nil { _ = stop() }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("memo-\(Int(Date().timeIntervalSince1970 * 1000)).wav")
+        let channels = Self.inputChannels()
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
+            AVNumberOfChannelsKey: channels,
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false,
             AVLinearPCMIsBigEndianKey: false,
@@ -44,6 +48,7 @@ final class VoiceMemo: NSObject {
         recorder.isMeteringEnabled = true
         recorder.record()
         self.recorder = recorder
+        self.channels = channels
         fileURL = url
 
         meterTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self, weak recorder] _ in
@@ -64,8 +69,8 @@ final class VoiceMemo: NSObject {
         duration = 0
     }
 
-    /// Stops and returns (fileURL, duration seconds).
-    func stop() -> (url: URL, duration: TimeInterval)? {
+    /// Stops and returns (fileURL, duration seconds, channels).
+    func stop() -> (url: URL, duration: TimeInterval, channels: Int)? {
         meterTimer?.invalidate()
         meterTimer = nil
         guard let recorder, let url = fileURL else { return nil }
@@ -74,6 +79,29 @@ final class VoiceMemo: NSObject {
         self.recorder = nil
         self.onAmplitude?(0)
         self.fileURL = nil
-        return (url, duration)
+        return (url, duration, channels)
+    }
+
+    /// The default input device's channel count, clamped to mono/stereo.
+    /// "2ch when the mic is": a USB stereo interface records stereo, the
+    /// built-in mic stays mono.
+    private static func inputChannels() -> Int {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var device = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
+              device != kAudioObjectUnknown else { return 1 }
+        address.mSelector = kAudioDevicePropertyStreamConfiguration
+        address.mScope = kAudioDevicePropertyScopeInput
+        guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr else { return 1 }
+        let list = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { list.deallocate() }
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, list) == noErr else { return 1 }
+        let buffers = UnsafeMutableAudioBufferListPointer(list.assumingMemoryBound(to: AudioBufferList.self))
+        return buffers.reduce(0) { $0 + Int($1.mNumberChannels) } >= 2 ? 2 : 1
     }
 }

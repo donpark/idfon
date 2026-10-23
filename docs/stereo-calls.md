@@ -1,8 +1,9 @@
 # Stereo calls
 
-> Status: **as-built** for the call path (transport seam, shells, the panel's
-> media row, stereo-driven re-publish). **Design/remaining**: stereo voice
-> messages (phase 3) and the device E2E pass.
+> Status: **as-built** end to end — the call path (transport seam, shells, the
+> panel's media row, stereo-driven re-publish) and stereo voice messages
+> (phase 3). **Remaining**: the device E2E pass and the VPIO probe (both need
+> hardware).
 
 The hook: almost nobody has ever heard a stereo phone call. Carrier telephony
 (VoLTE/EVS included) is mono to this day. Idfon already ships 48 kHz fullband
@@ -44,10 +45,11 @@ the benefit with no setup at all.
 | Subscribe | `crates/iroh-c-ffi/src/media.rs` | `decode.channels = None` (catalog count); prebuffer/pts/media-secs math per channel; the jitter shrink drops whole frames only |
 | Render (both apps) | `AudioPlaybackSink.swift` | buffers built at the callback's channel count (interleaved → planar) |
 | Voice agent plane | `crates/idfon-live-media` | 24 kHz mono PCM frames into ASR/TTS — **stays mono by design** |
-| Voice messages | `media.rs` recording path, `native/src/core.ts` | still mono — phase 3 |
+| Voice messages | `VoiceMemo.swift` (both apps), `media.rs` recording path, `native/src/core.ts` | 2ch when the mic is; envelope carries `channels=<n>` (derived, never hardcoded); playback honors the WAV header |
 
 Unit tests: `frame_pts_gap_scales_with_channels`,
-`stereo_wav_header_declares_two_channels` (`cargo test -p iroh-c-ffi`).
+`stereo_wav_header_declares_two_channels`, `wav_format_reads_the_declared_layout`
+(`cargo test -p iroh-c-ffi`).
 Compatibility is free in both directions: old mono subscribers downmix a stereo
 track (`decode.channels = Some(1)` + `remix`), new subscribers render old mono
 publishers as mono — the catalog self-describes.
@@ -98,11 +100,24 @@ invite is re-sent unchanged when a mode change re-publishes the leg.
   (today: `pcm24k` ⇒ no stereo, else willing; `ContactAudioModes` holds the user's
   per-contact override).
 
-### 3. Voice messages — **remaining (phase 3, independent)**
+### 3. Voice messages — **landed (phase 3)**
 
-- `VoiceMemo.swift` (2ch when the mic is), envelope `channels=<n>` (today
-  hardcoded `channels=1` in `native/src/core.ts` and the Swift composers),
-  receiver-side playback decode at the declared count.
+- Recording: `VoiceMemo.swift` (both apps) writes 2ch when the mic is — the iOS
+  recorder sizes the wav from the first captured buffer, the mac recorder from
+  the default input device's channel count (both clamped to stereo). Built-in
+  mics stay mono.
+- Envelope: `channels=<n>` in every composer (both Swift chat composers, the
+  iOS `-memo` harness, `native/src/core.ts`). The native shell derives it from
+  the recording (`media_recording_channels()` rides the
+  `media.live.recording.store` completion as `duration\nticket\nchannels`);
+  the shells derive it from their recorder.
+- Playback at the declared count: `media_recording_play` decodes the wav
+  header (channels + sample rate) instead of assuming mono 48 kHz — stereo
+  memos play as stereo through the native shell, and the shells' 16 kHz memos
+  no longer play chipmunked there. The Swift shells play via `AVAudioPlayer`,
+  which honors the header already.
+- Recording (native shell): `media_recording_start` records the catalog's
+  channel count (2ch when the mic is), matching the shells.
 
 ## The real gate: capture hardware + echo cancellation — resolved by routing
 
@@ -143,7 +158,7 @@ mono-ish speaker is harmless.
 | --- | --- | --- |
 | 1 | Stereo transport + render: FFI seam, subscribe, Swift capture/render honoring channels | **landed** (unit tests above) |
 | 2 | Stereo-driven capture: the panel's Stereo toggle picks the layout; stereo + headset = plain tap (no VPIO) at 2 channels; everything else keeps VPIO | **landed** (re-publish on stereo ↔ mono) |
-| 3 | Stereo voice messages + envelope + playback | remaining, ~1 day |
+| 3 | Stereo voice messages + envelope + playback | **landed** |
 
 Bandwidth is a non-issue: Opus stereo speech ≈ 48–64 kbps vs ≈ 24–32 kbps mono
 at the same 20 ms cadence; set `Options::bitrate` explicitly rather than
@@ -152,18 +167,27 @@ libopus's auto default.
 ## Verification
 
 - Unit (landed): `cargo test -p iroh-c-ffi` — `frame_pts_gap_scales_with_channels`,
-  `stereo_wav_header_declares_two_channels`. The panel's radio behavior is
-  covered by the runnable `ios/Checks` + `mac/Checks` `LiveActivityBarCheck`
-  programs (per-mode availability, set/unset intents).
-- E2E (remaining): two instances, L=440 Hz / R=880 Hz test tone, verify channel
-  separation at the far end (the `Automation` marks log channel counts);
-  mixed test: stereo publisher ↔ old mono build; mid-call stereo ↔ mono re-publish.
-- Probe: VPIO with 2-channel input format on iOS and macOS — no longer
-  blocking (the mode-gated design works either way) but decides whether
+  `stereo_wav_header_declares_two_channels`, `wav_format_reads_the_declared_layout`.
+  The panel's radio behavior is covered by the runnable `ios/Checks` +
+  `mac/Checks` `LiveActivityBarCheck` programs (per-mode availability,
+  set/unset intents).
+- Transport E2E (landed, hardware-free): `stereo_tone_roundtrip_keeps_channel_separation`
+  pushes a shell-capture L=440 / R=880 Hz stereo tone through the real MoQ
+  publish → decode path (opus) and asserts each tone stays in its own channel
+  — the tone E2E below minus the devices.
+- Device E2E (remaining): two instances on real hardware, L=440 Hz / R=880 Hz
+  test tone into a stereo input, verify channel separation at the far end (the
+  `Automation` marks log channel counts); mixed test: stereo publisher ↔ old
+  mono build (its downmix is `decode.channels = Some(1)`); mid-call stereo ↔
+  mono re-publish.
+- Probe (remaining): VPIO with 2-channel input format on iOS and macOS — no
+  longer blocking (the mode-gated design works either way) but decides whether
   Bluetooth/speaker routes can ever carry stereo.
 
 ## Rebuild scope (per `docs/build.md`)
 
-`crates/iroh-c-ffi` (dylib before `idfond`), `crates/idfon-live-media` /
-`crates/idfon-media` if touched, then `ios/` and `mac/` apps; the Native SDK
-shell only for the voice-message envelope.
+`crates/iroh-c-ffi` (dylib before `idfond`; after an FFI change regenerate
+`irohnet.h` with `cargo run --features headers --bin generate_headers`),
+`crates/idfon-live-media` / `crates/idfon-media` if touched, then `ios/` and
+`mac/` apps and the Native SDK shell (`native/`: `iroh_ffi.zig` + `core.ts`
+for the voice-message envelope).
