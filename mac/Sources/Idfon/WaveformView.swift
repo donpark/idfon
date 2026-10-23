@@ -713,23 +713,28 @@ final class AudioMeter {
         }
     }
 
-    /// Schedule one decoded remote-call chunk (`AudioPlaybackSink`) on the
-    /// shared engine's playback bus without awaiting: chunks queue back to
-    /// back and must never wait on a previous chunk's completion callback.
-    /// This bus is the AEC reference — remote audio anywhere else cannot be
-    /// echo-cancelled (docs/audio-media.md).
-    static func playStream(_ buffer: AVAudioPCMBuffer) {
+    /// Schedule one decoded remote-call chunk (`AudioPlaybackSink`) or TTS
+    /// stream chunk (`PhononTtsEngine`) on the shared engine's playback bus
+    /// without awaiting: chunks queue back to back and must never wait on a
+    /// previous chunk's completion callback. `completion` fires when the chunk
+    /// has played back (or the bus dropped it). This bus is the AEC reference —
+    /// remote audio anywhere else cannot be echo-cancelled (docs/audio-media.md).
+    static func playStream(_ buffer: AVAudioPCMBuffer, completion: (() -> Void)? = nil) {
         DispatchQueue.main.async {
             guard inputEngine.isRunning else {
                 log("idfon audio meter: stream play dropped engine idle")
+                completion?()
                 return
             }
             guard let converted = convert(buffer, to: playbackPlayer.outputFormat(forBus: 0)) else {
                 log("idfon audio meter: stream play dropped convert failed")
+                completion?()
                 return
             }
             PlaybackBus.notify(converted) // the second ear
-            playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: nil)
+            playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: {
+                completion?()
+            })
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
         }
     }

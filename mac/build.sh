@@ -11,7 +11,12 @@ ROOT="$(cd .. && pwd)"
 
 ./build-deps.sh
 
-swift build -c release
+# Phonon 31m TTS is a build-time option (arm64-only core; picked at runtime
+# with IDFON_TTS=phonon). IDFON_TTS_PHONON=1 selects the ptts package in
+# Package.swift and compiles PhononTtsEngine in.
+extra=()
+if [ "${IDFON_TTS_PHONON:-}" = "1" ]; then extra=(-Xswiftc -DPHONON_TTS); fi
+swift build -c release ${extra[@]+"${extra[@]}"}
 
 APP=build/Idfon.app
 rm -rf "$APP"

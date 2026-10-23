@@ -1,13 +1,18 @@
 import AVFAudio
 import Foundation
 import FluidAudio
+#if PHONON_TTS
+import PhononTTS
+#endif
 
 /// Reply-speech backend for the on-device voice loop.
 ///
 /// Kokoro (FluidAudio, ANE) is the default for English and Apple's
 /// `AVSpeechSynthesizer` is the default for every other system language (and
 /// the offline fallback, and the explicit alternative). Selection:
-/// `IDFON_TTS=kokoro|apple` (env) or `-ttsbackend <name>` (launch arg).
+/// `IDFON_TTS=kokoro|pocket|phonon|apple` (env) or `-ttsbackend <name>`
+/// (launch arg). `phonon` is the Phonon 31m option, only in builds made with
+/// `IDFON_TTS_PHONON=1` (see `PhononTtsEngine`).
 @MainActor
 protocol TtsEngine: AnyObject {
     var name: String { get }
@@ -33,14 +38,27 @@ extension TtsEngine {
 enum TtsBackend: String, CaseIterable {
     case kokoro
     case pocket
+    case phonon
     case apple
 
     var title: String {
         switch self {
         case .kokoro: return "Kokoro (on-device)"
         case .pocket: return "Pocket TTS (on-device)"
+        case .phonon: return "Phonon 31m (on-device)"
         case .apple: return "Apple Built-in"
         }
+    }
+
+    /// Whether this build carries the engine. `phonon` is compile-gated
+    /// (`IDFON_TTS_PHONON=1` at build → `-DPHONON_TTS`); other builds hide it
+    /// from pickers and fall back to Apple when a persisted pick names it.
+    var isBuilt: Bool {
+        #if PHONON_TTS
+        return true
+        #else
+        return self != .phonon
+        #endif
     }
 }
 
@@ -81,6 +99,15 @@ enum SpeechEngines {
         case .apple: return AppleTtsEngine()
         case .kokoro: return KokoroTtsEngine()
         case .pocket: return PocketTtsEngine()
+        case .phonon:
+            #if PHONON_TTS
+            if #available(iOS 18.0, *) { return PhononTtsEngine() }
+            Automation.mark("voice: phonon needs iOS 18+; using apple")
+            return AppleTtsEngine()
+            #else
+            Automation.mark("voice: phonon not built in (IDFON_TTS_PHONON=1 at build); using apple")
+            return AppleTtsEngine()
+            #endif
         }
     }
 
@@ -526,6 +553,319 @@ extension KokoroTtsEngine: AVAudioPlayerDelegate {
         self.player = nil
     }
 }
+
+#if PHONON_TTS
+/// Phonon 31m (gradium via the `ptts` Swift package) — build-time engine
+/// (`IDFON_TTS_PHONON=1` at build, then `IDFON_TTS=phonon` or per-contact).
+/// Models: the Core ML bundle at `Documents/phonon` (side-loaded, or fetched
+/// from `IDFON_PHONON_PACK_URL` — a PhononModels export served whole:
+/// bundle.json + the files it lists). Custom voices are 256KB `.safetensors`
+/// embeddings dropped in `phonon/voices/NAME.safetensors`, picked with
+/// `IDFON_TTS_VOICE=NAME`. Falls back to Apple per-utterance when the models
+/// cannot load. iOS 18+ (the ptts package floor).
+@available(iOS 18.0, *)
+@MainActor
+final class PhononTtsEngine: NSObject, TtsEngine {
+    let name = "phonon"
+    private var phonon: Phonon?
+    private let fallback = AppleTtsEngine()
+    private var prepared = false
+    /// The model load is shared across engine instances: a call builds its own
+    /// engine on top of what the prewarm warmed (KokoroTtsEngine pattern).
+    private static let warmLock = NSLock()
+    private static var warmTask: Task<Phonon?, Never>?
+    private var player: AVAudioPlayer?
+    private var finish: (() -> Void)?
+    private var speakTask: Task<Void, Never>?
+    private var tracker: StreamTracker?
+    /// The call's single playback sink (the recognizer's output bus). Mirrored
+    /// onto the Apple fallback so a phonon failure renders on the same bus.
+    weak var playback: AudioSink? {
+        didSet { fallback.playback = playback }
+    }
+    /// Set by `stop()` so a cancel during synthesis does not start playback.
+    private var stopRequested = false
+    private(set) var lastLatencyMs: Int?
+
+    func prepare() async {
+        if prepared { return }
+        let task = Self.warmLock.withLock { () -> Task<Phonon?, Never> in
+            if let existing = Self.warmTask { return existing }
+            // Explicit result type: multi-statement inference would pick
+            // `Phonon` from the first `return phonon` and reject `return nil`.
+            let created: Task<Phonon?, Never> = Task {
+                Automation.mark("voice: phonon initializing")
+                do {
+                    let models = try await Self.modelsDirectory()
+                    let phonon = try await Phonon.load(models: models, language: .english)
+                    if let voice = Self.env("IDFON_TTS_VOICE") {
+                        do { try await phonon.setVoice(voice) }
+                        catch {
+                            Automation.mark("voice: phonon voice '\(voice)' failed: \(error.localizedDescription)")
+                        }
+                    }
+                    Automation.mark("voice: phonon ready (voice=\(phonon.voice))")
+                    return phonon
+                } catch {
+                    Automation.mark("voice: phonon init failed \(error.localizedDescription)")
+                    return nil
+                }
+            }
+            Self.warmTask = created
+            return created
+        }
+        if let phonon = await task.value {
+            self.phonon = phonon
+            prepared = true
+        }
+    }
+
+    func speak(_ text: String) async {
+        stopRequested = false
+        await prepare()
+        guard prepared, let phonon else {
+            Automation.mark("voice: phonon unavailable, using apple")
+            await fallback.speak(text)
+            return
+        }
+        if let playback {
+            await stream(text, phonon: phonon, playback: playback)
+        } else {
+            await synthesizeWhole(text, phonon: phonon)  // text-only: local player
+        }
+    }
+
+    /// Stream the utterance onto the AEC bus as it generates (80 ms chunks),
+    /// so speech starts before synthesis finishes. Returns when the last chunk
+    /// has played back (or the bus dropped it).
+    private func stream(_ text: String, phonon: Phonon, playback: AudioSink) async {
+        let start = Date()
+        let tracker = StreamTracker()
+        self.tracker = tracker
+        let task = Task {
+            do {
+                try await phonon.speak(text) { chunk in
+                    guard tracker.beginChunk() else { return }  // stopped
+                    tracker.markFirstAudio(ms: Int(-start.timeIntervalSinceNow * 1000))
+                    guard let buffer = Self.buffer(chunk) else {
+                        Automation.mark("voice: phonon chunk encode failed")
+                        tracker.chunkDone()
+                        return
+                    }
+                    playback.playStream(buffer, done: tracker.chunkDone)
+                }
+            } catch {
+                Automation.mark("voice: phonon synth failed \(error.localizedDescription)")
+            }
+            tracker.generatorDone()
+        }
+        speakTask = task
+        await tracker.wait()
+        speakTask = nil
+        self.tracker = nil
+        if let first = tracker.firstAudioMs {
+            lastLatencyMs = first
+            Automation.mark(
+                "voice: phonon first audio \(first)ms chunks=\(tracker.chunks) total=\(Int(Date().timeIntervalSince(start) * 1000))ms")
+        } else if !stopRequested {
+            Automation.mark("voice: phonon generated nothing; using apple")
+            await fallback.speak(text)
+        }
+    }
+
+    /// Whole-clip path for text-only mode (no playback sink): synthesize, then
+    /// play through the local player.
+    private func synthesizeWhole(_ text: String, phonon: Phonon) async {
+        do {
+            let start = Date()
+            let samples = try await phonon.synthesize(text)
+            if stopRequested { return }  // cancelled while synthesizing
+            lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
+            Automation.mark("voice: phonon samples=\(samples.count) in \(lastLatencyMs ?? 0)ms")
+            guard let wav = Self.wav(samples) else {
+                Automation.mark("voice: phonon encode failed; using apple")
+                await fallback.speak(text)
+                return
+            }
+            await play(wav)
+        } catch {
+            Automation.mark("voice: phonon synth failed \(error.localizedDescription); using apple")
+            await fallback.speak(text)
+        }
+    }
+
+    func stop() {
+        stopRequested = true
+        tracker?.stop()
+        speakTask?.cancel()  // stops generation at the next chunk
+        speakTask = nil
+        player?.stop()
+        finish?()
+        finish = nil
+        player = nil
+        playback?.stopPlayback()
+        fallback.stop()
+    }
+
+    private func play(_ wav: Data) async {
+        // Prefer the recognizer's VPIO engine (the AEC reference bus); fall
+        // back to a local player in text-only mode (KokoroTtsEngine shape).
+        if let playback {
+            await playback.play(wav: wav)
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            do {
+                let player = try AVAudioPlayer(data: wav)
+                player.delegate = self
+                finish = { continuation.resume() }
+                self.player = player
+                player.play()
+            } catch {
+                Automation.mark("voice: phonon play failed \(error.localizedDescription)")
+                continuation.resume()
+            }
+        }
+    }
+
+    /// The Core ML bundle at `Documents/phonon`, side-loaded or fetched from
+    /// IDFON_PHONON_PACK_URL (scripts/fetch-phonon-31m.sh builds the layout).
+    private static func modelsDirectory() async throws -> URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("phonon")
+        if let base = env("IDFON_PHONON_PACK_URL"), let url = URL(string: base) {
+            return try await PhononModels.download(from: url, to: dir)
+        }
+        guard PhononModels.isInstalled(at: dir) else {
+            throw PhononError(
+                description: "no phonon models at \(dir.path); side-load the bundle or set IDFON_PHONON_PACK_URL")
+        }
+        return dir
+    }
+
+    /// f32 mono @24kHz -> 16-bit WAV for the playback sink.
+    private static func wav(_ samples: [Float]) -> Data? {
+        var data = Data()
+        let bytes = samples.count * 2
+        data.reserveCapacity(44 + bytes)
+        func ascii(_ s: String) { data.append(contentsOf: s.utf8) }
+        func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
+        func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
+        ascii("RIFF"); u32(UInt32(36 + bytes)); ascii("WAVE")
+        ascii("fmt "); u32(16); u16(1); u16(1)  // PCM, mono
+        u32(UInt32(Phonon.sampleRate)); u32(UInt32(Phonon.sampleRate) * 2)
+        u16(2); u16(16)  // block align, bits per sample
+        ascii("data"); u32(UInt32(bytes))
+        for s in samples {
+            let clamped = max(-1.0, min(1.0, Double(s)))
+            u16(UInt16(bitPattern: Int16(clamped * 32767)))
+        }
+        return data
+    }
+
+    /// f32 mono @24kHz chunk -> buffer for the playback bus.
+    /// nonisolated: called from the generator's audio callback thread.
+    private nonisolated static func buffer(_ samples: [Float]) -> AVAudioPCMBuffer? {
+        guard let format = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32, sampleRate: Phonon.sampleRate, channels: 1,
+                interleaved: false),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))
+        else { return nil }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        samples.withUnsafeBufferPointer { src in
+            guard let base = src.baseAddress, let dst = buffer.floatChannelData?[0] else { return }
+            dst.update(from: base, count: samples.count)
+        }
+        return buffer
+    }
+
+    private static func env(_ key: String) -> String? {
+        guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+/// Tracks a streamed utterance: `wait()` resumes once generation is done and
+/// every scheduled chunk has played back (a bus stop fires the completions
+/// too, so `wait` cannot hang on a barge).
+private final class StreamTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outstanding = 0
+    private var generated = false
+    private var stopped = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var firstAudioMs: Int?
+    private(set) var chunks = 0
+
+    /// Enqueue accounting for one chunk; false once stopped (drop the chunk).
+    func beginChunk() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if stopped { return false }
+        outstanding += 1
+        chunks += 1
+        return true
+    }
+
+    func chunkDone() {
+        lock.lock()
+        outstanding -= 1
+        let done = generated && outstanding <= 0
+        lock.unlock()
+        if done { finish() }
+    }
+
+    func generatorDone() {
+        lock.lock()
+        generated = true
+        let done = outstanding <= 0
+        lock.unlock()
+        if done { finish() }
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        lock.unlock()
+    }
+
+    func markFirstAudio(ms: Int) {
+        lock.lock()
+        if firstAudioMs == nil { firstAudioMs = ms }
+        lock.unlock()
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if generated && outstanding <= 0 {
+                lock.unlock()
+                c.resume()
+            } else {
+                continuation = c
+                lock.unlock()
+            }
+        }
+    }
+
+    private func finish() {
+        lock.lock()
+        let c = continuation
+        continuation = nil
+        lock.unlock()
+        c?.resume()
+    }
+}
+
+@available(iOS 18.0, *)
+extension PhononTtsEngine: AVAudioPlayerDelegate {
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        finish?()
+        finish = nil
+        self.player = nil
+    }
+}
+#endif
 
 // MARK: - Speech recognition
 

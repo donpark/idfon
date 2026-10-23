@@ -1,5 +1,5 @@
 {
-  "originHash" : "807072e7603e111d573dbbad2b7f0f0e895eb2ee8f36210b5327f936f7762344",
+  "originHash" : "cff967394dc55e43538fe94c8a8845a19ebae91d0dc8e968d33b8bc435b013f9",
   "pins" : [
     {
       "identity" : "fluidaudio",
@@ -26,6 +26,15 @@
       "state" : {
         "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
         "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "xn-ptts",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/gradium-ai/xn-ptts.git",
+      "state" : {
+        "branch" : "94f6c08e4a0e198bc9f3eb988535ab207607e334",
+        "revision" : "f07d7952db0c6127d5e4bc3f41c82b3304b6b5aa"
       }
     }
   ],

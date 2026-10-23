@@ -76,7 +76,7 @@ Three tabs, launch into the last used one:
 
 - **Tab bar**: minimal and minimizable on scroll so long lists stay uncluttered
   (P10). The stock minimize-on-scroll behavior (`tabBarMinimizeBehavior`) is
-  iOS 26+; at our iOS 17 deployment target the tab bar is static — do not build
+  iOS 26+; at our iOS 18 deployment target the tab bar is static — do not build
   a custom hiding tab bar (P12).
 - **Filters**: a segmented toggle strip on list screens where useful — initial
   set `All | Favorites | Recents`, extensible with more segments. Favorites and

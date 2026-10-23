@@ -10,6 +10,7 @@
 		4EDE359CCB42920BD36539D5 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */; };
 		4EDE359CCB42920BD36539E1 /* TygerVoice in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9E1 /* TygerVoice */; };
 		4EDE359CCB42920BD36539E2 /* TygerVoiceCoreAI in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9E2 /* TygerVoiceCoreAI */; };
+		4EDE359CCB42920BD36539E3 /* ptts in Frameworks */ = {isa = PBXBuildFile; productRef = FBED5B9B4DCF10AFC62DA9E3 /* ptts */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -69,6 +70,7 @@
 				4EDE359CCB42920BD36539D5 /* FluidAudio in Frameworks */,
 				4EDE359CCB42920BD36539E1 /* TygerVoice in Frameworks */,
 				4EDE359CCB42920BD36539E2 /* TygerVoiceCoreAI in Frameworks */,
+				4EDE359CCB42920BD36539E3 /* ptts in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -123,6 +125,7 @@
 				FBED5B9B4DCF10AFC62DA9D1 /* FluidAudio */,
 				FBED5B9B4DCF10AFC62DA9E1 /* TygerVoice */,
 				FBED5B9B4DCF10AFC62DA9E2 /* TygerVoiceCoreAI */,
+				FBED5B9B4DCF10AFC62DA9E3 /* ptts */,
 			);
 			productName = Idfon;
 			productReference = 1A000001000000000000001A /* Idfon.app */;
@@ -179,6 +182,7 @@
 			packageReferences = (
 				54D511937386577BC39C5690 /* XCRemoteSwiftPackageReference "FluidAudio" */,
 				54D511937386577BC39C56A1 /* XCLocalSwiftPackageReference "tyger-swift" */,
+				54D511937386577BC39C56B1 /* XCRemoteSwiftPackageReference "xn-ptts" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1A000004000000000000004D /* Products */;
@@ -243,7 +247,7 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_TESTABILITY = YES;
 				GCC_OPTIMIZATION_LEVEL = 0;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -259,7 +263,7 @@
 				CLANG_ENABLE_OBJC_ARC = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_VERSION = 5.0;
@@ -377,7 +381,7 @@
 				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = RV27HPQNMF;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 0.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.idfon.ios.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -395,7 +399,7 @@
 				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = RV27HPQNMF;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 0.9.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.idfon.ios.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -446,6 +450,14 @@
 				minimumVersion = 0.17.5;
 			};
 		};
+		54D511937386577BC39C56B1 /* XCRemoteSwiftPackageReference "xn-ptts" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gradium-ai/xn-ptts.git";
+			requirement = {
+				kind = revision;
+				revision = 94f6c08e4a0e198bc9f3eb988535ab207607e334;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -470,6 +482,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 54D511937386577BC39C5690 /* XCRemoteSwiftPackageReference "FluidAudio" */;
 			productName = FluidAudio;
+		};
+		FBED5B9B4DCF10AFC62DA9E3 /* ptts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 54D511937386577BC39C56B1 /* XCRemoteSwiftPackageReference "xn-ptts" */;
+			productName = ptts;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

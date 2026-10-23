@@ -314,6 +314,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if args.contains("-voices") {
             SpeechVoice.dump()
         }
+        if let i = args.firstIndex(of: "-ttssay"), args.count > i + 1 {
+            // Engine smoke: speak one phrase through the selected TTS seam
+            // (IDFON_TTS=...) and exit; markers show latency + the playback path.
+            let text = args[i + 1]
+            Task { @MainActor in
+                await SpeechEngines.tts.speak(text)
+                Automation.mark("voice: tts said")
+                exit(0)
+            }
+        }
     }
 
     private func waitForIncomingCall(video: Bool) {
