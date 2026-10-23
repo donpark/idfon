@@ -296,8 +296,10 @@ the 1s RMS log shows it immediately). The audio-settings volume slider feeds
 
 On macOS the audio is now single-owner on both sides. **Playback**: every
 speaker renders on the shared `AudioMeter` playback bus — remote call audio
-(`playStream`), Kokoro TTS wavs, Apple TTS (`AVSpeechSynthesizer.write`
-buffers), and call tones — so the bus is a complete AEC reference and every
+(`playStream`), Kokoro TTS wavs, Phonon TTS stream chunks (`playStream` with a
+per-chunk completion, so `speak` returns after the last chunk plays), Apple
+TTS (`AVSpeechSynthesizer.write` buffers), and call tones — so the bus is a
+complete AEC reference and every
 source feeds the turn-taker's second ear (`PlaybackBus`). **Input**: one
 `AVAudioEngine` with one VPIO tap fans out to the waveforms and to
 `AudioCaptureObserver` subscribers (`ParakeetReduxAsr`,

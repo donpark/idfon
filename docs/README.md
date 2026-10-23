@@ -14,7 +14,7 @@ kept because it records decisions; **design** = not all implemented.
 | `daemon.md` | why there is a daemon at all; the daemon as packaging of the feature functions | questioning the process model |
 | `protocol.md` | daemon JSON IPC methods/params | adding/changing an RPC or a client |
 | `interaction-parameters.md` | CLI vs GUI responsibility split | where a policy/feature belongs |
-| `build.md` | which subprojects to rebuild after a change; the Rust/FFI target dirs; `pnpm build`/`pnpm voice build` orchestration | touching a shared crate or the c-ffi crate, unsure what needs rebuilding, or building/cleaning everything |
+| `build.md` | which subprojects to rebuild after a change; the Rust/FFI target dirs; `pnpm build`/`pnpm voice build` orchestration; build-time options (`IDFON_TTS_PHONON`) | touching a shared crate or the c-ffi crate, unsure what needs rebuilding, building/cleaning everything, or toggling a build-time option |
 
 ## Platforms and apps
 
@@ -78,7 +78,7 @@ kept because it records decisions; **design** = not all implemented.
 | `voice-prompt-lab.md` | iterate voice-agent prompts headlessly (`scripts/voice-prompt-lab.sh`, scoring + variants) |
 | `reply-blocks.md` | what a reply is: the named block set (`Text`/`Speak`/`Artifact`/`View`/`JsonRender`/`Reference`/`Unparsed`) over the `IDFON-*/1` envelopes, ids and replacement, fail-open parsing, render-spec limits, where each piece lives (as-built) |
 | `voice-multimodal.md` | the voice turn contract: text + `IDFON-*/1` envelopes + attachment; references, camera input (per-contact capability), client-facing tools (`speak`/`point`/`show`) via the outbox, output split, full-duplex gap (design) |
-| `voice-side-channel.md` | shared voice service: requirements, STT/TTS candidates, plan (P0–P7 implemented; A1 client cascade integrated on iOS/macOS — iOS Kokoro/Parakeet seams, call cues, greet-on-connect, `· spoken` chat turns); the text-only `llm` agent and per-run model selection for agency contacts |
+| `voice-side-channel.md` | shared voice service: requirements, STT/TTS candidates, plan (P0–P7 implemented; A1 client cascade integrated on iOS/macOS — iOS Kokoro/Parakeet seams, call cues, greet-on-connect, `· spoken` chat turns); on-device TTS engines (Kokoro default, Pocket + Phonon options); the text-only `llm` agent and per-run model selection for agency contacts |
 | `voice-agent-prompting.md` | source notes on voice-agent prompt engineering: prompt structure, output rules, guardrails, tools, voice realism, testing; idfon use-case implications; frontier-lab voice prompting (research for a future skill) |
 | `voice-multichannel.md` | one result, many channels: modality vs channel, emotes (texturized non-verbal events), call-assist agents, hybrid fan-out, layered authorization, idfon primitives, open decisions (design) |
 | `voice-decisions.md` | decision points in the voice setup, fine-tuned decision models (on-device + remote), per-user training data, authority and guardrails (design) |

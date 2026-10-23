@@ -308,7 +308,7 @@ final class PersonViewController: NSViewController {
     private func choices(for slot: SpeechSlot) -> [SpeechChoice] {
         let onDevice: [SpeechChoice] = slot == .recognition
             ? AsrBackend.allCases.map { SpeechChoice(store: .onDevice, id: $0.rawValue, title: $0.title) }
-            : TtsBackend.allCases.map { SpeechChoice(store: .onDevice, id: $0.rawValue, title: $0.title) }
+            : TtsBackend.allCases.filter { $0.isBuilt }.map { SpeechChoice(store: .onDevice, id: $0.rawValue, title: $0.title) }
         guard agent == nil else { return onDevice }
         let kind: VoiceOption.Kind = slot == .recognition ? .stt : .tts
         let advertised = voiceCatalog

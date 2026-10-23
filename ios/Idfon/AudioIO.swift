@@ -32,8 +32,18 @@ protocol AudioSink: AnyObject {
     func play(_ buffer: AVAudioPCMBuffer) async
     /// Play a buffer on repeat until `stopPlayback` (call cues).
     func playLooping(_ buffer: AVAudioPCMBuffer)
+    /// Schedule one stream chunk without awaiting (chunks queue back to back);
+    /// `done` fires when the chunk has played back or the bus dropped it.
+    func playStream(_ buffer: AVAudioPCMBuffer, done: (() -> Void)?)
     /// Stop whatever is playing and release any waiting `play` call.
     func stopPlayback()
+}
+
+extension AudioSink {
+    /// Sinks without a streaming queue: play one-shot, then notify.
+    func playStream(_ buffer: AVAudioPCMBuffer, done: (() -> Void)?) {
+        Task { await play(buffer); done?() }
+    }
 }
 
 /// The app's single microphone source and single playback sink.
@@ -619,23 +629,28 @@ final class AudioIO: AudioSource, AudioSink {
     }
 
     /// Schedule one stream chunk (remote call audio from the media playback
-    /// callback) without awaiting: chunks queue back to back on the playback
-    /// bus and must never wait on a previous chunk's completion callback.
-    /// This bus is the AEC reference — remote audio anywhere else cannot be
-    /// echo-cancelled (docs/audio-media.md).
-    func playStream(_ buffer: AVAudioPCMBuffer) {
+    /// callback, or a TTS stream chunk) without awaiting: chunks queue back to
+    /// back on the playback bus and must never wait on a previous chunk's
+    /// completion callback. `done` fires when the chunk has played back (or a
+    /// bus stop dropped it). This bus is the AEC reference — remote audio
+    /// anywhere else cannot be echo-cancelled (docs/audio-media.md).
+    func playStream(_ buffer: AVAudioPCMBuffer, done: (() -> Void)? = nil) {
         runOnAudio { [self] in
             guard running else {
                 Automation.mark("audio: stream play dropped engine idle")
+                done?()
                 return
             }
             guard let converted = Self.convert(buffer, to: playbackPlayer.outputFormat(forBus: 0))
             else {
                 Automation.mark("audio: stream play dropped convert failed")
+                done?()
                 return
             }
             fanOutPlayback(converted) // the second ear
-            playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: nil)
+            playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: {
+                done?()
+            })
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
         }
     }

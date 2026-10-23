@@ -599,6 +599,20 @@ explicit choice still wins; the language gate only sets the default.
   documents an uncatchable iOS 27 Core ML crash after ≈1 h cumulative
   synthesis (short calls are fine); the escape hatch is Chatterbox Nano or
   Kokoro ONNX.
+- **TTS (build-time option)** — `PhononTtsEngine` (gradium phonon-31m, 24 kHz
+  streaming; `ptts`/xn-ptts runtime, not FluidAudio) is compiled in only when
+  the build sets `IDFON_TTS_PHONON=1` (mac: selects the package in
+  `mac/Package.swift` + `-DPHONON_TTS`; iOS: `SWIFT_ACTIVE_COMPILATION_CONDITIONS`
+  in `ios/build.sh`, the `ptts` product is referenced either way and stripped
+  when unused). Selected like any backend (`IDFON_TTS=phonon`, per-contact);
+  models via `scripts/fetch-phonon-31m.sh` (or `IDFON_PHONON_PACK_URL`);
+  custom voices are 256KB `.safetensors` embeddings in `voices/NAME.safetensors`
+  (`IDFON_TTS_VOICE=NAME`). iOS 18+/macOS 15+ only. Playback streams 80 ms
+  chunks through the AEC bus as they generate (first audio ≈ 5 ms in the mac
+  smoke: `IDFON_TTS=phonon Idfon -ttssay "…"`); iOS keeps whole-clip synthesis
+  for text-only mode. Voice *creation* runs
+  through Gradium's clone/download scripts (API key) — provider detail, not a
+  launch dependency.
 - **ASR** — `ParakeetAsr` (moondream/parakeet-redux, ANE) is the English
   default; `AppleSpeechTranscriber` (SpeechAnalyzer, iOS 26+, system locale)
   is the default for other languages and the runtime fallback when Parakeet
