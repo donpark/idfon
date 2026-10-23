@@ -324,6 +324,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(0)
             }
         }
+        if let i = args.firstIndex(of: "-tygerab"), args.count > i + 1 {
+            // Scripted turn-taker A/B run (see TygerAB): `kokoro|phonon`.
+            TygerAB.run(engine: args[i + 1])
+        }
     }
 
     private func waitForIncomingCall(video: Bool) {

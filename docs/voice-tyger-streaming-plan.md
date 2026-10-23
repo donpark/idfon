@@ -1,0 +1,107 @@
+# Tyger streaming-pair transition plan
+
+> Status: **plan** (2026-10-22, session-close deliverable). Goal: the full-streaming
+> ASR + TTS stack Tyger's turn model was calibrated on, replacing the current
+> whole-clip/batch pairing. After this: stereo calls (higher priority than
+> agent voice quality).
+
+## Why (the evidence from 2026-10-22)
+
+Tyger's model (`nineninesix/tyger`, per docs/voice-tyger.md) is calibrated on a
+**causal, streaming loop on both ends**:
+
+- Input: two aligned mono 16 kHz streams — caller's mic **and the agent's
+  playback**; Nemotron L15 features (1,024 dims), 1 frame / 80 ms, no lookahead;
+  320 ms decision hops; the app's LISTEN/SPEAK state fed as model state.
+- Their mouth (`app/plugins/tts/voxcpm2.py`): streaming TTS, **one request per
+  text chunk** (the LLM token stream is chunked with a `sentence` first-chunk
+  rule), audio yielded per decode step.
+
+Our A/B run 1 (`-tygerab kokoro|phonon`, scripted user audio + fixed reply,
+real two-channel `TurnShadow`, `ParakeetStudentTurnModel` tier): the first
+decision was **identical** across engines (user-channel-driven) while the later
+decisions **diverged exactly in the window where the second ears differ**
+(backchannel cadence: 3 events under whole-clip Kokoro vs 2 under streaming
+Phonon). Timing gap confirmed huge: Kokoro `wav … in 780ms` (whole clip) vs
+Phonon `first audio 6ms`. n=1, supportive — run 2 (fixed reply-start, N=3 per
+engine) is the pre/post comparison tool.
+
+Verdicts that shape the plan: BWE **dropped** (listening test: "differences but
+can't say one is better"); VoxCPM2 **not a candidate** (slower than real-time;
+its 48 kHz output is a calibration note, not a requirement); Pocket TTS
+cloning-optional only.
+
+## The three streaming legs
+
+| Leg | Today | Target |
+| --- | --- | --- |
+| 1. ASR + features | Parakeet Redux (batch/re-encode) + path-C student heads on Parakeet features (~49% parity, shadow/fail-open, CPU/BNNS encode = the hangup watchdog root cause) | Nemotron **Speech Streaming** encoder, incremental (cache-aware, ~1× RT), L15 tap feeding the heads natively |
+| 2. Agent text → TTS | `speak(fullText)` after the reply arrives complete | chunked speak (sentence first-chunk rule) over the LLM token stream, as the agent generates |
+| 3. TTS → playback | **DONE**: Phonon streaming-through-the-bus (5–6 ms first audio, chunk-cancel barge, custom voices 256KB; `IDFON_TTS_PHONON=1`) | keep; Phonon is the tyger-mode mouth |
+
+## Phases
+
+### Phase 1 — text-streaming seam (small, independent of ASR)
+
+- Chunk the agent reply stream at sentence boundaries (their `first_chunk`
+  rule) and speak chunks as they arrive via Phonon's stream path.
+- Needs: the holder/live-relay reply to arrive as deltas (verify — today's
+  `reply_ms` timing suggests whole-reply), and `TtsEngine` a chunked speak
+  (or one `speak` per chunk over the bus, already supported).
+- Gate: endpoint→first-audio measured in `live-relay` turn-timing logs.
+
+### Phase 2 — streaming ASR + L15 tap (the big one)
+
+- Spike first: FluidAudio's `StreamingNemotronAsrManager` streams incrementally
+  (`appendAudio`/`process`/partial callbacks) but its public API exposes
+  **text + token timings only — no L15 embedding tap**. Options:
+  1. thin raw-encoder runner over the CoreML Nemotron encoder bundle (the
+     Parakeet-tap pattern in `ParakeetStudentTurnModel`),
+  2. upstream a feature tap into FluidAudio,
+  3. reuse the tyger-models `front→L15` encoder tier (pack format exists).
+- Compute gate: encoder at 1× RT on iPhone ANE, measured (their pipeline
+  re-encodes 8 s windows per hop ≈ 50× RT — GPU-class; incremental is the
+  whole feasibility story; drift is the risk).
+- Drift gate: incremental-vs-re-encode decision agreement through the
+  parity6/parity7-style harness, ≥99% bar — and the CoreML fp16 same-feature
+  tier must clear it too (measured 95.9% at long horizon; MLX 99.5%; fix = the
+  mixed-precision exemption pattern in `coreml-ane-precision`).
+- Budget decision (user): L15-only tier ~378 MB vs coreai fp16 ~765 MB; note
+  Nemotron streaming replaces Parakeet Redux (219 MB) as the call ASR —
+  transcripts come free from the same stream.
+
+### Phase 3 — the tyger experience (integration)
+
+- `TurnTakerSetting.tyger` selects the streaming pair (Nemotron streaming ASR +
+  Phonon); guard: warn/upgrade when a non-streaming mouth is selected.
+- BACKCHANNEL hook live: a "mm-hm" that never enters history or the second
+  ear, 1.2 s gap rule (today: decided+logged only).
+- Barge with `onset_s` history trim; app LISTEN/SPEAK state continues to feed
+  the model (never its own guess).
+- Shadow → authoritative per the swap-over convention (decision-log diff gate).
+
+### Phase 4 — verification
+
+- `-tygerab` run 2: fixed reply-start, N=3 per engine, backchannel-cadence
+  scoring (pre/post comparison).
+- Device pass on iPhone: call E2E with the streaming pair, watchdog watch
+  (the CPU/BNNS encode backlog was the 2026-10-22 kill), latency budget:
+
+| step | target |
+| --- | --- |
+| user stops → endpoint decision | ≤ ~0.6–0.9 s (320 ms hop + debounce) |
+| endpoint → first text chunk | agent-side (LLM streaming) |
+| text chunk → first audio | ≤ ~50 ms (Phonon: 6 ms) |
+| **turn total to first audio** | **≤ ~1.5 s** (vs 3–7.5 s today) |
+
+## Decisions parked with the user
+
+1. Download tier for the encoder (378 vs 765 MB) against the ~550 MB ruling.
+2. Nemotron streaming replaces Parakeet Redux as the call ASR (recommend: yes).
+3. The ≥99% parity bar (keep; relax only if mixed-precision cannot clear it).
+
+## Explicitly out
+
+BWE/upsampling (dropped on the listening verdict), VoxCPM2 (slower than
+real-time), Pocket TTS (cloning-optional), 48 kHz playback (calibration note
+only).
