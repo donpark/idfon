@@ -50,15 +50,51 @@ cloning-optional only.
   (or one `speak` per chunk over the bus, already supported).
 - Gate: endpoint→first-audio measured in `live-relay` turn-timing logs.
 
-### Phase 2 — streaming ASR + L15 tap (the big one)
+### Phase 2 — streaming ASR + feature tap (the big one)
 
-- Spike first: FluidAudio's `StreamingNemotronAsrManager` streams incrementally
+The family is wider than Nemotron: the Parakeet line has native **streaming**
+variants — EOU 120M (160/320/1280 ms chunks, plus an end-of-utterance head)
+and Unified 0.6B streaming — while Redux, today's call ASR, is the **batch**
+one we picked for accuracy/size, not because Parakeet lacks streaming. And
+both families' CoreML bundles ship standalone preprocessor + encoder
+artifacts (verified 2026-10-22: EOU = `streaming_encoder.mlmodelc` +
+`parakeet_eou_preprocessor.mlmodelc`; Nemotron = `nemotron_coreml_<tier>/
+encoder` + `preprocessor.mlmodelc`), so the `ParakeetStudentTurnModel` tap
+pattern applies to both.
+
+| candidate | feature tap | heads | size class | the unknown |
+| --- | --- | --- | --- | --- |
+| A. Nemotron Speech Streaming 0.6B | encoder bundle (mid-layer L15 cut — the tyger-models `front→L15` pack proves the cut is derivable) | **native** (fp16 95.9% / MLX 99.5%) | ~378–765 MB | L15 cut on the streaming graph |
+| B. Parakeet EOU 120M (streaming) | `streaming_encoder` output per chunk | student heads retrained on these features | 120M-class | **parity** — and whether causal/streaming features beat the batch-Redux ones the ~49% student saw |
+| C. status quo: Redux batch + student | `Encoder.mlmodelc` (shipping) | student | 183 MB | 49% parity + CPU/BNNS encode |
+
+**The key question (user, 2026-10-22): can a streaming Parakeet variant be
+TAPPED to drive the tyger models?** Decomposed:
+
+1. *Tap* — almost certainly yes at encoder-output granularity (bundles above);
+   the open detail is mid-layer access: the OG heads read Nemotron **L15**,
+   not the encoder output. Verify per candidate in the spike.
+2. *Feature space* — only Nemotron L15 drives the **existing** heads. Any
+   Parakeet tap is the distillation route (path-C), where the 14M heads must
+   be retrained on those features. Hypothesis worth testing: streaming/causal
+   features suit the heads better than batch-re-encoded ones (the heads were
+   trained on no-lookahead inputs) and could beat the ~49%. Empirical gate:
+   label-trained heads on streaming-Parakeet features, scored on tyger-eval
+   metrics (the option from the path-C follow-ups).
+
+B's bonus if it wins: the EOU head is native endpointing, and 120M-class fits
+the download budget far better than 0.6B. A wins by construction on parity
+(native features) — it is the safe path if B's distillation misses.
+
+- Spike (A): FluidAudio's `StreamingNemotronAsrManager` streams incrementally
   (`appendAudio`/`process`/partial callbacks) but its public API exposes
   **text + token timings only — no L15 embedding tap**. Options:
   1. thin raw-encoder runner over the CoreML Nemotron encoder bundle (the
      Parakeet-tap pattern in `ParakeetStudentTurnModel`),
   2. upstream a feature tap into FluidAudio,
   3. reuse the tyger-models `front→L15` encoder tier (pack format exists).
+- Spike (B): same pattern over `streaming_encoder.mlmodelc`; then the
+  retrain-and-gate loop.
 - Compute gate: encoder at 1× RT on iPhone ANE, measured (their pipeline
   re-encodes 8 s windows per hop ≈ 50× RT — GPU-class; incremental is the
   whole feasibility story; drift is the risk).
@@ -99,6 +135,8 @@ cloning-optional only.
 1. Download tier for the encoder (378 vs 765 MB) against the ~550 MB ruling.
 2. Nemotron streaming replaces Parakeet Redux as the call ASR (recommend: yes).
 3. The ≥99% parity bar (keep; relax only if mixed-precision cannot clear it).
+4. Candidate A (native features, heavy) vs B (streaming Parakeet + retrained
+   heads, light) — resolve after the two spikes report.
 
 ## Explicitly out
 
