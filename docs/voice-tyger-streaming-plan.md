@@ -52,6 +52,12 @@ cloning-optional only.
 
 ### Phase 2 — streaming ASR + feature tap (the big one)
 
+**Decision (user, 2026-10-22): candidate A** (Nemotron Speech Streaming +
+native L15) **is the path; candidate B stays as the backup and future
+research** (the distillation question — causal vs batch features — remains
+interesting independent of A's outcome; spike B only if A fails its gates or
+later as research).
+
 The family is wider than Nemotron: the Parakeet line has native **streaming**
 variants — EOU 120M (160/320/1280 ms chunks, plus an end-of-utterance head)
 and Unified 0.6B streaming — while Redux, today's call ASR, is the **batch**
@@ -133,10 +139,13 @@ the download budget far better than 0.6B. A wins by construction on parity
 ## Decisions parked with the user
 
 1. Download tier for the encoder (378 vs 765 MB) against the ~550 MB ruling.
-2. Nemotron streaming replaces Parakeet Redux as the call ASR (recommend: yes).
+2. Nemotron streaming replaces Parakeet Redux as the call ASR (recommend: yes;
+   follows from candidate A).
 3. The ≥99% parity bar (keep; relax only if mixed-precision cannot clear it).
-4. Candidate A (native features, heavy) vs B (streaming Parakeet + retrained
-   heads, light) — resolve after the two spikes report.
+
+Decided 2026-10-22: candidate **A** (Nemotron + native L15) is the path;
+candidate **B** (streaming Parakeet + retrained heads) = backup + future
+research.
 
 ## Explicitly out
 
