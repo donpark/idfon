@@ -108,9 +108,22 @@ the download budget far better than 0.6B. A wins by construction on parity
   parity6/parity7-style harness, ≥99% bar — and the CoreML fp16 same-feature
   tier must clear it too (measured 95.9% at long horizon; MLX 99.5%; fix = the
   mixed-precision exemption pattern in `coreml-ane-precision`).
-- Budget decision (user): L15-only tier ~378 MB vs coreai fp16 ~765 MB; note
-  Nemotron streaming replaces Parakeet Redux (219 MB) as the call ASR —
-  transcripts come free from the same stream.
+- Download size (measured 2026-10-22 in the shipped bundle): the 560 ms tier
+  is `encoder/encoder_int8.mlmodelc` = **590 MB** (already int8) +
+  decoder/joint/preprocessor ≈ 36 MB. Levers, in ROI order:
+  1. **Truncate at L15** — the heads read L15 only (378M of the 652M params),
+     so the tyger path never pays for the rest of the encoder (~378 MB int8).
+  2. **Swap, not add** — Nemotron streaming becomes the call ASR too (drops
+     Parakeet Redux 219 MB; the decoder/joint ~36 MB covers transcripts).
+  3. **Quantize below int8** — the Redux existence proof: a 0.6B
+     FastConformer at 2-bit ternary = 183 MB total. A quantization-aware
+     retrain of the L15 slice is the big lever (~100–150 MB territory).
+  4. **Packaging** — ship `.mlmodelc`, strip the `.mlpackage` copies (the
+     Kokoro-pack lesson: no compiled-copy duplication).
+- Budget check vs the ~550 MB ruling: swap + L15-trunc **int8** ≈
+  32 (app) + 378 + 36 + 56 (heads) + 95 (Kokoro) ≈ **597 MB — over**; with
+  lever 3 (2-bit) ≈ **~340 MB — under**. So the size question is not which
+  model (that is decided: A) but the quantization tier.
 
 ### Phase 3 — the tyger experience (integration)
 
@@ -138,7 +151,10 @@ the download budget far better than 0.6B. A wins by construction on parity
 
 ## Decisions parked with the user
 
-1. Download tier for the encoder (378 vs 765 MB) against the ~550 MB ruling.
+1. The quantization tier for the Nemotron L15 slice: int8 (378 MB, total
+   ≈597 MB — over the ~550 MB ruling) vs 2-bit/ternary Redux-style retrain
+   (~100–150 MB, total ≈340 MB — under). Lever 1/2/4 are no-brainers; this is
+   the one call that closes the budget.
 2. Nemotron streaming replaces Parakeet Redux as the call ASR (recommend: yes;
    follows from candidate A).
 3. The ≥99% parity bar (keep; relax only if mixed-precision cannot clear it).
