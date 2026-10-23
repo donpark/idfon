@@ -104,6 +104,7 @@ enum TygerAB {
 
     /// Feed samples paced at wall-clock rate so the shadow's 320 ms hops pair
     /// 1:1 like they do off the live tap.
+    @MainActor
     private static func feed(
         _ samples: [Float], rate: Double, shadow: TurnShadow,
         mark: (String) -> Void
