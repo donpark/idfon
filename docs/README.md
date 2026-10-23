@@ -60,7 +60,7 @@ kept because it records decisions; **design** = not all implemented.
 | --- | --- |
 | `audio-media.md` | audio capture/playback status; the single in-app audio owner (`AudioIO`: one mic tap + one playback bus, one session), the capture-ownership rule; macOS echo reference (call audio on `AudioMeter`'s engine + voice processing, `IDFON_MACOS_AEC`) |
 | `video-media.md` | video capture/encode status |
-| `stereo-calls.md` | stereo (2-channel) calls: why phone infra can't retrofit them, the FFI/Swift plumbing and the panel's media row (Built-in/Earphone/Speaker/Mute radio + Stereo toggle) — as-built; voice messages remain |
+| `stereo-calls.md` | stereo (2-channel) calls: why phone infra can't retrofit them, the FFI/Swift plumbing and the panel's media row (Built-in/Earphone/Speaker/Mute radio + Stereo toggle) + stereo voice messages — as-built end to end; the device E2E pass remains |
 | `media-adapter-seam.md` | `video-frame.jpg` polling, seams, bundled playback / shell playback callback |
 
 ## Artifacts and agents

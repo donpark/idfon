@@ -65,6 +65,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private var memo: VoiceMemo?
     private var memoURL: URL?
     private var memoDuration: TimeInterval = 0
+    private var memoChannels: Int = 1
     private var memoStartDate = Date()
     private var memoTimer: Timer?
     private var memoMeter: AudioMeter?
@@ -1590,6 +1591,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 self.memo = memo
                 self.memoStartDate = Date()
                 self.memoURL = nil
+                self.memoChannels = 1
                 self.composerMode = .memoRecording
                 self.rebuildComposer()
                 // VoiceMemo meters into the live waveform; this timer only
@@ -1615,6 +1617,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         self.memo = nil
         memoURL = result.url
         memoDuration = result.duration
+        memoChannels = result.channels
         composerMode = .memoReview(url: result.url)
         rebuildComposer()
     }
@@ -1652,6 +1655,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         callMemo = nil
         memoURL = nil
         memoDuration = 0
+        memoChannels = 1
         composerMode = .normal
         rebuildComposer()
     }
@@ -1659,18 +1663,20 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc private func sendMemoTapped() {
         guard let url = memoURL else { return }
         let durationMs = Int(memoDuration * 1000)
+        let channels = memoChannels
         player?.stop()
         progressTimer?.invalidate()
         memo = nil
         callMemo = nil
         memoURL = nil
         memoDuration = 0
+        memoChannels = 1
         composerMode = .normal
         rebuildComposer()
-        Task { await sendRecording(fileURL: url, durationMs: durationMs, codec: "pcm", sampleRate: "16000") }
+        Task { await sendRecording(fileURL: url, durationMs: durationMs, codec: "pcm", sampleRate: "16000", channels: channels) }
     }
 
-    private func sendRecording(fileURL: URL, durationMs: Int, codec: String, sampleRate: String) async {
+    private func sendRecording(fileURL: URL, durationMs: Int, codec: String, sampleRate: String, channels: Int) async {
         // An app-local agent has no audio path: it cannot hear a memo, and the
         // upload would be sent to a peer that does not exist.
         guard OnDeviceAgents.shared.agent(forPeerId: peer.id) == nil else {
@@ -1688,6 +1694,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             IDFON-RECORDING/1
             id=\(UUID().uuidString)
             codec=\(codec)
+            channels=\(channels)
             sample_rate=\(sampleRate)
             duration_ms=\(durationMs)
             sender_id=\(store.selfPeerId)
@@ -1728,6 +1735,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             callRecordingActive = false
             memoURL = result.url
             memoDuration = result.duration
+            memoChannels = result.channels
             composerMode = .memoReview(url: result.url)
             rebuildComposer()
             return
@@ -1830,6 +1838,7 @@ extension ChatViewController: CallStateObserver {
             callRecordingActive = false
             memoURL = result.url
             memoDuration = result.duration
+            memoChannels = result.channels
             composerMode = .memoReview(url: result.url)
             rebuildComposer()
         }

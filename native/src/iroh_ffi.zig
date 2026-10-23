@@ -401,12 +401,18 @@ fn mediaAudioWorker(job: *Job) void {
         defer ffi.rust_free_string(ticket);
         const text = std.mem.span(ticket);
         if (text.len == 0) self.complete(job.key, false, "recording_store_failed") else {
+            // Payload: "<seconds>\n<ticket>\n<channels>" — the envelope's
+            // duration and channels= lines are derived from the recording.
             var result: [max_result]u8 = undefined;
             const duration = std.fmt.bufPrint(&result, "{d}", .{(ffi.media_recording_duration_ms() + 500) / 1000}) catch { self.complete(job.key, false, "recording_store_failed"); return; };
-            if (duration.len + 1 + text.len > result.len) { self.complete(job.key, false, "recording_store_failed"); return; }
+            var tail: [8]u8 = undefined;
+            const channels = std.fmt.bufPrint(&tail, "{d}", .{ffi.media_recording_channels()}) catch unreachable;
+            if (duration.len + 1 + text.len + 1 + channels.len > result.len) { self.complete(job.key, false, "recording_store_failed"); return; }
             result[duration.len] = 10;
             @memcpy(result[duration.len + 1 ..][0..text.len], text);
-            self.complete(job.key, true, result[0 .. duration.len + 1 + text.len]);
+            result[duration.len + 1 + text.len] = 10;
+            @memcpy(result[duration.len + 2 + text.len ..][0..channels.len], channels);
+            self.complete(job.key, true, result[0 .. duration.len + 2 + text.len + channels.len]);
         }
     } else if (std.mem.eql(u8, name, "media.video.start")) {
         var ticket: [max_payload + 1]u8 = undefined;

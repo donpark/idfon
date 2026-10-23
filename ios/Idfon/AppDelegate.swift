@@ -227,6 +227,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                             IDFON-RECORDING/1
                             id=\(UUID().uuidString)
                             codec=pcm
+                            channels=\(result.channels)
                             sample_rate=16000
                             duration_ms=\(Int(result.duration * 1000))
                             sender_id=ios-sim

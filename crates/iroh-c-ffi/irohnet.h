@@ -747,6 +747,10 @@ uint8_t
 media_audio_active (void);
 
 /** <No documentation available> */
+void
+media_audio_clear_playback_cb (void);
+
+/** <No documentation available> */
 size_t
 media_audio_input_count (void);
 
@@ -759,7 +763,12 @@ size_t
 media_audio_probe (
     uint64_t _duration_ms);
 
-/** <No documentation available> */
+/** \brief
+ *  Stereo-aware push: `frames` frames of `channels` interleaved f32 samples.
+ *  The channel count must match the live publisher's
+ *  (`media_live_start_with_profile`); mismatched pushes are dropped so a mono
+ *  meter cannot corrupt a stereo call's channel alignment.
+ */
 void
 media_audio_push_frames (
     float const * pcm,
@@ -776,6 +785,20 @@ media_audio_push_samples (
 uint8_t
 media_audio_set_bitrate (
     uint32_t bitrate);
+
+/** \brief
+ *  Register a shell audio renderer before `media_live_subscribe`.
+ *
+ *  The callback runs on the seam's pacing thread and is handed a borrowed
+ *  interleaved f32 PCM buffer valid only for the duration of the call; copy
+ *  before returning. Frames are paced through `seam::PacedPlayback`'s jitter
+ *  buffer, so `pts_us` is always 0 (in-order playout carries no per-frame
+ *  clock).
+ */
+uint8_t
+media_audio_set_playback_cb (
+    void const * ctx,
+    void (*cb)(void const *, uint8_t const *, size_t, uint32_t, uint32_t, uint64_t));
 
 /** <No documentation available> */
 uint8_t
@@ -877,6 +900,13 @@ media_live_subscribe (
 /** <No documentation available> */
 void
 media_live_unsubscribe (void);
+
+/** \brief
+ *  Channel count the local recording's WAV header declares (1 when there is
+ *  no readable recording) — the voice-message envelope's `channels=` line.
+ */
+uint32_t
+media_recording_channels (void);
 
 /** <No documentation available> */
 uint64_t

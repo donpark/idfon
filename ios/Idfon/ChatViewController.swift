@@ -334,6 +334,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var memo: VoiceMemo?
     private var memoURL: URL?
     private var memoDuration: TimeInterval = 0
+    private var memoChannels: Int = 1
     private var memoStartDate = Date()
     private var memoTimer: Timer?
     private let reviewWaveform = LiveWaveformView(frame: .zero)
@@ -544,6 +545,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             memo?.discard()
             memo = nil
             memoURL = nil
+            memoChannels = 1
             mode = .normal
         }
     }
@@ -1053,6 +1055,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         memoTimer?.invalidate()
         memoURL = result.url
         memoDuration = result.duration
+        memoChannels = result.channels
         memo = nil
         mode = .review
         reviewWaveform.style = .playback
@@ -1071,6 +1074,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         memo = nil
         if let url = memoURL { try? FileManager.default.removeItem(at: url) }
         memoURL = nil
+        memoChannels = 1
         reviewPlayer?.stop()
         reviewPlayer = nil
         mode = .normal
@@ -1130,6 +1134,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 IDFON-RECORDING/1
                 id=\(UUID().uuidString)
                 codec=pcm
+                channels=\(memoChannels)
                 sample_rate=16000
                 duration_ms=\(durationMs)
                 sender_id=\(ChatStore.shared.selfPeerId)
@@ -1154,6 +1159,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 try? FileManager.default.removeItem(at: url)
                 TransferCenter.shared.finish(id: transferId)
                 self.memoURL = nil
+                self.memoChannels = 1
                 self.reviewPlayer = nil
                 self.mode = .normal
                 self.showCallStatus(nil)
