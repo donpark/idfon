@@ -27,7 +27,8 @@ the benefit with no setup at all.
 3. Mono peers keep working unchanged in both directions.
 4. **Stereo is a per-call, sender-side choice** (the 2026-10-22 decision): the
    live panel's media row — a radio group **Built-in / Earphone / Speaker /
-   Mute** plus a **Stereo** toggle — picks the call's audio state; Stereo sends
+   Mute** plus a **Stereo** toggle (SF Symbol `person.spatialaudio.stereo.fill`)
+   — picks the call's audio state; Stereo sends
    the 2-channel stream. The buttons are offered per contact (user preference ∩
    what the contact is willing to make available), never gated on the hardware
    that happens to be plugged in (the earphone route is assumed available).

@@ -219,7 +219,7 @@ final class LiveActivityBar: UIView {
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
             button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         }
-        control(stereoButton, "waveform", "Stereo", #selector(stereoTapped))
+        control(stereoButton, "person.spatialaudio.stereo.fill", "Stereo", #selector(stereoTapped))
         control(camButton, "video.slash.fill", "Camera", #selector(camTapped))
         buildAudioGroup()
         control(declineButton, "phone.down.fill", "Decline", #selector(declineTapped))
@@ -359,7 +359,7 @@ final class LiveActivityBar: UIView {
         audioGroup.isHidden = compact || !togglesActive || !model.audioAvailable || model.audioModes.isEmpty
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
         stereoButton.isHidden = compact || !togglesActive || !model.audioAvailable
-        stereoButton.configuration?.image = UIImage(systemName: "waveform")
+        stereoButton.configuration?.image = UIImage(systemName: "person.spatialaudio.stereo.fill")
         stereoButton.configuration?.baseForegroundColor = model.stereo ? .tintColor : .secondaryLabel
         stereoButton.accessibilityValue = model.stereo ? "on" : "off"
         for (mode, button) in audioModeButtons {

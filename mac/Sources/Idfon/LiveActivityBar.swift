@@ -181,7 +181,7 @@ final class LiveActivityBar: NSView {
         titleStack.spacing = 0
 
         buildAudioGroup()
-        configure(stereoButton, symbol: "waveform", id: "stereo", label: "Stereo", action: #selector(stereoTapped))
+        configure(stereoButton, symbol: "person.spatialaudio.stereo.fill", id: "stereo", label: "Stereo", action: #selector(stereoTapped))
         configure(camButton, symbol: "video.slash.fill", id: "cam", label: "Camera", action: #selector(camTapped))
         configure(declineButton, symbol: "phone.down.fill", id: "decline", label: "Decline", action: #selector(declineTapped))
         configure(answerButton, symbol: "phone.fill", id: "answer", label: "Answer", action: #selector(answerTapped))
@@ -335,7 +335,7 @@ final class LiveActivityBar: NSView {
         audioGroup.isHidden = compact || !togglesActive || !model.audioAvailable || model.audioModes.isEmpty
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
         stereoButton.isHidden = compact || !togglesActive || !model.audioAvailable
-        stereoButton.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Stereo")
+        stereoButton.image = NSImage(systemSymbolName: "person.spatialaudio.stereo.fill", accessibilityDescription: "Stereo")
         stereoButton.contentTintColor = model.stereo ? .controlAccentColor : .secondaryLabelColor
         stereoButton.setAccessibilityValue(model.stereo ? "on" : "off")
         for (mode, button) in audioModeButtons {
