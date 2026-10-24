@@ -1,11 +1,17 @@
 packages:
+  - 'agents/*'
   - 'native'
   - 'ios'
   - 'mac'
   - 'cli'
   - 'integrations/eve-idfon'
   - 'integrations/eve-idfon-voice'
+  - 'deploy/cloudflare'
   
 allowBuilds:
   onnxruntime-node: true
   scriptc: true
+  esbuild: true
+  workerd: true
+  '@mongodb-js/zstd': true
+  node-liblzma: true

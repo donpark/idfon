@@ -70,7 +70,7 @@ command fails with `iroh-c-ffi dylib ... missing`.
 
 | Command | Entry | Produces |
 | --- | --- | --- |
-| `pnpm build` | `scripts/build.sh` | everything host-side for the daemons/agents: voice stack → `idfond` + `idfon-cli` → `pnpm eve build` |
+| `pnpm build` | `scripts/build.sh` | everything host-side for the daemons/agents: voice stack → `scripts/build-cli.sh` (daemon + CLI + `cli/<platform>/bin/`) → `pnpm eve build` |
 | `pnpm clean` | `scripts/build.sh clean` | every package's clean + agent bundles + the voice crates' cargo artifacts |
 | `pnpm voice build` / `pnpm voice clean` | `scripts/voice.sh` | the voice stack alone: iroh dylib + `eve-idfon-voice` (signed) + `agents/voice` bundle |
 | `pnpm cli build [TARGET]` | `scripts/build-cli.sh` | dylib + `idfond` + `idfon` → `cli/<platform>/bin/` |
