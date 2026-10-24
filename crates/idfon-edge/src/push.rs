@@ -59,6 +59,14 @@ pub struct ApnsConfig {
 }
 
 /// Real APNs sender: signed JWT (ES256, `kid` = key id), cached — HTTP/2.
+///
+/// Per-token environment: a dev-signed build's PushKit token only delivers
+/// via the sandbox host, a TestFlight/App Store build's only via production
+/// (`BadEnvironmentKeyInToken` otherwise). Mixed fleets are the normal case
+/// (external TestFlight testers next to `pnpm ios device` installs), so each
+/// token *learns* its environment: try the configured host, flip to the
+/// counterpart on the env refusal, remember the verdict in memory (a restart
+/// re-learns per token at the cost of one refused send).
 pub struct HttpApns {
     client: reqwest::Client,
     config: ApnsConfig,
@@ -69,6 +77,27 @@ pub struct HttpApns {
     /// sign once, reuse, refresh at 50 min. Signing per request throttles
     /// the whole provider into silence (observed 2026-10-23).
     bearer: std::sync::Mutex<(u64, String)>,
+    /// `(production host, sandbox host)` — see `plan_hosts`.
+    hosts: (String, String),
+    default_env: TokenEnv,
+    /// Learned per-token environments (in-memory, see the type doc).
+    envs: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, TokenEnv>>>,
+}
+
+/// The APNs environment a device token belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TokenEnv {
+    Production,
+    Sandbox,
+}
+
+impl TokenEnv {
+    fn other(self) -> Self {
+        match self {
+            Self::Production => Self::Sandbox,
+            Self::Sandbox => Self::Production,
+        }
+    }
 }
 
 impl HttpApns {
@@ -81,12 +110,42 @@ impl HttpApns {
         let client = reqwest::Client::builder()
             .build()
             .map_err(|error| anyhow::anyhow!("building APNs client: {error}"))?;
+        let (hosts, default_env) = Self::plan_hosts(&config.url);
         Ok(Self {
             client,
             config,
             encoding_key,
             bearer: std::sync::Mutex::new((0, String::new())),
+            hosts,
+            default_env,
+            envs: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         })
+    }
+
+    /// `(production host, sandbox host)` + the configured URL's own env. The
+    /// counterpart of a standard host is the other standard host; a custom
+    /// host has no counterpart (no fallback).
+    fn plan_hosts(url: &str) -> ((String, String), TokenEnv) {
+        if url.contains("api.sandbox.push.apple.com") {
+            (
+                ("https://api.push.apple.com".to_owned(), url.trim_end_matches('/').to_owned()),
+                TokenEnv::Sandbox,
+            )
+        } else if url.contains("api.push.apple.com") {
+            (
+                (url.trim_end_matches('/').to_owned(), "https://api.sandbox.push.apple.com".to_owned()),
+                TokenEnv::Production,
+            )
+        } else {
+            let own = url.trim_end_matches('/').to_owned();
+            ((own.clone(), own), TokenEnv::Production)
+        }
+    }
+
+    /// The refusal body that means "this token belongs to the other
+    /// environment".
+    fn env_error(error: &anyhow::Error) -> bool {
+        error.to_string().contains("BadEnvironmentKeyInToken")
     }
 
     fn bearer(&self) -> anyhow::Result<String> {
@@ -111,6 +170,33 @@ impl HttpApns {
         *cached = (now, token.clone());
         Ok(token)
     }
+
+    async fn post(
+        client: &reqwest::Client,
+        authorization: &str,
+        host: &str,
+        token: &str,
+        topic: &str,
+        payload: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let url = format!("{}/3/device/{}", host, token);
+        let response = client
+            .post(url)
+            .header("authorization", format!("bearer {authorization}"))
+            .header("apns-topic", topic)
+            .header("apns-push-type", "voip")
+            .header("apns-priority", "10")
+            .json(payload)
+            .send()
+            .await
+            .map_err(|error| anyhow::anyhow!("apns request: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("apns {status}: {body}");
+        }
+        Ok(())
+    }
 }
 
 impl ApnsSender for HttpApns {
@@ -121,27 +207,38 @@ impl ApnsSender for HttpApns {
         payload: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> {
         let client = self.client.clone();
-        let url = format!("{}/3/device/{}", self.config.url.trim_end_matches('/'), token);
+        let hosts = self.hosts.clone();
+        let envs = std::sync::Arc::clone(&self.envs);
+        let learned = self
+            .envs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(token)
+            .copied();
+        let env = learned.unwrap_or(self.default_env);
+        let token = token.to_owned();
         let topic = topic.to_owned();
         let authorization = self.bearer();
         Box::pin(async move {
             let authorization = authorization?;
-            let response = client
-                .post(url)
-                .header("authorization", format!("bearer {authorization}"))
-                .header("apns-topic", topic)
-                .header("apns-push-type", "voip")
-                .header("apns-priority", "10")
-                .json(&payload)
-                .send()
-                .await
-                .map_err(|error| anyhow::anyhow!("apns request: {error}"))?;
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                anyhow::bail!("apns {status}: {body}");
+            let host = if env == TokenEnv::Production { &hosts.0 } else { &hosts.1 };
+            match Self::post(&client, &authorization, host, &token, &topic, &payload).await {
+                Ok(()) => Ok(()),
+                Err(error) if Self::env_error(&error) => {
+                    // Wrong environment for this token: flip to the
+                    // counterpart host and remember the verdict so the next
+                    // ring does not pay the refusal again.
+                    let other = env.other();
+                    let other_host = if other == TokenEnv::Production { &hosts.0 } else { &hosts.1 };
+                    Self::post(&client, &authorization, other_host, &token, &topic, &payload).await?;
+                    envs
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .insert(token, other);
+                    Ok(())
+                }
+                Err(error) => Err(error),
             }
-            Ok(())
         })
     }
 }
@@ -428,6 +525,24 @@ mod tests {
     use super::*;
     use http_body_util::BodyExt;
     use idfon_core::{generate_identity, issue_capability_ticket};
+
+    #[test]
+    fn apns_env_fallback_recognizes_the_environment_refusal() {
+        let refused: anyhow::Error =
+            anyhow::anyhow!("apns 403 Forbidden: {{\"reason\":\"BadEnvironmentKeyInToken\"}}");
+        assert!(HttpApns::env_error(&refused));
+        let other: anyhow::Error =
+            anyhow::anyhow!("apns 400 Forbidden: {{\"reason\":\"BadDeviceToken\"}}");
+        assert!(!HttpApns::env_error(&other));
+
+        let (hosts, env) = HttpApns::plan_hosts("https://api.push.apple.com");
+        assert_eq!(env, TokenEnv::Production);
+        assert_eq!(hosts.1, "https://api.sandbox.push.apple.com");
+        let (hosts, env) = HttpApns::plan_hosts("https://api.sandbox.push.apple.com");
+        assert_eq!(env, TokenEnv::Sandbox);
+        assert_eq!(hosts.0, "https://api.push.apple.com");
+        assert_eq!(TokenEnv::Production.other(), TokenEnv::Sandbox);
+    }
 
     struct MockApns {
         sent: Mutex<Vec<(String, String, serde_json::Value)>>,
