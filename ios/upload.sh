@@ -90,38 +90,27 @@ xcodebuild -exportArchive -archivePath "$archive" \
   -allowProvisioningUpdates
 ipa=build/export/Idfon.ipa
 
-# 4. Make the push environment consistent with how TestFlight installs mint
-#    tokens, then gate the artifact that actually ships.
+# 4. Gate the artifact that actually ships (extracted from the IPA).
 tmp=$(mktemp -d)
 unzip -q "$ipa" -d "$tmp"
 app="$tmp/Payload/Idfon.app"
-# a) aps-environment=development, restored after the export. The App Store
-#    export swaps the value to production from the distribution profile, but
-#    TestFlight installs mint SANDBOX-keyed tokens (verified 2026-10-24 on two
-#    bundles: the edge's production sends answer BadEnvironmentKeyInToken).
-#    The cross-wire — sandbox token, production registration — leaves the
-#    token valid in neither environment and locked-phone calls never wake the
-#    app. Put development back and re-sign so mint and registration agree;
-#    the environment-learning edge (v0.9.2+) delivers to sandbox, which is
-#    also what dev installs use. (edge-deploy-checklist.md §C's "must be
-#    production" predates that edge.)
-dist_id=${DIST_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -m1 'Apple Distribution' | sed -E 's/.*"([^"]+)".*/\1/')}
-# Dump to a file (not stdout: codesign prefixes "Executable=…" on stdout).
-codesign -d --entitlements "$tmp/ents.plist" --xml "$app"
-plutil -replace aps-environment -string development "$tmp/ents.plist"
-codesign --force --sign "$dist_id" --entitlements "$tmp/ents.plist" "$app"
-rm -f "$ipa"
-(cd "$tmp" && zip -qry Idfon.ipa Payload)
-mv "$tmp/Idfon.ipa" "$ipa"
+# a) aps-environment must be production (App Store Connect rejects
+#    'development' with 90046; verified 2026-10-24). The CLI export swaps the
+#    entitlements file's development value to production from the
+#    distribution profile — that swap is correct and must not be undone:
+#    a TestFlight build whose entitlement (development) disagrees with its
+#    profile (production) mints sandbox tokens that never register anywhere
+#    — the locked-phone wake saga. The Xcode Organizer export keeps the file
+#    value verbatim, so always upload THIS CLI-exported IPA.
 codesign -d --entitlements "$tmp/ents" "$app" >/dev/null 2>&1
-if ! grep -A2 'aps-environment' "$tmp/ents" | grep -q 'development'; then
-  echo "upload.sh: aps-environment is not development after re-sign" >&2
+if ! grep -A2 'aps-environment' "$tmp/ents" | grep -q 'production'; then
+  echo "upload.sh: aps-environment is not production — distribution signing missing" >&2
   exit 1
 fi
 # b) ship hygiene (rig residue / bundled key) — see check_ship_hygiene.
 check_ship_hygiene "$app"
 rm -rf "$tmp"
-echo "upload.sh: gates ok (aps-environment=development, no rig residue)"
+echo "upload.sh: gates ok (aps-environment=production, no rig residue)"
 
 # 5. Upload.
 if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]; then
