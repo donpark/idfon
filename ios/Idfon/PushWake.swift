@@ -265,15 +265,25 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
 
     // MARK: - Identity / tickets
 
-    /// Every id this device is known by: the ticket issuer (`sender.peer_id`,
-    /// what message events carry) and the iroh endpoint id (what contact
-    /// records key on when the two differ).
+    /// Every id this device is known by — for **each** identity (a device
+    /// hosts several and calls are directed at identities, donpark/idfon#62
+    /// thread): the peer id (`sender.peer_id`, what message events carry) and
+    /// the iroh endpoint id (what contact records key on when the two
+    /// differ). Registering only the active identity leaves calls to the
+    /// others with no wake channel.
     private func accountRefs(issuer: String) async -> [String] {
-        var refs = [issuer]
-        if let raw = try? await client.request(method: "status"),
-           let endpoint = raw["identity"]?["endpoint_id"]?.stringValue,
-           !endpoint.isEmpty, endpoint != issuer {
-            refs.append(endpoint)
+        var refs: [String] = []
+        var seen = Set<String>()
+        func add(_ ref: String?) {
+            guard let ref, !ref.isEmpty, seen.insert(ref).inserted else { return }
+            refs.append(ref)
+        }
+        add(issuer)
+        if let raw = try? await client.request(method: "identities")?["identities"]?.asArray {
+            for entry in raw {
+                add(entry["public_key"]?.stringValue)
+                add(entry["endpoint_id"]?.stringValue)
+            }
         }
         return refs
     }
