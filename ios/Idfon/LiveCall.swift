@@ -74,8 +74,20 @@ final class LiveCall {
         case inCall(peer: String)
     }
 
-    private(set) var state: State = .idle
+    /// The call lifecycle (phase, peer, generation, epoch): the single source
+    /// of truth — `state` and the rest are views over it (CallLifecycle.swift;
+    /// every transition's effects run in `run`).
+    private var life = CallLifecycle()
     private(set) var lastError: String?
+
+    var state: State {
+        switch life.phase {
+        case .idle: return .idle
+        case .incoming(let invite): return .incoming(peer: invite.peer)
+        case .dialing(let peer): return .calling(peer: peer)
+        case .connected(let peer), .watching(let peer): return .inCall(peer: peer)
+        }
+    }
 
     // MARK: - Outgoing stream set (docs/ui-design-notes.md §3 State 3)
 
@@ -145,7 +157,8 @@ final class LiveCall {
             return
         }
         publishedChannels = channels
-        setCallTicket(ticket)
+        // No generation change here on purpose: stops must keep naming the
+        // call's original ticket (CallLifecycle.generation).
         do {
             try await client.sendText(
                 to: peer,
@@ -162,48 +175,93 @@ final class LiveCall {
     var onState: (() -> Void)?
 
     private let client = IdfonClient()
-    private var pendingInvite: (peer: String, ticket: String)?
-    /// The call generation's identity: the dialer's publish ticket, known to
-    /// both sides (the caller generated it, the callee received it in the
-    /// start invite). Stops carry it so an out-of-order stop from an older
-    /// call cannot terminate this one (#60).
-    private var callTicket: String?
     private var published = false
     /// The channel count the mic leg publishes (1 mono, 2 = the 2D mode).
     private var publishedChannels = 1
-    private var operationGeneration = 0
     private var operation: Task<Void, Never>?
 
-    var activePeer: String? {
-        switch state {
-        case .incoming(let peer), .calling(let peer), .inCall(let peer): return peer
-        case .idle: return nil
+    /// Runs one transition and its effects, then syncs the crash-recovery
+    /// keys (`recoverStaleCall`) to the machine.
+    private func apply(_ event: CallLifecycle.Event) {
+        for effect in life.on(event) { run(effect) }
+        persist()
+    }
+
+    private func run(_ effect: CallLifecycle.Effect) {
+        switch effect {
+        case .rejectedBusy:
+            CallFeedback.post("A call is already in progress.")
+        case .sendStop(let peer, let ticket):
+            // Empty ticket = the call never got a generation (ended before its
+            // publish landed); an unticketed stop keeps the legacy behavior.
+            Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: false)) }
+        case .join(let ticket, _):
+            // The peer answered our dial (or re-published a fresh ticket):
+            // cue and subscribe non-fatally — a failed subscribe must not tear
+            // down a call we are already publishing into.
+            CallTonePlayer.shared.start(.answered)
+            Task {
+                if await !self.subscribe(ticket: ticket) {
+                    idfonError("idfon live call: return-leg subscribe failed")
+                }
+            }
+        case .stopMedia:
+            operation?.cancel()
+            operation = nil
+            published = false
+            audioEnabled = false
+            videoEnabled = false
+            HybridVoice.shared.stop()
+            AudioPusher.shared.stop()
+            Task.detached(priority: .userInitiated) {
+                media_live_stop()
+                media_live_unsubscribe()
+            }
+        case .endCue:
+            CallTonePlayer.shared.start(.ended)
+        case .quiet:
+            CallTonePlayer.shared.stop()
+        case .ring(let peer):
+            // The system already rings (a push-first wake): no Bar ringtone and
+            // no app-owned audio session alongside it.
+            if !CallKitController.shared.isRinging(peer) {
+                LiveCallHarness.activateAudioSession()
+                CallTonePlayer.shared.start(.ringtone)
+            }
+        case .changed:
+            notify()
+        case .remoteEnded(let peer, let ticket):
+            // A push-first wake can outlive the machine: the transport truth
+            // must end a ringing system call too (#45).
+            CallKitController.shared.remoteEnded(peerId: peer, owner: .live, ticket: ticket ?? "")
+        case .log(let message):
+            idfonLog("idfon live call: \(message)")
         }
     }
+
+    /// Crash recovery reads these; keeping them in step with the machine here
+    /// replaces the per-callsite writes that flows used to skip.
+    private func persist() {
+        let defaults = UserDefaults.standard
+        if let peer = life.peer {
+            defaults.set(peer, forKey: "idfon.live-call.peer")
+        } else {
+            defaults.removeObject(forKey: "idfon.live-call.peer")
+        }
+        if let generation = life.generation {
+            defaults.set(generation, forKey: "idfon.live-call.ticket")
+        } else {
+            defaults.removeObject(forKey: "idfon.live-call.ticket")
+        }
+    }
+
+    var activePeer: String? { life.peer }
 
     /// The current call's generation ticket (the dialer's publish ticket),
     /// nil when no call exists — lets a ring push recognize a call the
     /// machines already own (the envelope is queued before the push is sent,
     /// so on a live app it arrives first and the Bar owns the ring, #7).
-    var callGeneration: String? { callTicket }
-
-    /// Records the call generation's identity (persisted so a crash can name
-    /// it in `recoverStaleCall`).
-    private func setCallTicket(_ ticket: String) {
-        callTicket = ticket
-        UserDefaults.standard.set(ticket, forKey: "idfon.live-call.ticket")
-    }
-
-    private func clearCallTicket() {
-        callTicket = nil
-        UserDefaults.standard.removeObject(forKey: "idfon.live-call.ticket")
-    }
-
-    /// Whether a stop envelope names this call (#60). The rule lives in the
-    /// tested pure seam; an empty ticket keeps the old terminate behavior.
-    private func stopNamesThisCall(_ ticket: String) -> Bool {
-        CallStopCorrelation.names(ticket, current: callTicket)
-    }
+    var callGeneration: String? { life.generation }
 
     func clearError() {
         lastError = nil
@@ -214,7 +272,7 @@ final class LiveCall {
 
     func dial(_ peerRef: String) {
         Automation.mark("live: dial ref=\(peerRef)")
-        guard case .idle = state else {
+        guard case .idle = life.phase else {
             CallFeedback.post("A call is already in progress.")
             return
         }
@@ -231,24 +289,21 @@ final class LiveCall {
 
     private func dialNow(_ peerRef: String) {
         operation?.cancel()
-        operationGeneration += 1
-        let generation = operationGeneration
-        state = .calling(peer: peerRef)
-        UserDefaults.standard.set(peerRef, forKey: "idfon.live-call.peer")
         audioEnabled = audioAvailable // this session carries audio from the start
-        notify()
+        apply(.dial(peer: peerRef))
         // The cue rides the shared playback bus (AudioIO): start the session
         // first or the tone is dropped before the dial task arms it.
         LiveCallHarness.activateAudioSession()
         CallTonePlayer.shared.start(.ringback)
+        let epoch = life.epoch
         operation = Task {
             do {
                 // Resolve the ref (name/alias/id) to the canonical peer id: the
                 // capability-ticket store (and grants) key on the id, so sending
                 // the invite to a display name would skip the holder's gate.
                 let peerId = await client.resolvePeerId(peerRef)
-                guard case .calling(let current) = state, current == peerRef || current == peerId else { return }
-                state = .calling(peer: peerId)
+                guard case .dialing(let current) = life.phase, current == peerRef || current == peerId else { return }
+                apply(.resolve(peer: peerId))
                 // Registry entry (parity with core.ts live_start).
                 let identity = (try? await client.status())?.1 ?? "default"
                 let returnAddr = try await client.localEndpointAddr()
@@ -269,18 +324,18 @@ final class LiveCall {
                     fail("microphone unavailable")
                     return
                 }
-                guard operationGeneration == generation, !Task.isCancelled else { return }
+                guard life.epoch == epoch, !Task.isCancelled else { return }
                 let ticket = await ffiString {
                     media_live_start_with_profile(1, 0, "push", profile.codec, UInt32(profile.sampleRate), UInt32(channels))
                 }
-                guard operationGeneration == generation, !Task.isCancelled, !ticket.isEmpty else {
+                guard life.epoch == epoch, !Task.isCancelled, !ticket.isEmpty else {
                     let err = await ffiString { media_live_last_error() }
                     fail(err.isEmpty ? "live start failed" : err)
                     return
                 }
                 // Hung up while the publish was in flight: stop the publisher
                 // we just started instead of leaking it and ringing the peer.
-                guard case .calling = state else {
+                guard case .dialing = life.phase else {
                     AudioPusher.shared.stop()
                     Task.detached(priority: .userInitiated) { media_live_stop() }
                     return
@@ -288,9 +343,8 @@ final class LiveCall {
                 published = true
                 publishedChannels = channels
                 idfonLog("idfon live call: caller audio published profile=\(profile.rawValue)")
-                applySendState() // a toggle during `.calling` may predate the publish
-                UserDefaults.standard.set(peerId, forKey: "idfon.live-call.peer")
-                setCallTicket(ticket)
+                applySendState() // a toggle during `.dialing` may predate the publish
+                apply(.published(ticket: ticket))
                 // Carry the daemon's current dial address: endpoint-id-only
                 // discovery is unreliable for inbound calls to suspended phones.
                 let encodedAddr = Data(returnAddr.utf8).base64EncodedString()
@@ -322,8 +376,8 @@ final class LiveCall {
                 var delivered = false
                 for _ in 0..<40 {
                     try await Task.sleep(nanoseconds: 500_000_000)
-                    guard operationGeneration == generation, !Task.isCancelled else { return }
-                    if case .calling = state {} else { return } // answered, failed, or hung up
+                    guard life.epoch == epoch, !Task.isCancelled else { return }
+                    if case .dialing = life.phase {} else { return } // answered, failed, or hung up
                     if !delivered, let inviteOperation {
                         let status = (try? await client.operationStatus(inviteOperation)) ?? nil
                         if status == "Delivered" {
@@ -345,26 +399,14 @@ final class LiveCall {
 
     func answer() {
         Automation.mark("live: answer")
-        guard case .incoming(let peer) = state else {
+        guard case .incoming(let pending) = life.phase else {
             idfonLog("idfon live: answer ignored — not incoming")
             return
         }
-        // The invite tuple can be missing while the state is .incoming (the
-        // #51 E2E "the CallKit answer had no effect"): fall back to the
-        // stored generation so the answer never silently vanishes.
-        let pending = pendingInvite ?? (peer: peer, ticket: callTicket ?? "")
-        guard !pending.ticket.isEmpty else {
-            idfonLog("idfon live: answer ignored — no call generation")
-            return
-        }
         operation?.cancel()
-        operationGeneration += 1
-        let generation = operationGeneration
-        pendingInvite = nil
-        setCallTicket(pending.ticket)
-        state = .inCall(peer: peer)
+        apply(.answer)
+        let epoch = life.epoch
         audioEnabled = audioAvailable
-        notify()
         CallTonePlayer.shared.stop()
         operation = Task {
             do {
@@ -388,11 +430,11 @@ final class LiveCall {
                 }
                 let pendingTicket = pending.ticket
                 await join(ticket: pendingTicket)
-                guard operationGeneration == generation, !Task.isCancelled else { return }
+                guard life.epoch == epoch, !Task.isCancelled else { return }
                 // Torn down while subscribing (the subscribe failed and
                 // `fail` already ended the call): never publish into a dead
                 // session — that would leak a publisher with no call.
-                guard case .inCall = state else { return }
+                guard case .connected = life.phase else { return }
                 // Publish our own mic so audio is two-way, then send the
                 // return-leg invite (own ticket) that makes the caller join us.
                 let own = await ffiString {
@@ -421,20 +463,15 @@ final class LiveCall {
     }
 
     func decline() {
-        guard case .incoming(let peer) = state else { return }
-        state = .idle
-        notify()
+        guard case .incoming = life.phase else { return }
         CallTonePlayer.shared.stop()
         // The ring brought the shared audio up; a decline must release it.
         AudioIO.shared.stop()
-        let ticket = callTicket ?? ""
-        Task { try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false)) }
-        clearCallTicket()
-        UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
+        apply(.hangUp)
     }
 
     func hangUp() {
-        terminate(local: true)
+        apply(.hangUp)
     }
 
     func recoverStaleCall() {
@@ -458,13 +495,7 @@ final class LiveCall {
     func handleControl(peer peerID: String, _ text: String) {
         if text == "call_started" { return } // informational
         if text == "call_stopped" {
-            if case .idle = state {
-                // A push-first wake can outlive the machine: the transport
-                // truth must end a ringing system call too (#45).
-                CallKitController.shared.remoteEnded(peerId: peerID, owner: .live)
-                return
-            }
-            if activePeer == peerID { terminate(local: false) }
+            apply(.remoteStop(peer: peerID, ticket: nil))
         }
     }
 
@@ -478,72 +509,17 @@ final class LiveCall {
         }
         idfonLog("idfon live call: envelope peer=\(peerID) state=\(String(describing: state)) start=\(invite.isStart) stop=\(invite.isStop) return=\(invite.isReturn) audio=\(invite.media == nil) ticket=\(!invite.ticket.isEmpty)")
         if invite.isStop {
-            if case .idle = state {
-                // A push-first wake can outlive the machine: the transport
-                // truth must end a ringing system call too (#45), correlated
-                // to the call the stop names (#60).
-                CallKitController.shared.remoteEnded(peerId: peerID, owner: .live, ticket: invite.ticket)
-                return
-            }
-            guard activePeer == peerID else { return }
-            guard stopNamesThisCall(invite.ticket) else {
-                idfonLog("idfon live call: ignored stop for an older call peer=\(peerID)")
-                return
-            }
-            terminate(local: false)
+            apply(.remoteStop(peer: peerID, ticket: invite.ticket.isEmpty ? nil : invite.ticket))
             return
         }
-        guard invite.isStart, invite.media == nil, !invite.ticket.isEmpty else {
-            idfonLog("idfon live call: ignored non-audio or incomplete start from \(peerID)")
+        guard invite.isStart, invite.media == nil else {
+            idfonLog("idfon live call: ignored non-audio start from \(peerID)")
             return
         }
-        // Return leg: the peer we called answered and is publishing its mic.
-        // Subscribe non-fatally (a failed subscribe must not tear down a call
-        // we are already publishing into); `.calling` → `.inCall`. Another
-        // peer's invite while busy is ignored (no steal).
-        switch state {
-        case .calling, .inCall:
-            guard activePeer == peerID else {
-                idfonLog("idfon live call: return leg peer mismatch active=\(activePeer ?? "nil") from=\(peerID)")
-                return
-            }
-            idfonLog("idfon live call: return leg received from \(peerID)")
-            CallTonePlayer.shared.start(.answered)
-            Task {
-                if await !subscribe(ticket: invite.ticket) {
-                    idfonError("idfon live call: return-leg subscribe failed")
-                }
-                if case .calling = state { state = .inCall(peer: peerID); notify() }
-            }
-            return
-        case .incoming, .idle:
-            if invite.isReturn {
-                idfonLog("idfon live call: ignored return leg without an active outgoing call from \(peerID)")
-                return
-            }
-        }
-        // A newer invite from the same peer supersedes an unanswered one.
-        // This prevents a delayed duplicate from winning after a newer call.
-        if case .incoming(let pendingPeer) = state {
-            guard pendingPeer == peerID else { return }
-            pendingInvite = (peerID, invite.ticket)
-            setCallTicket(invite.ticket)
-            idfonLog("idfon live: replaced pending invite from \(peerID)")
-            notify()
-            return
-        }
-        guard case .idle = state else { return } // video-call invites route to VideoCall
-        pendingInvite = (peerID, invite.ticket)
-        UserDefaults.standard.set(peerID, forKey: "idfon.live-call.peer")
-        setCallTicket(invite.ticket)
-        state = .incoming(peer: peerID)
-        notify()
-        // The system already rings (a push-first wake): no Bar ringtone and
-        // no app-owned audio session alongside it.
-        if !CallKitController.shared.isRinging(peerID) {
-            LiveCallHarness.activateAudioSession()
-            CallTonePlayer.shared.start(.ringtone)
-        }
+        // A leg on our call (return leg / re-publish) comes back as a `.join`
+        // effect; a fresh invite rings (or supersedes) via the machine.
+        apply(.invite(CallLifecycle.Invite(
+            peer: peerID, ticket: invite.ticket, isReturn: invite.isReturn, watchOnly: false)))
     }
 
     // MARK: - Internals
@@ -572,39 +548,13 @@ final class LiveCall {
         }
     }
 
-    private func terminate(local: Bool) {
-        guard let peer = activePeer else { return }
-        HybridVoice.shared.stop()
-        if local {
-            let ticket = callTicket ?? ""
-            Task { try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false)) }
-        }
-        operation?.cancel()
-        operation = nil
-        operationGeneration += 1
-        published = false
-        UserDefaults.standard.removeObject(forKey: "idfon.live-call.peer")
-        clearCallTicket()
-        pendingInvite = nil
-        // End cue only when a connected call ends; an unconnected ring
-        // (decline/cancel) goes quiet (#15).
-        if case .inCall = state { CallTonePlayer.shared.start(.ended) } else { CallTonePlayer.shared.stop() }
-        audioEnabled = false
-        videoEnabled = false
-        AudioPusher.shared.stop()
-        Task.detached(priority: .userInitiated) {
-            media_live_stop()
-            media_live_unsubscribe()
-        }
-        state = .idle
-        notify()
-    }
-
     private func fail(_ message: String) {
         idfonError("idfon live call failed: \(message)")
         lastError = message
         CallFeedback.post("No live calls from this contact: \(message)")
-        terminate(local: false)
+        // The machine's `.fail` end tells the peer too: a caller that gives up
+        // must un-ring a callee who answers late, or they sit in a call alone.
+        apply(.fail(message))
     }
 
     private func notify() {
