@@ -378,6 +378,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// A push-woken launch defers the speech warmup until the user brings the
     /// app up (donpark/idfon#55).
     func applicationDidBecomeActive(_ application: UIApplication) {
+        // Push registration is otherwise launch-only; a launch can beat the
+        // push service or the daemon and its attempts expire silently.
+        PushWake.shared.refresh()
         guard warmSpeechOnActivation else { return }
         warmSpeechOnActivation = false
         Task { @MainActor in SpeechEngines.prewarm() }

@@ -50,6 +50,16 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         if let lastToken { Task { await register(token: lastToken) } }
     }
 
+    /// Foreground hook: registration is otherwise a launch-only affair, and a
+    /// launch can beat both the push service (post-reboot, post network
+    /// reset) and the daemon — the attempts then expire silently. Re-create
+    /// the registry (PushKit re-delivers its current token) and re-assert the
+    /// persisted one (`start`).
+    func refresh() {
+        registry = nil
+        start()
+    }
+
     // MARK: - Caller side (ring/cancel)
 
     /// Ring the peer's registered devices — call after the invite envelope is
