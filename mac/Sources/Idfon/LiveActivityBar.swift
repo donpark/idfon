@@ -62,11 +62,11 @@ struct LiveActivityBarModel: Equatable {
     var camOn = false
     /// Audio modes the panel offers right now (display order) + the one the
     /// call runs — exactly one is always selected (Mute = the stream is off).
-    /// Stereo is an orthogonal toggle on the same row. Presence is
-    /// preference/capability-gated (ContactAudioModes), never hardware-gated.
+    /// Stereo is an orthogonal toggle on the same row — always present with
+    /// it (donpark/idfon#62 option B: a static control. The toggle records
+    /// intent; the media layer sends mono where the plane demands it).
     var audioModes: [CallAudioMode] = []
     var selectedAudioMode: CallAudioMode = .mute
-    var stereoAvailable = false
     var stereo = false
     /// What the session carries (§3 State 3): a toggle for an absent track is
     /// hidden rather than shown as if it worked. Watch-only sessions publish
@@ -334,7 +334,7 @@ final class LiveActivityBar: NSView {
         mediaStack.isHidden = compact || !togglesActive
         audioGroup.isHidden = compact || !togglesActive || !model.audioAvailable || model.audioModes.isEmpty
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
-        stereoButton.isHidden = compact || !togglesActive || !model.audioAvailable || !model.stereoAvailable
+        stereoButton.isHidden = compact || !togglesActive || !model.audioAvailable
         stereoButton.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Stereo")
         stereoButton.contentTintColor = model.stereo ? .controlAccentColor : .secondaryLabelColor
         stereoButton.setAccessibilityValue(model.stereo ? "on" : "off")

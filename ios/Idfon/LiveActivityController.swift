@@ -398,7 +398,6 @@ final class LiveActivityController: NSObject {
             model.phase = phase
             model.audioModes = ContactAudioModes.availableRoutes(for: callPeer)
             model.selectedAudioMode = selectedAudioMode
-            model.stereoAvailable = ContactAudioModes.stereoAllowed(for: callPeer)
             model.stereo = stereoOn
             model.camOn = camOn
             model.audioAvailable = machine?.audioAvailable ?? true
