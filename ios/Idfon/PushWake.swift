@@ -49,7 +49,13 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         // idempotent): the wake channel must not depend on didUpdate firing
         // promptly — a fresh install whose core is slow registers late, not
         // never.
-        if let lastToken { registerWithRetries(lastToken) }
+        if let lastToken {
+            // Distinguish "PushKit re-delivered" from "app replayed its cache":
+            // the fossil-token case (stale bytes re-registered forever) is only
+            // visible if each path logs its own source + token prefix.
+            idfonLog("idfon push: kit cached token=\(String(lastToken.prefix(12)))")
+            registerWithRetries(lastToken)
+        }
     }
 
     /// Foreground hook: registration is otherwise a launch-only affair, and a
@@ -164,12 +170,14 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     ) {
         guard type == .voIP else { return }
         let token = credentials.token.map { String(format: "%02x", $0) }.joined()
+        idfonLog("idfon push: kit update token=\(String(token.prefix(12))) len=\(token.count)")
         lastToken = token
         UserDefaults.standard.set(token, forKey: Self.tokenKey)
         registerWithRetries(token)
     }
 
     func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
+        idfonLog("idfon push: kit invalidated type=\(type.rawValue)")
         guard type == .voIP, let token = lastToken else { return }
         retryTask?.cancel()
         lastToken = nil
