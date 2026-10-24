@@ -30,7 +30,7 @@ private func logToIdfon(_ level: OSLogType, _ message: String, _ file: String) {
 
 /// Per-run app log file — the rootless pull documented in
 /// docs/troubleshooting.md (`devicectl device copy from --domain-type
-/// appDataContainer --domain-identifier com.idfon.ios2 --source tmp/…`). One file
+/// appDataContainer --domain-identifier com.idfon.ios --source tmp/…`). One file
 /// per process, named with the same pid as the in-process daemon's
 /// `idfon-<pid>.log`, so one launch is one clean, pairable trace; stale logs
 /// from earlier runs are removed at startup so the pull is unambiguous.
