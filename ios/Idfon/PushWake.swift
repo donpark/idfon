@@ -30,6 +30,8 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     private var registry: PKPushRegistry?
     /// Last registered token (for unregister on invalidation).
     private var lastToken: String?
+    /// The in-flight registration retry loop (at most one).
+    private var retryTask: Task<Void, Never>?
     /// The ring this device sent and that is not answered yet (caller side).
     private var pendingRing: (peer: String, callUUID: String)?
 
@@ -47,7 +49,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         // idempotent): the wake channel must not depend on didUpdate firing
         // promptly — a fresh install whose core is slow registers late, not
         // never.
-        if let lastToken { Task { await register(token: lastToken) } }
+        if let lastToken { registerWithRetries(lastToken) }
     }
 
     /// Foreground hook: registration is otherwise a launch-only affair, and a
@@ -116,17 +118,24 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
 
     // MARK: - Registration
 
+    /// One retry loop at a time; a newer token replaces the older loop.
+    private func registerWithRetries(_ token: String) {
+        retryTask?.cancel()
+        retryTask = Task { await register(token: token) }
+    }
+
     private func register(token: String) async {
-        // The core may still be booting at launch — exponential backoff, so a
-        // slow cold start does not exhaust five fixed 3 s attempts in ~15 s
-        // and silently never registers (observed 2026-10-24).
+        // Never give up while the app lives: the core may still be booting,
+        // the network may come back later, the push service may settle after
+        // a reset — a fixed attempt budget turned all of those into silent,
+        // permanent failure (observed 2026-10-24). Fast backoff first, then
+        // a calm cadence; a foreground refresh re-nudges it.
         var delay = 2_000_000_000
-        for _ in 0..<6 {
+        while !Task.isCancelled {
             if await registerOnce(token: token) { return }
             try? await Task.sleep(nanoseconds: UInt64(delay))
-            delay *= 2
+            delay = min(delay * 2, 60_000_000_000)
         }
-        idfonError("idfon push: registration failed")
     }
 
     private func registerOnce(token: String) async -> Bool {
@@ -157,11 +166,12 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         let token = credentials.token.map { String(format: "%02x", $0) }.joined()
         lastToken = token
         UserDefaults.standard.set(token, forKey: Self.tokenKey)
-        Task { await register(token: token) }
+        registerWithRetries(token)
     }
 
     func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
         guard type == .voIP, let token = lastToken else { return }
+        retryTask?.cancel()
         lastToken = nil
         UserDefaults.standard.removeObject(forKey: Self.tokenKey)
         Task {
