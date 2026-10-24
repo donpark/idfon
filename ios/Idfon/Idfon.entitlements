@@ -2,9 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Push Notifications capability. Xcode automatic signing registers the
-	     App ID service and provisions the profile at build; distribution
-	     signing swaps the environment via the profile. -->
+	<!-- Push Notifications capability. The value here is what dev installs
+	     embed; xcodebuild's App Store export swaps it to production from the
+	     distribution profile (verified 2026-10-24 by exporting the same
+	     archive and dumping the signed entitlements). Do not delete this key:
+	     Xcode injects nothing when it is absent — the app then signs without
+	     any aps-environment and gets no push tokens at all. -->
 	<key>aps-environment</key>
 	<string>development</string>
 </dict>
