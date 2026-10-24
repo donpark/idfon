@@ -102,7 +102,7 @@ instance at app start. Flipping
 4. **Mute sync**: `CXSetMutedCallAction` ↔ `LiveCall.setAudioEnabled` /
    `VideoCall.setVideoEnabled`, both directions (Bar toggles also request the CX
    transaction so the lock-screen state can't desync).
-5. **End**: `CXEndCallAction` ↔ `terminate(local:)`; peer-side `call_stopped` or a
+5. **End**: `CXEndCallAction` ↔ `CallLifecycle`'s single exit (`.hangUp`); peer-side `call_stopped` or a
    broken session → `reportCall(with:endedAt:reason:)`. `providerDidReset` tears
    everything down unconditionally (the stuck-green-banner fix). On app termination
    with a live call, report the call ended (`recoverStaleCall` already exists as the
@@ -269,13 +269,17 @@ these:
   sender, old behavior. `CallKitController.remoteEnded(peerId:ticket:)`
   applies the same rule to a push-only ringing call (ring UUID =
   `CallUUID.from(ticket)`). The watermark stays as a backstop for legacy
-  (unticketed) stops.
+  (unticketed) stops. 2026-10-25: the rule moved into `CallLifecycle`
+  (the pure call state machine shared by the four Swift call hosts), whose
+  generation is set once per call — a mid-call re-publish can no longer swap
+  it (that drift made hang-ups name an "older" call and linger), and a
+  ticketed stop is vouched by its ticket even when the sender's ref differs.
 - **#55 (open):** the woken app dying within seconds (SIGKILL). Suspect
   overlap with #61 (a wedge looks similar from outside) — re-verify only
   after #61 is resolved.
 - **#51 (open):** answer → two-way audio — the last functional leg.
 - **#52 (landed) / #54 (mostly landed):** host checks for the bitten seams —
-  stop correlation (`CallStopCorrelationCheck`), ticket → caller_id
+  stop correlation (`CallLifecycleCheck`), ticket → caller_id
   (`RingTicketCheck`), cache flattening (`PeerRefFlatteningCheck`) — each in
   both trees where the seam is duplicated, run with plain `swiftc` per their
   headers. Residue: `scripts/e2e-teardown.sh` + the

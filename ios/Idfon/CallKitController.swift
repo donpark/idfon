@@ -474,6 +474,15 @@ final class CallKitController: NSObject, CXProviderDelegate {
                 // `current` blocks every later ring.
                 current = nil
                 AudioIO.shared.callKitDidEnd()
+            } else {
+                // No mirrored call, but a machine may still hold one (the
+                // mirror can miss it): the user's end wins — hang up whichever
+                // machine is busy so the peer is told and nothing lingers.
+                if VideoCall.shared.state != .idle {
+                    VideoCall.shared.hangUp()
+                } else if LiveCall.shared.state != .idle {
+                    LiveCall.shared.hangUp()
+                }
             }
             gate.fulfill()
         case let muted as CXSetMutedCallAction:
