@@ -24,8 +24,8 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         let data: Data
     }
 
-    private static let urlKey = "idfon.edge.url"
-    private static let ticketKey = "idfon.edge.ticket"
+    static let urlKey = ConfigMigrations.edgeURLKey
+    static let ticketKey = ConfigMigrations.edgeTicketKey
     private static let pendingKey = "idfon.edge.pending"
     private static let sessionIdentifier = "app.idfon.edge.background"
     /// A background fetch that never completes is abandoned after this, along

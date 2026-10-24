@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DaemonRuntime.configure()
+        // Config schema migrations before launch-arg config below: automation
+        // must win over a migration, never the other way round.
+        ConfigMigrations.run()
         // Public edge endpoint + requester credential (P4 parity):
         // `-edgeurl <url> <ticket>` or `-edgeurl <url> -edgeticket <ticket>`.
         let launchArgs = ProcessInfo.processInfo.arguments
