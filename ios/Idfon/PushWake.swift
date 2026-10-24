@@ -111,13 +111,20 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     private func registerOnce(token: String) async -> Bool {
         guard let base = EdgeClient.shared.baseURL else { return true } // no edge: nothing to do
         guard let statement = try? await selfIssuedStatement() else { return false }
+        // A ref the ticket cannot claim (an endpoint-id spelling — the ticket
+        // is issued by the identity id) must not fail the refs that can:
+        // some claim beats a retry storm, and the claimed refs are the form
+        // rings address (the peer record's id).
+        var claimed = 0
         for account in await accountRefs(issuer: statement.issuer) {
             let url = EdgeClient.resourceURL(baseURL: base, account: account, path: "/_push/register")
-            guard await postJSON(
+            if await postJSON(
                 url: url, ticket: statement.raw, body: ["voip_token": token, "topic": Self.topic])
-            else { return false }
+            {
+                claimed += 1
+            }
         }
-        return true
+        return claimed > 0
     }
 
     // MARK: - PKPushRegistryDelegate
