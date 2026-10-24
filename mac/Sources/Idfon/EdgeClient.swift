@@ -48,8 +48,11 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         return dir
     }
 
+    /// The configured edge — defaulting to the production edge, so a fresh
+    /// install is reachable by pushes with zero configuration.
     var baseURL: URL? {
         UserDefaults.standard.string(forKey: Self.urlKey).flatMap(URL.init(string:))
+            ?? URL(string: ConfigMigrations.productionEdgeURL)
     }
 
     var ticket: String? {
