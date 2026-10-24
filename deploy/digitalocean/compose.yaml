@@ -12,7 +12,7 @@ services:
       - ${IDFON_EDGE_STATE:-/srv/idfon-edge}:/var/lib/idfon
       - /etc/idfon-edge:/etc/idfon-edge:ro
     environment:
-      RUST_LOG: idfon_edge=info,idfon.edge.access=info
+      RUST_LOG: idfon_edge=info,idfon.edge.access=info,idfon.edge.push=info
       # Empty means "use the key file"; set a 64-hex value to be stateless.
       IDFON_EDGE_KEY: ${IDFON_EDGE_KEY:-}
       # Enterprise relay (issue #26); empty keeps the N0 defaults.
