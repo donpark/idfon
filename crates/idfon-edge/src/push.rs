@@ -58,11 +58,17 @@ pub struct ApnsConfig {
     pub url: String,
 }
 
-/// Real APNs sender: signed JWT (ES256, `kid` = key id) per request, HTTP/2.
+/// Real APNs sender: signed JWT (ES256, `kid` = key id), cached — HTTP/2.
 pub struct HttpApns {
     client: reqwest::Client,
     config: ApnsConfig,
     encoding_key: jsonwebtoken::EncodingKey,
+    /// Cached provider JWT `(iat, token)`. Apple rejects providers that mint
+    /// a new token more than ~once per 20 min (429
+    /// `TooManyProviderTokenUpdates`) while the token stays valid ~1 h —
+    /// sign once, reuse, refresh at 50 min. Signing per request throttles
+    /// the whole provider into silence (observed 2026-10-23).
+    bearer: std::sync::Mutex<(u64, String)>,
 }
 
 impl HttpApns {
@@ -79,6 +85,7 @@ impl HttpApns {
             client,
             config,
             encoding_key,
+            bearer: std::sync::Mutex::new((0, String::new())),
         })
     }
 
@@ -88,14 +95,21 @@ impl HttpApns {
             iss: String,
             iat: u64,
         }
+        let mut cached = self.bearer.lock().unwrap_or_else(|error| error.into_inner());
+        let now = now_seconds();
+        if !cached.1.is_empty() && now.saturating_sub(cached.0) < 50 * 60 {
+            return Ok(cached.1.clone());
+        }
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
         header.kid = Some(self.config.key_id.clone());
         let claims = Claims {
             iss: self.config.team_id.clone(),
-            iat: now_seconds(),
+            iat: now,
         };
-        jsonwebtoken::encode(&header, &claims, &self.encoding_key)
-            .map_err(|error| anyhow::anyhow!("signing APNs token: {error}"))
+        let token = jsonwebtoken::encode(&header, &claims, &self.encoding_key)
+            .map_err(|error| anyhow::anyhow!("signing APNs token: {error}"))?;
+        *cached = (now, token.clone());
+        Ok(token)
     }
 }
 
