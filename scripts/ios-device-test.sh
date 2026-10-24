@@ -20,7 +20,7 @@ set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ios_dir="$root/ios"
-bundle_id=com.idfon.ios
+bundle_id=com.idfon.ios2
 
 peer="${PEER:-}"
 file=""
