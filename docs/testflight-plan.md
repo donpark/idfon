@@ -37,7 +37,9 @@ Code references are to `ios/` as of that review.
       — the plan's open first-archive question is answered; `upload.sh` gates
       on it. (The `.xcarchive` lands outside Organizer's
       `~/Library/Developer/Xcode/Archives`; copy it there to Distribute from
-      Xcode, or upload `build/export/Idfon.ipa` via Transporter.)
+      Xcode, or upload `build/export/Idfon.ipa` via Transporter. `pnpm ios
+      archive` = archive + gates + the Organizer staging only, no
+      export/upload — for the manual Organizer path.)
 - [x] **`CFBundleVersion` must be unique per upload — done (2026-10-21).**
       `upload.sh` bumps `CURRENT_PROJECT_VERSION` (pbxproj, all configs) on
       every run. On the manual Xcode path, bump Build (target → General) by
