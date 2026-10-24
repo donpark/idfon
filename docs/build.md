@@ -77,6 +77,8 @@ command fails with `iroh-c-ffi dylib ... missing`.
 | `pnpm mac build` | `mac/build.sh` → `mac/build-deps.sh` + `swift build` | `mac/build/Idfon.app` |
 | `pnpm native build` | `native/build-mac.sh` → `zig build` | `native/zig-out/bin/Idfon` + `Idfon.app` |
 | `pnpm ios build` | `ios/build.sh` → `ios/build-deps.sh` + `xcodebuild` | device `.app` in `ios/.derived/` (device only, no simulator) |
+| `pnpm ios ship` | `ios/upload.sh` | TestFlight upload: build bump → archive → gates → CLI export → `ios/build/export/Idfon.ipa` → altool upload (see `docs/testflight-plan.md` "How to ship an app update") |
+| `pnpm ios archive` | `ios/upload.sh archive` | archive + gates only, staged into Organizer's Archives |
 | `pnpm ios test` | `ios/test.sh` → `xcodebuild test` | runs `ios/IdfonTests` on a connected iPhone (Debug) |
 | `pnpm eve build` | `scripts/eve.sh` | eve extension + every installed agent |
 | `pnpm agent build <name>` | `scripts/agent.sh` | one agent |

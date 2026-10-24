@@ -7,6 +7,7 @@
     "build": "bash build.sh",
     "build:deps": "bash build-deps.sh",
     "archive": "bash upload.sh archive",
+    "ship": "bash upload.sh",
     "device": "bash device.sh",
     "test": "bash test.sh"
   }
