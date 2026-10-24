@@ -53,7 +53,10 @@ defaults delete com.idfon.mac idfon.edge.ticket
 ```
 
 iPhone: relaunch without `-edgeurl` (its `idfon.edge.url` defaults key stays
-set otherwise). Verify residue is gone:
+set otherwise). Both apps now self-heal this residue too — config schema v1
+(`ConfigMigrations`, 2026-10-23) repoints a private/loopback `idfon.edge.url`
+at `https://idfon.net` on first launch after an update; the manual steps above
+are the pre-update cleanup. Verify residue is gone:
 
 ```sh
 ps -axo pid,command | grep -e idfond -e idfon-edge | grep -v grep   # only the app daemon remains
@@ -74,8 +77,8 @@ push channel needs more than the stock `compose.yaml` provides:
    --push-state /var/lib/idfon/edge-push.json`.
    The **production** APNs URL is mandatory: the sandbox URL only rings
    development builds, and TestFlight/App Store builds silently die there.
-   (The stock compose does not pass `--push-*` yet — until it does this is a
-   manual edit on the droplet.)
+   (The stock `compose.yaml` carries these flags now — the droplet only needs
+   the `.p8` in place and a `docker compose up -d`.)
 3. **Apps on production** — mac: `defaults write com.idfon.mac idfon.edge.url
    https://idfon.net` + `idfon.edge.ticket <prod ticket>`; iPhone: relaunch
    with `-edgeurl https://idfon.net -edgeticket <prod ticket>`.
