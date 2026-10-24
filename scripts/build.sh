@@ -29,9 +29,8 @@ fi
 #    eve-idfon-voice holder, both signed.
 bash scripts/voice.sh build
 
-# 2. Daemon + CLI.
-cargo build --release -p idfond -p idfon-cli
-codesign --force -s - target/release/idfond
+# 2. Daemon + CLI, also into cli/<platform>/bin/ (the bundle `pnpm idfon` runs).
+sh scripts/build-cli.sh
 
 # 3. Eve agent bundles (extension first, then agents/*).
 bash scripts/eve.sh build

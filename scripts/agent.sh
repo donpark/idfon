@@ -107,7 +107,7 @@ logfile="$home/serve-manager.log"
 if [[ "$action" == build ]]; then
   eve="$agent_dir/node_modules/.bin/eve"
   if [[ ! -x "$eve" ]]; then
-    echo "skipped $name: no installed eve (run npm install in agents/$name)" >&2
+    echo "skipped $name: no installed eve (run pnpm install at the repo root)" >&2
     exit 0
   fi
   (cd "$agent_dir" && "$eve" build)
