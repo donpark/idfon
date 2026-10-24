@@ -33,3 +33,18 @@ services:
       - ${IDFON_EDGE_RATE_LIMIT:-120}
       - --key-file
       - /var/lib/idfon/edge.key
+      # VoIP push channel (checklist §C). Without --push-apns-key the
+      # /_push/* routes are not mounted at all (405), so locked phones never
+      # ring. Expects /srv/idfon-edge/edge.apns.p8 (mode 600) on the host.
+      - --push-apns-key
+      - /var/lib/idfon/edge.apns.p8
+      - --push-apns-key-id
+      - ${IDFON_EDGE_PUSH_KEY_ID:-LRV4AV57QS}
+      - --push-apns-team
+      - ${IDFON_EDGE_PUSH_TEAM:-RV27HPQNMF}
+      # Production APNs is mandatory: TestFlight/App Store builds only accept
+      # pushes from api.push.apple.com (the sandbox URL rings dev builds only).
+      - --push-apns-url
+      - ${IDFON_EDGE_PUSH_URL:-https://api.push.apple.com}
+      - --push-state
+      - /var/lib/idfon/edge-push.json
