@@ -23,23 +23,43 @@ Code references are to `ios/` as of that review.
         → `NSPrivacyAccessedAPICategoryFileTimestamp`, reason `C617.1`
         (app-container files).
 
-## Shipping plumbing (does not exist yet)
+## How to ship an app update
+
+    pnpm ios ship      # = ios/upload.sh (the whole path):
+                       # build-number bump → archive → ship-hygiene gates →
+                       # CLI export for App Store Connect → gate the IPA →
+                       # upload
+
+- Upload runs via `xcrun altool` when `APPLE_ID` +
+  `APPLE_APP_SPECIFIC_PASSWORD` are set; otherwise the run stops at
+  `ios/build/export/Idfon.ipa` — upload that file from Transporter.
+- **Ship only the CLI-exported IPA above — never the Xcode Organizer
+  export.** Organizer's Distribute keeps the entitlements file's
+  `development` value verbatim: App Store Connect rejects it (90046) and, if
+  one slips through, the build mints sandbox push tokens and nothing rings
+  (the locked-phone wake saga). `upload.sh` gates on `aps-environment =
+  production` in the extracted IPA for exactly this reason.
+- **Commit the `CURRENT_PROJECT_VERSION` bump** the script makes in
+  `ios/Idfon.xcodeproj/project.pbxproj` together with what it ships —
+  TestFlight rejects reused build numbers.
+- `pnpm ios archive` stops after archiving (gates + Organizer staging,
+  no export/upload). Handy for inspecting the `.xcarchive`, but do not
+  Distribute from Organizer — see the entitlements rule above.
+
+## Shipping plumbing
 
 - [x] **Archive → export → upload path — done (2026-10-21).** `ios/upload.sh`
       (sibling of `build.sh`): build-number bump → `xcodebuild archive` →
       gates → `-exportArchive` (method `app-store-connect`, team
       `RV27HPQNMF`) → `xcrun altool --upload-app` when
       `APPLE_ID`+`APPLE_APP_SPECIFIC_PASSWORD` are set, else the IPA is left
-      for Transporter. **First submission: manual in Xcode** (human preference,
-      2026-10-21); the script is for the ones after. First archive+export ran
+      for Transporter. First archive+export ran
       2026-10-21: export re-signs with the distribution profile and the
       archived IPA shows `aps-environment=production` / `get-task-allow=false`
       — the plan's open first-archive question is answered; `upload.sh` gates
-      on it. (The `.xcarchive` lands outside Organizer's
-      `~/Library/Developer/Xcode/Archives`; copy it there to Distribute from
-      Xcode, or upload `build/export/Idfon.ipa` via Transporter. `pnpm ios
-      archive` = archive + gates + the Organizer staging only, no
-      export/upload — for the manual Organizer path.)
+      on it. The `.xcarchive` lands outside Organizer's
+      `~/Library/Developer/Xcode/Archives`; `pnpm ios archive` stages it
+      there. `pnpm ios ship` is the alias for the full path (added 2026-10-25).
 - [x] **`CFBundleVersion` must be unique per upload — done (2026-10-21).**
       `upload.sh` bumps `CURRENT_PROJECT_VERSION` (pbxproj, all configs) on
       every run. On the manual Xcode path, bump Build (target → General) by
