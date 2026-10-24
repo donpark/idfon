@@ -90,7 +90,7 @@ trap cleanup EXIT
 # Unpair stale names in a separate launch: AppDelegate handles each request
 # asynchronously, so mixing remove and add in one launch races them.
 xcrun devicectl device process launch --device "$device" --terminate-existing --console \
-  com.idfon.ios -- -unpair mac -unpair mac-current >"$log" 2>&1 &
+  com.idfon.ios2 -- -unpair mac -unpair mac-current >"$log" 2>&1 &
 cleanup_launcher=$!
 sleep 2
 kill "$cleanup_launcher" 2>/dev/null || true
@@ -100,7 +100,7 @@ wait "$cleanup_launcher" 2>/dev/null || true
 pair_args=(-pair "$mac_ticket" mac)
 if [ -n "$eve_ticket" ]; then pair_args+=(-pair "$eve_ticket" eve); fi
 xcrun devicectl device process launch --device "$device" --terminate-existing --console \
-  com.idfon.ios -- -pair-exit "${pair_args[@]}" >"$log" 2>&1 &
+  com.idfon.ios2 -- -pair-exit "${pair_args[@]}" >"$log" 2>&1 &
 launcher=$!
 for _ in $(seq 1 50); do
   if grep -q 'idfon paired:' "$log"; then break; fi

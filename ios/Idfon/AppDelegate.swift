@@ -99,7 +99,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// header until the legacy path is deleted.
     private func setVideoRotation() {}
 
-    /// Automation channel (device.sh com.idfon.ios -dial <ref> / -answer);
+    /// Automation channel (device.sh com.idfon.ios2 -dial <ref> / -answer);
     /// launch arguments bypass the system "Open in app?" confirmation that
     /// opening a URL scheme shows.
     private func handleLaunchArguments() {
