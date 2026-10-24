@@ -2,7 +2,10 @@
 # Archive, export, gate and upload an iOS build to App Store Connect (TestFlight).
 # Sibling of build.sh (docs/testflight-plan.md).
 #
-# Usage: ios/upload.sh
+# Usage: ios/upload.sh          export + gates + upload (as below)
+#        ios/upload.sh archive  stop after archiving and stage the .xcarchive
+#                               into ~/Library/Developer/Xcode/Archives, ready
+#                               to upload from Xcode's Organizer
 #   APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD set -> also uploads via altool;
 #   otherwise the run stops at build/export/Idfon.ipa (upload it from
 #   Transporter or Xcode organizer). Every run bumps CURRENT_PROJECT_VERSION
@@ -13,6 +16,21 @@
 # Distribute App); this script exists for the convenience of the ones after.
 set -euo pipefail
 cd "$(dirname "$0")"
+mode=${1:-}
+
+# Ship-hygiene gates (shared by both paths): the rig's markers must never
+# reach a shipping binary, and no APNs key may ride along.
+check_ship_hygiene() {
+  local app="$1"
+  if strings "$app/Idfon" | grep -E -q 'e2etoken|sandbox\.push\.apple\.com|:8090|192\.168\.'; then
+    echo "upload.sh: test-rig residue in the binary" >&2
+    exit 1
+  fi
+  if find "$app" -name '*.p8' | grep -q .; then
+    echo "upload.sh: APNs .p8 key bundled inside the app" >&2
+    exit 1
+  fi
+}
 
 # 1. Unique build number per upload.
 n=$(grep -m1 'CURRENT_PROJECT_VERSION = ' Idfon.xcodeproj/project.pbxproj | grep -oE '[0-9]+')
@@ -29,6 +47,23 @@ rm -rf "$archive"
 xcodebuild archive -project Idfon.xcodeproj -scheme Idfon \
   -destination 'generic/platform=iOS' ARCHS=arm64 \
   -archivePath "$archive" -configuration Release -allowProvisioningUpdates
+
+# Archive-only path: stage into Organizer's Archives directory (it only lists
+# ~/Library/Developer/Xcode/Archives) and stop. Organizer's "Distribute App ->
+# App Store Connect" applies the distribution profile — where
+# aps-environment flips to production (the export path's gate below).
+if [ "$mode" = archive ]; then
+  check_ship_hygiene "$archive/Products/Applications/Idfon.app"
+  stamp=$(date '+%Y-%m-%d %H.%M.%S')
+  dest="$HOME/Library/Developer/Xcode/Archives/$(date +%Y-%m-%d)/Idfon $stamp.xcarchive"
+  mkdir -p "$(dirname "$dest")"
+  rm -rf "$dest"
+  cp -R "$archive" "$dest"
+  echo "upload.sh: gates ok (no rig residue, no bundled key)"
+  echo "upload.sh: staged for Organizer: $dest"
+  echo "  Xcode → Window → Devices and More → Archives → Distribute App → App Store Connect"
+  exit 0
+fi
 
 # 3. Export for App Store Connect (re-signs with the distribution profile).
 cat > build/ExportOptions.plist <<'PLIST'
@@ -67,16 +102,8 @@ if ! grep -A2 'aps-environment' "$tmp/ents" | grep -q 'production'; then
   echo "upload.sh: aps-environment is not production — distribution signing missing" >&2
   exit 1
 fi
-# b) no test-rig residue (edge-deploy-checklist.md "rules"): the rig's markers
-#    must never reach a shipping binary, and no APNs key may ride along.
-if strings "$app/Idfon" | grep -E -q 'e2etoken|sandbox\.push\.apple\.com|:8090|192\.168\.'; then
-  echo "upload.sh: test-rig residue in the binary" >&2
-  exit 1
-fi
-if find "$app" -name '*.p8' | grep -q .; then
-  echo "upload.sh: APNs .p8 key bundled inside the app" >&2
-  exit 1
-fi
+# b) ship hygiene (rig residue / bundled key) — see check_ship_hygiene.
+check_ship_hygiene "$app"
 rm -rf "$tmp"
 echo "upload.sh: gates ok (aps-environment=production, no rig residue)"
 
