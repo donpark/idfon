@@ -10,9 +10,14 @@ ios_dir="$root/ios"
 "$ios_dir/build-deps.sh"
 
 CONFIG=${CONFIG:-Release}
+# -allowProvisioningUpdates/-allowProvisioningDeviceRegistration: xcodebuild
+# registers a newly connected device with the developer portal and refreshes
+# the development profile on the fly — without them a rebuild re-signs with a
+# cached profile that lacks the new UDID (install fails 0xe8008012).
 xcodebuild -project "$ios_dir/Idfon.xcodeproj" -scheme Idfon \
   -destination 'generic/platform=iOS' ARCHS=arm64 \
-  -derivedDataPath "$ios_dir/.derived" -configuration "$CONFIG" build
+  -derivedDataPath "$ios_dir/.derived" -configuration "$CONFIG" \
+  -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
 
 app="$ios_dir/.derived/Build/Products/${CONFIG}-iphoneos/Idfon.app"
 
