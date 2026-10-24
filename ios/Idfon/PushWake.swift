@@ -19,7 +19,10 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     static let shared = PushWake()
 
     /// The app's VoIP topic: `<bundle-id>.voip` (tokens are per app bundle).
-    static let topic = "com.idfon.ios.voip"
+    /// Derived from the bundle, never hard-coded — a build whose bundle id
+    /// differs must not advertise a mismatched topic (APNs reports that as
+    /// BadDeviceToken).
+    static let topic = "\(Bundle.main.bundleIdentifier ?? "com.idfon.ios").voip"
 
     private static let tokenKey = "idfon.push.token"
 
@@ -40,6 +43,11 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
         self.registry = registry
+        // Re-assert the persisted token at launch (registration is
+        // idempotent): the wake channel must not depend on didUpdate firing
+        // promptly — a fresh install whose core is slow registers late, not
+        // never.
+        if let lastToken { Task { await register(token: lastToken) } }
     }
 
     // MARK: - Caller side (ring/cancel)
@@ -99,11 +107,14 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     // MARK: - Registration
 
     private func register(token: String) async {
-        // The core may still be booting at launch: retry, then leave it until
-        // the next launch or credential update re-tries.
-        for _ in 0..<5 {
+        // The core may still be booting at launch — exponential backoff, so a
+        // slow cold start does not exhaust five fixed 3 s attempts in ~15 s
+        // and silently never registers (observed 2026-10-24).
+        var delay = 2_000_000_000
+        for _ in 0..<6 {
             if await registerOnce(token: token) { return }
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(delay))
+            delay *= 2
         }
         idfonError("idfon push: registration failed")
     }
