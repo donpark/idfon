@@ -45,27 +45,38 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
         self.registry = registry
-        // Re-assert the persisted token at launch (registration is
-        // idempotent): the wake channel must not depend on didUpdate firing
-        // promptly — a fresh install whose core is slow registers late, not
-        // never.
-        if let lastToken {
-            // Distinguish "PushKit re-delivered" from "app replayed its cache":
-            // the fossil-token case (stale bytes re-registered forever) is only
-            // visible if each path logs its own source + token prefix.
-            idfonLog("idfon push: kit cached token=\(String(lastToken.prefix(12)))")
-            registerWithRetries(lastToken)
-        }
+        reassert(registry)
     }
 
     /// Foreground hook: registration is otherwise a launch-only affair, and a
     /// launch can beat both the push service (post-reboot, post network
-    /// reset) and the daemon — the attempts then expire silently. Re-create
-    /// the registry (PushKit re-delivers its current token) and re-assert the
-    /// persisted one (`start`).
+    /// reset) and the daemon — the attempts then expire silently.
     func refresh() {
-        registry = nil
-        start()
+        // One registry for the app's lifetime (Apple DTS, iOS 26: creating
+        // and destroying PKPushRegistry causes missed pushes and crashes).
+        // Re-prompt delivery by toggling desiredPushTypes instead.
+        guard let registry else { start(); return }
+        registry.desiredPushTypes = []
+        registry.desiredPushTypes = [.voIP]
+        reassert(registry)
+    }
+
+    /// Register the freshest token known. On iOS 26 `didUpdate` only fires
+    /// when the token *changes*, so the system-cached token must be read via
+    /// `pushToken(for:)` (DTS) — without it the app can replay a stale
+    /// UserDefaults copy forever. The persisted copy is only the fallback for
+    /// the instant before PushKit has any token.
+    private func reassert(_ registry: PKPushRegistry) {
+        if let raw = registry.pushToken(for: .voIP) {
+            let token = raw.map { String(format: "%02x", $0) }.joined()
+            idfonLog("idfon push: kit system token=\(String(token.prefix(12))) len=\(token.count)")
+            lastToken = token
+            UserDefaults.standard.set(token, forKey: Self.tokenKey)
+            registerWithRetries(token)
+        } else if let lastToken {
+            idfonLog("idfon push: kit cached token=\(String(lastToken.prefix(12)))")
+            registerWithRetries(lastToken)
+        }
     }
 
     // MARK: - Caller side (ring/cancel)
