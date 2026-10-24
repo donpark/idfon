@@ -75,8 +75,12 @@ push channel needs more than the stock `compose.yaml` provides:
    `--push-apns-key /var/lib/idfon/edge.apns.p8 --push-apns-key-id <id>
    --push-apns-team <team> --push-apns-url https://api.push.apple.com
    --push-state /var/lib/idfon/edge-push.json`.
-   The **production** APNs URL is mandatory: the sandbox URL only rings
-   development builds, and TestFlight/App Store builds silently die there.
+   The **production** APNs URL is the right default: since the
+   environment-learning edge (v0.9.2) a token minted for the other
+   environment flips to its own host on send. App-side counterpart (learned
+   2026-10-24): TestFlight installs mint *sandbox*-keyed tokens, so
+   `ios/upload.sh` deliberately ships `aps-environment: development` — its
+   gate comment carries the full chain.
    (The stock `compose.yaml` carries these flags now — the droplet only needs
    the `.p8` in place and a `docker compose up -d`.)
 3. **Apps on production** — mac: `defaults write com.idfon.mac idfon.edge.url
