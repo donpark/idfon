@@ -10,6 +10,14 @@ ios_dir="$root/ios"
 "$ios_dir/build-deps.sh"
 
 CONFIG=${CONFIG:-Release}
+# Signing leftovers survive "xcodebuild clean" and defeat re-signing after an
+# automatic-signing bundle id change (a freshly built .app kept the old
+# profile and failed install with 0xe8008012). Drop them so the build
+# re-signs from scratch.
+rm -rf "$ios_dir/build" \
+  "$ios_dir/.derived/Build/Products/${CONFIG}-iphoneos" \
+  "$ios_dir/.derived/Build/Intermediates.noindex/Idfon.build"
+
 # -allowProvisioningUpdates/-allowProvisioningDeviceRegistration: xcodebuild
 # registers a newly connected device with the developer portal and refreshes
 # the development profile on the fly — without them a rebuild re-signs with a
