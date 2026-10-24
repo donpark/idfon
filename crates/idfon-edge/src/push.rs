@@ -193,7 +193,7 @@ impl HttpApns {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("apns {status}: {body}");
+            anyhow::bail!("apns [{host}] {status}: {body}");
         }
         Ok(())
     }
@@ -230,6 +230,12 @@ impl ApnsSender for HttpApns {
                     // ring does not pay the refusal again.
                     let other = env.other();
                     let other_host = if other == TokenEnv::Production { &hosts.0 } else { &hosts.1 };
+                    tracing::warn!(
+                        target: "idfon.edge.push",
+                        from = host,
+                        to = other_host,
+                        "token refused by its environment; trying the counterpart"
+                    );
                     Self::post(&client, &authorization, other_host, &token, &topic, &payload).await?;
                     envs
                         .lock()
