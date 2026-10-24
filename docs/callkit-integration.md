@@ -186,10 +186,11 @@ id. What the bundle id does dictate is the APNs envelope: tokens are per app
 bundle and every push carries its token's topic (`<bundle-id>.voip`), which is
 why registration stores `token → topic` and fan-out varies the topic per token.
 One team-level `.p8` auth key signs for **all** apps — no second key when the
-mac joins (P3). The one leak to remember is the APNs *environment*: dev-signed
-builds deliver only via `api.sandbox.push.apple.com`, so a dev edge sets
-`--push-apns-url` there; an edge serving mixed sandbox/prod tokens would need
-per-token environment (not built).
+mac joins (P3). The one leak is the APNs *environment*: dev-signed builds
+deliver only via `api.sandbox.push.apple.com`, TestFlight/App Store builds only
+via production. The sender learns it per token (landed 2026-10-24): try the
+configured host, flip to the counterpart on `BadEnvironmentKeyInToken`,
+remember the verdict — one edge serves mixed dev/TestFlight fleets.
 
 **Names and the call log (decided 2026-10-17, donpark/idfon#48).** The system
 call UI shows real peer display names, which land in the system call log
