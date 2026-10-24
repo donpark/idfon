@@ -90,10 +90,14 @@ final class CallKitController: NSObject, CXProviderDelegate {
     /// call whose registration has not completed fails the report, #58).
     func presentPush(callUUID: String, callerId: String, hasVideo: Bool, endImmediately: Bool = false) {
         guard !callerId.isEmpty, !callUUID.isEmpty else { return }
+        let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
         if let existing = current, !existing.outgoing {
-            // Redelivery or a newer invite from the same peer: keep the ring
-            // already up (the machines hold the newest ticket).
-            if existing.peerId == callerId { return }
+            // Redelivery of the call already ringing: it is reported — keep
+            // it. Match on the call UUID, never on the peer: a *newer* call
+            // from the same peer (a redial) must supersede below, or its
+            // mustReport push ends in no reported call and PushKit stops
+            // delivering VoIP pushes to a suspended app entirely.
+            if existing.uuid == uuid { return }
             // Never steal a call this device answered.
             if answeredLocally(existing) {
                 idfonLog("idfon callkit: push ring ignored — busy")
@@ -104,7 +108,6 @@ final class CallKitController: NSObject, CXProviderDelegate {
             idfonLog("idfon callkit: push ring supersedes \(existing.uuid.uuidString)")
             endIncomingCall(existing, reason: .declinedElsewhere)
         }
-        let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
         let update = callUpdate(
             name: IncomingCallRouter.shared.name(for: callerId), hasVideo: hasVideo)
         current = Call(
