@@ -322,6 +322,27 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
                 await MainActor.run { completion(actions) }
             }
         }])
+        let share = UIMenu(title: "Share Identity", image: UIImage(systemName: "airdrop"),
+                           children: [UIDeferredMenuElement { [weak self] completion in
+            Task {
+                let identities = (try? await self?.client.identities()) ?? []
+                let actions: [UIAction]
+                if identities.isEmpty {
+                    actions = [UIAction(title: "Share Identity") { [weak self] _ in
+                        guard let self else { return }
+                        ContactExchange.shareCard(ref: nil, from: self)
+                    }]
+                } else {
+                    actions = identities.map { info in
+                        UIAction(title: info.displayName) { [weak self] _ in
+                            guard let self else { return }
+                            ContactExchange.shareCard(ref: nil, identity: info.id, from: self)
+                        }
+                    }
+                }
+                await MainActor.run { completion(actions) }
+            }
+        }])
         let exchange = [
             UIAction(title: "Scan QR Code", image: UIImage(systemName: "qrcode.viewfinder")) { [weak self] _ in
                 self?.scanCode()
@@ -330,9 +351,10 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
                 self?.showMyCard()
             },
         ]
-        guard OnDeviceAgents.available else { return UIMenu(children: [contact] + exchange) }
+        guard OnDeviceAgents.available else { return UIMenu(children: [contact, share] + exchange) }
         return UIMenu(children: [
             contact,
+            share,
         ] + exchange + [
             UIAction(title: "On-Device Agent", image: UIImage(systemName: "cpu")) { [weak self] _ in
                 self?.addOnDeviceAgent()
