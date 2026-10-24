@@ -22,18 +22,29 @@ app="$ios_dir/.derived/Build/Products/${CONFIG}-iphoneos/Idfon.app"
 stamp=$(strings "$app/Idfon" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}\.[a-z0-9]+' | head -1)
 echo "device.sh: build stamp = ${stamp:-MISSING} (expect AppDelegate.buildStamp)"
 
-device=$(xcrun devicectl list devices 2>/dev/null \
+# If several devices are attached, guessing which phone is the user's wife
+# costs a whole run (it silently installed to the wrong phone once).
+# Never guess: require an explicit pick when more than one is connected.
+candidates=$(xcrun devicectl list devices 2>/dev/null \
   | grep -E "connected.*physical|physical.*connected" \
-  | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
+  | grep -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' | sort -u || true)
 if [ -n "${IPHONE_UDID:-}" ]; then
   device="$IPHONE_UDID"
-  elif [ -n "${IPHONE_NAME:-}" ]; then
+elif [ -n "${IPHONE_NAME:-}" ]; then
   device="$IPHONE_NAME"
 elif [ -n "${DEVICE:-}" ]; then
   device="$DEVICE"
-elif [ -z "$device" ]; then
-  echo "no connected iPhone found (set IPHONE_UDID, IPHONE_NAME, or DEVICE)" >&2
+elif [ "$(printf '%s\n' "$candidates" | grep -c .)" -gt 1 ]; then
+  echo "multiple connected iPhones; pick one explicitly:" >&2
+  xcrun devicectl list devices >&2
+  echo "usage: IPHONE_UDID=<udid> $0   (or IPHONE_NAME=<name>)" >&2
   exit 1
+else
+  device="$candidates"
+  if [ -z "$device" ]; then
+    echo "no connected iPhone found (set IPHONE_UDID, IPHONE_NAME, or DEVICE)" >&2
+    exit 1
+  fi
 fi
 
 echo "== installing to $device"
