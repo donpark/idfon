@@ -12,6 +12,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         idfonLog("idfon build stamp \(Self.buildStamp)")
+        // Config schema migrations before launch-arg config below: automation
+        // must win over a migration, never the other way round.
+        ConfigMigrations.run()
         // Before the daemon starts so an automation launch (-relayurls …) both
         // sets and uses the relay config.
         RelaySettings.configureFromLaunchArgs(ProcessInfo.processInfo.arguments)
