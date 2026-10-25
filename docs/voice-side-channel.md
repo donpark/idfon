@@ -641,6 +641,9 @@ describes the shipping ASR.)
 - **Selection** — persisted per device; Contact Detail picks per contact on
   both apps, and the language rule sets the default when there is no pick.
   `IDFON_TTS`/`-ttsbackend` and `IDFON_ASR`/`-asrbackend` override for testing.
+  The seams stay multi-backend (cloud services included); the voice-agent
+  path itself requires streaming engines end-to-end — the 2026-10-25
+  streaming contract in `voice-tyger-streaming-plan.md`.
 - **Provisioning** — `SpeechProvisioning.directory(for:)` resolves the Kokoro
   model directory in priority order: an Apple-managed `BAAssetPackManager` pack
   (`IDFON_KOKORO_PACK`, iOS 26+; that path needs a managed downloader extension
