@@ -599,6 +599,10 @@ explicit choice still wins; the language gate only sets the default.
   documents an uncatchable iOS 27 Core ML crash after ≈1 h cumulative
   synthesis (short calls are fine); the escape hatch is Chatterbox Nano or
   Kokoro ONNX.
+  (2026-10-25 ruling: Kokoro is out as the voice-agent mouth — whole-clip,
+  no streaming, which the duplex loop needs. Phonon is the mouth. Kokoro
+stays in the tree for possible future use cases; this bullet remains the
+as-built default until the streaming pair lands.)
 - **TTS (build-time option)** — `PhononTtsEngine` (gradium phonon-31m, 24 kHz
   streaming; `ptts`/xn-ptts runtime, not FluidAudio) is compiled in only when
   the build sets `IDFON_TTS_PHONON=1` (mac: selects the package in
