@@ -25,6 +25,7 @@ enum PlaybackBus {
 
     /// Copy-under-lock, call outside it: an observer must not deadlock a producer.
     static func notify(samples: [Float], rate: Double) {
+        guard !FeedbackEar.active else { return }  // voice feedback stays out of the second ear
         lock.lock()
         let all = observers.allObjects
         lock.unlock()

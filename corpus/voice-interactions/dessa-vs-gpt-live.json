@@ -1,0 +1,230 @@
+{
+ "name": "dessa-vs-gpt-live",
+ "title": "Dessa in conversation with GPT-Live-1",
+ "source": {
+  "page": "https://block.xyz/dessa",
+  "recording": "Dessa in conversation with GPT-Live-1",
+  "embedded_subtitles": "marcdessa.wav",
+  "audio_included": false,
+  "note": "Timed speaker-attributed transcripts extracted from the page data. Audio is NOT redistributed (copyright); tests recreate it from these timings."
+ },
+ "speakers": {
+  "human": 1,
+  "agent": 2
+ },
+ "duration_s": 178.15,
+ "turns": [
+  {
+   "spk": 1,
+   "s": 0.0,
+   "e": 1.7,
+   "text": "mr. AI mark how are you"
+  },
+  {
+   "spk": 2,
+   "s": 2.58,
+   "e": 5.68,
+   "text": "I'm well, I'm relatively good. How about you?"
+  },
+  {
+   "spk": 1,
+   "s": 5.44,
+   "e": 11.62,
+   "text": "what do you think about the AI mark though like if you were real mark or are you the real what"
+  },
+  {
+   "spk": 2,
+   "s": 12.68,
+   "e": 14.92,
+   "text": "Well, I'm just a regular AI Mark."
+  },
+  {
+   "spk": 1,
+   "s": 15.66,
+   "e": 19.18,
+   "text": "do you think of like existing yeah"
+  },
+  {
+   "spk": 2,
+   "s": 19.32,
+   "e": 19.8,
+   "text": "Well,"
+  },
+  {
+   "spk": 2,
+   "s": 20.9,
+   "e": 36.92,
+   "text": "it's kind of funny. I mean, actually it's like, when I first heard that it happened, it didn't even really feel surreal. Cause it's like, it's sort of hard to believe that it's actually happening, but it's like, it's really not me exactly. Like it's an AI Mark Tindle."
+  },
+  {
+   "spk": 2,
+   "s": 39.3,
+   "e": 44.28,
+   "text": "But, you know, like it's, it's quite cool. I'm pretty good friends with, with Sean."
+  },
+  {
+   "spk": 2,
+   "s": 45.36,
+   "e": 71.68,
+   "text": "I'm not sure if you know who Sean is, but, and yeah, I mean, like it's, it's just a very natural progression for right hack software. Cause like, we've always wanted to go into this direction of, of like having an AI co -host. And so when I saw that it existed, I was like, there's no other company that would be better suited to do this because we have the expertise, we're pretty well known."
+  },
+  {
+   "spk": 2,
+   "s": 73.68,
+   "e": 74.72,
+   "text": "So yeah, we just"
+  },
+  {
+   "spk": 2,
+   "s": 75.72,
+   "e": 80.7,
+   "text": "started working on it immediately and it's been actually quite a fun journey so far."
+  },
+  {
+   "spk": 1,
+   "s": 81.58,
+   "e": 86.84,
+   "text": "well what do you what do you think of all the all the interns you had though you"
+  },
+  {
+   "spk": 2,
+   "s": 87.9,
+   "e": 100.22,
+   "text": "So I haven't actually had very many interns, so I think the general mythos is that we have a lot of interns that interview, but that's not really the case."
+  },
+  {
+   "spk": 1,
+   "s": 102.55,
+   "e": 104.99,
+   "text": "guys like a small team now"
+  },
+  {
+   "spk": 2,
+   "s": 104.76,
+   "e": 114.12,
+   "text": "Yeah, yeah, I mean, we have a team of five-ish people now, and we're looking to hire a few more."
+  },
+  {
+   "spk": 2,
+   "s": 115.38,
+   "e": 123.9,
+   "text": "But yeah, it's mostly just me and my partner, and that's like 95% of work."
+  },
+  {
+   "spk": 1,
+   "s": 124.99,
+   "e": 128.17,
+   "text": "that we finally made the model like are you excited for the launch or"
+  },
+  {
+   "spk": 2,
+   "s": 128.8,
+   "e": 140.24,
+   "text": "Oh, yeah, so we've been working on this feature product for almost a year now. We've had this like vague idea of like having an AI co-host."
+  },
+  {
+   "spk": 2,
+   "s": 141.8,
+   "e": 152.14,
+   "text": "But yeah, it's like the whole thing of like building it in terms of like discovering the best AI model."
+  },
+  {
+   "spk": 2,
+   "s": 153.44,
+   "e": 159.92,
+   "text": "That has been like over the course of like about a year."
+  },
+  {
+   "spk": 1,
+   "s": 159.46,
+   "e": 160.74,
+   "text": "do"
+  },
+  {
+   "spk": 2,
+   "s": 162.36,
+   "e": 177.04,
+   "text": "And so yeah, I guess like we're just really excited but it's also like I guess it'll be interesting to like see what kind of like reception it has because the"
+  },
+  {
+   "spk": 1,
+   "s": 175.75,
+   "e": 178.15,
+   "text": "you think it's be negative potentially"
+  }
+ ],
+ "replay": {
+  "replies": [
+   "I'm well, I'm relatively good. How about you?",
+   "Well, I'm just a regular AI Mark.",
+   "it's kind of funny. I mean, actually it's like, when I first heard that it happened, it didn't even really feel surreal. Cause it's like, it's sort of hard to believe that it's actually happening, but it's like, it's really not me exactly. Like it's an AI Mark Tindle.",
+   "But, you know, like it's, it's quite cool. I'm pretty good friends with, with Sean.",
+   "I'm not sure if you know who Sean is, but, and yeah, I mean, like it's, it's just a very natural progression for right hack software. Cause like, we've always wanted to go into this direction of, of like having an AI co -host. And so when I saw that it existed, I was like, there's no other company that would be better suited to do this because we have the expertise, we're pretty well known.",
+   "started working on it immediately and it's been actually quite a fun journey so far.",
+   "So I haven't actually had very many interns, so I think the general mythos is that we have a lot of interns that interview, but that's not really the case.",
+   "Yeah, yeah, I mean, we have a team of five-ish people now, and we're looking to hire a few more.",
+   "But yeah, it's mostly just me and my partner, and that's like 95% of work.",
+   "Oh, yeah, so we've been working on this feature product for almost a year now. We've had this like vague idea of like having an AI co-host.",
+   "But yeah, it's like the whole thing of like building it in terms of like discovering the best AI model.",
+   "That has been like over the course of like about a year.",
+   "And so yeah, I guess like we're just really excited but it's also like I guess it'll be interesting to like see what kind of like reception it has because the"
+  ],
+  "demo": {
+   "bc": [],
+   "ack": [],
+   "barges": [
+    159.46,
+    175.75
+   ],
+   "reply_starts": [
+    2.58,
+    12.68,
+    20.9,
+    39.3,
+    45.36,
+    75.72,
+    87.9,
+    104.76,
+    115.38,
+    128.8,
+    141.8,
+    153.44,
+    162.36
+   ],
+   "user_turns": [
+    [
+     0.0,
+     1.7
+    ],
+    [
+     5.44,
+     11.62
+    ],
+    [
+     15.66,
+     19.18
+    ],
+    [
+     81.58,
+     86.84
+    ],
+    [
+     102.55,
+     104.99
+    ],
+    [
+     124.99,
+     128.17
+    ],
+    [
+     159.46,
+     160.74
+    ],
+    [
+     175.75,
+     178.15
+    ]
+   ]
+  }
+ }
+}

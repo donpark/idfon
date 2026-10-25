@@ -70,6 +70,13 @@ final class VoiceAgentSession: NSObject {
     /// Last text spoken by TTS, so the agent's own tail can be dropped instead
     /// of re-sent as a user turn (self-bleed).
     private var lastSpoken: String?
+    /// Voice feedback ("mm-hm") that played and when: it never enters history
+    /// (`lastSpoken` stays the agent's reply) and is only echo-checked near its
+    /// playback window, so a later real "mm-hm" can still be a turn.
+    private var lastFeedback: String?
+    private var lastFeedbackAt: Date?
+    /// In-flight feedback utterance; drained before a reply speaks.
+    private var feedbackTask: Task<Void, Never>?
     /// True while the agent speaks and the recognizer is armed for barge-in;
     /// a committed utterance then cancels playback instead of ending a turn.
     private var bargeInArmed = false
@@ -636,6 +643,14 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func speak(_ text: String) async -> String? {
+        // A reply supersedes voice feedback still playing: ENDPOINT can land
+        // inside a "mm-hm". Stop it and await the drained task so two speaks
+        // never overlap (each engine is single-utterance).
+        if feedbackTask != nil {
+            tts.stop()
+            await feedbackTask?.value
+            feedbackTask = nil
+        }
         lastSpoken = text
         // Arm barge-in: keep the recognizer live while TTS plays. The echo and
         // gated-peak filters keep the agent's own voice out, so a cancellable
@@ -684,21 +699,61 @@ final class VoiceAgentSession: NSObject {
                 guard self.bargeInArmed else { return }
                 Automation.mark("turn-taker: tyger barge -> stop playback")
                 self.tts.stop()
+            case "BACKCHANNEL":
+                self.utterFeedback()
             default:
-                break // BACKCHANNEL: logged by the shadow; the speak hook is future work
+                break
             }
         }
     }
 
+    /// Tyger BACKCHANNEL: a short "mm-hm" over the caller's turn. Voice
+    /// feedback only — never in history (`lastSpoken` untouched: no chat
+    /// bubble, no echo bookkeeping) and never in the second ear
+    /// (FeedbackEar). The rules keep their own refractory; the gap here stops
+    /// playback-level stacking.
+    private func utterFeedback() {
+        guard !stopRequested, feedbackTask == nil, case .listening = state, !bargeInArmed else { return }
+        if let at = lastFeedbackAt, Date().timeIntervalSince(at) < 1.2 { return }
+        // "Mm-hmm." renders as a clean hum in Phonon; "Mm-hm." phonemizes
+        // to nonsense (heard as "lim"). Round-trip any change (TTS → ASR).
+        let text = "Mm-hmm."
+        lastFeedback = text
+        lastFeedbackAt = Date()
+        Automation.mark("turn-taker: tyger backchannel -> feedback")
+        feedbackTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await FeedbackEar.suppress { await self.tts.speak(text) }
+            self.feedbackTask = nil
+        }
+    }
+
+    /// True while the mic may still be re-hearing the agent's own feedback cue
+    /// (cue playback + the segmenter's 1.2 s gap-commit lag). The window is
+    /// short on purpose: a later real "mm-hm" is a turn again.
+    private func isFeedbackEcho(_ text: String) -> Bool {
+        guard let lastFeedback, let at = lastFeedbackAt,
+              Date().timeIntervalSince(at) < 3
+        else { return false }
+        return voice.isEcho(spoken: lastFeedback, heard: text)
+    }
+
     private func handleCommit(_ text: String) {
         guard bargeInArmed else {
+            // The mic can re-hear the agent's own feedback cue; it must not
+            // become a caller turn.
+            if isFeedbackEcho(text) {
+                Automation.mark("voice-agent: dropped feedback echo text=\(text)")
+                return
+            }
             deliver(text)
             return
         }
         guard !micMuted,
               asr?.bargeInEngages ?? true,
               voice.isCancellable(text),
-              !voice.isEcho(spoken: lastSpoken ?? "", heard: text)
+              !voice.isEcho(spoken: lastSpoken ?? "", heard: text),
+              !isFeedbackEcho(text)
         else {
             Automation.mark("voice-agent: barge-in ignored text=\(text)")
             return

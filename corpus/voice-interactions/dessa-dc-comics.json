@@ -1,0 +1,553 @@
+{
+ "name": "dessa-dc-comics",
+ "title": "Remembering a movie (title blank + completion)",
+ "source": {
+  "page": "https://block.xyz/dessa",
+  "recording": "Remembering a movie (title blank + completion)",
+  "embedded_subtitles": "DC_comics.wav",
+  "audio_included": false,
+  "note": "Timed speaker-attributed transcripts extracted from the page data. Audio is NOT redistributed (copyright); tests recreate it from these timings."
+ },
+ "speakers": {
+  "human": 1,
+  "agent": 2
+ },
+ "duration_s": 159.63,
+ "turns": [
+  {
+   "spk": 1,
+   "s": 0.11,
+   "e": 9.35,
+   "text": "Let's talk about the Batman movies, especially the trilogy by Christopher Nolan, what I'm talking about."
+  },
+  {
+   "spk": 2,
+   "s": 9.23,
+   "e": 22.85,
+   "text": "Yes, I have seen the first two and I am looking forward to the third one. This one's been in long production, a lot of stuff been happening. But I like Christopher Nolan's films, you know what I mean?"
+  },
+  {
+   "spk": 1,
+   "s": 22.31,
+   "e": 24.49,
+   "text": "Yeah, he's the goat, you know what I'm saying?"
+  },
+  {
+   "spk": 2,
+   "s": 24.19,
+   "e": 32.39,
+   "text": "Yeah, and my take on The Joker is I think Heath Ledger embodied The Joker"
+  },
+  {
+   "spk": 1,
+   "s": 33.42,
+   "e": 36.72,
+   "text": "Oh, this was in the second one,"
+  },
+  {
+   "spk": 2,
+   "s": 34.38,
+   "e": 35.52,
+   "text": "in."
+  },
+  {
+   "spk": 2,
+   "s": 36.62,
+   "e": 38.0,
+   "text": "Yes, in the second one."
+  },
+  {
+   "spk": 1,
+   "s": 36.82,
+   "e": 37.08,
+   "text": "right?"
+  },
+  {
+   "spk": 2,
+   "s": 38.0,
+   "e": 38.3,
+   "text": "Yeah."
+  },
+  {
+   "spk": 1,
+   "s": 38.78,
+   "e": 40.58,
+   "text": "Yeah, what was that one called again?"
+  },
+  {
+   "spk": 2,
+   "s": 39.38,
+   "e": 41.52,
+   "text": "And the Dark Knight."
+  },
+  {
+   "spk": 1,
+   "s": 40.78,
+   "e": 41.54,
+   "text": "I kind of forgot. Yeah."
+  },
+  {
+   "spk": 2,
+   "s": 42.42,
+   "e": 42.98,
+   "text": "Yeah."
+  },
+  {
+   "spk": 1,
+   "s": 42.54,
+   "e": 44.04,
+   "text": "The Dark Knight."
+  },
+  {
+   "spk": 2,
+   "s": 45.66,
+   "e": 46.84,
+   "text": "Rises the"
+  },
+  {
+   "spk": 1,
+   "s": 46.72,
+   "e": 49.24,
+   "text": "No, Rises, I think, is the third."
+  },
+  {
+   "spk": 2,
+   "s": 49.31,
+   "e": 49.73,
+   "text": "third one."
+  },
+  {
+   "spk": 1,
+   "s": 49.6,
+   "e": 50.52,
+   "text": "The one with Bane."
+  },
+  {
+   "spk": 2,
+   "s": 51.49,
+   "e": 52.05,
+   "text": "Yeah,"
+  },
+  {
+   "spk": 1,
+   "s": 52.04,
+   "e": 54.74,
+   "text": "I forgot what the second one was. Just The Dark Knight?"
+  },
+  {
+   "spk": 2,
+   "s": 54.67,
+   "e": 56.03,
+   "text": "I think so. Yeah."
+  },
+  {
+   "spk": 1,
+   "s": 56.3,
+   "e": 60.94,
+   "text": "Okay. But what other movies from Christopher Nolan do you like?"
+  },
+  {
+   "spk": 2,
+   "s": 60.89,
+   "e": 65.85,
+   "text": "Memento is one of that. It is great."
+  },
+  {
+   "spk": 1,
+   "s": 64.78,
+   "e": 65.88,
+   "text": "A Memento, you mean?"
+  },
+  {
+   "spk": 2,
+   "s": 66.09,
+   "e": 67.19,
+   "text": "Yeah, Memento."
+  },
+  {
+   "spk": 1,
+   "s": 67.26,
+   "e": 68.18,
+   "text": "Yeah, yeah, yeah."
+  },
+  {
+   "spk": 2,
+   "s": 67.79,
+   "e": 68.35,
+   "text": "Yeah."
+  },
+  {
+   "spk": 1,
+   "s": 68.18,
+   "e": 69.1,
+   "text": "Yeah, I watched that one."
+  },
+  {
+   "spk": 2,
+   "s": 69.1,
+   "e": 70.1,
+   "text": "That one is pretty good."
+  },
+  {
+   "spk": 1,
+   "s": 70.1,
+   "e": 73.62,
+   "text": "Yeah, Did you watch..."
+  },
+  {
+   "spk": 2,
+   "s": 71.04,
+   "e": 71.04,
+   "text": "Yeah."
+  },
+  {
+   "spk": 1,
+   "s": 73.62,
+   "e": 74.86,
+   "text": "what is it called?"
+  },
+  {
+   "spk": 2,
+   "s": 74.58,
+   "e": 74.62,
+   "text": "The"
+  },
+  {
+   "spk": 1,
+   "s": 75.52,
+   "e": 77.4,
+   "text": "The space one from 2004?"
+  },
+  {
+   "spk": 2,
+   "s": 75.9,
+   "e": 77.12,
+   "text": "Interstellar."
+  },
+  {
+   "spk": 1,
+   "s": 78.22,
+   "e": 79.3,
+   "text": "Interstellar, yes, yes."
+  },
+  {
+   "spk": 2,
+   "s": 78.72,
+   "e": 79.28,
+   "text": "Yeah."
+  },
+  {
+   "spk": 1,
+   "s": 79.46,
+   "e": 81.64,
+   "text": "Oh, that one was amazing, wasn't it?"
+  },
+  {
+   "spk": 2,
+   "s": 81.57,
+   "e": 84.87,
+   "text": "I really like that film, the music to and like how that"
+  },
+  {
+   "spk": 1,
+   "s": 84.64,
+   "e": 86.4,
+   "text": "Oh, yes, yes."
+  },
+  {
+   "spk": 2,
+   "s": 85.85,
+   "e": 88.01,
+   "text": "Yeah, that film was pretty awesome."
+  },
+  {
+   "spk": 1,
+   "s": 87.16,
+   "e": 93.42,
+   "text": "Holy. Yeah, holy shit. The sound work is always amazing in these movies, yeah."
+  },
+  {
+   "spk": 2,
+   "s": 94.03,
+   "e": 94.03,
+   "text": "Yeah."
+  },
+  {
+   "spk": 1,
+   "s": 95.32,
+   "e": 97.18,
+   "text": "But yeah, sorry, go ahead."
+  },
+  {
+   "spk": 2,
+   "s": 97.59,
+   "e": 99.19,
+   "text": "Let's go back to Batman."
+  },
+  {
+   "spk": 2,
+   "s": 100.45,
+   "e": 103.55,
+   "text": "From the Dark Knight to Dark Knight Rises,"
+  },
+  {
+   "spk": 2,
+   "s": 104.81,
+   "e": 105.75,
+   "text": "the Superman ones,"
+  },
+  {
+   "spk": 2,
+   "s": 106.93,
+   "e": 111.01,
+   "text": "there was the Dick Grayson ones."
+  },
+  {
+   "spk": 1,
+   "s": 114.27,
+   "e": 119.85,
+   "text": "Wait, the Superman ones, there was only one movie by Christopher Nolan on Superman, no?"
+  },
+  {
+   "spk": 2,
+   "s": 119.91,
+   "e": 122.19,
+   "text": "Yeah, it was another Batman before that."
+  },
+  {
+   "spk": 1,
+   "s": 123.1,
+   "e": 128.26,
+   "text": "Oh, I don't know them by date, like I don't know them by release dates, I'm pretty bad"
+  },
+  {
+   "spk": 2,
+   "s": 126.35,
+   "e": 126.99,
+   "text": "Yeah,"
+  },
+  {
+   "spk": 1,
+   "s": 128.26,
+   "e": 128.82,
+   "text": "with dates."
+  },
+  {
+   "spk": 2,
+   "s": 128.27,
+   "e": 133.51,
+   "text": "To be honest, Bryan Singer was before Nolan, and then Nolan did his thing."
+  },
+  {
+   "spk": 2,
+   "s": 135.25,
+   "e": 136.25,
+   "text": "But yeah, man,"
+  },
+  {
+   "spk": 1,
+   "s": 136.0,
+   "e": 137.78,
+   "text": "Who is, who is Bryan Singer?"
+  },
+  {
+   "spk": 2,
+   "s": 138.59,
+   "e": 144.15,
+   "text": "Superman Returns and Superman IV, or The Quest for Peace."
+  },
+  {
+   "spk": 1,
+   "s": 145.39,
+   "e": 155.63,
+   "text": "Oh, oh, oh, he did that, oh okay, okay, yeah, I just googled it, yeah, I see what you're talking about. Yeah, man, I don't know, I don't know too many names, yeah, like go easy on me here. All right."
+  },
+  {
+   "spk": 2,
+   "s": 156.59,
+   "e": 159.63,
+   "text": "Oh, man, I really appreciate this. This is awesome. them."
+  }
+ ],
+ "replay": {
+  "replies": [
+   "Yes, I have seen the first two and I am looking forward to the third one. This one's been in long production, a lot of stuff been happening. But I like Christopher Nolan's films, you know what I mean?",
+   "Yeah, and my take on The Joker is I think Heath Ledger embodied The Joker",
+   "Yes, in the second one.",
+   "And the Dark Knight.",
+   "I think so. Yeah.",
+   "Memento is one of that. It is great.",
+   "Interstellar.",
+   "I really like that film, the music to and like how that",
+   "Yeah, that film was pretty awesome.",
+   "Let's go back to Batman.",
+   "From the Dark Knight to Dark Knight Rises,",
+   "there was the Dick Grayson ones.",
+   "Yeah, it was another Batman before that.",
+   "To be honest, Bryan Singer was before Nolan, and then Nolan did his thing.",
+   "Superman Returns and Superman IV, or The Quest for Peace.",
+   "Oh, man, I really appreciate this. This is awesome. them."
+  ],
+  "demo": {
+   "bc": [
+    34.38,
+    42.42,
+    45.66,
+    49.31,
+    51.49,
+    67.79,
+    71.04,
+    74.58,
+    78.72,
+    126.35,
+    135.25
+   ],
+   "ack": [],
+   "barges": [
+    22.31,
+    33.42,
+    36.82,
+    38.78,
+    40.78,
+    42.54,
+    64.78,
+    67.26,
+    70.1,
+    75.52,
+    78.22,
+    84.64,
+    87.16,
+    123.1,
+    128.26
+   ],
+   "reply_starts": [
+    9.23,
+    24.19,
+    36.62,
+    39.38,
+    54.67,
+    60.89,
+    75.9,
+    81.57,
+    85.85,
+    97.59,
+    100.45,
+    106.93,
+    119.91,
+    128.27,
+    138.59,
+    156.59
+   ],
+   "user_turns": [
+    [
+     0.11,
+     9.35
+    ],
+    [
+     22.31,
+     24.49
+    ],
+    [
+     33.42,
+     36.72
+    ],
+    [
+     36.82,
+     37.08
+    ],
+    [
+     38.78,
+     40.58
+    ],
+    [
+     40.78,
+     41.54
+    ],
+    [
+     42.54,
+     44.04
+    ],
+    [
+     46.72,
+     49.24
+    ],
+    [
+     49.6,
+     50.52
+    ],
+    [
+     52.04,
+     54.74
+    ],
+    [
+     56.3,
+     60.94
+    ],
+    [
+     64.78,
+     65.88
+    ],
+    [
+     67.26,
+     68.18
+    ],
+    [
+     68.18,
+     69.1
+    ],
+    [
+     70.1,
+     73.62
+    ],
+    [
+     73.62,
+     74.86
+    ],
+    [
+     75.52,
+     77.4
+    ],
+    [
+     78.22,
+     79.3
+    ],
+    [
+     79.46,
+     81.64
+    ],
+    [
+     84.64,
+     86.4
+    ],
+    [
+     87.16,
+     93.42
+    ],
+    [
+     95.32,
+     97.18
+    ],
+    [
+     114.27,
+     119.85
+    ],
+    [
+     123.1,
+     128.26
+    ],
+    [
+     128.26,
+     128.82
+    ],
+    [
+     136.0,
+     137.78
+    ],
+    [
+     145.39,
+     155.63
+    ]
+   ]
+  }
+ }
+}

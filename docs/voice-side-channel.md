@@ -607,10 +607,14 @@ explicit choice still wins; the language gate only sets the default.
   when unused). Selected like any backend (`IDFON_TTS=phonon`, per-contact);
   models via `scripts/fetch-phonon-31m.sh` (or `IDFON_PHONON_PACK_URL`);
   custom voices are 256KB `.safetensors` embeddings in `voices/NAME.safetensors`
-  (`IDFON_TTS_VOICE=NAME`). iOS 18+/macOS 15+ only. Playback streams 80 ms
-  chunks through the AEC bus as they generate (first audio ≈ 5 ms in the mac
-  smoke: `IDFON_TTS=phonon Idfon -ttssay "…"`); iOS keeps whole-clip synthesis
-  for text-only mode. Voice *creation* runs
+  (`IDFON_TTS_VOICE=NAME`). iOS 18+/macOS 15+ only. Full streaming: text is
+  one utterance per call (the runtime splits long text at sentence ends) and
+  playback streams 80 ms chunks through the AEC bus as they generate (first
+  audio ≈ 6 ms in the 2026-10-25 mac smoke:
+  `IDFON_TTS=phonon Idfon -ttssay "…"`); iOS text-only mode streams through a
+  local player too since 2026-10-25 (whole-clip before). Speak chunk-per-chunk
+  for speak-while-generating (Tyger's mouth pattern; the reply-delta seam).
+  Voice *creation* runs
   through Gradium's clone/download scripts (API key) — provider detail, not a
   launch dependency.
 - **ASR** — `ParakeetAsr` (moondream/parakeet-redux, ANE) is the English

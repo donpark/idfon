@@ -574,8 +574,8 @@ final class PhononTtsEngine: NSObject, TtsEngine {
     /// engine on top of what the prewarm warmed (KokoroTtsEngine pattern).
     private static let warmLock = NSLock()
     private static var warmTask: Task<Phonon?, Never>?
-    private var player: AVAudioPlayer?
-    private var finish: (() -> Void)?
+    /// Text-only playback (no call sink): a local node fed chunk by chunk.
+    private var localPlayer: LocalStreamPlayer?
     private var speakTask: Task<Void, Never>?
     private var tracker: StreamTracker?
     /// The call's single playback sink (the recognizer's output bus). Mirrored
@@ -631,7 +631,7 @@ final class PhononTtsEngine: NSObject, TtsEngine {
         if let playback {
             await stream(text, phonon: phonon, playback: playback)
         } else {
-            await synthesizeWhole(text, phonon: phonon)  // text-only: local player
+            await streamLocal(text, phonon: phonon)  // text-only: local player
         }
     }
 
@@ -673,23 +673,47 @@ final class PhononTtsEngine: NSObject, TtsEngine {
         }
     }
 
-    /// Whole-clip path for text-only mode (no playback sink): synthesize, then
-    /// play through the local player.
-    private func synthesizeWhole(_ text: String, phonon: Phonon) async {
-        do {
-            let start = Date()
-            let samples = try await phonon.synthesize(text)
-            if stopRequested { return }  // cancelled while synthesizing
-            lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
-            Automation.mark("voice: phonon samples=\(samples.count) in \(lastLatencyMs ?? 0)ms")
-            guard let wav = Self.wav(samples) else {
-                Automation.mark("voice: phonon encode failed; using apple")
-                await fallback.speak(text)
-                return
+    /// Text-only path (no playback sink): stream onto a local player, so
+    /// speech starts at the first generated chunk instead of after the last —
+    /// Phonon's whole-clip path was its only non-streaming one.
+    private func streamLocal(_ text: String, phonon: Phonon) async {
+        guard let player = try? LocalStreamPlayer() else {
+            Automation.mark("voice: phonon local player failed; using apple")
+            await fallback.speak(text)
+            return
+        }
+        let start = Date()
+        self.localPlayer = player
+        let tracker = StreamTracker()
+        self.tracker = tracker
+        let task = Task {
+            do {
+                try await phonon.speak(text) { chunk in
+                    guard tracker.beginChunk() else { return }  // stopped
+                    tracker.markFirstAudio(ms: Int(-start.timeIntervalSinceNow * 1000))
+                    guard let buffer = Self.buffer(chunk) else {
+                        Automation.mark("voice: phonon chunk encode failed")
+                        tracker.chunkDone()
+                        return
+                    }
+                    player.enqueue(buffer, done: tracker.chunkDone)
+                }
+            } catch {
+                Automation.mark("voice: phonon synth failed \(error.localizedDescription)")
             }
-            await play(wav)
-        } catch {
-            Automation.mark("voice: phonon synth failed \(error.localizedDescription); using apple")
+            tracker.generatorDone()
+        }
+        speakTask = task
+        await tracker.wait()
+        speakTask = nil
+        self.tracker = nil
+        self.localPlayer = nil
+        if let first = tracker.firstAudioMs {
+            lastLatencyMs = first
+            Automation.mark(
+                "voice: phonon first audio \(first)ms chunks=\(tracker.chunks) total=\(Int(Date().timeIntervalSince(start) * 1000))ms")
+        } else if !stopRequested {
+            Automation.mark("voice: phonon generated nothing; using apple")
             await fallback.speak(text)
         }
     }
@@ -699,33 +723,10 @@ final class PhononTtsEngine: NSObject, TtsEngine {
         tracker?.stop()
         speakTask?.cancel()  // stops generation at the next chunk
         speakTask = nil
-        player?.stop()
-        finish?()
-        finish = nil
-        player = nil
+        localPlayer?.stop()
+        localPlayer = nil
         playback?.stopPlayback()
         fallback.stop()
-    }
-
-    private func play(_ wav: Data) async {
-        // Prefer the recognizer's VPIO engine (the AEC reference bus); fall
-        // back to a local player in text-only mode (KokoroTtsEngine shape).
-        if let playback {
-            await playback.play(wav: wav)
-            return
-        }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            do {
-                let player = try AVAudioPlayer(data: wav)
-                player.delegate = self
-                finish = { continuation.resume() }
-                self.player = player
-                player.play()
-            } catch {
-                Automation.mark("voice: phonon play failed \(error.localizedDescription)")
-                continuation.resume()
-            }
-        }
     }
 
     /// The Core ML bundle at `Documents/phonon`, side-loaded or fetched from
@@ -741,26 +742,6 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                 description: "no phonon models at \(dir.path); side-load the bundle or set IDFON_PHONON_PACK_URL")
         }
         return dir
-    }
-
-    /// f32 mono @24kHz -> 16-bit WAV for the playback sink.
-    private static func wav(_ samples: [Float]) -> Data? {
-        var data = Data()
-        let bytes = samples.count * 2
-        data.reserveCapacity(44 + bytes)
-        func ascii(_ s: String) { data.append(contentsOf: s.utf8) }
-        func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
-        func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { data.append(contentsOf: $0) } }
-        ascii("RIFF"); u32(UInt32(36 + bytes)); ascii("WAVE")
-        ascii("fmt "); u32(16); u16(1); u16(1)  // PCM, mono
-        u32(UInt32(Phonon.sampleRate)); u32(UInt32(Phonon.sampleRate) * 2)
-        u16(2); u16(16)  // block align, bits per sample
-        ascii("data"); u32(UInt32(bytes))
-        for s in samples {
-            let clamped = max(-1.0, min(1.0, Double(s)))
-            u16(UInt16(bitPattern: Int16(clamped * 32767)))
-        }
-        return data
     }
 
     /// f32 mono @24kHz chunk -> buffer for the playback bus.
@@ -857,12 +838,35 @@ private final class StreamTracker: @unchecked Sendable {
     }
 }
 
+/// Text-only playback for `PhononTtsEngine`: chunks as they generate on a
+/// local `AVAudioPlayerNode`. Per-chunk completions feed `StreamTracker`, so
+/// `speak` still returns when the audio has finished playing (the package's
+/// `PhononPlayer` enqueues but never reports playback). Only used when no call
+/// sink owns the session.
 @available(iOS 18.0, *)
-extension PhononTtsEngine: AVAudioPlayerDelegate {
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        finish?()
-        finish = nil
-        self.player = nil
+private final class LocalStreamPlayer: @unchecked Sendable {
+    private let engine = AVAudioEngine()
+    private let node = AVAudioPlayerNode()
+    private let format = AVAudioFormat(standardFormatWithSampleRate: Phonon.sampleRate, channels: 1)!
+
+    init() throws {
+        // Text-only only: a live call owns the session via AudioIO.
+        try AVAudioSession.sharedInstance().setCategory(.playback)
+        try AVAudioSession.sharedInstance().setActive(true)
+        engine.attach(node)
+        engine.connect(node, to: engine.mainMixerNode, format: format)
+        try engine.start()
+        node.play()
+    }
+
+    /// Queue one chunk; `done` fires when it has played back (or was stopped).
+    func enqueue(_ buffer: AVAudioPCMBuffer, done: @escaping () -> Void) {
+        node.scheduleBuffer(buffer, completionHandler: done)
+    }
+
+    func stop() {
+        node.stop()  // flushes scheduled chunks; their completions drain the tracker
+        engine.stop()
     }
 }
 #endif

@@ -1,0 +1,559 @@
+{
+ "name": "dessa-life-advice",
+ "title": "Life advice (empathetic)",
+ "source": {
+  "page": "https://block.xyz/dessa",
+  "recording": "Life advice (empathetic)",
+  "embedded_subtitles": "lifeadvice.wav",
+  "audio_included": false,
+  "note": "Timed speaker-attributed transcripts extracted from the page data. Audio is NOT redistributed (copyright); tests recreate it from these timings."
+ },
+ "speakers": {
+  "human": 1,
+  "agent": 2
+ },
+ "duration_s": 301.13,
+ "turns": [
+  {
+   "spk": 1,
+   "s": 1.1,
+   "e": 1.78,
+   "text": "Hello,"
+  },
+  {
+   "spk": 2,
+   "s": 2.86,
+   "e": 4.92,
+   "text": "Hello, yes,"
+  },
+  {
+   "spk": 1,
+   "s": 4.6,
+   "e": 8.86,
+   "text": "hey, yeah, I wanted to talk about that thing with you."
+  },
+  {
+   "spk": 1,
+   "s": 11.1,
+   "e": 15.0,
+   "text": "So I haven't I've just been so super stressed lately."
+  },
+  {
+   "spk": 2,
+   "s": 15.73,
+   "e": 18.21,
+   "text": "I know I can tell you look tired today."
+  },
+  {
+   "spk": 1,
+   "s": 18.52,
+   "e": 25.88,
+   "text": "I am very tired. I just I don't know. I'm just like I'm just so uncertain about the future. You know"
+  },
+  {
+   "spk": 2,
+   "s": 25.85,
+   "e": 29.33,
+   "text": "Yeah, I hear that. That's you know being uncertain is"
+  },
+  {
+   "spk": 2,
+   "s": 30.47,
+   "e": 33.95,
+   "text": "it's It's not it's not what anyone should do"
+  },
+  {
+   "spk": 1,
+   "s": 34.39,
+   "e": 35.61,
+   "text": "It sucks, like I"
+  },
+  {
+   "spk": 2,
+   "s": 35.83,
+   "e": 36.35,
+   "text": "Yeah"
+  },
+  {
+   "spk": 1,
+   "s": 36.85,
+   "e": 44.07,
+   "text": "Don't know like I just feel so confused about what I'm gonna do and where I'm gonna be all that and"
+  },
+  {
+   "spk": 2,
+   "s": 42.04,
+   "e": 43.52,
+   "text": "Yeah You"
+  },
+  {
+   "spk": 1,
+   "s": 44.07,
+   "e": 46.07,
+   "text": "like I just want to"
+  },
+  {
+   "spk": 2,
+   "s": 45.92,
+   "e": 82.24,
+   "text": "know, it's it's you know, you say like this is something that should be for you know, 50 60 year olds, right? But no, it's all life experiences And, you know, if you can relax into it knowing that this is not your problem. This is, you know, the world and the things that you would experience that give you a perspective that will then help you, you know, make the choices that you will be making. But you know, it's scary right now. It's scary right now because this is actually happening. You know, it's not this thing that you've, you know, got into your mind that it's like, oh yeah, but someday, someday it is"
+  },
+  {
+   "spk": 1,
+   "s": 81.57,
+   "e": 82.03,
+   "text": "You know,"
+  },
+  {
+   "spk": 2,
+   "s": 82.24,
+   "e": 84.9,
+   "text": "now, you know, that's, that's why it's so scary."
+  },
+  {
+   "spk": 1,
+   "s": 85.22,
+   "e": 92.64,
+   "text": "I don't know. I just feel like, I mean, I feel like there's so much pressure, you know, to like figure things out and do it the right way because"
+  },
+  {
+   "spk": 2,
+   "s": 91.26,
+   "e": 92.42,
+   "text": "yeah"
+  },
+  {
+   "spk": 1,
+   "s": 92.64,
+   "e": 94.18,
+   "text": "I'm just like young and like, you know,"
+  },
+  {
+   "spk": 2,
+   "s": 94.41,
+   "e": 97.83,
+   "text": "Yeah, but it's about what you want"
+  },
+  {
+   "spk": 1,
+   "s": 94.92,
+   "e": 97.42,
+   "text": "and I just, I"
+  },
+  {
+   "spk": 2,
+   "s": 97.83,
+   "e": 108.05,
+   "text": "Mike you know it's not just what everyone else wants it's it's what you want right and so it's entirely up to you what you want I don't think"
+  },
+  {
+   "spk": 1,
+   "s": 107.09,
+   "e": 108.79,
+   "text": "don't know. I don't know what I want."
+  },
+  {
+   "spk": 2,
+   "s": 108.05,
+   "e": 109.03,
+   "text": "oh"
+  },
+  {
+   "spk": 1,
+   "s": 109.11,
+   "e": 116.53,
+   "text": "I just, I can't decide, you know. I just, I don't know. And if I, if I, I don't know if I choose something, will I regret it later?"
+  },
+  {
+   "spk": 2,
+   "s": 116.58,
+   "e": 149.26,
+   "text": "honey I regretted every single day is regret yeah is regret what you have no it's what it's the choice you didn't make I mean, I never want to regret that. So I do what I can to, you know, make the choices that I think will be the best ones for me or, you know, what others want for me, um, but I do it to a point. You know, I, I, I can't make everybody happy, you know, but that's"
+  },
+  {
+   "spk": 1,
+   "s": 147.25,
+   "e": 149.47,
+   "text": "yeah yeah I mean there's there's that"
+  },
+  {
+   "spk": 2,
+   "s": 149.26,
+   "e": 150.42,
+   "text": "right."
+  },
+  {
+   "spk": 1,
+   "s": 149.47,
+   "e": 155.13,
+   "text": "too right like your parents expectations your people around you and then what"
+  },
+  {
+   "spk": 2,
+   "s": 152.56,
+   "e": 153.08,
+   "text": "Yeah."
+  },
+  {
+   "spk": 2,
+   "s": 154.46,
+   "e": 155.74,
+   "text": "Yeah. If you're doing."
+  },
+  {
+   "spk": 1,
+   "s": 155.13,
+   "e": 156.63,
+   "text": "you want as well"
+  },
+  {
+   "spk": 2,
+   "s": 156.62,
+   "e": 175.94,
+   "text": "Yeah, exactly. If you're only doing what you want, you know, I mean I want I know teaching is important But I do I also want the flexibility of my job, you know I don't want to I don't want to be tied down to any particular thing because I just I'm. I'm an old lady, you know, I"
+  },
+  {
+   "spk": 1,
+   "s": 175.35,
+   "e": 177.13,
+   "text": "well"
+  },
+  {
+   "spk": 2,
+   "s": 175.94,
+   "e": 179.66,
+   "text": "Want to just get up and go every day if I want to get up and go somewhere"
+  },
+  {
+   "spk": 1,
+   "s": 180.26,
+   "e": 184.42,
+   "text": "I guess you know given your life experience and all like"
+  },
+  {
+   "spk": 2,
+   "s": 182.09,
+   "e": 182.57,
+   "text": "right"
+  },
+  {
+   "spk": 1,
+   "s": 184.42,
+   "e": 187.06,
+   "text": "what what would have if if younger"
+  },
+  {
+   "spk": 2,
+   "s": 184.99,
+   "e": 185.47,
+   "text": "Yeah,"
+  },
+  {
+   "spk": 1,
+   "s": 187.06,
+   "e": 190.38,
+   "text": "you was thinking the things I'm thinking right now, what would you say to her?"
+  },
+  {
+   "spk": 2,
+   "s": 191.71,
+   "e": 192.77,
+   "text": "I Would"
+  },
+  {
+   "spk": 2,
+   "s": 194.85,
+   "e": 198.81,
+   "text": "just say to relax a little bit more. You know, I"
+  },
+  {
+   "spk": 1,
+   "s": 197.84,
+   "e": 199.3,
+   "text": "it"
+  },
+  {
+   "spk": 2,
+   "s": 198.81,
+   "e": 208.99,
+   "text": "didn't always have straight A's in school, right? It wasn't that serious and I managed to get through."
+  },
+  {
+   "spk": 2,
+   "s": 211.05,
+   "e": 241.15,
+   "text": "I'm pretty good at what I do and I don't think I would fail at anything right now, but I could have just eased up a little bit more and had a little bit slower pace of life. you know that you know back then it was always oh I have to this has to happen now and this only had to do with the school you know like I didn't have to go to university or I didn't have to you know get my undergrads degree I didn't have to do any of this it was all expectation."
+  },
+  {
+   "spk": 2,
+   "s": 242.31,
+   "e": 255.89,
+   "text": "And, you know, I think I would if I if there was a younger me that I was talking to I would just say hey. It's not as serious as you're thinking, you know,"
+  },
+  {
+   "spk": 1,
+   "s": 256.1,
+   "e": 264.36,
+   "text": "feels very it feels like you know I don't know it just feels like it feels so much right now you know I feel so serious and I just feel so"
+  },
+  {
+   "spk": 2,
+   "s": 262.88,
+   "e": 266.5,
+   "text": "yeah, yeah, it's, it's very much"
+  },
+  {
+   "spk": 1,
+   "s": 264.36,
+   "e": 264.68,
+   "text": "much pressure"
+  },
+  {
+   "spk": 2,
+   "s": 266.5,
+   "e": 283.92,
+   "text": "a lot of pressure, but it doesn't have to be, you know, it doesn't have to be. But whatever makes you happy and whatever makes you feel comfortable in your own skin, then I think that's, that's what you should focus on as opposed to you"
+  },
+  {
+   "spk": 1,
+   "s": 282.17,
+   "e": 285.73,
+   "text": "you know I would feel comfortable just"
+  },
+  {
+   "spk": 2,
+   "s": 283.92,
+   "e": 284.08,
+   "text": "know"
+  },
+  {
+   "spk": 1,
+   "s": 285.73,
+   "e": 289.47,
+   "text": "like sleeping all day and just like relaxing but I don't think I can"
+  },
+  {
+   "spk": 2,
+   "s": 288.75,
+   "e": 292.41,
+   "text": "yeah yeah you can't just do"
+  },
+  {
+   "spk": 1,
+   "s": 289.47,
+   "e": 290.39,
+   "text": "just do that you know"
+  },
+  {
+   "spk": 2,
+   "s": 292.41,
+   "e": 298.39,
+   "text": "that you know you wanna you you're gonna have to make your life you know you"
+  },
+  {
+   "spk": 1,
+   "s": 297.34,
+   "e": 298.9,
+   "text": "that's that's stressful"
+  },
+  {
+   "spk": 2,
+   "s": 298.39,
+   "e": 301.13,
+   "text": "you do oh it's overwhelming"
+  }
+ ],
+ "replay": {
+  "replies": [
+   "Hello, yes,",
+   "I know I can tell you look tired today.",
+   "Yeah, I hear that. That's you know being uncertain is",
+   "it's It's not it's not what anyone should do",
+   "Yeah You",
+   "know, it's it's you know, you say like this is something that should be for you know, 50 60 year olds, right? But no, it's all life experiences And, you know, if you can relax into it knowing that this is not your problem. This is, you know, the world and the things that you would experience that give you a perspective that will then help you, you know, make the choices that you will be making. But you know, it's scary right now. It's scary right now because this is actually happening. You know, it's not this thing that you've, you know, got into your mind that it's like, oh yeah, but someday, someday it is",
+   "now, you know, that's, that's why it's so scary.",
+   "Yeah, but it's about what you want",
+   "Mike you know it's not just what everyone else wants it's it's what you want right and so it's entirely up to you what you want I don't think",
+   "honey I regretted every single day is regret yeah is regret what you have no it's what it's the choice you didn't make I mean, I never want to regret that. So I do what I can to, you know, make the choices that I think will be the best ones for me or, you know, what others want for me, um, but I do it to a point. You know, I, I, I can't make everybody happy, you know, but that's",
+   "Yeah. If you're doing.",
+   "Yeah, exactly. If you're only doing what you want, you know, I mean I want I know teaching is important But I do I also want the flexibility of my job, you know I don't want to I don't want to be tied down to any particular thing because I just I'm. I'm an old lady, you know, I",
+   "Want to just get up and go every day if I want to get up and go somewhere",
+   "just say to relax a little bit more. You know, I",
+   "didn't always have straight A's in school, right? It wasn't that serious and I managed to get through.",
+   "I'm pretty good at what I do and I don't think I would fail at anything right now, but I could have just eased up a little bit more and had a little bit slower pace of life. you know that you know back then it was always oh I have to this has to happen now and this only had to do with the school you know like I didn't have to go to university or I didn't have to you know get my undergrads degree I didn't have to do any of this it was all expectation.",
+   "And, you know, I think I would if I if there was a younger me that I was talking to I would just say hey. It's not as serious as you're thinking, you know,",
+   "yeah, yeah, it's, it's very much",
+   "a lot of pressure, but it doesn't have to be, you know, it doesn't have to be. But whatever makes you happy and whatever makes you feel comfortable in your own skin, then I think that's, that's what you should focus on as opposed to you",
+   "yeah yeah you can't just do",
+   "that you know you wanna you you're gonna have to make your life you know you",
+   "you do oh it's overwhelming"
+  ],
+  "demo": {
+   "bc": [
+    91.26,
+    108.05,
+    149.26,
+    152.56,
+    182.09,
+    184.99,
+    283.92
+   ],
+   "ack": [],
+   "barges": [
+    4.6,
+    36.85,
+    81.57,
+    85.22,
+    94.92,
+    107.09,
+    147.25,
+    149.47,
+    155.13,
+    175.35,
+    180.26,
+    184.42,
+    197.84,
+    256.1,
+    264.36,
+    282.17,
+    285.73,
+    289.47,
+    297.34
+   ],
+   "reply_starts": [
+    2.86,
+    15.73,
+    25.85,
+    30.47,
+    42.04,
+    45.92,
+    82.24,
+    94.41,
+    97.83,
+    116.58,
+    154.46,
+    156.62,
+    175.94,
+    194.85,
+    198.81,
+    211.05,
+    242.31,
+    262.88,
+    266.5,
+    288.75,
+    292.41,
+    298.39
+   ],
+   "user_turns": [
+    [
+     1.1,
+     1.78
+    ],
+    [
+     4.6,
+     8.86
+    ],
+    [
+     11.1,
+     15.0
+    ],
+    [
+     18.52,
+     25.88
+    ],
+    [
+     34.39,
+     35.61
+    ],
+    [
+     36.85,
+     44.07
+    ],
+    [
+     44.07,
+     46.07
+    ],
+    [
+     81.57,
+     82.03
+    ],
+    [
+     85.22,
+     92.64
+    ],
+    [
+     92.64,
+     94.18
+    ],
+    [
+     94.92,
+     97.42
+    ],
+    [
+     107.09,
+     108.79
+    ],
+    [
+     109.11,
+     116.53
+    ],
+    [
+     147.25,
+     149.47
+    ],
+    [
+     149.47,
+     155.13
+    ],
+    [
+     155.13,
+     156.63
+    ],
+    [
+     175.35,
+     177.13
+    ],
+    [
+     180.26,
+     184.42
+    ],
+    [
+     184.42,
+     187.06
+    ],
+    [
+     187.06,
+     190.38
+    ],
+    [
+     197.84,
+     199.3
+    ],
+    [
+     256.1,
+     264.36
+    ],
+    [
+     264.36,
+     264.68
+    ],
+    [
+     282.17,
+     285.73
+    ],
+    [
+     285.73,
+     289.47
+    ],
+    [
+     289.47,
+     290.39
+    ],
+    [
+     297.34,
+     298.9
+    ]
+   ]
+  }
+ }
+}
