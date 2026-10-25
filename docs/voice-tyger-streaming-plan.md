@@ -28,6 +28,15 @@ solidifies it stays tier-neutral: decisions and the event vocabulary live in
 apps hold only adapters (ASR/TTS engines, the Tyger feature encoders, the LLM
 tier), and the off-device agent reuses the same core over the relay.
 
+**Streaming contract (user, 2026-10-25)**: the engine seams keep supporting
+other ASR/TTS engines — cloud services included — but a voice agent (on-device
+or off) only runs an all-streaming pipeline: **non-streaming ASR or TTS
+engines cannot be used in the agent path** (they stay usable for non-agent
+features, e.g. text-only speak and batch export). **Voice-enabled LLMs are
+first-class agents** (GPT-Live-1 class — already in the tree as the
+`gpt-live-1` contact), and so is any voice-enabled agent's own engine choice:
+as long as every component streams.
+
 Build order (each step stays fail-open to today's behavior):
 
 1. **Streaming mouth + feedback/barge** — done (2026-10-25): BACKCHANNEL
