@@ -210,6 +210,10 @@ is the call ASR ("swap, not add"). Consequence: the path-C student's Parakeet
 tap goes with it — the turn-taker runs on native Nemotron L15 features (the
 14M heads), or the student is retrained on them (the backup route).
 
+Decided 2026-10-25 (user): **Kokoro is out as the mouth** — same rationale
+(whole-clip, no streaming). Phonon is the mouth. Kokoro stays in the tree for
+possible future use cases; its 84 MB leaves the voice-agent download budget.
+
 ## Explicitly out
 
 BWE/upsampling (dropped on the listening verdict), VoxCPM2 (slower than
