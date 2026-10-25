@@ -630,6 +630,10 @@ explicit choice still wins; the language gate only sets the default.
   Cactus Compute's Whistle (16.9 MB CPU whole-clip model) was integrated and
   evaluated (2026-10-04) but **removed**: in real use the quality ranked
   **Parakeet > Apple ≫ Whistle**, and its batch (no-partials) shape felt worse.
+  (2026-10-25 ruling: Parakeet Redux is out as the *target* call ASR — it has
+  no streaming and the duplex loop needs streaming input. Nemotron streaming
+  ASR is the swap, per `voice-tyger-streaming-plan.md`; until then this bullet
+describes the shipping ASR.)
 - **Selection** — persisted per device; Contact Detail picks per contact on
   both apps, and the language rule sets the default when there is no pick.
   `IDFON_TTS`/`-ttsbackend` and `IDFON_ASR`/`-asrbackend` override for testing.

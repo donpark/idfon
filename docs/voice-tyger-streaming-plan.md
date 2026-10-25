@@ -198,13 +198,17 @@ the download budget far better than 0.6B. A wins by construction on parity
    ≈597 MB — over the ~550 MB ruling) vs 2-bit/ternary Redux-style retrain
    (~100–150 MB, total ≈340 MB — under). Lever 1/2/4 are no-brainers; this is
    the one call that closes the budget.
-2. Nemotron streaming replaces Parakeet Redux as the call ASR (recommend: yes;
-   follows from candidate A).
-3. The ≥99% parity bar (keep; relax only if mixed-precision cannot clear it).
+2. The ≥99% parity bar (keep; relax only if mixed-precision cannot clear it).
 
 Decided 2026-10-22: candidate **A** (Nemotron + native L15) is the path;
 candidate **B** (streaming Parakeet + retrained heads) = backup + future
 research.
+
+Decided 2026-10-25 (user): **Parakeet Redux is out as the call ASR** — it has
+no streaming, and the duplex loop needs streaming input. Nemotron streaming
+is the call ASR ("swap, not add"). Consequence: the path-C student's Parakeet
+tap goes with it — the turn-taker runs on native Nemotron L15 features (the
+14M heads), or the student is retrained on them (the backup route).
 
 ## Explicitly out
 
