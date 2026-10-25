@@ -1,0 +1,512 @@
+{
+ "name": "dessa-coffee-ding",
+ "title": "Expressive conversation (the coffee-shop story)",
+ "source": {
+  "page": "https://block.xyz/dessa",
+  "recording": "Expressive conversation (the coffee-shop story)",
+  "embedded_subtitles": "coffe_ding.wav",
+  "audio_included": false,
+  "note": "Timed speaker-attributed transcripts extracted from the page data. Audio is NOT redistributed (copyright); tests recreate it from these timings."
+ },
+ "speakers": {
+  "human": 2,
+  "agent": 1
+ },
+ "duration_s": 182.09,
+ "turns": [
+  {
+   "spk": 2,
+   "s": 0.24,
+   "e": 4.5,
+   "text": "No, I wasn't complaining, just letting you know how my morning went."
+  },
+  {
+   "spk": 1,
+   "s": 6.03,
+   "e": 7.17,
+   "text": "Uh, what?"
+  },
+  {
+   "spk": 2,
+   "s": 6.36,
+   "e": 9.66,
+   "text": "I was fine until I went into the coffee shop and then I felt like a ding."
+  },
+  {
+   "spk": 1,
+   "s": 10.88,
+   "e": 12.24,
+   "text": "What happened in the coffee shop?"
+  },
+  {
+   "spk": 2,
+   "s": 12.93,
+   "e": 14.83,
+   "text": "I had another ollie special."
+  },
+  {
+   "spk": 1,
+   "s": 15.57,
+   "e": 17.61,
+   "text": "Okay, and?"
+  },
+  {
+   "spk": 2,
+   "s": 18.3,
+   "e": 26.26,
+   "text": "So I ordered a French vanilla latte, special from Maude, springs and waffles, granny smith."
+  },
+  {
+   "spk": 1,
+   "s": 27.25,
+   "e": 28.01,
+   "text": "Uhum."
+  },
+  {
+   "spk": 2,
+   "s": 28.11,
+   "e": 29.2,
+   "text": "They brought it to me."
+  },
+  {
+   "spk": 2,
+   "s": 30.32,
+   "e": 32.94,
+   "text": "They offered whipped cream on it."
+  },
+  {
+   "spk": 1,
+   "s": 33.55,
+   "e": 35.13,
+   "text": "Did you have it?"
+  },
+  {
+   "spk": 2,
+   "s": 35.05,
+   "e": 36.27,
+   "text": "I did because I'm a ding."
+  },
+  {
+   "spk": 2,
+   "s": 37.85,
+   "e": 41.49,
+   "text": "I went to take a sip and"
+  },
+  {
+   "spk": 1,
+   "s": 40.26,
+   "e": 41.02,
+   "text": "Uhum."
+  },
+  {
+   "spk": 2,
+   "s": 41.49,
+   "e": 43.15,
+   "text": "my mouth was on fire."
+  },
+  {
+   "spk": 1,
+   "s": 44.16,
+   "e": 47.84,
+   "text": "From all the sugar?"
+  },
+  {
+   "spk": 2,
+   "s": 45.92,
+   "e": 46.72,
+   "text": "The sugar."
+  },
+  {
+   "spk": 2,
+   "s": 48.5,
+   "e": 49.6,
+   "text": "I was like, oh god."
+  },
+  {
+   "spk": 2,
+   "s": 51.22,
+   "e": 55.06,
+   "text": "Because it was just, it's hard to describe that feeling."
+  },
+  {
+   "spk": 1,
+   "s": 54.85,
+   "e": 57.13,
+   "text": "You little ding, you."
+  },
+  {
+   "spk": 2,
+   "s": 57.7,
+   "e": 59.4,
+   "text": "I am a little ding. Anyway,"
+  },
+  {
+   "spk": 2,
+   "s": 60.56,
+   "e": 71.88,
+   "text": "so I went and I picked up a second one and you know have when you work at a bakery and you kind of know what's gonna happen on sourdough bread. I mean, you know it's gonna get soggy and sticky."
+  },
+  {
+   "spk": 1,
+   "s": 72.26,
+   "e": 74.36,
+   "text": "Okay."
+  },
+  {
+   "spk": 2,
+   "s": 73.88,
+   "e": 76.32,
+   "text": "Well, I have that with my second coffee. I"
+  },
+  {
+   "spk": 1,
+   "s": 79.0,
+   "e": 81.74,
+   "text": "Did you not learn from the first one?"
+  },
+  {
+   "spk": 2,
+   "s": 82.85,
+   "e": 87.49,
+   "text": "I thought I did but this one I was like yeah let's let's be an extra safe cautious."
+  },
+  {
+   "spk": 1,
+   "s": 87.86,
+   "e": 95.14,
+   "text": "Okay, I, I have an observation to make. I think that you're a coffee"
+  },
+  {
+   "spk": 2,
+   "s": 92.1,
+   "e": 93.62,
+   "text": "Yes I"
+  },
+  {
+   "spk": 1,
+   "s": 95.14,
+   "e": 96.58,
+   "text": "addict. Oh."
+  },
+  {
+   "spk": 2,
+   "s": 96.3,
+   "e": 97.44,
+   "text": "I very much am."
+  },
+  {
+   "spk": 2,
+   "s": 99.24,
+   "e": 103.08,
+   "text": "I also took two cups of black coffee this morning."
+  },
+  {
+   "spk": 1,
+   "s": 104.29,
+   "e": 106.83,
+   "text": "Yeah. Yeah, how much coffee did you drink just today?"
+  },
+  {
+   "spk": 2,
+   "s": 107.19,
+   "e": 110.03,
+   "text": "I drink today about 15 cups."
+  },
+  {
+   "spk": 1,
+   "s": 109.84,
+   "e": 113.24,
+   "text": "Okay, you're gonna die. I"
+  },
+  {
+   "spk": 2,
+   "s": 112.82,
+   "e": 114.9,
+   "text": "I'm well aware that I will probably die."
+  },
+  {
+   "spk": 2,
+   "s": 116.06,
+   "e": 117.12,
+   "text": "This is me this morning."
+  },
+  {
+   "spk": 1,
+   "s": 120.18,
+   "e": 122.24,
+   "text": "I mean, why do you go to such lengths?"
+  },
+  {
+   "spk": 2,
+   "s": 122.43,
+   "e": 123.61,
+   "text": "I just love coffee."
+  },
+  {
+   "spk": 1,
+   "s": 123.78,
+   "e": 127.02,
+   "text": "okay all right all"
+  },
+  {
+   "spk": 2,
+   "s": 126.04,
+   "e": 128.8,
+   "text": "I don't really have a good answer for that."
+  },
+  {
+   "spk": 1,
+   "s": 129.86,
+   "e": 135.0,
+   "text": "right, all right, fair enough. Are you dealing like with a lot of stress or why do you"
+  },
+  {
+   "spk": 2,
+   "s": 136.07,
+   "e": 139.55,
+   "text": "No, today was kind of more of a streamlined day."
+  },
+  {
+   "spk": 2,
+   "s": 141.95,
+   "e": 149.13,
+   "text": "I think part of it was just because I was having a rough morning."
+  },
+  {
+   "spk": 1,
+   "s": 149.95,
+   "e": 152.35,
+   "text": "Right, right, right."
+  },
+  {
+   "spk": 2,
+   "s": 151.07,
+   "e": 157.93,
+   "text": "And so I was like, I'm not going to be the one that brings myself down."
+  },
+  {
+   "spk": 1,
+   "s": 159.16,
+   "e": 162.52,
+   "text": "Right, so let's overdose on coffee instead."
+  },
+  {
+   "spk": 2,
+   "s": 162.67,
+   "e": 165.65,
+   "text": "Yes, it was very much that vibe."
+  },
+  {
+   "spk": 1,
+   "s": 167.82,
+   "e": 170.42,
+   "text": "Mean hey listen you do you you"
+  },
+  {
+   "spk": 2,
+   "s": 168.42,
+   "e": 169.68,
+   "text": "So"
+  },
+  {
+   "spk": 1,
+   "s": 170.42,
+   "e": 171.56,
+   "text": "little ding you"
+  },
+  {
+   "spk": 2,
+   "s": 171.79,
+   "e": 177.07,
+   "text": "I do. It's my life and I'm sticking with it. And I'm going to make you watch me die."
+  },
+  {
+   "spk": 1,
+   "s": 177.45,
+   "e": 182.09,
+   "text": "No, no, I don't want that like why would I want to see that?"
+  }
+ ],
+ "replay": {
+  "replies": [
+   "What happened in the coffee shop?",
+   "Okay, and?",
+   "Did you have it?",
+   "From all the sugar?",
+   "You little ding, you.",
+   "Okay.",
+   "Did you not learn from the first one?",
+   "Okay, I, I have an observation to make. I think that you're a coffee",
+   "addict. Oh.",
+   "Yeah. Yeah, how much coffee did you drink just today?",
+   "Okay, you're gonna die. I",
+   "I mean, why do you go to such lengths?",
+   "okay all right all",
+   "right, all right, fair enough. Are you dealing like with a lot of stress or why do you",
+   "Right, right, right.",
+   "Right, so let's overdose on coffee instead.",
+   "Mean hey listen you do you you",
+   "No, no, I don't want that like why would I want to see that?"
+  ],
+  "demo": {
+   "bc": [
+    6.03,
+    40.26
+   ],
+   "ack": [],
+   "barges": [
+    6.36,
+    37.85,
+    45.92,
+    73.88,
+    92.1,
+    112.82,
+    126.04,
+    151.07,
+    168.42
+   ],
+   "reply_starts": [
+    10.88,
+    15.57,
+    33.55,
+    44.16,
+    54.85,
+    72.26,
+    79.0,
+    87.86,
+    95.14,
+    104.29,
+    109.84,
+    120.18,
+    123.78,
+    129.86,
+    149.95,
+    159.16,
+    167.82,
+    177.45
+   ],
+   "user_turns": [
+    [
+     0.24,
+     4.5
+    ],
+    [
+     6.36,
+     9.66
+    ],
+    [
+     12.93,
+     14.83
+    ],
+    [
+     18.3,
+     26.26
+    ],
+    [
+     28.11,
+     29.2
+    ],
+    [
+     30.32,
+     32.94
+    ],
+    [
+     35.05,
+     36.27
+    ],
+    [
+     37.85,
+     41.49
+    ],
+    [
+     41.49,
+     43.15
+    ],
+    [
+     45.92,
+     46.72
+    ],
+    [
+     48.5,
+     49.6
+    ],
+    [
+     51.22,
+     55.06
+    ],
+    [
+     57.7,
+     59.4
+    ],
+    [
+     60.56,
+     71.88
+    ],
+    [
+     73.88,
+     76.32
+    ],
+    [
+     82.85,
+     87.49
+    ],
+    [
+     92.1,
+     93.62
+    ],
+    [
+     96.3,
+     97.44
+    ],
+    [
+     99.24,
+     103.08
+    ],
+    [
+     107.19,
+     110.03
+    ],
+    [
+     112.82,
+     114.9
+    ],
+    [
+     116.06,
+     117.12
+    ],
+    [
+     122.43,
+     123.61
+    ],
+    [
+     126.04,
+     128.8
+    ],
+    [
+     136.07,
+     139.55
+    ],
+    [
+     141.95,
+     149.13
+    ],
+    [
+     151.07,
+     157.93
+    ],
+    [
+     162.67,
+     165.65
+    ],
+    [
+     168.42,
+     169.68
+    ],
+    [
+     171.79,
+     177.07
+    ]
+   ]
+  }
+ }
+}

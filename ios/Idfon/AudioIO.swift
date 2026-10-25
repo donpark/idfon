@@ -535,6 +535,7 @@ final class AudioIO: AudioSource, AudioSink {
 
     /// Copy-under-lock, call outside it (an observer must not deadlock the audio thread).
     private func fanOutPlayback(_ buffer: AVAudioPCMBuffer) {
+        guard !FeedbackEar.active else { return }  // voice feedback stays out of the second ear
         observerLock.lock()
         let observers = playbackObservers.allObjects
         observerLock.unlock()

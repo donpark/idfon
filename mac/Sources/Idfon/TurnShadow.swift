@@ -51,11 +51,14 @@ final class TurnShadow: AudioPlaybackObserver {
     /// nil when no turn model is available for this OS.
     static func start() -> TurnShadow? {
         var model: TurnModel?
-        if #available(macOS 15.0, *), let student = studentModel() {
+        // Calibration override: IDFON_TURN_TIER=coreai|mlx skips the path-C
+        // student (its backchannel head is the weakest part of the distill).
+        let tier = ProcessInfo.processInfo.environment["IDFON_TURN_TIER"]
+        if tier == nil, #available(macOS 15.0, *), let student = studentModel() {
             model = student // the path-C tier (Parakeet tap + distilled step)
         }
-        if model == nil, #available(macOS 27.0, *) {
-            model = try? CoreAITurnModel() // the OS 27+ tier (GPU, oracle-exact)
+        if tier != "mlx", #available(macOS 27.0, *) {
+            model = model ?? (try? CoreAITurnModel()) // the OS 27+ tier (GPU, oracle-exact)
         }
         if model == nil {
             model = try? MlxTurnModel() // legacy macOS 14-26 tier

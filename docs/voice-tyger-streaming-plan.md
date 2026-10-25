@@ -4,6 +4,47 @@
 > ASR + TTS stack Tyger's turn model was calibrated on, replacing the current
 > whole-clip/batch pairing. After this: stereo calls (higher priority than
 > agent voice quality).
+>
+> **2026-10-25: the new voice-agent ruling below names the three engines and
+> the portability rule (the off-device agent is next).**
+
+## The new voice agent (2026-10-25 ruling)
+
+**User ruling**: the refactored on-device voice agent is fully duplex:
+**Nemotron streaming ASR** for input (what Tyger uses — chosen to reduce risk
+at this stage), the **on-device Tyger model** for input features and turn
+management (ENDPOINT / BARGE / BACKCHANNEL), and **Gradium Phonon streaming
+TTS** for output. The turn model needs the streaming mouth to utter voice
+feedback (a "mm-hm") and to cancel fast on barge-in. Name note: "Phonon"
+collides across two families — the mouth is Gradium's phonon-31m/40m
+(`xn-ptts`); FermionResearch's Phonon-2/2.5 is a speech *recognizer* and is
+not in this stack.
+
+**Portability (user, 2026-10-25)**: the off-device voice agent is the next
+project once the on-device one fully works. As the on-device architecture
+solidifies it stays tier-neutral: decisions and the event vocabulary live in
+`crates/idfon-voice` (the portable contract of
+`docs/voice-agent-loop-contract.md` — prompt, tool schemas, trace record), the
+apps hold only adapters (ASR/TTS engines, the Tyger feature encoders, the LLM
+tier), and the off-device agent reuses the same core over the relay.
+
+Build order (each step stays fail-open to today's behavior):
+
+1. **Streaming mouth + feedback/barge** — done (2026-10-25): BACKCHANNEL
+   speaks through the streaming mouth (never in history, never in the second
+   ear — `FeedbackEar`; BARGE already cancels playback). Phonon streams on
+   every path now (iOS text-only streams through a local player); the one
+   utterance-per-call API speaks chunk-per-chunk once reply deltas land.
+2. **Nemotron streaming ASR** behind the `AsrEngine` seam (FluidAudio
+   `StreamingNemotronAsrManager`: append/process/partial callbacks), swapping
+   Parakeet Redux as the call ASR.
+3. **Tyger authoritative**: ENDPOINT (live under `TurnTakerSetting`) becomes
+   the turn boundary per the swap-over convention; `onset_s` history trim on
+   BARGE.
+4. **Reply deltas → chunked speak** (Phase 1's text-streaming seam): chunk
+   the LLM token stream at sentence ends (the `first_chunk` rule) into one
+   `speak` per chunk (Tyger's mouth pattern).
+5. Verification per Phase 4.
 
 ## Why (the evidence from 2026-10-22)
 
@@ -129,8 +170,10 @@ the download budget far better than 0.6B. A wins by construction on parity
 
 - `TurnTakerSetting.tyger` selects the streaming pair (Nemotron streaming ASR +
   Phonon); guard: warn/upgrade when a non-streaming mouth is selected.
-- BACKCHANNEL hook live: a "mm-hm" that never enters history or the second
-  ear, 1.2 s gap rule (today: decided+logged only).
+- BACKCHANNEL hook **live (2026-10-25)**: a "mm-hm" through the streaming
+  mouth — never in history (`lastSpoken` stays the agent's reply) and never
+  in the second ear (`FeedbackEar` drops the cue's playback samples while it
+  plays), 1.2 s gap rule, and a reply supersedes an in-flight cue.
 - Barge with `onset_s` history trim; app LISTEN/SPEAK state continues to feed
   the model (never its own guess).
 - Shadow → authoritative per the swap-over convention (decision-log diff gate).

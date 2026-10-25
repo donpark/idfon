@@ -1,0 +1,340 @@
+{
+ "name": "dessa-anniversary",
+ "title": "An anniversary surprise (the gasp)",
+ "source": {
+  "page": "https://block.xyz/dessa",
+  "recording": "An anniversary surprise (the gasp)",
+  "embedded_subtitles": "anniversary.wav",
+  "audio_included": false,
+  "note": "Timed speaker-attributed transcripts extracted from the page data. Audio is NOT redistributed (copyright); tests recreate it from these timings."
+ },
+ "speakers": {
+  "human": 1,
+  "agent": 2
+ },
+ "duration_s": 111.85,
+ "turns": [
+  {
+   "spk": 1,
+   "s": 0.05,
+   "e": 1.17,
+   "text": "Hey, how are you?"
+  },
+  {
+   "spk": 2,
+   "s": 2.03,
+   "e": 3.39,
+   "text": "Hey, baby. How's it going?"
+  },
+  {
+   "spk": 1,
+   "s": 4.14,
+   "e": 6.36,
+   "text": "Good. How's your day?"
+  },
+  {
+   "spk": 2,
+   "s": 7.66,
+   "e": 13.0,
+   "text": "It's good. Just um, like a bit of everything going on and we're getting through it."
+  },
+  {
+   "spk": 1,
+   "s": 13.02,
+   "e": 14.58,
+   "text": "Are you excited for our anniversary?"
+  },
+  {
+   "spk": 2,
+   "s": 16.9,
+   "e": 20.76,
+   "text": "Yes, I am. I'm gonna be really happy to see you and"
+  },
+  {
+   "spk": 2,
+   "s": 22.02,
+   "e": 22.5,
+   "text": "Yeah,"
+  },
+  {
+   "spk": 1,
+   "s": 22.2,
+   "e": 25.82,
+   "text": "That's wonderful. So I have a surprise for you."
+  },
+  {
+   "spk": 2,
+   "s": 24.67,
+   "e": 25.15,
+   "text": "Yeah."
+  },
+  {
+   "spk": 2,
+   "s": 26.77,
+   "e": 27.87,
+   "text": "Oh Thank God."
+  },
+  {
+   "spk": 1,
+   "s": 27.77,
+   "e": 30.93,
+   "text": "Thank God you you you're afraid I"
+  },
+  {
+   "spk": 2,
+   "s": 28.77,
+   "e": 29.73,
+   "text": "What I"
+  },
+  {
+   "spk": 1,
+   "s": 30.93,
+   "e": 32.61,
+   "text": "wouldn't have a surprise for you"
+  },
+  {
+   "spk": 2,
+   "s": 33.83,
+   "e": 41.69,
+   "text": "I was because I was like, I don't know what to get you and then I see all this T.J. Maxx And I saw this jumper. I'm like, this is perfect for you to get and then"
+  },
+  {
+   "spk": 1,
+   "s": 41.63,
+   "e": 43.87,
+   "text": "Okay, but I have I"
+  },
+  {
+   "spk": 2,
+   "s": 41.69,
+   "e": 41.95,
+   "text": "like"
+  },
+  {
+   "spk": 1,
+   "s": 44.67,
+   "e": 47.11,
+   "text": "Have the best surprise for you for on our anniversary"
+  },
+  {
+   "spk": 2,
+   "s": 47.64,
+   "e": 50.14,
+   "text": "what yes"
+  },
+  {
+   "spk": 1,
+   "s": 49.13,
+   "e": 55.55,
+   "text": "Okay, so you know how you've always talked about how much you want to go to Paris so"
+  },
+  {
+   "spk": 2,
+   "s": 56.45,
+   "e": 57.13,
+   "text": "Yes."
+  },
+  {
+   "spk": 1,
+   "s": 57.73,
+   "e": 64.07,
+   "text": "So for our anniversary, I'm taking you on a flight to Paris for"
+  },
+  {
+   "spk": 2,
+   "s": 63.4,
+   "e": 65.3,
+   "text": "Oh my god!"
+  },
+  {
+   "spk": 1,
+   "s": 65.67,
+   "e": 66.79,
+   "text": "an all-included"
+  },
+  {
+   "spk": 1,
+   "s": 69.31,
+   "e": 73.77,
+   "text": "hotel in right from the Eiffel Tower it'll be amazing I"
+  },
+  {
+   "spk": 2,
+   "s": 75.4,
+   "e": 78.64,
+   "text": "I can't believe you actually pulled that off pulled that"
+  },
+  {
+   "spk": 1,
+   "s": 77.58,
+   "e": 78.98,
+   "text": "I know, right?"
+  },
+  {
+   "spk": 2,
+   "s": 78.64,
+   "e": 84.24,
+   "text": "off. That is amazing, thank you so much. fully oh"
+  },
+  {
+   "spk": 1,
+   "s": 84.29,
+   "e": 86.47,
+   "text": "Are you excited?"
+  },
+  {
+   "spk": 2,
+   "s": 85.9,
+   "e": 93.6,
+   "text": "Yes, I am, and one thing I really need to plan out is I'm no longer going to be eating the pastries that day."
+  },
+  {
+   "spk": 1,
+   "s": 94.28,
+   "e": 99.3,
+   "text": "It's fine, you could eat the pastries. you know actually the French you know what their breakfast looks like?"
+  },
+  {
+   "spk": 2,
+   "s": 101.09,
+   "e": 101.59,
+   "text": "What?"
+  },
+  {
+   "spk": 1,
+   "s": 101.25,
+   "e": 104.77,
+   "text": "It's usually an espresso and a cigarette."
+  },
+  {
+   "spk": 2,
+   "s": 106.36,
+   "e": 108.18,
+   "text": "Yes, you're the pretty sheesh!"
+  },
+  {
+   "spk": 1,
+   "s": 107.79,
+   "e": 111.85,
+   "text": "so yeah you know maybe we could both I would lose a few pounds maybe"
+  }
+ ],
+ "replay": {
+  "replies": [
+   "Hey, baby. How's it going?",
+   "It's good. Just um, like a bit of everything going on and we're getting through it.",
+   "Yes, I am. I'm gonna be really happy to see you and",
+   "I was because I was like, I don't know what to get you and then I see all this T.J. Maxx And I saw this jumper. I'm like, this is perfect for you to get and then",
+   "what yes",
+   "Oh my god!",
+   "I can't believe you actually pulled that off pulled that",
+   "off. That is amazing, thank you so much. fully oh",
+   "Yes, I am, and one thing I really need to plan out is I'm no longer going to be eating the pastries that day.",
+   "Yes, you're the pretty sheesh!"
+  ],
+  "demo": {
+   "bc": [
+    22.02,
+    24.67,
+    26.77,
+    28.77,
+    41.69,
+    101.09
+   ],
+   "ack": [],
+   "barges": [
+    22.2,
+    27.77,
+    41.63,
+    49.13,
+    57.73,
+    77.58,
+    84.29,
+    101.25,
+    107.79
+   ],
+   "reply_starts": [
+    2.03,
+    7.66,
+    16.9,
+    33.83,
+    47.64,
+    63.4,
+    75.4,
+    78.64,
+    85.9,
+    106.36
+   ],
+   "user_turns": [
+    [
+     0.05,
+     1.17
+    ],
+    [
+     4.14,
+     6.36
+    ],
+    [
+     13.02,
+     14.58
+    ],
+    [
+     22.2,
+     25.82
+    ],
+    [
+     27.77,
+     30.93
+    ],
+    [
+     30.93,
+     32.61
+    ],
+    [
+     41.63,
+     43.87
+    ],
+    [
+     44.67,
+     47.11
+    ],
+    [
+     49.13,
+     55.55
+    ],
+    [
+     57.73,
+     64.07
+    ],
+    [
+     65.67,
+     66.79
+    ],
+    [
+     69.31,
+     73.77
+    ],
+    [
+     77.58,
+     78.98
+    ],
+    [
+     84.29,
+     86.47
+    ],
+    [
+     94.28,
+     99.3
+    ],
+    [
+     101.25,
+     104.77
+    ],
+    [
+     107.79,
+     111.85
+    ]
+   ]
+  }
+ }
+}

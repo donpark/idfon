@@ -331,6 +331,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Scripted turn-taker A/B run (see TygerAB): `kokoro|phonon`.
             TygerAB.run(engine: args[i + 1])
         }
+        if let i = args.firstIndex(of: "-tygerdemo"), args.count > i + 2 {
+            // Demo replay through the turn pipeline (see TygerDemo): the
+            // diarized user wav + its interaction script.
+            TygerDemo.run(userWav: args[i + 1], script: args[i + 2])
+        }
     }
 
     private func waitForIncomingCall(video: Bool) {

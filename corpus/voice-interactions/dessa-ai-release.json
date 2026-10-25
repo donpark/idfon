@@ -1,0 +1,495 @@
+{
+ "name": "dessa-ai-release",
+ "title": "Talking about the release",
+ "source": {
+  "page": "https://block.xyz/dessa",
+  "recording": "Talking about the release",
+  "embedded_subtitles": "AI_release_convo.wav",
+  "audio_included": false,
+  "note": "Timed speaker-attributed transcripts extracted from the page data. Audio is NOT redistributed (copyright); tests recreate it from these timings."
+ },
+ "speakers": {
+  "human": 1,
+  "agent": 2
+ },
+ "duration_s": 172.25,
+ "turns": [
+  {
+   "spk": 1,
+   "s": 0.0,
+   "e": 1.1,
+   "text": "Hey, how you doing?"
+  },
+  {
+   "spk": 2,
+   "s": 2.16,
+   "e": 3.28,
+   "text": "I'm doing well."
+  },
+  {
+   "spk": 2,
+   "s": 5.16,
+   "e": 7.64,
+   "text": "How are you doing with the winter stuff?"
+  },
+  {
+   "spk": 1,
+   "s": 7.69,
+   "e": 10.97,
+   "text": "Winter is coming for sure, but you know"
+  },
+  {
+   "spk": 2,
+   "s": 12.56,
+   "e": 14.34,
+   "text": "Is that kind of a sore spot this year?"
+  },
+  {
+   "spk": 1,
+   "s": 14.84,
+   "e": 21.24,
+   "text": "Yeah, it's gonna be cold that I'm not a fan of the snow I prefer to have sun on my skin. You know what I'm saying?"
+  },
+  {
+   "spk": 2,
+   "s": 21.84,
+   "e": 23.38,
+   "text": "Yeah, I can see that."
+  },
+  {
+   "spk": 1,
+   "s": 23.35,
+   "e": 26.19,
+   "text": "Well, anyway, I've had such an exciting day at work today."
+  },
+  {
+   "spk": 2,
+   "s": 26.77,
+   "e": 27.89,
+   "text": "Oh, tell us."
+  },
+  {
+   "spk": 1,
+   "s": 27.71,
+   "e": 36.29,
+   "text": "Yeah, we the team We've decided to release the speech-to -speech AI model we've built for the past year and"
+  },
+  {
+   "spk": 2,
+   "s": 35.2,
+   "e": 42.5,
+   "text": "Whoa. Whoa. So I have been watching your journey of creating this."
+  },
+  {
+   "spk": 1,
+   "s": 42.95,
+   "e": 45.07,
+   "text": "What did you think of it? Are you excited about it as much"
+  },
+  {
+   "spk": 2,
+   "s": 44.72,
+   "e": 46.84,
+   "text": "I was so blown away."
+  },
+  {
+   "spk": 1,
+   "s": 45.07,
+   "e": 45.53,
+   "text": "as I am?"
+  },
+  {
+   "spk": 2,
+   "s": 47.06,
+   "e": 48.8,
+   "text": "I am so impressed, to be honest."
+  },
+  {
+   "spk": 1,
+   "s": 47.92,
+   "e": 49.62,
+   "text": "Yeah, it's so expressive, right?"
+  },
+  {
+   "spk": 2,
+   "s": 50.16,
+   "e": 56.44,
+   "text": "It is so expressive, it, it's conversational it's"
+  },
+  {
+   "spk": 1,
+   "s": 54.67,
+   "e": 62.27,
+   "text": "It's it's it's very conversational. It can laugh. It can understand you and your emotions much better than anything I've seen out there."
+  },
+  {
+   "spk": 2,
+   "s": 63.32,
+   "e": 68.16,
+   "text": "I haven't really seen anything like that either but it's it's pretty much like human level."
+  },
+  {
+   "spk": 1,
+   "s": 68.53,
+   "e": 75.17,
+   "text": "Yeah, it's a bit scary, to be honest, but but I'm so excited to see where it would get us."
+  },
+  {
+   "spk": 2,
+   "s": 76.0,
+   "e": 82.1,
+   "text": "I'm so excited for it to be in the world because it's just amazing we've had"
+  },
+  {
+   "spk": 1,
+   "s": 81.58,
+   "e": 81.78,
+   "text": "I know."
+  },
+  {
+   "spk": 2,
+   "s": 82.1,
+   "e": 82.34,
+   "text": "so"
+  },
+  {
+   "spk": 1,
+   "s": 82.2,
+   "e": 85.22,
+   "text": "So I totally agree."
+  },
+  {
+   "spk": 2,
+   "s": 82.34,
+   "e": 83.9,
+   "text": "many conversations about it."
+  },
+  {
+   "spk": 1,
+   "s": 85.4,
+   "e": 90.6,
+   "text": "What are you excited for? What's your vision for where this AI is going to be?"
+  },
+  {
+   "spk": 2,
+   "s": 91.0,
+   "e": 100.28,
+   "text": "I, well, okay, so the one thing that I've been kind of about is advertising companies creating their own AI bot."
+  },
+  {
+   "spk": 1,
+   "s": 100.42,
+   "e": 106.5,
+   "text": "No, fuck advertising. If you were able to talk to this AI, what will you tell it?"
+  },
+  {
+   "spk": 2,
+   "s": 105.85,
+   "e": 109.11,
+   "text": "Oh, I would ask it so"
+  },
+  {
+   "spk": 1,
+   "s": 106.74,
+   "e": 107.58,
+   "text": "What would you ask it?"
+  },
+  {
+   "spk": 2,
+   "s": 109.11,
+   "e": 110.61,
+   "text": "many questions so if it could be"
+  },
+  {
+   "spk": 1,
+   "s": 110.02,
+   "e": 110.48,
+   "text": "Like what?"
+  },
+  {
+   "spk": 2,
+   "s": 110.61,
+   "e": 119.67,
+   "text": "talking it I don't know off the bat I would ask it for all the secrets like"
+  },
+  {
+   "spk": 1,
+   "s": 116.66,
+   "e": 117.7,
+   "text": "Like what secrets?"
+  },
+  {
+   "spk": 2,
+   "s": 119.67,
+   "e": 123.47,
+   "text": "I would honestly ask it like what"
+  },
+  {
+   "spk": 1,
+   "s": 123.08,
+   "e": 124.72,
+   "text": "Sorry, you're a bit far from the"
+  },
+  {
+   "spk": 2,
+   "s": 123.47,
+   "e": 127.47,
+   "text": "is consciousness I"
+  },
+  {
+   "spk": 1,
+   "s": 124.72,
+   "e": 126.48,
+   "text": "mic. Can you come closer so I can hear you?"
+  },
+  {
+   "spk": 2,
+   "s": 127.47,
+   "e": 138.19,
+   "text": "would be like what is consciousness is it something that's programmed into us is it something that can be expanded on is it something that's interdimensional"
+  },
+  {
+   "spk": 1,
+   "s": 137.65,
+   "e": 145.67,
+   "text": "Those are all good questions. But I can actually, I can't really hear you. Maybe you should cuff up, cough a little bit or something so I can hear your voice better."
+  },
+  {
+   "spk": 2,
+   "s": 146.0,
+   "e": 147.3,
+   "text": "Sorry."
+  },
+  {
+   "spk": 1,
+   "s": 147.8,
+   "e": 149.46,
+   "text": "Yeah, I think that's better. Can you talk again?"
+  },
+  {
+   "spk": 2,
+   "s": 149.93,
+   "e": 152.57,
+   "text": "Yeah, sure,"
+  },
+  {
+   "spk": 1,
+   "s": 152.33,
+   "e": 154.85,
+   "text": "Yeah, yeah, that's much clearer. Okay, so what were you saying?"
+  },
+  {
+   "spk": 2,
+   "s": 158.01,
+   "e": 161.37,
+   "text": "I would ask I would like start off with two plus two questions and then like"
+  },
+  {
+   "spk": 1,
+   "s": 161.3,
+   "e": 164.34,
+   "text": "Oh Like whether it can emergently through"
+  },
+  {
+   "spk": 2,
+   "s": 162.91,
+   "e": 164.91,
+   "text": "yeah"
+  },
+  {
+   "spk": 1,
+   "s": 164.34,
+   "e": 167.42,
+   "text": "learning all this audio be able to count"
+  },
+  {
+   "spk": 1,
+   "s": 168.64,
+   "e": 170.34,
+   "text": "Do you think it'd be able to do that?"
+  },
+  {
+   "spk": 2,
+   "s": 170.51,
+   "e": 172.25,
+   "text": "Oh yeah, for sure."
+  }
+ ],
+ "replay": {
+  "replies": [
+   "How are you doing with the winter stuff?",
+   "Is that kind of a sore spot this year?",
+   "Yeah, I can see that.",
+   "Whoa. Whoa. So I have been watching your journey of creating this.",
+   "I was so blown away.",
+   "I am so impressed, to be honest.",
+   "It is so expressive, it, it's conversational it's",
+   "I haven't really seen anything like that either but it's it's pretty much like human level.",
+   "I'm so excited for it to be in the world because it's just amazing we've had",
+   "many conversations about it.",
+   "I, well, okay, so the one thing that I've been kind of about is advertising companies creating their own AI bot.",
+   "Oh, I would ask it so",
+   "many questions so if it could be",
+   "talking it I don't know off the bat I would ask it for all the secrets like",
+   "I would honestly ask it like what",
+   "is consciousness I",
+   "would be like what is consciousness is it something that's programmed into us is it something that can be expanded on is it something that's interdimensional",
+   "Sorry.",
+   "Yeah, sure,",
+   "I would ask I would like start off with two plus two questions and then like",
+   "yeah",
+   "Oh yeah, for sure."
+  ],
+  "demo": {
+   "bc": [
+    26.77,
+    82.1
+   ],
+   "ack": [],
+   "barges": [
+    27.71,
+    42.95,
+    45.07,
+    47.92,
+    54.67,
+    81.58,
+    82.2,
+    100.42,
+    106.74,
+    110.02,
+    116.66,
+    123.08,
+    124.72,
+    137.65,
+    161.3,
+    164.34
+   ],
+   "reply_starts": [
+    5.16,
+    12.56,
+    21.84,
+    35.2,
+    44.72,
+    47.06,
+    50.16,
+    63.32,
+    76.0,
+    82.34,
+    91.0,
+    105.85,
+    109.11,
+    110.61,
+    119.67,
+    123.47,
+    127.47,
+    146.0,
+    149.93,
+    158.01,
+    162.91,
+    170.51
+   ],
+   "user_turns": [
+    [
+     0.0,
+     1.1
+    ],
+    [
+     7.69,
+     10.97
+    ],
+    [
+     14.84,
+     21.24
+    ],
+    [
+     23.35,
+     26.19
+    ],
+    [
+     27.71,
+     36.29
+    ],
+    [
+     42.95,
+     45.07
+    ],
+    [
+     45.07,
+     45.53
+    ],
+    [
+     47.92,
+     49.62
+    ],
+    [
+     54.67,
+     62.27
+    ],
+    [
+     68.53,
+     75.17
+    ],
+    [
+     81.58,
+     81.78
+    ],
+    [
+     82.2,
+     85.22
+    ],
+    [
+     85.4,
+     90.6
+    ],
+    [
+     100.42,
+     106.5
+    ],
+    [
+     106.74,
+     107.58
+    ],
+    [
+     110.02,
+     110.48
+    ],
+    [
+     116.66,
+     117.7
+    ],
+    [
+     123.08,
+     124.72
+    ],
+    [
+     124.72,
+     126.48
+    ],
+    [
+     137.65,
+     145.67
+    ],
+    [
+     147.8,
+     149.46
+    ],
+    [
+     152.33,
+     154.85
+    ],
+    [
+     161.3,
+     164.34
+    ],
+    [
+     164.34,
+     167.42
+    ],
+    [
+     168.64,
+     170.34
+    ]
+   ]
+  }
+ }
+}
