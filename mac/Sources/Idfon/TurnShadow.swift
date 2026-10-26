@@ -55,7 +55,7 @@ final class TurnShadow: AudioPlaybackObserver {
         if tier != "mlx", #available(macOS 27.0, *) {
             model = model ?? (try? CoreAITurnModel()) // the OS 27+ tier (GPU, oracle-exact)
         }
-        if model == nil {
+        if model == nil, MlxTurnModel.hasMetalLibrary {
             model = try? MlxTurnModel() // legacy macOS 14-26 tier
         }
         guard let model else {

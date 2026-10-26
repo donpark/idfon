@@ -28,6 +28,12 @@ cp .build/release/Idfon "$APP/Contents/MacOS/Idfon"
 cp "$ROOT/target/release/idfond" "$APP/Contents/MacOS/idfond"
 cp Vendor/libiroh_c_ffi.dylib "$APP/Contents/MacOS/"
 cp Vendor/libidfon_director.dylib "$APP/Contents/MacOS/"
+# mlx-swift's Metal shader bundle: the mlx turn tier loads default.metallib
+# from the app's resources, and mlx-c aborts hard when it is missing (an
+# uncatchable C++ error). Ship it whenever mlx-swift is in the product.
+if [ -d ".build/release/mlx-swift_Cmlx.bundle" ]; then
+  cp -R ".build/release/mlx-swift_Cmlx.bundle" "$APP/Contents/Resources/"
+fi
 cp Info.plist "$APP/Contents/Info.plist"
 # Ad-hoc sign the dlopen'd director dylib too: a stale signature on a relinked
 # dylib gets it SIGKILLed at load (see scripts/test-e2e.sh).
