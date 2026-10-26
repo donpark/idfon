@@ -255,6 +255,10 @@ final class AudioMeter {
     private static var playbackAttached = false
     private static var voiceProcessingTried = false
     private static var voiceProcessingEnabled = false
+    /// Recovery retries in the current failure streak; reset on a successful
+    /// start. (Not the start counter: after a few starts a process-lifetime
+    /// bound silently stops retrying forever.)
+    private var startRetries = 0
     /// Playback state that must survive a stop/start cycle: the looping cue and
     /// one-shots mid-flight are dropped by engine.stop() (their completions
     /// fire, so callers resume while the audio silently vanishes — the iOS
@@ -442,11 +446,12 @@ final class AudioMeter {
                         if !self.engine.isRunning { try self.engine.start() }
                         Self.rearmAfterRestart()
                         self.running = true
+                        self.startRetries = 0
                         self.startInFlight = false
                         self.settle()
                     } catch {
                         Self.log("idfon audio meter reuse failed: \(error.localizedDescription)")
-                        self.recoverStaleTap(generation: generation, input: input)
+                        self.recoverStaleTap(input: input)
                     }
                     return
                 }
@@ -529,10 +534,10 @@ final class AudioMeter {
                 // crashing or losing the capture.
                 guard format.sampleRate > 0, format.channelCount > 0 else {
                     Self.log("idfon audio meter: invalid input format \(format); retrying")
-                    if generation < 4 {
+                    if startRetries < 6 {
+                        startRetries += 1
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                            guard let self, self.startGeneration == generation,
-                                  !self.running else {
+                            guard let self, !self.running else {
                                 self?.startInFlight = false
                                 self?.settle()
                                 return
@@ -566,12 +571,13 @@ final class AudioMeter {
                     self.installAudioObservers()
                     Self.rearmAfterRestart() // playback dropped by a recovery stop
                     self.running = true
+                    self.startRetries = 0
                     self.startInFlight = false
                     Self.log("idfon audio meter engine started")
                     self.settle()
                 } catch {
                     Self.log("idfon audio meter failed: \(error.localizedDescription)")
-                    self.recoverStaleTap(generation: generation, input: input)
+                    self.recoverStaleTap(input: input)
                 }
             }
         }
@@ -585,7 +591,7 @@ final class AudioMeter {
     /// match", -10868) and calls die with "microphone unavailable". Drop the
     /// tap and retry once the audio device settles: the retry reinstalls at
     /// the now-current hardware format.
-    private func recoverStaleTap(generation: Int, input: AVAudioInputNode) {
+    private func recoverStaleTap(input: AVAudioInputNode) {
         input.removeTap(onBus: 0)
         Self.inputTapInstalled = false
         tapInstalled = false
@@ -599,9 +605,13 @@ final class AudioMeter {
             try? input.setVoiceProcessingEnabled(false)
             Self.log("idfon audio meter: voice-processing dropped after start failure")
         }
-        if generation < 4 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                guard let self, self.startGeneration == generation, !self.running else {
+        // Backoff (a flapping input device reconfigures every couple of
+        // seconds; a fixed 0.5 s retry fights the storm and loses).
+        if startRetries < 6 {
+            startRetries += 1
+            let delay = 0.5 + 0.5 * Double(startRetries)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, !self.running else {
                     self?.settle()
                     return
                 }
@@ -664,7 +674,7 @@ final class AudioMeter {
     private func installAudioObservers() {
         let center = NotificationCenter.default
         interruptionObserver = center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-            guard let self, self.running else { return }
+            guard let self, self.running || self.startInFlight || !self.pendingStarts.isEmpty else { return }
             Self.dropping = true // a recovery stop: playback re-arms on restart
             self.stop()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
