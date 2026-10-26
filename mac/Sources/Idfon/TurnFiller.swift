@@ -115,14 +115,39 @@ enum TurnFiller {
         return asked + ". You already said: " + saidPart
     }
 
-    /// Their say_clean gate (nothing speakable = no line). Line-level only:
-    /// shortcut: no TTS→ASR round-trip audit of the lead-in vocabulary yet.
+    /// Their say_clean gate plus the hum policy (BackchannelFiller's fold):
+    /// Phonon is a prose-trained text-to-speech model with no phonemizer, so
+    /// letter-string hums sound out as words ("mm-hm" is heard as "lim",
+    /// "mm" as "meem"). A bare vocalization yields no line (the caller
+    /// speaks its fixed fallback) and a leading one is stripped.
     static func normalize(_ raw: String) -> String? {
         var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         t = t.replacingOccurrences(of: "\"", with: "")
         t = t.components(separatedBy: .newlines).first ?? t
         t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+        t = stripLeadingVocalizations(t)
         guard t.rangeOfCharacter(from: .alphanumerics) != nil else { return nil }
+        guard !isVocalization(t) else { return nil }
         return t.prefix(1).uppercased() + t.dropFirst()
+    }
+
+    /// Hum and spelled-out sound tokens the mouth cannot say.
+    private static let vocalizations: Set<String> = [
+        "mm", "mm-hm", "mm-hmm", "mm hmm", "mmhmm", "mmm", "mhm", "hm", "hmm", "hmmm",
+        "uh-huh", "uh huh", "uhhuh", "uh", "uhm", "um", "umm", "huh", "ha", "hah", "huh.",
+    ]
+
+    static func isVocalization(_ text: String) -> Bool {
+        let bare = text.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".!?,… "))
+        return vocalizations.contains(bare)
+    }
+
+    static func stripLeadingVocalizations(_ text: String) -> String {
+        var t = text
+        while true {
+            let parts = t.split(separator: " ", maxSplits: 1)
+            guard parts.count == 2, isVocalization(String(parts[0])) else { return t }
+            t = String(parts[1])
+        }
     }
 }

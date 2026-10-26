@@ -818,10 +818,10 @@ final class VoiceAgentSession: NSObject {
         feedbackTask = Task { @MainActor [weak self] in
             guard let self else { return }
             // Contextual ack off the ASR partial (the tyger filler recipe on
-            // AFM, fail-open to nil). "Mm-hmm." renders as a clean hum in
-            // Phonon; "Mm-hm." phonemizes to nonsense (heard as "lim").
-            // Round-trip any change (TTS → ASR).
-            let text = await BackchannelFiller.ack(partial: heard) ?? "Mm-hmm."
+            // AFM, fail-open to a rotating safe word). Hum spellings never
+            // reach the mouth: Phonon sounds letter strings out as words
+            // ("mm-hm" is heard as "lim", "mm" as "meem").
+            let text = await BackchannelFiller.ack(partial: heard) ?? BackchannelFiller.fallbackCue()
             guard case .listening = self.state, !self.stopRequested else {
                 self.feedbackTask = nil
                 return
