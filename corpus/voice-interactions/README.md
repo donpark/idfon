@@ -19,7 +19,6 @@ copyright. The originals stay on their pages.
 | `dessa-coffee-ding.json` | "Expressive conversation" | intonation range, overlapping acks |
 | `dessa-life-advice.json` | "Life advice" | empathy, long monologues + interjections |
 | `dessa-vs-gpt-live.json` | "Dessa in conversation with GPT-Live-1" | AI-vs-AI |
-| `tyger-demo.json` | tyger-s2s demo recording | mm-hm over turns, 2 interruptions |
 
 The `turns` array is the clean timed transcript (`spk`, `s`, `e`, `text`;
 `speakers.human`/`speakers.agent` name the roles). The `replay` object is the
@@ -44,8 +43,6 @@ against `replay.demo` for regressions. See `mac/Sources/Idfon/TygerDemo.swift`.
 
 - Dessa clips: `block.xyz/dessa` (Block research demos). Transcripts extracted
   from the page's own speaker-attributed subtitle data (verbatim).
-- tyger-demo: diarized (FluidAudio nemotron3) + transcribed (Parakeet Redux)
-  from the tyger-s2s demo recording.
 
 ## Planned (not urgent)
 
