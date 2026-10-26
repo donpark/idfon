@@ -55,6 +55,38 @@ Build order (each step stays fail-open to today's behavior):
    `speak` per chunk (Tyger's mouth pattern).
 5. Verification per Phase 4.
 
+### Reply deltas — the remaining half (mapped 2026-10-25)
+
+The mouth side is done: `SpeechChunker` (the `mouth/chunker.py` port) +
+chunked speak, locked by `mac/Checks/SpeechChunkerCheck`. The delta wire's
+server half already exists — the gap is delivery to the client-cascade app:
+
+- `extension/channels/idfon.ts` `message.appended` → POST `/stream/append`
+  (per-delta, retry-safe keys `(turn_id, step_index, sequence)`).
+- `bridge.mjs` `/stream/append` → IPC `StreamAppend` (`crates/eve-idfon`).
+- Holder `IpcFrame::StreamAppend` handler (`crates/eve-idfon/src/lib.rs`
+  ~1046) → `deltas::route(peer, …)` → a registered `StreamingSpeaker`
+  (`crates/idfon-voice/src/stream.rs`: ClauseBatcher + EnvelopeStripper +
+  DeltaKey dedupe). **No subscriber ⇒ deltas are dropped — exactly today's
+  client-cascade behavior.**
+
+To close it (the app owns the TTS in the client cascade):
+
+1. **Delivery**: the holder forwards deltas to the calling app — the call's
+   live-session data frames (preferred: no message-log pollution) or
+   correlated `speak` messages with a `final?: boolean` (default true =
+   backward compatible) on `IDFON-SPEAK/1`.
+2. **App**: the turn loop feeds `SpeechChunker.nextChunk` incrementally from
+   the delta stream and speaks each closing chunk (the chunk loop seam
+   already exists); the final message still carries display + correlation +
+   the barge trim.
+3. **Bubble**: one reply bubble upserted per delta (the existing
+   `recordSpokenTurn(replacing:)`/`updateMessage` path).
+
+Acceptance: first audio ≤ first sentence (~1–2 s) on a slow LLM; the
+final-message bookkeeping (correlation, echo, barge trim) unchanged; the
+corpus replay unchanged.
+
 ## Why (the evidence from 2026-10-22)
 
 Tyger's model (`nineninesix/tyger`, per docs/voice-tyger.md) is calibrated on a
