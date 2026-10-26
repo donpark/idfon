@@ -203,11 +203,17 @@ the download budget far better than 0.6B. A wins by construction on parity
 
 ## Decisions parked with the user
 
-1. The quantization tier for the Nemotron L15 slice: int8 (378 MB, total
-   ≈597 MB — over the ~550 MB ruling) vs 2-bit/ternary Redux-style retrain
-   (~100–150 MB, total ≈340 MB — under). Lever 1/2/4 are no-brainers; this is
-   the one call that closes the budget.
-2. The ≥99% parity bar (keep; relax only if mixed-precision cannot clear it).
+1. The ≥99% parity bar (keep; relax only if mixed-precision cannot clear it).
+
+Decided 2026-10-25 (user): **the ~550 MB budget is deferred** — implement with
+whatever ASR engine is available (Nemotron streaming as-is) and revisit when a
+promising lightweight streaming ASR arrives "without performance loss". The
+L15-slice quantization question is parked with it. Note the size anatomy
+honestly: the L15-truncation lever only applies to a *separate* turn-model
+encoder — with Nemotron as the call ASR the encoder runs to L24 for
+transcripts (L16–24 + RNN-T are transcripts-only per the measured anatomy),
+so the models total ≈820 MB as-is (626 ASR + 56 heads + 137 Phonon), not the
+≈640 MB the truncated row showed.
 
 Decided 2026-10-22: candidate **A** (Nemotron + native L15) is the path;
 candidate **B** (streaming Parakeet + retrained heads) = backup + future
