@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
-# Render the Phonon audition set (docs/voice-audition.html) and open the page.
+# Render the Phonon audition set next to the page (docs/voice-audition.html).
 #
 #   scripts/phonon-audition.sh [OUTDIR] [PTTS]
 #
-# OUTDIR: where the wav files land (default ~/.cache/idfon/hum-audition).
+# OUTDIR: the directory that holds (or will hold) voice-audition.html; the
+# wav files land in its voice-audition-audio/ subdir (gitignored — the audio
+# is regenerable and stays out of git). Default: docs/ (the repo page).
 # PTTS: a ptts CLI build (default: `ptts` on PATH). Build one from an xn-ptts
 # checkout:  cargo build --release --bin ptts --features cli
-# The audio is regenerable and stays out of git; the page is copied next to it.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${1:-$HOME/.cache/idfon/hum-audition}"
+OUT="${1:-$ROOT/docs}"
 PTTS="${2:-ptts}"
 command -v "$PTTS" >/dev/null 2>&1 || {
   echo "phonon-audition: ptts CLI not found. Build xn-ptts with --features cli and pass its path." >&2
   exit 2
 }
 
-mkdir -p "$OUT"
+AUDIO="$OUT/voice-audition-audio"
+mkdir -p "$AUDIO"
 render() {
-  "$PTTS" --lang en "$2" -o "$OUT/$1.wav" 2>/dev/null && echo "ok $1"
+  "$PTTS" --lang en "$2" -o "$AUDIO/$1.wav" 2>/dev/null && echo "ok $1"
 }
 
 # Letter-string hums.
@@ -50,6 +52,8 @@ render i-see "I see."
 render got-it "Got it."
 render okay "Okay."
 
-cp "$ROOT/docs/voice-audition.html" "$OUT/audition.html"
-echo "audition page: $OUT/audition.html"
-open "$OUT/audition.html" 2>/dev/null || true
+if [ "$OUT/voice-audition.html" != "$ROOT/docs/voice-audition.html" ]; then
+  cp "$ROOT/docs/voice-audition.html" "$OUT/voice-audition.html"
+fi
+echo "audition page: $OUT/voice-audition.html"
+open "$OUT/voice-audition.html" 2>/dev/null || true
