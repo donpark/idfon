@@ -15,7 +15,10 @@ ROOT="$(cd .. && pwd)"
 # with IDFON_TTS=phonon). IDFON_TTS_PHONON=1 selects the ptts package in
 # Package.swift and compiles PhononTtsEngine in.
 extra=()
-if [ "${IDFON_TTS_PHONON:-}" = "1" ]; then extra=(-Xswiftc -DPHONON_TTS); fi
+# Phonon 31m TTS is compiled in by default (it is the voice-agent mouth,
+# 2026-10-25 ruling); IDFON_TTS_PHONON=0 opts out (the mouth then falls back
+# to the language default and the macOS floor stays at 14).
+if [ "${IDFON_TTS_PHONON:-1}" = "1" ]; then extra=(-Xswiftc -DPHONON_TTS); fi
 swift build -c release ${extra[@]+"${extra[@]}"}
 
 APP=build/Idfon.app

@@ -4,9 +4,9 @@ import PackageDescription
 
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 
-// Phonon 31m TTS is a build-time option: IDFON_TTS_PHONON=1 selects the
-// `ptts` package here and compiles `PhononTtsEngine` in (see build.sh).
-let phonon = ProcessInfo.processInfo.environment["IDFON_TTS_PHONON"] == "1"
+// Phonon 31m TTS is compiled in by default (the voice-agent mouth);
+// IDFON_TTS_PHONON=0 opts out.
+let phonon = ProcessInfo.processInfo.environment["IDFON_TTS_PHONON"] != "0"
 
 let package = Package(
     name: "Idfon",
