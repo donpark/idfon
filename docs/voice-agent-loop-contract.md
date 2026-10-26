@@ -92,6 +92,15 @@ Two tool shapes:
 | `screenshot` | `IDFON-SCREENSHOT/1` | `{ reason?: string }` |
 | camera request (planned) | — | `{ reason?: string }` |
 
+**Reply correlation.** A turn request's `context` ends with a `Turn: <id>`
+line. A reply that answers that turn sets `correlation_id` to `<id>` in every
+`speak` envelope it carries. Clients match replies to turns by it and treat
+differently-correlated messages as other turns (a late greeting reply must
+never be spoken as a newer turn's answer). Agents that set no `correlation_id`
+fall back to first-new-message matching — correct but weaker. The `eve-idfon`
+bridge applies the echo mechanically; agents need only pass their request's
+turn id through to `speak` (or do nothing, behind the bridge).
+
 `Selector` is a tagged object:
 
 ```json
