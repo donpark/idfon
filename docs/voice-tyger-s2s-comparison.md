@@ -65,6 +65,14 @@ trim contract absent.
    partial; the loop discards it.
 6. **Filler economy**: tool lead-ins ("Checking the time in Tokyo"), "still
    looking" lines (≤2, 0.8 s gaps) — mechanical timing beats prompt preambles.
+   **Implemented 2026-10-26** (`TurnFiller`, both apps): the client cascade
+   cannot see `tool_start`, so the app covers reply latency on its own clock —
+   a lead-in after 2.0 s of dead air (local turns land ~1.5 s), their
+   `tool_leadin`/`still_looking` recipe on AFM (`$said` anti-repeat framing),
+   then ≤2 still-lines at 0.8 s after each plays out; the reply supersedes a
+   line in flight. Never in history, never in the second ear (`FeedbackEar`).
+   Shortcut: no corpus ground truth for lead-ins — `-fillerscore` covers the
+   backchannel half only.
 7. **Floor protocol** (`F`/`G`, 1.2 s silence grant) for proactive speech —
    only when background tasks exist; relevant to the off-device agent's wire.
 
