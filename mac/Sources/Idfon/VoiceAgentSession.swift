@@ -165,9 +165,6 @@ final class VoiceAgentSession: NSObject {
             // Wait for the recognizer before the turn loop (first-run model).
             await startAnalyzer()
             setState(.listening(""))
-            // Let ChatStore finish hydrating so the reply snapshot excludes
-            // pre-existing history.
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
             // Greet like a live call, fetched before the cue so "answered" is
             // followed immediately by speech instead of dead air.
             if let greetTask {
@@ -429,6 +426,11 @@ final class VoiceAgentSession: NSObject {
         logPrefix: String,
         spokenTurnId: String? = nil
     ) async -> (display: String, spoken: String)? {
+        // The reply snapshot must exclude pre-existing history: a
+        // late-arriving restored-history message would otherwise be taken for
+        // the agent's reply and spoken. Gate on ChatStore's hydration pass
+        // (the old code slept 1.5 s and hoped).
+        await ChatStore.shared.whenHydrated()
         let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
         do {
             try await client.sendText(to: peerId, text, context: callContext)
