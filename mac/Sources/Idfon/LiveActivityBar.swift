@@ -182,6 +182,7 @@ final class LiveActivityBar: NSView {
 
         buildAudioGroup()
         configure(stereoButton, symbol: "person.spatialaudio.stereo.fill", id: "stereo", label: "Stereo", action: #selector(stereoTapped))
+        stereoButton.toolTip = "Stereo capture — echo cancellation off (mono stays echo-cancelled)"
         configure(camButton, symbol: "video.slash.fill", id: "cam", label: "Camera", action: #selector(camTapped))
         configure(declineButton, symbol: "phone.down.fill", id: "decline", label: "Decline", action: #selector(declineTapped))
         configure(answerButton, symbol: "phone.fill", id: "answer", label: "Answer", action: #selector(answerTapped))

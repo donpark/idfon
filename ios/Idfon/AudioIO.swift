@@ -139,9 +139,11 @@ final class AudioIO: AudioSource, AudioSink {
     static var preferredStereo: Bool?
 
     /// The stereo stream: the toggle, or on auto the headset route.
+    /// The call's mic stream is mono (echo-cancelled) unless the user's
+    /// stereo toggle says otherwise — "keep AEC" is the default (2026-10-25);
+    /// stereo capture is opt-in and its no-AEC trade is stated at the toggle.
     static func stereoStreamForCall() -> Bool {
-        if let preferredStereo { return preferredStereo }
-        return stereoCaptureAllowed()
+        preferredStereo ?? false
     }
 
     /// The channel count the call's mic leg publishes.
