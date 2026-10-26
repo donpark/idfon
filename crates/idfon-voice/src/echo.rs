@@ -63,6 +63,36 @@ impl EchoSuppressor {
         // in a long spoken answer ("stop" matches "... it will stop").
         heard_tokens.len() >= 3 && (run as f64 / heard_tokens.len() as f64) >= self.threshold
     }
+
+    /// The caller's own words: `heard` minus every substantial contiguous
+    /// span that echoes what the agent is speaking. Mixed transcripts (the
+    /// caller's words with the agent's reply leaking in — e.g. the no-AEC
+    /// stereo route with barge-in hearing) keep only the caller's part; pure
+    /// echo yields "". Short accidental overlaps (under 3 tokens) are kept:
+    /// real speech shares words with an answer.
+    pub fn strip_echo(&self, heard: &str) -> String {
+        if self.spoken.is_empty() {
+            return heard.to_string();
+        }
+        let spoken_tokens: Vec<String> = self
+            .spoken
+            .split_whitespace()
+            .map(|token| normalize(token))
+            .collect();
+        let mut kept: Vec<String> = heard.split_whitespace().map(str::to_string).collect();
+        loop {
+            let normalized: Vec<String> = kept.iter().map(|token| normalize(token)).collect();
+            let heard_refs: Vec<&str> = normalized.iter().map(String::as_str).collect();
+            let spoken_refs: Vec<&str> = spoken_tokens.iter().map(String::as_str).collect();
+            match longest_common_run_span(&spoken_refs, &heard_refs) {
+                Some((start, len)) if len >= MIN_ECHO_RUN => {
+                    kept.drain(start..start + len);
+                }
+                _ => break,
+            }
+        }
+        kept.join(" ")
+    }
 }
 
 fn normalize(text: &str) -> String {
@@ -80,7 +110,12 @@ fn contains_word(text: &str, word: &str) -> bool {
 
 /// Length of the longest contiguous run of tokens shared by `a` and `b`.
 fn longest_common_run(a: &[&str], b: &[&str]) -> usize {
-    let mut best = 0;
+    longest_common_run_span(a, b).map(|(_, len)| len).unwrap_or(0)
+}
+
+/// The longest contiguous run shared by `a` and `b`, as `(start in b, len)`.
+fn longest_common_run_span(a: &[&str], b: &[&str]) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
     for (i, token) in a.iter().enumerate() {
         for (j, other) in b.iter().enumerate() {
             if token != other {
@@ -90,15 +125,45 @@ fn longest_common_run(a: &[&str], b: &[&str]) -> usize {
             while i + len < a.len() && j + len < b.len() && a[i + len] == b[j + len] {
                 len += 1;
             }
-            best = best.max(len);
+            if best.map_or(true, |(_, best_len)| len > best_len) {
+                best = Some((j, len));
+            }
         }
     }
     best
 }
 
+/// Shortest shared run worth subtracting as echo (2-token overlaps are just
+/// how real speech shares words with an answer).
+const MIN_ECHO_RUN: usize = 3;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_echo_keeps_the_callers_own_words() {
+        let mut suppressor = EchoSuppressor::new();
+        suppressor.set_spoken("you're right I did say that sorry for repeating myself");
+        assert_eq!(
+            suppressor.strip_echo("stop you're right I did say that sorry for repeating myself go on"),
+            "stop go on"
+        );
+    }
+
+    #[test]
+    fn strip_echo_keeps_short_coincidences() {
+        let mut suppressor = EchoSuppressor::new();
+        suppressor.set_spoken("I can look that up after the break");
+        assert_eq!(suppressor.strip_echo("look after dinner"), "look after dinner");
+    }
+
+    #[test]
+    fn strip_echo_of_pure_echo_is_empty() {
+        let mut suppressor = EchoSuppressor::new();
+        suppressor.set_spoken("tell me what you wanted to talk about");
+        assert_eq!(suppressor.strip_echo("tell me what you wanted to talk about"), "");
+    }
 
     #[test]
     fn spoken_text_is_suppressed_but_unrelated_speech_is_not() {

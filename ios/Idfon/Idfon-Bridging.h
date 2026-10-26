@@ -93,6 +93,10 @@ char *idfon_voice_apple_selftest(void);
 uint8_t idfon_voice_is_cancellable(const char *text, uint8_t playing, uint8_t in_tool_window);
 // Text-layer echo check (P5): nonzero when `heard` is our own `spoken` text.
 uint8_t idfon_voice_is_echo(const char *spoken, const char *heard);
+/// Echo subtraction: the caller's own words (`heard` minus every substantial
+/// span echoing `spoken`), NUL-terminated into `out`. Returns the result's
+/// full length (size-first: a null `out` sizes the buffer).
+size_t idfon_voice_strip_echo(const char *spoken, const char *heard, char *out, size_t out_len);
 
 // Turn rules (idfon_voice::turns via crates/iroh-c-ffi src/voice.rs): the
 // voice loop's decision seam, one session per conversation. JSON results are

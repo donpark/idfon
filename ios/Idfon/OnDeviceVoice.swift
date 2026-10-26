@@ -321,6 +321,16 @@ final class OnDeviceVoice: NSObject, AudioCaptureObserver {
         idfon_voice_is_echo(spoken, heard) != 0
     }
 
+    /// The caller's own words: `heard` with every substantial span echoing
+    /// `spoken` removed (P5 echo subtraction over the C ABI).
+    func stripEcho(spoken: String, heard: String) -> String {
+        let needed = idfon_voice_strip_echo(spoken, heard, nil, 0)
+        guard needed > 0 else { return "" }
+        var buffer = [CChar](repeating: 0, count: needed + 1)
+        _ = idfon_voice_strip_echo(spoken, heard, &buffer, buffer.count)
+        return String(cString: buffer)
+    }
+
     /// P5 barge-in rule over the C ABI: whether a committed utterance may
     /// cancel the agent's playback (backchannels/sub-minimum never do).
     func isCancellable(_ text: String, inToolWindow: Bool = false) -> Bool {
