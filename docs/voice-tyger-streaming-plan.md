@@ -87,6 +87,44 @@ Acceptance: first audio ≤ first sentence (~1–2 s) on a slow LLM; the
 final-message bookkeeping (correlation, echo, barge trim) unchanged; the
 corpus replay unchanged.
 
+#### Reference wire (distilled 2026-10-26): HF speech-to-speech / ConvFill
+
+Probed `smolagents/hf-realtime-voice` and `smolagents/convfill-speech-demo`
+(client sources `main.js` + `s2s-realtime-client.js`; both run the official
+`@openai/agents` RealtimeSession). Their wire:
+
+- **One socket, two frame kinds.** OpenAI Realtime **GA** over WebSocket (or
+  WebRTC): binary frames are 24 kHz PCM audio, text frames are JSON events —
+  `input_audio_buffer.speech_started`/`speech_stopped` (server VAD,
+  `turnDetection: {type: "server_vad", interruptResponse: true}`),
+  `response.created` → `response.output_audio.delta` (binary) +
+  `response.output_audio_transcript.delta` → `.done` → `response.done`, and
+  `conversation.item.truncate` for the barge trim (the played-prefix event —
+  the wire form of our `add_barged`). Both transcripts stream as deltas on the
+  same socket; there is no message log in the loop.
+- **Same mouth and rate as ours**: the ConvFill deploy synthesizes with
+  Phonon 31M at 24 kHz (our pcm24k profile).
+
+Consequence for the delivery choice: the reference shape is the live-session
+delta stream (option A) in this vocabulary — delta events per chunk closed by
+one `response.done`, with the final chat message unchanged for display and
+history. Option B (message-log deltas) has no counterpart there and would be
+our own invention. The call-assistant use-case (private coaching to the
+user's earpiece; assistant voice injected into the outgoing stream) is the
+same socket with more frame kinds — another reason to keep the loop on the
+live session.
+
+**What the ConvFill model does with the pipe** (paper: "Thinking While
+Speaking", arXiv 2511.07397): *conversational infill* — after the user's
+speech is transcribed, a 0.6B local talker speaks immediately to buy time,
+then seamlessly weaves in the answer a 31B reasoner produced in parallel
+(the talker is finetuned to merge delayed "cheat notes" into its stream).
+That is our filler economy + reply deltas unified: the fast opening is not
+throwaway filler but the beginning of the reply, continued from the
+reasoner's stream. Our tier-neutral shape maps 1:1 — the local tier is the
+talker, the remote agent is the reasoner, and the pipe above carries both.
+Follow-up candidate, not part of this decision.
+
 ## Why (the evidence from 2026-10-22)
 
 Tyger's model (`nineninesix/tyger`, per docs/voice-tyger.md) is calibrated on a
