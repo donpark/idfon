@@ -8,10 +8,11 @@ ios_dir="$root/ios"
 
 "$ios_dir/build-deps.sh"
 
-# Phonon 31m TTS is a build-time option: IDFON_TTS_PHONON=1 compiles
-# PhononTtsEngine in (ptts is referenced either way and stripped when unused).
+# Phonon 31m TTS is compiled in by default (the voice-agent mouth);
+# IDFON_TTS_PHONON=0 opts out (ptts is referenced either way and stripped
+# when unused).
 extra=()
-if [ "${IDFON_TTS_PHONON:-}" = "1" ]; then
+if [ "${IDFON_TTS_PHONON:-1}" = "1" ]; then
   extra=(SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PHONON_TTS')
 fi
 

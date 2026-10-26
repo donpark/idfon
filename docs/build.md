@@ -58,12 +58,12 @@ command fails with `iroh-c-ffi dylib ... missing`.
 
 ## Build-time options
 
-- `IDFON_TTS_PHONON=1` — compiles the Phonon 31m TTS engine into the apps
-  (mac: selects the `ptts` package in `mac/Package.swift`, phonon builds raise
-  the macOS floor to 15; iOS: `SWIFT_ACTIVE_COMPILATION_CONDITIONS=PHONON_TTS`
-  in `ios/build.sh`, the `ptts` product is referenced either way and stripped
-  when unused). Without it the engine is absent from the binary and the picker.
-  Run `scripts/fetch-phonon-31m.sh` for the models. Details:
+- `IDFON_TTS_PHONON=0` — opts out of the Phonon 31m TTS engine. Phonon is
+  compiled in **by default** (2026-10-25: it is the voice-agent mouth);
+  phonon builds raise the macOS floor to 15 (`ptts` in `mac/Package.swift`,
+  `SWIFT_ACTIVE_COMPILATION_CONDITIONS=PHONON_TTS` in `ios/build.sh`), and
+  the opt-out keeps the floor at 14 with the engine absent from the binary
+  and the picker. Models: `scripts/fetch-phonon-31m.sh`. Details:
   `docs/voice-side-channel.md` ("TTS (build-time option)").
 
 ## Consumer entrypoints
