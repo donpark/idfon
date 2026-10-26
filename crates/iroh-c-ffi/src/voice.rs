@@ -25,11 +25,12 @@ fn mode_str(mode: *const c_char) -> String {
     unsafe { CStr::from_ptr(mode) }.to_string_lossy().into_owned()
 }
 
-/// New session; `thresholds_json` overrides EarsSession defaults (NULL/empty =
-/// defaults, invalid = NULL handle). Free with `idfon_voice_turn_free`.
+/// New session; `thresholds_json` overrides the live-tuned defaults
+/// (`Thresholds::tuned()`, tyger-s2s config/default.yaml — NULL/empty =
+/// tuned, invalid = NULL handle). Free with `idfon_voice_turn_free`.
 #[no_mangle]
 pub extern "C" fn idfon_voice_turn_new(thresholds_json: *const c_char) -> *mut c_void {
-    let mut th = Thresholds::default();
+    let mut th = Thresholds::tuned();
     if !thresholds_json.is_null() {
         let s = unsafe { CStr::from_ptr(thresholds_json) }.to_string_lossy();
         if !s.trim().is_empty() {
@@ -253,6 +254,16 @@ pub extern "C" fn idfon_voice_strip_echo(
 #[cfg(test)]
 mod turn_tests {
     use super::*;
+
+    #[test]
+    fn turn_thresholds_default_to_the_tuned_set() {
+        let th = idfon_voice::turns::Thresholds::tuned();
+        assert_eq!(th.ep_thr, 0.915);
+        assert_eq!(th.barge_thr, 0.4);
+        assert_eq!(th.bc_thr, 0.4);
+        // The parity fixtures keep the bundle set.
+        assert_eq!(idfon_voice::turns::Thresholds::default().ep_thr, 0.9146);
+    }
 
     #[test]
     fn turn_abi_round_trip() {
