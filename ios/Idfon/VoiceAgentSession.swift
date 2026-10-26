@@ -84,6 +84,10 @@ final class VoiceAgentSession: NSObject {
     /// The agent's recent spoken turns (memory-only): the caller's turn can
     /// pick up several of them while barge-in keeps the mic live.
     private var spokenRecent: [String] = []
+    /// The prefix of a barge-cut reply that actually played (their
+    /// `add_barged` trim): the next turn must be told "you only said this
+    /// much" or the agent continues from words the caller never heard.
+    private var cutReply: String?
     /// Voice feedback ("mm-hm") that played and when: it never enters history
     /// (`lastSpoken` stays the agent's reply) and is only echo-checked near its
     /// playback window, so a later real "mm-hm" can still be a turn.
@@ -398,6 +402,13 @@ final class VoiceAgentSession: NSObject {
             setState(.speaking(result.spoken))
             let speakStart = Date()
             pendingHeard = await speak(result.spoken)
+            if pendingHeard != nil {
+                let played = tts.playedSeconds
+                cutReply = played > 0
+                    ? Self.playedPrefix(of: result.spoken, seconds: played)
+                    : result.spoken
+                Automation.mark("voice-agent: reply cut said=" + (cutReply ?? ""))
+            }
             speakMs = Int(Date().timeIntervalSince(speakStart) * 1000)
         }
         // Turn-stage timings for the latency report (docs/benchmarks.md):
@@ -801,6 +812,15 @@ final class VoiceAgentSession: NSObject {
         }
     }
 
+    /// The words that actually played before a barge cut — their
+    /// `played_s * 25` characters-per-second estimate, snapped to a word.
+    static func playedPrefix(of text: String, seconds: TimeInterval) -> String {
+        let cut = text.index(text.startIndex, offsetBy: min(text.count, Int(seconds * 25)))
+        let prefix = String(text[..<cut])
+        guard let lastSpace = prefix.lastIndex(of: " ") else { return prefix }
+        return String(prefix[..<lastSpace])
+    }
+
     /// Send one turn and match its reply. The snapshot of known ids is taken
     /// after ChatStore hydration — a late restored-history message must never
     /// be taken for the reply — and the request names its turn so the reply
@@ -809,11 +829,16 @@ final class VoiceAgentSession: NSObject {
         peerId: String, text: String, turnId: String?, logPrefix: String
     ) async -> ChatMessage? {
         await ChatStore.shared.whenHydrated()
+        var context = callContext
+        if let cut = cutReply {
+            // "You only said this much" (the barge-history trim, slice 3).
+            context += "\nYour previous reply was interrupted after: \"\(cut)\" — continue from there without repeating it."
+            cutReply = nil
+        }
+        if let turnId { context += "\nTurn: \(turnId)" }
         let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
         do {
-            try await client.sendText(
-                to: peerId, text,
-                context: turnId.map { "\(callContext)\nTurn: \($0)" } ?? callContext)
+            try await client.sendText(to: peerId, text, context: context)
         } catch {
             Automation.mark("\(logPrefix): FAIL send \(error.localizedDescription)")
             return nil

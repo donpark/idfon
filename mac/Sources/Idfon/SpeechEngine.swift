@@ -26,10 +26,15 @@ protocol TtsEngine: AnyObject {
     /// Speak `text`, returning when playback finishes.
     func speak(_ text: String) async
     func stop()
+    /// Audio seconds that actually played in the current/last `speak` — the
+    /// barge-history trim's `played_s` (engines that cannot measure it report
+    /// 0 and callers fall back to the full text).
+    var playedSeconds: TimeInterval { get }
 }
 
 extension TtsEngine {
     var lastLatencyMs: Int? { nil }
+    var playedSeconds: TimeInterval { 0 }
 }
 
 /// Reply-speech backend choice, persisted across launches.
@@ -590,8 +595,11 @@ final class PhononTtsEngine: NSObject, TtsEngine {
         await prepareTask?.value
     }
 
+    var playedSeconds: TimeInterval = 0
+
     func speak(_ text: String) async {
         stopRequested = false
+        playedSeconds = 0
         await prepare()
         guard prepared, let phonon else {
             Automation.mark("voice: phonon unavailable, using apple")
@@ -613,7 +621,11 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                         tracker.chunkDone()
                         return
                     }
-                    AudioMeter.playStream(buffer, completion: tracker.chunkDone)
+                    let duration = Double(buffer.frameLength) / buffer.format.sampleRate
+                    AudioMeter.playStream(buffer) { [weak self] in
+                        Task { @MainActor in self?.playedSeconds += duration }
+                        tracker.chunkDone()
+                    }
                 }
             } catch {
                 Automation.mark("voice: phonon synth failed \(error.localizedDescription)")
