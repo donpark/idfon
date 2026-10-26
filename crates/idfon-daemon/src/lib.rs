@@ -6745,56 +6745,42 @@ fn prepare_socket(socket: &Path) -> io::Result<()> {
     }
 }
 
-struct DataLock(PathBuf);
+/// The store's single-host lock: an exclusive advisory file lock that dies
+/// with the process. The previous pid-file scheme needed stale-recovery
+/// heuristics (a `kill(pid, 0)` probe) that mis-fired on pid reuse and had a
+/// create/write crash window; a kernel lock has no stale state at all. The
+/// file is never deleted: unlink + recreate would let two hosts lock
+/// different inodes.
+struct DataLock(std::fs::File);
 
 impl DataLock {
     fn acquire(data_dir: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         let path = data_dir.join("state.lock");
-        Self::recover_stale(&path);
-        std::fs::OpenOptions::new()
+        let file = std::fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
-            .open(&path)
-            .and_then(|mut file| {
-                use std::io::Write;
-                writeln!(file, "{}", std::process::id())
-            })
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::AlreadyExists {
-                    io::Error::new(
-                        io::ErrorKind::AddrInUse,
-                        format!("data directory is already locked: {}", path.display()),
-                    )
-                } else {
-                    error
-                }
-            })?;
-        Ok(Self(path))
-    }
-
-    // A crash skips Drop, leaving a lock whose PID is dead; take over then.
-    fn recover_stale(path: &Path) {
-        let Ok(contents) = std::fs::read_to_string(path) else {
-            return;
-        };
-        let Ok(pid) = contents.trim().parse::<u32>() else {
-            return;
-        };
-        if pid == std::process::id() {
-            return;
+            .create(true)
+            .truncate(true)
+            .open(&path)?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!("data directory is already locked: {}", path.display()),
+                ));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
         }
-        let process = unsafe { libc::kill(pid as i32, 0) };
-        if process == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) {
-            return; // process is alive
-        }
-        let _ = std::fs::remove_file(path);
+        use std::io::Write;
+        let _ = writeln!(&file, "{}", std::process::id()); // holder pid, for `ps`
+        Ok(Self(file))
     }
 }
 
 impl Drop for DataLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = self.0.unlock();
     }
 }
 
@@ -9263,7 +9249,7 @@ mod tests {
     }
 
     #[test]
-    fn data_lock_recovers_stale_lock_from_dead_pid() {
+    fn data_lock_ignores_a_stale_lock_file() {
         let dir = temp_dir("lock-stale");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("state.lock"), "999999999\n").unwrap();
