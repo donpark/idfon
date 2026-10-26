@@ -363,14 +363,9 @@ final class VoiceAgentSession: NSObject {
             Automation.mark("director: forward FAIL no peer")
             return nil
         }
-        let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
-        do {
-            try await client.sendText(to: peerId, text, context: callContext)
-        } catch {
-            Automation.mark("director: forward FAIL send \(error.localizedDescription)")
-            return nil
-        }
-        guard let message = await waitForReply(peerId: peerId, excluding: before),
+        guard let message = await sendAndMatchReply(
+            peerId: peerId, text: text, turnId: "\(callId)-fwd\(turnsDone)",
+            logPrefix: "director: forward"),
               case .text(let raw) = message.kind else {
             Automation.mark("director: forward FAIL no reply")
             return nil
@@ -426,19 +421,8 @@ final class VoiceAgentSession: NSObject {
         logPrefix: String,
         spokenTurnId: String? = nil
     ) async -> (display: String, spoken: String)? {
-        // The reply snapshot must exclude pre-existing history: a
-        // late-arriving restored-history message would otherwise be taken for
-        // the agent's reply and spoken. Gate on ChatStore's hydration pass
-        // (the old code slept 1.5 s and hoped).
-        await ChatStore.shared.whenHydrated()
-        let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
-        do {
-            try await client.sendText(to: peerId, text, context: callContext)
-        } catch {
-            Automation.mark("\(logPrefix): FAIL send \(error.localizedDescription)")
-            return nil
-        }
-        guard let message = await waitForReply(peerId: peerId, excluding: before),
+        guard let message = await sendAndMatchReply(
+            peerId: peerId, text: text, turnId: spokenTurnId, logPrefix: logPrefix),
               case .text(let raw) = message.kind else {
             Automation.mark("\(logPrefix): FAIL no reply")
             return nil
@@ -643,16 +627,49 @@ final class VoiceAgentSession: NSObject {
         }
     }
 
-    private func waitForReply(peerId: String, excluding: Set<String>) async -> ChatMessage? {
+    /// Send one turn and match its reply. The snapshot of known ids is taken
+    /// after ChatStore hydration — a late restored-history message must never
+    /// be taken for the reply — and the request names its turn so the reply
+    /// can be matched exactly (see `waitForReply`).
+    private func sendAndMatchReply(
+        peerId: String, text: String, turnId: String?, logPrefix: String
+    ) async -> ChatMessage? {
+        await ChatStore.shared.whenHydrated()
+        let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
+        do {
+            try await client.sendText(
+                to: peerId, text,
+                context: turnId.map { "\(callContext)\nTurn: \($0)" } ?? callContext)
+        } catch {
+            Automation.mark("\(logPrefix): FAIL send \(error.localizedDescription)")
+            return nil
+        }
+        return await waitForReply(peerId: peerId, excluding: before, expecting: turnId)
+    }
+
+    /// The reply to one turn: the new agent message whose speak envelope
+    /// carries this turn's correlation id (`docs/voice-agent-loop-contract.md`:
+    /// the reply echoes the request's `Turn: <id>` context line as
+    /// `speak.correlation_id`). A message correlated to a *different* turn
+    /// (e.g. a late greeting reply) is never spoken as this turn's answer.
+    /// Agents that set no correlation id fall back to the first new message —
+    /// the historical behavior.
+    private func waitForReply(
+        peerId: String, excluding: Set<String>, expecting correlationId: String?
+    ) async -> ChatMessage? {
         for _ in 0..<60 {
             if stopRequested { return nil }
-            let messages = ChatStore.shared.messages(for: peerId)
-            for message in messages.reversed()
+            var legacy: ChatMessage?
+            for message in ChatStore.shared.messages(for: peerId).reversed()
             where !message.outgoing && !excluding.contains(message.id) {
-                if case .text = message.kind {
-                    return message
+                guard case .text(let raw) = message.kind else { continue }
+                if let expected = correlationId, let id = SpeakEnvelope.correlationIds(in: raw).first {
+                    if id == expected { return message }
+                    continue
                 }
+                if legacy == nil { legacy = message }
             }
+            if let legacy { return legacy }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return nil

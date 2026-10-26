@@ -23,6 +23,30 @@ const pending = new Map();
 // for a card and hold the caller's turn open until it arrives). Keyed by the
 // `reply_to` id the two agents carry in the request/reply text.
 const pendingReplies = new Map();
+// Reply correlation (`docs/voice-agent-loop-contract.md`): a turn request
+// whose context ends `Turn: <id>` is answered with that id echoed as the
+// reply's `speak.correlation_id`, so the caller can match replies to turns
+// exactly. The echo is applied here — mechanically — never left to the model.
+const turnOf = new Map();
+
+function turnIdOf(context) {
+  const match = typeof context === "string" && /(?:^|\n)Turn: ([^\s]+)/.exec(context);
+  return match ? match[1] : null;
+}
+
+function withSpeakCorrelation(text, correlationId) {
+  if (!correlationId || typeof text !== "string" || !text.includes("IDFON-SPEAK/1")) return text;
+  // Envelope bodies are compact single-line JSON from our tool emitters.
+  return text.replace(/IDFON-SPEAK\/1\n(\{[^\n]*\})/g, (whole, json) => {
+    try {
+      const envelope = JSON.parse(json);
+      if (envelope.correlation_id == null) envelope.correlation_id = correlationId;
+      return `IDFON-SPEAK/1\n${JSON.stringify(envelope)}`;
+    } catch {
+      return whole;
+    }
+  });
+}
 const roomMembers = new Map();
 // Live-call caller-audio SSE subscribers (standalone TS voice agents).
 const sseClients = new Set();
@@ -74,6 +98,11 @@ function processFrames() {
         }
       }
       const path = value.type === "turn.in" ? "/idfon/turn" : value.type === "input.in" ? "/idfon/input" : "/idfon/status";
+      if (value.type === "turn.in" && value.message_id) {
+        const turnId = turnIdOf(value.context);
+        if (turnId) turnOf.set(value.message_id, turnId);
+        if (turnOf.size > 5000) turnOf.clear(); // unreplied turns never drain
+      }
       fetch(`${targetUrl}${path}`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-idfon-channel-secret": secret },
@@ -242,6 +271,8 @@ const server = createServer(async (request, response) => {
         } catch (error) {
           log.error("local turn delivery failed", { error: String(error) });
         }
+        const turnId = turnIdOf(body.context);
+        if (turnId) turnOf.set(localId, turnId);
         try {
           const reply = await replyPromise;
           response.writeHead(200, { "content-type": "application/json" });
@@ -516,19 +547,21 @@ const server = createServer(async (request, response) => {
   // Boundary wide event: the agent produced a reply for a turn. Absence of
   // this line after a `forwarding to agent` is "the agent never finished".
   log.info("agent replied", { in_reply_to: body.in_reply_to, chars: body.text.length });
+  const replyText = withSpeakCorrelation(body.text, turnOf.get(body.in_reply_to));
+  turnOf.delete(body.in_reply_to);
   // A local turn (a voice engine wrapping this instance's agent) waits on the
   // /reply itself — resolve it here and skip the holder round trip.
   const localWaiter = pendingReplies.get(body.in_reply_to);
   if (localWaiter) {
     pendingReplies.delete(body.in_reply_to);
-    localWaiter.resolve({ text: body.text });
+    localWaiter.resolve({ text: replyText });
     response.writeHead(200, { "content-type": "application/json" });
     response.end("{}");
     return;
   }
   const ack = new Promise((resolve, reject) => pending.set(body.in_reply_to, { resolve, reject }));
   try {
-    await write({ type: "reply.out", in_reply_to: body.in_reply_to, text: body.text });
+    await write({ type: "reply.out", in_reply_to: body.in_reply_to, text: replyText });
     const result = await ack;
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(result));
