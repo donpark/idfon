@@ -73,15 +73,46 @@ enum DaemonRuntime {
         iroh_enable_tracing()
     }
 
-    /// Spawns the idfond subprocess once. Cheap no-op when a daemon is
-    /// already listening (CLI or the native GUI shares the same socket) —
-    /// the extra child fails to bind and exits; the launcher just retries.
+    /// True when some daemon already serves the socket (cheap connect
+    /// probe) — the launcher then skips the spawn entirely instead of forking
+    /// a child that immediately fails to bind.
+    private static func daemonListening() -> Bool {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let capacity = MemoryLayout.size(ofValue: addr.sun_path)
+        let fits = socketPath.withCString { src in
+            withUnsafeMutablePointer(to: &addr.sun_path) { dst in
+                dst.withMemoryRebound(to: CChar.self, capacity: capacity) { cap in
+                    strncpy(cap, src, capacity)
+                    return cap[capacity - 1] == 0
+                }
+            }
+        }
+        guard fits else { return false }
+        return withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+            }
+        }
+    }
+
+    /// Spawns the idfond subprocess once. Connect-or-spawn: when a daemon
+    /// already serves the socket (CLI or the native GUI shares it), probing
+    /// skips the spawn — the flock makes a duplicate impossible anyway, but
+    /// not forking at all keeps the logs and process table clean.
     static func launchIfNeeded() {
         dispatchPrecondition(condition: .notOnQueue(.main))
         guard !launched else { return }
         launched = true
         let socket = socketPath
         let data = dataDir
+        if daemonListening() {
+            idfonLog("idfon: daemon already serving \(socket)")
+            return
+        }
         guard let idfond = locateDaemon() else {
             idfonLog("idfon: no idfond binary found (looked in bundle dir, ../target/release, /usr/local/bin)")
             return

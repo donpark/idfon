@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use idfon_protocol::{Request, Response, MAX_FRAME_BYTES};
+use idfon_protocol::{Request, Response, MAX_FRAME_BYTES, PROTOCOL_VERSION};
 
 pub const DEFAULT_SOCKET: &str = "/tmp/idfon/idfond.sock";
 const PROFILE_MAX_CHARS: usize = 64;
@@ -51,7 +51,17 @@ pub struct ClientResponse {
 impl ClientResponse {
     /// Deserializes a JSON response body (binary payloads error here).
     pub fn json(&self) -> Result<Response, serde_json::Error> {
-        serde_json::from_slice(&self.body)
+        let response: Response = serde_json::from_slice(&self.body)?;
+        // Requests are version-checked server-side (idfon-protocol); check the
+        // response too — a stale daemon must fail loudly here rather than let
+        // a client misread its feature surface.
+        if response.version != PROTOCOL_VERSION {
+            return Err(<serde_json::Error as serde::de::Error>::custom(format!(
+                "daemon speaks protocol v{}; this client speaks v{} (rebuild idfond)",
+                response.version, PROTOCOL_VERSION
+            )));
+        }
+        Ok(response)
     }
 }
 
@@ -278,6 +288,24 @@ mod tests {
         assert!(!response.ok);
         assert!(response.body.windows(14).any(|w| w == b"unknown_method"));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn json_rejects_wrong_response_version() {
+        let stale = ClientResponse {
+            ok: true,
+            body: br#"{"version":1,"id":"t1","ok":true,"operation":"status","result":{}}"#.to_vec(),
+        };
+        assert!(stale.json().is_err());
+        let current = ClientResponse {
+            ok: true,
+            body: format!(
+                r#"{{"version":{},"id":"t1","ok":true,"operation":"status","result":{{}}}}"#,
+                PROTOCOL_VERSION
+            )
+            .into_bytes(),
+        };
+        assert!(current.json().is_ok());
     }
 
     #[test]
