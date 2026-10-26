@@ -72,10 +72,13 @@ server half already exists — the gap is delivery to the client-cascade app:
 
 To close it (the app owns the TTS in the client cascade):
 
-1. **Delivery**: the holder forwards deltas to the calling app — the call's
-   live-session data frames (preferred: no message-log pollution) or
-   correlated `speak` messages with a `final?: boolean` (default true =
-   backward compatible) on `IDFON-SPEAK/1`.
+1. **Delivery** (decided 2026-10-26): the holder forwards deltas to the
+   calling app as **speech units on the call's live session** — the unit
+   shape of `docs/voice-agent-loop-contract.md` §2 "Speech unit protocol"
+   (partial / final / played), expressed in the OpenAI Realtime vocabulary
+   of the reference wire below. The earlier alternative (correlated `speak`
+   messages with `final?: boolean`) is out: the protocol persists nothing,
+   and the app weaves history from the unit stream.
 2. **App**: the turn loop feeds `SpeechChunker.nextChunk` incrementally from
    the delta stream and speaks each closing chunk (the chunk loop seam
    already exists); the final message still carries display + correlation +
