@@ -25,6 +25,10 @@ public final class CoreAITurnModel: TurnModel {
     private let encInDesc: NDArrayDescriptor
     private let encOutDesc: NDArrayDescriptor
 
+    /// Which rung loaded: the shipping fp16 pair when present, else the fp32
+    /// exact tier (acceptance envelopes differ — see CoreAISoakTests).
+    public let usesFloat16: Bool
+
     private let stepFn: InferenceFunction
     private let stepInNames: [String]
     private let stepOutNames: [String]
@@ -56,6 +60,7 @@ public final class CoreAITurnModel: TurnModel {
         let hasFP16 = FileManager.default.fileExists(atPath: fp16.0.path)
             && FileManager.default.fileExists(atPath: fp16.1.path)
         let (encURL, stepURL) = hasFP16 ? fp16 : fp32
+        self.usesFloat16 = hasFP16
         for u in [encURL, stepURL] where !FileManager.default.fileExists(atPath: u.path) {
             throw LoadError.missingArtifact(u.lastPathComponent)
         }

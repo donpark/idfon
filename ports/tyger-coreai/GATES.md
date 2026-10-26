@@ -68,3 +68,13 @@ tier (99.5%), marginally worse same-frame (97.8% there). Size ≈ half of fp32
 
 **Chosen as the OS 27+ shipping rung (user, 2026-10-21).** `CoreAITurnModel`
 prefers the float16 pair and falls back to the float32 assets (the exact tier).
+
+**Provisioned into the loader's path (2026-10-26)**: `bench-results/coreai`
+now carries both rungs (fp32 1.53 GB + fp16 793 MB) — until today only the
+fp32 pair was there, so every loader silently ran the exact tier. Re-exported
+with `TYGER_S2S=/Users/don/dev/github/tyger-s2s`, gates re-run PASS (step
+max|Δ| 0.000977; encoder 0.25–1.0 at cos 0.999975, the known fp16 drift
+class). Swift `CoreAITurnModel` (now reports `usesFloat16`) passes
+`testRuntimeMatchesTheOracle` on the fp16 pair inside parity6's envelope
+(measured state ≤ 0.038, probs ≤ 0.010 on the 248-frame fixture). The HF
+manifest has served the fp16 pair since 2026-10-21 (the iOS install path).

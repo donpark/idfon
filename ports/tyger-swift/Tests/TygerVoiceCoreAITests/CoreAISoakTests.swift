@@ -57,8 +57,15 @@ final class CoreAISoakTests: XCTestCase {
             h += 1
         }
         XCTAssertEqual(got.count, exp.frames.count, "frame count")
-        // fp32 tier contract: tight (the chain gated at ~1e-4 on real audio)
-        let envelope: [Double] = [2e-3, 2e-3, 2e-3, 2e-3, 1e-3, 1e-3, 1e-3, 1e-3]
+        // Exact (fp32) tier contract: tight (the chain gated at ~1e-4 on real
+        // audio). The shipping fp16 rung is judged by the accepted fp16 tier's
+        // record — parity6's envelope (state ≤ 0.7 / prob heads ≤ 0.06 maxima,
+        // the TurnRuntimeTests contract), its decisions by the ±2-frame guard
+        // (917/919). Measured here on the fp16 pair: state ≤ 0.038,
+        // probs ≤ 0.010 — a wiring bug is O(1) and still trips either.
+        let envelope: [Double] = model.usesFloat16
+            ? [0.7, 0.7, 0.7, 0.7, 0.06, 0.06, 0.06, 0.06]
+            : [2e-3, 2e-3, 2e-3, 2e-3, 1e-3, 1e-3, 1e-3, 1e-3]
         var worst = [Double](repeating: 0, count: 8)
         for (g, w) in zip(got, exp.frames) {
             for k in 0..<8 {
