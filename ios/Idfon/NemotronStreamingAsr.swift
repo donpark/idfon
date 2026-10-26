@@ -45,12 +45,17 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     func prepare() async { await Self.warmCache() }
 
     /// `Application Support/FluidAudio/Models/<nemotron repo folder>` — the
-    /// FluidAudio models base the other engines download into.
+    /// FluidAudio models base the other engines download into; exactly where
+    /// `ModelHub.download` lands the files (it appends the repo's folder name
+    /// under `to:` itself).
     static func modelDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        modelsBase.appendingPathComponent(repo.folderName)
+    }
+
+    private static var modelsBase: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("FluidAudio", isDirectory: true)
             .appendingPathComponent("Models", isDirectory: true)
-        return base.appendingPathComponent(repo.folderName)
     }
 
     static func warmCache() async {
@@ -59,7 +64,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
             let created = Task {
                 Automation.mark("voice: nemotron prewarming")
                 do {
-                    try await ModelHub.download(repo, to: modelDirectory())
+                    try await ModelHub.download(repo, to: modelsBase)
                     Automation.mark("voice: nemotron prewarmed")
                 } catch {
                     Automation.mark("voice: nemotron prewarm failed \(error.localizedDescription)")
@@ -79,7 +84,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     ) async throws {
         self.onText = onText
         Automation.mark("voice: nemotron initializing")
-        try await ModelHub.download(Self.repo, to: Self.modelDirectory())
+        try await ModelHub.download(Self.repo, to: Self.modelsBase)
         let manager = StreamingNemotronAsrManager()
         try await manager.loadModels(from: Self.modelDirectory())
         await manager.setPartialCallback { [weak self] text in

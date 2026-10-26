@@ -37,7 +37,9 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
 
     func prepare() async { await Self.warmCache() }
 
-    /// `~/.idfon/models/<nemotron repo folder>`, the ModelStore convention.
+    /// `~/.idfon/models/<nemotron repo folder>`, the ModelStore convention —
+    /// exactly where `ModelHub.download` lands the files (it appends the
+    /// repo's folder name under `to:` itself).
     static func modelDirectory() -> URL {
         ModelStore.directory(named: repo.folderName)
     }
@@ -48,7 +50,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
             let created = Task {
                 Automation.mark("voice: nemotron prewarming")
                 do {
-                    try await ModelHub.download(repo, to: modelDirectory())
+                    try await ModelHub.download(repo, to: ModelStore.root)
                     Automation.mark("voice: nemotron prewarmed")
                 } catch {
                     Automation.mark("voice: nemotron prewarm failed \(error.localizedDescription)")
@@ -68,7 +70,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     ) async throws {
         self.onText = onText
         Automation.mark("voice: nemotron initializing")
-        try await ModelHub.download(Self.repo, to: Self.modelDirectory())
+        try await ModelHub.download(Self.repo, to: ModelStore.root)
         let manager = StreamingNemotronAsrManager()
         try await manager.loadModels(from: Self.modelDirectory())
         await manager.setPartialCallback { [weak self] text in

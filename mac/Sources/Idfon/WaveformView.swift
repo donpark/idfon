@@ -254,6 +254,7 @@ final class AudioMeter {
     private static let playbackPlayer = AVAudioPlayerNode()
     private static var playbackAttached = false
     private static var voiceProcessingTried = false
+    private static var voiceProcessingEnabled = false
     /// Playback state that must survive a stop/start cycle: the looping cue and
     /// one-shots mid-flight are dropped by engine.stop() (their completions
     /// fire, so callers resume while the audio silently vanishes — the iOS
@@ -465,10 +466,12 @@ final class AudioMeter {
                 // Audio USB mic) — the 1s RMS log shows that immediately.
                 if !Self.voiceProcessingTried {
                     // Once per process: the tap is process-sticky, so the mode
-                    // is fixed here. Skipped on the stereo (headset) route —
-                    // VPIO would mono-downmix the tap (docs/stereo-calls.md).
+                    // is fixed here. Skipped unless the input is mono — VPIO
+                    // mono-downmixes stereo (docs/stereo-calls.md) and some
+                    // multichannel/aggregate inputs fail engine start
+                    // outright with it on.
                     Self.voiceProcessingTried = true
-                    if Self.skipVoiceProcessing() {
+                    if Self.skipVoiceProcessing() || input.outputFormat(forBus: 0).channelCount != 1 {
                         Self.log("idfon audio meter: voice-processing skipped (headset route, stereo capture)")
                     } else if ProcessInfo.processInfo.environment["IDFON_MACOS_AEC"] == "0" {
                         Self.log("idfon audio meter: voice-processing off (IDFON_MACOS_AEC=0)")
@@ -485,6 +488,7 @@ final class AudioMeter {
                                     enableAdvancedDucking: false, duckingLevel: .min)
                             }
                             Self.log("idfon audio meter: voice-processing enabled")
+                            Self.voiceProcessingEnabled = true
                         } catch {
                             Self.log("idfon audio meter: voice-processing unsupported: \(error.localizedDescription)")
                         }
@@ -584,6 +588,15 @@ final class AudioMeter {
         Self.inputTapInstalled = false
         tapInstalled = false
         startInFlight = false
+        // Voice processing is an optimization some inputs cannot host. A
+        // running engine without AEC always beats a dead one (everything on
+        // the playback bus drops while the engine is idle): drop the mode and
+        // retry before the settle-retry.
+        if Self.voiceProcessingEnabled {
+            Self.voiceProcessingEnabled = false
+            try? input.setVoiceProcessingEnabled(false)
+            Self.log("idfon audio meter: voice-processing dropped after start failure")
+        }
         if generation < 4 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self, self.startGeneration == generation, !self.running else {
