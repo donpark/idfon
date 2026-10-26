@@ -76,6 +76,26 @@ final class ChatStore {
     }
 
     private var started = false
+
+    /// Set once `hydrateHistory()` has finished its pass. The daemon event
+    /// replay is the only thing that appends pre-existing history late, so
+    /// afterwards the message set is stable enough to snapshot. Awaited in
+    /// place of a fixed sleep by anything that must distinguish new messages
+    /// from restored ones (the voice loop's reply snapshot).
+    private var hydrated = false
+    private var hydrationWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func whenHydrated() async {
+        guard !hydrated else { return }
+        await withCheckedContinuation { hydrationWaiters.append($0) }
+    }
+
+    private func markHydrated() {
+        hydrated = true
+        let waiters = hydrationWaiters
+        hydrationWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
     /// Our endpoint id (public key), for IDFON-RECORDING/1 envelopes.
     private(set) var selfPeerId = "unknown"
 
@@ -499,6 +519,7 @@ final class ChatStore {
     }
 
     private func hydrateHistory() async {
+        defer { markHydrated() }
         guard let events = try? await client.events(after: nil) else { return }
         for event in events { ingest(event) }
     }
