@@ -70,6 +70,9 @@ final class VoiceAgentSession: NSObject {
     /// Last text spoken by TTS, so the agent's own tail can be dropped instead
     /// of re-sent as a user turn (self-bleed).
     private var lastSpoken: String?
+    /// The agent's recent spoken turns (memory-only): the caller's turn can
+    /// pick up several of them while barge-in keeps the mic live.
+    private var spokenRecent: [String] = []
     /// Voice feedback ("mm-hm") that played and when: it never enters history
     /// (`lastSpoken` stays the agent's reply) and is only echo-checked near its
     /// playback window, so a later real "mm-hm" can still be a turn.
@@ -283,14 +286,26 @@ final class VoiceAgentSession: NSObject {
                 guard let text = await listenOnce(), !text.isEmpty else { break }
                 lastListenMs = Int(Date().timeIntervalSince(listenStart) * 1000)
                 Automation.mark("voice-agent: asr listen_ms=\(lastListenMs)")
-                if let spoken = lastSpoken, !spoken.isEmpty,
-                   voice.isEcho(spoken: spoken, heard: text) {
-                    Automation.mark("voice-agent: dropped echo heard=\(text)")
-                    continue
+                var own = text
+                if let spoken = lastSpoken, !spoken.isEmpty {
+                    if voice.isEcho(spoken: spoken, heard: text) {
+                        Automation.mark("voice-agent: dropped echo heard=\(text)")
+                        continue
+                    }
+                    // Mixed transcripts (the agent's replies leaking into the
+                    // caller's turn — the no-AEC stereo route with barge-in
+                    // hearing): keep the caller's own words only.
+                    let stripped = voice.stripEcho(
+                        spoken: spokenRecent.joined(separator: " \(spoken) "), heard: text)
+                    if stripped != text {
+                        Automation.mark("voice-agent: echo stripped=\(stripped)")
+                        own = stripped
+                    }
                 }
+                guard !own.isEmpty else { continue }
                 // Optional on-device LM cleanup (fail-open to the raw transcript).
-                let corrected = await SpeechCorrection.correct(text)
-                if corrected != text {
+                let corrected = await SpeechCorrection.correct(own)
+                if corrected != own {
                     Automation.mark("voice-agent: corrected=\(corrected)")
                 }
                 heard = corrected
@@ -685,6 +700,8 @@ final class VoiceAgentSession: NSObject {
             feedbackTask = nil
         }
         lastSpoken = text
+        spokenRecent.append(text)
+        if spokenRecent.count > 3 { spokenRecent.removeFirst(spokenRecent.count - 3) }
         // Arm barge-in: keep the recognizer live while TTS plays. The echo and
         // gated-peak filters keep the agent's own voice out, so a cancellable
         // non-echo utterance is the caller interrupting.

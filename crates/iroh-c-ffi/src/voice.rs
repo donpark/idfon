@@ -219,6 +219,37 @@ pub extern "C" fn idfon_voice_is_echo(spoken: *const c_char, heard: *const c_cha
     u8::from(suppressor.is_echo(&heard))
 }
 
+/// Text-layer echo subtraction (P5): the caller's own words — `heard` with
+/// every substantial span echoing `spoken` removed — copied NUL-terminated
+/// into `out`. Returns the result's full length (size-first, like
+/// `idfon_client_socket_path`: a null `out` sizes the buffer). Mixed
+/// transcripts keep the caller's part; pure echo yields an empty string.
+#[no_mangle]
+pub extern "C" fn idfon_voice_strip_echo(
+    spoken: *const c_char,
+    heard: *const c_char,
+    out: *mut c_char,
+    out_len: usize,
+) -> usize {
+    if spoken.is_null() || heard.is_null() {
+        return 0;
+    }
+    let spoken = unsafe { CStr::from_ptr(spoken) }.to_string_lossy();
+    let heard = unsafe { CStr::from_ptr(heard) }.to_string_lossy();
+    let mut suppressor = idfon_voice::echo::EchoSuppressor::new();
+    suppressor.set_spoken(&spoken);
+    let stripped = suppressor.strip_echo(&heard);
+    let bytes = stripped.as_bytes();
+    if !out.is_null() && out_len > 0 {
+        let copy = bytes.len().min(out_len - 1);
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, copy);
+            *out.add(copy) = 0;
+        }
+    }
+    bytes.len()
+}
+
 #[cfg(test)]
 mod turn_tests {
     use super::*;
