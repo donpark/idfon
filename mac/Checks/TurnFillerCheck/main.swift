@@ -50,8 +50,20 @@ do {
 check(TurnFiller.normalize("   \"Still getting the time for Cape Town.\"   ") == "Still getting the time for Cape Town.",
       "quotes stripped + trimmed")
 check(TurnFiller.normalize("Still on it.\nExtra markdown line") == "Still on it.", "first line only")
-check(TurnFiller.normalize("...") == nil, "nothing speakable yields nil")
+check(TurnFiller.normalize("... ") == nil, "nothing speakable yields nil")
 check(TurnFiller.normalize("let me check the time in Tokyo.") == "Let me check the time in Tokyo.",
       "sentence capitalized")
+
+// Hum policy: Phonon sounds letter strings out as words ("mm-hm" is heard as
+// "lim", "mm" as "meem"), so bare vocalizations never reach the mouth and
+// leading ones are stripped from the line.
+check(TurnFiller.normalize("Mm-hmm.") == nil, "bare hum yields no line")
+check(TurnFiller.normalize("hmm") == nil, "bare 'hmm' yields no line")
+check(TurnFiller.normalize("Um, let me check the time in Tokyo.") == "Let me check the time in Tokyo.",
+      "leading 'um' stripped")
+check(TurnFiller.normalize("Hmm. Still getting the time for Cape Town.") == "Still getting the time for Cape Town.",
+      "leading hum dropped with the rest kept")
+check(TurnFiller.isVocalization("Mm-hm."), "mm-hm is a vocalization")
+check(!TurnFiller.isVocalization("yeah"), "a word is not a vocalization")
 
 print("ALL OK")

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice parity board: status of the eight gaps</title>
+<style>
+  :root {
+    --paper: #F2F5F3;
+    --panel: #16241E;
+    --ink: #1C2A24;
+    --muted: #58685F;
+    --rule: #C9D2CC;
+    --done: #1E6B52;
+    --done-bg: #DCEBE3;
+    --needs: #8A5A0B;
+    --needs-bg: #F2E7C8;
+    --open: #9A3B26;
+    --open-bg: #F0DDD6;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--paper); }
+  body {
+    margin: 0;
+    color: var(--ink);
+    font-family: "Iowan Old Style", Charter, Georgia, serif;
+    font-size: 1.0625rem;
+    line-height: 1.65;
+  }
+  .wrap { max-width: 46rem; margin: 0 auto; padding: 3.5rem 1.5rem 5rem; }
+
+  .kicker {
+    font-family: system-ui, sans-serif;
+    font-size: 0.8125rem;
+    color: var(--muted);
+    margin: 0 0 1.25rem;
+  }
+  h1 {
+    font-size: clamp(2rem, 5.5vw, 3.125rem);
+    line-height: 1.12;
+    font-weight: 600;
+    margin: 0 0 1rem;
+    letter-spacing: -0.01em;
+    max-width: 22ch;
+  }
+  .standfirst { margin: 0 0 2.75rem; color: var(--muted); max-width: 58ch; }
+
+  .focus {
+    background: var(--panel);
+    color: #EDF2EE;
+    padding: 2.25rem 2.25rem 2rem;
+    margin-bottom: 3.25rem;
+  }
+  .focus h2 {
+    font-family: system-ui, sans-serif;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: #A8BCB1;
+    margin: 0 0 1.5rem;
+  }
+  .focus ol { margin: 0; padding: 0; list-style: none; counter-reset: f; }
+  .focus li { counter-increment: f; padding: 1.125rem 0; border-top: 1px solid #2E4238; }
+  .focus li:first-child { border-top: none; padding-top: 0; }
+  .focus li:last-child { padding-bottom: 0; }
+  .focus h3 {
+    font-size: 1.3125rem;
+    font-weight: 600;
+    margin: 0 0 0.375rem;
+    display: flex;
+    gap: 0.875rem;
+    align-items: baseline;
+  }
+  .focus h3::before {
+    content: counter(f);
+    font-family: system-ui, sans-serif;
+    font-size: 0.8125rem;
+    color: #A8BCB1;
+    border: 1px solid #4A6156;
+    border-radius: 50%;
+    width: 1.625rem;
+    height: 1.625rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    transform: translateY(-2px);
+  }
+  .focus p { margin: 0; color: #C4D2CA; max-width: 52ch; }
+
+  h2.section {
+    font-family: system-ui, sans-serif;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--muted);
+    margin: 0 0 0.5rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 2px solid var(--ink);
+  }
+  article { padding: 1.875rem 0 1.75rem; border-bottom: 1px solid var(--rule); }
+  .status {
+    font-family: system-ui, sans-serif;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.25rem 0.625rem;
+    border-radius: 999px;
+    display: inline-block;
+    margin-bottom: 0.75rem;
+  }
+  .s-done { color: var(--done); background: var(--done-bg); }
+  .s-needs { color: var(--needs); background: var(--needs-bg); }
+  .s-open { color: var(--open); background: var(--open-bg); }
+  article h3 { font-size: 1.5rem; line-height: 1.25; font-weight: 600; margin: 0 0 0.625rem; }
+  article p { margin: 0 0 0.625rem; max-width: 62ch; }
+  .board-name {
+    font-family: system-ui, sans-serif;
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin: 0.75rem 0 0;
+  }
+
+  .option {
+    border-left: 3px solid var(--ink);
+    padding: 0.25rem 0 0.25rem 1.125rem;
+    margin: 1.125rem 0;
+    max-width: 60ch;
+  }
+  .option h4 { font-size: 1.0625rem; margin: 0 0 0.375rem; font-weight: 600; }
+  .option p { margin: 0 0 0.5rem; }
+
+  footer {
+    margin-top: 3.25rem;
+    color: var(--muted);
+    font-size: 0.9375rem;
+    max-width: 58ch;
+  }
+  a { color: var(--ink); }
+  a:focus-visible, li:focus-visible {
+    outline: 2px solid var(--done);
+    outline-offset: 3px;
+  }
+  @media (max-width: 32rem) {
+    .wrap { padding: 2.5rem 1.125rem 3.5rem; }
+    .focus { padding: 1.625rem 1.25rem 1.5rem; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="kicker">Idfon voice agent. Parity board, October 26.</p>
+  <h1>What is left to do</h1>
+  <p class="standfirst">
+    We compare our voice agent with a reference system that speaks and listens at the
+    same time. The comparison produced eight gaps. We closed five gaps. One gap needs a
+    decision from you. Two gaps need work. Do the iPhone item first. The iPhone is the
+    launch target.
+  </p>
+
+  <div class="focus">
+    <h2>What to do next</h2>
+    <ol>
+      <li>
+        <h3>Fix audio reliability in the iPhone app</h3>
+        <p>
+          Item 6. The Mac app now handles audio devices that disconnect and reconnect
+          repeatedly. The iPhone app does not. A call on the iPhone can lose its audio and
+          not recover. This is the most important open item.
+        </p>
+      </li>
+      <li>
+        <h3>Choose how the assistant sends its speech</h3>
+        <p>
+          Item 4. The fix for streaming speech is ready except for one decision. Read the
+          two choices in the section for item 4 and tell me which one to build.
+        </p>
+      </li>
+      <li>
+        <h3>Automate the conversation replays</h3>
+        <p>
+          Item 7. We replay old conversations after each voice change to detect problems.
+          The replay is manual work today. One command can run it and report pass or fail.
+        </p>
+      </li>
+    </ol>
+  </div>
+
+  <h2 class="section">The eight gaps</h2>
+
+  <article>
+    <span class="status s-done">Done</span>
+    <h3>Interrupting the assistant</h3>
+    <p>
+      You can interrupt the assistant while it speaks. The assistant then stops. Before
+      the fix, the assistant assumed that you heard the complete reply. Its next answer
+      repeated sentences that you did not hear.
+    </p>
+    <p>
+      Now the assistant stores the part of the reply that played before the interruption.
+      Its next answer continues from that part.
+    </p>
+    <p class="board-name">Item 1 (barge history trim)</p>
+  </article>
+
+  <article>
+    <span class="status s-done">Done</span>
+    <h3>Timing of the assistant's decisions</h3>
+    <p>
+      The assistant decides when to let you speak and when to react with a short sound.
+      These decisions use audio timing. The old code used the time when audio entered the
+      play queue. That time can be earlier than the time when you hear the audio. The
+      difference can reach a few seconds.
+    </p>
+    <p>
+      The code now uses the real playback time. The decisions now match what you hear.
+    </p>
+    <p class="board-name">Item 2 (playback clock)</p>
+  </article>
+
+  <article>
+    <span class="status s-done">Done</span>
+    <h3>Conversation settings</h3>
+    <p>
+      Three settings control the assistant. One setting decides when you finished
+      speaking. One setting decides when you interrupted the assistant. One setting
+      decides when the assistant reacts with a short sound such as "mm-hm". We used
+      generic values. These values missed interruptions and produced too few reactions.
+    </p>
+    <p>
+      We now use the values that the reference system uses in live calls.
+    </p>
+    <p class="board-name">Item 3 (thresholds)</p>
+  </article>
+
+  <article>
+    <span class="status s-needs">Needs your decision</span>
+    <h3>Speaking the answer in parts</h3>
+    <p>
+      The assistant writes its complete answer first. Then it speaks the answer. When the
+      answer takes time, you hear nothing during that time. The fix is to speak each
+      sentence when the sentence is ready.
+    </p>
+    <p>
+      We completed and tested the speech part. The missing part is the code that sends each
+      sentence to the speaker during a call. There are two ways to do this.
+    </p>
+    <div class="option">
+      <h4>Choice A: send the sentences on the call connection</h4>
+      <p>
+        The sentences travel like the voice audio. They do not enter the chat history.
+        Delivery is fast. App versions that predate this change are not affected.
+      </p>
+      <p>
+        The call connection cannot carry these sentences today. We would add that
+        capability.
+      </p>
+    </div>
+    <div class="option">
+      <h4>Choice B: send the sentences as chat messages</h4>
+      <p>
+        Each sentence arrives as a chat message with a "partial" marker. The final message
+        replaces the partial messages with the complete answer. No new capability is
+        necessary.
+      </p>
+      <p>
+        The chat history then contains many partial messages. App versions that predate
+        this change would speak each partial message as a complete answer.
+      </p>
+    </div>
+    <p>
+      My recommendation is A. Tell me your choice and I will build it.
+    </p>
+    <p class="board-name">Item 4 (reply deltas)</p>
+  </article>
+
+  <article>
+    <span class="status s-done">Done today</span>
+    <h3>What the assistant says during long waits</h3>
+    <p>
+      The assistant can take time to answer, for example when it looks up information. It
+      now speaks short lines during these waits. After two seconds of silence it speaks
+      one line, such as "Let me check on that." If the wait continues, it can speak up to
+      two more lines.
+    </p>
+    <p>
+      A small language model in the app writes these lines. The main model does not write
+      them. These lines do not enter the conversation history.
+    </p>
+    <p class="board-name">Item 5 (filler economy)</p>
+  </article>
+
+  <article>
+    <span class="status s-open">Open</span>
+    <h3>Audio reliability in the iPhone app</h3>
+    <p>
+      The Mac app now handles audio devices that disconnect and reconnect repeatedly, for
+      example a headset with a loose cable. Before the fix, one disconnect could stop the
+      audio and the audio did not recover. Greetings and call tones were silent after
+      that.
+    </p>
+    <p>
+      The iPhone app does not have this fix. The iPhone is the launch target, so this is
+      the most important open item.
+    </p>
+    <p class="board-name">Item 6 (iOS install and engine parity)</p>
+  </article>
+
+  <article>
+    <span class="status s-open">Open</span>
+    <h3>Replays of past conversations</h3>
+    <p>
+      We keep transcripts of real conversations. We replay them after voice changes to
+      find problems. The replay is manual work today. As a result, we check changes by
+      hand and problems appear late.
+    </p>
+    <p>
+      This item is one command. The command runs the replay and reports pass or fail.
+    </p>
+    <p class="board-name">Item 7 (corpus regression)</p>
+  </article>
+
+  <article>
+    <span class="status s-done">Done today</span>
+    <h3>Size of the turn-taking model</h3>
+    <p>
+      The part that detects when you finish speaking has two versions. One version is
+      large and exact. The other version is half the size and nearly as exact. We
+      installed only the large version. The app loaded 1.5 GB where the design intends
+      0.8 GB.
+    </p>
+    <p>
+      The small version is now installed and tested. The app uses it by default.
+    </p>
+    <p class="board-name">Item 8 (fp16 export)</p>
+  </article>
+
+  <footer>
+    Completed: items 1, 2, 3, 5, and 8. Open: items 6 and 7. Item 4 waits for your
+    decision.
+  </footer>
+
+</div>
+</body>
+</html>

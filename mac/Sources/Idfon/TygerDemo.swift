@@ -29,6 +29,14 @@ enum TygerDemo {
         }
     }
 
+    /// The script either stands alone or sits under `replay` in a corpus
+    /// entry — the README documents passing the entry file directly.
+    private static func decodeScript(_ data: Data) -> Script? {
+        struct Entry: Decodable { let replay: Script }
+        return (try? JSONDecoder().decode(Script.self, from: data))
+            ?? (try? JSONDecoder().decode(Entry.self, from: data))?.replay
+    }
+
     /// Retained: AudioMeter holds observers weakly and must see one to start.
     private final class DummyCapture: AudioCaptureObserver {
         func audioCapture(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {}
@@ -41,7 +49,7 @@ enum TygerDemo {
             Automation.mark(String(format: "tygerdemo t=%.2f %@", -t0.timeIntervalSinceNow, s))
         }
         guard let scriptData = FileManager.default.contents(atPath: script),
-              let plan = try? JSONDecoder().decode(Script.self, from: scriptData),
+              let plan = Self.decodeScript(scriptData),
               let user = loadWav(userWav)
         else {
             mark("FAIL load wav/script")
@@ -129,11 +137,19 @@ enum TygerDemo {
         func decision(_ kind: String) {
             switch kind {
             case "ENDPOINT":
-                guard !speaking else { return }
+                guard !speaking else {
+                    // Visible for the corpus gate (scripts/corpus-regression.py):
+                    // dropped decisions are turn splits in the diff.
+                    mark("decision ENDPOINT -> ignored (agent speaking)")
+                    return
+                }
                 mark("decision ENDPOINT -> reply")
                 Task { await startReply() }
             case "BARGE":
-                guard speaking else { return }
+                guard speaking else {
+                    mark("decision BARGE -> ignored (agent not speaking)")
+                    return
+                }
                 mark("decision BARGE -> stop playback")
                 tts.stop()
             case "BACKCHANNEL":
@@ -154,7 +170,7 @@ enum TygerDemo {
             lastFeedbackAt = Date()
             mark("decision BACKCHANNEL -> feedback")
             feedbackTask = Task { @MainActor in
-                await FeedbackEar.suppress { await self.tts.speak("Mm-hmm.") }
+                await FeedbackEar.suppress { await self.tts.speak("Yeah.") }
                 self.mark("feedback done")
                 self.feedbackTask = nil
             }

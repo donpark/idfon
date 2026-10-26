@@ -28,15 +28,20 @@ enum BackchannelFiller {
     private static let lock = NSLock()
 
     /// The tyger backchannel system prompt (config/prompts.yaml), shots folded
-    /// in as examples so a single AFM call carries the whole recipe.
+    /// in as examples so a single AFM call carries the whole recipe. Hum
+    /// spellings are taught out: Phonon is a prose-trained text-to-speech
+    /// model with no phonemizer, so letter strings like "mm-hm" sound out as
+    /// words ("lim", "meem") — the reactions are words the mouth can say.
     private static let instructions = """
     You are a voice assistant listening to the user, who is STILL speaking. You have NOT been given the floor.
     Read their partial words so far and emit ONLY a brief, natural spoken reaction (one to four words) to WHAT
     they are saying -- match its content and emotion, for example 'oh nice', 'oh no', 'wow, really?', 'that
-    makes sense', 'got it', 'right', 'sure', 'ha, yeah', 'that's great', 'oh, I see'. If they have said too
-    little so far to react to, or nothing in their words calls for a specific reaction, use a neutral hum such
-    as 'mm-hm' or 'mhm'. Do NOT answer, do NOT ask a real question, do NOT continue their sentence, do NOT take
-    the floor. Always react in English. Plain spoken words only, no markdown or symbols. Just the short reaction.
+    makes sense', 'got it', 'right', 'sure', 'yeah', 'that's great', 'oh, I see'. If they have said too
+    little so far to react to, or nothing in their words calls for a specific reaction, use a short neutral
+    word such as 'right', 'yeah', or 'I see'. Do NOT answer, do NOT ask a real question, do NOT continue
+    their sentence, do NOT take the floor. Never write hums or spelled-out sounds like 'mm-hm', 'mhm',
+    'hmm', 'uh-huh' -- the voice cannot say them. Always react in English. Plain spoken words only, no
+    markdown or symbols. Just the short reaction.
 
     Examples:
     user: The user is currently saying: "I finally finished my first marathon last weekend"
@@ -44,17 +49,17 @@ enum BackchannelFiller {
     user: The user is currently saying: "my car broke down today right on the way to work"
     you: oh, no
     user: The user has only said a few words so far: "so I"
-    you: mm-hm
+    you: right
     user: The user has only said a few words so far: "well so"
-    you: uh-huh
+    you: yeah
     user: The user is currently saying: "I finally passed my driving test yesterday"
     you: oh, that's great!
-    user: The user is currently saying: "we adopted a kitten and now the kitten sleeps on my pillow every" (You already said 'aw, how cute'.)
-    you: ha, lucky you
+    user: The user is currently saying: "we adopted a kitten and now the kitten sleeps on my pillow every" (You already said 'how cute'.)
+    you: lucky you
     user: The user is currently saying: "so the flight got cancelled and then the airline lost my bag and" (You already said 'oh, no'.)
-    you: ugh, what a day
+    you: what a day
     user: The user is currently saying: "I got the job, and the job is in Denver, so in Denver we'll need a" (You already said 'that's great', 'wow'.)
-    you: mm-hm
+    you: okay
     """
 
     static var isAvailable: Bool {
@@ -82,11 +87,10 @@ enum BackchannelFiller {
             guard let text = normalize(response.content) else { return nil }
             // AFM can repeat despite the no_repeat line (identical partials
             // recur mid-turn). Swap a repeat for the first unused audited-safe
-            // ack so variety is guaranteed, not hoped for.
+            // word so variety is guaranteed, not hoped for.
             let out: String
             if recentAcksSnapshot().contains(text) {
-                let fallbacks = ["Mm-hmm.", "Hmm.", "Mhm.", "Yeah.", "Right.", "Okay."]
-                guard let fresh = fallbacks.first(where: { !recentAcksSnapshot().contains($0) }) else {
+                guard let fresh = safePool().first(where: { !recentAcksSnapshot().contains($0) }) else {
                     return nil
                 }
                 out = fresh
@@ -101,6 +105,19 @@ enum BackchannelFiller {
         #else
         return nil
         #endif
+    }
+
+    /// The audited-safe neutral reactions: plain words the mouth says cleanly.
+    static func safePool() -> [String] {
+        ["Yeah.", "Right.", "Okay.", "I see.", "Got it.", "Sure."]
+    }
+
+    /// The fixed-cue fallback (no AFM): the next unused safe word, so even the
+    /// no-model path never repeats one word the whole call.
+    static func fallbackCue() -> String {
+        let fresh = safePool().first(where: { !recentAcksSnapshot().contains($0) }) ?? safePool()[0]
+        rememberAck(fresh)
+        return fresh
     }
 
     private static func rememberAck(_ text: String) {
@@ -134,24 +151,43 @@ enum BackchannelFiller {
             : user + " (You already said \(acks.map { "'\($0)'" }.joined(separator: ", ")).)"
     }
 
-    /// Their say_clean gate (nothing speakable = no ack, not remembered), plus
-    /// the hum spellings that Phonon renders. "Mm-hmm." is the clean hum;
-    /// "Mm-hm." phonemizes to nonsense ("lim") and "Mm." to "MAN", so bare hum
-    /// forms collapse to the known-good one. Other text is passed through —
-    /// shortcut: only hum spellings are normalized; a fuller TTS→ASR
-    /// round-trip audit of the filler's vocabulary, when its output is varied.
+    /// Their say_clean gate plus the hum policy. Phonon is a prose-trained
+    /// text-to-speech model with no phonemizer: letter-string hums are
+    /// out-of-distribution and sound out as words ("Mm-hm." is heard as
+    /// "lim", "Mm." as "MAN", "mm"/"hmm" as "meem" — the 2026-10-26 field
+    /// report). So a bare vocalization yields no ack at all (the caller
+    /// speaks a safe word instead) and a leading one is stripped from the
+    /// line. Shortcut: only leading vocalizations are stripped mid-sentence;
+    /// the deeper TTS→ASR round-trip audit is the audition kit.
     private static func normalize(_ raw: String) -> String? {
         var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         t = t.replacingOccurrences(of: "\"", with: "")
         t = t.components(separatedBy: .newlines).first ?? t
         t = t.trimmingCharacters(in: .whitespacesAndNewlines)
-        let bare = t.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".!?, "))
-        let hums: Set<String> = ["mm-hm", "mm hmm", "mmhmm", "mm-hmm", "mhm", "mm", "uh huh", "uh-huh"]
-        if hums.contains(bare) {
-            return bare == "uh-huh" || bare == "uh huh" ? "Uh-huh." : "Mm-hmm."
-        }
+        t = stripLeadingVocalizations(t)
         guard t.rangeOfCharacter(from: .alphanumerics) != nil else { return nil }
+        guard !isVocalization(t) else { return nil }
         return t.prefix(1).uppercased() + t.dropFirst()
+    }
+
+    /// Hum and spelled-out sound tokens the mouth cannot say.
+    private static let vocalizations: Set<String> = [
+        "mm", "mm-hm", "mm-hmm", "mm hmm", "mmhmm", "mmm", "mhm", "hm", "hmm", "hmmm",
+        "uh-huh", "uh huh", "uhhuh", "uh", "uhm", "um", "umm", "huh", "ha", "hah", "huh.",
+    ]
+
+    static func isVocalization(_ text: String) -> Bool {
+        let bare = text.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".!?,… "))
+        return vocalizations.contains(bare)
+    }
+
+    static func stripLeadingVocalizations(_ text: String) -> String {
+        var t = text
+        while true {
+            let parts = t.split(separator: " ", maxSplits: 1)
+            guard parts.count == 2, isVocalization(String(parts[0])) else { return t }
+            t = String(parts[1])
+        }
     }
 
     // MARK: - Corpus scoring

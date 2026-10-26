@@ -98,10 +98,17 @@ final class AudioIO: AudioSource, AudioSink {
     private var activeLoop: AVAudioPCMBuffer?
     /// Engine self-stop recovery (AVAudioEngine.h: a hardware format change
     /// stops the engine and posts AVAudioEngineConfigurationChangeNotification;
-    /// nodes stay attached): debounced, capped restarts.
+    /// nodes stay attached): debounced restarts.
     private var engineObserver: NSObjectProtocol?
     private var restartWorkItem: DispatchWorkItem?
-    private var restartAttempts = 0
+    /// Recovery retries in the current failure streak; reset on a successful
+    /// start. Not a process-lifetime budget: a bound like that silently stops
+    /// retrying forever after a handful of starts (the mac `generation < 4`
+    /// bug this mirrors, mac/Sources/Idfon/WaveformView.swift).
+    private var startRetries = 0
+    /// The user has been told the audio did not recover (once per streak).
+    private var recoveryNoticePosted = false
+    private static let maxStartRetries = 6
     /// CallKit session ownership (docs/callkit-integration.md): while a
     /// `call_kit` call runs, CallKit owns `AVAudioSession` — AudioIO starts
     /// capture/playback but never configures or activates the session, and
@@ -187,7 +194,8 @@ final class AudioIO: AudioSource, AudioSink {
             if running || self.profile != nil { stopLocked() }
             self.profile = profile
             restartAfterInterruption = false
-            restartAttempts = 0
+            startRetries = 0
+            recoveryNoticePosted = false
             restartWorkItem?.cancel()
             // Observers BEFORE configuration: setActive/override can begin an
             // interruption synchronously, and a missed `.began` leaves
@@ -302,6 +310,16 @@ final class AudioIO: AudioSource, AudioSink {
         engine.connect(playbackPlayer, to: engine.mainMixerNode, format: nil)
 
         input.removeTap(onBus: 0) // insurance: installTap aborts if one survived
+        // installTap raises an uncaturable ObjC exception on an invalid node
+        // format (0 Hz/0 ch while a device settles). Probe and recover through
+        // the failure streak instead of crashing: the nil-format tap itself
+        // follows the hardware and can never go stale.
+        let nodeFormat = input.outputFormat(forBus: 0)
+        guard nodeFormat.sampleRate > 0, nodeFormat.channelCount > 0 else {
+            Automation.mark("audio: invalid input format \(nodeFormat); recovering")
+            scheduleStartRetry(reason: "invalid input format")
+            return
+        }
         input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buffer, time in
             self?.fanOut(buffer, at: time)
         }
@@ -309,6 +327,8 @@ final class AudioIO: AudioSource, AudioSink {
         do {
             try engine.start()
             running = true
+            startRetries = 0
+            recoveryNoticePosted = false
             Automation.mark("audio: started profile=\(String(describing: profile))")
             markOutput("output at start")
             // Re-arm what the rebuild dropped (the ring must not die with one
@@ -319,9 +339,7 @@ final class AudioIO: AudioSource, AudioSink {
             // consequence of this, and console captures must show the cause.
             Automation.mark("audio: engine start FAILED \(error.localizedDescription)")
             idfonError("idfon audio: engine start failed: \(error.localizedDescription)")
-            // A dead engine is total call silence (tones, TTS, recognition) —
-            // never fail mute again.
-            CallFeedback.post("Audio unavailable: \(error.localizedDescription)")
+            scheduleStartRetry(reason: "start failed")
         }
     }
 
@@ -452,8 +470,9 @@ final class AudioIO: AudioSource, AudioSink {
         if profile != nil, !engine.isRunning { scheduleRestart() }
     }
 
-    /// Debounced, capped engine recovery (debounce coalesces the session churn
-    /// that accompanies every configuration change).
+    /// Debounced engine recovery (debounce coalesces the session churn that
+    /// accompanies every configuration change); the retry budget lives in
+    /// `scheduleStartRetry`.
     private func scheduleRestart() {
         restartWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.restartEngine() }
@@ -463,29 +482,55 @@ final class AudioIO: AudioSource, AudioSink {
 
     /// `running == true`: the engine stopped itself with the graph intact —
     /// plain `start()` and re-arm the looping cue. `running == false`: we tore
-    /// the tap down, so a full rebuild. Capped per activation so a hopeless
-    /// session cannot spin.
+    /// the tap down, so a full rebuild.
     private func restartEngine() {
-        guard profile != nil, !engine.isRunning else { return }
-        guard restartAttempts < 3 else {
-            Automation.mark("audio: engine restart gave up after \(restartAttempts) attempts")
+        guard profile != nil else { return }
+        guard !engine.isRunning else {
+            startRetries = 0
+            recoveryNoticePosted = false
             return
         }
-        restartAttempts += 1
-        Automation.mark("audio: engine halted — recovery #\(restartAttempts) full=\(!running)")
+        Automation.mark("audio: engine halted — recovery full=\(!running)")
         guard running else {
             startEngine()
             return
         }
         do {
             try engine.start()
+            startRetries = 0
+            recoveryNoticePosted = false
             playbackPlayer.stop()
             // Re-arm everything the stop dropped (loop AND one-shots) instead
             // of resuming the callers silently.
             rearmPlayback()
         } catch {
             Automation.mark("audio: engine restart FAILED \(error.localizedDescription)")
+            scheduleStartRetry(reason: "restart failed")
         }
+    }
+
+    /// A start attempt failed. Back off and retry (a flapping input device
+    /// reconfigures every couple of seconds, so a fixed retry fights the storm
+    /// and loses), up to `maxStartRetries` consecutive failures. The streak
+    /// resets on the next successful start.
+    private func scheduleStartRetry(reason: String) {
+        guard profile != nil else { return }
+        guard startRetries < Self.maxStartRetries else {
+            // A dead engine is total call silence (tones, TTS, recognition) —
+            // never fail mute: tell the user once when recovery is done.
+            if !recoveryNoticePosted {
+                recoveryNoticePosted = true
+                CallFeedback.post("Audio unavailable: call audio did not recover")
+            }
+            return
+        }
+        startRetries += 1
+        let delay = 0.5 + 0.5 * Double(startRetries)
+        Automation.mark("audio: engine recovery #\(startRetries) in \(String(format: "%.1f", delay))s (\(reason))")
+        restartWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.restartEngine() }
+        restartWorkItem = item
+        Self.queue.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     // MARK: - capture (AudioSource)
