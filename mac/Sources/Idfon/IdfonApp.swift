@@ -336,6 +336,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // diarized user wav + its interaction script.
             TygerDemo.run(userWav: args[i + 1], script: args[i + 2])
         }
+        if let i = args.firstIndex(of: "-fillerscore"), args.count > i + 1 {
+            // Contextual-backchannel scoring against a corpus entry (see
+            // BackchannelFiller): text-only, no audio needed.
+            BackchannelFiller.runScore(path: args[i + 1])
+            exit(0)
+        }
     }
 
     private func waitForIncomingCall(video: Bool) {

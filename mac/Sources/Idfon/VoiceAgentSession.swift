@@ -713,16 +713,22 @@ final class VoiceAgentSession: NSObject {
     /// (FeedbackEar). The rules keep their own refractory; the gap here stops
     /// playback-level stacking.
     private func utterFeedback() {
-        guard !stopRequested, feedbackTask == nil, case .listening = state, !bargeInArmed else { return }
+        guard !stopRequested, feedbackTask == nil, case .listening(let heard) = state, !bargeInArmed else { return }
         if let at = lastFeedbackAt, Date().timeIntervalSince(at) < 1.2 { return }
-        // "Mm-hmm." renders as a clean hum in Phonon; "Mm-hm." phonemizes
-        // to nonsense (heard as "lim"). Round-trip any change (TTS → ASR).
-        let text = "Mm-hmm."
-        lastFeedback = text
         lastFeedbackAt = Date()
         Automation.mark("turn-taker: tyger backchannel -> feedback")
         feedbackTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // Contextual ack off the ASR partial (the tyger filler recipe on
+            // AFM, fail-open to nil). "Mm-hmm." renders as a clean hum in
+            // Phonon; "Mm-hm." phonemizes to nonsense (heard as "lim").
+            // Round-trip any change (TTS → ASR).
+            let text = await BackchannelFiller.ack(partial: heard) ?? "Mm-hmm."
+            guard case .listening = self.state, !self.stopRequested else {
+                self.feedbackTask = nil
+                return
+            }
+            self.lastFeedback = text
             await FeedbackEar.suppress { await self.tts.speak(text) }
             self.feedbackTask = nil
         }
