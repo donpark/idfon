@@ -425,9 +425,10 @@ pair crashes in the compiler (use b3/0.4.3); device loader landmines from the
 zoo: >2 GB multi-I/O bundles fail to load (split) and terse input names are
 rejected.
 
-Remaining: the fp16 rung (size play:
-1.53 GB → ~0.77 GB), device AOT gates (`xcrun coreai-build compile` + an
-on-device run in the transcript discipline).
+Remaining: device AOT gates (`xcrun coreai-build compile` + an on-device run in
+the transcript discipline). The fp16 rung (size play: 1.53 GB → ~0.77 GB) is
+exported and gated (2026-10-26: both rungs in `bench-results/coreai`, the
+loader's path; `ports/tyger-coreai/GATES.md`).
 
 ## Risks
 
