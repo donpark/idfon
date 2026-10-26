@@ -442,8 +442,8 @@ final class AudioMeter {
                         self.startInFlight = false
                         self.settle()
                     } catch {
-                        self.startInFlight = false
-                        self.settle()
+                        Self.log("idfon audio meter reuse failed: \(error.localizedDescription)")
+                        self.recoverStaleTap(generation: generation, input: input)
                     }
                     return
                 }
@@ -562,10 +562,35 @@ final class AudioMeter {
                     self.settle()
                 } catch {
                     Self.log("idfon audio meter failed: \(error.localizedDescription)")
-                    self.startInFlight = false
-                    self.settle()
+                    self.recoverStaleTap(generation: generation, input: input)
                 }
             }
+        }
+    }
+
+    /// Recover from a stale-tap start failure. The tap is process-sticky but
+    /// the input format is not: a route/iounit change (e.g. a pcm24k
+    /// voice-agent call reconfiguring the input, or a device switch) can leave
+    /// the tap at an old rate while `outputFormat(forBus:)` itself reads stale
+    /// right after the change — engine.start() then fails ("formats don't
+    /// match", -10868) and calls die with "microphone unavailable". Drop the
+    /// tap and retry once the audio device settles: the retry reinstalls at
+    /// the now-current hardware format.
+    private func recoverStaleTap(generation: Int, input: AVAudioInputNode) {
+        input.removeTap(onBus: 0)
+        Self.inputTapInstalled = false
+        tapInstalled = false
+        startInFlight = false
+        if generation < 4 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, self.startGeneration == generation, !self.running else {
+                    self?.settle()
+                    return
+                }
+                self.start { self.settle() }
+            }
+        } else {
+            settle()
         }
     }
 
