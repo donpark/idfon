@@ -88,6 +88,8 @@ final class VoiceAgentSession: NSObject {
     /// `add_barged` trim): the next turn must be told "you only said this
     /// much" or the agent continues from words the caller never heard.
     private var cutReply: String?
+    /// Audio seconds that played in the last `speak` (summed across chunks).
+    private var lastPlayedSeconds: TimeInterval = 0
     /// Voice feedback ("mm-hm") that played and when: it never enters history
     /// (`lastSpoken` stays the agent's reply) and is only echo-checked near its
     /// playback window, so a later real "mm-hm" can still be a turn.
@@ -403,7 +405,7 @@ final class VoiceAgentSession: NSObject {
             let speakStart = Date()
             pendingHeard = await speak(result.spoken)
             if pendingHeard != nil {
-                let played = tts.playedSeconds
+                let played = lastPlayedSeconds
                 cutReply = played > 0
                     ? Self.playedPrefix(of: result.spoken, seconds: played)
                     : result.spoken
@@ -899,7 +901,16 @@ final class VoiceAgentSession: NSObject {
             segmenter.setEnabled(true)
             asr?.resume()
         }
-        await tts.speak(text)
+        // Chunked speak (their mouth/chunker.py pattern): sentences go to
+        // the mouth as they close — the seam reply deltas will feed per-chunk.
+        // Played time accumulates across chunks for the barge trim.
+        var played: TimeInterval = 0
+        for chunk in SpeechChunker.chunks(text) {
+            if stopRequested || bargeInHeard != nil { break }
+            await tts.speak(SpeechChunker.sayClean(chunk))
+            played += tts.playedSeconds
+        }
+        lastPlayedSeconds = played
         Automation.mark("voice-agent: speak done")
         var interrupted: String?
         if armed {
