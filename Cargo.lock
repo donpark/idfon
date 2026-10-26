@@ -3133,6 +3133,7 @@ name = "idfon-client"
 version = "0.9.0"
 dependencies = [
  "idfon-protocol",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
 ]
