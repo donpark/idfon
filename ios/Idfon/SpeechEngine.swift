@@ -68,7 +68,14 @@ enum SpeechEngines {
     /// Per-contact picks live in Contact Detail.
     static var backend: TtsBackend {
         if let override = overrideBackend() { return override }
+        // Phonon 31m is the mouth (2026-10-25 ruling): the duplex loop needs
+        // a streaming TTS, and Phonon is it. Builds without it fall back to
+        // the language default.
+        #if PHONON_TTS
+        return .phonon
+        #else
         return OnDeviceSpeechLanguage.isEnglish ? .kokoro : .apple
+        #endif
     }
 
     /// The active engine; read by `VoiceAgentSession` at call time.
@@ -84,10 +91,17 @@ enum SpeechEngines {
         let ttsChoice = tts.flatMap(TtsBackend.init(rawValue:)) ?? backend
         Task { await makeTts(ttsChoice).prepare() }
         let asrChoice = asr.flatMap(AsrBackend.init(rawValue:)) ?? asrBackend
-        if asrChoice == .parakeet {
+        switch asrChoice {
+        case .nemotron:
+            Task {
+                if #available(iOS 18.0, *) { await NemotronStreamingAsr.warmCache() }
+            }
+        case .parakeet:
             Task {
                 if #available(iOS 18.0, *) { await ParakeetReduxAsr.warmCache() }
             }
+        case .system:
+            break
         }
     }
 
@@ -896,15 +910,22 @@ protocol AsrEngine: AnyObject {
 extension AsrEngine {
     var lastLatencyMs: Int? { nil }
     func prepare() async {}
+    /// A turn committed (or the current utterance was cleared): streaming
+    /// recognizers whose transcript accumulates across turns reset here so
+    /// their partials stay per-utterance. No-op for recognizers that segment
+    /// internally.
+    func utteranceCommitted() {}
 }
 
 enum AsrBackend: String, CaseIterable {
     case system
+    case nemotron
     case parakeet
 
     var title: String {
         switch self {
         case .system: return "Apple Built-in"
+        case .nemotron: return "Nemotron Streaming (on-device)"
         case .parakeet: return "Parakeet Redux (on-device)"
         }
     }
@@ -933,7 +954,7 @@ extension SpeechEngines {
         if let override, !override.isEmpty {
             return AsrBackend(rawValue: override.lowercased()) ?? .system
         }
-        return OnDeviceSpeechLanguage.isEnglish ? .parakeet : .system
+        return OnDeviceSpeechLanguage.isEnglish ? .nemotron : .system
     }
 
     /// The configured recognizer, or nil to use the SFSpeech fallback (system
@@ -944,6 +965,10 @@ extension SpeechEngines {
     /// choice (per-contact on-device selection).
     static func makeAsr(_ backend: AsrBackend) -> (any AsrEngine)? {
         switch backend {
+        case .nemotron:
+            guard #available(iOS 18.0, *) else { return nil }
+            Automation.mark("voice: asr backend=nemotron")
+            return NemotronStreamingAsr()
         case .parakeet:
             guard #available(iOS 18.0, *) else { return nil }
             Automation.mark("voice: asr backend=parakeet")
