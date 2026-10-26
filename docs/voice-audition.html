@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phonon audition: what the mouth can say</title>
+<style>
+  body {
+    margin: 0 auto; max-width: 42rem; padding: 2.5rem 1.25rem 4rem;
+    font-family: "Iowan Old Style", Charter, Georgia, serif;
+    color: #1C2A24; background: #F2F5F3; line-height: 1.6;
+  }
+  h1 { font-size: 1.75rem; margin: 0 0 0.75rem; }
+  p.lead { color: #58685F; margin: 0 0 1.25rem; }
+  h2 {
+    font-family: system-ui, sans-serif; font-size: 0.8125rem; font-weight: 600;
+    color: #58685F; margin: 2.25rem 0 0.5rem; padding-bottom: 0.5rem;
+    border-bottom: 2px solid #1C2A24;
+  }
+  .row {
+    display: flex; align-items: center; gap: 1.25rem;
+    padding: 0.75rem 0; border-bottom: 1px solid #C9D2CC;
+  }
+  .word { width: 11rem; flex: none; font-size: 1.0625rem; }
+  .said { color: #58685F; font-size: 0.9375rem; flex: 1; }
+  audio { height: 2rem; }
+  .findings {
+    border-left: 3px solid #1C2A24; padding: 0.25rem 0 0.25rem 1.125rem;
+    margin: 1.5rem 0 0; max-width: 60ch;
+  }
+  .findings p { margin: 0 0 0.5rem; }
+  footer { margin-top: 2.5rem; color: #58685F; font-size: 0.9375rem; max-width: 60ch; }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: 0.875em; }
+</style>
+</head>
+<body>
+
+<h1>What the mouth can say</h1>
+<p class="lead">
+  Phonon (the voice these apps speak with) is a text-to-speech model trained on
+  written prose. It has no sound-spelling stage: a written hum like "mm-hm" is a
+  foreign word to it and gets sounded out. This page is the audition table for the
+  reaction vocabulary. Each line is the same voice speaking the written text on the
+  left. Run <code>scripts/phonon-audition.sh</code> to render the audio next to
+  this page.
+</p>
+
+<div class="findings">
+  <p><strong>Review of 2026-10-26.</strong> Every candidate pronounces correctly,
+  including the letter-string hums. One problem: vowel sounds ("Um.", "Ah.") play
+  over the top — too loud, too emphatic. The in-sentence examples show it well.</p>
+  <p>So the shipping vocabulary stays words ("Yeah.", "Right.", "I see.", "Got it.",
+  "Okay.", "Sure."), and the "Softer vowels" group below is the open probe for
+  natural "ums and ahs". Also known: the text normalizer folds ellipses away
+  ("Um..." speaks as "Um."), so softness has to come from wording, not dots.</p>
+</div>
+
+<h2>Letter-string hums</h2>
+<div class="row"><span class="word">"Mm-hmm."</span><span class="said">the classic listening hum</span><audio controls preload="none" src="mm-hmm.wav"></audio></div>
+<div class="row"><span class="word">"Mhm."</span><span class="said"></span><audio controls preload="none" src="mhm.wav"></audio></div>
+<div class="row"><span class="word">"Hmm."</span><span class="said"></span><audio controls preload="none" src="hmm.wav"></audio></div>
+<div class="row"><span class="word">"Huh."</span><span class="said"></span><audio controls preload="none" src="huh.wav"></audio></div>
+
+<h2>Vowel sounds (reviewed: over the top)</h2>
+<div class="row"><span class="word">"Um."</span><span class="said"></span><audio controls preload="none" src="um.wav"></audio></div>
+<div class="row"><span class="word">"Umm."</span><span class="said"></span><audio controls preload="none" src="umm.wav"></audio></div>
+<div class="row"><span class="word">"Uh."</span><span class="said"></span><audio controls preload="none" src="uh.wav"></audio></div>
+<div class="row"><span class="word">"Ah."</span><span class="said"></span><audio controls preload="none" src="ah.wav"></audio></div>
+<div class="row"><span class="word">"Oh."</span><span class="said"></span><audio controls preload="none" src="oh.wav"></audio></div>
+<div class="row"><span class="word">"Hmm, let me check the time…"</span><span class="said">a lead-in with a hum at the start</span><audio controls preload="none" src="hmm-leadin.wav"></audio></div>
+<div class="row"><span class="word">"Um, one moment."</span><span class="said">a lead-in with a vowel at the start</span><audio controls preload="none" src="um-leadin.wav"></audio></div>
+
+<h2>Softer vowels (open probe)</h2>
+<div class="row"><span class="word">"Um, one moment."</span><span class="said">same as above, for direct comparison</span><audio controls preload="none" src="soft-um-comma.wav"></audio></div>
+<div class="row"><span class="word">"Well, one moment."</span><span class="said">a prose word instead of a vowel</span><audio controls preload="none" src="soft-well.wav"></audio></div>
+<div class="row"><span class="word">"Oh, one moment."</span><span class="said"></span><audio controls preload="none" src="soft-oh.wav"></audio></div>
+<div class="row"><span class="word">"Let me see. Checking the time…"</span><span class="said">hesitation without any vowel</span><audio controls preload="none" src="soft-letmesee.wav"></audio></div>
+<div class="row"><span class="word">"I'll check the time…, um, one moment."</span><span class="said">the vowel mid-sentence, where it should stay quiet</span><audio controls preload="none" src="soft-midsentence.wav"></audio></div>
+<div class="row"><span class="word">"Um..." (plays as "Um.")</span><span class="said">the normalizer folds the ellipsis; kept to show it</span><audio controls preload="none" src="soft-um-ell.wav"></audio></div>
+<div class="row"><span class="word">"Hmm..." (plays as "Hmm.")</span><span class="said"></span><audio controls preload="none" src="soft-hmm-ell.wav"></audio></div>
+<div class="row"><span class="word">"huh."</span><span class="said">lower case</span><audio controls preload="none" src="soft-huh-low.wav"></audio></div>
+
+<h2>Safe words (what ships)</h2>
+<div class="row"><span class="word">"Yeah."</span><span class="said"></span><audio controls preload="none" src="yeah.wav"></audio></div>
+<div class="row"><span class="word">"Right."</span><span class="said"></span><audio controls preload="none" src="right.wav"></audio></div>
+<div class="row"><span class="word">"I see."</span><span class="said"></span><audio controls preload="none" src="i-see.wav"></audio></div>
+<div class="row"><span class="word">"Got it."</span><span class="said"></span><audio controls preload="none" src="got-it.wav"></audio></div>
+<div class="row"><span class="word">"Okay."</span><span class="said"></span><audio controls preload="none" src="okay.wav"></audio></div>
+
+<footer>
+  The apps speak through the Core ML build of these same weights, so what you hear
+  here is what callers hear. To render the set: build the
+  <code>ptts</code> CLI (<code>cargo build --release --bin ptts --features cli</code>
+  in an <code>xn-ptts</code> checkout), then run
+  <code>scripts/phonon-audition.sh</code>. It renders the wav files and copies this
+  page next to them (audio is regenerable and stays out of git). The reaction
+  vocabulary policy lives in <code>BackchannelFiller</code>/<code>TurnFiller</code>
+  (the hum fold).
+</footer>
+
+</body>
+</html>
