@@ -720,30 +720,39 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         return height + (conversation.isRoom && !message.outgoing ? 16 : 0)
     }
 
+    /// Bubble layout, one arithmetic in one place: a bubble is at most
+    /// `maxBubbleWidth` wide with 10pt side insets for its text view, and the
+    /// row adds 22pt vertical padding (6+6 insets, 2+2 row margins, 6pt
+    /// line-box slack). Measurement and drawing must agree on every number —
+    /// a mismatch clipped multi-line bubbles.
+    private static let maxBubbleWidth: CGFloat = 420
+
     /// Measured like `textHeight`, but uncached: a transcript snapshot mutates
     /// the same message id as it streams, so a cached height would clip.
     private func transcriptHeight(_ transcript: CallTranscript) -> CGFloat {
-        let who = transcript.role == "agent" ? "Agent" : "You"
-        let width = max(view.bounds.width - 140, 120)
-        let size = renderText("\(who): \(transcript.text)").boundingRect(
-            with: NSSize(width: width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            context: nil).size
-        return ceil(size.height) + 22
+        let suffix = transcript.final ? "" : " …"
+        return renderedHeight("\(transcript.text)\(suffix)")
     }
 
     /// Cached bubble row height; measured from the same attributed string the
     /// text view renders, so markdown line wraps can't clip.
     private func textHeight(for message: ChatMessage, text: String) -> CGFloat {
         if let cached = textHeights[message.id] { return cached }
-        let width = max(view.bounds.width - 140, 120)
+        let height = renderedHeight(text)
+        textHeights[message.id] = height
+        return height
+    }
+
+    /// Row height for `text`, measured at the width the bubble can actually
+    /// draw into (`maxBubbleWidth` minus the text view's insets) — measuring
+    /// at the window width gave one-line heights to three-line bubbles.
+    private func renderedHeight(_ text: String) -> CGFloat {
+        let width = min(max(view.bounds.width - 140, 120), Self.maxBubbleWidth - 20)
         let size = renderText(text).boundingRect(
             with: NSSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             context: nil).size
-        let height = ceil(size.height) + 22
-        textHeights[message.id] = height
-        return height
+        return ceil(size.height) + 22
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -792,8 +801,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 tv.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
                 tv.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
                 tv.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
-                tv.heightAnchor.constraint(equalToConstant: textHeight(for: message, text: text) - 18),
-                bubble.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+                tv.heightAnchor.constraint(equalToConstant: textHeight(for: message, text: text) - 16),
+                bubble.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxBubbleWidth),
             ])
         case .recording(let ticket, let durationMs):
             let play = NSButton(image: NSImage(systemSymbolName: playingMessageId == message.id ? "pause.fill" : "play.fill",
@@ -959,9 +968,11 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             tv.textColor = .labelColor
             tv.textContainerInset = .zero
             tv.textContainer?.lineFragmentPadding = 0
-            let who = transcript.role == "agent" ? "Agent" : "You"
             let suffix = transcript.final ? "" : " …"
-            tv.textStorage?.setAttributedString(renderText("\(who): \(transcript.text)\(suffix)"))
+            // Role is carried by side and color (like plain text bubbles), so
+            // the transcript keeps the same clean look without an "Agent:" /
+            // "You:" prefix.
+            tv.textStorage?.setAttributedString(renderText("\(transcript.text)\(suffix)"))
             tv.translatesAutoresizingMaskIntoConstraints = false
             bubble.addSubview(tv)
             NSLayoutConstraint.activate([
@@ -969,8 +980,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 tv.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
                 tv.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
                 tv.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
-                tv.heightAnchor.constraint(equalToConstant: transcriptHeight(transcript) - 18),
-                bubble.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+                tv.heightAnchor.constraint(equalToConstant: transcriptHeight(transcript) - 16),
+                bubble.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxBubbleWidth),
             ])
         }
 
