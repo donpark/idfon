@@ -297,9 +297,22 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         ) {
             let full = NSMutableAttributedString(attributedString: attr)
             full.addAttribute(.font, value: font, range: NSRange(location: 0, length: full.length))
+            // Runs with no foreground color draw black — unreadable in dark
+            // mode, and NSTextView.textColor does not rescue attributed
+            // strings. Fill only the missing runs with the dynamic label
+            // color (adapts to appearance at draw time); markdown links keep
+            // their own colors.
+            full.enumerateAttribute(
+                .foregroundColor, in: NSRange(location: 0, length: full.length)
+            ) { value, range, _ in
+                if value == nil {
+                    full.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+                }
+            }
             return full
         }
-        return NSAttributedString(string: text, attributes: [.font: font])
+        return NSAttributedString(
+            string: text, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
     }
 
     private func showBanner(_ text: String) {
