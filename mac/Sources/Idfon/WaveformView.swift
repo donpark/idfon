@@ -794,8 +794,13 @@ final class AudioMeter {
                 completion?()
                 return
             }
-            PlaybackBus.notify(converted) // the second ear
             playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: {
+                // The second ear at PLAYBACK time (their I-17 class): the
+                // schedule-time notify put the agent channel up to the whole
+                // queue depth ahead of what the mic actually echoes (seconds
+                // when chunks queue faster than real time). One chunk late
+                // is the right side of the error.
+                PlaybackBus.notify(converted)
                 completion?()
             })
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
@@ -817,10 +822,13 @@ final class AudioMeter {
                 completion?()
                 return
             }
-            PlaybackBus.notify(converted) // the second ear
             let id = UUID()
             inFlightOneShots[id] = (converted, completion)
-            scheduleOneShot(id: id, buffer: converted, completion: completion)
+            scheduleOneShot(id: id, buffer: converted, completion: {
+                // The second ear at PLAYBACK time (see playStream).
+                PlaybackBus.notify(converted)
+                completion?()
+            })
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
         }
     }
@@ -852,7 +860,8 @@ final class AudioMeter {
     }
 
     /// A looping cue (the ring). Fed to the second ear once (its repeats are
-    /// the same samples).
+    /// the same samples) — at schedule time: a constant loop has no drift,
+    /// and it never ends to signal a completion.
     static func playLooping(_ buffer: AVAudioPCMBuffer) {
         DispatchQueue.main.async {
             guard inputEngine.isRunning else {
