@@ -6,5 +6,6 @@ license.workspace = true
 
 [dependencies]
 idfon-protocol = { path = "../idfon-protocol" }
+serde = "1"
 serde_json = "1"
 thiserror = "2"
