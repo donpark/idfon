@@ -131,6 +131,25 @@ final class VoiceAgentSession: NSObject {
             if localAgent == nil {
                 try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
             }
+            // Fetch the greeting concurrently with the engine prep below: it
+            // only needs the transport (the peer's history was just rotated),
+            // while the analyzer start and the hydration sleep don't need it.
+            // Serial, the caller hears "answered" plus analyzer start plus a
+            // 1.5 s hydration sleep plus the agent's full round-trip — the
+            // greeting is an agent turn and the round-trip is its floor.
+            var greeting: (display: String, spoken: String)?
+            let greetTask: Task<(display: String, spoken: String)?, Never>? =
+                (localAgent == nil && !stopRequested)
+                ? Task { [weak self] in
+                    guard let self else { return nil }
+                    return await self.sendAndAwait(
+                        peerId: peer.id,
+                        text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
+                        logPrefix: "voice-agent-greet",
+                        spokenTurnId: "\(callId)-greet"
+                    )
+                }
+                : nil
             // Per-contact on-device engines (else the app defaults). Resolved
             // here, once the peer id is known, before the recognizer is built.
             ttsBackend = ContactOnDeviceEngines.tts(for: peer.id).flatMap(TtsBackend.init(rawValue:)) ?? SpeechEngines.ttsBackend
@@ -151,8 +170,9 @@ final class VoiceAgentSession: NSObject {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             // Greet like a live call, fetched before the cue so "answered" is
             // followed immediately by speech instead of dead air.
-            var greeting: (display: String, spoken: String)?
-            if !stopRequested {
+            if let greetTask {
+                greeting = await greetTask.value
+            } else if !stopRequested {
                 let greetTurn =
                     "The caller just connected on a voice call. Greet them briefly and invite them to speak."
                 // An app-local agent greets locally. A proxy or passive call
@@ -160,12 +180,6 @@ final class VoiceAgentSession: NSObject {
                 // director's persona (`docs/voice-agent-modes.md`).
                 if localAgent != nil {
                     greeting = await reply(
-                        peerId: peer.id, text: greetTurn,
-                        logPrefix: "voice-agent-greet",
-                        spokenTurnId: "\(callId)-greet"
-                    )
-                } else {
-                    greeting = await sendAndAwait(
                         peerId: peer.id, text: greetTurn,
                         logPrefix: "voice-agent-greet",
                         spokenTurnId: "\(callId)-greet"
