@@ -693,6 +693,7 @@ final class VoiceAgentSession: NSObject {
             bargeInArmed = true
             bargeInHeard = nil
             segmenter.clear()
+            asr?.utteranceCommitted()
             segmenter.setEnabled(true)
             asr?.resume()
         }
@@ -778,6 +779,10 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func handleCommit(_ text: String) {
+        // The utterance is consumed here (spoken, or dropped as an echo): a
+        // streaming recognizer's running transcript resets with it so its
+        // partials stay per-utterance.
+        asr?.utteranceCommitted()
         guard bargeInArmed else {
             // The mic can re-hear the agent's own feedback cue; it must not
             // become a caller turn.
