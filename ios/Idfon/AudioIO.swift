@@ -581,7 +581,6 @@ final class AudioIO: AudioSource, AudioSink {
             return
         }
         let id = UUID()
-        fanOutPlayback(converted) // the second ear: what the bus is about to play
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             pendingPlays[id] = continuation
             inFlightOneShots[id] = converted
@@ -590,7 +589,13 @@ final class AudioIO: AudioSource, AudioSink {
                 converted, at: nil, options: [], completionCallbackType: .dataPlayedBack
             ) { _ in
                 // via .shared: captures no self in the @Sendable hop
-                Self.queue.async { AudioIO.shared.finishPlay(id) }
+                Self.queue.async {
+                    // The second ear at PLAYBACK time (their I-17 class):
+                    // schedule-time notify led the mic's actual echo by the
+                    // queue depth; one buffer late is the right side.
+                    AudioIO.shared.fanOutPlayback(converted)
+                    AudioIO.shared.finishPlay(id)
+                }
             }
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
         }
@@ -650,8 +655,9 @@ final class AudioIO: AudioSource, AudioSink {
                 done?()
                 return
             }
-            fanOutPlayback(converted) // the second ear
             playbackPlayer.scheduleBuffer(converted, at: nil, options: [], completionHandler: {
+                // The second ear at PLAYBACK time (see the one-shot play).
+                Self.queue.async { AudioIO.shared.fanOutPlayback(converted) }
                 done?()
             })
             if !playbackPlayer.isPlaying { playbackPlayer.play() }
