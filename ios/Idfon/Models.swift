@@ -450,6 +450,13 @@ struct SpeakEnvelope: Equatable {
         let (_, envelopes) = MessageBody.parse(raw)
         return envelopes.compactMap { decode($0)?.text }
     }
+
+    /// Correlation ids carried by speak envelopes in a raw reply, in order
+    /// (empty when the agent sets none).
+    static func correlationIds(in raw: String) -> [String] {
+        let (_, envelopes) = MessageBody.parse(raw)
+        return envelopes.compactMap { decode($0)?.correlationId }
+    }
 }
 
 /// `IDFON-POINT/1`: the agent points the user at part of an artifact. The app
