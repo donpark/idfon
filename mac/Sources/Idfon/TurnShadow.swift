@@ -13,8 +13,7 @@ import TygerVoiceMLX
 /// and BARGE see the agent's own voice. Gaps: the Apple-TTS fallback plays via
 /// AVSpeechSynthesizer (system audio, no buffer seam) and a looping tone ring
 /// is fed once. Hops pair 1:1 from the two taps' queues.
-/// Tier: the path-C student (Parakeet tap + distilled step) first, else
-/// Core AI on macOS 27+ (oracle-exact), MLX below.
+/// Tier: Core AI on macOS 27+ (oracle-exact), MLX below.
 final class TurnShadow: AudioPlaybackObserver {
     private let engine: TurnEngine
     private let tap: TurnTap
@@ -51,12 +50,8 @@ final class TurnShadow: AudioPlaybackObserver {
     /// nil when no turn model is available for this OS.
     static func start() -> TurnShadow? {
         var model: TurnModel?
-        // Calibration override: IDFON_TURN_TIER=coreai|mlx skips the path-C
-        // student (its backchannel head is the weakest part of the distill).
+        // Calibration override: IDFON_TURN_TIER=coreai|mlx picks the tier.
         let tier = ProcessInfo.processInfo.environment["IDFON_TURN_TIER"]
-        if tier == nil, #available(macOS 15.0, *), let student = studentModel() {
-            model = student // the path-C tier (Parakeet tap + distilled step)
-        }
         if tier != "mlx", #available(macOS 27.0, *) {
             model = model ?? (try? CoreAITurnModel()) // the OS 27+ tier (GPU, oracle-exact)
         }
@@ -69,22 +64,6 @@ final class TurnShadow: AudioPlaybackObserver {
         }
         Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))")
         return TurnShadow(model: model)
-    }
-
-    /// The path-C tier: the shipped Parakeet Redux tap (the ASR cache at
-    /// `~/.idfon/models/parakeet-redux` has the bundles) + the distilled
-    /// student step from `bench-results/pathc` — the same dev-machine
-    /// convention as the CoreAI/MLX tiers.
-    @available(macOS 15.0, *)
-    private static func studentModel() -> ParakeetStudentTurnModel? {
-        let repo = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-        let tap = ParakeetReduxAsr.modelDirectory()
-        return try? ParakeetStudentTurnModel(
-            preprocessorURL: tap.appendingPathComponent("Preprocessor.mlmodelc"),
-            encoderURL: tap.appendingPathComponent("Encoder.mlmodelc"),
-            stepURL: repo.appendingPathComponent("bench-results/pathc/TygerStepStudent.mlpackage"))
     }
 
     private init(model: TurnModel) {

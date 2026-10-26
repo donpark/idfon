@@ -34,7 +34,7 @@ const out = resolve(arg("--out") ?? "dist/tyger-models");
 const all = args.includes("--all");
 const root = resolve("bench-results");
 
-const tiers = ["coreai", "coreml", "mlx", "pathc"];
+const tiers = ["coreai", "coreml", "mlx"];
 let bundles = all
   ? tiers.flatMap((tier) =>
       readdirSync(join(root, tier), { withFileTypes: true })
@@ -47,7 +47,6 @@ let bundles = all
       "coreml/TygerEncoderDyn.mlpackage",
       "coreml/TygerStep.mlpackage",
       "mlx/TygerChainInt8.safetensors",
-      "pathc/TygerStepStudent.mlpackage",
     ];
 const only = arg("--only");
 if (only) bundles = bundles.filter((b) => b.startsWith(`${only}/`));
