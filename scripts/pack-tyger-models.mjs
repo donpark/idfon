@@ -12,9 +12,7 @@
 //
 // Default set: the coreai fp16 pair (the iOS 27+ shipping tier), the three
 // coreml packages the pre-27 loader needs (TygerEncoder, TygerEncoderDyn,
-// TygerStep), the quantized MLX int8 chain (the pre-27 mac tier), and the
-// path-C student step (the distilled 56 MB turn heads — its Parakeet tap is
-// the ASR's own model, nothing else to fetch).
+// TygerStep), and the quantized MLX int8 chain (the pre-27 mac tier).
 // `--only TIER` packs just that tier's default set (when other bundles are
 // not on this machine). `--all` packs every bundle incl. fp32 fallbacks and
 // bench variants (Q8/…).
