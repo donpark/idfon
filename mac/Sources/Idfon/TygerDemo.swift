@@ -44,9 +44,13 @@ enum TygerDemo {
 
     @MainActor
     static func run(userWav: String, script: String) {
-        let t0 = Date()
+        // Marks carry STREAM time (the corpus timeline), not wall time: the
+        // feed loop paces at wall rate but every hop runs a little late, and
+        // over a conversation that drift moves the whole decision timeline.
+        // scripts/corpus-regression.py matches against these times.
+        var streamNow = 0.0
         func mark(_ s: String) {
-            Automation.mark(String(format: "tygerdemo t=%.2f %@", -t0.timeIntervalSinceNow, s))
+            Automation.mark(String(format: "tygerdemo t=%.2f %@", streamNow, s))
         }
         guard let scriptData = FileManager.default.contents(atPath: script),
               let plan = Self.decodeScript(scriptData),
@@ -85,11 +89,12 @@ enum TygerDemo {
             mark("meter running=\(AudioMeter.shared.running)")
             shadow.setMode("listen")
             mark("user stream start")
-            await feed(user, rate: 16000, shadow: shadow) { streamT in
+            await feed(user, rate: 16000, shadow: shadow) { t in
+                streamNow = t
                 // The timeline's backchannels: the demo's own mm-hm moments,
                 // fired at their stream time (the student tier's bc head does
                 // not fire; ENDPOINT/BARGE stay model-driven).
-                while let first = driver.nextBc, first <= streamT {
+                while let first = driver.nextBc, first <= t {
                     driver.popBc()
                     driver.decision("BACKCHANNEL")
                 }
@@ -210,20 +215,27 @@ enum TygerDemo {
 
     /// Feed samples paced at wall-clock rate so the shadow's 320 ms hops pair
     /// 1:1 like they do off the live tap (TygerAB's feed). `onTick` sees the
-    /// stream position (seconds) at each chunk.
+    /// stream position (seconds) at each chunk. Pacing is a metronome against
+    /// a fixed start: per-iteration sleep jitter must not accumulate into the
+    /// decision timeline (scripts/corpus-regression.py compares runs).
     @MainActor
     private static func feed(
         _ samples: [Float], rate: Double, shadow: TurnShadow,
         onTick: (Double) -> Void
     ) async {
         let chunk = Int(rate * 0.2)
+        let started = DispatchTime.now()
         var index = 0
         while index < samples.count {
             let end = min(index + chunk, samples.count)
             shadow.feed(Array(samples[index..<end]), rate: rate)
             index = end
             onTick(Double(index) / rate)
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            let due = started.uptimeNanoseconds + UInt64(Double(index) / rate * 1e9)
+            let now = DispatchTime.now().uptimeNanoseconds
+            if due > now {
+                try? await Task.sleep(nanoseconds: due - now)
+            }
         }
     }
 

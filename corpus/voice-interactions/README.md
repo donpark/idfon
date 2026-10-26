@@ -39,6 +39,13 @@ IDFON_TTS=phonon Idfon -tygerdemo /path/user.wav corpus/voice-interactions/dessa
 Marks (`tygerdemo t=…`, `turn-shadow: …`) are the decision timeline; diff them
 against `replay.demo` for regressions. See `mac/Sources/Idfon/TygerDemo.swift`.
 
+The one-command replay is `scripts/corpus-regression.py`: it recreates each
+caller wav from the timings (cached outside the repo), runs `-tygerdemo` at
+wall-clock pace, and compares the decision timeline against the recorded
+baseline in `baselines/` (accept a new one with `--update-baseline`). How
+replay comes to the original's own timings is reported as context — the
+replica is approximate, so the baseline is the gate.
+
 ## Provenance
 
 - Dessa clips: `block.xyz/dessa` (Block research demos). Transcripts extracted
