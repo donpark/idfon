@@ -42,6 +42,23 @@ scores better, write the lesson here (Harness2's outer loop).
   "ums and ahs" are wanted at utterance start, the other knob is a ~120 ms
   attack fade on phatic playback (mouth-side, not yet built).
 
+### 2026-10-26b — UTMOS as the quality floor (second scorer)
+
+- UTMOS (neural MOS, `scripts/utmos-score.py`) gives the pipeline a
+  perceptual witness. It confirms the ear on the hums: **"Mhm." = 1.70 MOS,
+  "Hmm." = 1.54** — their shape is natural but Phonon's rendering is not.
+  The 2026-10-26 "murmurs swell naturally" note gets its correction: the
+  swell is right, the sound is wrong.
+- In-sentence vowels are quality-fine ("Um, one moment." = 4.21 MOS): their
+  problem is onset dynamics, not the sound. Bare "Um." (3.17) and "hmm, let
+  me check." (3.54) degrade. The floor demoted both in the ranking.
+- Quality-floor policy: a candidate never wins on target-distance below the
+  target's own MOS minus 0.25 (or the built-in 4.0 floor).
+- Autoresearch found a winner the hand rounds missed: **"so. One moment."**
+  (swell 150 ms, head 0.05, MOS fine) — pending the ear gate on the
+  audition page. Lowercase "so." apparently renders with a drawn-out soft
+  onset.
+
 ## Knob inventory
 
 | Knob | Where | Scorer |
@@ -51,3 +68,10 @@ scores better, write the lesson here (Harness2's outer loop).
 | Filler prompts | `BackchannelFiller.instructions`, `TurnFiller` prompts | voice-prompt-lab |
 | Filler timing | `TurnFiller.leadInAfter/fillerGap/maxStill` | corpus replay |
 | Turn thresholds | `Thresholds::tuned()` (C ABI) | corpus replay, parity gates |
+
+Scorers: style metrics (`voice-audio-metrics.py`: onset swell, opening
+energy, crest — identity metrics like pitch are reported, never scored),
+UTMOS quality floor (`utmos-score.py`, torch venv via `UTMOS_PYTHON`),
+behavior replay (`corpus-regression.py`), rubric (`voice-prompt-lab.sh`).
+Driver: `voice-autoresearch.py` (mechanical proposals, generational search,
+round reports; `--selftest`).

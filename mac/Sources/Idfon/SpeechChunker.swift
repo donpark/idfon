@@ -13,8 +13,7 @@ import Foundation
 enum SpeechChunker {
     /// Never cut a chunk shorter than this: short replies/sentences go out
     /// whole (merged with what follows).
-    static let minChars = 40
-    /// First-chunk fallback when the rule is `clause`: cut at a word boundary
+    static let minChars = 40    /// First-chunk fallback when the rule is `clause`: cut at a word boundary
     /// after this many words.
     static let firstMaxWords = 12
     /// Later chunks are whole sentences; a run-on still flushes at this many
@@ -200,6 +199,61 @@ enum SpeechChunker {
         }
         let tail = rest.trimmingCharacters(in: .whitespaces)
         if !tail.isEmpty { out.append(tail) }
+        return out
+    }
+}
+
+/// Incremental mouth feed over a growing text (the speech-unit `partial`
+/// stream, `docs/voice-agent-loop-contract.md` §2): holds the unspoken tail
+/// and yields whole chunks as they close, so playback starts on chunk 1 while
+/// the rest still renders. `finish` closes with the tail. If the stream
+/// diverges (a speak envelope's spoken form can differ from the body that
+/// streamed first), `finish` yields the final text whole — fail-open to the
+/// pre-streaming behavior.
+struct ChunkFeeder {
+    /// Everything accepted from the stream so far.
+    private(set) var fed = ""
+    private var pending = ""
+    private var broken = false
+
+    /// Feed the newest cumulative snapshot; returns the chunks that closed.
+    mutating func feed(_ cumulative: String) -> [String] {
+        guard !broken else { return [] }
+        guard cumulative.hasPrefix(fed) else {
+            // Diverged: stop feeding the mouth; `finish` speaks the final
+            // text whole (already-spoken chunks were phatic-at-worst).
+            broken = true
+            pending = ""
+            return []
+        }
+        pending += String(cumulative.dropFirst(fed.count))
+        fed = cumulative
+        return drain()
+    }
+
+    /// Close the unit with its authoritative full form; returns everything
+    /// left to speak.
+    mutating func finish(_ final: String) -> [String] {
+        if !broken && final.hasPrefix(fed) {
+            pending += String(final.dropFirst(fed.count))
+        } else {
+            pending = final
+        }
+        fed = final
+        broken = true // the unit is closed; further feeds are ignored
+        var out = drain()
+        let tail = pending.trimmingCharacters(in: .whitespaces)
+        if !tail.isEmpty { out.append(SpeechChunker.sayClean(tail)) }
+        pending = ""
+        return out
+    }
+
+    private mutating func drain() -> [String] {
+        var out: [String] = []
+        while let next = SpeechChunker.nextChunk(pending, first: false) {
+            out.append(SpeechChunker.sayClean(next.chunk))
+            pending = next.rest
+        }
         return out
     }
 }
