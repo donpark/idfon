@@ -109,6 +109,22 @@ impl Default for Thresholds {
     }
 }
 
+impl Thresholds {
+    /// The live-tuned set (tyger-s2s `config/default.yaml`, adopted
+    /// 2026-10-25): their demonstrations run these, not the bundle defaults
+    /// above. `Default` stays the bundle set so the parity fixtures remain
+    /// byte-comparable with their rules tests; the runtime constructs with
+    /// `tuned()` (documenting any change here, per the comparison doc).
+    pub fn tuned() -> Self {
+        Thresholds {
+            ep_thr: 0.915,
+            barge_thr: 0.4,
+            bc_thr: 0.4,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub kind: String,

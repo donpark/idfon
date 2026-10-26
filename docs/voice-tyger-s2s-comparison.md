@@ -34,6 +34,9 @@ trim contract absent.
    these live; `IDFON_TURN_TIER` + `-tygerdemo` are our calibration path.
    Care: `turns.rs` fixtures pin behavior at the defaults — pass thresholds
    explicitly when changing them.
+   **Adopted 2026-10-25**: the runtime constructs with `Thresholds::tuned()`
+   (0.915 / 0.4 / 0.4) through the C ABI; the library `Default` stays the
+   bundle set so the parity fixtures remain byte-comparable.
 2. **2nd ear timing** (the deepest fix): they measured arrival-order pairing
    putting the 2nd ear 316–783 ms (median 566) AHEAD of what the user heard
    (I-17) and replaced it with per-mic-block playback tags. Ours is
