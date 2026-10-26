@@ -68,6 +68,68 @@ The model returns **tool calls**, not one text blob:
 - A turn that only speaks needs no artifact; a turn that only publishes can stay
   silent.
 
+What `speak` means on the wire is the speech unit protocol below.
+
+### Speech unit protocol (the app seam)
+
+Responsibility-based design (2026-10-26). The voice agent speaks. The app
+renders and keeps history. The protocol between them exists so that the app
+can do its job (great UX) without message-level logic in the voice-agent
+heuristics.
+
+**Responsibilities**
+
+| Owner | Owns | Must not carry |
+| --- | --- | --- |
+| Voice agent | Oral accounting: what it said and what was actually played. Knowledge state: transcript, work-agent results in flight. Rhythm with the human. Emitting units. | Bubbles, history, upserts, message replacement. |
+| App | Weaving coherent history out of partial and full units. Rendering. History policy: which unit kinds persist. | — (its choice) |
+| Protocol | The fields that make the app's job mechanical. | Persistence of any kind. |
+
+**Unit shape**
+
+```text
+unit:
+  id            stable, agent-generated (the agent's only bookkeeping)
+  correlation   which user interaction this unit answers
+  kind          fact about the speech, e.g. answer | phatic
+  partial       append-only text fragments (monotonic, never revised)
+  final         the one authoritative full form (may differ from the partials)
+  played        what was actually spoken, and the truncated state
+```
+
+**Weaving rules** (mechanical: the app derives its whole UX from the fields)
+
+- Live display: concatenate the `partial` fragments.
+- History: place `final`, grouped by `correlation`.
+- Barge-in: keep `final` trimmed to `played`.
+- `kind` is a fact, not a policy. The app decides what history means. Example:
+  phatic units stay out of history in our apps today. Another app can choose
+  differently without a change in the agent.
+
+**Consequences for the agent**
+
+- The agent never emits edits or replacements. A re-say after a barge is a new
+  unit with the same `correlation`. The old unit keeps its truthful `played`.
+- Work-agent output is knowledge that the agent composes into units. A raw
+  work stream is not speech and does not cross the seam.
+- Optional status facts (for example "still working") are protocol facts for
+  UX. They are not speech units.
+- The agent heuristics stay speech-shaped. The app can change its UX without a
+  change in the agent.
+
+**Conformance**
+
+- OpenAI Realtime: `partial` = `response.output_audio_transcript.delta`,
+  `final` = `.done`, unit close = `response.done`, `played` =
+  `conversation.item.truncate` (their wire, distilled 2026-10-26,
+  `docs/voice-tyger-streaming-plan.md`).
+- `IDFON-SPEAK/1`: `text` is the unit body, `correlation_id` is `correlation`.
+  The played prefix of the barge trim is the `played` field today.
+- Transport: the unit stream rides the call's live session
+  (`docs/voice-tyger-streaming-plan.md`, option A). The one persisted chat
+  message is the app's woven `final`. Deltas are unit protocol. They are not
+  messages and the protocol persists nothing.
+
 ## 3. Tool contract
 
 One namespace, snake_case names, one job per tool. The schemas below are the
