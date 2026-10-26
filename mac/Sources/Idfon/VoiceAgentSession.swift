@@ -86,6 +86,12 @@ final class VoiceAgentSession: NSObject {
     private var lastFeedbackAt: Date?
     /// In-flight feedback utterance; drained before a reply speaks.
     private var feedbackTask: Task<Void, Never>?
+    /// The filler cover over reply latency (tool lead-ins / still-looking
+    /// lines); cancelled the moment the reply arrives.
+    private var fillerTask: Task<Void, Never>?
+    /// True while the filler is inside `tts.speak`, so cancellation cuts the
+    /// line and drains it instead of racing the reply's speak.
+    private var fillerSpeaking = false
     /// True while the agent speaks and the recognizer is armed for barge-in;
     /// a committed utterance then cancels playback instead of ending a turn.
     private var bargeInArmed = false
@@ -210,6 +216,8 @@ final class VoiceAgentSession: NSObject {
         stopRequested = true
         // Cancel in-flight speech now; otherwise hang-up waits out the whole
         // utterance while the loop is parked in `speak()`.
+        fillerTask?.cancel()
+        fillerTask = nil
         tts.stop()
         deliver(nil)
     }
@@ -343,15 +351,18 @@ final class VoiceAgentSession: NSObject {
         )
         setState(.thinking)
         let replyStart = Date()
+        startFillerCover(transcript: heard)
         guard let result = await reply(
             peerId: peerId, text: heard, logPrefix: "voice-agent",
             spokenTurnId: "\(callId)-\(turnsDone)-agent"
         )
         else {
+            await cancelFiller()
             // A missing reply must not kill the call; try the next turn.
             Automation.mark("voice-agent: no reply, continuing")
             return true
         }
+        await cancelFiller()
         let replyMs = Int(Date().timeIntervalSince(replyStart) * 1000)
         Automation.mark("voice-agent: reply=\(result.display)")
         var speakMs = 0
@@ -819,6 +830,48 @@ final class VoiceAgentSession: NSObject {
             await FeedbackEar.suppress { await self.tts.speak(text) }
             self.feedbackTask = nil
         }
+    }
+
+    /// The filler economy (tyger-s2s's tool lead-ins + "still looking" lines,
+    /// their `mouth/turns.py` `cover()`): while the reply is out, a fast
+    /// phatic line on the clock covers the dead air a tool call or a slow
+    /// model leaves. Voice feedback only — never in history (`lastSpoken`
+    /// stays the agent's reply) and never in the second ear (FeedbackEar);
+    /// the reply supersedes it (`cancelFiller`).
+    private func startFillerCover(transcript: String) {
+        fillerTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var said: [String] = []
+            while let wait = TurnFiller.nextWait(saidCount: said.count) {
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                guard !Task.isCancelled, !self.stopRequested, case .thinking = self.state else { return }
+                let still = !said.isEmpty
+                let text = await TurnFiller.line(transcript: transcript, said: said, still: still)
+                    ?? (still ? "Still on it." : "Just a moment.")
+                guard !Task.isCancelled, !self.stopRequested, case .thinking = self.state else { return }
+                said.append(text)
+                Automation.mark("voice-agent: filler \(still ? "still" : "lead-in") said=\(text)")
+                // Echo bookkeeping before playback, like the backchannel cue:
+                // a re-heard filler must not become a caller turn.
+                self.lastFeedback = text
+                self.lastFeedbackAt = Date()
+                self.fillerSpeaking = true
+                await FeedbackEar.suppress { await self.tts.speak(text) }
+                self.fillerSpeaking = false
+            }
+        }
+    }
+
+    /// The reply is here: cancel the filler cover, cutting a line still
+    /// playing so the reply owns the mouth.
+    private func cancelFiller() async {
+        guard let task = fillerTask else { return }
+        fillerTask = nil
+        task.cancel()
+        // Still generating or sleeping: its guards stop it before it speaks.
+        guard fillerSpeaking else { return }
+        tts.stop()
+        await task.value
     }
 
     /// True while the mic may still be re-hearing the agent's own feedback cue
