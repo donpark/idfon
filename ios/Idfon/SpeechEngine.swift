@@ -32,6 +32,10 @@ protocol TtsEngine: AnyObject {
 extension TtsEngine {
     var lastLatencyMs: Int? { nil }
     var playback: AudioSink? { get { nil } set {} }
+    /// Audio seconds that actually played in the current/last `speak` — the
+    /// barge-history trim's `played_s` (engines that cannot measure it report
+    /// 0 and callers fall back to the full text).
+    var playedSeconds: TimeInterval { 0 }
 }
 
 /// Reply-speech backend choice, persisted across launches.
