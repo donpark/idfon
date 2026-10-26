@@ -499,26 +499,28 @@ final class AudioMeter {
                 }
                 let format = input.outputFormat(forBus: 0)
                 if self.pushToEncoder {
-                    let outputFormat = self.pipelineFormat()
-                    self.converter = AVAudioConverter(from: format, to: outputFormat)
-                    self.outputFormat = outputFormat
+                    // Built lazily in push() from the delivered buffer format —
+                    // the value read here can be stale right after a route
+                    // change and must not define the converter's source.
+                    self.converter = nil
+                    self.outputFormat = self.pipelineFormat()
                     self.pushedBuffers = 0
                     self.callbackBuffers = 0
                     self.windowSamples = 0
                     self.windowSumSquares = 0
                     self.windowPeak = 0
-                    if self.converter == nil {
-                        // Non-standard hardware format: keep metering but drop the
-                        // push rather than publish wrong-speed audio.
-                        idfonLog("idfon push: no converter for \(format); call stays on mic capture")
-                        self.pushToEncoder = false
-                    }
                 }
-                Self.log("idfon audio meter installing tap format=\(format)")
-                // installTap raises an uncapturable ObjC exception (and aborts
-                // the app) on an invalid format: at call start macOS is often
-                // mid-route-change and inputNode reports 0 Hz/0 ch. Retry once
-                // the device settles instead of crashing or losing the capture.
+                // Install at the hardware format (nil): an explicit format is
+                // validated against the node's *current* format and raises an
+                // uncaturable ObjC exception ("Failed to create tap due to
+                // format mismatch") whenever the input reconfigures underneath
+                // us — the pcm24k voice-agent profile reconfigures the input
+                // mid-session, and `outputFormat(forBus:)` itself reads stale
+                // right after the change. A nil-format tap follows the
+                // hardware, so the process-sticky tap cannot mismatch.
+                // installTap still raises on an invalid node format (0 Hz/0 ch
+                // while a device settles): retry once it settles instead of
+                // crashing or losing the capture.
                 guard format.sampleRate > 0, format.channelCount > 0 else {
                     Self.log("idfon audio meter: invalid input format \(format); retrying")
                     if generation < 4 {
@@ -538,7 +540,8 @@ final class AudioMeter {
                     }
                     return
                 }
-                input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak owner = self] buffer, time in
+                Self.log("idfon audio meter installing tap at hardware format \(format)")
+                input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak owner = self] buffer, time in
                     guard let owner else { return }
                     owner.callbackBuffers += 1
                     if owner.callbackBuffers <= 3 || owner.callbackBuffers % 100 == 0 {
@@ -670,10 +673,20 @@ final class AudioMeter {
     /// to the dylib. `.noDataNow` after one buffer lets the converter retain its
     /// resampler state for the next tap.
     private func push(_ buffer: AVAudioPCMBuffer) {
-        if converter == nil {
+        // The converter's source is the *delivered* buffer format: the input
+        // can reconfigure mid-call (48 kHz ↔ 24 kHz), so rebuild whenever it
+        // changes, not just on the first buffer after a retarget.
+        if converter == nil || converter?.inputFormat != buffer.format {
             let format = pipelineFormat()
             outputFormat = format
             converter = AVAudioConverter(from: buffer.format, to: format)
+            if converter == nil {
+                // Non-standard hardware format: keep metering but drop the
+                // push rather than publish wrong-speed audio.
+                idfonLog("idfon push: no converter for \(buffer.format); call stays on mic capture")
+                pushToEncoder = false
+                return
+            }
         }
         guard let converter, let outputFormat else { return }
         let ratio = Double(targetSampleRate) / buffer.format.sampleRate
