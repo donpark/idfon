@@ -89,6 +89,27 @@ final class ChatStore {
 
     private var started = false
 
+    /// Set once `hydrateHistory()` has finished its pass. The session-cache
+    /// restore and the daemon event replay are the only things that append
+    /// pre-existing history late, so afterwards the message set is stable
+    /// enough to snapshot. Awaited in place of a fixed sleep by anything that
+    /// must distinguish new messages from restored ones (the voice loop's
+    /// reply snapshot).
+    private var hydrated = false
+    private var hydrationWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func whenHydrated() async {
+        guard !hydrated else { return }
+        await withCheckedContinuation { hydrationWaiters.append($0) }
+    }
+
+    private func markHydrated() {
+        hydrated = true
+        let waiters = hydrationWaiters
+        hydrationWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+
     func start() {
         guard !started else { return }
         started = true
@@ -428,6 +449,7 @@ final class ChatStore {
     }
 
     private func hydrateHistory() async {
+        defer { markHydrated() }
         // App-side session cache first; the daemon replay below dedupes against
         // these ids, so restored history is not appended twice.
         for stored in SessionStore.shared.load(identity: identityId) {
