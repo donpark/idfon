@@ -19,6 +19,16 @@ public final class MlxTurnModel: TurnModel {
         try self.init(weightsURL: pkg.appendingPathComponent("bench-results/mlx/TygerChainInt8.safetensors"))
     }
 
+    /// mlx-c aborts (uncatchable C++) when its Metal library is missing — a
+    /// bundle that forgot mlx-swift's Cmlx resource dies at first MLX call.
+    /// Check before attempting the tier so a missing shader bundle degrades
+    /// to "no model" instead of a crash.
+    public static var hasMetalLibrary: Bool {
+        Bundle.main.url(
+            forResource: "default", withExtension: "metallib",
+            subdirectory: "mlx-swift_Cmlx.bundle/Contents/Resources") != nil
+    }
+
     public init(weightsURL: URL) throws {
         let all = try MLX.loadArrays(url: weightsURL)
         let enc = Dictionary(uniqueKeysWithValues: all.filter { $0.key.hasPrefix("enc.") }.map { (String($0.key.dropFirst(4)), $0.value) })
