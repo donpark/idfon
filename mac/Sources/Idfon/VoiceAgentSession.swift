@@ -668,7 +668,7 @@ final class VoiceAgentSession: NSObject {
 
     /// The words that actually played before a barge cut — their
     /// `played_s * 25` characters-per-second estimate, snapped to a word.
-    static func playedPrefix(of text: String, seconds: TimeInterval) -> String {
+    nonisolated static func playedPrefix(of text: String, seconds: TimeInterval) -> String {
         let cut = text.index(text.startIndex, offsetBy: min(text.count, Int(seconds * 25)))
         let prefix = String(text[..<cut])
         guard let lastSpace = prefix.lastIndex(of: " ") else { return prefix }

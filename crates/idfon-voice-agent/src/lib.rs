@@ -114,6 +114,8 @@ pub async fn send_call_transcript(
         role,
         text: text.to_string(),
         r#final,
+        played_s: None,
+        kind: None,
     };
     let Ok(text) = idfon_protocol::encode_call_transcript(&transcript) else {
         return;
@@ -783,6 +785,113 @@ fn push_speak_json(body: &str, out: &mut Vec<String>) {
     }
 }
 
+/// Text a voice agent should actually speak, mid-generation. The streaming
+/// twin of [`speak_text`] for the speech-unit `partial` field: tolerant of a
+/// half-written message. An incomplete `IDFON-SPEAK/1` block contributes the
+/// decoded prefix of its `text` value (a terminated literal and an
+/// unterminated one decode to the same prefix); with no speak block started
+/// yet the result is the prose before any envelope. On a complete message
+/// this equals [`speak_text`].
+pub fn speak_text_partial(text: &str) -> String {
+    let mut spoken: Vec<String> = Vec::new();
+    let mut in_speak = false;
+    let mut body = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.starts_with("IDFON-") && trimmed.ends_with("/1") {
+            if in_speak {
+                push_speak_json_partial(&body, &mut spoken);
+                body.clear();
+            }
+            in_speak = trimmed == "IDFON-SPEAK/1";
+            continue;
+        }
+        if in_speak {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if in_speak {
+        push_speak_json_partial(&body, &mut spoken);
+    }
+    if spoken.is_empty() {
+        body_prefix(text)
+    } else {
+        spoken.join(" ")
+    }
+}
+
+/// The prose before any envelope block. A trailing `IDFON-` fragment is held
+/// back: it may still become an envelope marker (the stripper's rule).
+fn body_prefix(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(index) = rest.find('\n') {
+        let (line, tail) = rest.split_at(index + 1);
+        if line.trim_end().starts_with("IDFON-") && line.trim_end().ends_with("/1") {
+            return out;
+        }
+        out.push_str(line);
+        rest = tail;
+    }
+    if !rest.starts_with("IDFON-") {
+        out.push_str(rest);
+    }
+    out
+}
+
+fn push_speak_json_partial(body: &str, out: &mut Vec<String>) {
+    if let Some(text) = json_text_prefix(body) {
+        let text = text.trim();
+        if !text.is_empty() {
+            out.push(text.to_string());
+        }
+    }
+}
+
+/// The decoded prefix of the `"text"` string value in a JSON object that may
+/// still be half-written. Scans the string literal with JSON escapes; stops
+/// at the closing quote or end of input, which yields the same prefix.
+/// Shortcut: the first `"text"` occurrence wins (a prose copy of the key
+/// inside another value would confuse it).
+fn json_text_prefix(body: &str) -> Option<String> {
+    let at = body.find("\"text\"")? + "\"text\"".len();
+    let rest = body[at..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let bytes = rest.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => {
+                match bytes[i + 1] {
+                    b'"' => { out.push('"'); i += 2; }
+                    b'\\' => { out.push('\\'); i += 2; }
+                    b'/' => { out.push('/'); i += 2; }
+                    b'n' => { out.push('\n'); i += 2; }
+                    b't' => { out.push('\t'); i += 2; }
+                    b'r' => { out.push('\r'); i += 2; }
+                    b'u' if i + 6 <= bytes.len() => {
+                        if let Some(c) = u32::from_str_radix(&rest[i + 2..i + 6], 16).ok().and_then(char::from_u32) {
+                            out.push(c);
+                        }
+                        i += 6;
+                    }
+                    _ => { i += 1; }
+                }
+            }
+            b'"' => break,
+            _ => {
+                let ch = rest[i..].chars().next()?;
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,6 +935,39 @@ mod tests {
             "Sure, here you go."
         );
         assert_eq!(strip_envelopes("plain reply"), "plain reply");
+    }
+
+    #[test]
+    fn speak_partial_streams_the_growing_spoken_form() {
+        // Plain body: the prose prefix.
+        assert_eq!(speak_text_partial("Sure, one mo"), "Sure, one mo");
+        // A trailing half-marker is held back (it may become an envelope).
+        assert_eq!(speak_text_partial("Sure.\nIDFON-").trim(), "Sure.");
+        // A half-written speak block contributes the decoded prefix of text.
+        assert_eq!(
+            speak_text_partial("IDFON-SPEAK/1\n{\"text\": \"Let me check the ti"),
+            "Let me check the ti"
+        );
+        // Escapes decode the same whether or not the literal is closed.
+        assert_eq!(
+            speak_text_partial("IDFON-SPEAK/1\n{\"text\": \"say \\\"hi\\\" now\"}"),
+            "say \"hi\" now"
+        );
+        // Blocks join like speak_text does.
+        assert_eq!(
+            speak_text_partial(
+                "IDFON-SPEAK/1\n{\"text\": \"One moment.\"}\nIDFON-SPEAK/1\n{\"text\": \"The time in"
+            ),
+            "One moment. The time in"
+        );
+        // Prefix consistency: on a complete message the two agree.
+        for reply in [
+            "Plain reply.",
+            "IDFON-SPEAK/1\n{\"text\": \"Hi there.\", \"voice\": \"Aiden\"}",
+            "Preamble.\nIDFON-SPEAK/1\n{\"text\": \"Spoken form.\"}\nIDFON-ARTIFACT/1\n{}",
+        ] {
+            assert_eq!(speak_text_partial(reply), speak_text(reply), "partial == full on {reply:?}");
+        }
     }
 
     #[test]

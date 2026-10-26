@@ -23,7 +23,7 @@ pub enum CallSpeaker {
     Agent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallTranscript {
     pub call_id: String,
     pub turn_id: String,
@@ -31,6 +31,15 @@ pub struct CallTranscript {
     pub text: String,
     #[serde(default)]
     pub r#final: bool,
+    /// Speech-unit `played` accounting: seconds of this unit that actually
+    /// played before a barge cut it. Present on a closing unit that was
+    /// truncated mid-speech (the app trims its woven history to it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub played_s: Option<f64>,
+    /// Speech-unit `kind`: a fact about the speech (e.g. "answer", "phatic").
+    /// History policy on the fact is the app's choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 impl CallTranscript {
@@ -41,6 +50,8 @@ impl CallTranscript {
             role: CallSpeaker::Caller,
             text: text.to_string(),
             r#final,
+            played_s: None,
+            kind: None,
         }
     }
 
@@ -51,7 +62,21 @@ impl CallTranscript {
             role: CallSpeaker::Agent,
             text: text.to_string(),
             r#final,
+            played_s: None,
+            kind: None,
         }
+    }
+
+    /// Close the unit as truncated: `played` accounting for the app's weave.
+    pub fn with_played_s(mut self, seconds: f64) -> Self {
+        self.played_s = Some(seconds);
+        self
+    }
+
+    /// Tag the unit's kind ("answer", "phatic", …).
+    pub fn with_kind(mut self, kind: &str) -> Self {
+        self.kind = Some(kind.to_string());
+        self
     }
 }
 
@@ -85,5 +110,27 @@ mod tests {
     fn rejects_non_call_text() {
         assert!(!is_call_transcript("IDFON-ARTIFACT/1\n{}"));
         assert_eq!(decode_call_transcript("plain text"), None);
+    }
+
+    #[test]
+    fn played_and_kind_are_optional_for_old_senders() {
+        // An old sender's payload (no played_s/kind) still decodes.
+        let old = "IDFON-CALL/1\n{\"call_id\":\"c\",\"turn_id\":\"t\",\"role\":\"agent\",\"text\":\"Hi\",\"final\":true}";
+        let decoded = decode_call_transcript(old).expect("decode");
+        assert_eq!(decoded.played_s, None);
+        assert_eq!(decoded.kind, None);
+    }
+
+    #[test]
+    fn played_accounting_round_trips() {
+        let unit = CallTranscript::agent("c", "t", "Well, I think", true)
+            .with_played_s(1.25)
+            .with_kind("answer");
+        let encoded = encode_call_transcript(&unit).expect("encode");
+        assert_eq!(decode_call_transcript(&encoded), Some(unit));
+        // The fields only appear when set (old wire shape stays byte-lean).
+        let plain = encode_call_transcript(&CallTranscript::agent("c", "t", "Hi", true)).expect("encode");
+        assert!(!plain.contains("played_s"));
+        assert!(!plain.contains("kind"));
     }
 }

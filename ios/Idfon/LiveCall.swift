@@ -600,6 +600,10 @@ final class HybridVoice {
     private(set) var isActive = false
     private var peerId: String?
     private var speakLocal = false
+    /// Speech-unit stream state: one incremental mouth feed per turn
+    /// (`docs/voice-agent-loop-contract.md` §2), plus the serial speak chain.
+    private var feeders: [String: ChunkFeeder] = [:]
+    private var speakChain: Task<Void, Never>?
 
     func start(peerRef: String, route: VoiceRoute) {
         Automation.mark("hybrid: start ref=\(peerRef)")
@@ -628,10 +632,33 @@ final class HybridVoice {
         asr = nil
     }
 
-    /// Speak an agent transcript when TTS is on-device.
-    func maybeSpeak(peerId: String, role: String, text: String) {
+    /// Speak an agent transcript when TTS is on-device. The `final` closes
+    /// the unit: whatever the partials did not cover plays as the tail.
+    func maybeSpeak(peerId: String, turnId: String, role: String, text: String) {
         guard isActive, speakLocal, role == "agent", !text.isEmpty else { return }
-        Task { @MainActor in await tts.speak(text) }
+        var feeder = feeders.removeValue(forKey: turnId) ?? ChunkFeeder()
+        for chunk in feeder.finish(text) { speakQueued(chunk) }
+    }
+
+    /// Speech-unit `partial` (loop contract §2): the cumulative snapshot of
+    /// the agent's spoken text so far. Chunks start playback as they close —
+    /// first audio at the first sentence instead of at reply end.
+    func streamPartial(turnId: String, text: String) {
+        guard isActive, speakLocal, !text.isEmpty else { return }
+        var feeder = feeders[turnId] ?? ChunkFeeder()
+        let chunks = feeder.feed(text)
+        feeders[turnId] = feeder
+        for chunk in chunks { speakQueued(chunk) }
+    }
+
+    /// One utterance at a time through the mouth (each engine is
+    /// single-utterance), chained in arrival order.
+    private func speakQueued(_ text: String) {
+        let prior = speakChain
+        speakChain = Task { @MainActor in
+            await prior?.value
+            await self.tts.speak(text)
+        }
     }
 
     private func startLocalAsr(peerRef: String) async {

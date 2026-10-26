@@ -187,14 +187,23 @@ struct CallTranscript: Codable, Equatable {
     let callId: String
     let turnId: String
     let role: String // "caller" | "agent"
-    let text: String
+    var text: String
     let final: Bool
+    /// Speech-unit `played` accounting (loop contract §2): seconds of this
+    /// unit that played before a barge cut it. A unit closed by a barge
+    /// weaves trimmed to it.
+    var playedS: Double? = nil
+    /// Speech-unit `kind` (e.g. "answer", "phatic"): a fact about the
+    /// speech. History policy on the fact is the app's choice.
+    var kind: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case callId = "call_id"
         case turnId = "turn_id"
         case role, text
         case final = "final"
+        case playedS = "played_s"
+        case kind
     }
 }
 

@@ -69,4 +69,36 @@ check({
 // next_chunk streaming shape: nothing is ready until a boundary closes.
 check(SpeechChunker.nextChunk("The beginning of a sen") == nil, "incomplete text stays pending")
 
+
+// ChunkFeeder: the incremental mouth feed over a growing text (speech-unit
+// partials). Chunks close in order as the text grows; the tail speaks at
+// finish; a divergent stream falls back to the final whole.
+do {
+    var feeder = ChunkFeeder()
+    var spoken: [String] = []
+    let full = "I looked up the time in Tokyo, and it is three in the afternoon there now. "
+        + "Would you like me to set a reminder as well, or is there anything else?"
+    for end in stride(from: 20, through: full.count, by: 37) {
+        spoken += feeder.feed(String(full.prefix(end)))
+    }
+    spoken += feeder.finish(full)
+    check(spoken.joined(separator: " ").replacingOccurrences(of: "  ", with: " ")
+            .contains("I looked up the time in Tokyo"), "feeder speaks the stream")
+    check(spoken.allSatisfy { !$0.isEmpty }, "feeder emits no empty chunks")
+    check(spoken.count >= 2, "feeder closed chunks incrementally (\(spoken.count))")
+}
+do {
+    // Divergence: the spoken form replaces what streamed; finish speaks it whole.
+    var feeder = ChunkFeeder()
+    check(feeder.feed("Let me look into that.").count <= 1, "short stream stays pending-ish")
+    check(feeder.feed("The time in Tokyo is three PM.").isEmpty, "divergent stream stops the mouth")
+    let out = feeder.finish("The time in Tokyo is three PM.")
+    check(out.contains("The time in Tokyo is three PM."), "divergent finish speaks the final whole")
+}
+do {
+    // No partials at all (an old holder): the final speaks whole.
+    var feeder = ChunkFeeder()
+    let out = feeder.finish("A plain reply with no streaming.")
+    check(out.contains("A plain reply with no streaming."), "finish with no feed speaks whole")
+}
 print("ALL OK")

@@ -213,12 +213,27 @@ final class ChatStore {
             }
         }
         if parts.isEmpty { parts.append((text, .text(text))) }
+        // Weaving rule (loop contract §2): a unit closed by a barge weaves
+        // trimmed to what actually played (`played` accounting).
+        for index in parts.indices {
+            if case .callTranscript(var transcript) = parts[index].1, let played = transcript.playedS {
+                transcript.text = VoiceAgentSession.playedPrefix(of: transcript.text, seconds: played)
+                parts[index].1 = .callTranscript(transcript)
+            }
+        }
         for (index, part) in parts.enumerated() {
             let partID = index == 0 ? messageID : "\(messageID)#\(index)"
-            // Hybrid: with on-device TTS, speak the agent's final transcript.
-            if case .callTranscript(let transcript) = part.1, transcript.final {
-                Task { @MainActor in
-                    HybridVoice.shared.maybeSpeak(peerId: peerId, role: transcript.role, text: transcript.text)
+            // Hybrid: with on-device TTS, the mouth follows the unit stream —
+            // partials speak as chunks close, the final closes the unit.
+            if case .callTranscript(let transcript) = part.1 {
+                if transcript.final {
+                    Task { @MainActor in
+                        HybridVoice.shared.maybeSpeak(peerId: peerId, turnId: transcript.turnId, role: transcript.role, text: transcript.text)
+                    }
+                } else if transcript.role == "agent" {
+                    Task { @MainActor in
+                        HybridVoice.shared.streamPartial(turnId: transcript.turnId, text: transcript.text)
+                    }
                 }
             }
             // Transcript snapshots stream for one turn: upsert the bubble by

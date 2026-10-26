@@ -11,7 +11,7 @@
 //! [`AudioSink`] as they produce it (`tts_with_sink`). Batch providers return
 //! chunks, which are routed through the same sink.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -26,8 +26,8 @@ use tokio::time::MissedTickBehavior;
 
 use crate::metrics::TurnMetrics;
 use crate::{
-    send_call_transcript, speak_text, BackendFuture, VoiceBackend, VoiceBackendFactory,
-    VoiceMedia,
+    send_call_transcript, speak_text, speak_text_partial, BackendFuture, VoiceBackend,
+    VoiceBackendFactory, VoiceMedia,
 };
 use idfon_protocol::CallSpeaker;
 
@@ -92,6 +92,8 @@ impl CascadeBackend {
         let mut played_text = String::new();
         let mut current_turn: Option<String> = None;
         let mut cancelled: HashSet<String> = HashSet::new();
+        // Speech-unit stream for the app-owned mouth (client/hybrid cascade).
+        let mut units = UnitStream::new();
 
         loop {
             tokio::select! {
@@ -207,7 +209,7 @@ impl CascadeBackend {
                         .await;
                     }
                 }
-                Some((turn_id, _step, _seq, text)) = media.deltas.recv() => {
+                Some((turn_id, step, seq, text)) = media.deltas.recv() => {
                     // Deltas don't drive TTS: synthesizing them incrementally
                     // raced the completed reply and truncated multi-clause
                     // answers (only what arrived before the reply finished got
@@ -215,13 +217,32 @@ impl CascadeBackend {
                     // on the completed reply below — the provider still streams
                     // the audio as it synthesizes.
                     if tts_server && !cancelled.contains(&turn_id) {
-                        current_turn = Some(turn_id);
+                        current_turn = Some(turn_id.clone());
                         played_text.push_str(&text);
                         echo.set_spoken(&played_text);
+                    }
+                    // The app owns the mouth (client/hybrid cascade): the
+                    // deltas ARE the speech-unit stream. Each due snapshot is
+                    // the cumulative `partial` — the spoken form so far,
+                    // envelope-aware — and the completed reply closes the unit
+                    // below (loop contract §2).
+                    if !tts_server && !cancelled.contains(&turn_id) {
+                        if let Some(spoken) = units.push(&turn_id, step, seq, &text) {
+                            send_call_transcript(
+                                &media.platform,
+                                media.bridge.call_id(),
+                                CallSpeaker::Agent,
+                                &turn_id,
+                                &spoken,
+                                false,
+                            )
+                            .await;
+                        }
                     }
                 }
                 Some((turn_id, reply)) = media.bridge.next_reply() => {
                     let spoken = speak_text(&reply);
+                    units.finish(&turn_id);
                     // Forget the cancelled turn once its own (empty) reply
                     // arrives, so a later turn reusing the id is not dropped.
                     let cancelled_turn = cancelled.remove(&turn_id);
@@ -388,6 +409,63 @@ fn caller_decision(text: &str, playing: bool, in_tool_window: bool) -> CallerDec
     }
 }
 
+/// The speech-unit streamer for the app-owned mouth (client/hybrid cascade):
+/// accumulates the agent's growing message per turn (delta retry keys
+/// deduped) and yields the cumulative spoken prefix when a snapshot is due —
+/// on a sentence close, or at a throttle cadence (the wire gets sentences,
+/// not tokens). That is the unit protocol's `partial` field
+/// (`docs/voice-agent-loop-contract.md` §2).
+struct UnitStream {
+    raw: HashMap<String, String>,
+    seen: HashSet<(String, u64, u64)>,
+    emitted: HashMap<String, String>,
+    last: HashMap<String, Instant>,
+}
+
+impl UnitStream {
+    fn new() -> Self {
+        Self {
+            raw: HashMap::new(),
+            seen: HashSet::new(),
+            emitted: HashMap::new(),
+            last: HashMap::new(),
+        }
+    }
+
+    /// Feed one delta; returns the cumulative spoken text when a snapshot is
+    /// due (and records it as emitted).
+    fn push(&mut self, turn_id: &str, step: u64, seq: u64, text: &str) -> Option<String> {
+        if !self.seen.insert((turn_id.to_string(), step, seq)) {
+            return None; // a retried delta: already counted
+        }
+        let raw = self.raw.entry(turn_id.to_string()).or_default();
+        raw.push_str(text);
+        let spoken = speak_text_partial(raw);
+        if spoken.is_empty() || Some(&spoken) == self.emitted.get(turn_id) {
+            return None;
+        }
+        let last = self.last.entry(turn_id.to_string()).or_insert_with(Instant::now);
+        if !sentence_closed(&spoken) && last.elapsed() < Duration::from_millis(250) {
+            return None;
+        }
+        *last = Instant::now();
+        self.emitted.insert(turn_id.to_string(), spoken.clone());
+        Some(spoken)
+    }
+
+    /// The unit closed: drop its state (the `final` supersedes the partials).
+    fn finish(&mut self, turn_id: &str) {
+        self.raw.remove(turn_id);
+        self.emitted.remove(turn_id);
+        self.last.remove(turn_id);
+        self.seen.retain(|(t, _, _)| t != turn_id);
+    }
+}
+
+fn sentence_closed(text: &str) -> bool {
+    matches!(text.trim_end().chars().last(), Some('.') | Some('!') | Some('?'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,5 +486,42 @@ mod tests {
     fn pre_playback_speech_steers_without_cancelling() {
         assert_eq!(caller_decision("hello there", false, false), CallerDecision::Steer);
         assert_eq!(caller_decision("uh-huh", false, false), CallerDecision::Steer);
+    }
+
+    #[test]
+    fn unit_stream_dedupes_retries_and_only_grows() {
+        let mut units = UnitStream::new();
+        // A retried delta is counted once.
+        assert_eq!(units.push("t", 0, 1, "Let me "), None);
+        assert_eq!(units.push("t", 0, 1, "Let me "), None);
+        // A sentence close is due immediately and the series only grows.
+        let first = units.push("t", 0, 2, "check.").expect("snapshot");
+        assert_eq!(first, "Let me check.");
+        // Mid-sentence growth within the throttle window stays quiet; the
+        // emitted prefix is never re-sent.
+        assert_eq!(units.push("t", 0, 3, " Looking"), None);
+        assert_eq!(units.push("t", 0, 4, " now"), None);
+        let second = units.push("t", 0, 5, ".").expect("snapshot");
+        assert!(second.starts_with(&first), "partials only grow");
+        assert_eq!(second, "Let me check. Looking now.");
+        // finish clears the turn.
+        units.finish("t");
+        assert!(units.raw.is_empty() && units.seen.is_empty());
+    }
+
+    #[test]
+    fn unit_stream_streams_the_spoken_form_not_the_raw_message() {
+        let mut units = UnitStream::new();
+        assert_eq!(
+            units.push("t", 0, 1, "One moment.\nIDFON-SPEAK/1\n{\"text\": \"The time in"),
+            None
+        );
+        // A sentence close in the speak envelope's text is due; what streams
+        // is the spoken form, not the raw body.
+        let snapshot = units
+            .push("t", 0, 2, " Tokyo.\"}")
+            .expect("snapshot");
+        assert!(!snapshot.contains("One moment."));
+        assert_eq!(snapshot, "The time in Tokyo.");
     }
 }
