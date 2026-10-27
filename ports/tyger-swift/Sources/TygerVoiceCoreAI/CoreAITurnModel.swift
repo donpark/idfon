@@ -116,9 +116,31 @@ public final class CoreAITurnModel: TurnModel {
     }
 
     private static func prepare(_ url: URL, dynamic: Bool) throws -> AIModel {
+        // Prefer the AOT-compiled specialization ("<name>.compiled.aimodel", the
+        // `xcrun coreai-build compile --preferred-compute gpu --architecture <arch>`
+        // output container): loading the source .aimodel makes the runtime compile
+        // it per process and leak ANE-compiler scratch (mpsgraph workdirs, ~4 GB
+        // per encoder load — the 2026-10-27 disk incident). The loadable unit is
+        // the container's per-arch "<name>.<arch>.aimodelc" child, loaded WITHOUT
+        // specialization options (options on a compiled asset re-trigger
+        // compilation). An arch-mismatched container fails loud — never fall
+        // back to the source asset silently, that is the leak.
+        let compiled = url.deletingLastPathComponent()
+            .appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".compiled.aimodel")
+        let kids = ((try? FileManager.default.contentsOfDirectory(at: compiled, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "aimodelc" }
+        if !kids.isEmpty {
+            return try runSync { () async throws -> AIModel in
+                var firstErr: Error?
+                for kid in kids {
+                    do { return try await AIModel(contentsOf: kid) } catch { firstErr = firstErr ?? error }
+                }
+                throw firstErr ?? LoadError.missingArtifact(compiled.path)
+            }
+        }
         // OS API directly (Apple's PreparedModel wrapper adds nothing we need):
         // GPU posture, reshapes expected for the dynamic-shape encoder.
-        try runSync {
+        return try runSync {
             var opts = SpecializationOptions(preferredComputeUnitKind: .gpu)
             // LANDMINE: expectFrequentReshapes=true CORRUPTS this dynamic model's GPU
             // execution (max|Δ| ~10 on hidden vs the same asset in Python; exact
