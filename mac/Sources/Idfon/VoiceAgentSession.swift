@@ -846,8 +846,12 @@ final class VoiceAgentSession: NSObject {
                 try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                 guard !Task.isCancelled, !self.stopRequested, case .thinking = self.state else { return }
                 let still = !said.isEmpty
+                // The lead-in fallback is the ear-gated autoresearch winner
+                // (2026-10-26): lowercase "so." renders with a drawn-out soft
+                // onset — the one hesitation lead that measures and sounds
+                // like a human's (docs/voice-calibration.md).
                 let text = await TurnFiller.line(transcript: transcript, said: said, still: still)
-                    ?? (still ? "Still on it." : "Just a moment.")
+                    ?? (still ? "Still on it." : "so. One moment.")
                 guard !Task.isCancelled, !self.stopRequested, case .thinking = self.state else { return }
                 said.append(text)
                 Automation.mark("voice-agent: filler \(still ? "still" : "lead-in") said=\(text)")
