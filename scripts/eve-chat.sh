@@ -98,7 +98,7 @@ HOLDER_TICKET=$("$HOLDER" --key-file "$work/holder.key" ticket --subject "$A_PID
 
 # --- the agent's endpoint holder -----------------------------------------
 "$HOLDER" --key-file "$work/holder.key" serve --socket "$HOLDER_SOCK" --allow "$A_PID" \
-  >"$work/holder.ticket" 2>"$work/holder.log" &
+  --blob-dir "$work/blobs" >"$work/holder.ticket" 2>"$work/holder.log" &
 pids="$pids $!"
 for _ in $(seq 1 150); do
   if [ -s "$work/holder.ticket" ]; then break; fi
