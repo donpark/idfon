@@ -340,6 +340,11 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     /// the iroh endpoint id (what contact records key on when the two
     /// differ). Registering only the active identity leaves calls to the
     /// others with no wake channel.
+    /// The identity spellings only: the self-issued ticket's issuer is the
+    /// identity id, so an endpoint-id spelling can never be claimed (its 403
+    /// is structural) and never received a token even before this was pruned.
+    /// Rings address the peer record's id = the identity form; the endpoint
+    /// form only mattered for legacy endpoint-keyed contact records (#56).
     private func accountRefs(issuer: String) async -> [String] {
         var refs: [String] = []
         var seen = Set<String>()
@@ -351,7 +356,6 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         if let raw = try? await client.request(method: "identities")?["identities"]?.asArray {
             for entry in raw {
                 add(entry["public_key"]?.stringValue)
-                add(entry["endpoint_id"]?.stringValue)
             }
         }
         return refs

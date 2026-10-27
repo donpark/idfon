@@ -141,6 +141,12 @@ if [[ "$action" == kill ]]; then
     read -r pid < "$pidfile"
     [[ "$pid" =~ ^[0-9]+$ ]] && pids+=("$pid")
   fi
+  # The agency provisioner is detached (no $home in its command line), so
+  # pgrep below cannot see it — reap it by pidfile.
+  if [[ -r "$home/agency-provisioner.pid" ]]; then
+    read -r pid < "$home/agency-provisioner.pid"
+    [[ "$pid" =~ ^[0-9]+$ ]] && pids+=("$pid")
+  fi
   while IFS= read -r child; do
     pids+=("$child")
   done < <(pgrep -f "$home/" 2>/dev/null || true)

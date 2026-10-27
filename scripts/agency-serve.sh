@@ -17,13 +17,20 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 port="${AGENCY_PORT:-18777}"
 secret="${AGENCY_SECRET:-m2-test-secret}"
 
+export EVE_AGENT="${EVE_AGENT:-agency}"
+
 if ! curl -fsS -H "x-idfon-provisioner-secret: $secret" \
   "http://127.0.0.1:$port/catalog" >/dev/null 2>&1; then
-  node "$root/scripts/agency-provisioner.mjs" &
-  echo $! > "${TMPDIR:-/tmp}/agency-provisioner.pid"
+  # Detached from the serve shell's job table (the shared script's `wait`
+  # must not track it) but not orphaned: its pid lives in the instance home,
+  # where the serve EXIT trap and `pnpm agent kill` both reap it.
+  home="${EVE_VOICE_HOME:-$HOME/.idfon/${EVE_INSTANCE:-$EVE_AGENT}}"
+  mkdir -p "$home"
+  node "$root/scripts/agency-provisioner.mjs" >"$home/agency-provisioner.log" 2>&1 &
+  echo $! > "$home/agency-provisioner.pid"
+  disown 2>/dev/null || true
 fi
 
-export EVE_AGENT="${EVE_AGENT:-agency}"
 export AGENCY_PROVISIONER_URL="${AGENCY_PROVISIONER_URL:-http://127.0.0.1:$port}"
 export AGENCY_PROVISIONER_SECRET="$secret"
 

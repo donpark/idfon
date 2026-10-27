@@ -332,7 +332,7 @@ holder_pid=$(printf '%s' "$contact" | jq -r .id)
   echo "  (iOS: devicectl launch ... -- -pair-ticket $holder_pid \"\$(cat $home/capability-ticket-<ios-endpoint-id>.json)\")"
 } | tee "$home/pairing.txt"
 
-trap 'kill "$(cat "$home/holder.pid" 2>/dev/null)" "$(cat "$home/bridge.pid" 2>/dev/null)" "$(cat "$home/eve.pid" 2>/dev/null)" "$(cat "$home/tyger-relay.pid" 2>/dev/null)" "$(cat "$home/live-relay.pid" 2>/dev/null)" 2>/dev/null || true' EXIT
+trap 'kill "$(cat "$home/holder.pid" 2>/dev/null)" "$(cat "$home/bridge.pid" 2>/dev/null)" "$(cat "$home/eve.pid" 2>/dev/null)" "$(cat "$home/tyger-relay.pid" 2>/dev/null)" "$(cat "$home/live-relay.pid" 2>/dev/null)" "$(cat "$home/agency-provisioner.pid" 2>/dev/null)" 2>/dev/null || true' EXIT
 echo
 echo "serving; Ctrl-C to stop"
 wait
