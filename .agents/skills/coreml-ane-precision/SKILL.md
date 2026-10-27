@@ -94,6 +94,26 @@ tail-fp16 (ANE)** — artifacts exist (`TygerFront`, `TygerTail`), only
 front-fp32 + tail-Q8 was measured. This is the direct translation of the
 passing MLX recipe and could recover ANE without the jitter.
 
+### Core AI mixed-precision sweep (2026-10-27, negative result)
+
+Gate = `scripts/corpus-corner.py` (margin turns whose fp32 p_end peaks at
+0.94–0.96 against the 0.915+debounce bar). Every fp16-encoder config tried
+produces ZERO endpoints — the wall is the encoder's fp16 tail, not the step:
+
+| Core AI config | torch hidden drift (mean / max) | corner gate |
+|---|---|---|
+| encoder+step full fp16 | 0.015 / 0.35 | 0 endpoints |
+| mixed: enc stem+block0 fp32, step GRU+heads fp32 | 0.005 / 0.28 | 0 endpoints |
+| mixed encoder + fully fp32 step | (same encoder) | 0 endpoints |
+
+The exported asset drifts MORE than torch math (max 0.875 through the runtime
+vs 0.28 in torch; one region hits an ANECCompile internal error and falls
+back — isolate before blaming precision). The MLX stem+layers.0 exemption
+recipe does not transfer (consistent with "quantization layouts are not
+portable across frameworks"). Remaining levers if fp16 must carry the margin:
+much larger fp32 exemption (breaks the size budget), a rung-specific endpoint
+threshold (product-tolerance question), per-stage bisect for an op defect.
+
 ## idfon's machinery (paths + commands)
 
 - `ports/tyger-coreml/export.py` — `--only front|tail|check`; `--only enc-dyn`
