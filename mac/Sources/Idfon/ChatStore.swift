@@ -326,6 +326,14 @@ final class ChatStore {
         notifyObservers()
     }
 
+    /// Drop one message row (a streamed-unit bubble superseded by the woven
+    /// final, or a raw reply row absorbed into it).
+    func removeMessage(id: String) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages.remove(at: index)
+        notifyObservers()
+    }
+
     /// Record a voice-call turn as a "spoken" bubble. The client-side cascade
     /// owns the transcript (there is no holder snapshot to ingest); pass
     /// `replacing` to relabel the agent's already-received reply message.
