@@ -5,9 +5,10 @@ README.md). One command replaces the manual `-tygerdemo` run-and-diff.
 
 The corpus keeps transcripts and timings, never audio (see the README). This
 script recreates the caller's side deterministically: each human turn is
-synthesized with macOS `say` (Samantha, rate fitted to its corpus window) and
-placed at its corpus start time on a 16 kHz mono timeline. The wav is cached
-outside the repo (audio is recreated, never committed).
+synthesized with ptts (Phonon — the same voice engine as the agent's mouth,
+caller voice IDFON_CALLER_VOICE, default Everly) and placed at its corpus
+start time on a 16 kHz mono timeline. The wav is cached outside the repo
+(audio is recreated, never committed).
 
 The replay itself is `Idfon -tygerdemo <wav> <entry>` at wall-clock pace: the
 app's real turn engine makes the decisions, the harness speaks the scripted
@@ -46,7 +47,8 @@ BASELINE_DIR = os.path.join(CORPUS_DIR, "baselines")
 CACHE_DIR = os.path.expanduser("~/.cache/idfon/corpus-audio")
 DEFAULT_APP = os.path.join(ROOT, "mac", "build", "Idfon.app", "Contents", "MacOS", "Idfon")
 SR = 16_000
-VOICE = "Samantha"
+PTTS = os.environ.get("PTTS") or shutil.which("ptts")
+CALLER_VOICE = os.environ.get("IDFON_CALLER_VOICE", "Everly")
 
 
 def die(msg):
@@ -54,20 +56,57 @@ def die(msg):
     sys.exit(2)
 
 
+def resample_to(data, n):
+    """Linear-interp resample to n samples (rate conversion and fit-stretch)."""
+    if n <= 0 or not data:
+        return array.array("h")
+    if n == len(data):
+        return data
+    out = array.array("h", bytes(2 * n))
+    scale = (len(data) - 1) / max(1, n - 1)
+    for i in range(n):
+        pos = i * scale
+        j = int(pos)
+        frac = pos - j
+        v = data[j] if j + 1 >= len(data) else data[j] + (data[j + 1] - data[j]) * frac
+        out[i] = max(-32768, min(32767, int(v)))
+    return out
+
+
 def synth_turn(text, window_s, out_path):
-    """One human turn as a 16k mono wav, rate fitted to its corpus window."""
-    words = max(1, len(text.split()))
-    wpm = min(500.0, max(100.0, words / max(0.3, window_s) * 60.0))
-    for _ in range(3):  # refit until the render fits its corpus window
-        subprocess.run(
-            ["say", "-v", VOICE, "-r", str(int(wpm)), "--data-format=LEI16@16000",
-             "-o", out_path, text],
-            check=True, capture_output=True)
-        with wave.open(out_path) as w:
-            dur = w.getnframes() / SR
-        if dur <= window_s * 1.03 or wpm >= 550:
-            return
-        wpm = min(550.0, wpm * dur / window_s)
+    """One human turn as a 16k mono wav, fitted to its corpus window.
+
+    Same voice engine as the agent's mouth (ptts/Phonon), a different voice
+    (IDFON_CALLER_VOICE) so the two speakers are tellable apart — one engine
+    per simulated conversation, never mixed engines.
+    """
+    if not PTTS:
+        die("ptts CLI not found (PATH or $PTTS). Build xn-ptts: "
+            "cargo build --release --bin ptts --features cli")
+    with tempfile.TemporaryDirectory() as tmp:
+        raw = os.path.join(tmp, "raw.wav")
+        r = subprocess.run(
+            [PTTS, "--lang", "en", "--voice", CALLER_VOICE, text, "-o", raw],
+            capture_output=True)
+        if r.returncode != 0:
+            die(f"ptts render failed ({CALLER_VOICE}): "
+                + r.stderr.decode(errors="replace").strip()[-200:])
+        with wave.open(raw) as w:
+            rate = w.getframerate()
+            data = array.array("h", w.readframes(w.getnframes()))
+    data = resample_to(data, round(len(data) * SR / rate))
+    dur = len(data) / SR
+    fit = window_s * 1.03
+    if dur > fit:
+        # Mild speed-up is inaudible; beyond ~1.15x speech sounds tape-fast-
+        # forwarded (the 2026-10-26 garble), so accept the overrun instead.
+        fit = max(fit, dur / 1.15)
+        data = resample_to(data, int(fit * SR))
+    with wave.open(out_path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(data.tobytes())
 
 
 def build_user_wav(entry, cache_path):
@@ -100,7 +139,7 @@ def build_user_wav(entry, cache_path):
 def user_wav_for(entry, name, force):
     """Cached by content hash: corpus edits invalidate automatically."""
     human = entry["speakers"]["human"]
-    key = b"fit3|" + json.dumps(
+    key = b"ptts1|" + CALLER_VOICE.encode() + b"|" + json.dumps(
         [[t["s"], t["e"], t["text"]] for t in entry["turns"] if t["spk"] == human],
         sort_keys=True).encode()
     path = os.path.join(CACHE_DIR, f"{name}-{hashlib.sha256(key).hexdigest()[:8]}.wav")
@@ -260,11 +299,9 @@ def main():
 
     if not os.path.exists(args.app):
         die(f"app not found: {args.app} (run mac/build.sh first)")
-    if shutil.which("say") is None:
-        die("macOS `say` not found (audio is recreated from timings with it)")
-    if not any(l.startswith(VOICE) for l in
-               subprocess.run(["say", "-v", "?"], capture_output=True, text=True).stdout.splitlines()):
-        die(f"voice {VOICE} not installed (set VOICE in this script)")
+    if not PTTS:
+        die("ptts CLI not found (PATH or $PTTS). Build xn-ptts: "
+            "cargo build --release --bin ptts --features cli")
 
     entries = args.entries or sorted(
         os.path.join(CORPUS_DIR, f) for f in os.listdir(CORPUS_DIR) if f.endswith(".json"))

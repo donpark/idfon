@@ -9,7 +9,11 @@ decision timeline.
 **No audio is committed.** Only text + timings + the replay script. Tests
 recreate the caller's side from the timings (TTS-synthesized user speech, the
 `-tygerdemo` harness pattern), which keeps the corpus free of the recordings'
-copyright. The originals stay on their pages.
+copyright. The originals stay on their pages. Simulated conversations always
+use ONE voice engine — ptts/Phonon, the agent mouth's own — with a different
+voice per speaker (caller voice: `IDFON_CALLER_VOICE`, default Everly); never
+mixed engines, and turn windows stay at natural speech rate (squeezing a turn
+into a too-short window fast-forwards the speech and garbles it).
 
 | file | origin | highlights |
 | --- | --- | --- |
