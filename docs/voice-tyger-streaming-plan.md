@@ -55,40 +55,38 @@ Build order (each step stays fail-open to today's behavior):
    `speak` per chunk (Tyger's mouth pattern).
 5. Verification per Phase 4.
 
-### Reply deltas — the remaining half (mapped 2026-10-25)
+### Reply deltas — DONE (2026-10-27)
 
 The mouth side is done: `SpeechChunker` (the `mouth/chunker.py` port) +
 chunked speak, locked by `mac/Checks/SpeechChunkerCheck`. The delta wire's
-server half already exists — the gap is delivery to the client-cascade app:
+server half already existed — the gap was delivery to the client-cascade app,
+now closed:
 
 - `extension/channels/idfon.ts` `message.appended` → POST `/stream/append`
   (per-delta, retry-safe keys `(turn_id, step_index, sequence)`).
 - `bridge.mjs` `/stream/append` → IPC `StreamAppend` (`crates/eve-idfon`).
 - Holder `IpcFrame::StreamAppend` handler (`crates/eve-idfon/src/lib.rs`
   ~1046) → `deltas::route(peer, …)` → a registered `StreamingSpeaker`
-  (`crates/idfon-voice/src/stream.rs`: ClauseBatcher + EnvelopeStripper +
-  DeltaKey dedupe). **No subscriber ⇒ deltas are dropped — exactly today's
-  client-cascade behavior.**
+  (`crates/idfon-voice/src/stream.rs`), or — no live backend registered —
+  `cascade::push_and_send` (`crates/eve-idfon/src/cascade.rs`): throttled
+  `IDFON-CALL/1` transcript snapshots to the calling app (the cumulative
+  `partial`, `final: false`, 250 ms, deduped, envelope-stripped).
+- App: `HybridVoice.streamPartial` (server cascade with client TTS) and the
+  on-device loop's `feedUnitStream` (`VoiceAgentSession`, both apps) feed
+  `ChunkFeeder` and speak chunks as they close; the woven final lands in the
+  bubble the caller watched grow (`recordSpokenTurn(replacing:)`), the final
+  message keeps display + correlation + the barge trim (played time
+  accumulates across streamed and tail chunks).
 
-To close it (the app owns the TTS in the client cascade):
-
-1. **Delivery** (decided 2026-10-26): the holder forwards deltas to the
-   calling app as **speech units on the call's live session** — the unit
-   shape of `docs/voice-agent-loop-contract.md` §2 "Speech unit protocol"
-   (partial / final / played), expressed in the OpenAI Realtime vocabulary
-   of the reference wire below. The earlier alternative (correlated `speak`
-   messages with `final?: boolean`) is out: the protocol persists nothing,
-   and the app weaves history from the unit stream.
-2. **App**: the turn loop feeds `SpeechChunker.nextChunk` incrementally from
-   the delta stream and speaks each closing chunk (the chunk loop seam
-   already exists); the final message still carries display + correlation +
-   the barge trim.
-3. **Bubble**: one reply bubble upserted per delta (the existing
-   `recordSpokenTurn(replacing:)`/`updateMessage` path).
-
-Acceptance: first audio ≤ first sentence (~1–2 s) on a slow LLM; the
-final-message bookkeeping (correlation, echo, barge trim) unchanged; the
-corpus replay unchanged.
+Landed as `3be4108` (holder) + `d5a5fec` (both app loops). Acceptance's
+first-audio measurement (≤ first sentence on a slow LLM) still wants a live
+call timing run; the logic path is covered by `SpeechChunkerCheck` + the
+suite's back-compat paths (no deltas ⇒ whole reply speaks as before).
+Delivery-decision record (2026-10-26): the unit stream rides the call's
+live session in the OpenAI Realtime vocabulary of the reference wire below;
+the earlier alternative (correlated `speak` messages with `final?: boolean`)
+is out — the protocol persists nothing, and the app weaves history from the
+unit stream.
 
 #### Reference wire (distilled 2026-10-26): HF speech-to-speech / ConvFill
 
