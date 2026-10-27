@@ -190,7 +190,7 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         // this call.
         if #available(iOS 27.0, *),
            let coreai = try? CoreAITurnModel(directory: dir.appendingPathComponent("coreai")) {
-            Automation.mark("turn-shadow: tier CoreAI (fp32 GPU)")
+            Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU)")
             return TurnShadow(model: coreai)
         }
         let enc = dir.appendingPathComponent("TygerEncoder.mlpackage")

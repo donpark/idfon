@@ -62,7 +62,8 @@ final class TurnShadow: AudioPlaybackObserver {
             Automation.mark("turn-shadow: no turn model available")
             return nil
         }
-        Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))")
+        let rung = (model as? CoreAITurnModel).map { $0.usesFloat16 ? "fp16" : "fp32" }
+        Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))\(rung.map { "(\($0))" } ?? "")")
         return TurnShadow(model: model)
     }
 
