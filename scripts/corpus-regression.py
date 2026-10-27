@@ -146,7 +146,7 @@ def user_wav_for(entry, name, force):
     if force or not os.path.exists(path):
         os.makedirs(CACHE_DIR, exist_ok=True)
         n = build_user_wav(entry, path)
-        print(f"  synthesized {n} human turns -> {path}")
+        print(f"  synthesized {n} human turns -> {path}", file=sys.stderr)
     return path
 
 
