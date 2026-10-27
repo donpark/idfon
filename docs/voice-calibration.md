@@ -73,6 +73,8 @@ scores better, write the lesson here (Harness2's outer loop).
 | Knob | Where | Scorer |
 | --- | --- | --- |
 | Reaction vocabulary + hum fold | `BackchannelFiller`, `TurnFiller` (both apps) | voice-reaction-bench |
+| **Voice identity** (delivery/attack) | `IDFON_TTS_VOICE` / per-contact voice | voice-audio-metrics |
+| Mouth audio modules (Compressor/Gain/Limiter) | ptts `SpeechOptions.post_process` (API-only, not built) | voice-audio-metrics |
 | Mouth attack fade (phatic) | playback path (not built) | voice-audio-metrics |
 | Filler prompts | `BackchannelFiller.instructions`, `TurnFiller` prompts | voice-prompt-lab |
 | Filler timing | `TurnFiller.leadInAfter/fillerGap/maxStill` | corpus replay |
@@ -84,3 +86,22 @@ UTMOS quality floor (`utmos-score.py`, torch venv via `UTMOS_PYTHON`),
 behavior replay (`corpus-regression.py`), rubric (`voice-prompt-lab.sh`).
 Driver: `voice-autoresearch.py` (mechanical proposals, generational search,
 round reports; `--selftest`).
+
+### 2026-10-27 — no emotes, but the voice is the expressivity knob
+
+- Phonon has **no emote system** (verified in the tokenizer — zero special
+  tokens — and the source: prose in, prose out; the model card's only
+  prosody note is that long inputs split at sentences).
+- **The voice carries the delivery.** Same text, same model: the default
+  voice hits "Um" at 5 ms (exclamation); Hadley swells 110 ms, Trevor
+  140 ms — human-shaped. The hot-vowel problem is largely a DEFAULT-VOICE
+  trait, not a model law. Voice choice is now a first-class knob
+  (`voice-audition.html` "Voice sweep"); per-voice vocabularies are a
+  possible refinement.
+- The synth has a **native audio-module chain** (Compressor / Gain /
+  Limiter, `SpeechOptions.post_process` — API-only, no CLI flag): the
+  "exaggerated energy" fix can live inside the mouth without custom DSP.
+- Mimi note: Phonon builds on PocketTTS + the Mimi codec (known
+  "exaggerated/waterlogged" traits). The codec is not addressable from
+  text; voice + modules are the reachable levers. If "waterlogged"
+  persists, the mouth choice is the deeper lever (Kokoro is not Mimi).
