@@ -267,6 +267,7 @@ enum MessageBody {
         "IDFON-CALL/1\n",
         "IDFON-LIVE/1\n",
         "IDFON-INVITE/1\n",
+        "IDFON-DIAG/1\n",
     ]
 
     static func parse(_ text: String) -> (text: String?, envelopes: [String]) {

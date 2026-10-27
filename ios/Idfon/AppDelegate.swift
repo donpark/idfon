@@ -32,6 +32,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         VideoCall.shared.recoverStaleCall()
         // VoIP push wake channel (docs/callkit-integration.md, P2).
         PushWake.shared.start()
+        // Diagnostics over iroh (IDFON-DIAG/1) — the wake-saga lesson: remote
+        // log access was the binding constraint. The monitor is a peer id
+        // (`-diagpeer <peerId>` at launch, else the saved one).
+        Diag.build = Self.buildStamp
+        Diag.send = { peer, text in try await IdfonClient().sendText(to: peer, text) }
+        Diag.log("config", ["edge": EdgeClient.shared.baseURL?.absoluteString ?? "none"])
+        Diag.flush()
         // Warm the TTS model (Kokoro) so the first call reply is not blocked by
         // a cold model download/compile. Deferred until the app is active: a
         // push wake must stay light — the warmup's memory spike is what killed

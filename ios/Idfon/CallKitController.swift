@@ -89,7 +89,10 @@ final class CallKitController: NSObject, CXProviderDelegate {
     /// report first, end once the report completes (never before — ending a
     /// call whose registration has not completed fails the report, #58).
     func presentPush(callUUID: String, callerId: String, hasVideo: Bool, endImmediately: Bool = false) {
-        guard !callerId.isEmpty, !callUUID.isEmpty else { return }
+        guard !callerId.isEmpty, !callUUID.isEmpty else {
+            Diag.log("wake", ["call": callUUID, "outcome": "skip_no_ids"])
+            return
+        }
         let uuid = UUID(uuidString: callUUID) ?? CallUUID.from(ticket: callUUID)
         if let existing = current, !existing.outgoing {
             // Redelivery of the call already ringing: it is reported — keep
@@ -97,10 +100,14 @@ final class CallKitController: NSObject, CXProviderDelegate {
             // from the same peer (a redial) must supersede below, or its
             // mustReport push ends in no reported call and PushKit stops
             // delivering VoIP pushes to a suspended app entirely.
-            if existing.uuid == uuid { return }
+            if existing.uuid == uuid {
+                Diag.log("wake", ["call": callUUID, "outcome": "skip_redelivery"])
+                return
+            }
             // Never steal a call this device answered.
             if answeredLocally(existing) {
                 idfonLog("idfon callkit: push ring ignored — busy")
+                Diag.log("wake", ["call": callUUID, "outcome": "skip_busy"])
                 return
             }
             // A newer ring supersedes a stale unanswered one (#59): a dead
@@ -118,6 +125,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
         idfonLog("idfon callkit: reporting push ring \(uuid.uuidString) from \(callerId)")
         provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
             guard let error else {
+                Diag.log("wake", ["call": callUUID, "outcome": "presented"])
                 if endImmediately {
                     Task { @MainActor in self?.endReportedIfUnanswered(uuid: uuid) }
                 }
@@ -125,6 +133,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
             }
             DispatchQueue.main.async {
                 idfonError("idfon callkit: push report failed: \(error.localizedDescription)")
+                Diag.log("wake", ["call": callUUID, "outcome": "report_failed"])
                 self?.abandonToBar(peerId: callerId)
             }
         }

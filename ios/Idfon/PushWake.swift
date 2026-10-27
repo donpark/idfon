@@ -70,6 +70,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         if let raw = registry.pushToken(for: .voIP) {
             let token = raw.map { String(format: "%02x", $0) }.joined()
             idfonLog("idfon push: kit system token=\(String(token.prefix(12))) len=\(token.count)")
+            Diag.log("push.token_update", ["source": "system", "len": token.count])
             lastToken = token
             UserDefaults.standard.set(token, forKey: Self.tokenKey)
             registerWithRetries(token)
@@ -165,12 +166,12 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         var claimed = 0
         for account in await accountRefs(issuer: statement.issuer) {
             let url = EdgeClient.resourceURL(baseURL: base, account: account, path: "/_push/register")
-            if await postJSON(
+            let ok = await postJSON(
                 url: url, ticket: statement.raw, body: ["voip_token": token, "topic": Self.topic])
-            {
-                claimed += 1
-            }
+            Diag.log("push.register", ["account": account, "ok": ok])
+            if ok { claimed += 1 }
         }
+        Diag.flush() // registration is a wake-saga fact: ship it now
         return claimed > 0
     }
 
@@ -182,6 +183,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         guard type == .voIP else { return }
         let token = credentials.token.map { String(format: "%02x", $0) }.joined()
         idfonLog("idfon push: kit update token=\(String(token.prefix(12))) len=\(token.count)")
+        Diag.log("push.token_update", ["source": "kit", "len": token.count])
         lastToken = token
         UserDefaults.standard.set(token, forKey: Self.tokenKey)
         registerWithRetries(token)
@@ -189,6 +191,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
 
     func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
         idfonLog("idfon push: kit invalidated type=\(type.rawValue)")
+        Diag.log("push.token_invalidate", ["type": type.rawValue])
         guard type == .voIP, let token = lastToken else { return }
         retryTask?.cancel()
         lastToken = nil
@@ -241,6 +244,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
         let callUUID = dict["call_uuid"] as? String ?? ""
         let cancel = (dict["cancel"] as? Bool) == true
         idfonLog("idfon push: received call=\(callUUID) cancel=\(cancel) mustReport=\(mustReport)")
+        Diag.log("push.received", ["call": callUUID, "cancel": cancel, "must_report": mustReport])
         // Report before anything else (Signal's rule) — the completion handler
         // runs once the system has the call. But PushKit kills the app when
         // completion is late (~1.5s budget; the #55 death: the report landed
@@ -265,6 +269,9 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                         callerId: dict["caller_id"] as? String ?? "",
                         hasVideo: (dict["has_video"] as? Bool) ?? false,
                         endImmediately: true)
+                    Diag.log("wake", ["call": callUUID, "outcome": "reported_ended"])
+                } else {
+                    Diag.log("wake", ["call": callUUID, "outcome": "canceled"])
                 }
             } else {
                 let callerId = dict["caller_id"] as? String ?? ""
@@ -285,9 +292,11 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                     || ownedByBar(VideoCall.shared.callGeneration)
                 if barOwnsCall, !mustReport {
                     idfonLog("idfon push: ring already arrived over iroh; the Bar owns it — no system bar")
+                    Diag.log("wake", ["call": callUUID, "outcome": "bar_owns"])
                 } else if IncomingCallRouter.shared.ringsViaSystem(for: callerId) {
                     CallKitController.shared.presentPush(
                         callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                    Diag.log("wake", ["call": callUUID, "outcome": "system_ring"])
                 } else if mustReport {
                     // Apple demands a reported call for this push. Report and
                     // KEEP it: the report-then-end flash (#58) looked like a
@@ -297,10 +306,13 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
                     // closes it; the Bar ring is presentation-only.
                     CallKitController.shared.presentPush(
                         callUUID: callUUID, callerId: callerId, hasVideo: hasVideo)
+                    Diag.log("wake", ["call": callUUID, "outcome": "reported_ring"])
                 } else {
                     idfonLog("idfon push: bar-mode channel \(callerId); no system ring")
+                    Diag.log("wake", ["call": callUUID, "outcome": "bar_mode"])
                 }
             }
+            Diag.flush() // a wake can die within ~1.5 s: ship before done
             done.run()
         }
     }
