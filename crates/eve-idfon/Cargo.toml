@@ -21,6 +21,7 @@ idfon-h3 = { path = "../idfon-h3" }
 idfon-media = { path = "../idfon-media" }
 idfon-protocol = { path = "../idfon-protocol" }
 idfon-telemetry = { path = "../idfon-telemetry", features = ["otlp"] }
+idfon-voice = { path = "../idfon-voice" }
 iroh = "1"
 iroh-blobs = "0.103"
 serde = { version = "1", features = ["derive"] }
