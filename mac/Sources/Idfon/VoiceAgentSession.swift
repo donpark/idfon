@@ -97,6 +97,18 @@ final class VoiceAgentSession: NSObject {
     private var bargeInArmed = false
     /// Text that cancelled playback, consumed by `speak`.
     private var bargeInHeard: String?
+    /// The turn's speech-unit stream (loop contract §2): delta snapshots feed
+    /// the mouth chunk-per-chunk (the `HybridVoice.streamPartial` seam);
+    /// `speak` closes the unit with the tail. `ChunkFeeder`'s prefix guard
+    /// degrades safely — a diverged stream speaks the final whole.
+    private var unitFeeder = ChunkFeeder()
+    private var unitPlayed: TimeInterval = 0
+    /// The ChatStore row the snapshots upsert into; the woven final lands in it.
+    private var unitRowId: String?
+    /// The armed phase (recognizer live while the mouth plays) spans the whole
+    /// unit: begun at the first streamed chunk or at `speak`, ended at `speak`.
+    private var speechActive = false
+    private var speechArmed = false
     /// Barge-in text handed to the next turn instead of listening again.
     private var pendingHeard: String?
 
@@ -464,6 +476,7 @@ final class VoiceAgentSession: NSObject {
             peerId: peerId, text: text, turnId: spokenTurnId, logPrefix: logPrefix),
               case .text(let raw) = message.kind else {
             Automation.mark("\(logPrefix): FAIL no reply")
+            resetUnitStream() // close an armed phase the stream may have opened
             return nil
         }
         let display = Self.stripEnvelopes(raw)
@@ -471,13 +484,20 @@ final class VoiceAgentSession: NSObject {
         // reply text is what gets spoken (backward compatible).
         let spoken = Self.spokenText(from: raw)
         // Relabel the agent's reply as a spoken bubble (voice-call turns are
-        // distinguished from typed ones by the "spoken" annotation).
+        // distinguished from typed ones by the "spoken" annotation). With a
+        // streamed unit the woven final lands in the bubble the caller watched
+        // grow (loop contract §2: history places `final`), and the raw reply
+        // row is absorbed into it.
         if let spokenTurnId {
+            let target = unitRowId ?? message.id
             ChatStore.shared.recordSpokenTurn(
                 peerId: peerId, callId: callId, turnId: spokenTurnId,
-                role: "agent", text: spoken, replacing: message.id
-            )
+                role: "agent", text: spoken, replacing: target)
+            if target != message.id { ChatStore.shared.removeMessage(id: message.id) }
+        } else if let unitRow = unitRowId {
+            ChatStore.shared.removeMessage(id: unitRow)
         }
+        unitRowId = nil
         return (display, spoken)
     }
 
@@ -690,6 +710,7 @@ final class VoiceAgentSession: NSObject {
             cutReply = nil
         }
         if let turnId { context += "\nTurn: \(turnId)" }
+        resetUnitStream()
         let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
         do {
             try await client.sendText(to: peerId, text, context: context)
@@ -723,9 +744,42 @@ final class VoiceAgentSession: NSObject {
                 if legacy == nil { legacy = message }
             }
             if let legacy { return legacy }
+            // Speech units (loop contract §2): the mouth follows the delta
+            // stream — closing chunks speak as they arrive, so first audio
+            // lands at the first sentence instead of at reply end.
+            await feedUnitStream(peerId: peerId, excluding: excluding)
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return nil
+    }
+
+    /// Feed the turn's speech-unit stream: ChatStore upserts the cumulative
+    /// snapshot into one row per turn (`streamPartial` semantics); the chunks
+    /// that close speak as they arrive. The row id is remembered so the woven
+    /// final lands in the bubble the caller watched grow.
+    private func feedUnitStream(peerId: String, excluding: Set<String>) async {
+        for message in ChatStore.shared.messages(for: peerId).reversed()
+        where !message.outgoing && !excluding.contains(message.id) {
+            guard case .callTranscript(let transcript) = message.kind,
+                  transcript.role == "agent", !transcript.final else { continue }
+            if unitRowId == nil {
+                unitRowId = message.id
+                // The reply supersedes voice feedback and the filler cover,
+                // and the turn model must see "speaking" while the mouth runs.
+                if feedbackTask != nil {
+                    tts.stop()
+                    await feedbackTask?.value
+                    feedbackTask = nil
+                }
+                await cancelFiller()
+                setState(.speaking(transcript.text))
+            }
+            for chunk in unitFeeder.feed(transcript.text) {
+                if stopRequested || bargeInHeard != nil { break }
+                await speakStreamed(chunk)
+            }
+            return // one upserted snapshot row per turn
+        }
     }
 
     private func speak(_ text: String) async -> String? {
@@ -740,36 +794,19 @@ final class VoiceAgentSession: NSObject {
         lastSpoken = text
         spokenRecent.append(text)
         if spokenRecent.count > 3 { spokenRecent.removeFirst(spokenRecent.count - 3) }
-        // Arm barge-in: keep the recognizer live while TTS plays. The echo and
-        // gated-peak filters keep the agent's own voice out, so a cancellable
-        // non-echo utterance is the caller interrupting.
-        let armed = !micMuted && asr != nil
-        if armed {
-            bargeInArmed = true
-            bargeInHeard = nil
-            segmenter.clear()
-            asr?.utteranceCommitted()
-            segmenter.setEnabled(true)
-            asr?.resume()
-        }
-        // Chunked speak (their mouth/chunker.py pattern): sentences go to
-        // the mouth as they close — the seam reply deltas will feed per-chunk.
-        // Played time accumulates across chunks for the barge trim.
-        var played: TimeInterval = 0
-        for chunk in SpeechChunker.chunks(text) {
+        beginSpeech()
+        // The delta stream may already have spoken the opening chunks; the
+        // feeder hands back only the rest (usually the tail — everything when
+        // no deltas arrived). Played time accumulates across streamed and tail
+        // chunks for the barge trim.
+        var played: TimeInterval = unitPlayed
+        for chunk in unitFeeder.finish(text) {
             if stopRequested || bargeInHeard != nil { break }
             await tts.speak(SpeechChunker.sayClean(chunk))
             played += tts.playedSeconds
         }
         lastPlayedSeconds = played
-        var interrupted: String?
-        if armed {
-            bargeInArmed = false
-            interrupted = bargeInHeard
-            bargeInHeard = nil
-            segmenter.setEnabled(false)
-            asr?.pause()
-        }
+        let interrupted = endSpeech()
         // Hold the tap gate closed briefly so the speaker/acoustic tail decays
         // before the next turn re-arms the mic; skip when stopping or already
         // interrupted (the barge-in text is the next turn).
@@ -777,6 +814,58 @@ final class VoiceAgentSession: NSObject {
             try? await Task.sleep(nanoseconds: 350_000_000)
         }
         return interrupted
+    }
+
+    /// One streamed chunk (the unit stream's delta feed): arms the unit on
+    /// first use and accumulates played time for the barge trim.
+    private func speakStreamed(_ chunk: String) async {
+        beginSpeech()
+        await tts.speak(SpeechChunker.sayClean(chunk))
+        unitPlayed += tts.playedSeconds
+    }
+
+    /// The armed phase (recognizer live while the mouth plays) spans a whole
+    /// speech unit: begun at the first streamed chunk or at `speak`, ended at
+    /// `speak`. Idempotent.
+    private func beginSpeech() {
+        guard !speechActive else { return }
+        speechActive = true
+        // Arm barge-in: keep the recognizer live while TTS plays. The echo and
+        // gated-peak filters keep the agent's own voice out, so a cancellable
+        // non-echo utterance is the caller interrupting.
+        speechArmed = !micMuted && asr != nil
+        if speechArmed {
+            bargeInArmed = true
+            bargeInHeard = nil
+            segmenter.clear()
+            asr?.utteranceCommitted()
+            segmenter.setEnabled(true)
+            asr?.resume()
+        }
+    }
+
+    /// End the armed phase; returns the barge-in utterance if one landed.
+    private func endSpeech() -> String? {
+        guard speechActive else { return nil }
+        speechActive = false
+        var interrupted: String?
+        if speechArmed {
+            speechArmed = false
+            bargeInArmed = false
+            interrupted = bargeInHeard
+            bargeInHeard = nil
+            segmenter.setEnabled(false)
+            asr?.pause()
+        }
+        return interrupted
+    }
+
+    /// Start the turn's speech unit (closing any leaked armed phase first).
+    private func resetUnitStream() {
+        _ = endSpeech()
+        unitFeeder = ChunkFeeder()
+        unitPlayed = 0
+        unitRowId = nil
     }
 
     /// A committed utterance: normally it ends the listen turn; while the agent
