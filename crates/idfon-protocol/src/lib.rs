@@ -6,10 +6,12 @@ use thiserror::Error;
 pub mod artifacts;
 pub mod blocks;
 pub mod calls;
+pub mod diag;
 pub mod vcf;
 pub use artifacts::*;
 pub use blocks::*;
 pub use calls::*;
+pub use diag::*;
 
 pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;

@@ -29,7 +29,7 @@ use crate::artifacts::{
 };
 
 /// The headers a reply can be split on. Keep in step with the shells.
-pub const ENVELOPE_HEADERS: [&str; 13] = [
+pub const ENVELOPE_HEADERS: [&str; 14] = [
     "IDFON-ARTIFACT/1\n",
     "IDFON-REF/1\n",
     "IDFON-POINT/1\n",
@@ -43,6 +43,7 @@ pub const ENVELOPE_HEADERS: [&str; 13] = [
     "IDFON-CALL/1\n",
     "IDFON-LIVE/1\n",
     "IDFON-INVITE/1\n",
+    "IDFON-DIAG/1\n",
 ];
 
 /// The header of a render block: a declarative view the app draws natively.

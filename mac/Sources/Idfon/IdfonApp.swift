@@ -21,6 +21,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DaemonRuntime.configure()
         // Compiler scratch from killed/hung CoreAI loads (age-gated, off-main).
         Task.detached { ScratchSweep.sweep() }
+        // Diagnostics over iroh (IDFON-DIAG/1) — the wake-saga lesson: remote
+        // log access was the binding constraint. The monitor is a peer id
+        // (`-diagpeer <peerId>` at launch, else the saved one).
+        Diag.build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "mac"
+        Diag.send = { peer, text in try await DaemonClient().sendText(to: peer, text) }
+        Diag.log("config", ["edge": EdgeClient.shared.baseURL?.absoluteString ?? "none"])
+        Diag.flush()
         // Config schema migrations before launch-arg config below: automation
         // must win over a migration, never the other way round.
         ConfigMigrations.run()
