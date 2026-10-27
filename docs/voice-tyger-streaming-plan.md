@@ -276,10 +276,13 @@ the download budget far better than 0.6B. A wins by construction on parity
 
 1. The ≥99% parity bar (keep; relax only if mixed-precision cannot clear it).
 
-Decided 2026-10-25 (user): **the ~550 MB budget is deferred** — implement with
-whatever ASR engine is available (Nemotron streaming as-is) and revisit when a
-promising lightweight streaming ASR arrives "without performance loss". The
-L15-slice quantization question is parked with it. Note the size anatomy
+Decided 2026-10-25, hardened 2026-10-27 (user): **the ~550 MB budget is
+dropped** — it cannot be achieved at this time and "get it working first" has
+higher priority. Implement with whatever ASR engine is available (Nemotron
+streaming as-is); size work (L15-slice quantization, the Path-C student)
+resumes only if a promising lightweight streaming ASR arrives "without
+performance loss". The Path-C distillation is parked for good: 49.9% ±2-frame
+decision agreement vs the 99% bar (77.4% plateau at ±16f). Note the size anatomy
 honestly: the L15-truncation lever only applies to a *separate* turn-model
 encoder — with Nemotron as the call ASR the encoder runs to L24 for
 transcripts (L16–24 + RNN-T are transcripts-only per the measured anatomy),
