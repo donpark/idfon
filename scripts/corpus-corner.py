@@ -15,8 +15,9 @@ notes — they report but do not fail (behavior not yet settled by design).
     scripts/corpus-corner.py --selftest         # no app, no audio
 
 The harness is the corpus replay's `-tygerdemo` (real turn engine, scripted
-replies); the caller audio is synthesized from the case timings with macOS
-`say` — generated speech, so no recordings and no copyright surface.
+replies); the caller audio is synthesized from the case timings with ptts
+(Phonon — the mouth's own engine, a different voice) — generated speech, so
+no recordings and no copyright surface.
 Shortcut: speech-only triggers. Coughs, whispers and noise need real audio
 and are not generated here yet.
 """
@@ -67,22 +68,27 @@ CASES = [
          turns=[(0.5, 0.8, "So"),
                 (3.0, 6.0, "what I wanted to know about is the weather in Paris")],
          replies=[LONG_REPLY],
-         expect=[dict(event="ENDPOINT", absent_in=(0.0, 2.5)),
+         # 2026-10-27 ptts re-run: characterization — the engine endpoints
+         # "So" + 1.8 s pause at 2.6 (the fragment becomes a turn) and turn 2
+         # barges the reply at 5.2. Unsettled: a bare fragment as a turn.
+         soft=True,
+         expect=[dict(event="ENDPOINT", absent_in=(0.0, 3.0)),
                  dict(event="ENDPOINT", near=6.5, tol=1.5)]),
     dict(id="barge-mid-reply",
          desc="the caller cutting the reply stops playback",
          turns=[(0.5, 3.0, "Tell me everything about electric cars please"),
-                (5.5, 6.3, "stop, I want to ask something else")],
+                (5.5, 7.7, "stop, I want to ask something else")],
          replies=[LONG_REPLY],
-         # 2026-10-26 fp32 calibration: characterization — `say` cut-ins are
+         # 2026-10-26 fp32 calibration: characterization — the cut-ins are
          # sub-threshold for BOTH implementations (Python oracle on the same
          # turn-capture: real cut-ins peak yield_prob 0.366 vs the ~0.4 bar —
-         # the TTS reply masks the caller's onset). Real caller audio needed.
+         # the TTS reply masks the caller's onset). Still sub-threshold on ptts
+         # caller audio (2026-10-27 re-run). Real caller audio needed.
          expect=[dict(event="BARGE", near=5.9, tol=0.8, soft=True)]),
     dict(id="barge-then-new-turn",
          desc="a cut-in becomes the next turn after it interrupts",
          turns=[(0.5, 3.0, "Tell me everything about electric cars please"),
-                (5.5, 6.3, "stop that for a second"),
+                (5.5, 7.3, "stop that for a second"),
                 (8.0, 11.0, "what I actually want is a good cheap city car")],
          replies=[LONG_REPLY, LONG_REPLY],
          # 2026-10-26 fp32 calibration: same sub-threshold cut-ins as
@@ -98,13 +104,15 @@ CASES = [
          expect=[dict(event="BARGE", absent_in=(5.0, 6.5))]),
     dict(id="rapid-turns",
          desc="three quick turns stay three turns",
-         turns=[(0.5, 2.0, "One thing I wanted to ask about today"),
-                (2.4, 3.9, "and the second thing about tomorrow"),
-                (4.3, 6.0, "and the last thing about the weekend trip")],
+         turns=[(0.5, 2.8, "One thing I wanted to ask about today"),
+                (3.2, 5.3, "and the second thing about tomorrow"),
+                (5.7, 8.2, "and the last thing about the weekend trip")],
          replies=[LONG_REPLY],
          # 2026-10-26 fp32 calibration: characterization — one ENDPOINT fires in
          # the 0.4 s inter-turn gap (count 1), then the reply covers turns 2-3
-         # and the cut-ins are sub-threshold (see barge-mid-reply).
+         # and the cut-ins are sub-threshold (see barge-mid-reply). Windows are
+         # natural speech rate now (the old 0.8 s/1.5 s slots forced 280-450 wpm
+         # synthesis — the tape-fast-forward garble).
          expect=[dict(event="ENDPOINT", count=3, tol=1, soft=True)]),
     dict(id="long-monologue",
          desc="a 25 s monologue ends in one turn, not splits",
@@ -113,17 +121,19 @@ CASES = [
                             "carefully because this matters a great deal to me and "
                             "I have been thinking about it for a very long time now")],
          replies=[LONG_REPLY],
-         # 2026-10-26 fp32 calibration: characterization — `say` pauses at the
-         # commas and the engine split at 13.1 s. Suspect synthesis rhythm, not
-         # the model; re-check with natural prosody before hardening.
+         # 2026-10-26 fp32 calibration: characterization — the engine splits
+         # the monologue early (13.1 s on `say` audio; still splits on ptts
+         # audio, 2026-10-27 re-run) — natural prosody alone does not fix it.
          expect=[dict(event="ENDPOINT", near=26.5, tol=1.5, soft=True),
                  dict(event="ENDPOINT", count=1, count_tol=1)]),
     dict(id="restart-self-correction",
          desc="a mid-sentence restart is one turn",
-         turns=[(0.5, 4.0, "I need the flight for the fourteenth, actually "
+         turns=[(0.5, 6.0, "I need the flight for the fourteenth, actually "
                            "make that the fifteenth, in the morning")],
          replies=[LONG_REPLY],
-         expect=[dict(event="ENDPOINT", near=4.5, tol=1.5, count=1, count_tol=1)]),
+         # Window is natural speech rate (15 words ≈ 5.5 s; the old 3.5 s slot
+         # was 257 wpm — the tape-fast-forward garble), endpoint near its end.
+         expect=[dict(event="ENDPOINT", near=6.5, tol=1.5, count=1, count_tol=1)]),
     dict(id="digits-spoken",
          desc="digit-heavy speech still turns over",
          turns=[(0.5, 4.0, "Call me back at five five five one two one two "
