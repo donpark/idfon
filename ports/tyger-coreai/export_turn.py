@@ -46,33 +46,56 @@ import coreai.runtime as rt  # noqa: E402
 from coreai_models.export.macos import export_to_coreai  # noqa: E402
 
 
-class EncIO32(torch.nn.Module):
-    """fp16 compute behind fp32 I/O — the fp16 rung's boundary ergonomics (the
-    app and the gates keep feeding fp32, like the CoreML fp16 pair)."""
+def step_model(tt, prec):
+    """The step graph for a rung (export and gate share one builder).
 
-    def __init__(self, inner):
+    Both rungs run the step fp32: at 53 MB it is 6% of the pair, and a fp16
+    step (fuse in half, even with the GRU+heads exempt) buys ~26 MB while
+    adding decision drift — measured 2026-10-27, the margin-cliff night.
+    """
+    return CE.StepWrap(tt).to(torch.float32).eval()
+
+
+class EncMixed(torch.nn.Module):
+    """The fp16 encoder rung's real form: fp16 bulk with the sensitive front
+    exempt — stem + block 0 stay fp32. This is the only exemption config ever
+    to pass the score budget (MLX int8-g16 evidence); a fp16 step-GRU exemption
+    alone (2026-10-27) still killed every endpoint because fp16 hidden drift
+    feeds the GRU garbage. Seam: casts at the block-0/block-1 boundary."""
+
+    def __init__(self, asr):
         super().__init__()
-        self.inner = inner
+        self.front = CE.EncFrontWrap(asr)  # shares enc; used for its mask/pos ctx
+        self.enc = asr.encoder
+        self.tail = torch.nn.ModuleList(list(asr.encoder.layers[1:15]))
+        for layer in self.tail:
+            layer.half()
 
     def forward(self, feats):
-        return self.inner(feats.to(torch.float16)).to(torch.float32)
+        e = self.enc
+        x = e.subsampling(feats, None, padding_cache=None) * e.input_scale
+        mask, allm, pos = self.front.ctx(x)
+        x = e.layers[0](x, attention_mask=mask, all_masked_rows=allm,
+                        position_embeddings=pos, past_key_values=None,
+                        padding_cache=None, use_cache=False)
+        x16 = x.to(torch.float16)
+        pos16 = pos.to(torch.float16)
+        for layer in self.tail:
+            x16 = layer(x16, attention_mask=mask, all_masked_rows=allm,
+                        position_embeddings=pos16, past_key_values=None,
+                        padding_cache=None, use_cache=False)
+        return x16.to(torch.float32)
 
 
-class StepIO32(torch.nn.Module):
-    def __init__(self, inner):
-        super().__init__()
-        self.inner = inner
-
-    def forward(self, hu, ha, act_db, prev_state, state):
-        out, nxt = self.inner(hu.to(torch.float16), ha.to(torch.float16),
-                              act_db.to(torch.float16), prev_state, state.to(torch.float16))
-        return out.to(torch.float32), nxt.to(torch.float32)
+def enc_model(asr, prec):
+    """The encoder for a rung (export and gate share one builder)."""
+    if prec == "float16":
+        return EncMixed(asr.eval())
+    return CE.EncWrap(asr).to(torch.float32).eval()
 
 
 def export_encoder(asr, dtype, prec):
-    enc = CE.EncWrap(asr).to(dtype).eval()
-    if prec == "float16":
-        enc = EncIO32(enc)  # fp16 compute behind fp32 I/O
+    enc = enc_model(asr, prec)
     ex = {"feats": torch.zeros(1, 33, 128)}
     # mel lengths are 8k-7 (33, 41, ..., 801): the derived dim the startup
     # contract needs (same expression as the Core ML enc-dyn export)
@@ -89,9 +112,7 @@ def export_encoder(asr, dtype, prec):
 
 
 def export_step(tt, dtype, prec):
-    step = CE.StepWrap(tt).to(dtype).eval()
-    if prec == "float16":
-        step = StepIO32(step)  # fp16 compute behind fp32 I/O
+    step = step_model(tt, prec)
     ex = {
         "hu": torch.zeros(1, 1, 1024),
         "ha": torch.zeros(1, 1, 1024),
@@ -176,11 +197,11 @@ def main():
     if args.only in ("both", "enc", "gate"):
         p = enc_path or OUT / f"tyger_encoder_{args.precision}.aimodel"
         if p.exists():
-            enc = CE.EncWrap(asr).to(dtype).eval()
+            enc = enc_model(asr, args.precision)
             feeds, wants = [], []
             with torch.no_grad():
                 for mel in mels:
-                    x = torch.from_numpy(mel).to(dtype)
+                    x = torch.from_numpy(mel)
                     feeds.append({"mel_features": mel.astype(np.float32)})
                     wants.append({"encoder_hidden_state": enc(x).numpy().astype(np.float32)})
             ok = asyncio.run(gate(p, feeds, wants))
@@ -188,7 +209,7 @@ def main():
     if args.only in ("both", "step", "gate"):
         p = step_path or OUT / f"tyger_step_{args.precision}.aimodel"
         if p.exists():
-            step = CE.StepWrap(tt).to(dtype).eval()
+            step = step_model(tt, args.precision)
             rng = np.random.default_rng(0)
             hu = rng.normal(size=(1, 1, 1024)).astype(np.float32)
             ha = rng.normal(size=(1, 1, 1024)).astype(np.float32)
@@ -197,10 +218,10 @@ def main():
                     "state_id": np.array([[0]], np.int32),
                     "gru_state": np.zeros((3, 1, 768), np.float32)}
             with torch.no_grad():
-                out, st = step(torch.from_numpy(hu).to(dtype), torch.from_numpy(ha).to(dtype),
-                               torch.tensor([[-30.0]], dtype=dtype),
+                out, st = step(torch.from_numpy(hu), torch.from_numpy(ha),
+                               torch.tensor([[-30.0]]),
                                torch.tensor([[0]], dtype=torch.int32),
-                               torch.zeros(3, 1, 768, dtype=dtype))
+                               torch.zeros(3, 1, 768))
             wants = [{"decision_vector": out.numpy().astype(np.float32),
                       "gru_state_next": st.numpy().astype(np.float32)}]
             ok = asyncio.run(gate(p, [feed], wants))
