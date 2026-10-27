@@ -55,9 +55,18 @@ scores better, write the lesson here (Harness2's outer loop).
 - Quality-floor policy: a candidate never wins on target-distance below the
   target's own MOS minus 0.25 (or the built-in 4.0 floor).
 - Autoresearch found a winner the hand rounds missed: **"so. One moment."**
-  (swell 150 ms, head 0.05, MOS fine) — pending the ear gate on the
-  audition page. Lowercase "so." apparently renders with a drawn-out soft
-  onset.
+  (swell 150 ms, head 0.05, MOS fine) — lowercase "so." renders with a
+  drawn-out soft onset.
+
+### 2026-10-26c — ear gate passed; the winner ships
+
+- User review of the "Autoresearch winners" clips: **approved**. The
+  "so. One moment." family is the hesitation vocabulary.
+- Applied to code: the filler lead-in fallback is now `"so. One moment."`
+  (`startFillerCover`, both apps; exact spelling kept — the render is the
+  audio). Words-only vocabulary and the hum/vowel fold were already shipped.
+- The loop's first full cycle is complete: measure target → search → score
+  (style + UTMOS floor) → ear gate → ship → registry.
 
 ## Knob inventory
 
