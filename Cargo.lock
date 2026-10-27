@@ -1957,6 +1957,7 @@ dependencies = [
  "idfon-media",
  "idfon-protocol",
  "idfon-telemetry",
+ "idfon-voice",
  "iroh",
  "iroh-blobs",
  "rustls",

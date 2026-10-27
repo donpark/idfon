@@ -4,12 +4,14 @@ Status: **reference** (2026-10-25, one-shot audit of `/Users/don/dev/github/tyge
 against our voice stack). Read with `voice-tyger-streaming-plan.md` — the ranked
 gap list below is the evidence behind its build order.
 
-**Scorecard**: rules engine ✅ verified-equal · grid/encoder ✅ equal ·
-thresholds ⚠️ drift · turn lifecycle ≈ equivalent-by-topology · barge ❌ missing
-`played_s` history trim · backchannel ⚠️ ours fixed-text, theirs contextual ·
-mouth chunker ❌ ours not built yet · 2nd ear ❌ ours = their pre-I-17
-arrival-order bug · ASR ⚠️ theirs one encoder for both consumers · history ❌
-trim contract absent.
+**Scorecard** (2026-10-27): rules engine ✅ verified-equal · grid/encoder ✅
+equal · thresholds ✅ adopted (`Thresholds::tuned()` 0.915/0.4/0.4, library
+Default stays bundle-parity) · turn lifecycle ≈ equivalent-by-topology ·
+barge ✅ `played_s` trim + the cut context · backchannel ✅ contextual (ours:
+AFM ack off the ASR partial; theirs: LLM filler) · mouth chunker ✅ ported
+(sentence first-chunk) · 2nd ear ✅ app-owned playback clock · ASR ⚠️ theirs
+one encoder for both consumers · history ✅ trim contract (`played_s` +
+"you only said this much").
 
 ## What matches exactly
 
@@ -37,7 +39,9 @@ trim contract absent.
    **Adopted 2026-10-25**: the runtime constructs with `Thresholds::tuned()`
    (0.915 / 0.4 / 0.4) through the C ABI; the library `Default` stays the
    bundle set so the parity fixtures remain byte-comparable.
-2. **2nd ear timing** (the deepest fix): they measured arrival-order pairing
+2. **2nd ear timing** (the deepest fix) — **landed 2026-10-26** (the app owns
+   the playback clock; the parity board's gap 2): they measured arrival-order
+   pairing
    putting the 2nd ear 316–783 ms (median 566) AHEAD of what the user heard
    (I-17) and replaced it with per-mic-block playback tags. Ours is
    arrival-order pairing (`PlaybackBus` notify at schedule time) — the same
@@ -45,24 +49,28 @@ trim contract absent.
    better than tags: the app owns the playback clock. Acceptance metric to
    copy: their `second_ear.py --echo-db` (agent echo in the mic as mic−ear
    level; their live figure −65…−73 dB).
-3. **Barge history trim** (slice 3 spec): their chain is `onset_s` → tags →
+3. **Barge history trim** (slice 3 spec) — **landed 2026-10-25/26**
+   (`played_s` + `cutReply` "you only said this much" context): their chain is
+   `onset_s` → tags →
    `B {played_s}` → `Speaker.heard(played_s)` (line offsets) →
    `History.add_barged` (heard lines + interrupted marker " —"). Ours stops
    playback but records/reports the FULL reply (recordSpokenTurn runs before
    playback; the agent's context believes it said everything). The contract
    "you only said this much" must cross the AFM/eve boundary.
-4. **Chunker** (slice 4 spec): adopt `mouth/chunker.py` wholesale —
+4. **Chunker** (slice 4 spec) — **landed 2026-10-25** (`SpeechChunker`, both
+   apps, `mac/Checks/SpeechChunkerCheck`): adopt `mouth/chunker.py` wholesale —
    `first_chunk: sentence` (user-tested as much better than `clause`),
    MIN_CHARS 40, SENT_MAX 220, boundaries confirmed only when whitespace
    follows (0.50 / 3,000 / example.com safe), abbreviation + acronym +
    initial exceptions, `say_clean` sanitizer for mouths without
    paralinguistic tags.
-5. **Contextual backchannels**: theirs are `filler` LLM calls on the ASR
-   partial (≤12 tokens), hum when partial < 4 words, RECENT_ACKS=3 shown to
-   the LLM (prompt-only "don't repeat" failed: 17/100 repeats → 0), empty ack
-   = no ack. Ours is one fixed cue (round-tripped: "Mm-hmm." renders clean;
-   "Mm-hm." phonemizes to "lim"). Our `Event.partial` already carries the
-   partial; the loop discards it.
+5. **Contextual backchannels** — **landed 2026-10-25** (`BackchannelFiller.ack`
+   off the ASR partial, AFM path with the safe-word fallback): theirs are
+   `filler` LLM calls on the ASR partial (≤12 tokens), hum when partial < 4
+   words, RECENT_ACKS=3 shown to the LLM (prompt-only "don't repeat" failed:
+   17/100 repeats → 0), empty ack = no ack. Ours was one fixed cue
+   (round-tripped: "Mm-hmm." renders clean; "Mm-hm." phonemizes to "lim").
+   Our `Event.partial` already carries the partial.
 6. **Filler economy**: tool lead-ins ("Checking the time in Tokyo"), "still
    looking" lines (≤2, 0.8 s gaps) — mechanical timing beats prompt preambles.
    **Implemented 2026-10-26** (`TurnFiller`, both apps): the client cascade
