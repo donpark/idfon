@@ -63,9 +63,15 @@ public final class CoreAITurnModel: TurnModel {
                     directory.appendingPathComponent("tyger_step_float16.aimodel"))
         let fp32 = (directory.appendingPathComponent("tyger_encoder_float32.aimodel"),
                     directory.appendingPathComponent("tyger_step_float32.aimodel"))
-        let useFP16 = forceFP16
-            && FileManager.default.fileExists(atPath: fp16.0.path)
-            && FileManager.default.fileExists(atPath: fp16.1.path)
+        let have = { (pair: (URL, URL)) in
+            FileManager.default.fileExists(atPath: pair.0.path)
+                && FileManager.default.fileExists(atPath: pair.1.path)
+        }
+        // fp32 is the gated reference rung. fp16 is opt-in via
+        // IDFON_TURN_PRECISION=fp16 — and the fallback when only the fp16 pair
+        // is installed (the iOS ModelStore delivers just that), so an install
+        // without the fp32 pair never loses the turn model.
+        let useFP16 = have(fp16) && (forceFP16 || !have(fp32))
         let (encURL, stepURL) = useFP16 ? fp16 : fp32
         self.usesFloat16 = useFP16
         for u in [encURL, stepURL] where !FileManager.default.fileExists(atPath: u.path) {
