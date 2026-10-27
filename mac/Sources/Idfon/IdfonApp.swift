@@ -19,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DaemonRuntime.configure()
+        // Compiler scratch from killed/hung CoreAI loads (age-gated, off-main).
+        Task.detached { ScratchSweep.sweep() }
         // Config schema migrations before launch-arg config below: automation
         // must win over a migration, never the other way round.
         ConfigMigrations.run()

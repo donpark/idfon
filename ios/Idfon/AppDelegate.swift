@@ -12,6 +12,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         idfonLog("idfon build stamp \(Self.buildStamp)")
+        // Compiler scratch from killed/hung CoreAI loads (age-gated, off-main).
+        Task.detached { ScratchSweep.sweep() }
         // Config schema migrations before launch-arg config below: automation
         // must win over a migration, never the other way round.
         ConfigMigrations.run()
