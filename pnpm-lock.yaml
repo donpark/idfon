@@ -247,6 +247,18 @@ importers:
         specifier: ^3.4.2
         version: 3.6.0(supports-color@10.2.2)
 
+  agents/monitor:
+    dependencies:
+      eve:
+        specifier: 0.68.0
+        version: 0.68.0(ai@7.0.152(zod@4.6.7))(just-bash@3.6.0(supports-color@10.2.2))
+      eve-idfon:
+        specifier: link:../../integrations/eve-idfon
+        version: link:../../integrations/eve-idfon
+      just-bash:
+        specifier: ^3.4.2
+        version: 3.6.0(supports-color@10.2.2)
+
   agents/voice:
     dependencies:
       eve:
