@@ -49,18 +49,25 @@ public final class CoreAITurnModel: TurnModel {
     }
 
     public init(directory: URL) throws {
-        // The shipping rung is **fp16** (2026-10-21 decision; the parity7 guard:
-        // 99.67% aligned ±2 frames, 4 boundary flips in 917, half the fp32
-        // size). fp32 stays the exact tier and the fallback when the fp16 pair
-        // is absent.
+        // Rung selection (2026-10-27): **fp32 by default**, fp16 opt-in via
+        // IDFON_TURN_PRECISION=fp16. The fp16 pair (the 2026-10-21 shipping
+        // ruling) drifts `p_end` by ~0.03 — enough to shave near-threshold
+        // turns below the endpoint gate (corner-case finding 2026-10-27:
+        // natural-speed synthetic speech never ended its turn on fp16, and
+        // ended it identically to the Python oracle on fp32). The 99.67%
+        // decision guard did not catch it because real conversations rarely
+        // sit on the margin. fp16 returns as the default when the export
+        // keeps the GRU and heads in fp32 (the mixed-precision exemption).
+        let forceFP16 = ProcessInfo.processInfo.environment["IDFON_TURN_PRECISION"] == "fp16"
         let fp16 = (directory.appendingPathComponent("tyger_encoder_float16.aimodel"),
                     directory.appendingPathComponent("tyger_step_float16.aimodel"))
         let fp32 = (directory.appendingPathComponent("tyger_encoder_float32.aimodel"),
                     directory.appendingPathComponent("tyger_step_float32.aimodel"))
-        let hasFP16 = FileManager.default.fileExists(atPath: fp16.0.path)
+        let useFP16 = forceFP16
+            && FileManager.default.fileExists(atPath: fp16.0.path)
             && FileManager.default.fileExists(atPath: fp16.1.path)
-        let (encURL, stepURL) = hasFP16 ? fp16 : fp32
-        self.usesFloat16 = hasFP16
+        let (encURL, stepURL) = useFP16 ? fp16 : fp32
+        self.usesFloat16 = useFP16
         for u in [encURL, stepURL] where !FileManager.default.fileExists(atPath: u.path) {
             throw LoadError.missingArtifact(u.lastPathComponent)
         }
