@@ -22,8 +22,10 @@ Output: bench-results/coreai/*.aimodel (gitignored)
 import argparse
 import asyncio
 import importlib.machinery
+import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -169,10 +171,88 @@ async def gate(path, feeds, wants, units=("gpu", "cpu")):
     return ok_all
 
 
+def compile_asset(path, arch):
+    """AOT-compile `path` into `<name>.compiled.aimodel/<name>.<arch>.aimodelc`.
+    Swift loaders prefer that container: loading a source .aimodel makes the
+    runtime attempt an ANE compile per load — one mpsgraph workdir plus a
+    feed to the daemon ANE caches that only a reboot flushes (the 2026-10-27
+    disk incident; the attempt repeats forever because the ANE compile never
+    succeeds for these graphs). ALWAYS pass --architecture: an unscoped compile
+    builds every supported arch (22 for macOS, 9 for iOS) and each arch child
+    copies the weights (~50 MB for the step, ~787 MB for the encoder). Ship
+    macOS and iOS targets only; add archs as devices are confirmed (2026-10-27
+    ruling). Skips the compile when the container already holds a fresh child
+    for `arch` (its metadata sourceHash equals the source main.hash) — the
+    same unchanged model never pays a recompile. Stale children (older exports)
+    are removed; fresh children of other archs survive."""
+    out = path.with_name(path.stem + ".compiled.aimodel")
+    want = (path / "main.hash").read_bytes().hex().upper()
+
+    def fresh(kid):
+        try:
+            have = json.loads((kid / "metadata.json").read_text()).get("sourceHash", "")
+        except (OSError, ValueError):
+            return False
+        return have.upper() == want
+
+    for old in sorted(out.glob("*.aimodelc")):
+        if not fresh(old):
+            shutil.rmtree(old, ignore_errors=True)
+    kid = out / f"{path.stem}.{arch}.aimodelc"
+    if kid.exists():
+        print(f"[compile] {kid.name} up to date")
+        return
+    subprocess.run(["xcrun", "coreai-build", "compile", str(path),
+                    "--output", str(out), "--platform", "macOS",
+                    "--preferred-compute", "gpu", "--architecture", arch],
+                   check=True)
+    sz = sum(f.stat().st_size for f in out.rglob("*") if f.is_file()) / 1e6
+    print(f"[compile] {kid.name} ({sz:.1f} MB)")
+
+
+def host_arch():
+    """This machine's arch token (e.g. h16s), read from an existing container.
+    coreai-build has no host query, and an unscoped compile is never the
+    fallback."""
+    kids = sorted(OUT.glob("*.compiled.aimodel/*.aimodelc"))
+    if not kids:
+        raise SystemExit("no compiled container to read the arch token from — pass --arch")
+    return kids[0].name.split(".")[-2]
+
+
+def scratch_sweep(max_age_s=3600):
+    """Age-gated sweep of runtime compile scratch (the apps' ScratchSweep does
+    the same at launch): mpsgraph-* workdirs under
+    $TMPDIR/com.apple.MetalPerformanceShadersGraph/ and *_main.ir dumps."""
+    import glob
+    import time
+    tmp = os.environ.get("TMPDIR", "/tmp")
+    now = time.time()
+    targets = glob.glob(os.path.join(tmp, "com.apple.MetalPerformanceShadersGraph", "*"))
+    targets += glob.glob(os.path.join(tmp, "*_main.ir"))
+    n = 0
+    for t in targets:
+        if now - os.path.getmtime(t) <= max_age_s:
+            continue
+        if os.path.isdir(t):
+            shutil.rmtree(t, ignore_errors=True)
+        else:
+            try:
+                os.remove(t)
+            except OSError:
+                pass
+        n += 1
+    if n:
+        print(f"[scratch] swept {n} stale compile-scratch items")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="both", choices=["both", "enc", "step", "gate"])
     ap.add_argument("--precision", default="float32", choices=["float32", "float16"])
+    ap.add_argument("--arch", default=None,
+                    help="arch token for the AOT compile (default: read from an "
+                         "existing compiled container, e.g. h16s)")
     args = ap.parse_args()
 
     import torch  # noqa
@@ -226,6 +306,15 @@ def main():
                       "gru_state_next": st.numpy().astype(np.float32)}]
             ok = asyncio.run(gate(p, [feed], wants))
             print(f"[gate] step {'PASS' if ok else 'FAIL'}")
+
+    # AOT-compile what we exported so every Swift loader finds a fresh compiled
+    # container (a stale one would silently run the previous export's weights).
+    if args.only in ("both", "enc", "step"):
+        arch = args.arch or host_arch()
+        for p in (enc_path, step_path):
+            if p is not None:
+                compile_asset(p, arch)
+    scratch_sweep()
 
 
 if __name__ == "__main__":

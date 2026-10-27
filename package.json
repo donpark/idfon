@@ -16,6 +16,7 @@
     "voice": "bash ./scripts/voice.sh",
     "pair": "bash ./scripts/pair-apple-channels.sh",
     "agent": "bash ./scripts/agent.sh",
+    "ane": "bash ./scripts/ane.sh",
     "idfon": "node cli/idfon/bin/idfon.js",
     "edge": "bash ./scripts/edge.sh",
     "deploy:do": "bash ./scripts/deploy-digitalocean.sh",

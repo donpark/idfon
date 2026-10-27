@@ -50,3 +50,28 @@ runtime -> torch comparison (expect max|Δ| = 0.0).
   ANECCompile code 22) and falls back to GPU. The NE path is not usable for
   this graph yet — same posture as the zoo's diarization gate (NE below bar →
   ship GPU).
+
+## Compiled containers and disk hygiene (2026-10-27)
+
+- `export_turn.py` AOT-compiles each export into `<name>.compiled.aimodel/`
+  with a scoped `--architecture` (default: this Mac's token, read from an
+  existing container). NEVER run `coreai-build compile` without
+  `--architecture`: it builds every supported arch (22 for macOS, 9 for iOS)
+  and each arch child copies the weights (~50 MB per arch for the step,
+  ~787 MB for the encoder). Ruling: compile for macOS and iOS targets only,
+  and add archs as devices are confirmed.
+- Loading a source `.aimodel` makes the runtime attempt an ANE compile per
+  process: one `mpsgraph-*` workdir under
+  `$TMPDIR/com.apple.MetalPerformanceShadersGraph/`, plus a feed to the daemon
+  ANE caches (`/Library/Caches/com.apple.aned` and friends — datavault-locked;
+  only a reboot flushes them; the recurring ~300 GB "System Data" balloon).
+  The Swift loaders avoid this via the compiled containers. The Python binding
+  cannot load `.aimodelc` (coreai-core 1.0.0b3, verified 2026-10-27) and
+  specialization options change nothing about the attempt (numerics identical
+  with and without options, max|Δ| 0.0), so every harness process pays one
+  compile attempt per model load: run suites in few processes, and sweep
+  scratch after (the export pipeline does both).
+- `scripts/coreai-cache-prune.sh` removes stale registrations in
+  `~/Library/Caches/coreai-cache`. Judge the reclaim by df deltas, never by du.
+- Or run `pnpm ane list` / `pnpm ane clean` — the same leftovers for humans and
+  agents (contract in `docs/disk-hygiene.md`).
