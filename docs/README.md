@@ -99,5 +99,6 @@ kept because it records decisions; **design** = not all implemented.
 | --- | --- |
 | `troubleshooting.md` | known issues, diagnoses, fixes |
 | `observability.md` | unified telemetry: shared subscriber, structured fields, `trace` correlation, opt-in OTLP, the external-agent seam (as-built; open items in §10) |
+| `diag.md` | `IDFON-DIAG/1` app diagnostics over iroh: protocol, app reporter, the `monitor` filing agent, query examples (issue #63) |
 | `benchmarks.md` | repeatable latency measurement as a pure-TS vertical: the bench Eve agent (`agents/bench`) + `scripts/relay-bench.sh` (relay A/B over the daemon stack, JSONL history) + `scripts/voice-latency-report.sh` (voice-turn stages) |
 | `dylib-refactoring-plan.md` | shared-dylib build as-built + follow-up log |

@@ -79,8 +79,9 @@ integration="$root/integrations/eve-idfon"
 holder_pkg="${EVE_IDFON_PKG:-idfon-voice-agent}"
 holder_bin="${EVE_IDFON_BIN:-eve-idfon-voice}"
 # Cargo features for the holder package. `gpt-live` links the OpenAI Live-API
-# backend; set empty for a cascade/relay-only build.
-holder_features="${EVE_IDFON_FEATURES:-gpt-live}"
+# backend; set empty for a cascade/relay-only build (empty must stay empty, so
+# the default uses `-`, not `:-`).
+holder_features="${EVE_IDFON_FEATURES-gpt-live}"
 
 : "${AI_GATEWAY_API_KEY:?AI_GATEWAY_API_KEY must be set}"
 model="${EVE_IDFON_MODEL:-openai/gpt-6-luna}"
