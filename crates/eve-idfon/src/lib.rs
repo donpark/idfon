@@ -28,6 +28,7 @@ use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as 
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 
+pub mod cascade;
 pub mod deltas;
 pub mod live;
 pub mod live_audio;
@@ -1067,6 +1068,23 @@ async fn serve(
                         })
                         .unwrap_or(false);
                     if !routed {
+                        // Client cascade: the calling app owns the mouth —
+                        // forward the delta as a throttled IDFON-CALL/1
+                        // transcript snapshot (the unit stream) so it can
+                        // speak chunk-per-chunk and upsert the bubble.
+                        if let Some(peer) = peer_id.as_deref() {
+                            cascade::push_and_send(
+                                &key,
+                                &transport,
+                                reply_ticket.as_ref(),
+                                peer,
+                                &turn_id,
+                                step_index,
+                                sequence,
+                                &text,
+                            )
+                            .await;
+                        }
                         tracing::info!(
                             target: "idfon.holder",
                             turn_id = %turn_id,
@@ -1549,6 +1567,13 @@ async fn handle_message(
         },
     );
     drop(targets_guard);
+    cascade::remember_peer(
+        &message.sender.peer_id,
+        cascade::PeerRoute {
+            endpoint_id: remote_endpoint_id.clone(),
+            conversation: message.conversation.clone(),
+        },
+    );
     out_tx
         .send(IpcFrame::TurnIn {
             message_id: reply_key,
