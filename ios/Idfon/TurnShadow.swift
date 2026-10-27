@@ -188,10 +188,17 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         // never pull a 0.8 GB tier. A late shadow costs nothing — classic
         // drives until it appears — and a failed load just means classic for
         // this call.
-        if #available(iOS 27.0, *),
-           let coreai = try? CoreAITurnModel(directory: dir.appendingPathComponent("coreai")) {
-            Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU)")
-            return TurnShadow(model: coreai)
+        if #available(iOS 27.0, *) {
+            do {
+                let coreai = try CoreAITurnModel(directory: dir.appendingPathComponent("coreai"))
+                Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU)")
+                Diag.log("turnmodel", ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32", "ok": true])
+                return TurnShadow(model: coreai)
+            } catch {
+                // The 2026-10-27 class: an install can end up with no usable
+                // turn pair — record why the tier failed.
+                Diag.log("turnmodel", ["tier": "coreai", "ok": false, "error": String(describing: error)])
+            }
         }
         let enc = dir.appendingPathComponent("TygerEncoder.mlpackage")
         let dyn = dir.appendingPathComponent("TygerEncoderDyn.mlpackage")
@@ -200,13 +207,16 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
               FileManager.default.fileExists(atPath: dyn.path),
               FileManager.default.fileExists(atPath: step.path) else {
             Automation.mark("turn-shadow: no models at \(dir.path)")
+            Diag.log("turnmodel", ["ok": false, "error": "no models installed"])
             return nil
         }
         guard let model = try? CoreMLTurnModel(encoderURL: enc, encoderDynURL: dyn, stepURL: step) else {
             Automation.mark("turn-shadow: model load failed")
+            Diag.log("turnmodel", ["tier": "coreml", "ok": false, "error": "load failed"])
             return nil
         }
         Automation.mark("turn-shadow: tier CoreML (fp16/ANE)")
+        Diag.log("turnmodel", ["tier": "coreml", "rung": "fp16-ane", "ok": true])
         return TurnShadow(model: model)
     }
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileReport } from "../agent/lib/file-diag.ts";
@@ -53,4 +53,16 @@ test("keeps the device name path-safe", () => {
   const lines = readFileSync(join(dir, ".._evil_name.jsonl"), "utf8").trim().split("\n");
   assert.equal(lines.length, 1);
   assert.equal(JSON.parse(lines[0]).device, "../evil name");
+});
+
+test("rotates to one generation when the file passes the size cap", () => {
+  const dir = tmp();
+  const big = (tag: string) => "IDFON-DIAG/1\n" + JSON.stringify({
+    device: "d", build: "b",
+    events: [{ ts_ms: 1, kind: "k", detail: { tag, pad: "x".repeat(1024) } }],
+  });
+  // Overfill with many reports, then check the generation files.
+  for (let i = 0; i < 9000; i++) fileReport(dir, big("t" + i));
+  assert.ok(statSync(join(dir, "d.jsonl.1")).size > 0, "previous generation kept");
+  assert.ok(statSync(join(dir, "d.jsonl")).size > 0, "current file keeps appending");
 });
