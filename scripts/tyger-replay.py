@@ -56,6 +56,10 @@ def main():
     ap.add_argument("--wav", required=True)
     ap.add_argument("--agent", default=None)
     ap.add_argument("--mode", default="listen", choices=["listen", "speaking"])
+    ap.add_argument("--device", default="cpu",
+                    help="torch device for the reference encoder (cpu is the "
+                         "calibrated one; mps is ~10-20x faster for sweeps, "
+                         "with float-noise caveat)")
     args = ap.parse_args()
 
     user = read_mono16k(args.wav)
@@ -66,7 +70,7 @@ def main():
 
     torch.set_num_threads(os.cpu_count() or 8)
     t0 = time.perf_counter()
-    ears = ReferenceEars(BUNDLE, device="cpu")
+    ears = ReferenceEars(BUNDLE, device=args.device)
     print(f"loaded {BUNDLE} in {time.perf_counter() - t0:.1f}s", file=sys.stderr)
 
     sess = EarsSession(0)
