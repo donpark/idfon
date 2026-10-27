@@ -53,13 +53,22 @@ final class TurnShadow: AudioPlaybackObserver {
         // Calibration override: IDFON_TURN_TIER=coreai|mlx picks the tier.
         let tier = ProcessInfo.processInfo.environment["IDFON_TURN_TIER"]
         if tier != "mlx", #available(macOS 27.0, *) {
-            model = model ?? (try? CoreAITurnModel()) // the OS 27+ tier (GPU, oracle-exact)
+            do {
+                model = try CoreAITurnModel() // the OS 27+ tier (GPU, oracle-exact)
+            } catch {
+                Diag.log("turnmodel", ["tier": "coreai", "ok": false, "error": String(describing: error)])
+            }
         }
         if model == nil, MlxTurnModel.hasMetalLibrary {
-            model = try? MlxTurnModel() // legacy macOS 14-26 tier
+            do {
+                model = try MlxTurnModel() // legacy macOS 14-26 tier
+            } catch {
+                Diag.log("turnmodel", ["tier": "mlx", "ok": false, "error": String(describing: error)])
+            }
         }
         guard let model else {
             Automation.mark("turn-shadow: no turn model available")
+            Diag.log("turnmodel", ["ok": false, "error": "no tier available"])
             return nil
         }
         var rung: String?
@@ -67,6 +76,7 @@ final class TurnShadow: AudioPlaybackObserver {
             rung = core.usesFloat16 ? "fp16" : "fp32"
         }
         Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))\(rung.map { "(\($0))" } ?? "")")
+        Diag.log("turnmodel", ["tier": String(describing: type(of: model)), "rung": rung ?? "-", "ok": true])
         return TurnShadow(model: model)
     }
 

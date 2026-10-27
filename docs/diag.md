@@ -17,21 +17,24 @@ batch, never a call or a wake.
 ## App side
 
 `Diag` (mac + iOS): a ring buffer flushed as one report. The monitor peer is
-`-diagpeer <peerId>` at launch, else the saved one. Instrumentation today is
-iOS-focused: PushKit token lifecycle, per-ref registration results (the 403
-storm evidence), wake outcomes (presented / canceled / bar_owns / system_ring
-/ reported_ring / bar_mode / skip_redelivery / skip_busy / skip_no_ids /
-report_failed), and a launch config snapshot. Wake and registration flush
-immediately — a woken process can die within ~1.5 s.
+`-diagpeer <peerId>` at launch, else the saved one. Instrumentation today:
+iOS PushKit token lifecycle, per-ref registration results (the 403 storm
+evidence), wake outcomes (presented / canceled / bar_owns / system_ring /
+reported_ring / bar_mode / skip_redelivery / skip_busy / skip_no_ids /
+report_failed), a launch config snapshot on both apps, turn-model tier
+selection and load failures (`turnmodel`: tier, rung, error) on both apps,
+and ScratchSweep findings (`scratchsweep`: removed, freed_bytes) on both
+apps. Wake and registration flush immediately — a woken process can die
+within ~1.5 s.
 
 ## Monitor side: the `monitor` agent
 
 A plain Eve agent (`agents/monitor/`) that files reports and never minds:
 the `file-diag` hook appends every report's events to
 `~/.idfon/<agent>/diag/<device>.jsonl` (one JSON line per event; device and
-build stamp attached), and reports get `<eve-empty-delivery/>` back — the app
-sender is fire-and-forget. Any other message gets one line pointing at the
-files.
+build stamp attached). The file rotates to `<device>.jsonl.1` past 8 MB
+(one generation). Reports get `<eve-empty-delivery/>` back — the app sender
+is fire-and-forget. Any other message gets one line pointing at the files.
 
 ```sh
 scripts/monitor-serve.sh          # holder + bridge + eve, prints pairing
@@ -57,7 +60,4 @@ hook → filed events, with no reply delivered back.
 
 ## Open
 
-- The filing agent's own rotation/retention (files grow unbounded today).
-- Non-iOS instrumentation parity (the mac app only reports the config
-  snapshot).
 - A `monitor` query front-end if jq stops being enough.
