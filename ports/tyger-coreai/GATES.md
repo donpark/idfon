@@ -78,3 +78,13 @@ class). Swift `CoreAITurnModel` (now reports `usesFloat16`) passes
 `testRuntimeMatchesTheOracle` on the fp16 pair inside parity6's envelope
 (measured state ≤ 0.038, probs ≤ 0.010 on the 248-frame fixture). The HF
 manifest has served the fp16 pair since 2026-10-21 (the iOS install path).
+
+**Superseded (2026-10-27)**: the corner gate (`scripts/corpus-corner.py`) shows
+the fp16 rung never ends a margin turn (0 endpoints; `p_end` drift ≈ 0.03 — the
+99.67% guard missed it because real conversations rarely sit on the margin).
+fp32 is the default rung again (`CoreAITurnModel`, loader-enforced); fp16 is
+opt-in via `IDFON_TURN_PRECISION=fp16`. The HF manifest now serves the fp32
+pair + the `.h17p` (A18/A18 Pro) AOT containers. Two delivery defects fixed
+with it: `url_base` was packed null (manifest decode fails → the store could
+never fetch anything), and the store was never wired (now behind the
+`VoiceModelGate` approval; see `docs/voice-tyger-ondevice.md`).

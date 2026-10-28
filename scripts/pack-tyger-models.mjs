@@ -6,13 +6,17 @@
 // Upload the output dir to the HuggingFace repo the app points at
 // (`donpark/tyger-models`; the store's default manifest URL) — models ship
 // via HuggingFace, never git — and point the app at the manifest URL
-// (`IDFON_TYGER_MODELS` / `-tygermodels` overrides).
+// (`IDFON_TYGER_MODELS` / `-tygermodels` overrides). `url_base` defaults to
+// that repo's resolve base so a packed manifest is always fetchable (the
+// store decodes it non-optional and fails the whole delivery on null).
 //
 //   node scripts/pack-tyger-models.mjs [--url-base URL] [--out DIR] [--all] [--only TIER]
 //
-// Default set: the coreai fp16 pair (the iOS 27+ shipping tier), the three
-// coreml packages the pre-27 loader needs (TygerEncoder, TygerEncoderDyn,
-// TygerStep), and the quantized MLX int8 chain (the pre-27 mac tier).
+// Default set: the coreai fp32 pair + their A18 (.h17p) AOT containers (the
+// gated default rung since 2026-10-27 — the fp16 pair drifts `p_end` near the
+// endpoint gate and is opt-in, side-loaded), the three coreml packages the
+// pre-27 loader needs (TygerEncoder, TygerEncoderDyn, TygerStep), and the
+// quantized MLX int8 chain (the pre-27 mac tier).
 // `--only TIER` packs just that tier's default set (when other bundles are
 // not on this machine). `--all` packs every bundle incl. fp32 fallbacks and
 // bench variants (Q8/…).
@@ -27,7 +31,7 @@ const arg = (flag) => {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
 };
-const urlBase = arg("--url-base") ?? null;
+const urlBase = arg("--url-base") ?? "https://huggingface.co/donpark/tyger-models/resolve/main";
 const out = resolve(arg("--out") ?? "dist/tyger-models");
 const all = args.includes("--all");
 const root = resolve("bench-results");
@@ -39,8 +43,10 @@ let bundles = all
         .filter((e) => e.name !== ".DS_Store")
         .map((e) => `${tier}/${e.name}`))
   : [
-      "coreai/tyger_encoder_float16.aimodel",
-      "coreai/tyger_step_float16.aimodel",
+      "coreai/tyger_encoder_float32.aimodel",
+      "coreai/tyger_step_float32.aimodel",
+      "coreai/tyger_encoder_float32.compiled.aimodel/tyger_encoder_float32.h17p.aimodelc",
+      "coreai/tyger_step_float32.compiled.aimodel/tyger_step_float32.h17p.aimodelc",
       "coreml/TygerEncoder.mlpackage",
       "coreml/TygerEncoderDyn.mlpackage",
       "coreml/TygerStep.mlpackage",

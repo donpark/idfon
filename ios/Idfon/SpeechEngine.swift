@@ -6,7 +6,19 @@ import FluidAudio
 /// (app support files — `Documents/` is user content) with iCloud backup
 /// excluded: the weights are re-downloadable and must not cost backup quota.
 func modelSupportDirectory(_ name: String) -> URL {
-    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    modelDirectory(name, in: .applicationSupportDirectory)
+}
+
+/// Cache-class model home (`Library/Caches`): packs that re-download on
+/// demand live here so the file system may delete them when asked to free
+/// space (`NSURLIsPurgeableKey` semantics — 2026-10-27, the tyger tier).
+/// Same backup exclusion as the support-directory variant.
+func modelCachesDirectory(_ name: String) -> URL {
+    modelDirectory(name, in: .cachesDirectory)
+}
+
+private func modelDirectory(_ name: String, in search: FileManager.SearchPathDirectory) -> URL {
+    let base = FileManager.default.urls(for: search, in: .userDomainMask)[0]
     let dir = base.appendingPathComponent(name)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     var excluded = dir
@@ -326,6 +338,10 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
                 // Apple-managed asset pack when configured; else FluidAudio's
                 // own HuggingFace download (directory == nil).
                 let directory = await SpeechProvisioning.directory(for: .kokoroAne)
+                if directory == nil, !VoiceModelGate.approved {
+                    Automation.mark("voice: kokoro model download not approved")
+                    return nil
+                }
                 let manager = KokoroAneManager(variant: .english, directory: directory)
                 do {
                     try await manager.initialize()

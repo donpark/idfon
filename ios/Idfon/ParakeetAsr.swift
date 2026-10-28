@@ -47,6 +47,10 @@ final class ParakeetReduxAsr: AsrEngine, AudioCaptureObserver {
         let task = warmLock.withLock { () -> Task<Void, Never> in
             if let existing = warmTask { return existing }
             let created = Task {
+                guard VoiceModelGate.approved else {
+                    Automation.mark("voice: parakeet prewarm skipped (no download approval)")
+                    return
+                }
                 let throttle = ProgressThrottle()
                 Automation.mark("voice: parakeet prewarming")
                 do {

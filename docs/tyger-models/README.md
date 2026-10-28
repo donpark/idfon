@@ -26,10 +26,7 @@ tags:
 # tyger-models
 
 **On-device delivery tiers for [TYGER](https://huggingface.co/nineninesix/tyger)
-— an open-weight speech decision model for full-duplex voice agents — plus
-`TYGER-Step-Student`, a distilled turn-taker that reads
-[Parakeet Redux](https://huggingface.co/FluidInference/parakeet-redux-coreml)
-features instead of Nemotron's.**
+— an open-weight speech decision model for full-duplex voice agents.**
 
 TYGER knows when to respond, keep listening, yield, and backchannel. This repo
 is the shipping form: the same decisions, at device scale, in the formats
@@ -40,10 +37,10 @@ inference code.
 
 | Path | Model | Format | Size |
 | --- | --- | --- | ---: |
-| `coreai/` | TYGER chain (encoder + turn heads) | Core AI `.aimodel`, fp16 | ~0.77 GB |
+| `coreai/` | TYGER chain (encoder + turn heads) | Core AI `.aimodel` — **fp32 default rung** + A18 (`.h17p`) AOT containers; fp16 pair opt-in | 1.53 GB (fp32) / ~0.77 GB (fp16) |
 | `coreml/` | TYGER chain | Core ML `.mlpackage` (encoder fp16, step fp32) | ~0.86 GB |
 | `mlx/` | TYGER chain | MLX int8-g16 `.safetensors` (pre-27 macOS) | 1.58 GB¹ |
-| `pathc/` | **TYGER-Step-Student** (turn heads only) | Core ML `.mlpackage`, fp32 | **56 MB** |
+| `pathc/` | **TYGER-Step-Student** (turn heads only) — **removed from distribution 2026-10-25** (section below kept as record) | Core ML `.mlpackage`, fp32 | **56 MB** |
 | `manifest.json` | — | delivery manifest (sha256 per file) | — |
 
 ¹ the artifact stores dequantized fp32 weights.
@@ -54,7 +51,11 @@ The tiers are interchangeable exports of
 the architecture, event semantics (endpoint / barge-in / backchannel), guards
 and thresholds. `pathc/` is a different animal and is documented below.
 
-## TYGER-Step-Student (`pathc/`)
+## TYGER-Step-Student (`pathc/`) — removed from distribution 2026-10-25
+
+*(Kept as record. The tier was deleted from the product: a Parakeet-tap
+copycat with ~50% frame-identity and a backchannel head that never fired.
+`manifest.json` no longer lists it.)*
 
 The turn-taker alone — **14M parameters** (a causal GRU, 3 layers, width 768,
 plus the input projections and five output heads; the same architecture as
