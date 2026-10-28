@@ -1290,6 +1290,63 @@ pub fn media_audio_set_bitrate(bitrate: u32) -> u8 {
     BITRATE.store(bitrate as u64, Ordering::Relaxed);
     0
 }
+
+/// Flip in-band FEC on the live audio track (docs/media-adaptation.md §B2.4).
+///
+/// The degradation ladder's stereo step calls this: stereo on is quality
+/// mode (FEC off, the LBRR copy would couple the channels), auto stereo-off
+/// is resilience mode (FEC on, the measured recovery win is mono speech).
+/// Replacing the track restarts the encoder, which the stereo step's channel
+/// change costs anyway. Returns 0 on success, 1 without a live audio track.
+#[ffi_export]
+pub fn media_audio_set_fec(fec: u8) -> u8 {
+    let setup = LIVE_CONFIG.lock().unwrap().clone();
+    let live = LIVE.lock().unwrap();
+    let (Some(session), Some((audio, _video, push_audio, file_audio, codec, sample_rate, channels))) =
+        (live.as_ref(), setup)
+    else {
+        return 1;
+    };
+    if !audio {
+        return 1;
+    }
+    let Some(broadcast) = session._audio.as_ref() else {
+        return 1;
+    };
+    // Mirror start_live's options; only the fec flag moves.
+    let mut options = AudioOptions::default();
+    options.codec = codec;
+    options.sample_rate = Some(sample_rate);
+    let per_channel = BITRATE
+        .load(Ordering::Relaxed)
+        .max(if codec == AudioCodec::Opus && channels > 1 {
+            48_000
+        } else {
+            0
+        });
+    options.bitrate = (codec == AudioCodec::Opus).then(|| per_channel as u32 * channels);
+    options.dtx = codec == AudioCodec::Opus;
+    options.fec = codec == AudioCodec::Opus && fec != 0;
+    // The shell queue is shared across replaces, so a push source keeps
+    // whatever it holds; a device source re-opens.
+    let capture: Box<dyn AudioCapture> = if push_audio {
+        Box::new(ShellAudioCapture {
+            sample_rate,
+            channels,
+        })
+    } else if let Some(path) = file_audio {
+        match FileAudioCapture::open(&path, false) {
+            Ok(capture) => Box::new(capture),
+            Err(_) => return 1,
+        }
+    } else {
+        Box::new(DeviceAudioCapture::new(
+            INPUT_DEVICE.lock().unwrap().clone(),
+        ))
+    };
+    broadcast.audio().set_with(capture.into_source(), options);
+    0
+}
 #[ffi_export]
 pub fn media_recording_start() -> u8 {
     media_recording_stop();

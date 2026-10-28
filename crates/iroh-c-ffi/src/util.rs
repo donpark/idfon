@@ -13,6 +13,7 @@ pub fn tokio_executor<F: std::future::Future>(future: F) -> F::Output {
 /// Serializes tests that drive the process-global media FFI state (the audio
 /// queue, the live session, the shared executor). A real-time pipeline there
 /// starves under a concurrent heavy test and reads as a pipeline bug.
+#[cfg(test)]
 pub(crate) static MEDIA_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Frees a Rust-allocated string.
