@@ -1,3 +1,4 @@
+pub mod health;
 pub mod live;
 pub mod seam;
 pub mod service;
