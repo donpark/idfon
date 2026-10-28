@@ -544,6 +544,40 @@ more under load; 6/6 clean with FEC off). The 48 kbps/ch floor hid the
 common case but not every frame. Policy: **FEC is a mono-voice feature**
 (flip it with the stereo step, see B2.4); stereo keeps the image.
 
+### D7.1 The redundancy option space (DRED and beyond)
+
+With libopus 1.5/1.6 there are now four redundancy mechanisms, and the
+stereo step no longer has to mean "no recovery" (user framing, 2026-10-28):
+
+| mechanism | stereo-safe | wire cost | needs | recovers |
+| --- | --- | --- | --- | --- |
+| in-band FEC (LBRR) | **no** (couples channels) | ~0 (steals the budget) | 1.3.1, works today | 1 frame |
+| **DRED** (deep redundancy) | **yes** (additive payload, ~12–32 kbps; the primary is coded normally) | +12–32 kbps | libopus **1.5+** (#41) | up to **1 s** |
+| transport-layer FEC (parity over the datagram groups) | yes (codec-independent, covers video too) | 10–30% parity | nothing (works on 1.3.1 today) | one parity block |
+| duplication / RFC 2198 red | yes | 2× audio | nothing | 1 frame |
+
+Verified facts (opus-codec.org 1.5 demo, `opus_defines.h`, `opus.h`):
+DRED is set with `OPUS_SET_DRED_DURATION` (max 10-ms redundant frames),
+decodes through its own `opus_dred_*` state, **composes with LBRR**
+("quality approaches that of the no-loss case"), older decoders ignore the
+payload, and it is **not yet standardized** (1.5 and 1.6 payloads may
+differ: both ends must pin the same libopus generation). Deep PLC is free
+on top (decoder-only).
+
+Design shape: one **redundancy mode** in the media profile (B2),
+`off | inband | dred | transport`, chosen by the ladder and the call mode
+(C11), same seam as the FEC flip (`media_audio_set_fec` today, the mode
+knob tomorrow):
+
+- mono voice on 1.3.1: `inband` (shipped, the measured win).
+- stereo/quality calls on 1.5+: `dred` — the stereo step keeps recovery
+  without touching the image, and the 1 s span covers handover blackholes
+  that no frame-level mechanism reaches.
+- `transport` as the codec-independent floor: works today on 1.3.1, needs
+  no codec bump, and is the only redundancy play that also covers **video**
+  datagrams. Costs a parity block of latency unless run as a sliding window.
+- `off` for recorders and anything that must show holes as sent.
+
 **Codec-version caveat (checked 2026-10-28).** The whole build (ours and
 moq's) runs libopus **1.3.1** (c2rust transpile `unsafe-libopus`, idle since
 2024-11; moq calls it "a build-cost choice rather than a maintenance one"
