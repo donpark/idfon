@@ -375,7 +375,10 @@ fn start_live(
         anyhow::bail!("at least one media track is required");
     }
     let result = tokio_executor(async move {
-        let live = Live::from_env().await?.with_router().spawn();
+        let live = Live::from_env().await?.spawn();
+        // Accept-side routing (MoQ + the health ALPN) comes from the health
+        // module's router (docs/media-adaptation.md §B2.2).
+        crate::health::ensure_served(&live);
         let name = format!("idfon-live-{}", std::process::id());
         let mut combined_broadcast = None;
         if audio || video {
@@ -861,7 +864,7 @@ async fn subscribe_decode_once(
             .await?;
         let broadcast = subscription.broadcast();
         // Health checks sample this session's downlink (docs/media-adaptation.md §B2.2).
-        crate::health::attach(subscription.signals().clone());
+        crate::health::attach(&live, subscription.signals().clone());
         // The publisher writes an empty catalog first and adds the audio
         // rendition once its encoder is probed, so the first snapshot a
         // fast subscriber sees may not carry it yet: wait for it.
