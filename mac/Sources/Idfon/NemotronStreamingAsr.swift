@@ -25,7 +25,12 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     private var gated = false
     private var manager: StreamingNemotronAsrManager?
     private var feedTask: Task<Void, Never>?
-    private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
+    private var bufferContinuation: AsyncStream<(Int, AVAudioPCMBuffer)>.Continuation?
+    /// Bumped at every utterance commit: the feed drops buffers captured
+    /// under an older epoch instead of transcribing them into the next
+    /// utterance. Read from the audio thread — a plain Int bump/race is
+    /// benign here (worst case one buffer lands on the wrong side).
+    private var epoch = 0
     private var onText: ((String, Bool) -> Void)?
     private var onError: ((String) -> Void)?
     private var onSamples: (([Float], Double) -> Void)?
@@ -98,7 +103,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
             onSamples(Self.monoSamples(buffer), buffer.format.sampleRate)
         }
         guard !isGated else { return }
-        bufferContinuation?.yield(buffer)
+        bufferContinuation?.yield((epoch, buffer))
     }
 
     func pause() { setGated(true) }
@@ -110,38 +115,38 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     }
 
     /// A turn committed (or a barge cleared the utterance): drop the running
-    /// transcript so the next partial is the next utterance only. Mic audio
-    /// queued before the commit is dropped with it — chunked inference can lag
-    /// real time, and stale buffers re-transcribe consumed words into the
-    /// fresh transcript (the cross-turn accumulation bug).
+    /// transcript so the next partial is the next utterance only. Buffers
+    /// captured before the commit are dropped by the feed's epoch check —
+    /// chunked inference can lag real time, and stale audio re-transcribes
+    /// consumed words into the fresh transcript (the cross-turn accumulation
+    /// bug). The stream lives for the whole session; only its content is
+    /// fenced — restarting the feed proved fragile.
     func utteranceCommitted() {
         guard started, let manager else { return }
-        feedTask?.cancel()
-        feedTask = nil
-        bufferContinuation?.finish()
-        bufferContinuation = nil
-        Task { [weak self] in
-            await manager.reset()
-            self?.startFeed(manager)
-        }
+        epoch &+= 1
+        Automation.mark("voice: nemotron utterance committed epoch=\(epoch)")
+        Task { await manager.reset() }
     }
 
-    /// The mic→manager feed. Bounded: under overload the oldest audio drops
-    /// instead of the stream lagging further behind real time without bound.
+    /// The mic→manager feed, one stream per session. Bounded: under overload
+    /// the oldest audio drops instead of the stream lagging behind real time
+    /// without bound.
     private func startFeed(_ manager: StreamingNemotronAsrManager) {
         guard started else { return }
-        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
+        let (stream, continuation) = AsyncStream<(Int, AVAudioPCMBuffer)>.makeStream(
             bufferingPolicy: .bufferingNewest(64)
         )
         bufferContinuation = continuation
         feedTask = Task { [weak self] in
-            for await buffer in stream {
+            for await (capturedEpoch, buffer) in stream {
                 if Task.isCancelled { break }
+                guard let self else { return }
+                guard self.epoch == capturedEpoch else { continue }
                 do {
                     _ = try await manager.process(audioBuffer: buffer)
                 } catch {
                     Automation.mark("voice: nemotron error \(error.localizedDescription)")
-                    self?.onError?("nemotron: \(error.localizedDescription)")
+                    self.onError?("nemotron: \(error.localizedDescription)")
                 }
             }
         }
