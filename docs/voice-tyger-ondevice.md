@@ -15,8 +15,8 @@ rulings and measurements further down are the record that produced it.
 | Platform | Tier | Decision guard (24 × 3 min, 72 min corpus) | Size |
 | --- | --- | --- | --- |
 | **All platforms (2026-10-22; removed 2026-10-25)** | ~~path-C student~~ deleted: a Parakeet-tap copycat with ~50% decision parity and a backchannel head that never fired | — | — |
-| **macOS 27+ / iOS 27+** | **CoreAI fp16** (fp16 compute, fp32 I/O) — `ports/tyger-coreai` | **99.67%** aligned ±2 frames (916/919; 4 boundary flips in 917) | ~0.77 GB |
-| — same platforms, exact tier | CoreAI fp32 | **100%** (917/917 identical frames) | 1.53 GB |
+| **macOS 27+ / iOS 27+** | **CoreAI fp32** — `ports/tyger-coreai` (default rung, loader-enforced 2026-10-27) | **100%** (917/917 identical frames) | 1.53 GB |
+| — same platforms, opt-in rung | CoreAI fp16 (fp16 compute, fp32 I/O) — `IDFON_TURN_PRECISION=fp16` | 99.67% aligned ±2 frames on the corpus — but **0 endpoints on the corner gate** (fp16 `p_end` drift); opt-in only | ~0.77 GB |
 | macOS 14–26 | MLX int8-g16 (stem + layers.0 fp32) — `TygerVoiceMLX` | 99.5% (3 flips in 917) | 1.58 GB on disk¹ |
 | iOS 18–26 | CoreML fp16 encoder (ANE) + fp32 step — `TygerVoice` | 95.9% (21 flips; accepted jitter) | ~0.86 GB |
 
@@ -28,9 +28,36 @@ decision parity; its backchannel head never fired). `TurnShadow.start()`
 selects the teacher tiers below, and classic turn-taking when nothing loads.
 The `pathc` tier is gone from the packed manifest (`scripts/pack-tyger-models.mjs`).
 
-- **Loading**: `CoreAITurnModel` prefers the float16 assets
-  (`tyger_encoder_float16.aimodel` + `tyger_step_float16.aimodel`) and falls
-  back to the float32 pair — drop the fp16 pair to run the exact tier.
+- **Loading**: `CoreAITurnModel` loads the float32 pair by default (the
+  2026-10-27 ruling: the fp16 pair drifts `p_end` ≈ 0.03 and never ends a
+  margin turn on the corner gate); fp16 is opt-in via
+  `IDFON_TURN_PRECISION=fp16` and the fallback when only it is installed.
+- **Delivery (phone)**: `TygerModelStore` fetches the tier from the pinned
+  `donpark/tyger-models` manifest (packed by `scripts/pack-tyger-models.mjs`)
+  into `TygerModelStore.root` — `Library/Caches/tyger-models`, cache-class
+  (the weights are re-downloadable) — behind the `VoiceModelGate` download
+  approval (2026-10-27 rule: downloads start from the leading user action,
+  never at call start). The manifest ships the fp32 pair plus the A18
+  (`.h17p`) AOT containers — loading a source `.aimodel` without one triggers
+  the per-load ANE compile leak (`docs/disk-hygiene.md`) — and side-loads go
+  to the same directory. `TygerModelStore.migrateLegacyLayout()` (app launch)
+  moves the older layouts in (pre-2026-10-27 `Documents/tyger-models`, the
+  earlier Application Support root) and deletes the product-dead `pathc` tier.
+  **Reclaim (2026-10-27)**: the tier is cache-class on purpose — iOS purges
+  `Library/Caches` content automatically in low-storage situations (Apple
+  storage guidelines; community-confirmed — there is no file-level override:
+  `NSURLIsPurgeableKey` is read-only and reads `false` even in Caches, and
+  nothing can exempt a cache file from the purge), so the system's condition
+  (low storage) and action (delete) handle the common case, and the gate
+  re-fetches on the next voice use. `TygerModelStore.reclaimIfDiskLow()` at
+  launch covers the deterministic edge: condition =
+  `volumeAvailableCapacityForImportantUsage` < 2 GB, action = delete the
+  store root. Non-re-downloadable packs (phonon, pocket-voices) stay in
+  Application Support — never purged — exactly the split the SO guidance
+  prescribes. Heavier Apple-native option if that is not enough: Background
+  Assets (`AssetPackManager` — ODR's designated successor: manifest-driven
+  packs with system-scheduled download and system eviction under pressure).
+  Provisioned on the iPhone 16 (iOS 27): 2026-10-27.
 - **Guard metric**: agreement with the fp32 reference through the same rules
   (same-kind decisions within ±2 frames = one) over the `dualturn-otospeech`
   corpus, `ports/tyger-coreml/parity7.py`; the bar is **≥99%**.

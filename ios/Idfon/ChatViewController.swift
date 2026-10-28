@@ -421,7 +421,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // contact may be about to be called, and the model load must not sit
         // on the call's critical path (per-contact engine picks included).
         if !conversation.isRoom, ContactCallProfiles.isCallable(peer.id) {
-            SpeechEngines.prewarm(
+            // The download approval gate (2026-10-27 rule): model downloads
+            // start from here only after the user approves them — never
+            // while a call is starting.
+            VoiceModelGate.prompt(
+                from: self,
                 asr: ContactOnDeviceEngines.asr(for: peer.id),
                 tts: ContactOnDeviceEngines.tts(for: peer.id))
         }
@@ -1459,6 +1463,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if session.isActive {
             session.stop()
         } else {
+            // A voice-agent call needs its models already on disk: the gate
+            // (2026-10-27 rule) — a call never starts a download.
+            guard VoiceModelGate.callReady() else {
+                VoiceModelGate.prompt(from: self, forCall: true)
+                return
+            }
             // Same call cues as a live call: ringback while the recognizer
             // loads, answered once it is listening, stop on hangup. Configure
             // the session first so the tone engine starts on the speaker route.

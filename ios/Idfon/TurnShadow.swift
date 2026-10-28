@@ -5,13 +5,15 @@ import Foundation
 import TygerVoice
 import TygerVoiceCoreAI
 
-/// Model delivery for the turn engine — download-on-first-use (2026-10-21
-/// decision): the tier's artifacts come from a pinned manifest (`url_base` +
-/// per-file sha256/size — the `scripts/pack-tyger-models.mjs` shape) into
-/// `Documents/tyger-models/`, the same place side-loading uses, so either
-/// path works. Only the device's tier is fetched (CoreAI fp16 on iOS 27+,
-/// else the three CoreML packages). Fail-open: any failure just means classic
-/// turn-taking.
+/// Model delivery for the turn engine — download behind the `VoiceModelGate`
+/// approval (2026-10-27 rule): the tier's artifacts come from a pinned
+/// manifest (`url_base` + per-file sha256/size — the
+/// `scripts/pack-tyger-models.mjs` shape) into `TygerModelStore.root`
+/// (`Library/Caches/tyger-models` — cache-class, system-reclaimable), the
+/// same place side-loading uses, so
+/// either path works. Only the device's tier is fetched (CoreAI fp32 on iOS
+/// 27+, else the three CoreML packages). Fail-open: any failure just means
+/// classic turn-taking.
 enum TygerModelStore {
     struct Manifest: Decodable {
         struct Entry: Decodable {
@@ -42,9 +44,77 @@ enum TygerModelStore {
         return nil
     }
 
-    private static let root = modelSupportDirectory("tyger-models")
+    /// The install root: `Library/Caches/tyger-models` (2026-10-27) — the
+    /// weights are re-downloadable, so the pack is cache-class by Apple's
+    /// definition: the file system may delete it when asked to free space
+    /// (`NSURLIsPurgeableKey`), and the gate re-fetches. The loaders read the
+    /// same root (fail-open to classic when it is gone).
+    static let root = modelCachesDirectory("tyger-models")
     private static let lock = NSLock()
     private static var tasks: [String: Task<Bool, Never>] = [:]
+
+    /// One-time cleanup/migration of model-pack layouts (idempotent, cheap
+    /// when nothing is stray). The pack is cache-class since 2026-10-27
+    /// (`Library/Caches` — the file system may delete it when asked to free
+    /// space; the gate re-fetches). Everything found in the older layouts
+    /// moves into the current root (existing files win, nothing is
+    /// overwritten): the pre-2026-10-27 `Documents/tyger-models` side-load
+    /// dir, the previous Application Support root, and tier dirs misplaced at
+    /// the support root. The product-dead `pathc` student tier (removed
+    /// 2026-10-25) is deleted instead.
+    static func migrateLegacyLayout() {
+        let fm = FileManager.default
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("tyger-models")
+        let tygerChildren = ["coreai", "coreml", "mlx", "TygerEncoder.mlpackage",
+                             "TygerEncoderDyn.mlpackage", "TygerStep.mlpackage"]
+        for source in [docs, support] where fm.fileExists(atPath: source.path) {
+            for item in (try? fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)) ?? [] {
+                let name = item.lastPathComponent
+                let dest = name == "tyger-models" ? root
+                    : (tygerChildren.contains(name) ? root.appendingPathComponent(name) : nil)
+                if source == docs && name == "pathc" {
+                    try? fm.removeItem(at: item) // tier removed from the product 2026-10-25
+                } else if let dest {
+                    // `modelCachesDirectory` creates the root eagerly; an
+                    // empty destination is that placeholder, not content.
+                    if fm.fileExists(atPath: dest.path) {
+                        guard ((try? fm.contentsOfDirectory(atPath: dest.path)) ?? []).isEmpty else { continue }
+                        try? fm.removeItem(at: dest)
+                    }
+                    try? fm.moveItem(at: item, to: dest)
+                }
+            }
+            if source == docs, ((try? fm.contentsOfDirectory(atPath: source.path)) ?? []).isEmpty {
+                try? fm.removeItem(at: source)
+            }
+        }
+        // Purgeable probe: prove the Caches home is evictable on this OS build.
+        let probe = root.appendingPathComponent(".purge-probe")
+        fm.createFile(atPath: probe.path, contents: Data())
+        let purgeable = (try? probe.resourceValues(forKeys: [.isPurgeableKey]))?.isPurgeable
+        Automation.mark("voice: model store purgeable=\(purgeable.map { String(describing: $0) } ?? "?")")
+        try? fm.removeItem(at: probe)
+    }
+
+    /// The reclaim condition/action we own (2026-10-27). Condition: free
+    /// space for important usage below `freeBytes`. Action: delete the store
+    /// root — the tier is re-downloadable, loaders fail open to classic, and
+    /// the gate re-fetches on the next voice use. This is deliberate: on iOS
+    /// `NSURLIsPurgeableKey` is read-only and reads `false` even in Caches
+    /// (verified iOS 27.1), so no file-system eviction will reclaim it for
+    /// us. The heavier Apple-native alternative is Background Assets
+    /// (`AssetPackManager` — system-scheduled download + system eviction).
+    static func reclaimIfDiskLow(freeBytes: Int64 = 2_000_000_000) {
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        let free = (try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage ?? .max
+        Automation.mark("voice: model store free=\(free / 1_000_000)MB reclaim-below=\(freeBytes / 1_000_000)MB")
+        guard free < freeBytes else { return }
+        try? FileManager.default.removeItem(at: root)
+        Automation.mark("voice: turn tier reclaimed (\(free / 1_000_000)MB free)")
+    }
 
     /// Download the tier's files once per process (already-present files are
     /// kept: side-loading and earlier fetches both count). Returns whether
@@ -109,7 +179,7 @@ enum TygerModelStore {
 
     /// Install paths follow the loaders' expectations — and the side-load
     /// layout they already document: CoreAI bundles live under `coreai/`, the
-    /// CoreML packages at the root of `Documents/tyger-models/`.
+    /// CoreML packages at the root of `TygerModelStore.root`.
     private static func installPath(for name: String) -> String {
         name.hasPrefix("coreml/") ? String(name.dropFirst("coreml/".count)) : name
     }
@@ -134,12 +204,13 @@ enum TygerModelStore {
 /// segmenter's commit stays authoritative until the diff says otherwise (the
 /// swap-over convention; `docs/voice-tyger-option.md` P3).
 ///
-/// Tier: Core AI (iOS 27+) — the shipping rung is fp16 (2026-10-21 ruling;
-/// `CoreAITurnModel` prefers the float16 assets and falls back to fp32) — when
-/// its `.aimodel`s are side-loaded in `Documents/tyger-models/coreai/`;
+/// Tier: Core AI (iOS 27+) — the default rung is fp32 (2026-10-27 ruling; the
+/// fp16 pair drifts `p_end` near the endpoint gate and is opt-in via
+/// IDFON_TURN_PRECISION=fp16) — from `TygerModelStore.root/coreai/`;
 /// otherwise CoreML (TygerEncoder fp16 on ANE, TygerEncoderDyn at startup,
 /// TygerStep fp32) — the accepted pre-27 iOS tier — from
-/// `Documents/tyger-models/`. With no models there the shadow stays off and
+/// `TygerModelStore.root`. Delivery: `TygerModelStore` behind the
+/// `VoiceModelGate` approval. With no models there the shadow stays off and
 /// says so in the Automation log.
 ///
 /// Phase-1 note: the agent channel is now REAL (AudioIO's playback observers —
@@ -181,8 +252,7 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
 
     /// nil when no models are available.
     static func start() async -> TurnShadow? {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("tyger-models")
+        let dir = TygerModelStore.root
         // Tiers load only when already present — an ASR-warmup race must
         // never pull a 0.8 GB tier. A late shadow costs nothing — classic
         // drives until it appears — and a failed load just means classic for

@@ -14,6 +14,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         idfonLog("idfon build stamp \(Self.buildStamp)")
         // Compiler scratch from killed/hung CoreAI loads (age-gated, off-main).
         Task.detached { ScratchSweep.sweep() }
+        // Model-dir housekeeping (legacy side-load layouts into the store
+        // root); synchronous — the moves are same-volume renames.
+        TygerModelStore.migrateLegacyLayout()
+        TygerModelStore.reclaimIfDiskLow()
         // Config schema migrations before launch-arg config below: automation
         // must win over a migration, never the other way round.
         ConfigMigrations.run()
@@ -132,6 +136,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         if let i = args.firstIndex(of: "-videodial"), args.count > i + 1 {
             VideoCall.shared.dial(args[i + 1])
+        }
+        if let i = args.firstIndex(of: "-voiceagent"), args.count > i + 1 {
+            let ref = args[i + 1]
+            Task { @MainActor in
+                VoiceAgentSession.shared.start(peerRef: ref)
+                idfonLog("idfon voice agent started: \(ref)")
+            }
         }
         // Pairing requests run in order on one task: `peer.remove`/`peer.add`
         // for the same name race when issued concurrently, and `-pair-exit`

@@ -69,8 +69,8 @@ public final class CoreAITurnModel: TurnModel {
         }
         // fp32 is the gated reference rung. fp16 is opt-in via
         // IDFON_TURN_PRECISION=fp16 — and the fallback when only the fp16 pair
-        // is installed (the iOS ModelStore delivers just that), so an install
-        // without the fp32 pair never loses the turn model.
+        // is installed (a side-load), so an install without the fp32 pair
+        // never loses the turn model. The ModelStore delivers the fp32 pair.
         let useFP16 = have(fp16) && (forceFP16 || !have(fp32))
         let (encURL, stepURL) = useFP16 ? fp16 : fp32
         self.usesFloat16 = useFP16
