@@ -1,24 +1,23 @@
 #!/bin/bash
 # Builds Idfon.app (macOS) from the Swift sources in this directory.
 #
-# Rust deps (libiroh_c_ffi.dylib + idfond) are built once by cargo and reused
-# from the repo's release targets; the dylib is staged into Vendor/ for the
-# Swift link, then shipped inside the .app next to the executable (its
-# install name is @executable_path/libiroh_c_ffi.dylib).
+# Rust deps (libiroh_c_ffi.dylib, libidfon_director.dylib, idfond) are built
+# once by cargo and reused from the repo's release targets; the dylibs are
+# staged into Vendor/ then shipped inside the .app next to the executable
+# (c-ffi's install name is @executable_path/libiroh_c_ffi.dylib).
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
 
 ./build-deps.sh
 
-# Phonon 31m TTS is a build-time option (arm64-only core; picked at runtime
-# with IDFON_TTS=phonon). IDFON_TTS_PHONON=1 selects the ptts package in
-# Package.swift and compiles PhononTtsEngine in.
-extra=()
 # Phonon 31m TTS is compiled in by default (it is the voice-agent mouth,
-# 2026-10-25 ruling); IDFON_TTS_PHONON=0 opts out (the mouth then falls back
-# to the language default and the macOS floor stays at 14).
-if [ "${IDFON_TTS_PHONON:-1}" = "1" ]; then extra=(-Xswiftc -DPHONON_TTS); fi
+# 2026-10-25 ruling; arm64-only core, picked at runtime with IDFON_TTS=phonon).
+# IDFON_TTS_PHONON=0 opts out (the mouth then falls back to the language
+# default and the macOS floor stays at 14). Same "0 opts out" switch as
+# Package.swift (which adds the ptts package) — keep the two in sync.
+extra=()
+if [ "${IDFON_TTS_PHONON:-1}" != "0" ]; then extra=(-Xswiftc -DPHONON_TTS); fi
 swift build -c release ${extra[@]+"${extra[@]}"}
 
 APP=build/Idfon.app
