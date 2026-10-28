@@ -77,6 +77,11 @@ final class AudioIO: AudioSource, AudioSink {
 
     private var engine = AVAudioEngine()
     private var playbackPlayer = AVAudioPlayerNode()
+    /// In front of the player so a stop can decay the bus (~60 ms) instead of
+    /// cutting scheduled buffers at an amplitude cliff.
+    private var playbackMixer = AVAudioMixerNode()
+    /// Set while a stop fade is in flight (all touches on Self.queue).
+    private var fadePending = false
     private let observerLock = NSLock()
     private let captureObservers = NSHashTable<AnyObject>.weakObjects()
     private let playbackObservers = NSHashTable<AnyObject>.weakObjects()
@@ -288,6 +293,8 @@ final class AudioIO: AudioSource, AudioSink {
         ) { [weak self] _ in self?.engineConfigurationChanged() }
         playbackPlayer = AVAudioPlayerNode()
         engine.attach(playbackPlayer)
+        playbackMixer = AVAudioMixerNode()
+        engine.attach(playbackMixer)
         let input = engine.inputNode
         // Order matters: enable voice processing while the engine is stopped,
         // then connect the playback bus. Connecting first materializes the
@@ -307,7 +314,8 @@ final class AudioIO: AudioSource, AudioSink {
             input.voiceProcessingOtherAudioDuckingConfiguration = .init(
                 enableAdvancedDucking: false, duckingLevel: .min)
         }
-        engine.connect(playbackPlayer, to: engine.mainMixerNode, format: nil)
+        engine.connect(playbackPlayer, to: playbackMixer, format: nil)
+        engine.connect(playbackMixer, to: engine.mainMixerNode, format: nil)
 
         input.removeTap(onBus: 0) // insurance: installTap aborts if one survived
         // installTap raises an uncaturable ObjC exception on an invalid node
@@ -627,6 +635,7 @@ final class AudioIO: AudioSource, AudioSink {
         }
         let id = UUID()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            settleFadeNow()
             pendingPlays[id] = continuation
             inFlightOneShots[id] = converted
             isPlaying = true
@@ -689,6 +698,7 @@ final class AudioIO: AudioSource, AudioSink {
     /// anywhere else cannot be echo-cancelled (docs/audio-media.md).
     func playStream(_ buffer: AVAudioPCMBuffer, done: (() -> Void)? = nil) {
         runOnAudio { [self] in
+            settleFadeNow()
             guard running else {
                 Automation.mark("audio: stream play dropped engine idle")
                 done?()
@@ -727,6 +737,7 @@ final class AudioIO: AudioSource, AudioSink {
             Automation.mark("audio: loop play dropped convert failed in=\(buffer.format.sampleRate)Hz/\(buffer.format.channelCount)ch")
             return
         }
+        settleFadeNow()
         playbackPlayer.scheduleBuffer(converted, at: nil, options: [.loops], completionHandler: nil)
         fanOutPlayback(converted) // the second ear (a looping ring: fed once)
         activeLoop = converted
@@ -750,10 +761,36 @@ final class AudioIO: AudioSource, AudioSink {
     }
 
     func stopPlayback() {
+        runOnAudio { [self] in
+            activeLoop = nil
+            isPlaying = false
+            resumePendingPlays()
+            // A hard stop is an amplitude cliff — speech sounds like a
+            // recording being cut off. Decay the bus over ~60 ms, then stop.
+            // A new play settles the fade immediately so new audio wins.
+            fadePending = true
+            for i in 1...6 {
+                Self.queue.asyncAfter(deadline: .now() + .milliseconds(10 * i)) { [weak self] in
+                    guard let self, self.fadePending else { return }
+                    if i < 6 {
+                        self.playbackMixer.outputVolume = 1 - Float(i) / 6
+                    } else {
+                        self.fadePending = false
+                        self.playbackPlayer.stop()
+                        self.playbackMixer.outputVolume = 1
+                    }
+                }
+            }
+        }
+    }
+
+    /// Land an in-flight fade now: the next chunk must play at full volume and
+    /// must not be flushed by the fade's delayed stop.
+    private func settleFadeNow() {
+        guard fadePending else { return }
+        fadePending = false
         playbackPlayer.stop()
-        activeLoop = nil
-        isPlaying = false
-        resumePendingPlays()
+        playbackMixer.outputVolume = 1
     }
 
     // MARK: - PCM helpers
