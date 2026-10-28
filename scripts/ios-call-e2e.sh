@@ -22,7 +22,11 @@ fi
 [ -n "$device" ] || { echo "no connected physical iPhone; set IPHONE_UDID, IPHONE_NAME, DEVICE, or --device" >&2; exit 2; }
 if [ "$build" = 1 ]; then
   "$ios_dir/build-deps.sh"
-  xcodebuild -project "$ios_dir/Idfon.xcodeproj" -scheme Idfon -destination 'generic/platform=iOS' ARCHS=arm64 -derivedDataPath "$ios_dir/.derived" -configuration Release build >/dev/null
+  extra=()
+  if [ "${IDFON_TTS_PHONON:-1}" = "1" ]; then
+    extra=(SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PHONON_TTS')
+  fi
+  xcodebuild -project "$ios_dir/Idfon.xcodeproj" -scheme Idfon -destination 'generic/platform=iOS' ARCHS=arm64 -derivedDataPath "$ios_dir/.derived" -configuration Release ${extra[@]+"${extra[@]}"} build >/dev/null
 fi
 app="$ios_dir/.derived/Build/Products/Release-iphoneos/Idfon.app"
 log=$(mktemp /tmp/idfon-ios-call-e2e.XXXXXX)

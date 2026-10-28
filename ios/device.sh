@@ -22,10 +22,18 @@ rm -rf "$ios_dir/build" \
 # registers a newly connected device with the developer portal and refreshes
 # the development profile on the fly — without them a rebuild re-signs with a
 # cached profile that lacks the new UDID (install fails 0xe8008012).
+# Phonon 31m TTS is the voice-agent mouth (2026-10-25 ruling) and is compiled
+# in by default, like ios/build.sh — without the condition this script built
+# a Kokoro-fallback app.
+extra=()
+if [ "${IDFON_TTS_PHONON:-1}" = "1" ]; then
+  extra=(SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PHONON_TTS')
+fi
 xcodebuild -project "$ios_dir/Idfon.xcodeproj" -scheme Idfon \
   -destination 'generic/platform=iOS' ARCHS=arm64 \
   -derivedDataPath "$ios_dir/.derived" -configuration "$CONFIG" \
-  -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
+  -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
+  ${extra[@]+"${extra[@]}"} build
 
 app="$ios_dir/.derived/Build/Products/${CONFIG}-iphoneos/Idfon.app"
 
