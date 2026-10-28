@@ -260,6 +260,12 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             session.stop()
             return
         }
+        // Models must already be on disk: the gate (2026-10-27 rule) — a call
+        // never starts a download.
+        guard VoiceModelGate.callReady() else {
+            VoiceModelGate.prompt(forCall: true)
+            return
+        }
         // Ringback while the recognizer loads; the session plays answered/ended.
         CallTonePlayer.shared.start(.ringback)
         if let agent {
@@ -674,6 +680,12 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             self?.showBanner(text)
         }
         syncMessages()
+        // A call from here is plausible now — the download approval gate
+        // (2026-10-27 rule): model downloads start only after the user
+        // approves them here, never while a call is starting.
+        if !conversation.isRoom {
+            DispatchQueue.main.async { VoiceModelGate.prompt() }
+        }
         // Media artifacts (video-frame.jpg, recordings) for this conversation.
         let scope = DaemonRuntime.mediaDir(peer.endpointId ?? peer.id)
         Task.detached(priority: .userInitiated) { _ = media_set_scope(scope) }
