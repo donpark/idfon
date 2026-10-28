@@ -330,6 +330,26 @@ check is what makes the record actionable in the field.
 
 ## C. Prioritized: what to test and change
 
+### Field report (user device, 2026-10-28) — the ladder validated by hand
+
+Wi-Fi calls are very good. During the Wi-Fi→cellular transition audio breaks
+up (crackling, skipping) and video freezes sporadically. Turning off video
+**helps** but audio still crackles. Turning off stereo (with video off)
+**stabilizes the audio**.
+
+Read against the stack: the handover gap is one problem (C2), but "audio
+still crackles with video off" says the *settling* cellular leg is the
+second one: the path lands in a capacity/loss regime where 72–96 kbps
+stereo audio alone does not fit. The user's manual sequence (video off →
+stereo off) is the B2.4 ladder executing by hand, and each step worked in
+the predicted order — video off frees the most bytes (helps), mono halves
+the audio bitrate (stabilizes). Crackling is the silence-hole path: a lost
+frame becomes a zeroed gap with click edges; the conceal fill (PLC/LBRR,
+shipped in the fork branch) converts those to soft dropouts. What this
+changes: the transition fix is not only gap-taming (C2) but post-handover
+adaptation — audio ABR (C5), the jitter buffer (C8), and the redundancy
+mode (D7.1) are what make the cellular leg stable without user action.
+
 Measure first — everything below needs the same instrumentation to prove out.
 
 1. **Per-call quality record** (measure). Emit a per-call JSON summary at
