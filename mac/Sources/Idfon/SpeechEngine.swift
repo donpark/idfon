@@ -340,6 +340,10 @@ final class KokoroTtsEngine: NSObject, TtsEngine {
                 do {
                     Automation.mark("voice: kokoro initializing")
                     let directory = await SpeechProvisioning.directory(for: .kokoroAne)
+                    if directory == nil, !VoiceModelGate.approved {
+                        Automation.mark("voice: kokoro model download not approved")
+                        return
+                    }
                     let manager = KokoroAneManager(variant: .english, directory: directory)
                     try await manager.initialize()
                     self.manager = manager

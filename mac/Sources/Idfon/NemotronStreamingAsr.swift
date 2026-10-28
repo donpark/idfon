@@ -54,6 +54,10 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
         let task = warmLock.withLock { () -> Task<Void, Never> in
             if let existing = warmTask { return existing }
             let created = Task {
+                guard VoiceModelGate.approved else {
+                    Automation.mark("voice: nemotron prewarm skipped (no download approval)")
+                    return
+                }
                 Automation.mark("voice: nemotron prewarming")
                 do {
                     try await ModelHub.download(repo, to: ModelStore.root)
@@ -77,7 +81,11 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
         self.onText = onText
         self.onError = onError
         Automation.mark("voice: nemotron initializing")
-        try await ModelHub.download(Self.repo, to: ModelStore.root)
+        // Downloads are the approval gate's job (2026-10-27 rule): a call
+        // loads from disk and fails clearly if the models are not there.
+        if VoiceModelGate.approved {
+            try await ModelHub.download(Self.repo, to: ModelStore.root)
+        }
         let manager = StreamingNemotronAsrManager()
         try await manager.loadModels(from: Self.modelDirectory())
         await manager.setPartialCallback { [weak self] text in
