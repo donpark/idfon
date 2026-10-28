@@ -152,6 +152,9 @@ mod tests {
 
     #[test]
     fn socket_path_c_abi() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let mut buf = [0u8; 128];
         let written = idfon_client_socket_path(std::ptr::null(), buf.as_mut_ptr(), buf.len());
         assert!(written > 0);
@@ -169,6 +172,9 @@ mod tests {
 
     #[test]
     fn null_args_are_earg() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
         let mut ok: u8 = 255;
@@ -201,6 +207,9 @@ mod tests {
 
     #[test]
     fn absent_daemon_is_econnect() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let dir = unique_dir("absent");
         let path = dir.join("s").to_str().unwrap().to_owned();
         let mut out: *mut u8 = std::ptr::null_mut();
@@ -224,6 +233,9 @@ mod tests {
 
     #[test]
     fn round_trip_through_ffi() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let dir = unique_dir("roundtrip");
         let path = dir.join("s");
         let listener = UnixListener::bind(&path).unwrap();

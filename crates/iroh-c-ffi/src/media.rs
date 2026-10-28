@@ -402,7 +402,13 @@ fn start_live(
                 // In-band FEC: the frame after a hole carries a copy of this
                 // one. LBRR is paid from inside the budget, hence the bitrate
                 // step above (docs/media-adaptation.md §D7).
-                options.fec = codec == AudioCodec::Opus;
+                // FEC only for mono voice: the measured recovery win is
+                // speech (docs/media-adaptation.md §D7). On stereo the LBRR
+                // copy is paid in bandwidth (decide_fec: above a 5% loss hint
+                // it narrows bandwidth to fit FEC), and that pushes the
+                // encoder into coupled coding: the channels leak into each
+                // other. Stereo calls trade resilience for the stereo image.
+                options.fec = codec == AudioCodec::Opus && channels == 1;
                 // Capture device is the default live source; shell-pushed PCM
                 // remains available through `media_audio_push_samples`.
                 let capture: Box<dyn AudioCapture> = if push_audio {
@@ -627,6 +633,10 @@ pub fn media_audio_push_frames(pcm: *const f32, frames: usize, channels: u32) {
             .max(samples);
         let target = (burst * 2).max(rate as usize * 40 / 1_000);
         let excess = q.len().saturating_sub(target);
+        // Trim whole frames only: one stray sample dropped from an interleaved
+        // stream swaps the channels of every later sample on stereo.
+        let channels = AUDIO_PUSH_CHANNELS.load(Ordering::Relaxed).max(1) as usize;
+        let excess = excess - excess % channels;
         if excess > 0 {
             AUDIO_QUEUE_OVERFLOW_SAMPLES.fetch_add(excess as u64, Ordering::Relaxed);
             for _ in 0..excess {
@@ -1746,6 +1756,10 @@ mod tests {
         use std::f32::consts::PI;
         use std::sync::atomic::Ordering;
 
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
         // No speaker in CI: the shell render callback is a no-op sink.
         unsafe extern "C" fn discard(
             _: *const std::ffi::c_void,
@@ -1790,7 +1804,15 @@ mod tests {
         let watchdog = {
             let stop = stop.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(3_000));
+                // Deadlock guard, not a latency budget: the round trip must
+                // finish eventually, however loaded the machine is. What the
+                // test asserts is the captured audio, not the wall clock.
+                for _ in 0..150 {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
                 stop.store(true, Ordering::Relaxed);
             })
         };
@@ -1809,6 +1831,7 @@ mod tests {
             &mut channels,
         ));
         pusher.join().unwrap();
+        stop.store(true, Ordering::Relaxed);
         watchdog.join().unwrap();
         super::media_live_stop();
         super::media_audio_clear_playback_cb();
