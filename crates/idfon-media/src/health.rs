@@ -173,7 +173,7 @@ impl Report {
             if context.stereo && leg.loss_pct_mean >= LOSS_FAIR_PCT {
                 tips.push(Tip {
                     action: Action::TurnOffStereo,
-                    reason: format!("{who} leg: mono halves the audio bitrate and loss is {:.1}%", leg.loss_pct_mean),
+                    reason: format!("{who} leg: mono halves the audio bitrate and turns on loss recovery (FEC); loss is {:.1}%", leg.loss_pct_mean),
                 });
             }
             if queues(leg) {
