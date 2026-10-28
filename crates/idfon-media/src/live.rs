@@ -328,6 +328,9 @@ async fn record_remote(
     decode_config.format = Format::F32;
     decode_config.sample_rate = Some(48_000);
     decode_config.channels = Some(1);
+    // The harness measures live playout, so it fills holes the way calls do
+    // (moq-audio `conceal`); `missing_packets` still counts pts holes.
+    decode_config.conceal = std::time::Duration::from_millis(120);
     let mut decoder = AudioConsumer::new(
         broadcast.consumer(), config, audio, decode_config,
     ).await?;

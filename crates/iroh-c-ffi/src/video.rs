@@ -241,7 +241,16 @@ async fn video_loop(ticket: &str, render: Box<dyn VideoRender>, stop: Arc<Atomic
                 continue;
             }
         };
-        render.present(frame);
+        // Present against the audio playout clock: wait out an early frame,
+        // drop one too late to show (av.rs). No audio leg = present on arrival.
+        match crate::av::decide(frame.timestamp.as_micros() as u64) {
+            crate::av::Decision::Present => render.present(frame),
+            crate::av::Decision::Wait(due) => {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
+                render.present(frame);
+            }
+            crate::av::Decision::Drop => {}
+        }
     }
     // Track ended or the session stopped: nothing is live any more.
     render.clear();

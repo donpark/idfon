@@ -49,6 +49,10 @@ serde_json = "1"
 
 [dev-dependencies]
 tracing-subscriber = "0.3"
+# Opus redundancy-loss harness (tests/opus_redundancy.rs, docs/media-adaptation.md
+# §D7): same codec moq-audio encodes with, plus the raw `decode_fec` surface
+# moq-audio does not expose. Pure Rust, no C toolchain.
+unsafe-libopus = "0.2"
 
 # Hardware H.264 in the Rust pipeline: VideoToolbox (Apple) / VAAPI (Linux).
 # Target-gated because moq-media's `vaapi` feature pulls `cros-codecs`

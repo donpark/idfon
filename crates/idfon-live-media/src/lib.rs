@@ -392,6 +392,9 @@ pub async fn subscribe_caller(
     decode.sample_rate = Some(24_000);
     decode.channels = Some(1);
     decode.latency_max = Some(Duration::from_millis(100));
+    // Live playout fills small holes from the next packet's in-band copy
+    // (moq-audio `conceal`); recordings and downloads must show holes as-is.
+    decode.conceal = Duration::from_millis(120);
     let mut consumer =
         moq_audio::decode::Consumer::new(broadcast.consumer(), &config, &name, decode).await?;
     let (frame_tx, frame_rx) = mpsc::channel(8);
@@ -554,6 +557,10 @@ pub async fn publish_audio(
     let mut options = AudioOptions::default();
     options.codec = profile.codec;
     options.sample_rate = Some(profile.sample_rate);
+    // DTX: silence costs ~nothing on the wire; the decode side honors it.
+    options.dtx = profile.codec == AudioCodec::Opus;
+    // In-band FEC: the frame after a hole carries a copy of this one.
+    options.fec = profile.codec == AudioCodec::Opus;
     broadcast.audio().set_with(
         AudioSource::Frames {
             input: moq_audio::encode::Input {

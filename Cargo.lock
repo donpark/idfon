@@ -1936,7 +1936,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2605,7 +2605,7 @@ dependencies = [
 [[package]]
 name = "hang"
 version = "0.20.11"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "bytes",
  "derive_more",
@@ -3338,6 +3338,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing-subscriber",
+ "unsafe-libopus",
 ]
 
 [[package]]
@@ -4291,7 +4292,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 [[package]]
 name = "kio"
 version = "0.5.8"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "loom",
  "smallvec",
@@ -4588,7 +4589,7 @@ checksum = "21909324aa58f5c284d91cac514c6d081210901dc372d7c8ea6a9d7e0406097a"
 [[package]]
 name = "moq-audio"
 version = "0.0.23"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "block2",
  "bytes",
@@ -4619,7 +4620,7 @@ dependencies = [
 [[package]]
 name = "moq-flate"
 version = "0.1.2"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "bytes",
  "flate2",
@@ -4629,7 +4630,7 @@ dependencies = [
 [[package]]
 name = "moq-json"
 version = "0.3.10"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "bytes",
  "json-patch",
@@ -4646,7 +4647,7 @@ dependencies = [
 [[package]]
 name = "moq-loc"
 version = "0.2.6"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "bytes",
  "moq-net",
@@ -4682,7 +4683,7 @@ dependencies = [
 [[package]]
 name = "moq-msf"
 version = "0.4.2"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "serde",
  "serde_json",
@@ -4692,7 +4693,7 @@ dependencies = [
 [[package]]
 name = "moq-mux"
 version = "0.9.14"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -4724,7 +4725,7 @@ dependencies = [
 [[package]]
 name = "moq-net"
 version = "0.2.20"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "arrayvec",
  "bytes",
@@ -4743,7 +4744,7 @@ dependencies = [
 [[package]]
 name = "moq-nvenc"
 version = "0.0.4"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "cudarc",
  "lazy_static",
@@ -4768,7 +4769,7 @@ dependencies = [
 [[package]]
 name = "moq-video"
 version = "0.0.23"
-source = "git+https://github.com/Frando/moq?branch=iroh-live-3#253441fdb49b0d5606d4bdee54e4571478269a08"
+source = "git+https://github.com/donpark/moq?branch=loss-recovery-0.0.23#7abfc74d48e484874d62f89d75b9e0e6e81c07d3"
 dependencies = [
  "anyhow",
  "block2",
@@ -6406,7 +6407,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6855,7 +6856,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6868,7 +6869,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6936,7 +6937,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8887,7 +8888,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9031,15 +9032,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]

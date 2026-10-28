@@ -69,7 +69,7 @@ static PLAYBACK_ENGINE: Mutex<Option<moq_audio::playback::Engine>> = Mutex::new(
 static INPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 static OUTPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 static VOLUME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(100);
-static BITRATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(32_000);
+static BITRATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(36_000);
 
 /// Stored as `usize` so the function pointer survives a static `Mutex`.
 type AudioPlaybackFn = unsafe extern "C" fn(*const c_void, *const u8, usize, u32, u32, u64);
@@ -376,8 +376,20 @@ fn start_live(
                 options.sample_rate = Some(sample_rate);
                 // BITRATE is per channel: stereo speech wants ~64 kbps at the
                 // 32 kbps default (music wants `media_audio_set_bitrate`).
+                // With FEC, stereo needs a higher floor: at 36 kbps per channel
+                // the LBRR copy pays for itself by coupling the channels,
+                // audible as crosstalk (stereo_tone_roundtrip test).
+                let per_channel = BITRATE
+                    .load(Ordering::Relaxed)
+                    .max(if codec == AudioCodec::Opus && channels > 1 { 48_000 } else { 0 });
                 options.bitrate =
-                    (codec == AudioCodec::Opus).then(|| BITRATE.load(Ordering::Relaxed) as u32 * channels);
+                    (codec == AudioCodec::Opus).then(|| per_channel as u32 * channels);
+                // DTX: silence costs ~nothing on the wire; the decode side honors it.
+                options.dtx = codec == AudioCodec::Opus;
+                // In-band FEC: the frame after a hole carries a copy of this
+                // one. LBRR is paid from inside the budget, hence the bitrate
+                // step above (docs/media-adaptation.md §D7).
+                options.fec = codec == AudioCodec::Opus;
                 // Capture device is the default live source; shell-pushed PCM
                 // remains available through `media_audio_push_samples`.
                 let capture: Box<dyn AudioCapture> = if push_audio {
@@ -865,6 +877,9 @@ async fn subscribe_decode_once(
         // immediately. This is the decoder's jitter tolerance; the sink
         // below adds its own ~50 ms device buffer.
         decode.latency_max = Some(std::time::Duration::from_millis(50));
+        // Live playout fills small holes from the next packet's in-band copy
+        // (moq-audio `conceal`); recordings must show holes as-is.
+        decode.conceal = std::time::Duration::from_millis(120);
         let mut consumer =
             moq_audio::decode::Consumer::new(broadcast.consumer(), config, name, decode).await?;
         let input = AudioInput {
@@ -903,6 +918,8 @@ async fn subscribe_decode_once(
                 Box::new(device_playback)
             }
         };
+        // A/V sync: video presents against the audio playout clock (av.rs).
+        crate::av::reset();
         // Do not start the speaker on the first arriving packet. A short
         // startup prebuffer absorbs normal network/decoder scheduling
         // jitter without turning the first late packet into a click.
@@ -980,7 +997,15 @@ async fn subscribe_decode_once(
                 if startup.len() / 4 < STARTUP_PREBUFFER_FRAMES * input.channels as usize {
                     continue;
                 }
+                let batch_us = (startup.len() as u128 / 4 / input.channels.max(1) as u128)
+                    * 1_000_000
+                    / input.sample_rate.max(1) as u128;
                 playback.write(&apply_playback_gain(&startup), pts_us as u64)?;
+                // The batch plays as one block starting at pts_us - batch_us.
+                crate::av::anchor_audio(
+                    pts_us.saturating_sub(batch_us) as u64,
+                    playback.buffered(),
+                );
                 startup.clear();
                 started = true;
             } else {
@@ -990,6 +1015,7 @@ async fn subscribe_decode_once(
                 const SINK_TARGET_LATENCY: f64 = 0.08; // 80 ms
                 let buffered = playback.buffered().as_secs_f64();
                 let mut data = frame.data.as_ref();
+                let mut trim_samples = 0usize;
                 if buffered > SINK_TARGET_LATENCY && data.len() >= 4 {
                     // Drop whole frames only: a half frame would swap the
                     // channels of every later sample on a stereo call.
@@ -997,9 +1023,16 @@ async fn subscribe_decode_once(
                         * 48_000.0) as usize)
                         .min(data.len() / 4);
                     excess_samples -= excess_samples % input.channels as usize;
+                    trim_samples = excess_samples;
                     data = &data[excess_samples * 4..];
                 }
+                // Anchored at the pts of what is actually written: trimmed
+                // front samples moved the playout start later.
+                let written_pts_us = pts_us
+                    + (trim_samples as u128 / input.channels.max(1) as u128) * 1_000_000
+                        / input.sample_rate.max(1) as u128;
                 playback.write(&apply_playback_gain(data), pts_us as u64)?;
+                crate::av::anchor_audio(written_pts_us as u64, playback.buffered());
             }
             for chunk in frame.data.chunks_exact(4) {
                 samples.push(f32::from_le_bytes(chunk.try_into().unwrap()));
