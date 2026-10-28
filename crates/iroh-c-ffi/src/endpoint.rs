@@ -978,6 +978,9 @@ mod tests {
 
     #[test]
     fn test_config() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let mut config = endpoint_config_default();
         let alpn0: vec::Vec<u8> = b"/hello/world/1234".to_vec().into();
         let alpn1: vec::Vec<u8> = b"/ha/coo/12".to_vec().into();
@@ -993,6 +996,9 @@ mod tests {
 
     #[test]
     fn stream_uni_a_b() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let alpn: vec::Vec<u8> = b"/cool/alpn/1".to_vec().into();
         // create config
         let mut config_server = endpoint_config_default();
@@ -1082,6 +1088,9 @@ mod tests {
 
     #[test]
     fn stream_uni_b_a() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let alpn: vec::Vec<u8> = b"/cool/alpn/1".to_vec().into();
         // create config
         let mut config_server = endpoint_config_default();
@@ -1170,6 +1179,9 @@ mod tests {
 
     #[test]
     fn datagram() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let alpn: vec::Vec<u8> = b"/cool/alpn/1".to_vec().into();
         // create config
         let mut config_server = endpoint_config_default();
@@ -1243,6 +1255,9 @@ mod tests {
 
     #[test]
     fn stream_bi() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let alpn: vec::Vec<u8> = b"/cool/alpn/1".to_vec().into();
         // create config
         let mut config_server = endpoint_config_default();
@@ -1344,6 +1359,9 @@ mod tests {
 
     #[test]
     fn recording_receiver_bi_roundtrip() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let alpn: vec::Vec<u8> = b"idfon-chat/1".to_vec().into();
         let mut server_config = endpoint_config_default();
         endpoint_config_add_alpn(&mut server_config, alpn.as_ref());
@@ -1448,6 +1466,9 @@ mod tests {
 
     #[test]
     fn test_two_connections() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let alpn1: vec::Vec<u8> = b"/cool/alpn/1".to_vec().into();
         let alpn2: vec::Vec<u8> = b"/cool/alpn/2".to_vec().into();
 
