@@ -10,6 +10,7 @@ final class CallViewController: UIViewController {
     private let answerButton = UIButton(type: .system)
     private let declineButton = UIButton(type: .system)
     private let collapseButton = UIButton(type: .system)
+    private let checkButton = UIButton(type: .system)
     private var observers: [NSObjectProtocol] = []
 
     override func viewDidLoad() {
@@ -42,6 +43,12 @@ final class CallViewController: UIViewController {
         collapseButton.backgroundColor = UIColor.white.withAlphaComponent(0.15)
         collapseButton.layer.cornerRadius = 20
         collapseButton.addTarget(self, action: #selector(collapseTapped), for: .touchUpInside)
+        checkButton.translatesAutoresizingMaskIntoConstraints = false
+        checkButton.setImage(UIImage(systemName: "waveform.path.ecg"), for: .normal)
+        checkButton.tintColor = .white
+        checkButton.backgroundColor = UIColor.white.withAlphaComponent(0.15)
+        checkButton.layer.cornerRadius = 20
+        checkButton.addTarget(self, action: #selector(healthCheckTapped), for: .touchUpInside)
         hangUpButton.addTarget(self, action: #selector(hangUpTapped), for: .touchUpInside)
         answerButton.addTarget(self, action: #selector(answerTapped), for: .touchUpInside)
         declineButton.addTarget(self, action: #selector(declineTapped), for: .touchUpInside)
@@ -52,6 +59,7 @@ final class CallViewController: UIViewController {
         view.addSubview(answerButton)
         view.addSubview(declineButton)
         view.addSubview(collapseButton)
+        view.addSubview(checkButton)
 
         NSLayoutConstraint.activate([
             videoView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -63,6 +71,11 @@ final class CallViewController: UIViewController {
             statusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+
+            checkButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+            checkButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            checkButton.widthAnchor.constraint(equalToConstant: 40),
+            checkButton.heightAnchor.constraint(equalToConstant: 40),
 
             hangUpButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             answerButton.trailingAnchor.constraint(equalTo: view.centerXAnchor, constant: -44),
@@ -121,6 +134,55 @@ final class CallViewController: UIViewController {
     }
 
     @objc private func hangUpTapped() { VideoCall.shared.hangUp() }
+
+    /// Connection health check (docs/media-adaptation.md §B2.2): a sheet with
+    /// check progress, then the actions the measurements imply.
+    @objc private func healthCheckTapped() {
+        let progress = UIAlertController(
+            title: "Connection check",
+            message: "Sampling both ends of the call…",
+            preferredStyle: .alert
+        )
+        progress.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(progress, animated: true)
+        HealthCheck.shared.run(peerTicket: VideoCall.shared.joinedTicket) { [weak self] event in
+            guard case .done(let report) = event else { return }
+            progress.dismiss(animated: true) {
+                self?.presentHealthReport(report)
+            }
+        }
+    }
+
+    private func presentHealthReport(_ report: HealthCheck.Report) {
+        var message = "Local: loss \(String(format: "%.1f", report.local.lossPctMean))%, rtt \(report.local.rttMsMin)–\(report.local.rttMsMax) ms"
+        if let remote = report.remote {
+            message += "\nRemote: loss \(String(format: "%.1f", remote.lossPctMean))%, rtt \(remote.rttMsMin)–\(remote.rttMsMax) ms"
+        }
+        for tip in report.tips {
+            message += "\n• \(tip.reason)"
+        }
+        let alert = UIAlertController(
+            title: "Connection: \(report.verdict.capitalized)",
+            message: message,
+            preferredStyle: .actionSheet
+        )
+        for tip in report.tips {
+            switch tip.action {
+            case "turn_off_video":
+                alert.addAction(UIAlertAction(title: "Turn off video", style: .default) { _ in
+                    VideoCall.shared.setVideoEnabled(false)
+                })
+            case "turn_off_stereo":
+                alert.addAction(UIAlertAction(title: "Switch to mono", style: .default) { _ in
+                    VideoCall.shared.setStereo(false)
+                })
+            default:
+                break
+            }
+        }
+        alert.addAction(UIAlertAction(title: "Close", style: .cancel))
+        present(alert, animated: true)
+    }
     @objc private func answerTapped() { VideoCall.shared.answer() }
     @objc private func declineTapped() { VideoCall.shared.decline() }
     /// Collapse to the inline chat video bar; the call keeps running.

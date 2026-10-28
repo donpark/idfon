@@ -92,6 +92,24 @@ uint8_t media_recording_persist(char const *ticket);
 
 uint8_t media_audio_set_volume(uint8_t percent);           // 0..100
 uint8_t media_audio_set_bitrate(uint32_t bitrate);         // 8000..510000 bps
+// Stereo step's complement (docs/media-adaptation.md §B2.4): FEC on with a
+// mono payload is resilience mode; stereo keeps FEC off (the copy would
+// couple the channels). Replaces the audio track (the encoder restarts).
+uint8_t media_audio_set_fec(uint8_t fec);
+// Connection health check (docs/media-adaptation.md §B2.2). Streams JSON
+// Progress events ("sampling" while the window runs, then one "done" with the
+// report; the last argument tells them apart, 1 = done). The remote/ticket
+// variants ask the far end to sample its own downlink over the health ALPN
+// and merge both legs into one report. Returns 0 when started, 1 without a
+// live session, 2 when the remote argument does not parse.
+uint8_t media_health_check(void const *ctx,
+    void (*cb)(void const *ctx, uint8_t const *json, size_t len, uint8_t done), uint64_t duration_ms);
+uint8_t media_health_check_remote(void const *ctx,
+    void (*cb)(void const *ctx, uint8_t const *json, size_t len, uint8_t done), uint64_t duration_ms, char const *peer_addr);
+uint8_t media_health_check_ticket(void const *ctx,
+    void (*cb)(void const *ctx, uint8_t const *json, size_t len, uint8_t done), uint64_t duration_ms, char const *peer_ticket);
+// The last per-call report JSON (a health Report), empty before a call ends.
+char *media_health_last_report(void);
 size_t media_audio_output_count(void);
 size_t media_audio_input_count(void);
 uint64_t media_audio_probe(uint64_t duration_ms);          // input samples captured

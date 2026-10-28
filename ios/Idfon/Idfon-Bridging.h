@@ -71,6 +71,17 @@ uint8_t media_video_set_render_cb(void const *ctx,
 void media_video_clear_render_cb(void);
 uint8_t media_live_set_audio_enabled(uint8_t enabled); // 0 = send silence (capture stays open)
 uint8_t media_live_set_video_enabled(uint8_t enabled); // 0 = send no frames
+// Stereo step's complement (docs/media-adaptation.md §B2.4): FEC on with a
+// mono payload is resilience mode; stereo keeps FEC off.
+uint8_t media_audio_set_fec(uint8_t fec);
+// Connection health check (docs/media-adaptation.md §B2.2): JSON Progress
+// events ("sampling", then one "done" with the report; last arg 1 = done).
+// The remote/ticket variants merge the far end's downlink into one report.
+uint8_t media_health_check(void const *ctx,
+    void (*cb)(void const *ctx, uint8_t const *json, size_t len, uint8_t done), uint64_t duration_ms);
+uint8_t media_health_check_ticket(void const *ctx,
+    void (*cb)(void const *ctx, uint8_t const *json, size_t len, uint8_t done), uint64_t duration_ms, char const *peer_ticket);
+char *media_health_last_report(void);
 char *media_live_last_error(void);           // last publish failure ("" if none)
 void media_video_push_frame(const void *data, uintptr_t len, uint32_t width, uint32_t height, uint64_t pts_ms); // BGRA frame -> live encoder
 void media_shutdown(void);

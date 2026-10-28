@@ -54,4 +54,13 @@ xcrun swiftc -emit-library \
     "$ROOT/target/aarch64-apple-darwin/release/libidfon_director.a" \
     -framework FoundationModels -framework SystemConfiguration -lc++
 
+# swift build links with -L .build/out/Products/Debug ahead of Vendor, so a
+# stale copy there shadows the fresh dylib; keep the shadow in step.
+for shadow in .build/out/Products/Debug; do
+  if [ -d "$shadow" ]; then
+    cp Vendor/libiroh_c_ffi.dylib "$shadow/"
+    cp Vendor/libidfon_director.dylib "$shadow/"
+  fi
+done
+
 echo "staged $PWD/Vendor/libiroh_c_ffi.dylib + libidfon_director.dylib (+ $ROOT/target/release/idfond)"
