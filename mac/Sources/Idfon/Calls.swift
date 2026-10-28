@@ -273,6 +273,7 @@ final class LiveCall {
     }
 
     func hangUp() {
+        joinedTicket = nil
         apply(.hangUp)
     }
 
@@ -369,6 +370,9 @@ final class LiveCall {
             return
         }
         publishedChannels = channels
+        // The stereo step's complement (docs/media-adaptation.md §B2.4):
+        // mono payload is resilience mode, so FEC follows the layout.
+        Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
         do {
             try await client.sendText(
                 to: peer,
@@ -499,6 +503,9 @@ final class LiveCall {
     }
 
     /// Subscribes to a peer ticket without tearing the call down on failure.
+    /// The far end's ticket, for the connection health check (§B2.2).
+    private(set) var joinedTicket: String?
+
     private func subscribe(ticket: String) async -> Bool {
         await Task.detached(priority: .userInitiated) { () -> Bool in
             media_live_subscribe(ticket) == 0
@@ -510,6 +517,7 @@ final class LiveCall {
             fail("live subscribe failed")
             return
         }
+        joinedTicket = ticket
     }
 
     private func fail(_ message: String) {
@@ -582,7 +590,7 @@ final class VideoCall {
     private var frameTimer: Timer?
 
     private var callStartedAt: Date?
-    private var joinedTicket: String?
+    private(set) var joinedTicket: String?
     /// Latest decoded remote frame (rendered via onFrame; also readable).
     private(set) var lastFrame: NSImage?
 
@@ -700,6 +708,9 @@ final class VideoCall {
             return
         }
         publishedChannels = channels
+        // The stereo step's complement (docs/media-adaptation.md §B2.4):
+        // mono payload is resilience mode, so FEC follows the layout.
+        Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
         // No generation change here on purpose: stops must keep naming the
         // call's original ticket (CallLifecycle.generation).
         applySendState()

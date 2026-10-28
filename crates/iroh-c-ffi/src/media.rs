@@ -681,6 +681,8 @@ pub fn media_live_last_error() -> char_p::Box {
 }
 #[ffi_export]
 pub fn media_live_stop() {
+    // Fold the per-call report before the counters reset (health §B2.2).
+    crate::health::finish_call_sampling();
     VIDEO_ENABLED.store(false, Ordering::Relaxed);
     let underruns = AUDIO_QUEUE_UNDERRUN_SAMPLES.swap(0, Ordering::Relaxed);
     let overflows = AUDIO_QUEUE_OVERFLOW_SAMPLES.swap(0, Ordering::Relaxed);

@@ -157,6 +157,9 @@ final class LiveCall {
             return
         }
         publishedChannels = channels
+        // The stereo step's complement (docs/media-adaptation.md §B2.4):
+        // mono payload is resilience mode, so FEC follows the layout.
+        Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
         // No generation change here on purpose: stops must keep naming the
         // call's original ticket (CallLifecycle.generation).
         do {
@@ -342,6 +345,9 @@ final class LiveCall {
                 }
                 published = true
                 publishedChannels = channels
+        // The stereo step's complement (docs/media-adaptation.md §B2.4):
+        // mono payload is resilience mode, so FEC follows the layout.
+        Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
                 idfonLog("idfon live call: caller audio published profile=\(profile.rawValue)")
                 applySendState() // a toggle during `.dialing` may predate the publish
                 apply(.published(ticket: ticket))
@@ -447,6 +453,9 @@ final class LiveCall {
                 }
                 published = true
                 publishedChannels = channels
+        // The stereo step's complement (docs/media-adaptation.md §B2.4):
+        // mono payload is resilience mode, so FEC follows the layout.
+        Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
                 idfonLog("idfon live call: callee audio published profile=\(profile.rawValue)")
                 applySendState() // the mic toggle drives a real published session now
                 // Audio invite: no media line (audio is the default).

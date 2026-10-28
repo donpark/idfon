@@ -26,32 +26,33 @@ pub const HEALTH_ALPN: &[u8] = b"idfon-health/1";
 
 static SIGNALS: Mutex<Option<watch::Receiver<NetworkSignals>>> = Mutex::new(None);
 static CHANNELS: AtomicU64 = AtomicU64::new(1);
-/// The router serving [`HEALTH_ALPN`] for the current session's endpoint.
-static ROUTER: Mutex<Option<(iroh::EndpointId, Router, Endpoint)>> = Mutex::new(None);
+/// Routers serving [`HEALTH_ALPN`], one per session endpoint. A call runs
+/// two endpoints in one process (publish and subscribe legs); each keeps its
+/// own accept side alive.
+static ROUTERS: Mutex<Vec<(iroh::EndpointId, Router)>> = Mutex::new(Vec::new());
+/// The endpoint of the attached session: where a merged check dials out.
+static ENDPOINT: Mutex<Option<Endpoint>> = Mutex::new(None);
 
-/// Serve the health ALPN on the session's endpoint, alongside MoQ. Idempotent
-/// per endpoint; a later session's endpoint replaces the previous router.
+/// Serve the health ALPN on the session's endpoint, alongside MoQ. Per
+/// endpoint and idempotent; routers live as long as their endpoint.
 pub(crate) fn ensure_served(live: &Live) {
-    let mut slot = ROUTER.lock().unwrap_or_else(|poison| poison.into_inner());
-    if slot.as_ref().is_some_and(|(id, _, _)| *id == live.endpoint().id()) {
+    let mut routers = ROUTERS.lock().unwrap_or_else(|poison| poison.into_inner());
+    if routers.iter().any(|(id, _)| *id == live.endpoint().id()) {
         return;
-    }
-    if let Some((_, router, _)) = slot.take() {
-        tokio::spawn(async move {
-            let _ = router.shutdown().await;
-        });
     }
     let endpoint = live.endpoint().clone();
     let builder = live.register_protocols(Router::builder(endpoint.clone()));
     let router = builder.accept(HEALTH_ALPN, Arc::new(HealthProtocol)).spawn();
-    *slot = Some((live.endpoint().id(), router, endpoint));
+    routers.push((live.endpoint().id(), router));
 }
 
 /// Attach the live session's signals so checks can sample them. Call it when
 /// a subscription is established; the last one wins per call.
 pub(crate) fn attach(live: &Live, signals: watch::Receiver<NetworkSignals>) {
     ensure_served(live);
+    *ENDPOINT.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(live.endpoint().clone());
     *SIGNALS.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(signals);
+    start_call_sampling();
 }
 
 /// The live session's channel count, for the mono/stereo tips.
@@ -67,6 +68,96 @@ fn take_sample(signals: &watch::Receiver<NetworkSignals>) -> Sample {
         loss_pct: signals.loss_rate * 100.0,
         goodput_kbps: signals.goodput_bps.map(|bps| bps / 1_000),
     }
+}
+
+// --- Per-call report (the quality record's log-only first slice) ---------
+
+/// The last per-call report as JSON, for shells that want the numbers the
+/// hangup log carries. Empty before any call has ended.
+static LAST_REPORT: Mutex<String> = Mutex::new(String::new());
+
+struct CallSampler {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    samples: std::sync::Arc<Mutex<Vec<Sample>>>,
+    video_seen: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    underruns_at_start: u64,
+}
+
+static CALL: Mutex<Option<CallSampler>> = Mutex::new(None);
+
+/// Sample the attached session for the length of a call. Starts with
+/// [`attach`]; the report is produced by [`finish_call_sampling`].
+fn start_call_sampling() {
+    finish_call_sampling();
+    let Some(signals) = SIGNALS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone()
+    else {
+        return;
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let samples = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let video_seen = std::sync::Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let thread_samples = samples.clone();
+    let thread_video = video_seen.clone();
+    std::thread::spawn(move || {
+        while !thread_stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(500));
+            thread_samples
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(take_sample(&signals));
+            if crate::media::video_enabled() {
+                thread_video.store(true, Ordering::Relaxed);
+            }
+        }
+    });
+    *CALL.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(CallSampler {
+        stop,
+        samples,
+        video_seen,
+        underruns_at_start: crate::media::underruns(),
+    });
+}
+
+/// Produce the per-call report at hangup: fold the call's samples, log it,
+/// and keep it for [`media_health_last_report`].
+pub(crate) fn finish_call_sampling() {
+    use std::sync::atomic::Ordering;
+    let Some(call) = CALL.lock().unwrap_or_else(|poison| poison.into_inner()).take() else {
+        return;
+    };
+    call.stop.store(true, Ordering::Relaxed);
+    let samples = call
+        .samples
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    let underruns = crate::media::underruns().saturating_sub(call.underruns_at_start);
+    let local = Leg::fold(&samples, underruns);
+    let context = Context {
+        video_on: call.video_seen.load(Ordering::Relaxed),
+        stereo: CHANNELS.load(Ordering::Relaxed) > 1,
+    };
+    let report = Report::one_sided(local, context);
+    let json = serde_json::to_string(&report).unwrap_or_default();
+    eprintln!("[health] per-call report: {json}");
+    *LAST_REPORT.lock().unwrap_or_else(|poison| poison.into_inner()) = json;
+}
+
+/// The last per-call report JSON (`idfon_media::health::Report`), empty when
+/// no call has ended since launch.
+#[ffi_export]
+pub fn media_health_last_report() -> char_p::Box {
+    LAST_REPORT
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone()
+        .try_into()
+        .unwrap()
 }
 
 /// One probe request: sample for `probe_ms` and answer with one `Leg`.
@@ -129,11 +220,10 @@ async fn fetch_remote_leg(endpoint: Endpoint, addr: EndpointAddr, probe_ms: u64)
 }
 
 fn session_endpoint() -> Option<Endpoint> {
-    ROUTER
+    ENDPOINT
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
-        .as_ref()
-        .map(|(_, _, endpoint)| endpoint.clone())
+        .clone()
 }
 
 /// Run a health check over the live session and report through `cb`.
@@ -170,6 +260,26 @@ pub fn media_health_check_remote(
         return 2;
     };
     run_check(ctx, cb, duration_ms, Some((endpoint, addr)))
+}
+
+/// The shell-friendly bi-directional check: the far end is named by its
+/// `LiveTicket` (what call setup already holds) instead of a raw address.
+/// Returns 0 when started, 1 when no live session is attached, 2 when the
+/// ticket does not parse.
+#[ffi_export]
+pub fn media_health_check_ticket(
+    ctx: *const c_void,
+    cb: unsafe extern "C" fn(*const c_void, *const u8, usize, u8),
+    duration_ms: u64,
+    peer_ticket: char_p::Ref<'_>,
+) -> u8 {
+    let Some(endpoint) = session_endpoint() else {
+        return 1;
+    };
+    let Ok(ticket) = peer_ticket.to_str().parse::<iroh_live::ticket::LiveTicket>() else {
+        return 2;
+    };
+    run_check(ctx, cb, duration_ms, Some((endpoint, ticket.endpoint)))
 }
 
 fn run_check(

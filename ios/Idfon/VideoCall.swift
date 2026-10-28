@@ -115,7 +115,7 @@ final class VideoCall: NSObject {
     /// of truth — `state` and the rest are views over it (CallLifecycle.swift;
     /// every transition's effects run in `run`).
     private var life = CallLifecycle()
-    private var joinedTicket: String?
+    private(set) var joinedTicket: String?
 
     var state: State {
         switch life.phase {
@@ -220,6 +220,9 @@ final class VideoCall: NSObject {
             return
         }
         publishedChannels = channels
+        // The stereo step's complement (docs/media-adaptation.md §B2.4):
+        // mono payload is resilience mode, so FEC follows the layout.
+        Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
         // No generation change here on purpose: stops must keep naming the
         // call's original ticket (CallLifecycle.generation).
         applySendState()
@@ -359,6 +362,9 @@ final class VideoCall: NSObject {
                 }
                 published = true
                 publishedChannels = channels
+        // The stereo step's complement (docs/media-adaptation.md §B2.4):
+        // mono payload is resilience mode, so FEC follows the layout.
+        Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
                 apply(.published(ticket: ticket))
                 applySendState() // a toggle during `.calling` may predate the publish
                 try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
@@ -422,6 +428,9 @@ final class VideoCall: NSObject {
                 }
                 published = true
                 publishedChannels = channels
+        // The stereo step's complement (docs/media-adaptation.md §B2.4):
+        // mono payload is resilience mode, so FEC follows the layout.
+        Task.detached(priority: .userInitiated) { _ = media_audio_set_fec(channels == 1 ? 1 : 0) }
                 applySendState()
                 idfonLog("idfon video answer media started audio=1 video=\(cameraOn ? 1 : 0)")
                 try await client.sendText(to: pending.peer, LiveInvite.build(action: "start", ticket: own, call: true))

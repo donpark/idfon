@@ -493,7 +493,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             case .inCall:
                 title = "In call"
                 buttons = [headerButton("End call", #selector(endCallTapped), destructive: true),
-                           headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
+                           headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped)),
+                           headerButton(checkingHealth ? "Checking\u{2026}" : "Check", #selector(healthCheckTapped))]
             case .calling:
                 title = "Calling…"
                 buttons = [headerButton("Cancel", #selector(endCallTapped))]
@@ -504,7 +505,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             case .inCall:
                 title = "In video call"
                 buttons = [headerButton("End call", #selector(endCallTapped), destructive: true),
-                           headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped))]
+                           headerButton(callRecordingActive ? "Stop rec" : "Record", #selector(callRecordTapped)),
+                           headerButton(checkingHealth ? "Checking\u{2026}" : "Check", #selector(healthCheckTapped))]
             case .watching:
                 title = "Watching video"
                 buttons = [headerButton("Stop watching", #selector(endCallTapped), destructive: true)]
@@ -1277,6 +1279,77 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc private func endCallTapped() {
         if case .idle = live.state { video.hangUp() } else { live.hangUp() }
         refreshHeaderSoon()
+    }
+
+    /// Connection health check (docs/media-adaptation.md §B2.2): sample both
+    /// legs of the live call, then offer the actions the measurements imply.
+    private var checkingHealth = false
+
+    @objc private func healthCheckTapped() {
+        guard !checkingHealth else { return }
+        checkingHealth = true
+        updateLiveUI()
+        let peerTicket = audioActive() ? live.joinedTicket : video.joinedTicket
+        HealthCheck.shared.run(peerTicket: peerTicket) { [weak self] event in
+            guard case .done(let report) = event else { return }
+            self?.checkingHealth = false
+            self?.updateLiveUI()
+            self?.presentHealthReport(report)
+        }
+    }
+
+    private func presentHealthReport(_ report: HealthCheck.Report) {
+        let alert = NSAlert()
+        alert.messageText = "Connection: \(report.verdict.capitalized)"
+        var lines = [legLine("Local", report.local)]
+        if let remote = report.remote {
+            lines.append(legLine("Remote", remote))
+        }
+        for tip in report.tips {
+            lines.append("\u{2022} \(tip.reason)")
+        }
+        alert.informativeText = lines.joined(separator: "\n")
+        // Action buttons map 1:1 to the tips' degradations, where a seam
+        // exists today; the rest ride along as text (docs §B2.2).
+        var actions: [() -> Void] = []
+        for tip in report.tips {
+            switch tip.action {
+            case "turn_off_video":
+                alert.addButton(withTitle: "Turn off video")
+                actions.append { [weak self] in self?.turnOffVideo() }
+            case "turn_off_stereo":
+                alert.addButton(withTitle: "Switch to mono")
+                actions.append { [weak self] in self?.turnOffStereo() }
+            default:
+                break
+            }
+        }
+        alert.addButton(withTitle: "Close")
+        actions.append({})
+        let index = alert.runModal().rawValue
+            - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        if index >= 0, index < actions.count {
+            actions[index]()
+        }
+    }
+
+    private func legLine(_ who: String, _ leg: HealthCheck.Leg) -> String {
+        var line = "\(who): loss \(String(format: "%.1f", leg.lossPctMean))%, rtt \(leg.rttMsMin)\u{2013}\(leg.rttMsMax) ms"
+        if let goodput = leg.goodputKbpsMean {
+            line += ", \(goodput) kbps"
+        }
+        if leg.audioUnderrunSamples > 0 {
+            line += ", audio dropouts"
+        }
+        return line
+    }
+
+    private func turnOffVideo() {
+        if case .idle = live.state { video.setVideoEnabled(false) } else { live.setVideoEnabled(false) }
+    }
+
+    private func turnOffStereo() {
+        if case .idle = live.state { video.setStereo(false) } else { live.setStereo(false) }
     }
 
     // MARK: - §5 file send
