@@ -27,6 +27,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     private var feedTask: Task<Void, Never>?
     private var bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation?
     private var onText: ((String, Bool) -> Void)?
+    private var onError: ((String) -> Void)?
     private var onSamples: (([Float], Double) -> Void)?
     private var started = false
 
@@ -83,6 +84,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
         onError: @escaping (String) -> Void
     ) async throws {
         self.onText = onText
+        self.onError = onError
         Automation.mark("voice: nemotron initializing")
         try await ModelHub.download(Self.repo, to: Self.modelsBase)
         let manager = StreamingNemotronAsrManager()
@@ -93,22 +95,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
             self?.onText?(text, false)
         }
         self.manager = manager
-
-        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
-            bufferingPolicy: .unbounded
-        )
-        bufferContinuation = continuation
-        feedTask = Task {
-            for await buffer in stream {
-                if Task.isCancelled { break }
-                do {
-                    _ = try await manager.process(audioBuffer: buffer)
-                } catch {
-                    Automation.mark("voice: nemotron error \(error.localizedDescription)")
-                    onError("nemotron: \(error.localizedDescription)")
-                }
-            }
-        }
+        startFeed(manager)
 
         // The shared microphone source (single input owner).
         source.addCaptureObserver(self)
@@ -136,10 +123,41 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     }
 
     /// A turn committed (or a barge cleared the utterance): drop the running
-    /// transcript so the next partial is the next utterance only.
+    /// transcript so the next partial is the next utterance only. Mic audio
+    /// queued before the commit is dropped with it — chunked inference can lag
+    /// real time, and stale buffers re-transcribe consumed words into the
+    /// fresh transcript (the cross-turn accumulation bug).
     func utteranceCommitted() {
-        let manager = self.manager
-        Task { await manager?.reset() }
+        guard started, let manager else { return }
+        feedTask?.cancel()
+        feedTask = nil
+        bufferContinuation?.finish()
+        bufferContinuation = nil
+        Task { [weak self] in
+            await manager.reset()
+            self?.startFeed(manager)
+        }
+    }
+
+    /// The mic→manager feed. Bounded: under overload the oldest audio drops
+    /// instead of the stream lagging further behind real time without bound.
+    private func startFeed(_ manager: StreamingNemotronAsrManager) {
+        guard started else { return }
+        let (stream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream(
+            bufferingPolicy: .bufferingNewest(64)
+        )
+        bufferContinuation = continuation
+        feedTask = Task { [weak self] in
+            for await buffer in stream {
+                if Task.isCancelled { break }
+                do {
+                    _ = try await manager.process(audioBuffer: buffer)
+                } catch {
+                    Automation.mark("voice: nemotron error \(error.localizedDescription)")
+                    self?.onError?("nemotron: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     func stop() {
@@ -154,6 +172,7 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
         self.manager = nil
         Task { await manager?.cleanup() }
         onText = nil
+        onError = nil
     }
 
     private var isGated: Bool { gateLock.withLock { gated } }
