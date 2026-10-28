@@ -144,8 +144,9 @@ final class NemotronStreamingAsr: AsrEngine, AudioCaptureObserver {
     /// The mic→manager feed, one stream per session. Bounded: under overload
     /// the oldest audio drops instead of the stream lagging behind real time
     /// without bound.
+    /// no guard here — called once from `start` (before `started` is set);
+    /// the epoch fence and `stop()` own the lifecycle.
     private func startFeed(_ manager: StreamingNemotronAsrManager) {
-        guard started else { return }
         let (stream, continuation) = AsyncStream<(Int, AVAudioPCMBuffer)>.makeStream(
             bufferingPolicy: .bufferingNewest(64)
         )
