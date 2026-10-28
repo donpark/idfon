@@ -1,6 +1,20 @@
 import AVFAudio
 import Foundation
 import FluidAudio
+
+/// Apple layout for on-device model packs: `Library/Application Support/<name>`
+/// (app support files — `Documents/` is user content) with iCloud backup
+/// excluded: the weights are re-downloadable and must not cost backup quota.
+func modelSupportDirectory(_ name: String) -> URL {
+    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    let dir = base.appendingPathComponent(name)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    var excluded = dir
+    var values = URLResourceValues()
+    values.isExcludedFromBackup = true
+    try? excluded.setResourceValues(values)
+    return dir
+}
 #if PHONON_TTS
 import PhononTTS
 #endif
@@ -551,8 +565,7 @@ final class PocketTtsEngine: NSObject, TtsEngine {
     /// Cloned-voice pack directory (side-loaded or fetched; see
     /// scripts/fetch-pocket-voices.sh for the layout).
     private static var voicesDir: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("pocket-voices")
+        modelSupportDirectory("pocket-voices")
     }
 }
 
@@ -747,12 +760,14 @@ final class PhononTtsEngine: NSObject, TtsEngine {
         fallback.stop()
     }
 
-    /// The Core ML bundle at `Documents/phonon`, side-loaded or fetched from
-    /// IDFON_PHONON_PACK_URL (scripts/fetch-phonon-31m.sh builds the layout).
+    /// The Core ML bundle in `Library/Application Support/phonon`, side-loaded
+    /// or fetched from IDFON_PHONON_PACK_URL / `-phononpack <url>`
+    /// (scripts/fetch-phonon-31m.sh builds the layout).
     private static func modelsDirectory() async throws -> URL {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("phonon")
-        if let base = env("IDFON_PHONON_PACK_URL"), let url = URL(string: base) {
+        let dir = modelSupportDirectory("phonon")
+        // The launch arg mirrors the env var: devicectl launch cannot set
+        // environment variables.
+        if let base = env("IDFON_PHONON_PACK_URL") ?? launchString("-phononpack"), let url = URL(string: base) {
             return try await PhononModels.download(from: url, to: dir)
         }
         guard PhononModels.isInstalled(at: dir) else {
@@ -781,6 +796,14 @@ final class PhononTtsEngine: NSObject, TtsEngine {
     private static func env(_ key: String) -> String? {
         guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else { return nil }
         return value
+    }
+
+    private static func launchString(_ flag: String) -> String? {
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: flag), args.count > index + 1 {
+            return args[index + 1]
+        }
+        return nil
     }
 }
 

@@ -42,8 +42,7 @@ enum TygerModelStore {
         return nil
     }
 
-    private static let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("tyger-models")
+    private static let root = modelSupportDirectory("tyger-models")
     private static let lock = NSLock()
     private static var tasks: [String: Task<Bool, Never>] = [:]
 
