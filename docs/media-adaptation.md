@@ -258,6 +258,21 @@ Do not build a new reconfiguration mechanism. The missing piece is the
    on: with mono there is no channel coupling to corrupt, and the measured
    recovery win is mono speech). So "turn off stereo" doubles as "turn on
    recovery", one step on the way down and the reverse on the way up.
+   **Simulated stereo keeps the ear wide on a mono wire** (user idea,
+   2026-10-28): the stereo step's middle rung transmits mono (FEC-safe,
+   halves the bitrate) and the shell re-synthesizes the image at playback —
+   Apple's 3D audio support (`AVAudioEnvironmentNode` listener/source
+   positions, or a cheap Haas/decorrelation widener) with well-known spatial
+   offsets. Receiver-local presentation, zero wire change, lives on the
+   playback-bus seam like the form changes. Ladder: stereo → simulated
+   stereo (mono payload + spatial render) → mono flat. **Battery is a gate,
+   not an afterthought**: default to the cheap widener (a few delays and
+   filters, negligible cost); the full `AVAudioEnvironmentNode` path, and
+   head-tracked Spatial Audio especially, only if a battery measurement
+   clears it — otherwise the rung degrades to plain mono rather than drain
+   the phone. Caveats: the directionality is synthesized (not the real
+   capture image), and the AEC echo reference must match the *rendered*
+   output or the spatialization tails leak into the residual echo.
 
 This subsumes the one-off adaptation items below: C4 (rendition ladder) is the
 network-side rung mechanism, C7 (auto video-off) is one policy rule over the
