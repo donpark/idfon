@@ -253,6 +253,11 @@ Do not build a new reconfiguration mechanism. The missing piece is the
    must not fight: the video rendition loop (`adaptive.rs`) is autonomous
    within its rungs; the policy layer orders rung *ranges*, video on/off and
    the audio knobs.
+   **The stereo step flips FEC**: stereo on = quality mode (FEC off, the
+   stereo image is worth the bytes); auto stereo-off = resilience mode (FEC
+   on: with mono there is no channel coupling to corrupt, and the measured
+   recovery win is mono speech). So "turn off stereo" doubles as "turn on
+   recovery", one step on the way down and the reverse on the way up.
 
 This subsumes the one-off adaptation items below: C4 (rendition ladder) is the
 network-side rung mechanism, C7 (auto video-off) is one policy rule over the
@@ -288,6 +293,41 @@ first (C4/C10), and the LL-HLS packager consumes the same objects. The
 demand model (C11) gains an HLS mode (one-to-many watch, replay) alongside
 the call modes.
 
+### B2.2 Bi-directional connection health check (user-invoked)
+
+A push-button health check that turns the quality record into advice and
+actions:
+
+- **Bi-directional**: the probe runs on both legs (each side measures its
+  own downlink via `NetworkSignals`; results merge into one verdict),
+  because a call is two broadcasts and either direction can be the sick
+  one. A passive mode (read both ends' current records) plus a short active
+  probe (a few seconds of paced traffic) covers in-call and pre-call use.
+- **Entry points**: an in-call button ("check connection"), a contact-screen
+  check before dialing, and optionally a connection-health agent that runs
+  it conversationally and narrates the result (the `agents/bench` pattern;
+  tips can ride the outbox tools like any agent output).
+- **Output**: verdict + tips + **action buttons** that map 1:1 to policy
+  degradations: Turn off video, Turn off stereo (mono halves the audio
+  bitrate), Lower video quality, Relay only. Each button calls the same
+  profile/policy seam as the automatic rules (B2.4), so a health check
+  teaches the user what the auto-policy would do anyway, and every automatic
+  change can be shown with its reverse button.
+- **Tips are rules first**: thresholds over the quality record (uplink loss
+  → suggest video off; RTT queueing → suggest relay; stereo + weak link →
+  mono; jitter → the jitter-buffer note). An agent layer can narrate the
+  same rules in words; it should not invent new remedies.
+- **Seam: tracing is shared, presentation is per app.** The shared layer
+  owns the pure health-check tracing feature only: the probe, the merge of
+  both ends' records, and a structured result plus progress events. Each
+  shell owns how it runs and renders that (iOS: a sheet with check progress
+  and action buttons; mac and the native GUI their own). The result schema
+  and progress events are the contract; the two sides improve
+  independently and incrementally.
+
+This is the on-demand consumer of the C1 capture controls (#42): the health
+check is what makes the record actionable in the field.
+
 ## C. Prioritized: what to test and change
 
 Measure first — everything below needs the same instrumentation to prove out.
@@ -297,6 +337,14 @@ Measure first — everything below needs the same instrumentation to prove out.
    min_rtt, loss_rate, goodput, path_type direct/relay, path switches) +
    video freeze/rendition-switch events → telemetry + `Diag`. Foundation for
    every other item and for "are we improving".
+   **Capture controls** (required, not an afterthought): the record is
+   switchable at three levels — a global on/off default, a per-identity
+   override (per user/contact opt, the privacy-relevant axis), and an
+   on-demand per-call switch for live diagnosis and validation (flip it on a
+   running call, e.g. through `Diag`/IDFON-DIAG/1, read the growing record
+   live, leave it on or off afterwards). The on-demand path is what makes
+   field reports actionable without a rebuild. Default state and retention
+   are policy decisions to settle with the user.
 2. **Reproduce + diagnose the Wi-Fi→cellular breakage** (test then fix).
    Under link conditioning / real device transition, capture the quality
    record + iroh path events. Decide between (a) transport switchover,
@@ -486,6 +534,15 @@ exactly the missing duration "otherwise the decoder will not be in the
 optimal state to decode the next incoming packet" (what `conceal_len` gives
 us), and a packet without FEC data "is decoded as if it were lost" (one
 call covers both).
+
+**Stereo + FEC couples the channels (measured 2026-10-28).** With FEC on,
+`decide_fec`'s own comment delivers the mechanism: above a 5% loss hint it
+"decreases the bandwidth until it can enable FEC", and narrowed-band stereo
+coding falls into coupled/intensity stereo, which leaks the channels into
+each other (the stereo roundtrip test's 5:1 separation fails intermittently,
+more under load; 6/6 clean with FEC off). The 48 kbps/ch floor hid the
+common case but not every frame. Policy: **FEC is a mono-voice feature**
+(flip it with the stereo step, see B2.4); stereo keeps the image.
 
 **Codec-version caveat (checked 2026-10-28).** The whole build (ours and
 moq's) runs libopus **1.3.1** (c2rust transpile `unsafe-libopus`, idle since
