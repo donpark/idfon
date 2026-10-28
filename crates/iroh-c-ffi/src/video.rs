@@ -230,6 +230,7 @@ async fn video_loop(ticket: &str, render: Box<dyn VideoRender>, stop: Arc<Atomic
         }
     };
     track.enable_adaptation(subscription.signals().clone());
+    crate::health::attach(subscription.signals().clone());
     while !stop.load(Ordering::Relaxed) {
         // `VideoTrack::recv` is a cancel-safe latest-frame slot, so bounding it
         // keeps hangup prompt and lets an idle track clear the picture.

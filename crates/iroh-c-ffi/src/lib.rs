@@ -1,5 +1,6 @@
 pub mod addr;
 pub mod av;
+pub mod health;
 #[cfg(unix)]
 pub mod client;
 pub mod daemon;

@@ -53,6 +53,16 @@ static LIVE_CONFIG: Mutex<Option<(bool, bool, bool, Option<PathBuf>, AudioCodec,
     Mutex::new(None);
 static AUDIO_ENABLED: AtomicBool = AtomicBool::new(true);
 static VIDEO_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Audio samples the playout could not deliver in time, for health checks.
+pub(crate) fn underruns() -> u64 {
+    AUDIO_QUEUE_UNDERRUN_SAMPLES.load(Ordering::Relaxed)
+}
+
+/// Whether the live session carries video, for health-check tips.
+pub(crate) fn video_enabled() -> bool {
+    VIDEO_ENABLED.load(Ordering::Relaxed)
+}
 static SUBSCRIBER: Mutex<Option<Subscriber>> = Mutex::new(None);
 static RECORDING: Mutex<Option<Recording>> = Mutex::new(None);
 static RECORDING_DURATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -850,6 +860,8 @@ async fn subscribe_decode_once(
             .subscribe(ticket.endpoint, &ticket.broadcast_name)
             .await?;
         let broadcast = subscription.broadcast();
+        // Health checks sample this session's downlink (docs/media-adaptation.md §B2.2).
+        crate::health::attach(subscription.signals().clone());
         // The publisher writes an empty catalog first and adds the audio
         // rendition once its encoder is probed, so the first snapshot a
         // fast subscriber sees may not carry it yet: wait for it.
@@ -888,6 +900,7 @@ async fn subscribe_decode_once(
             channels: consumer.channels(),
         };
         *channels_out = input.channels;
+        crate::health::set_channels(input.channels as u64);
         // Shell playback renders remote call audio on the app's playback bus,
         // which is the VoiceProcessingIO echo reference (docs/audio-media.md);
         // the bundled device engine is the fallback when no callback is set.
