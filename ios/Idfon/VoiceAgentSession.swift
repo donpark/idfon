@@ -103,6 +103,15 @@ final class VoiceAgentSession: NSObject {
     /// True while the filler is inside `tts.speak`, so cancellation cuts the
     /// line and drains it instead of racing the reply's speak.
     private var fillerSpeaking = false
+    /// The response-arrival phase (per turn): once the agent's reply starts
+    /// landing in the store, no reaction may start and a playing one is cut
+    /// now — a response supersedes a reaction at every phase. Set from the
+    /// store's update callback (arrival), not the 500 ms reply poll.
+    private var responseArrived = false
+    /// Message ids that predate this turn's send; any other agent row is the
+    /// response arriving.
+    private var turnBaseline: Set<String> = []
+    private var awaitingReply = false
     /// True while the agent speaks and the recognizer is armed for barge-in;
     /// a committed utterance then cancels playback instead of ending a turn.
     private var bargeInArmed = false
@@ -138,6 +147,7 @@ final class VoiceAgentSession: NSObject {
         isActive = true
         localAgent = agent
         stopRequested = false
+        ChatStore.shared.addObserver(self)
         callId = UUID().uuidString
         turnLimit = turns
         turnsDone = 0
@@ -414,11 +424,13 @@ final class VoiceAgentSession: NSObject {
             spokenTurnId: "\(callId)-\(turnsDone)-agent"
         )
         else {
+            awaitingReply = false
             await cancelFiller()
             // A missing reply must not kill the call; try the next turn.
             Automation.mark("voice-agent: no reply, continuing")
             return true
         }
+        awaitingReply = false
         await cancelFiller()
         let replyMs = Int(Date().timeIntervalSince(replyStart) * 1000)
         Automation.mark("voice-agent: reply=\(result.display)")
@@ -871,6 +883,9 @@ final class VoiceAgentSession: NSObject {
         if let turnId { context += "\nTurn: \(turnId)" }
         resetUnitStream()
         let before = Set(ChatStore.shared.messages(for: peerId).map(\.id))
+        turnBaseline = before
+        responseArrived = false
+        awaitingReply = true
         do {
             try await client.sendText(to: peerId, text, context: context)
         } catch {
@@ -1061,7 +1076,8 @@ final class VoiceAgentSession: NSObject {
     /// (FeedbackEar). The rules keep their own refractory; the gap here stops
     /// playback-level stacking.
     private func utterFeedback() {
-        guard !stopRequested, feedbackTask == nil, case .listening(let heard) = state, !bargeInArmed else { return }
+        guard !stopRequested, !responseArrived, feedbackTask == nil,
+              case .listening(let heard) = state, !bargeInArmed else { return }
         if let at = lastFeedbackAt, Date().timeIntervalSince(at) < 1.2 { return }
         lastFeedbackAt = Date()
         Automation.mark("turn-taker: tyger backchannel -> feedback")
@@ -1072,13 +1088,25 @@ final class VoiceAgentSession: NSObject {
             // reach the mouth: Phonon sounds letter strings out as words
             // ("mm-hm" is heard as "lim", "mm" as "meem").
             let text = await BackchannelFiller.ack(partial: heard) ?? BackchannelFiller.fallbackCue()
-            guard case .listening = self.state, !self.stopRequested else {
+            guard case .listening = self.state, !self.stopRequested, !self.responseArrived else {
                 self.feedbackTask = nil
                 return
             }
             self.lastFeedback = text
             await FeedbackEar.suppress { await self.tts.speak(text) }
             self.feedbackTask = nil
+        }
+    }
+
+    /// A response row landed in the store: cut any reaction at once and bar
+    /// new ones. The user's rule — if a response arrives just when a reaction
+    /// is scheduled or playing, the reaction loses immediately.
+    private func cancelReactions() async {
+        await cancelFiller()
+        if feedbackTask != nil {
+            tts.stop()
+            await feedbackTask?.value
+            feedbackTask = nil
         }
     }
 
@@ -1094,7 +1122,8 @@ final class VoiceAgentSession: NSObject {
             var said: [String] = []
             while let wait = TurnFiller.nextWait(saidCount: said.count) {
                 try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
-                guard !Task.isCancelled, !self.stopRequested, case .thinking = self.state else { return }
+                guard !Task.isCancelled, !self.stopRequested, !self.responseArrived,
+                      case .thinking = self.state else { return }
                 let still = !said.isEmpty
                 // The lead-in fallback is the ear-gated autoresearch winner
                 // (2026-10-26): lowercase "so." renders with a drawn-out soft
@@ -1102,7 +1131,8 @@ final class VoiceAgentSession: NSObject {
                 // like a human's (docs/voice-calibration.md).
                 let text = await TurnFiller.line(transcript: transcript, said: said, still: still)
                     ?? (still ? "Still on it." : "so. One moment.")
-                guard !Task.isCancelled, !self.stopRequested, case .thinking = self.state else { return }
+                guard !Task.isCancelled, !self.stopRequested, !self.responseArrived,
+                      case .thinking = self.state else { return }
                 said.append(text)
                 Automation.mark("voice-agent: filler \(still ? "still" : "lead-in") said=\(text)")
                 // Echo bookkeeping before playback, like the backchannel cue:
@@ -1191,5 +1221,26 @@ final class VoiceAgentSession: NSObject {
     private static func spokenText(from raw: String) -> String {
         let texts = SpeakEnvelope.texts(in: raw)
         return texts.isEmpty ? stripEnvelopes(raw) : texts.joined(separator: " ")
+    }
+}
+
+extension VoiceAgentSession: ChatStoreObserver {
+    /// Store updates are the response-arrival signal: a new agent row for the
+    /// turn supersedes reactions immediately, not at the next reply poll.
+    func chatStoreDidUpdate() {
+        guard awaitingReply, !responseArrived, let peerId = activePeerId else { return }
+        for message in ChatStore.shared.messages(for: peerId)
+        where !message.outgoing && !turnBaseline.contains(message.id) {
+            switch message.kind {
+            case .text:
+                responseArrived = true
+            case .callTranscript(let transcript) where transcript.role == "agent":
+                responseArrived = true
+            default:
+                continue
+            }
+            Task { @MainActor [weak self] in await self?.cancelReactions() }
+            return
+        }
     }
 }
