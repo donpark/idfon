@@ -1315,55 +1315,61 @@ pub fn media_audio_set_bitrate(bitrate: u32) -> u8 {
 /// change costs anyway. Returns 0 on success, 1 without a live audio track.
 #[ffi_export]
 pub fn media_audio_set_fec(fec: u8) -> u8 {
-    let setup = LIVE_CONFIG.lock().unwrap().clone();
-    let live = LIVE.lock().unwrap();
-    let (Some(session), Some((audio, _video, push_audio, file_audio, codec, sample_rate, channels))) =
-        (live.as_ref(), setup)
-    else {
-        return 1;
-    };
-    if !audio {
-        return 1;
-    }
-    let Some(broadcast) = session._audio.as_ref() else {
-        return 1;
-    };
-    // Mirror start_live's options; only the fec flag moves.
-    let mut options = AudioOptions::default();
-    options.codec = codec;
-    options.sample_rate = Some(sample_rate);
-    let per_channel = BITRATE
-        .load(Ordering::Relaxed)
-        .max(if codec == AudioCodec::Opus && channels > 1 {
-            48_000
-        } else {
-            0
-        });
-    options.bitrate = (codec == AudioCodec::Opus).then(|| per_channel as u32 * channels);
-    options.dtx = codec == AudioCodec::Opus;
-    options.fec = codec == AudioCodec::Opus && fec != 0;
-    // The FEC flip restarts the track: keep driving the new encoder from the
-    // running call's ABR control.
-    options.bitrate_control = crate::abr::control();
-    // The shell queue is shared across replaces, so a push source keeps
-    // whatever it holds; a device source re-opens.
-    let capture: Box<dyn AudioCapture> = if push_audio {
-        Box::new(ShellAudioCapture {
-            sample_rate,
-            channels,
-        })
-    } else if let Some(path) = file_audio {
-        match FileAudioCapture::open(&path, false) {
-            Ok(capture) => Box::new(capture),
-            Err(_) => return 1,
+    // The shells call this from bare threads (Swift `Task.detached`), where
+    // tokio timers panic with "there is no reactor running" — `into_source`
+    // builds a time-based stream. Run the whole rebuild inside the shared
+    // executor, as `start_live` does.
+    tokio_executor(async move {
+        let setup = LIVE_CONFIG.lock().unwrap().clone();
+        let live = LIVE.lock().unwrap();
+        let (Some(session), Some((audio, _video, push_audio, file_audio, codec, sample_rate, channels))) =
+            (live.as_ref(), setup)
+        else {
+            return 1;
+        };
+        if !audio {
+            return 1;
         }
-    } else {
-        Box::new(DeviceAudioCapture::new(
-            INPUT_DEVICE.lock().unwrap().clone(),
-        ))
-    };
-    broadcast.audio().set_with(capture.into_source(), options);
-    0
+        let Some(broadcast) = session._audio.as_ref() else {
+            return 1;
+        };
+        // Mirror start_live's options; only the fec flag moves.
+        let mut options = AudioOptions::default();
+        options.codec = codec;
+        options.sample_rate = Some(sample_rate);
+        let per_channel = BITRATE
+            .load(Ordering::Relaxed)
+            .max(if codec == AudioCodec::Opus && channels > 1 {
+                48_000
+            } else {
+                0
+            });
+        options.bitrate = (codec == AudioCodec::Opus).then(|| per_channel as u32 * channels);
+        options.dtx = codec == AudioCodec::Opus;
+        options.fec = codec == AudioCodec::Opus && fec != 0;
+        // The FEC flip restarts the track: keep driving the new encoder from
+        // the running call's ABR control.
+        options.bitrate_control = crate::abr::control();
+        // The shell queue is shared across replaces, so a push source keeps
+        // whatever it holds; a device source re-opens.
+        let capture: Box<dyn AudioCapture> = if push_audio {
+            Box::new(ShellAudioCapture {
+                sample_rate,
+                channels,
+            })
+        } else if let Some(path) = file_audio {
+            match FileAudioCapture::open(&path, false) {
+                Ok(capture) => Box::new(capture),
+                Err(_) => return 1,
+            }
+        } else {
+            Box::new(DeviceAudioCapture::new(
+                INPUT_DEVICE.lock().unwrap().clone(),
+            ))
+        };
+        broadcast.audio().set_with(capture.into_source(), options);
+        0
+    })
 }
 #[ffi_export]
 pub fn media_recording_start() -> u8 {
@@ -1763,6 +1769,24 @@ mod tests {
         // 20 ms @ 48 kHz: 960 mono samples, 1920 interleaved stereo samples.
         assert_eq!(super::frame_pts_gap_us(&vec![0u8; 960 * 4], 1), 20_000);
         assert_eq!(super::frame_pts_gap_us(&vec![0u8; 960 * 8], 2), 20_000);
+    }
+
+    /// `media_audio_set_fec` runs on bare threads (the shells call it from
+    /// Swift `Task.detached`); its track rebuild must not need a caller tokio
+    /// context — `into_source` builds a time-based stream and used to panic
+    /// there ("there is no reactor running"), killing every call at publish.
+    #[test]
+    fn media_audio_set_fec_works_on_a_bare_thread() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let ticket =
+            super::media_live_start_inner(true, false, true, None, AudioCodec::Opus, 48_000, 1);
+        assert!(!ticket.to_str().is_empty(), "publish");
+        // This test thread has no tokio runtime, exactly like the call site.
+        assert_eq!(super::media_audio_set_fec(0), 0);
+        assert_eq!(super::media_audio_set_fec(1), 0);
+        super::media_live_stop();
     }
 
     #[test]

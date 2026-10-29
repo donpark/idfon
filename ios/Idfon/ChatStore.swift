@@ -118,7 +118,12 @@ final class ChatStore {
     }
 
     private func ingestOnMain(_ event: Event) {
-        guard let text = event.messageText, let peerId = event.messagePeerId else { return }
+        guard let text = event.messageText, let peerId = event.messagePeerId else {
+            // A shapeless event used to vanish here without a trace (a hangup
+            // stop lost between the daemon and the call machines); say so.
+            idfonLog("idfon event: dropped shapeless event \(event.eventId) type=\(event.type) cursor=\(event.cursor)")
+            return
+        }
         let messageID = event.messageId ?? event.eventId
         // Core message ids are sender-local (an eve holder restarts its
         // counter), so qualify by sender: deduping on the bare id silently

@@ -277,7 +277,25 @@ these:
 - **#55 (open):** the woken app dying within seconds (SIGKILL). Suspect
   overlap with #61 (a wedge looks similar from outside) — re-verify only
   after #61 is resolved.
-- **#51 (open):** answer → two-way audio — the last functional leg.
+- **#51 (2026-10-29: answer→audio PASSES; remaining legs below):** the
+device E2E ran and closed the answer→two-way-audio leg on both surfaces —
+app-alive (Bar ring) and locked-phone wake (system ring, answer from the lock
+screen) — with clean teardown at hangup both times. Three real bugs surfaced
+and are fixed: (1) `media_audio_set_fec` built a tokio timer on the shells'
+bare `Task.detached` threads and SIGABRTed both apps at publish (now runs in
+`tokio_executor`; regression test proves the panic red→green); (2) the mac
+`LiveCall.dial` never fed `.resolve` into the machine, so dialing by name
+rejected the answer's return invite (`call is with <ref>`) and the mac stayed
+"calling" forever (all other hosts already resolved); (3) the daemon's
+`events` page came back newest-first, so `wait`'s truncate-to-one stranded
+every older event in a burst — a ring invite lost behind a session-rotate
+("it's not ringing") and a hangup stop lost behind its own invite ("mac stuck
+in calling") — fixed by restoring cursor order (+ test), which also repairs
+`events --follow`'s cursor pick. The wake itself additionally needed the
+right APNs key id (see the runbook). Still unrun: video ring, quick-cancel
+(ghost call), force-quit mid-call, the pending-answer fast/slow race, and
+the system-UI action legs (accept lands in the caller's chat, reject ends the
+ring everywhere, mute syncs).
 - **#52 (landed) / #54 (mostly landed):** host checks for the bitten seams —
   stop correlation (`CallLifecycleCheck`), ticket → caller_id
   (`RingTicketCheck`), cache flattening (`PeerRefFlatteningCheck`) — each in
@@ -313,10 +331,21 @@ the system-UI action legs on device, then the audio leg (#51).
   one (#59).
 
 **Local E2E runbook (mac→phone wake):** run the edge with the push flags
-(`--push-apns-key ~/.idfon/edge.apns.p8 --push-apns-key-id LRV4AV57QS
+(`--push-apns-key ~/.idfon/edge.apns.p8 --push-apns-key-id A9R2SP5259
 --push-apns-team RV27HPQNMF --push-apns-url
 https://api.sandbox.push.apple.com --push-state /tmp/edge-push-e2e.json`);
-both apps take `-edgeurl http://<mac-lan-ip>:<port> -edgeticket e2e`; the
+**the key id must match the key file** — `LRV4AV57QS` ("idfon dev") is the
+old sandbox-scoped key kept at `~/.idfon/edge.apns.dev.p8.bak`; the current
+`edge.apns.p8` is `A9R2SP5259` ("idfon edge prod", Sandbox & Production) and
+a kid mismatch fails every fan-out with 403 `InvalidProviderToken`. That
+failure is invisible under the default log filter (`idfon_edge=info,idfon.edge.access=info`
+— the push warns target `idfon.edge.push`), so add
+`RUST_LOG=idfon_edge=info,idfon.edge.access=info,idfon.edge.push=warn` and
+watch for `"rung": n` in the ring response (`rung: 0` = nothing was sent;
+the route answers 200 regardless). APNs rate limits answer 429
+(`TooManyProviderTokenUpdates`, `TooManyRequests`); 403 is a key problem,
+not a limit.
+Both apps take `-edgeurl http://<mac-lan-ip>:<port> -edgeticket e2e`; the
 phone needs a peer record for the mac app's daemon identity (pairing
 workaround, #56) and the mac needs `peer update <phone> --call-mode call_kit`;
 kill the phone app, then
