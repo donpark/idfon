@@ -563,6 +563,7 @@ final class VideoCall: NSObject {
             Task.detached(priority: .userInitiated) {
                 CameraPusher.shared.stop()
                 media_live_stop()
+                Diag.logCallRecord() // the record folds inside the stop: ship once, here
                 media_video_stop()
                 media_live_unsubscribe()
             }

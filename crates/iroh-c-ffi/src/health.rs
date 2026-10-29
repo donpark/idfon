@@ -6,9 +6,9 @@
 //! this module only traces.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
@@ -18,7 +18,10 @@ use moq_media::net::NetworkSignals;
 use safer_ffi::prelude::*;
 use tokio::sync::watch;
 
-use idfon_media::health::{Context, Leg, Progress, Report, Sample};
+use idfon_media::health::{
+    decimate, AudioArrival, CallRecord, Context, Leg, NetPoint, PathSwitch, Progress, Report,
+    Sample, TIMELINE_CAP,
+};
 
 /// The health-check ALPN: one request, one `Leg` reply, on the call's own
 /// endpoint (docs/media-adaptation.md §B2.2).
@@ -32,6 +35,9 @@ static CHANNELS: AtomicU64 = AtomicU64::new(1);
 static ROUTERS: Mutex<Vec<(iroh::EndpointId, Router)>> = Mutex::new(Vec::new());
 /// The endpoint of the attached session: where a merged check dials out.
 static ENDPOINT: Mutex<Option<Endpoint>> = Mutex::new(None);
+/// The attached session's connection: what the per-call record reads path
+/// state (direct/relay, path switches) from.
+static CONN: Mutex<Option<Connection>> = Mutex::new(None);
 
 /// Serve the health ALPN on the session's endpoint, alongside MoQ. Per
 /// endpoint and idempotent; routers live as long as their endpoint.
@@ -46,11 +52,14 @@ pub(crate) fn ensure_served(live: &Live) {
     routers.push((live.endpoint().id(), router));
 }
 
-/// Attach the live session's signals so checks can sample them. Call it when
-/// a subscription is established; the last one wins per call.
-pub(crate) fn attach(live: &Live, signals: watch::Receiver<NetworkSignals>) {
+/// Attach the live session's connection and signals so checks and the
+/// per-call record can sample them. Call it when a subscription is
+/// established; the last one wins per call, and a re-attach (the re-subscribe
+/// loop) keeps the record accumulating rather than starting a new one.
+pub(crate) fn attach(live: &Live, conn: &Connection, signals: watch::Receiver<NetworkSignals>) {
     ensure_served(live);
     *ENDPOINT.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(live.endpoint().clone());
+    *CONN.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(conn.clone());
     *SIGNALS.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(signals);
     start_call_sampling();
 }
@@ -70,92 +79,203 @@ fn take_sample(signals: &watch::Receiver<NetworkSignals>) -> Sample {
     }
 }
 
-// --- Per-call report (the quality record's log-only first slice) ---------
+// --- Per-call quality record (docs/media-adaptation.md §C1) --------------
 
-/// The last per-call report as JSON, for shells that want the numbers the
-/// hangup log carries. Empty before any call has ended.
+/// The last ended call's record as JSON (`idfon_media::health::CallRecord`),
+/// for shells to ship to `Diag` at hangup. Empty before any call has ended.
 static LAST_REPORT: Mutex<String> = Mutex::new(String::new());
 
+/// What one call accumulates between [`start_call_sampling`] and
+/// [`finish_call_sampling`].
 struct CallSampler {
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    samples: std::sync::Arc<Mutex<Vec<Sample>>>,
-    video_seen: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop: std::sync::Arc<AtomicBool>,
+    started: Instant,
+    started_wall_ms: u64,
+    timeline: std::sync::Arc<Mutex<Vec<NetPoint>>>,
+    switches: std::sync::Arc<Mutex<Vec<PathSwitch>>>,
+    audio: std::sync::Arc<Mutex<AudioArrival>>,
+    video_seen: std::sync::Arc<AtomicBool>,
     underruns_at_start: u64,
 }
 
 static CALL: Mutex<Option<CallSampler>> = Mutex::new(None);
 
-/// Sample the attached session for the length of a call. Starts with
-/// [`attach`]; the report is produced by [`finish_call_sampling`].
-fn start_call_sampling() {
-    finish_call_sampling();
-    let Some(signals) = SIGNALS
+/// The attached connection's selected path: id and relay flag.
+fn selected_path() -> Option<(String, bool)> {
+    let conn = CONN
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
-        .clone()
-    else {
+        .clone()?;
+    let paths = conn.paths();
+    let selected = paths.iter().find(|p| p.is_selected())?;
+    Some((format!("{:?}", selected.id()), selected.is_relay()))
+}
+
+/// Sample the attached session for the length of a call. Starts with
+/// [`attach`]; the record is produced by [`finish_call_sampling`]. A re-attach
+/// (the re-subscribe loop) keeps the same record accumulating — only a fresh
+/// [`start_call_sampling`] with no record running begins one.
+fn start_call_sampling() {
+    let mut slot = CALL.lock().unwrap_or_else(|poison| poison.into_inner());
+    if slot.is_some() {
         return;
-    };
-    use std::sync::atomic::{AtomicBool, Ordering};
+    }
     let stop = std::sync::Arc::new(AtomicBool::new(false));
-    let samples = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let timeline = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let switches = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let last_path = std::sync::Arc::new(Mutex::new(None));
+    let audio = std::sync::Arc::new(Mutex::new(AudioArrival::new()));
     let video_seen = std::sync::Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
-    let thread_samples = samples.clone();
+    let thread_timeline = timeline.clone();
+    let thread_switches = switches.clone();
+    let thread_last_path = last_path.clone();
     let thread_video = video_seen.clone();
+    let started = Instant::now();
     std::thread::spawn(move || {
         while !thread_stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(500));
-            thread_samples
+            // Sources are re-read each tick: a return-leg re-invite swaps the
+            // subscription (and with it SIGNALS/CONN) mid-call.
+            let Some(signals) = SIGNALS
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
-                .push(take_sample(&signals));
+                .clone()
+            else {
+                continue;
+            };
+            let sample = take_sample(&signals);
+            let t_ms = started.elapsed().as_millis() as u64;
             if crate::media::video_enabled() {
                 thread_video.store(true, Ordering::Relaxed);
             }
+            // Path state comes from the connection each tick: a path switch
+            // mid-call is a timeline event (#22's handover evidence).
+            let path = selected_path();
+            let relay = path
+                .as_ref()
+                .or(thread_last_path.lock().unwrap_or_else(|p| p.into_inner()).as_ref())
+                .map(|(_, relay)| *relay)
+                .unwrap_or(false);
+            if let Some(path) = path {
+                let mut last = thread_last_path.lock().unwrap_or_else(|p| p.into_inner());
+                if last.as_ref() != Some(&path) {
+                    thread_switches
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(PathSwitch {
+                            t_ms,
+                            path: path.0.clone(),
+                            relay: path.1,
+                        });
+                    *last = Some(path);
+                }
+            }
+            thread_timeline
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(NetPoint {
+                    t_ms,
+                    rtt_ms: sample.rtt_ms,
+                    min_rtt_ms: sample.min_rtt_ms,
+                    loss_pct: sample.loss_pct,
+                    goodput_kbps: sample.goodput_kbps,
+                    relay,
+                });
         }
     });
-    *CALL.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(CallSampler {
+    *slot = Some(CallSampler {
         stop,
-        samples,
+        started,
+        started_wall_ms: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or(0),
+        timeline,
+        switches,
+        audio,
         video_seen,
         underruns_at_start: crate::media::underruns(),
     });
 }
 
-/// Produce the per-call report at hangup: fold the call's samples, log it,
-/// and keep it for [`media_health_last_report`].
-pub(crate) fn finish_call_sampling() {
-    use std::sync::atomic::Ordering;
-    let Some(call) = CALL.lock().unwrap_or_else(|poison| poison.into_inner()).take() else {
-        return;
-    };
-    call.stop.store(true, Ordering::Relaxed);
-    let samples = call
-        .samples
+/// Feed one decoded frame into the running call's audio fold (the decode
+/// loop's pts observations). Time runs from the record's own start, so a
+/// second subscribe leg (return-leg re-invite) keeps one timeline. No-op
+/// when no call is sampling.
+pub(crate) fn note_frame(pts_us: u64, pts_gap_us: u64) {
+    let call = CALL.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some(call) = call.as_ref() {
+        let arrival_us = call.started.elapsed().as_micros() as u64;
+        call.audio
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .record(arrival_us, pts_us, pts_gap_us);
+    }
+}
+
+/// Fold the call's accumulators into the record (the same shape whether the
+/// call is still running or just ended).
+fn build_record(call: &CallSampler) -> CallRecord {
+    let underruns = crate::media::underruns().saturating_sub(call.underruns_at_start);
+    let points = call
+        .timeline
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .clone();
-    let underruns = crate::media::underruns().saturating_sub(call.underruns_at_start);
-    let local = Leg::fold(&samples, underruns);
+    let samples: Vec<Sample> = points
+        .iter()
+        .map(|p| Sample {
+            rtt_ms: p.rtt_ms,
+            min_rtt_ms: p.min_rtt_ms,
+            loss_pct: p.loss_pct,
+            goodput_kbps: p.goodput_kbps,
+        })
+        .collect();
     let context = Context {
         video_on: call.video_seen.load(Ordering::Relaxed),
         stereo: CHANNELS.load(Ordering::Relaxed) > 1,
     };
-    let report = Report::one_sided(local, context);
-    let json = serde_json::to_string(&report).unwrap_or_default();
-    eprintln!("[health] per-call report: {json}");
+    let audio = call
+        .audio
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .stats(underruns);
+    CallRecord {
+        started_ms: call.started_wall_ms,
+        duration_ms: call.started.elapsed().as_millis() as u64,
+        context,
+        audio,
+        report: Report::one_sided(Leg::fold(&samples, underruns), context),
+        timeline: decimate(&points, TIMELINE_CAP),
+        path_switches: call
+            .switches
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone(),
+    }
+}
+
+/// Produce the per-call quality record at hangup: fold the call's timeline,
+/// path switches and audio stats; log it (telemetry); keep it for
+/// [`media_health_last_report`] so the shell can ship it to `Diag`.
+pub(crate) fn finish_call_sampling() {
+    let Some(call) = CALL.lock().unwrap_or_else(|poison| poison.into_inner()).take() else {
+        return;
+    };
+    call.stop.store(true, Ordering::Relaxed);
+    let json = serde_json::to_string(&build_record(&call)).unwrap_or_default();
+    tracing::info!(target: "quality", "per-call record: {json}");
+    eprintln!("[health] per-call record: {json}");
     *LAST_REPORT.lock().unwrap_or_else(|poison| poison.into_inner()) = json;
 }
 
-/// The last per-call report JSON (`idfon_media::health::Report`), empty when
-/// no call has ended since launch.
+/// The last ended call's record JSON (`idfon_media::health::CallRecord`),
+/// taken (and cleared) so one record ships exactly once. Empty when no call
+/// has ended since the last read.
 #[ffi_export]
 pub fn media_health_last_report() -> char_p::Box {
-    LAST_REPORT
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .clone()
+    std::mem::take(&mut *LAST_REPORT.lock().unwrap_or_else(|poison| poison.into_inner()))
         .try_into()
         .unwrap()
 }

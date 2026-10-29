@@ -1,4 +1,3 @@
-import CIdfon
 import Foundation
 
 /// The connection health check (docs/media-adaptation.md §B2.2): runs the

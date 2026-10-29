@@ -441,6 +441,7 @@ final class LiveCall {
             AudioMeter.shared.stop()
             Task.detached(priority: .userInitiated) {
                 media_live_stop()
+                Diag.logCallRecord() // the record folds inside the stop: ship once, here
                 media_live_unsubscribe()
             }
         case .endCue:
@@ -1017,6 +1018,7 @@ final class VideoCall {
             CameraPusher.shared.stop()
             Task.detached(priority: .userInitiated) {
                 media_live_stop()
+                Diag.logCallRecord() // the record folds inside the stop: ship once, here
                 media_video_stop()
                 media_live_unsubscribe()
             }

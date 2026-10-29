@@ -372,6 +372,15 @@ Measure first — everything below needs the same instrumentation to prove out.
    min_rtt, loss_rate, goodput, path_type direct/relay, path switches) +
    video freeze/rendition-switch events → telemetry + `Diag`. Foundation for
    every other item and for "are we improving".
+   **Landed 2026-10-28 (the measure slice)**: `idfon_media::health::CallRecord`
+   — a 500 ms NetworkSignals timeline (rtt, min_rtt, loss, goodput,
+   direct/relay), selected-path switches, and a decode-side arrival fold
+   (frames, startup, arrival jitter, max gap, stalls > 100 ms, missing
+   frames, capture underruns) plus a video-seen flag. It accumulates across
+   re-subscribes, folds at `media_live_stop()`, is read-and-clear as JSON via
+   `media_health_last_report`, and both shells ship it to `Diag` ("call"
+   event) at hangup. Not built yet: the capture controls below and video
+   freeze/rendition-switch events.
    **Capture controls** (required, not an afterthought): the record is
    switchable at three levels — a global on/off default, a per-identity
    override (per user/contact opt, the privacy-relevant axis), and an
@@ -396,6 +405,13 @@ Measure first — everything below needs the same instrumentation to prove out.
 5. **Audio ABR from NetworkSignals** (change, after 1–3). Drive the Opus
    bitrate with `delivery_bps`/`goodput_bps` headroom (clamp 8–64 kbps).
    Audio never breaks first.
+   **Landed 2026-10-28**: `crates/iroh-c-ffi/src/abr.rs` drives the encoder's
+   `BitrateControl` from `Session::send_bandwidth()` through the house rate
+   policy (`moq_video::encode::rate`), clamped to 8–64 kbps per channel and
+   never above configured — a caller who configured more (music via
+   `media_audio_set_bitrate`) made that choice, so ABR stands down outside
+   the band. The FEC-flip track rebuild re-attaches the same control
+   (`media_audio_set_fec`).
 6. **Loss/jitter/transition test harness** (test). Repeatable netem/link-
    conditioner profiles (clean, 1 % loss, bursty Wi-Fi, 300 kbps uplink,
    1 s blackhole = handover) run against the headless `ListenStats` path so
@@ -471,11 +487,13 @@ live-streaming project, where nothing is addressed or nothing is modern yet.
    (ITU-R BT.1359-1). Ours to implement at playout (video slaved to the audio
    clock) and to measure in the quality record.
 4. **Audio adaptation loop** (build; C5 + C3). `adaptive.rs` is video-only;
-   the audio knobs (`set_bitrate`, `fec`, `dtx`) exist with no driver. The
-   policy layer (B2) supplies one — no new mechanism.
+   the bitrate knob has a driver now (C5 landed 2026-10-28); `fec`/`dtx` are
+   policy-only flips. The policy layer (B2) supplies the rest — no new
+   mechanism.
 5. **Quality persistence and summary** (build; C1). `stats.rs` is a live
-   overlay (EMA + sparklines); nothing persists per-call summaries, computes
-   an R-factor/MOS-style score, or trends across releases. Ours.
+   overlay (EMA + sparklines); the per-call record folds and logs at hangup
+   now (C1 landed), but nothing persists the summaries, computes an
+   R-factor/MOS-style score, or trends across releases. Ours.
 6. **Own-edge relay quality** (investigate; new). They run on n0's public
    relays; we run `idfon-edge`. Verify how iroh selects relay paths, whether
    our edge is preferred/usable mid-call, and how direct→relay fallback reads
