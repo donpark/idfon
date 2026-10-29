@@ -6580,7 +6580,7 @@ fn events(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         }
     }
     let identity = request_text(&request.params, "identity");
-    let events: Vec<_> = state
+    let mut events: Vec<_> = state
         .events
         .iter()
         .rev()
@@ -6603,6 +6603,12 @@ fn events(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
         })
         .cloned()
         .collect();
+    // Cursor order (oldest first): `wait` truncates to one event and the
+    // shells advance their cursor per delivered event, so a newest-first page
+    // strands every older event in the same burst (a hangup stop or an invite
+    // lost behind a newer message). `events --follow` also advances by
+    // `events.last()`, which is only correct in this order.
+    events.reverse();
     success(request, serde_json::json!({"events": events}))
 }
 
@@ -9039,6 +9045,68 @@ mod tests {
         assert!(dispatch(request(), &store).ok);
         assert!(dispatch(request(), &store).ok);
         assert_eq!(store.lock().unwrap().peers.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `events` must answer in cursor order (oldest first): `wait` truncates
+    /// to one event and the shells advance their cursor per delivered event,
+    /// so a newest-first page stranded every older event in the same burst
+    /// (#51 E2E: a ring invite lost behind a newer message — "it's not
+    /// ringing"; and a hangup stop lost behind its own invite).
+    #[test]
+    fn events_page_is_oldest_first_so_wait_truncation_cannot_strand() {
+        let dir = temp_dir("events-order");
+        let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        {
+            let mut state = store.lock().unwrap();
+            for index in 0..3 {
+                state.events.push(idfon_protocol::Event {
+                    event_id: format!("evt-{index}"),
+                    cursor: format!("cur_{index:020}"),
+                    r#type: "message.received".into(),
+                    timestamp: now(),
+                    identity: "default".into(),
+                    data: serde_json::json!({
+                        "text": format!("m{index}"),
+                        "peer_id": "p",
+                        "message_id": format!("m{index}")
+                    }),
+                });
+            }
+        }
+        let request = Request {
+            version: PROTOCOL_VERSION,
+            id: "order".into(),
+            method: "events".into(),
+            params: serde_json::json!({}),
+        };
+        let response = events(&request, &store);
+        let ResponseBody::Success { result, .. } = response.body else {
+            panic!("events failed");
+        };
+        let cursors: Vec<String> = result["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["cursor"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            cursors,
+            vec![
+                format!("cur_{:020}", 0),
+                format!("cur_{:020}", 1),
+                format!("cur_{:020}", 2)
+            ]
+        );
+        // The `wait` long-poll truncates to one: it must keep the oldest
+        // pending event, never the newest.
+        let response = wait_event(&request, &store);
+        let ResponseBody::Success { result, .. } = response.body else {
+            panic!("wait failed");
+        };
+        let list = result["events"].as_array().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["cursor"].as_str().unwrap(), format!("cur_{:020}", 0));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

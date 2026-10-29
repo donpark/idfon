@@ -162,6 +162,22 @@ final class LiveCall {
         let epoch = life.epoch
         operation = Task {
             do {
+                // Resolve the ref (name/alias/id) to the canonical id before
+                // the invite goes out: the machine correlates the return leg
+                // and stops by peer, and envelopes arrive under the sender's
+                // id (#51 E2E: dialing "iphone" rejected the answer —
+                // "ignored invite … call is with iphone").
+                var id = peerId
+                if let list = try? await client.request(method: "peers"),
+                   let peers = list["peers"]?.asArray,
+                   let match = peers.first(where: {
+                       $0["id"]?.stringValue == peerId || $0["name"]?.stringValue == peerId
+                           || $0["aliases"]?.asArray?.contains { $0.stringValue == peerId } == true
+                   }),
+                   let resolved = match["id"]?.stringValue, !resolved.isEmpty {
+                    id = resolved
+                }
+                apply(.resolve(peer: id))
                 // Registry entry (parity with core.ts live_start).
                 let identity = (try? await client.identityId()) ?? "default"
                 let peerBytes = Array(peerId.utf8.map { AnyEncodable(Int($0)) })

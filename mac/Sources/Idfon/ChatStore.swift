@@ -122,7 +122,12 @@ final class ChatStore {
 
     /// Delivers an event (new or replayed) into the store.
     private func ingest(_ event: Event) {
-        guard let text = event.messageText, let peerId = event.messagePeerId else { return }
+        guard let text = event.messageText, let peerId = event.messagePeerId else {
+            // A shapeless event used to vanish here without a trace (a hangup
+            // stop lost between the daemon and the call machines); say so.
+            idfonLog("idfon event: dropped shapeless event \(event.eventId) type=\(event.type) cursor=\(event.cursor)")
+            return
+        }
         idfonLog("idfon event: type=\(event.type) peer=\(peerId) text=\(text.prefix(48))")
         let messageID = event.messageId ?? event.eventId
         // Daemon message ids are sender-local (an eve holder restarts its
@@ -499,7 +504,9 @@ final class ChatStore {
                 if events.isEmpty {
                     try? await Task.sleep(nanoseconds: 500_000_000)
                 } else {
-                    for event in events.sorted(by: { (Double($0.timestamp) ?? 0) < (Double($1.timestamp) ?? 0) }) {
+                    let sorted = events.sorted(by: { (Double($0.timestamp) ?? 0) < (Double($1.timestamp) ?? 0) })
+                    idfonLog("idfon events: batch after=\(cursor ?? "nil") n=\(sorted.count) last=\(sorted.last?.cursor ?? "-")")
+                    for event in sorted {
                         cursor = event.cursor
                         ingest(event)
                     }
