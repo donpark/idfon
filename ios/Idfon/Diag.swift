@@ -41,6 +41,26 @@ enum Diag {
         if over { flush() }
     }
 
+    /// Ship the per-call quality record (media-adaptation §C1) folded at
+    /// `media_live_stop()`. Read-and-clear on the Rust side, so call this
+    /// exactly once per call — right after the stop. Parse-and-log: a record
+    /// that will not parse still ships as a raw string, never loses a call.
+    static func logCallRecord() {
+        guard let ptr = media_health_last_report() else { return }
+        let json = String(cString: ptr)
+        rust_free_string(ptr)
+        guard !json.isEmpty else { return }
+        let detail: [String: Any]
+        if let data = json.data(using: .utf8),
+           let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            detail = parsed
+        } else {
+            detail = ["raw": json]
+        }
+        log("call", detail)
+        flush()
+    }
+
     /// Send the buffered events to the monitor peer as one report.
     static func flush() {
         guard let peer = monitorPeer, let send else { return }

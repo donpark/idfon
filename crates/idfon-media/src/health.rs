@@ -115,6 +115,191 @@ pub enum Progress {
     Done { report: Report },
 }
 
+// --- Per-call quality record (docs/media-adaptation.md §C1) --------------
+
+/// One timeline point: the transport's own numbers at an instant.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NetPoint {
+    /// Milliseconds since sampling started.
+    pub t_ms: u64,
+    /// Round-trip time in milliseconds.
+    pub rtt_ms: u64,
+    /// The path's idle round trip in milliseconds.
+    pub min_rtt_ms: u64,
+    /// Recent packet loss, percent.
+    pub loss_pct: f64,
+    /// Downlink goodput in kbps, or `None` while too little arrives to measure.
+    pub goodput_kbps: Option<u64>,
+    /// Whether the selected path is a relay path (false = direct).
+    pub relay: bool,
+}
+
+/// A selected-path change during the call; the first entry is the path
+/// sampling started on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PathSwitch {
+    /// Milliseconds since sampling started.
+    pub t_ms: u64,
+    /// The newly selected path's id (debug form).
+    pub path: String,
+    /// Whether the new path is a relay path.
+    pub relay: bool,
+}
+
+/// ListenStats-style measurements of the call's downlink decode path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct AudioStats {
+    /// Decoded frames.
+    pub frames: u64,
+    /// Decoded audio duration in milliseconds.
+    pub duration_ms: u64,
+    /// Subscribe start to the first decoded frame (ms).
+    pub startup_ms: u64,
+    /// Standard deviation of frame-arrival intervals (ms).
+    pub arrival_jitter_ms: f64,
+    /// Largest interval between consecutive frames (ms).
+    pub max_gap_ms: u64,
+    /// Arrival gaps longer than 100 ms (would drain any small play buffer).
+    pub stalls_over_100ms: u64,
+    /// Frames missing from pts discontinuities.
+    pub missing_frames: u64,
+    /// Capture-side starvation samples: mic samples the encoder had to pad.
+    pub underrun_samples: u64,
+}
+
+/// Running fold of the decode path's frame arrivals. Fed per decoded frame
+/// (across re-subscribes too), folded at hangup into [`AudioStats`]. Gaps and
+/// pts discontinuities are computed here from consecutive frames, so a
+/// re-subscribe attempt boundary shows up as the stall it was.
+#[derive(Debug, Clone, Copy)]
+pub struct AudioArrival {
+    frames: u64,
+    startup_us: u64,
+    media_us: u64,
+    gap_sum_us: u128,
+    gap_sq_sum: f64,
+    max_gap_us: u64,
+    stalls_over_100ms: u64,
+    missing_frames: u64,
+    last_arrival_us: u64,
+    last_pts_us: u64,
+    last_pts_gap_us: u64,
+}
+
+impl AudioArrival {
+    /// Starts an empty fold.
+    pub const fn new() -> Self {
+        Self {
+            frames: 0,
+            startup_us: 0,
+            media_us: 0,
+            gap_sum_us: 0,
+            gap_sq_sum: 0.0,
+            max_gap_us: 0,
+            stalls_over_100ms: 0,
+            missing_frames: 0,
+            last_arrival_us: 0,
+            last_pts_us: 0,
+            last_pts_gap_us: 0,
+        }
+    }
+
+    /// One decoded frame: `arrival_us` since subscribe start, `pts_us` on the
+    /// media clock, `pts_gap_us` of media the frame carries.
+    pub fn record(&mut self, arrival_us: u64, pts_us: u64, pts_gap_us: u64) {
+        if self.frames == 0 {
+            self.startup_us = arrival_us;
+        } else {
+            let gap = arrival_us.saturating_sub(self.last_arrival_us);
+            self.gap_sum_us += gap as u128;
+            self.gap_sq_sum += (gap as f64) * (gap as f64);
+            self.max_gap_us = self.max_gap_us.max(gap);
+            if gap > 100_000 {
+                self.stalls_over_100ms += 1;
+            }
+            // A pts jump beyond the frame's own duration is lost media.
+            let expected = self.last_pts_us + self.last_pts_gap_us;
+            self.missing_frames += pts_us.saturating_sub(expected) / pts_gap_us.max(1);
+        }
+        self.frames += 1;
+        self.media_us += pts_gap_us;
+        self.last_arrival_us = arrival_us;
+        self.last_pts_us = pts_us;
+        self.last_pts_gap_us = pts_gap_us;
+    }
+
+    /// The fold, with `underrun_samples` (the capture-side counter) attached.
+    pub fn stats(&self, underrun_samples: u64) -> AudioStats {
+        let n = self.frames.saturating_sub(1) as f64;
+        let mean = if n > 0.0 {
+            self.gap_sum_us as f64 / n
+        } else {
+            0.0
+        };
+        let var = if n > 0.0 {
+            self.gap_sq_sum / n - mean * mean
+        } else {
+            0.0
+        };
+        AudioStats {
+            frames: self.frames,
+            duration_ms: self.media_us / 1_000,
+            startup_ms: self.startup_us / 1_000,
+            arrival_jitter_ms: var.max(0.0).sqrt() / 1_000.0,
+            max_gap_ms: self.max_gap_us / 1_000,
+            stalls_over_100ms: self.stalls_over_100ms,
+            missing_frames: self.missing_frames,
+            underrun_samples,
+        }
+    }
+}
+
+impl Default for AudioArrival {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The per-call quality record (media-adaptation §C1): what the call measured
+/// about itself, folded at hangup and shipped to telemetry and `Diag`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallRecord {
+    /// Wall-clock (ms since epoch) when sampling started.
+    pub started_ms: u64,
+    /// Sampling span in milliseconds.
+    pub duration_ms: u64,
+    /// The call's media form (video, stereo).
+    pub context: Context,
+    /// Downlink decode-path audio stats.
+    pub audio: AudioStats,
+    /// The health fold: verdict and the actions that would improve the call.
+    pub report: Report,
+    /// Network signals over the call, decimated to [`TIMELINE_CAP`] points.
+    pub timeline: Vec<NetPoint>,
+    /// Selected-path changes, the first entry being the path at sampling start.
+    pub path_switches: Vec<PathSwitch>,
+}
+
+/// Cap for [`CallRecord::timeline`]: on overflow the fold keeps every
+/// `stride`-th point (and the last), so the whole call stays covered.
+/// shortcut: full resolution only covers ~5 min at the 500 ms sample step; a
+/// short transition can fall between points on longer calls — windowed
+/// min/max buckets if that bites (media-adaptation C2).
+pub const TIMELINE_CAP: usize = 600;
+
+/// Uniformly decimate `points` to at most `cap`, keeping the last point.
+pub fn decimate(points: &[NetPoint], cap: usize) -> Vec<NetPoint> {
+    if points.len() <= cap || cap == 0 {
+        return points.to_vec();
+    }
+    let stride = (points.len() + cap - 1) / cap;
+    let mut out: Vec<NetPoint> = points.iter().step_by(stride).copied().collect();
+    if out.last() != points.last() {
+        out.push(points[points.len() - 1]);
+    }
+    out
+}
+
 // Rule thresholds. Percent loss and kbps are the knobs a future calibration
 // pass (C1 records) may move; keep them together and named.
 const LOSS_FAIR_PCT: f64 = 1.0;
@@ -280,5 +465,66 @@ mod tests {
         })
         .unwrap();
         assert_eq!(json, r#"{"kind":"sampling","elapsed_ms":250,"total_ms":1000}"#);
+    }
+
+    fn point(t_ms: u64) -> NetPoint {
+        NetPoint {
+            t_ms,
+            rtt_ms: 25,
+            min_rtt_ms: 20,
+            loss_pct: 0.0,
+            goodput_kbps: Some(2_000),
+            relay: false,
+        }
+    }
+
+    #[test]
+    fn decimate_keeps_the_last_point_and_a_bounded_count() {
+        let points: Vec<NetPoint> = (0..10).map(point).collect();
+        let out = decimate(&points, 4);
+        assert!(out.len() <= 4);
+        assert_eq!(out.first().unwrap().t_ms, 0);
+        assert_eq!(out.last().unwrap().t_ms, 9);
+    }
+
+    #[test]
+    fn decimate_passes_short_timelines_through() {
+        let points: Vec<NetPoint> = (0..3).map(point).collect();
+        assert_eq!(decimate(&points, 4), points);
+    }
+
+    #[test]
+    fn audio_arrival_folds_gaps_jitter_and_missing_frames() {
+        let mut arrival = AudioArrival::new();
+        arrival.record(100_000, 0, 20_000); // first frame: startup, no gap
+        arrival.record(120_000, 20_000, 20_000); // on time
+        arrival.record(180_000, 80_000, 20_000); // 60 ms stall + 2 lost frames
+        let stats = arrival.stats(5_000);
+        assert_eq!(stats.frames, 3);
+        assert_eq!(stats.duration_ms, 60);
+        assert_eq!(stats.startup_ms, 100);
+        assert_eq!(stats.max_gap_ms, 60);
+        assert_eq!(stats.stalls_over_100ms, 0); // 60 ms gap is not a stall
+        assert_eq!(stats.missing_frames, 2);
+        assert_eq!(stats.underrun_samples, 5_000);
+        // gaps 20 ms and 60 ms → mean 40, stddev 20
+        assert!((stats.arrival_jitter_ms - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn audio_arrival_counts_100ms_gaps_as_stalls() {
+        let mut arrival = AudioArrival::new();
+        arrival.record(0, 0, 20_000);
+        arrival.record(250_000, 20_000, 20_000);
+        let stats = arrival.stats(0);
+        assert_eq!(stats.stalls_over_100ms, 1);
+    }
+
+    #[test]
+    fn an_empty_audio_fold_is_all_zeroes() {
+        let stats = AudioArrival::new().stats(7);
+        assert_eq!(stats.frames, 0);
+        assert_eq!(stats.arrival_jitter_ms, 0.0);
+        assert_eq!(stats.underrun_samples, 7);
     }
 }

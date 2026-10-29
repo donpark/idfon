@@ -409,6 +409,15 @@ fn start_live(
                 // encoder into coupled coding: the channels leak into each
                 // other. Stereo calls trade resilience for the stereo image.
                 options.fec = codec == AudioCodec::Opus && channels == 1;
+                // Audio ABR (docs/media-adaptation.md §C5): drive the encoder
+                // from the connection's send estimate — the same congestion-
+                // controller rate `delivery_bps` carries to the peer — clamped
+                // to the voice band. The control rides Options to the encoder
+                // the publish task owns.
+                if codec == AudioCodec::Opus {
+                    options.bitrate_control =
+                        crate::abr::start(&live, per_channel * u64::from(channels), channels);
+                }
                 // Capture device is the default live source; shell-pushed PCM
                 // remains available through `media_audio_push_samples`.
                 let capture: Box<dyn AudioCapture> = if push_audio {
@@ -683,6 +692,7 @@ pub fn media_live_last_error() -> char_p::Box {
 pub fn media_live_stop() {
     // Fold the per-call report before the counters reset (health §B2.2).
     crate::health::finish_call_sampling();
+    crate::abr::stop();
     VIDEO_ENABLED.store(false, Ordering::Relaxed);
     let underruns = AUDIO_QUEUE_UNDERRUN_SAMPLES.swap(0, Ordering::Relaxed);
     let overflows = AUDIO_QUEUE_OVERFLOW_SAMPLES.swap(0, Ordering::Relaxed);
@@ -876,7 +886,7 @@ async fn subscribe_decode_once(
             .await?;
         let broadcast = subscription.broadcast();
         // Health checks sample this session's downlink (docs/media-adaptation.md §B2.2).
-        crate::health::attach(&live, subscription.signals().clone());
+        crate::health::attach(&live, subscription.session().conn(), subscription.signals().clone());
         // The publisher writes an empty catalog first and adds the audio
         // rendition once its encoder is probed, so the first snapshot a
         // fast subscriber sees may not carry it yet: wait for it.
@@ -1014,8 +1024,11 @@ async fn subscribe_decode_once(
             let media_gap_us =
                 expected_pts_us.map(|expected| pts_us.saturating_sub(expected)).unwrap_or(0);
             let frame_samples = frame.data.len() / 4;
-            expected_pts_us = Some(pts_us + frame_pts_gap_us(frame.data.as_ref(), input.channels));
+            let pts_gap_us = frame_pts_gap_us(frame.data.as_ref(), input.channels);
+            expected_pts_us = Some(pts_us + pts_gap_us);
             last_arrival = Some(arrived);
+            // Per-call quality record: one fold tick per decoded frame (§C1).
+            crate::health::note_frame(pts_us as u64, pts_gap_us as u64);
             if decoded <= 3 || decoded % 100 == 0 || arrival_gap_us > 30_000 || media_gap_us > 1_000 {
                 eprintln!("[media] audio frame decoded #{} arrival_gap={}us media_gap={}us samples={}", decoded, arrival_gap_us, media_gap_us, frame_samples);
             }
@@ -1329,6 +1342,9 @@ pub fn media_audio_set_fec(fec: u8) -> u8 {
     options.bitrate = (codec == AudioCodec::Opus).then(|| per_channel as u32 * channels);
     options.dtx = codec == AudioCodec::Opus;
     options.fec = codec == AudioCodec::Opus && fec != 0;
+    // The FEC flip restarts the track: keep driving the new encoder from the
+    // running call's ABR control.
+    options.bitrate_control = crate::abr::control();
     // The shell queue is shared across replaces, so a push source keeps
     // whatever it holds; a device source re-opens.
     let capture: Box<dyn AudioCapture> = if push_audio {

@@ -218,6 +218,7 @@ final class LiveCall {
             AudioPusher.shared.stop()
             Task.detached(priority: .userInitiated) {
                 media_live_stop()
+                Diag.logCallRecord() // the record folds inside the stop: ship once, here
                 media_live_unsubscribe()
             }
         case .endCue:
