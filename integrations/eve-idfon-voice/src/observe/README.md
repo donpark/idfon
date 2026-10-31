@@ -37,6 +37,7 @@ agent behavior mismatch? No classifiers, no models, no adaptation logic.
     { "type": "repair", "turn_index": 4, "excerpt": "wait, what do you mean" },
     { "type": "early_hangup", "turn_index": 6, "excerpt": "" }
   ],
+  "bcd": { "backchannels": 1, "floor_takes": 0, "events": [ { "kind": "backchannel", "at_ms": 52100, "p": 0.83 } ] },
   "turns": [
     {
       "text": "mm-hmm",
@@ -75,6 +76,9 @@ Field notes (heuristics are deliberately crude — raw evidence, not judgments):
     it on the tyger `barge` decision, the TS-side analog of the Rust
     `TurnBridge::record_playback_truncated`.
   - `early_hangup` — call ended with < 4 turns or < 30 s.
+- `bcd` — backchannel-detector events (src/bcd/) at call-relative ms: counts +
+  raw events. **Null when the detector was off** (`IDFON_BCD=off` or no model
+  bundle). Shadow only: recorded, never acted on.
 - `turns[].how` — **reserved paralinguistic slot**, always nulls in v1. Later
   it carries RCS-style annotation strings (e.g.
   `([emotion angry=0.81, neutral=0.12],[sarcasm value=0.04])`); parsing and

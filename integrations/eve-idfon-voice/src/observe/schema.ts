@@ -42,6 +42,19 @@ export interface Percentiles {
   p90: number;
 }
 
+/** A backchannel-detector event at call-relative ms (src/bcd/decisions.ts). */
+export interface BcdEvent {
+  kind: "backchannel" | "floor_take";
+  at_ms: number;
+  p: number;
+}
+
+export interface BcdSummary {
+  backchannels: number;
+  floor_takes: number;
+  events: BcdEvent[];
+}
+
 export interface CallRecord {
   schema: "eve-idfon-voice.call-observe/1";
   call_id: string;
@@ -64,5 +77,7 @@ export interface CallRecord {
     preamble_chars_p50: number;
   };
   friction: FrictionEvent[];
+  /** Backchannel-detector summary (src/bcd/), null when the detector was off. */
+  bcd: BcdSummary | null;
   turns: TurnEntry[];
 }

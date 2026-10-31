@@ -4,7 +4,7 @@
 // `TurnBridge::record_playback_truncated` is the daemon-side analog of
 // `recordPlaybackTruncated`.
 
-import type { CallRecord, FrictionEvent, Percentiles, TurnEntry, TurnRole } from "./schema.ts";
+import type { BcdEvent, CallRecord, FrictionEvent, Percentiles, TurnEntry, TurnRole } from "./schema.ts";
 
 /** Early hangup: the call ended below either bound. */
 export const EARLY_HANGUP_TURNS = 4;
@@ -49,6 +49,8 @@ export class CallRecorder {
   readonly startedAt: Date;
   #turns: TurnEntry[] = [];
   #truncations: number[] = [];
+  #bcdActive = false;
+  #bcdEvents: BcdEvent[] = [];
 
   constructor(callId: string, startedAt: Date = new Date()) {
     this.callId = callId;
@@ -62,6 +64,16 @@ export class CallRecorder {
   /** Playback was cut short by a barge-in at `atMs` (call-relative). */
   recordPlaybackTruncated(atMs: number): void {
     this.#truncations.push(atMs);
+  }
+
+  /** The backchannel detector (src/bcd/) was loaded and is feeding events. */
+  markBcdActive(): void {
+    this.#bcdActive = true;
+  }
+
+  /** A detector event at call-relative ms (shadow: recorded, never acted on). */
+  recordBcdEvent(kind: BcdEvent["kind"], atMs: number, p: number): void {
+    this.#bcdEvents.push({ kind, at_ms: atMs, p });
   }
 
   build(endedAt: Date = new Date()): CallRecord {
@@ -91,6 +103,13 @@ export class CallRecorder {
         preamble_chars_p50: percentile(agentTurns.map((t) => firstSentenceLength(t.text)), 0.5),
       },
       friction: this.#friction(turns, endedAt.getTime() - this.startedAt.getTime()),
+      bcd: this.#bcdActive
+        ? {
+            backchannels: this.#bcdEvents.filter((e) => e.kind === "backchannel").length,
+            floor_takes: this.#bcdEvents.filter((e) => e.kind === "floor_take").length,
+            events: [...this.#bcdEvents],
+          }
+        : null,
       turns,
     };
   }
