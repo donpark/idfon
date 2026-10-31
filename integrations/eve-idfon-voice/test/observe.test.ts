@@ -125,3 +125,26 @@ test("emitter appends one JSONL line per call", () => {
   assert.deepEqual(JSON.parse(lines[0]), first);
   assert.deepEqual(JSON.parse(lines[1]), second);
 });
+
+test("bcd block is null when the detector never ran", () => {
+  const rec = new CallRecorder("call-nobcd", new Date(0));
+  rec.addTurn({ text: "hi", role: "user", started_ms: 0, duration_ms: 300 });
+  assert.equal(rec.build(new Date(60_000)).bcd, null);
+});
+
+test("bcd events land as counts and raw events", () => {
+  const rec = new CallRecorder("call-bcd", new Date(0));
+  rec.markBcdActive();
+  rec.recordBcdEvent("backchannel", 52_100, 0.83);
+  rec.recordBcdEvent("floor_take", 61_000, 0.91);
+  rec.recordBcdEvent("backchannel", 70_000, 0.77);
+  const bcd = rec.build(new Date(90_000)).bcd;
+  assert.ok(bcd);
+  assert.equal(bcd.backchannels, 2);
+  assert.equal(bcd.floor_takes, 1);
+  assert.deepEqual(bcd.events, [
+    { kind: "backchannel", at_ms: 52_100, p: 0.83 },
+    { kind: "floor_take", at_ms: 61_000, p: 0.91 },
+    { kind: "backchannel", at_ms: 70_000, p: 0.77 },
+  ]);
+});

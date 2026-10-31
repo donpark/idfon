@@ -150,12 +150,19 @@ async function speakElevenLabs(cfg, text, peerId) {
 
 /** Speak text on the call, streaming when the TTS provider supports it. */
 async function speak(text, peerId) {
-  const cfg = engine.tts || {};
-  const spoken = spokenText(text);
-  if ((cfg.provider || "openai-compatible") === "elevenlabs") {
-    return speakElevenLabs(cfg, spoken, peerId);
+  botSpeech.speaking = true;
+  botSpeech.onsetMs = Date.now() - callStartedAt;
+  try {
+    const cfg = engine.tts || {};
+    const spoken = spokenText(text);
+    if ((cfg.provider || "openai-compatible") === "elevenlabs") {
+      return await speakElevenLabs(cfg, spoken, peerId);
+    }
+    await play(peerId, await synthesize(spoken));
+  } finally {
+    botSpeech.speaking = false;
+    botSpeech.stopMs = Date.now() - callStartedAt;
   }
-  await play(peerId, await synthesize(spoken));
 }
 
 /// The spoken form of a reply: `IDFON-SPEAK/1` carries it in its `text` field
@@ -221,6 +228,15 @@ let turnChain = Promise.resolve();
 // The tyger chain is the authoritative endpointer (src/tyger/endpointer.ts);
 // the energy path above stays as the fail-open fallback. IDFON_ENDPOINTER=energy opts out.
 let tyger = null;
+// Shadow backchannel detector (src/bcd/): model events land in the call
+// record only, never in behavior. IDFON_BCD=off disables, =on requires the
+// bundle; default 'auto' loads it when present (fail-open).
+let bcd = null;
+// bcd bot_state (src/bcd/engine.ts botStateRow): the bot's speech clock.
+// shortcut: each speak() is one utterance and the gap before it (the agent's
+// round trip) is always >= 200 ms, so the "last >=200 ms pause" clock restarts
+// at onset; pauses inside a streamed TTS run are invisible here.
+const botSpeech = { speaking: false, onsetMs: null, stopMs: null };
 
 async function onFrame(frame) {
   const pcm = Buffer.from(frame.pcm_base64, "base64");
@@ -246,6 +262,7 @@ async function onFrame(frame) {
     log.info("tyger", { decisions: decisions.join(",") });
   }
   if (decisions.includes("barge")) recorder.recordPlaybackTruncated(Date.now() - callStartedAt);
+  if (bcd) bcd.push(pcm);
   if (isLoud(pcm)) {
     if (!speaking) { speaking = true; utterance = pcm; }
     quiet = 0;
@@ -306,10 +323,11 @@ async function handleTurn(speech, peerId, trace, turnEndMs) {
 // failure is logged and dropped. shortcut: a process crash loses the call's
 // record — move to incremental flushes if records go missing in practice.
 let recordEmitted = false;
-function emitCallRecord() {
+async function emitCallRecord() {
   if (recordEmitted) return;
   recordEmitted = true;
   try {
+    if (bcd) await bcd.flush();
     const path = callRecordPath();
     if (path) {
       const record = recorder.build();
@@ -332,6 +350,51 @@ async function main() {
     }
   } else {
     log.info("endpointer", { kind: "energy" });
+  }
+  if (process.env.IDFON_BCD !== "off") {
+    try {
+      const { createRequire } = await import("node:module");
+      const ort = createRequire(import.meta.url)("onnxruntime-node");
+      const { loadBundle } = await import("./src/bcd/bundle.ts");
+      const { BcdEngine, botStateRow, CHUNK_N } = await import("./src/bcd/engine.ts");
+      const { BcdDecisions } = await import("./src/bcd/decisions.ts");
+      const { makeResampler, pcm16ToFloat } = await import("./src/tyger/stream.ts");
+      const bundle = loadBundle();
+      const model = new BcdEngine(await ort.InferenceSession.create(bundle.modelPath));
+      const decider = new BcdDecisions();
+      const resample = makeResampler();
+      let pending = [];
+      let pump = Promise.resolve(); // serializes the stateful engine
+      bcd = {
+        push(pcm) {
+          pending.push(...resample(pcm16ToFloat(new Uint8Array(pcm))));
+          pump = pump.then(async () => {
+            while (pending.length >= CHUNK_N) {
+              const chunk = pending.slice(0, CHUNK_N);
+              pending = pending.slice(CHUNK_N);
+              const now = Date.now() - callStartedAt;
+              const sinceOnset = botSpeech.onsetMs === null ? 5 : (now - botSpeech.onsetMs) / 1000;
+              const sinceStop = botSpeech.stopMs === null ? 5 : (now - botSpeech.stopMs) / 1000;
+              const row = botStateRow(botSpeech.speaking, sinceOnset, sinceOnset, sinceStop);
+              for (const f of await model.chunk(chunk, [...row, ...row])) {
+                const d = decider.onFrame(f.intent, f.vad);
+                if (d.kind !== "none") {
+                  recorder.recordBcdEvent(d.kind, now, d.p);
+                  log.info("bcd", { kind: d.kind, p: d.p });
+                }
+              }
+            }
+          }).catch((error) => log.warn("bcd", { error: String(error) }));
+        },
+        flush() {
+          return pump;
+        },
+      };
+      recorder.markBcdActive();
+      log.info("bcd", { kind: "shadow", model: bundle.modelPath });
+    } catch (error) {
+      log[process.env.IDFON_BCD === "on" ? "warn" : "info"]("bcd off", { reason: String(error) });
+    }
   }
   log.info("listening", { bridge });
   // Declare the real pipeline: the holder's startup info lists the client's
@@ -368,7 +431,7 @@ async function main() {
     }
   }
   await turnChain; // in-flight turns still land in the record
-  emitCallRecord();
+  await emitCallRecord();
 }
 
-main().catch((error) => { log.error("fatal", { error: String(error) }); emitCallRecord(); process.exit(1); });
+main().catch(async (error) => { log.error("fatal", { error: String(error) }); await emitCallRecord(); process.exit(1); });
