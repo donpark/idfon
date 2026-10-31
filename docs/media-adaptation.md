@@ -604,9 +604,9 @@ stereo step no longer has to mean "no recovery" (user framing, 2026-10-28):
 
 | mechanism | stereo-safe | wire cost | needs | recovers |
 | --- | --- | --- | --- | --- |
-| in-band FEC (LBRR) | **no** (couples channels) | ~0 (steals the budget) | 1.3.1, works today | 1 frame |
-| **DRED** (deep redundancy) | **yes** (additive payload, ~12–32 kbps; the primary is coded normally) | +12–32 kbps | libopus **1.5+** (#41) | up to **1 s** |
-| transport-layer FEC (parity over the datagram groups) | yes (codec-independent, covers video too) | 10–30% parity | nothing (works on 1.3.1 today) | one parity block |
+| in-band FEC (LBRR) | **no** (couples channels) | ~0 (steals the budget) | any libopus; **shipped** (mono resilience mode) | 1 frame |
+| **DRED** (deep redundancy) | **yes** (additive payload; the primary is coded normally) | rate-controlled, ~0.3×(bitrate−20 kbps) at loss hint 10 | libopus **1.5+**; **shipped** (1.6.1, stereo quality mode) | up to **1 s** |
+| transport-layer FEC (parity over the datagram groups) | yes (codec-independent, covers video too) | 10–30% parity | nothing (codec-independent) | one parity block |
 | duplication / RFC 2198 red | yes | 2× audio | nothing | 1 frame |
 
 Verified facts (opus-codec.org 1.5 demo, `opus_defines.h`, `opus.h`):
@@ -620,40 +620,52 @@ on top (decoder-only).
 Design shape: one **redundancy mode** in the media profile (B2),
 `off | inband | dred | transport`, chosen by the ladder and the call mode
 (C11), same seam as the FEC flip (`media_audio_set_fec` today, the mode
-knob tomorrow):
+knob tomorrow). Shipped 2026-10-30 as the two-flag approximation of that
+mode split (`Settings::fec` + `Settings::dred`, flipped together by the
+stereo step):
 
-- mono voice on 1.3.1: `inband` (shipped, the measured win).
-- stereo/quality calls on 1.5+: `dred` — the stereo step keeps recovery
-  without touching the image, and the 1 s span covers handover blackholes
-  that no frame-level mechanism reaches.
-- `transport` as the codec-independent floor: works today on 1.3.1, needs
-  no codec bump, and is the only redundancy play that also covers **video**
-  datagrams. Costs a parity block of latency unless run as a sliding window.
-- `off` for recorders and anything that must show holes as sent.
+- mono voice: `inband` (shipped, the measured win).
+- stereo/quality calls: `dred` — **shipped**: the stereo step keeps
+  recovery without touching the image, and the 1 s span covers handover
+  blackholes that no frame-level mechanism reaches. Stereo rates (≥ 96 kbps)
+  afford DRED's chunk budget; mono resilience rates do not (see below).
+- `transport` as the codec-independent floor: needs no codec, and is the
+  only redundancy play that also covers **video** datagrams. Costs a parity
+  block of latency unless run as a sliding window. Not built.
+- `off` for recorders and anything that must show holes as sent (shipped:
+  the recording path sets neither flag).
 
-**Codec-version caveat (checked 2026-10-28).** The whole build (ours and
-moq's) runs libopus **1.3.1** (c2rust transpile `unsafe-libopus`, idle since
-2024-11; moq calls it "a build-cost choice rather than a maintenance one"
-over `opusic-sys`). Current libopus is **1.6.1** (2026-01): 1.5 added
-**DRED** (deep redundancy, recovers up to ~1 s of lost audio) and **deep
-PLC**; 1.6 improved DRED further. So the blackhole row above is a 1.3.1
-result, not a law: on 1.5+, DRED is the real remedy for handover blackholes
-and deep PLC upgrades the PLC tier for free. The `recover` API being built
-for #39 is version-agnostic (LBRR/PLC exist in every libopus); a codec
-modernization track (opusic-sys/1.6, or a new transpile) is the separate
-question of build cost vs ML-model size vs mobile CPU, and is the one moq
-has never evaluated (no DRED/1.5/1.6 mentions anywhere upstream).
+**Codec-version caveat (updated 2026-10-30).** The build now runs libopus
+**1.6.1** (`opusic-sys`, vendored C): the fork's moq-audio codec backends
+and `recover` moved off the 1.3.1 `unsafe-libopus` transpile (branch map in
+`moq-fork.md`). DRED is wired end to end: `Settings::dred` embeds up to
+`DRED_COVER` (120 ms), `Decoder::recover(next, frames_to_next)` rebuilds
+each lost frame in `opus_demo` order (LBRR at the boundary frame, DRED at
+the frame's offset, then concealment), family 0 decoding through the plain
+Opus decoder so recovery keeps prediction continuity. Measured
+(2026-10-30, stepped tones): DRED beats concealment 1.1–1.8×, the margin
+thinning with depth (older latents are quantized coarser); the DRED chunk
+budget is rate-controlled (`compute_dred_bitrate`) and the codec **drops
+DRED entirely below ~2 chunks affordable** (~48 kbps at loss hint 10) —
+exactly why the mode split above gives DRED to stereo rates and LBRR to
+mono resilience. Both ends must pin the same libopus generation (DRED
+payloads are not standardized). Still open: the single mode knob, the
+`transport` tier, and a device CPU measurement of the DRED encoder before
+shipping it on iPhone. The blackhole row above is likewise no longer a
+1.3.1 result: on 1.6.1, DRED is the remedy for handover blackholes and
+deep PLC upgrades the PLC tier for free.
 
-**D8 Upstream drift — decided: stay pinned, contribute upstream.** Checked
-2026-10-28: Frando/moq `iroh-live-3` HEAD == our checkout (`253441f`), zero
-drift. `n0-computer/iroh-live` is 4 commits ahead of our pin, and its HEAD
-is `refactor!: build against moq main after the dev merge` +
-`chore(deps)!: build against the released moq crates` — the ecosystem is
-consolidating onto **released moq crates**, so `Frando/moq` branch is a
-bridge. Decision: keep the git pins (reproducible builds, both bumps are
-breaking `!` commits); carry no patches; route delta work (e.g. D7 decode
-recovery) **upstream to moq main** so it survives the consolidation; review
-pins monthly and before any media-plane feature work.
+**D8 Upstream drift — updated 2026-10-30.** The 2026-10-28 "stay pinned to
+Frando" decision was superseded by upstream's history rewrite: moq-dev/moq
+now carries two living, unrelated lines — `release` (our lineage; the
+crates.io releases are cut from it, and iroh-live builds against those)
+and a re-rooted `main`. We moved to `donpark/moq@loss-recovery-release`
+(= `origin/release` + our loss-recovery/FEC/BitrateControl/codec patches)
+and iroh-live `9abd29be` (`Frando/bump-moq-2`, released moq crates).
+Branch map, the git-source unification rules, and the update procedure live
+in `moq-fork.md`. Decision stands: keep the git pins (reproducible builds);
+route delta work upstream so it survives the consolidation; review pins
+monthly and before any media-plane feature work.
 
 ## Rebuild scope
 

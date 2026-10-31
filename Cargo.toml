@@ -13,18 +13,21 @@ panic = "abort"
 strip = "symbols"
 
 [patch.crates-io]
-# Fork branch of Frando/moq `iroh-live-3` (same base commit as before) carrying
-# decode-side loss recovery (Decoder::recover + Consumer `conceal`) and a
-# working encoder FEC knob; mirrors the upstream PR to moq-dev/moq. All five
-# crates point at the one branch so their internal path-deps unify to a single
-# instance each (mixing two git sources splits moq_net/moq_mux types).
-# Snaps back to Frando (or the upstream release) once the PR lands.
+# Fork branch of moq-dev/moq `main` (post history-rewrite; the old lineage is
+# frozen and has no common ancestor with it) carrying decode-side loss
+# recovery (Decoder::recover + Consumer `conceal`), a working encoder FEC knob
+# (upstream removed theirs as ineffective; ours also sets the loss-rate hint
+# libopus needs to write the LBRR copy), and the shared BitrateControl. Keep
+# the fork patched until these land upstream; all five crates point at the one
+# branch so their internal path-deps unify to a single instance each (mixing
+# two git sources splits moq_net/moq_mux types). Update procedure:
+# docs/moq-fork.md.
+hang = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
+moq-audio = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
+moq-mux = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
+moq-net = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
+moq-video = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
+moq-tokio = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4" }
 # Match the MoQ development snapshot selected by the current iroh-live rev.
-hang = { git = "https://github.com/donpark/moq", branch = "loss-recovery-0.0.23" }
-moq-audio = { git = "https://github.com/donpark/moq", branch = "loss-recovery-0.0.23" }
-moq-mux = { git = "https://github.com/donpark/moq", branch = "loss-recovery-0.0.23" }
-moq-net = { git = "https://github.com/donpark/moq", branch = "loss-recovery-0.0.23" }
-moq-video = { git = "https://github.com/donpark/moq", branch = "loss-recovery-0.0.23" }
-moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2" }
-# Match the MoQ development snapshot selected by the current iroh-live rev.
-iroh-moq = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2" }
+iroh-moq = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4" }

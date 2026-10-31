@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use moq_media::subscribe::RemoteBroadcast;
-use moq_audio::decode::{Config as AudioDecodeConfig, Consumer as AudioConsumer};
+use moq_audio::decode::{Consumer as AudioConsumer, Options as AudioDecodeOptions, Output as AudioDecodeOutput};
 use moq_audio::Format;
 use moq_audio::encode::Options as AudioOptions;
 use iroh_live::{ticket::LiveTicket, Live};
@@ -324,10 +324,12 @@ async fn record_remote(
         .audio()
         .get(audio)
         .ok_or_else(|| anyhow::anyhow!("audio catalog entry disappeared"))?;
-    let mut decode_config = AudioDecodeConfig::new();
-    decode_config.format = Format::F32;
-    decode_config.sample_rate = Some(48_000);
-    decode_config.channels = Some(1);
+    let mut output = AudioDecodeOutput::default();
+    output.format = Format::F32;
+    output.sample_rate = Some(48_000);
+    output.layout = Some(moq_audio::Layout::Mono);
+    let mut decode_config = AudioDecodeOptions::default();
+    decode_config.output = output;
     // The harness measures live playout, so it fills holes the way calls do
     // (moq-audio `conceal`); `missing_packets` still counts pts holes.
     decode_config.conceal = std::time::Duration::from_millis(120);

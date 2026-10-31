@@ -20,7 +20,8 @@ use std::time::Instant;
 
 use iroh_live::Live;
 use moq_audio::encode::BitrateControl;
-use moq_video::encode::rate::{Control, Policy};
+use moq_mux::rate::{Control, Policy};
+use moq_net::bandwidth::Rate;
 
 /// The voice band `Producer::set_bitrate` is clamped to, in bits per second
 /// per channel. The floor is where speech stops being worth sending; the
@@ -60,7 +61,7 @@ pub(crate) fn start(live: &Live, configured_bps: u64, channels: u32) -> Option<B
             let mut send = send;
             let mut rate = Control::new(policy.clone());
             if let Some(target) = rate.update(send.peek(), Instant::now()) {
-                driving.set(target);
+                driving.set(target.as_bps());
             }
             loop {
                 tokio::select! {
@@ -68,7 +69,7 @@ pub(crate) fn start(live: &Live, configured_bps: u64, channels: u32) -> Option<B
                     changed = send.changed() => {
                         let Ok(estimate) = changed else { break };
                         if let Some(target) = rate.update(estimate, Instant::now()) {
-                            driving.set(target);
+                            driving.set(target.as_bps());
                         }
                     }
                 }
@@ -100,8 +101,8 @@ fn voice_policy(configured_bps: u64, channels: u32) -> Option<Policy> {
     if !(BAND_MIN..=BAND_MAX).contains(&per_channel) {
         return None;
     }
-    let mut policy = Policy::new(configured_bps);
-    policy.min = BAND_MIN * channels;
+    let mut policy = Policy::new(Rate::from_bps(configured_bps));
+    policy.min = Rate::from_bps(BAND_MIN * channels);
     Some(policy)
 }
 
@@ -113,13 +114,13 @@ mod tests {
     fn voice_policy_clamps_the_voice_band_per_channel() {
         // Mono voice at the 36 kbps default: floor 8k, ceiling = configured.
         let policy = voice_policy(36_000, 1).unwrap();
-        assert_eq!(policy.max, 36_000);
-        assert_eq!(policy.min, 8_000);
+        assert_eq!(policy.max.as_bps(), 36_000);
+        assert_eq!(policy.min.as_bps(), 8_000);
 
         // Stereo voice at 48 kbps/channel: both ends scale with channels.
         let policy = voice_policy(96_000, 2).unwrap();
-        assert_eq!(policy.max, 96_000);
-        assert_eq!(policy.min, 16_000);
+        assert_eq!(policy.max.as_bps(), 96_000);
+        assert_eq!(policy.min.as_bps(), 16_000);
     }
 
     #[test]
@@ -131,10 +132,18 @@ mod tests {
     #[test]
     fn estimates_never_take_the_target_above_configured() {
         let mut rate = Control::new(voice_policy(36_000, 1).unwrap());
-        assert_eq!(rate.update(Some(10_000_000), Instant::now()), None, "an optimistic estimate changes nothing");
-        assert!(rate.target() <= 36_000);
+        assert_eq!(
+            rate.update(Some(Rate::from_bps(10_000_000)), Instant::now()),
+            None,
+            "an optimistic estimate changes nothing"
+        );
+        assert!(rate.target().as_bps() <= 36_000);
         // A starved uplink takes it down at once, into the band.
-        let target = rate.update(Some(12_000), Instant::now()).unwrap();
-        assert!((8_000..=36_000).contains(&target), "target {target} left the voice band");
+        let target = rate.update(Some(Rate::from_bps(12_000)), Instant::now()).unwrap();
+        assert!(
+            (8_000..=36_000).contains(&target.as_bps()),
+            "target {} left the voice band",
+            target.as_bps()
+        );
     }
 }

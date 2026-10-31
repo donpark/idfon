@@ -32,7 +32,7 @@ iroh-blobs = "0.103.0"
 # so capture-camera/rusty-capture/v4l2r/nokhwa are compiled nowhere: the
 # v4l2r 0.0.7 bindgen also fails against Ubuntu 22.04 kernel headers
 # (missing AV1/VP9 stateless controls).
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4", default-features = false }
 # macOS camera permission request (camera access is also requested from the
 # Swift shells; this covers daemon-side starts). objc2 hard-fails to compile
 # on non-Apple platforms, hence the target gate; ensure_camera_access is
@@ -50,11 +50,11 @@ n0-future = "0.3.0"
 data-encoding = "2.9.0"
 ogg = "0.9.2"
 iroh-mdns-address-lookup = "0.5.0"
-moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", package = "moq-media", default-features = false, features = ["capture"] }
-moq-audio = { git = "https://github.com/donpark/moq", branch = "loss-recovery-0.0.23", default-features = false, features = ["aac", "capture", "playback"] }
-moq-video = { git = "https://github.com/donpark/moq", branch = "loss-recovery-0.0.23" }
-moq-net = { git = "https://github.com/donpark/moq", branch = "loss-recovery-0.0.23" }
-moq-mux = { git = "https://github.com/donpark/moq", branch = "loss-recovery-0.0.23" }
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4", package = "moq-media", default-features = false, features = ["capture"] }
+moq-audio = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release", default-features = false, features = ["aac", "capture", "playback"] }
+moq-video = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
+moq-net = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
+moq-mux = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
 idfon-protocol = { path = "../idfon-protocol" }
 idfon-client = { path = "../idfon-client" }
 idfon-media = { path = "../idfon-media" }
@@ -73,7 +73,7 @@ block2 = "0.6"
 # Target-gated because moq-media's `vaapi` feature pulls `cros-codecs`
 # unconditionally, which does not build on non-Linux.
 [target.'cfg(target_os = "macos")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4", default-features = false }
 # P5 barge-in/echo filters for the mac shell (see src/voice.rs).
 idfon-voice = { path = "../idfon-voice" }
 
@@ -85,7 +85,7 @@ idfon-voice = { path = "../idfon-voice" }
 idfon-voice = { path = "../idfon-voice", features = ["apple-ffi"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4", default-features = false }
 
 # ponytail note: a 4f94b3e regression put tokio and the idfon-* deps inside
 # a not(linux) target section and silently broke the Linux dylib (tokio
