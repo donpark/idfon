@@ -65,10 +65,12 @@ pub trait AudioPlayback: Send {
 /// they arrived, and arrival jitter crackled.
 ///
 /// `write` queues interleaved PCM; a pacing thread emits it to `emit` in
-/// `PLAYOUT_CHUNK`-sized pieces at media rate after a `PLAYOUT_TARGET`
-/// prebuffer. `buffered` reports the queue so the caller can trim after a
-/// stall. On overflow the oldest audio drops back to `PLAYOUT_TARGET`, so
-/// latency cannot ratchet after a burst.
+/// `PLAYOUT_CHUNK`-sized pieces at media rate after a prebuffer that adapts
+/// to recent arrival jitter between [`PLAYOUT_TARGET_MIN`] and
+/// [`PLAYOUT_TARGET_MAX`] (starting at [`PLAYOUT_TARGET`]).
+/// `buffered` reports the queue so the caller can trim after a stall. On
+/// overflow the oldest audio drops back to the current target, so latency
+/// cannot ratchet after a burst.
 pub struct PacedPlayback {
     input: AudioInput,
     shared: Arc<PacedState>,
@@ -81,17 +83,78 @@ struct PacedState {
     done: std::sync::atomic::AtomicBool,
     /// f32 bits; applied at emit so `set_volume` is safe mid-stream.
     volume: std::sync::atomic::AtomicU32,
+    /// Arrival jitter behind the adaptive prebuffer target.
+    jitter: std::sync::Mutex<ArrivalJitter>,
+    /// Adaptive prebuffer target in microseconds: the write side computes it,
+    /// the pacing thread reads it at each (re)prebuffer.
+    target_us: std::sync::atomic::AtomicU64,
     emit: Box<dyn Fn(&[u8]) + Send + Sync>,
 }
 
 /// Prebuffer before the first emit (and after an underrun): enough to ride
-/// out arrival jitter without adding perceptible latency.
+/// out arrival jitter without adding perceptible latency. The starting
+/// value; [`ArrivalJitter`] adapts it as arrivals show their real jitter
+/// (docs/media-adaptation.md §C8).
 const PLAYOUT_TARGET: Duration = Duration::from_millis(50);
+/// Adaptive target floor: perfect arrivals still deserve a little lead.
+const PLAYOUT_TARGET_MIN: Duration = Duration::from_millis(30);
+/// Adaptive target ceiling: past this, latency costs more than the jitter.
+const PLAYOUT_TARGET_MAX: Duration = Duration::from_millis(150);
 /// How much audio one emit carries; the pacing granularity.
 const PLAYOUT_CHUNK: Duration = Duration::from_millis(20);
 /// Queue ceiling: after a stall plus a burst, drop the oldest audio back to
 /// `PLAYOUT_TARGET` instead of playing it seconds late.
 const PLAYOUT_MAX: Duration = Duration::from_millis(250);
+
+/// Recent arrival jitter of [`PacedPlayback::write`] calls: how far each
+/// write's wall-clock spacing drifted from its media spacing. The p95 is the
+/// lead playout needs to stop that jitter from draining the queue dry.
+struct ArrivalJitter {
+    /// Deviation samples in microseconds; the percentile's memory (~2.5 s of
+    /// 20 ms frames).
+    samples: std::collections::VecDeque<u64>,
+    /// Previous write's arrival and media stamp.
+    last: Option<(std::time::Instant, u64)>,
+}
+
+impl ArrivalJitter {
+    const WINDOW: usize = 128;
+
+    fn new() -> Self {
+        Self {
+            samples: std::collections::VecDeque::new(),
+            last: None,
+        }
+    }
+
+    /// One write's arrival. Writes without media spacing (`pts_us` of 0 or a
+    /// repeat) say nothing about jitter and are skipped.
+    fn record(&mut self, now: std::time::Instant, pts_us: u64) {
+        if let Some((last_now, last_pts)) = self.last {
+            let media_us = pts_us.saturating_sub(last_pts);
+            if media_us > 0 {
+                let wall_us = now.duration_since(last_now).as_micros().min(u128::from(u64::MAX)) as u64;
+                self.samples.push_back(wall_us.abs_diff(media_us).min(1_000_000));
+                if self.samples.len() > Self::WINDOW {
+                    self.samples.pop_front();
+                }
+            }
+        }
+        self.last = Some((now, pts_us));
+    }
+
+    /// The prebuffer a recent p95 of arrivals needs, clamped. The default
+    /// until there is a meaningful sample set.
+    fn target(&self) -> Duration {
+        if self.samples.len() < 16 {
+            return PLAYOUT_TARGET;
+        }
+        let mut sorted: Vec<u64> = self.samples.iter().copied().collect();
+        sorted.sort_unstable();
+        let p95 = sorted[(sorted.len() * 95) / 100];
+        Duration::from_micros(p95).clamp(PLAYOUT_TARGET_MIN, PLAYOUT_TARGET_MAX)
+    }
+}
 
 impl PacedPlayback {
     /// `emit` is called on the pacing thread with borrowed interleaved PCM;
@@ -102,6 +165,8 @@ impl PacedPlayback {
             wake: std::sync::Condvar::new(),
             done: std::sync::atomic::AtomicBool::new(false),
             volume: std::sync::atomic::AtomicU32::new(1f32.to_bits()),
+            jitter: std::sync::Mutex::new(ArrivalJitter::new()),
+            target_us: std::sync::atomic::AtomicU64::new(PLAYOUT_TARGET.as_micros() as u64),
             emit,
         });
         let thread_shared = shared.clone();
@@ -121,15 +186,20 @@ impl PacedPlayback {
     }
 
     fn drain(shared: &PacedState, bytes_per_ms: usize) {
-        let target = PLAYOUT_TARGET.as_millis() as usize * bytes_per_ms;
         let chunk = PLAYOUT_CHUNK.as_millis() as usize * bytes_per_ms;
         let mut started = false;
         let mut next = std::time::Instant::now();
         loop {
             let mut queue = shared.queue.lock().unwrap();
-            while !started && queue.len() < target {
+            while !started {
                 if shared.done.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
+                }
+                // The target adapts on the write side; re-read it each wait so
+                // a grown prebuffer takes effect at the next (re)prebuffer.
+                let target = (shared.target_us.load(std::sync::atomic::Ordering::Relaxed) as usize * bytes_per_ms) / 1000;
+                if queue.len() >= target {
+                    break;
                 }
                 queue = shared.wake.wait(queue).unwrap();
             }
@@ -189,13 +259,21 @@ impl AudioPlayback for PacedPlayback {
         self.input
     }
 
-    fn write(&mut self, pcm: &[u8], _pts_us: u64) -> anyhow::Result<()> {
+    fn write(&mut self, pcm: &[u8], pts_us: u64) -> anyhow::Result<()> {
+        {
+            let mut jitter = self.shared.jitter.lock().unwrap();
+            jitter.record(std::time::Instant::now(), pts_us);
+            let target = jitter.target();
+            self.shared
+                .target_us
+                .store(target.as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         let mut queue = self.shared.queue.lock().unwrap();
         queue.extend(pcm.iter().copied());
         let per_ms = Self::bytes_per_ms(self.input);
         let max = PLAYOUT_MAX.as_millis() as usize * per_ms;
         if queue.len() > max {
-            let keep = PLAYOUT_TARGET.as_millis() as usize * per_ms;
+            let keep = (self.shared.target_us.load(std::sync::atomic::Ordering::Relaxed) as usize * per_ms) / 1000;
             let excess = queue.len() - keep;
             queue.drain(..excess);
         }
@@ -388,5 +466,49 @@ mod tests {
         assert_eq!(out.len(), pcm.len());
         let first = f32::from_le_bytes(out[0..4].try_into().unwrap());
         assert_eq!(first, 0.5);
+    }
+
+    /// The prebuffer target tracks recent arrival jitter (docs/media-
+    /// adaptation.md §C8): the default while warming up, the floor for
+    /// perfect arrivals, following a jittery tail toward the ceiling.
+    #[test]
+    fn arrival_jitter_drives_the_paced_target() {
+        let mut jitter = ArrivalJitter::new();
+        let start = std::time::Instant::now();
+
+        // Too few samples to judge: the default.
+        for i in 0..4 {
+            jitter.record(start + Duration::from_millis(i * 20), i * 20_000);
+        }
+        assert_eq!(jitter.target(), PLAYOUT_TARGET);
+
+        // Writes without media spacing (pts 0 or a repeat) say nothing.
+        jitter.record(start + Duration::from_millis(100), 0);
+        assert_eq!(jitter.target(), PLAYOUT_TARGET);
+
+        // Steady arrivals at exactly media rate: the floor.
+        for i in 0..64u64 {
+            jitter.record(start + Duration::from_millis(1_000 + i * 20), 1_000_000 + i * 20_000);
+        }
+        assert_eq!(jitter.target(), PLAYOUT_TARGET_MIN);
+
+        // Every other write slips 60 ms against the media clock: the p95
+        // lands on the slip.
+        for i in 0..64u64 {
+            jitter.record(
+                start + Duration::from_millis(2_000 + i * 20 + (i % 2) * 60),
+                2_000_000 + i * 20_000,
+            );
+        }
+        assert_eq!(jitter.target(), Duration::from_millis(60));
+
+        // Slips past the ceiling clamp at the ceiling.
+        for i in 0..64u64 {
+            jitter.record(
+                start + Duration::from_millis(3_000 + i * 20 + (i % 2) * 200),
+                3_000_000 + i * 20_000,
+            );
+        }
+        assert_eq!(jitter.target(), PLAYOUT_TARGET_MAX);
     }
 }

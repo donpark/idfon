@@ -421,6 +421,11 @@ Measure first — everything below needs the same instrumentation to prove out.
    UI ("video paused to protect audio"); restore on sustained recovery.
 8. **Adaptive jitter buffer** (change). PacedPlayback prebuffer target from
    recent arrival-jitter percentile (clamp ~30–150 ms) instead of fixed 50 ms.
+   **Landed 2026-10-30**: `seam::ArrivalJitter` records each write's
+   wall-clock spacing against its media spacing; the p95 of that deviation
+   (clamped 30–150 ms, default 50 ms while warming up) is the prebuffer
+   target, recomputed per write and applied at the next (re)prebuffer and
+   at the overflow trim.
 9. **NWPathMonitor on ios/mac** (change). On interface change: announce it
    (quality record tag "transition"), proactively grow the jitter buffer and
    step video down one rung before the breakage hits.
@@ -619,19 +624,30 @@ on top (decoder-only).
 
 Design shape: one **redundancy mode** in the media profile (B2),
 `off | inband | dred | transport`, chosen by the ladder and the call mode
-(C11), same seam as the FEC flip (`media_audio_set_fec` today, the mode
-knob tomorrow). Shipped 2026-10-30 as the two-flag approximation of that
-mode split (`Settings::fec` + `Settings::dred`, flipped together by the
-stereo step):
+(C11), same seam as the FEC flip. Shipped 2026-10-30 first as the two-flag
+approximation of that mode split (`Settings::fec` + `Settings::dred`,
+flipped together by the stereo step), then the same day as the full knob:
+`media_audio_set_redundancy(mode)` (`0` auto, `1` off, `2` inband, `3` dred,
+`4` transport), with `media_audio_set_fec` kept as the ladder's stereo-step
+entry (`on` → `inband`, `off` → auto). The auto split gives the audio of
+any **video call** to DRED (user ruling 2026-10-30): video is the shed
+rung, its audio must survive it.
 
 - mono voice: `inband` (shipped, the measured win).
 - stereo/quality calls: `dred` — **shipped**: the stereo step keeps
   recovery without touching the image, and the 1 s span covers handover
   blackholes that no frame-level mechanism reaches. Stereo rates (≥ 96 kbps)
   afford DRED's chunk budget; mono resilience rates do not (see below).
-- `transport` as the codec-independent floor: needs no codec, and is the
-  only redundancy play that also covers **video** datagrams. Costs a parity
-  block of latency unless run as a sliding window. Not built.
+- `transport` as the codec-independent floor — **shipped 2026-10-30** on
+  the audio track: `moq_audio::parity` puts one XOR parity block per window
+  of encoded packets on a `{track}.parity` sidecar (window 4, ~25% wire),
+  so a receiver that misses one packet of a block rebuilds it exactly —
+  codec-independent, and the one redundancy that spans holes longer than
+  the codec's cover. Blocks close a window of packets past the loss (the
+  "parity block latency"); the consumer waits on the sidecar for it, a cost
+  holes alone pay. Video wiring is deliberately out (user ruling 2026-10-30):
+  video sheds first, so it needs no DRED equivalent and the parity spend
+  belongs to audio.
 - `off` for recorders and anything that must show holes as sent (shipped:
   the recording path sets neither flag).
 
@@ -649,9 +665,9 @@ budget is rate-controlled (`compute_dred_bitrate`) and the codec **drops
 DRED entirely below ~2 chunks affordable** (~48 kbps at loss hint 10) —
 exactly why the mode split above gives DRED to stereo rates and LBRR to
 mono resilience. Both ends must pin the same libopus generation (DRED
-payloads are not standardized). Still open: the single mode knob, the
-`transport` tier, and a device CPU measurement of the DRED encoder before
-shipping it on iPhone. The blackhole row above is likewise no longer a
+payloads are not standardized). Still open: a device CPU measurement of
+the DRED encoder before shipping it on iPhone, and the upstream moq PR for
+the loss-recovery/parity stack (board task; branch map in `moq-fork.md`). The blackhole row above is likewise no longer a
 1.3.1 result: on 1.6.1, DRED is the remedy for handover blackholes and
 deep PLC upgrades the PLC tier for free.
 

@@ -74,6 +74,9 @@ uint8_t media_live_set_video_enabled(uint8_t enabled); // 0 = send no frames
 // Stereo step's complement (docs/media-adaptation.md §B2.4): FEC on with a
 // mono payload is resilience mode; stereo keeps FEC off.
 uint8_t media_audio_set_fec(uint8_t fec);
+
+/** Redundancy mode: 0 auto, 1 off, 2 inband (LBRR), 3 dred, 4 transport. */
+uint8_t media_audio_set_redundancy(uint8_t mode);
 // Connection health check (docs/media-adaptation.md §B2.2): JSON Progress
 // events ("sampling", then one "done" with the report; last arg 1 = done).
 // The remote/ticket variants merge the far end's downlink into one report.
