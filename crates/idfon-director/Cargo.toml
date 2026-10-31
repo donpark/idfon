@@ -13,7 +13,7 @@ default = []
 afm = ["dep:fm-rs"]
 
 [dependencies]
-yoagent = { version = "0.25", features = ["decision"] }
+yoagent = { version = "0.26", features = ["decision"] }
 idfon-protocol = { path = "../idfon-protocol" }
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
