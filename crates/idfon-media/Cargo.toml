@@ -34,6 +34,12 @@ n0-future = "0.3.2"
 # iroh-live -> iroh-mdns-peer-lookup -> hick -> agnostic-net/hick-udp, and
 # getifs, with the `timespec` module feature-gated out). 1.1.6 fixed it and
 # the pin is gone; pin again if a future rustix re-breaks that feature set.
+#
+# Version pin, not a direct dependency: libc 0.2.191 narrows `in6_ifreq` to
+# `target_os = "macos"`, which breaks netdev (netwatch <- iroh) on the iOS
+# target (`pnpm ios build`). Hold the graph at 0.2.189; drop the pin when
+# iroh ships netwatch 0.20 / netdev 0.47 (or netdev gets the fix in 0.46.x).
+libc = "=0.2.189"
 jpeg-encoder = "0.7"
 # fMP4/MKV/TS/FLV/H.264 import (video file demuxing) and the in-memory
 # broadcast pair used to replay imported tracks. Versions must stay in lock
