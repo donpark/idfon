@@ -81,6 +81,10 @@ static OUTPUT_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 static VOLUME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(100);
 static BITRATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(36_000);
 
+/// The deep redundancy (DRED) cover, matching the decode `conceal` bound: a
+/// burst this long recovers instead of concealing.
+const DRED_COVER: std::time::Duration = std::time::Duration::from_millis(120);
+
 /// Stored as `usize` so the function pointer survives a static `Mutex`.
 type AudioPlaybackFn = unsafe extern "C" fn(*const c_void, *const u8, usize, u32, u32, u64);
 
@@ -296,7 +300,8 @@ impl DevicePlayback {
         let mut spec = moq_audio::playback::Input::default();
         spec.format = input.format;
         spec.sample_rate = input.sample_rate;
-        spec.channels = input.channels;
+        spec.layout = moq_audio::Layout::from_channels(input.channels)
+            .map_err(|err| anyhow::anyhow!("playback channels {}: {err}", input.channels))?;
         let sink = engine
             .sink(spec)
             .map_err(|err| anyhow::anyhow!("playback sink: {err}"))?;
@@ -326,6 +331,7 @@ impl AudioPlayback for DevicePlayback {
     fn write(&mut self, pcm: &[u8], _pts_us: u64) -> anyhow::Result<()> {
         self.sink
             .write(pcm)
+            .map(drop)
             .map_err(|err| anyhow::anyhow!("playback write: {err}"))
     }
 
@@ -385,8 +391,10 @@ fn start_live(
             let broadcast = live.publish(&name)?;
             if audio {
                 let mut options = AudioOptions::default();
-                options.codec = codec;
-                options.sample_rate = Some(sample_rate);
+                options.settings.codec = codec;
+                options.settings.sample_rate = sample_rate;
+                options.settings.layout = moq_audio::Layout::from_channels(channels)
+                    .map_err(|err| anyhow::anyhow!("audio channels {channels}: {err}"))?;
                 // BITRATE is per channel: stereo speech wants ~64 kbps at the
                 // 32 kbps default (music wants `media_audio_set_bitrate`).
                 // With FEC, stereo needs a higher floor: at 36 kbps per channel
@@ -395,10 +403,10 @@ fn start_live(
                 let per_channel = BITRATE
                     .load(Ordering::Relaxed)
                     .max(if codec == AudioCodec::Opus && channels > 1 { 48_000 } else { 0 });
-                options.bitrate =
-                    (codec == AudioCodec::Opus).then(|| per_channel as u32 * channels);
+                options.settings.bitrate =
+                    (codec == AudioCodec::Opus).then(|| moq_net::bandwidth::Rate::from_bps(per_channel * u64::from(channels)));
                 // DTX: silence costs ~nothing on the wire; the decode side honors it.
-                options.dtx = codec == AudioCodec::Opus;
+                options.settings.dtx = codec == AudioCodec::Opus;
                 // In-band FEC: the frame after a hole carries a copy of this
                 // one. LBRR is paid from inside the budget, hence the bitrate
                 // step above (docs/media-adaptation.md §D7).
@@ -408,7 +416,16 @@ fn start_live(
                 // it narrows bandwidth to fit FEC), and that pushes the
                 // encoder into coupled coding: the channels leak into each
                 // other. Stereo calls trade resilience for the stereo image.
-                options.fec = codec == AudioCodec::Opus && channels == 1;
+                options.settings.fec = codec == AudioCodec::Opus && channels == 1;
+                // Deep redundancy is the stereo-safe recovery (docs/media-
+                // adaptation.md §D7.1): stereo (quality mode) cannot take LBRR
+                // (it couples the channels) and does not need to — DRED's
+                // additive payload keeps recovery without touching the image,
+                // and stereo rates afford its chunk budget (the codec's rate
+                // control drops DRED below ~48 kbps). Mono resilience rides
+                // LBRR instead.
+                options.settings.dred =
+                    (codec == AudioCodec::Opus && channels > 1).then_some(DRED_COVER);
                 // Audio ABR (docs/media-adaptation.md §C5): drive the encoder
                 // from the connection's send estimate — the same congestion-
                 // controller rate `delivery_bps` carries to the peer — clamped
@@ -904,16 +921,18 @@ async fn subscribe_decode_once(
             .audio()
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("audio catalog missing"))?;
-        let mut decode = moq_audio::decode::Config::new();
-        decode.format = Format::F32;
-        decode.sample_rate = Some(48_000);
+        let mut output = moq_audio::decode::Output::default();
+        output.format = Format::F32;
+        output.sample_rate = Some(48_000);
         // Native channel count from the catalog (mono or stereo): the shell
         // renders stereo natively — old mono publishers decode as mono.
-        decode.channels = None;
+        output.layout = None;
+        let mut decode = moq_audio::decode::Options::default();
+        decode.output = output;
         // Keep a bounded playout budget so a late group is not discarded
         // immediately. This is the decoder's jitter tolerance; the sink
         // below adds its own ~50 ms device buffer.
-        decode.latency_max = Some(std::time::Duration::from_millis(50));
+        decode.max_age = std::time::Duration::from_millis(50);
         // Live playout fills small holes from the next packet's in-band copy
         // (moq-audio `conceal`); recordings must show holes as-is.
         decode.conceal = std::time::Duration::from_millis(120);
@@ -922,7 +941,7 @@ async fn subscribe_decode_once(
         let input = AudioInput {
             format: Format::F32,
             sample_rate: 48_000,
-            channels: consumer.channels(),
+            channels: consumer.layout().channels(),
         };
         *channels_out = input.channels;
         crate::health::set_channels(input.channels as u64);
@@ -1335,8 +1354,12 @@ pub fn media_audio_set_fec(fec: u8) -> u8 {
         };
         // Mirror start_live's options; only the fec flag moves.
         let mut options = AudioOptions::default();
-        options.codec = codec;
-        options.sample_rate = Some(sample_rate);
+        options.settings.codec = codec;
+        options.settings.sample_rate = sample_rate;
+        let Ok(layout) = moq_audio::Layout::from_channels(channels) else {
+            return 1;
+        };
+        options.settings.layout = layout;
         let per_channel = BITRATE
             .load(Ordering::Relaxed)
             .max(if codec == AudioCodec::Opus && channels > 1 {
@@ -1344,9 +1367,15 @@ pub fn media_audio_set_fec(fec: u8) -> u8 {
             } else {
                 0
             });
-        options.bitrate = (codec == AudioCodec::Opus).then(|| per_channel as u32 * channels);
-        options.dtx = codec == AudioCodec::Opus;
-        options.fec = codec == AudioCodec::Opus && fec != 0;
+        options.settings.bitrate =
+            (codec == AudioCodec::Opus).then(|| moq_net::bandwidth::Rate::from_bps(per_channel * u64::from(channels)));
+        options.settings.dtx = codec == AudioCodec::Opus;
+        options.settings.fec = codec == AudioCodec::Opus && fec != 0;
+        // Same mode split as start_live: the ladder's stereo step turns FEC
+        // on and DRED off (resilience mode `inband`); quality mode `dred` is
+        // the reverse.
+        options.settings.dred =
+            (codec == AudioCodec::Opus && fec == 0 && channels > 1).then_some(DRED_COVER);
         // The FEC flip restarts the track: keep driving the new encoder from
         // the running call's ABR control.
         options.bitrate_control = crate::abr::control();
@@ -1381,11 +1410,11 @@ pub fn media_recording_start() -> u8 {
             let live = Live::from_env().await?.with_router().spawn();
             let path = format!("idfon-recording-{}", std::process::id());
             let mut producer = live.publish_raw(&path)?;
-            let catalog = moq_mux::catalog::Producer::new(&mut producer)?;
+            let catalog = moq_mux::catalog::Producer::new(&mut producer, moq_mux::catalog::Config::default())?;
             let mut options = PublicationOptions::default();
             options.capture.source =
                 moq_audio::capture::Source::Microphone(INPUT_DEVICE.lock().unwrap().clone());
-            options.encode.codec = moq_audio::encode::Codec::Opus;
+            options.encode.settings.codec = moq_audio::encode::Codec::Opus;
             let (publication, driver) = Publication::new(producer, catalog, options)?;
             let mut driver_future = Box::pin(driver.run());
             let subscription_future = live.subscribe(live.endpoint().addr(), &path);
@@ -1408,14 +1437,16 @@ pub fn media_recording_start() -> u8 {
                 .get(&name)
                 .ok_or_else(|| anyhow::anyhow!("recording catalog unavailable"))?
                 .clone();
-            let mut decode = moq_audio::decode::Config::new();
-            decode.format = Format::F32;
-            decode.sample_rate = Some(48_000);
-            decode.channels = None; // catalog count: 2ch when the mic is
+            let mut output = moq_audio::decode::Output::default();
+            output.format = Format::F32;
+            output.sample_rate = Some(48_000);
+            output.layout = None; // catalog count: 2ch when the mic is
+            let mut decode = moq_audio::decode::Options::default();
+            decode.output = output;
             let mut consumer =
                 moq_audio::decode::Consumer::new(broadcast.consumer(), &config, &name, decode)
                     .await?;
-            let channels = consumer.channels();
+            let channels = consumer.layout().channels();
             let mut samples = Vec::new();
             let started = std::time::Instant::now();
             loop {
@@ -1515,7 +1546,8 @@ pub fn media_recording_play(ticket: char_p::Ref<'_>) -> u8 {
             let mut input = moq_audio::playback::Input::default();
             input.format = Format::S16;
             input.sample_rate = format.sample_rate;
-            input.channels = format.channels;
+            input.layout = moq_audio::Layout::from_channels(format.channels)
+                .map_err(|err| anyhow::anyhow!("playback channels {}: {err}", format.channels))?;
             let mut sink = engine.sink(input)?;
             let control = sink.control();
             control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
@@ -1526,7 +1558,7 @@ pub fn media_recording_play(ticket: char_p::Ref<'_>) -> u8 {
                 if thread_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                sink.write(chunk)?;
+                let _ = sink.write(chunk)?;
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
             anyhow::Ok(())
@@ -1582,7 +1614,7 @@ pub fn media_call_tone(kind: u8) -> u8 {
             let mut input = moq_audio::playback::Input::default();
             input.format = Format::S16;
             input.sample_rate = 48_000;
-            input.channels = 1;
+            input.layout = moq_audio::Layout::Mono;
             let mut sink = engine.sink(input)?;
             let control = sink.control();
             control.set_volume(VOLUME.load(Ordering::Relaxed) as f32 / 100.0);
@@ -1592,7 +1624,7 @@ pub fn media_call_tone(kind: u8) -> u8 {
                     if thread_stop.load(Ordering::Relaxed) {
                         return anyhow::Ok(());
                     }
-                    sink.write(chunk)?;
+                    let _ = sink.write(chunk)?;
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
                 if kind >= 3 {
@@ -1958,6 +1990,12 @@ mod tests {
         };
         let low = magnitude(0, 440.0);
         let high = magnitude(1, 880.0);
+        eprintln!(
+            "DIAG samples={} ch0: 440={low:.1} 880={:.1} | ch1: 440={:.1} 880={high:.1}",
+            samples.len(),
+            magnitude(0, 880.0),
+            magnitude(1, 440.0),
+        );
         assert!(low > 5.0 * magnitude(0, 880.0), "ch0 must carry 440 Hz");
         assert!(high > 5.0 * magnitude(1, 440.0), "ch1 must carry 880 Hz");
         assert!(low > 5.0 * magnitude(1, 440.0), "440 Hz must stay out of ch1");

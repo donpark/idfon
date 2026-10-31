@@ -387,11 +387,13 @@ pub async fn subscribe_caller(
         actual_profile == expected_profile,
         "caller invite requested {expected_profile:?}, but media catalog advertises {actual_profile:?}"
     );
-    let mut decode = moq_audio::decode::Config::new();
-    decode.format = Format::S16;
-    decode.sample_rate = Some(24_000);
-    decode.channels = Some(1);
-    decode.latency_max = Some(Duration::from_millis(100));
+    let mut output = moq_audio::decode::Output::default();
+    output.format = Format::S16;
+    output.sample_rate = Some(24_000);
+    output.layout = Some(moq_audio::Layout::Mono);
+    let mut decode = moq_audio::decode::Options::default();
+    decode.output = output;
+    decode.max_age = Duration::from_millis(100);
     // Live playout fills small holes from the next packet's in-band copy
     // (moq-audio `conceal`); recordings and downloads must show holes as-is.
     decode.conceal = Duration::from_millis(120);
@@ -555,18 +557,18 @@ pub async fn publish_audio(
         },
     ));
     let mut options = AudioOptions::default();
-    options.codec = profile.codec;
-    options.sample_rate = Some(profile.sample_rate);
+    options.settings = moq_audio::encode::Settings::new(profile.sample_rate, moq_audio::Layout::Mono);
+    options.settings.codec = profile.codec;
     // DTX: silence costs ~nothing on the wire; the decode side honors it.
-    options.dtx = profile.codec == AudioCodec::Opus;
+    options.settings.dtx = profile.codec == AudioCodec::Opus;
     // In-band FEC: the frame after a hole carries a copy of this one.
-    options.fec = profile.codec == AudioCodec::Opus;
+    options.settings.fec = profile.codec == AudioCodec::Opus;
     broadcast.audio().set_with(
         AudioSource::Frames {
-            input: moq_audio::encode::Input {
-                format: Format::S16,
-                sample_rate: 24_000,
-                channels: 1,
+            input: {
+                let mut input = moq_audio::encode::Input::new(24_000, moq_audio::Layout::Mono);
+                input.format = Format::S16;
+                input
             },
             frames: stream,
         },

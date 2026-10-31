@@ -59,16 +59,18 @@ impl VideoPublisher {
             let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase();
             if matches!(extension.as_str(), "mp4" | "m4v" | "mov" | "cmfv" | "mkv" | "webm" | "ts" | "m2ts" | "flv") {
                 let mut raw = live.publish_raw(&name)?;
-                let catalog = moq_mux::catalog::Producer::new(&mut raw)?;
+                let catalog = moq_mux::catalog::Producer::new(&mut raw, moq_mux::catalog::Config::default())?;
                 let reserve = catalog.reserve();
                 let data = std::fs::read(&path)?;
                 let first_chunk_len = data.len().min(256 * 1024);
-                let mut container = moq_mux::import::Container::new(raw, reserve, match extension.as_str() {
-                    "mkv" | "webm" => "mkv",
-                    "ts" | "m2ts" => "ts",
-                    "flv" => "flv",
-                    _ => "fmp4",
-                }, &data[..first_chunk_len])?;
+                let format = match extension.as_str() {
+                    "mkv" | "webm" => moq_mux::import::ContainerFormat::Mkv,
+                    "ts" | "m2ts" => moq_mux::import::ContainerFormat::Ts,
+                    "flv" => moq_mux::import::ContainerFormat::Flv,
+                    _ => moq_mux::import::ContainerFormat::Fmp4,
+                };
+                let init = moq_mux::import::ContainerInit::new(format, data[..first_chunk_len].to_vec());
+                let mut container = moq_mux::import::Container::new(raw, reserve, &init)?;
                 let ticket = LiveTicket::new(live.endpoint().id(), &name).serialize();
                 let import_task = tokio::spawn(async move {
                     for chunk in data[first_chunk_len..].chunks(256 * 1024) {
@@ -146,7 +148,7 @@ pub fn listen_to_h264(
                 let Some(frame) = track.recv().await else { break; };
                 if encoder.is_none() {
                     let size = frame.size();
-                    encoder = Some(Encoder::new(&EncodeConfig::new(size.width, size.height, 30))?);
+                    encoder = Some(Encoder::new(&EncodeConfig::new(size.width, size.height, moq_video::Rate::new(30, 1)?))?);
                 }
                 if let Some(encoder) = encoder.as_mut() {
                     for unit in encoder.encode(&frame)? { encoded.extend_from_slice(&unit.payload); }
@@ -247,7 +249,7 @@ async fn record_video_track(
         let Some(frame) = track.recv().await else { break; };
         if encoder.is_none() {
             let size = frame.size();
-            encoder = Some(Encoder::new(&EncodeConfig::new(size.width, size.height, 30))?);
+            encoder = Some(Encoder::new(&EncodeConfig::new(size.width, size.height, moq_video::Rate::new(30, 1)?))?);
         }
         for unit in encoder.as_mut().unwrap().encode(&frame)? { bytes.extend_from_slice(&unit.payload); }
         frames += 1;

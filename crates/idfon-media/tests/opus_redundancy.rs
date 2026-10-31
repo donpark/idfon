@@ -24,11 +24,11 @@
 
 use std::path::PathBuf;
 
-use unsafe_libopus::{
-    varargs, OpusDecoder, OpusEncoder, OPUS_APPLICATION_AUDIO, OPUS_OK,
+use opusic_sys::{
+    OpusDecoder, OpusEncoder, OPUS_APPLICATION_AUDIO, OPUS_OK,
     OPUS_SET_BITRATE_REQUEST, OPUS_SET_INBAND_FEC_REQUEST, OPUS_SET_PACKET_LOSS_PERC_REQUEST,
     opus_decode_float, opus_decoder_create, opus_decoder_destroy, opus_encode_float,
-    opus_encoder_create, opus_encoder_ctl_impl, opus_encoder_destroy,
+    opus_encoder_create, opus_encoder_ctl, opus_encoder_destroy,
 };
 
 const RATE: i32 = 24_000;
@@ -151,16 +151,12 @@ impl Enc {
             let mut err = 0;
             let enc = opus_encoder_create(RATE, 1, OPUS_APPLICATION_AUDIO, &mut err);
             assert_eq!(err, OPUS_OK, "opus_encoder_create");
-            let rc = opus_encoder_ctl_impl(enc, OPUS_SET_BITRATE_REQUEST, varargs![BITRATE]);
+            let rc = opus_encoder_ctl(enc, OPUS_SET_BITRATE_REQUEST, BITRATE);
             assert_eq!(rc, OPUS_OK, "OPUS_SET_BITRATE");
             if fec {
-                let rc = opus_encoder_ctl_impl(enc, OPUS_SET_INBAND_FEC_REQUEST, varargs![1i32]);
+                let rc = opus_encoder_ctl(enc, OPUS_SET_INBAND_FEC_REQUEST, 1i32);
                 assert_eq!(rc, OPUS_OK, "OPUS_SET_INBAND_FEC");
-                let rc = opus_encoder_ctl_impl(
-                    enc,
-                    OPUS_SET_PACKET_LOSS_PERC_REQUEST,
-                    varargs![10i32],
-                );
+                let rc = opus_encoder_ctl(enc, OPUS_SET_PACKET_LOSS_PERC_REQUEST, 10i32);
                 assert_eq!(rc, OPUS_OK, "OPUS_SET_PACKET_LOSS_PERC");
             }
             Self(enc)

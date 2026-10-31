@@ -19,11 +19,13 @@ async fn main() -> anyhow::Result<()> {
     let catalog = broadcast.catalog();
     let name = catalog.first_audio().ok_or_else(|| anyhow::anyhow!("no audio track"))?;
     let config = catalog.audio().get(name).ok_or_else(|| anyhow::anyhow!("audio catalog missing"))?;
-    let mut decode_config = Config::new();
-    decode_config.format = Format::F32;
-    decode_config.sample_rate = Some(48_000);
-    decode_config.channels = Some(1);
-    decode_config.latency_max = Some(std::time::Duration::from_millis(50));
+    let mut output = moq_audio::decode::Output::default();
+    output.format = Format::F32;
+    output.sample_rate = Some(48_000);
+    output.layout = Some(moq_audio::Layout::Mono);
+    let mut decode_config = moq_audio::decode::Options::default();
+    decode_config.output = output;
+    decode_config.max_age = std::time::Duration::from_millis(50);
     let mut decoder = Consumer::new(
         broadcast.consumer(), config, name, decode_config,
     ).await?;

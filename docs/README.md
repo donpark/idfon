@@ -63,6 +63,7 @@ kept because it records decisions; **design** = not all implemented.
 | `stereo-calls.md` | stereo (2-channel) calls: why phone infra can't retrofit them, the FFI/Swift plumbing and the panel's media row (Built-in/Earphone/Speaker/Mute radio + Stereo toggle) + stereo voice messages — as-built end to end; the device E2E pass remains |
 | `media-adapter-seam.md` | `video-frame.jpg` polling, seams, bundled playback / shell playback callback |
 | `media-adaptation.md` | live-call robustness: VoIP field knowledge (jitter buffers, Opus FEC/DTX/ABR, GCC/SCREAM, Wi-Fi↔cellular handover, burst/gap loss metrics), our MoQ/iroh stack reviewed against it (what `adaptive.rs`/`NetworkSignals`/moq knobs already cover vs gaps), dynamic demand-based media configuration (profile + policy layer), prioritized test/change list |
+| `moq-fork.md` | the `donpark/moq` fork: the three patch features (loss recovery, working FEC knob, BitrateControl), upstream's two living lines (`release` vs `main`) and our branch map, the update procedure and the git-source unification rules | when touching the moq/media transport stack, updating the fork or the iroh-live pin, or debugging split `moq_net` types |
 
 ## Artifacts and agents
 

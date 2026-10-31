@@ -25,10 +25,10 @@ iroh = "1"
 # idfon-cli or a caller-linked source, never as a feature here.
 # Current moq-video owns codec/backend selection. Idfon supplies frames and
 # chooses renditions; the upstream encoder selects the available backend.
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
-moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", package = "moq-media", default-features = false, features = ["capture", "playback"] }
-moq-audio = { version = "0.0.23", default-features = false, features = ["aac", "capture", "playback"] }
-moq-video = "0.0.23"
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4", default-features = false }
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4", package = "moq-media", default-features = false, features = ["capture", "playback"] }
+moq-audio = { version = "0.1", default-features = false, features = ["aac", "capture", "playback"] }
+moq-video = "0.1"
 n0-future = "0.3.2"
 # Version pin, not a direct dependency: rustix 1.1.5 fails to compile under
 # hick's limited feature set (iroh-live -> iroh-mdns-peer-lookup -> hick ->
@@ -40,7 +40,7 @@ jpeg-encoder = "0.7"
 # fMP4/MKV/TS/FLV/H.264 import (video file demuxing) and the in-memory
 # broadcast pair used to replay imported tracks. Versions must stay in lock
 # with what iroh-live resolves to (see Cargo.lock).
-moq-mux = "0.9.14"
+moq-mux = "0.10"
 idfon-core = { path = "../idfon-core" }
 idfon-protocol = { path = "../idfon-protocol" }
 thiserror = "2"
@@ -52,14 +52,15 @@ serde = { version = "1", features = ["derive"] }
 tracing-subscriber = "0.3"
 # Opus redundancy-loss harness (tests/opus_redundancy.rs, docs/media-adaptation.md
 # §D7): same codec moq-audio encodes with, plus the raw `decode_fec` surface
-# moq-audio does not expose. Pure Rust, no C toolchain.
-unsafe-libopus = "0.2"
+# moq-audio does not expose. opusic-sys = maintained libopus 1.6.1 bindings
+# (bundled cc build; see the fork's moq-audio for why).
+opusic-sys = { version = "0.7", features = ["dred"] }
 
 # Hardware H.264 in the Rust pipeline: VideoToolbox (Apple) / VAAPI (Linux).
 # Target-gated because moq-media's `vaapi` feature pulls `cros-codecs`
 # unconditionally, which does not build on non-Linux.
 [target.'cfg(target_os = "macos")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "de7f43bfc466988f08b7e63acdd7fb295a9f9fd2", default-features = false }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4", default-features = false }

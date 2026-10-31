@@ -126,7 +126,7 @@ impl DiskRender {
 
 impl VideoRender for DiskRender {
     fn present(&self, frame: VideoFrame) {
-        let Ok(rgba) = frame.surface.into_rgba() else {
+        let Ok(rgba) = frame.surface.to_rgba(&moq_video::convert::Config::default()) else {
             return;
         };
         let mut jpeg = Vec::new();
@@ -161,7 +161,7 @@ struct CallbackRender {
 
 impl VideoRender for CallbackRender {
     fn present(&self, frame: VideoFrame) {
-        let Ok(rgba) = frame.surface.into_rgba() else {
+        let Ok(rgba) = frame.surface.to_rgba(&moq_video::convert::Config::default()) else {
             return;
         };
         let data = rgba.data();

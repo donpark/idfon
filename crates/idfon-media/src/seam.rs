@@ -218,12 +218,13 @@ impl AudioPlayback for PacedPlayback {
 }
 
 pub fn audio_frames(input: AudioInput, frames: BoxStream<AudioFrame>) -> AudioSource {
+    // shortcut: channels outside 1..=8 label as Mono instead of erroring at
+    // encode open; upgrade audio_frames to Result if a caller needs the error.
+    let layout = moq_audio::Layout::from_channels(input.channels).unwrap_or(moq_audio::Layout::Mono);
+    let mut encode_input = moq_audio::encode::Input::new(input.sample_rate, layout);
+    encode_input.format = input.format;
     AudioSource::Frames {
-        input: moq_audio::encode::Input {
-            format: input.format,
-            sample_rate: input.sample_rate,
-            channels: input.channels,
-        },
+        input: encode_input,
         frames,
     }
 }
