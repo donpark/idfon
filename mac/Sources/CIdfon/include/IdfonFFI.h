@@ -96,6 +96,9 @@ uint8_t media_audio_set_bitrate(uint32_t bitrate);         // 8000..510000 bps
 // mono payload is resilience mode; stereo keeps FEC off (the copy would
 // couple the channels). Replaces the audio track (the encoder restarts).
 uint8_t media_audio_set_fec(uint8_t fec);
+
+/** Redundancy mode: 0 auto, 1 off, 2 inband (LBRR), 3 dred, 4 transport. */
+uint8_t media_audio_set_redundancy(uint8_t mode);
 // Connection health check (docs/media-adaptation.md §B2.2). Streams JSON
 // Progress events ("sampling" while the window runs, then one "done" with the
 // report; the last argument tells them apart, 1 = done). The remote/ticket

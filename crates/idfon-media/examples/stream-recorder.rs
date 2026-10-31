@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use iroh_live::Live;
-use moq_audio::{decode::{Config, Consumer}, Format};
+use moq_audio::{decode::Consumer, Format};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

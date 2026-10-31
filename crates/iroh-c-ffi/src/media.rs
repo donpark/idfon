@@ -85,6 +85,89 @@ static BITRATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 /// burst this long recovers instead of concealing.
 const DRED_COVER: std::time::Duration = std::time::Duration::from_millis(120);
 
+/// The parity sidecar window for `transport` redundancy, in packets: one XOR
+/// block per four packets is ~25% wire (docs/media-adaptation.md §D7.1).
+const PARITY_WINDOW: usize = 4;
+
+/// Redundancy modes for [`redundancy_for`] and `media_audio_set_redundancy`:
+/// docs/media-adaptation.md §D7.1's `off | inband | dred | transport`, plus
+/// `auto` as the default the ladder does not override.
+mod redundancy {
+    /// Derive from the call shape (see [`super::redundancy_for`]).
+    pub const AUTO: u8 = 0;
+    /// Show holes as sent.
+    pub const OFF: u8 = 1;
+    /// Opus in-band FEC (LBRR).
+    pub const INBAND: u8 = 2;
+    /// Opus deep redundancy (DRED).
+    pub const DRED: u8 = 3;
+    /// Codec-independent parity sidecar over the encoded packets.
+    pub const TRANSPORT: u8 = 4;
+}
+static REDUNDANCY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(redundancy::AUTO);
+
+/// The redundancy mode in effect for a call: an explicit override from
+/// `media_audio_set_redundancy`, else the automatic §D7.1 split — DRED for
+/// quality calls (stereo, and the audio of any video call: video is the shed
+/// rung, its audio must survive it), LBRR for mono voice, nothing for
+/// non-Opus.
+fn redundancy_for(override_mode: u8, codec: AudioCodec, channels: u32, video: bool) -> u8 {
+    match override_mode {
+        redundancy::AUTO => {
+            if codec != AudioCodec::Opus {
+                redundancy::OFF
+            } else if channels > 1 || video {
+                redundancy::DRED
+            } else {
+                redundancy::INBAND
+            }
+        }
+        mode => mode,
+    }
+}
+
+/// The call's audio options with the redundancy mode applied — the one place
+/// both construction sites (`start_live` and the track rebuild) mirror.
+fn call_options(
+    codec: AudioCodec,
+    sample_rate: u32,
+    channels: u32,
+    video: bool,
+) -> anyhow::Result<AudioOptions> {
+    let mut options = AudioOptions::default();
+    options.settings.codec = codec;
+    options.settings.sample_rate = sample_rate;
+    options.settings.layout = moq_audio::Layout::from_channels(channels)
+        .map_err(|err| anyhow::anyhow!("audio channels {channels}: {err}"))?;
+    let mode = redundancy_for(REDUNDANCY.load(Ordering::Relaxed), codec, channels, video);
+    // BITRATE is per channel: stereo speech wants ~64 kbps at the 32 kbps
+    // default (music wants `media_audio_set_bitrate`). DRED and the stereo
+    // image both need the 48 kbps per channel floor: at 36 kbps the LBRR copy
+    // pays for itself by coupling the channels (audible as crosstalk,
+    // stereo_tone_roundtrip test), and the codec's rate control drops DRED
+    // entirely below ~48 kbps (docs/media-adaptation.md §D7/D7.1).
+    let per_channel = BITRATE.load(Ordering::Relaxed).max(
+        if codec == AudioCodec::Opus && (channels > 1 || mode == redundancy::DRED) {
+            48_000
+        } else {
+            0
+        },
+    );
+    options.settings.bitrate =
+        (codec == AudioCodec::Opus).then(|| moq_net::bandwidth::Rate::from_bps(per_channel * u64::from(channels)));
+    // DTX: silence costs ~nothing on the wire; the decode side honors it.
+    options.settings.dtx = codec == AudioCodec::Opus;
+    // One redundancy mechanism at a time (docs/media-adaptation.md §D7.1):
+    // `inband` is LBRR (the measured mono-voice win, paid from inside the
+    // bitrate budget — hence the floor above); `dred` is the stereo-safe deep
+    // copy (additive payload, keeps the image; rate-controlled); `transport`
+    // is the codec-independent parity sidecar; `off` shows holes as sent.
+    options.settings.fec = codec == AudioCodec::Opus && mode == redundancy::INBAND;
+    options.settings.dred = (codec == AudioCodec::Opus && mode == redundancy::DRED).then_some(DRED_COVER);
+    options.parity_window = (mode == redundancy::TRANSPORT).then_some(PARITY_WINDOW);
+    Ok(options)
+}
+
 /// Stored as `usize` so the function pointer survives a static `Mutex`.
 type AudioPlaybackFn = unsafe extern "C" fn(*const c_void, *const u8, usize, u32, u32, u64);
 
@@ -390,50 +473,15 @@ fn start_live(
         if audio || video {
             let broadcast = live.publish(&name)?;
             if audio {
-                let mut options = AudioOptions::default();
-                options.settings.codec = codec;
-                options.settings.sample_rate = sample_rate;
-                options.settings.layout = moq_audio::Layout::from_channels(channels)
-                    .map_err(|err| anyhow::anyhow!("audio channels {channels}: {err}"))?;
-                // BITRATE is per channel: stereo speech wants ~64 kbps at the
-                // 32 kbps default (music wants `media_audio_set_bitrate`).
-                // With FEC, stereo needs a higher floor: at 36 kbps per channel
-                // the LBRR copy pays for itself by coupling the channels,
-                // audible as crosstalk (stereo_tone_roundtrip test).
-                let per_channel = BITRATE
-                    .load(Ordering::Relaxed)
-                    .max(if codec == AudioCodec::Opus && channels > 1 { 48_000 } else { 0 });
-                options.settings.bitrate =
-                    (codec == AudioCodec::Opus).then(|| moq_net::bandwidth::Rate::from_bps(per_channel * u64::from(channels)));
-                // DTX: silence costs ~nothing on the wire; the decode side honors it.
-                options.settings.dtx = codec == AudioCodec::Opus;
-                // In-band FEC: the frame after a hole carries a copy of this
-                // one. LBRR is paid from inside the budget, hence the bitrate
-                // step above (docs/media-adaptation.md §D7).
-                // FEC only for mono voice: the measured recovery win is
-                // speech (docs/media-adaptation.md §D7). On stereo the LBRR
-                // copy is paid in bandwidth (decide_fec: above a 5% loss hint
-                // it narrows bandwidth to fit FEC), and that pushes the
-                // encoder into coupled coding: the channels leak into each
-                // other. Stereo calls trade resilience for the stereo image.
-                options.settings.fec = codec == AudioCodec::Opus && channels == 1;
-                // Deep redundancy is the stereo-safe recovery (docs/media-
-                // adaptation.md §D7.1): stereo (quality mode) cannot take LBRR
-                // (it couples the channels) and does not need to — DRED's
-                // additive payload keeps recovery without touching the image,
-                // and stereo rates afford its chunk budget (the codec's rate
-                // control drops DRED below ~48 kbps). Mono resilience rides
-                // LBRR instead.
-                options.settings.dred =
-                    (codec == AudioCodec::Opus && channels > 1).then_some(DRED_COVER);
+                let mut options = call_options(codec, sample_rate, channels, video)?;
                 // Audio ABR (docs/media-adaptation.md §C5): drive the encoder
                 // from the connection's send estimate — the same congestion-
                 // controller rate `delivery_bps` carries to the peer — clamped
                 // to the voice band. The control rides Options to the encoder
                 // the publish task owns.
                 if codec == AudioCodec::Opus {
-                    options.bitrate_control =
-                        crate::abr::start(&live, per_channel * u64::from(channels), channels);
+                    let total = options.settings.bitrate.as_ref().map_or(0, |rate| rate.as_bps());
+                    options.bitrate_control = crate::abr::start(&live, total, channels);
                 }
                 // Capture device is the default live source; shell-pushed PCM
                 // remains available through `media_audio_push_samples`.
@@ -1330,18 +1378,50 @@ pub fn media_audio_set_bitrate(bitrate: u32) -> u8 {
 /// The degradation ladder's stereo step calls this: stereo on is quality
 /// mode (FEC off, the LBRR copy would couple the channels), auto stereo-off
 /// is resilience mode (FEC on, the measured recovery win is mono speech).
-/// Replacing the track restarts the encoder, which the stereo step's channel
-/// change costs anyway. Returns 0 on success, 1 without a live audio track.
+/// `fec` on selects the `inband` redundancy mode; off returns to the
+/// automatic split ([`redundancy_for`]). Returns 0 on success, 1 without a
+/// live audio track.
 #[ffi_export]
 pub fn media_audio_set_fec(fec: u8) -> u8 {
-    // The shells call this from bare threads (Swift `Task.detached`), where
-    // tokio timers panic with "there is no reactor running" — `into_source`
-    // builds a time-based stream. Run the whole rebuild inside the shared
-    // executor, as `start_live` does.
+    REDUNDANCY.store(
+        if fec != 0 {
+            redundancy::INBAND
+        } else {
+            redundancy::AUTO
+        },
+        Ordering::Relaxed,
+    );
+    rebuild_audio_track()
+}
+
+/// Set the redundancy mode for the live audio track and every call after it
+/// (docs/media-adaptation.md §D7.1). Modes: `0` auto — DRED for stereo and
+/// for the audio of any video call (video is the shed rung, its audio must
+/// survive it), LBRR for mono voice; `1` off (holes as sent); `2` inband
+/// (Opus LBRR); `3` dred (Opus deep redundancy); `4` transport (the
+/// codec-independent parity sidecar over the encoded packets). Returns 0 on
+/// success, 1 without a live audio track (the mode still applies to the next
+/// call), 2 for an unknown mode.
+#[ffi_export]
+pub fn media_audio_set_redundancy(mode: u8) -> u8 {
+    if mode > redundancy::TRANSPORT {
+        return 2;
+    }
+    REDUNDANCY.store(mode, Ordering::Relaxed);
+    rebuild_audio_track()
+}
+
+/// Replace the live audio track with one built from the current
+/// [`call_options`]. Replacing restarts the encoder, which the ladder's
+/// channel change costs anyway. Runs inside the shared executor: the shells
+/// call the FFI entries from bare threads (Swift `Task.detached`), where tokio
+/// timers panic with "there is no reactor running" — `into_source` builds a
+/// time-based stream. Returns 0 on success, 1 without a live audio track.
+fn rebuild_audio_track() -> u8 {
     tokio_executor(async move {
         let setup = LIVE_CONFIG.lock().unwrap().clone();
         let live = LIVE.lock().unwrap();
-        let (Some(session), Some((audio, _video, push_audio, file_audio, codec, sample_rate, channels))) =
+        let (Some(session), Some((audio, video, push_audio, file_audio, codec, sample_rate, channels))) =
             (live.as_ref(), setup)
         else {
             return 1;
@@ -1352,31 +1432,10 @@ pub fn media_audio_set_fec(fec: u8) -> u8 {
         let Some(broadcast) = session._audio.as_ref() else {
             return 1;
         };
-        // Mirror start_live's options; only the fec flag moves.
-        let mut options = AudioOptions::default();
-        options.settings.codec = codec;
-        options.settings.sample_rate = sample_rate;
-        let Ok(layout) = moq_audio::Layout::from_channels(channels) else {
+        let Ok(mut options) = call_options(codec, sample_rate, channels, video) else {
             return 1;
         };
-        options.settings.layout = layout;
-        let per_channel = BITRATE
-            .load(Ordering::Relaxed)
-            .max(if codec == AudioCodec::Opus && channels > 1 {
-                48_000
-            } else {
-                0
-            });
-        options.settings.bitrate =
-            (codec == AudioCodec::Opus).then(|| moq_net::bandwidth::Rate::from_bps(per_channel * u64::from(channels)));
-        options.settings.dtx = codec == AudioCodec::Opus;
-        options.settings.fec = codec == AudioCodec::Opus && fec != 0;
-        // Same mode split as start_live: the ladder's stereo step turns FEC
-        // on and DRED off (resilience mode `inband`); quality mode `dred` is
-        // the reverse.
-        options.settings.dred =
-            (codec == AudioCodec::Opus && fec == 0 && channels > 1).then_some(DRED_COVER);
-        // The FEC flip restarts the track: keep driving the new encoder from
+        // The rebuild restarts the track: keep driving the new encoder from
         // the running call's ABR control.
         options.bitrate_control = crate::abr::control();
         // The shell queue is shared across replaces, so a push source keeps
@@ -1818,7 +1877,27 @@ mod tests {
         // This test thread has no tokio runtime, exactly like the call site.
         assert_eq!(super::media_audio_set_fec(0), 0);
         assert_eq!(super::media_audio_set_fec(1), 0);
+        assert_eq!(super::media_audio_set_redundancy(super::redundancy::DRED), 0);
+        assert_eq!(super::media_audio_set_redundancy(super::redundancy::TRANSPORT), 0);
+        assert_eq!(super::media_audio_set_redundancy(9), 2);
+        // Leaves the mode on auto for the other tests.
+        assert_eq!(super::media_audio_set_fec(0), 0);
         super::media_live_stop();
+    }
+
+    /// The §D7.1 automatic split: DRED for stereo and for the audio of any
+    /// video call (video is the shed rung, its audio must survive it), LBRR
+    /// for mono voice, nothing for non-Opus. Explicit modes override it.
+    #[test]
+    fn redundancy_derives_from_the_call_shape() {
+        use super::redundancy;
+        let derive = super::redundancy_for;
+        assert_eq!(derive(redundancy::AUTO, AudioCodec::Opus, 1, false), redundancy::INBAND);
+        assert_eq!(derive(redundancy::AUTO, AudioCodec::Opus, 2, false), redundancy::DRED);
+        assert_eq!(derive(redundancy::AUTO, AudioCodec::Opus, 1, true), redundancy::DRED);
+        assert_eq!(derive(redundancy::AUTO, AudioCodec::Pcm, 1, false), redundancy::OFF);
+        assert_eq!(derive(redundancy::TRANSPORT, AudioCodec::Opus, 1, false), redundancy::TRANSPORT);
+        assert_eq!(derive(redundancy::OFF, AudioCodec::Opus, 2, true), redundancy::OFF);
     }
 
     #[test]
