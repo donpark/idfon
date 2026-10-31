@@ -23,7 +23,7 @@ idfon-protocol = { path = "../idfon-protocol" }
 idfon-telemetry = { path = "../idfon-telemetry", features = ["otlp"] }
 idfon-voice = { path = "../idfon-voice" }
 iroh = "1"
-iroh-blobs = "0.103"
+iroh-blobs = "0.104"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
