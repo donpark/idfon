@@ -9,6 +9,9 @@ source (Node ≥ 24 type-stripping); `node --test test/` is the suite.
 - `src/providers.ts` — the STT/TTS provider seam (OpenAI-compatible gateway and friends)
 - `src/turn.ts` — turn heuristics shared with the Rust `idfon-voice` crate (energy endpointer, silence trim, clause batching, echo suppression)
 - `src/audio.ts`, `src/bridge.ts`, `src/wrap.ts`, `src/tools/` — channel glue and voice tool factories
+- `src/observe/` — per-call observation record (JSONL): user/agent habit stats,
+  raw friction events, and turns with a reserved paralinguistic slot
+  (`src/observe/README.md`); emitted by `live-relay.mjs` at call teardown
 
 ## `src/tyger/` — the tyger decision model in-process
 
