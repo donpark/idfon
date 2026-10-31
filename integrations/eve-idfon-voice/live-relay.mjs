@@ -10,6 +10,9 @@
 // the full seam). `wrap` names the agent to relay to; without it the relay
 // echoes the transcript (a connectivity check).
 
+import { CallRecorder } from "./src/observe/collector.ts";
+import { appendCallRecord, callRecordPath } from "./src/observe/emitter.ts";
+
 const bridge = process.env.IDFON_BRIDGE_URL || "http://127.0.0.1:18766";
 const secret = process.env.IDFON_BRIDGE_SECRET || "m2-test-secret";
 const engine = process.env.IDFON_VOICE_ENGINE ? JSON.parse(process.env.IDFON_VOICE_ENGINE) : {};
@@ -179,6 +182,10 @@ function spokenText(reply) {
 // process-global) — mint a new call id when the relay learns call boundaries.
 let callId = `call-${Date.now().toString(36)}`;
 let turnSeq = 0;
+// Per-call observation record (src/observe/): turns and truncation marks feed a
+// CallRecorder, one JSONL line at teardown. Fully passive.
+const callStartedAt = Date.now();
+const recorder = new CallRecorder(callId, new Date());
 async function sendTranscript(peerId, role, text, isFinal) {
   const turnId = `${callId}-t${turnSeq++}`;
   const body = JSON.stringify({ call_id: callId, turn_id: turnId, role, text, final: isFinal });
@@ -226,7 +233,10 @@ async function onFrame(frame) {
     greeted = true;
     const greeting = process.env.IDFON_VOICE_GREETING || "Hello! I'm here whenever you're ready.";
     log.info("greet", { text: greeting });
-    speak(greeting, frame?.peer_id).catch((error) => log.error("greet failed", { error: String(error) }));
+    const greetStart = Date.now() - callStartedAt;
+    speak(greeting, frame?.peer_id)
+      .then(() => recorder.addTurn({ text: greeting, role: "agent", started_ms: greetStart, duration_ms: Date.now() - callStartedAt - greetStart }))
+      .catch((error) => log.error("greet failed", { error: String(error) }));
     sendTranscript(frame?.peer_id, "agent", greeting, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
   }
   utterance = Buffer.concat([utterance, pcm]);
@@ -235,6 +245,7 @@ async function onFrame(frame) {
   if (decisions.includes("backchannel") || decisions.includes("barge")) {
     log.info("tyger", { decisions: decisions.join(",") });
   }
+  if (decisions.includes("barge")) recorder.recordPlaybackTruncated(Date.now() - callStartedAt);
   if (isLoud(pcm)) {
     if (!speaking) { speaking = true; utterance = pcm; }
     quiet = 0;
@@ -254,20 +265,25 @@ async function onFrame(frame) {
   // ~10 s audio took 14-20 s wall.) Turns stay in order on a chain.
   const peerId = frame?.peer_id;
   const trace = frame?.trace;
-  turnChain = turnChain.then(() => handleTurn(speech, peerId, trace));
+  const turnEndMs = Date.now() - callStartedAt;
+  turnChain = turnChain.then(() => handleTurn(speech, peerId, trace, turnEndMs));
 }
 
-async function handleTurn(speech, peerId, trace) {
+async function handleTurn(speech, peerId, trace, turnEndMs) {
   const started = Date.now();
   try {
     const transcript = (await transcribe(speech)).trim();
     if (!transcript) return;
     const sttMs = Date.now() - started;
+    const captureMs = Math.round((speech.length / 2 / RATE) * 1000);
     log.info("heard", {
       transcript,
       stt_ms: sttMs,
-      capture_ms: Math.round((speech.length / 2 / RATE) * 1000),
+      capture_ms: captureMs,
     });
+    // Observation record: the user turn is the captured utterance, timed from
+    // its audio ([endpoint - capture, endpoint], call-relative).
+    recorder.addTurn({ text: transcript, role: "user", started_ms: turnEndMs - captureMs, duration_ms: captureMs });
     sendTranscript(peerId, "caller", transcript, true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
     const replyStart = Date.now();
     const reply = (await forward(transcript)).trim();
@@ -275,10 +291,33 @@ async function handleTurn(speech, peerId, trace) {
     const replyMs = Date.now() - replyStart;
     log.info("reply", { reply, peer_id: peerId, trace, reply_ms: replyMs });
     sendTranscript(peerId, "agent", spokenText(reply), true).catch((error) => log.warn("transcript send failed", { error: String(error) }));
+    const playStart = Date.now();
     await speak(reply, peerId);
+    // Observation record: the agent turn is the delivery window (TTS + posting),
+    // approximating when the caller hears the agent.
+    recorder.addTurn({ text: spokenText(reply), role: "agent", started_ms: playStart - callStartedAt, duration_ms: Date.now() - playStart });
     log.info("turn timing", { stt_ms: sttMs, reply_ms: replyMs, total_ms: Date.now() - started });
   } catch (error) {
     log.error("turn failed", { peer_id: peerId, trace, error: String(error) });
+  }
+}
+
+// One observation record per call at teardown (src/observe/). Passive: a sink
+// failure is logged and dropped. shortcut: a process crash loses the call's
+// record — move to incremental flushes if records go missing in practice.
+let recordEmitted = false;
+function emitCallRecord() {
+  if (recordEmitted) return;
+  recordEmitted = true;
+  try {
+    const path = callRecordPath();
+    if (path) {
+      const record = recorder.build();
+      appendCallRecord(path, record);
+      log.info("call record", { path, call_id: record.call_id, turn_count: record.turn_count });
+    }
+  } catch (error) {
+    log.warn("call record failed", { error: String(error) });
   }
 }
 
@@ -328,6 +367,8 @@ async function main() {
       if (frame.type === "audio.frame") await onFrame(frame);
     }
   }
+  await turnChain; // in-flight turns still land in the record
+  emitCallRecord();
 }
 
-main().catch((error) => { log.error("fatal", { error: String(error) }); process.exit(1); });
+main().catch((error) => { log.error("fatal", { error: String(error) }); emitCallRecord(); process.exit(1); });
