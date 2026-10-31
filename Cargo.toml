@@ -7,7 +7,11 @@ license = "MIT OR Apache-2.0"
 version = "0.9.0"
 
 [profile.release]
-lto = "fat"
+# thin, not fat: fat LTO doubles every rlib (bitcode) and makes each relink of
+# the ~350-crate graph minutes; thin LTO keeps cross-crate inlining at a
+# fraction of the link/intermediate cost. Flip back to "fat" for a release
+# build if profiling says the media path needs it.
+lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"

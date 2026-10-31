@@ -1,0 +1,4 @@
+# The dylib/Rust-ABI work (idfon-core-dylib) assumes one rustc across the
+# workspace: a Rust "dylib" artifact is rustc-version-locked. Pin it.
+[toolchain]
+channel = "1.99.1"
