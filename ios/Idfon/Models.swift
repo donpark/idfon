@@ -540,9 +540,13 @@ struct ChatMessage: Identifiable {
     let timestamp: Date
     /// nil is the ordinary 1:1 conversation; a room id scopes group history.
     let conversation: String?
+    /// Event ids folded into this row (upserted snapshots, an absorbed plain
+    /// reply); kept so the replay dedupe set survives a relaunch — row ids
+    /// alone lose them and the daemon replay re-duplicates (issue #69).
+    var mergedIds: [String] = []
 
-    init(id: String, peerId: String, kind: MessageKind, outgoing: Bool, timestamp: Date, conversation: String? = nil) {
-        self.id = id; self.peerId = peerId; self.kind = kind; self.outgoing = outgoing; self.timestamp = timestamp; self.conversation = conversation
+    init(id: String, peerId: String, kind: MessageKind, outgoing: Bool, timestamp: Date, conversation: String? = nil, mergedIds: [String] = []) {
+        self.id = id; self.peerId = peerId; self.kind = kind; self.outgoing = outgoing; self.timestamp = timestamp; self.conversation = conversation; self.mergedIds = mergedIds
     }
 
     var displayText: String {

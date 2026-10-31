@@ -255,6 +255,28 @@ final class ChatStore {
                 messages[existing].kind = part.1
                 continue
             }
+            // A reply-delta turn leaves one unfinalized agent row (Rule 1);
+            // the turn's preamble reply closes it by absorbing into that row in
+            // place — preamble part only (envelope-synthesized texts like invite
+            // confirmations keep their own bubbles), positional + peer-scoped,
+            // never text-matched (a text match ate legitimate replies;
+            // donpark/idfon#69).
+            // Sync note: ios/Idfon/ChatStore.swift mirrors this clause plus
+            // mergedIds bookkeeping on every merged part (its seen-set rebuild
+            // needs it; mac's restore() covers consumed ids via per-stored-id
+            // seen inserts). Keep in sync.
+            // shortcut: a plain reply landing while an earlier turn's unit row is still unclosed absorbs into that row — one row, no duplicate, but the later turn is then lost to the voice loop (the row keeps the older unit's id, which waitForReply's snapshot filter excludes, so that turn times out unspoken); upgrade (bound absorption to the current turn) if that ordering ever matters.
+            if preamble != nil, index == 0, case .text = part.1,
+               let existing = messages.lastIndex(where: {
+                   guard $0.peerId == peerId, !$0.outgoing else { return false }
+                   if case .callTranscript(let current) = $0.kind {
+                       return current.role == "agent" && !current.final
+                   }
+                   return false
+               }) {
+                messages[existing].kind = part.1
+                continue
+            }
             messages.append(ChatMessage(id: partID, peerId: peerId, kind: part.1, outgoing: false, status: nil, timestamp: timestamp, conversation: event.conversationId))
             switch part.1 {
             case .recording(let ticket, _):
@@ -464,6 +486,19 @@ final class ChatStore {
             if case .callTranscript(let transcript) = part.1,
                let existing = messages.firstIndex(where: {
                    if case .callTranscript(let current) = $0.kind { return current.turnId == transcript.turnId }
+                   return false
+               }) {
+                messages[existing].kind = part.1
+                continue
+            }
+            // Same reply-delta absorption as ingest (donpark/idfon#69), so a
+            // merged turn converges to one row on replay.
+            if !stored.outgoing, preamble != nil, index == 0, case .text = part.1,
+               let existing = messages.lastIndex(where: {
+                   guard $0.peerId == stored.peerId, !$0.outgoing else { return false }
+                   if case .callTranscript(let current) = $0.kind {
+                       return current.role == "agent" && !current.final
+                   }
                    return false
                }) {
                 messages[existing].kind = part.1

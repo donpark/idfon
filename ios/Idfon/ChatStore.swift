@@ -249,6 +249,7 @@ final class ChatStore {
                    return false
                }) {
                 messages[existing].kind = part.1
+                messages[existing].mergedIds.append(messageID)
                 continue
             }
             // A live holder also delivers the agent's reply as a normal
@@ -262,10 +263,33 @@ final class ChatStore {
                    return $0.peerId == peerId && !$0.outgoing && $0.displayText == transcript.text
                }) {
                 messages[existing].kind = part.1
+                messages[existing].mergedIds.append(messageID)
                 continue
             }
             if case .file(_, let name, let sizeBytes, _) = part.1 {
                 idfonLog("idfon file: received name=\(name) size=\(sizeBytes)")
+            }
+            // A reply-delta turn leaves one unfinalized agent row (Rule 1);
+            // the turn's preamble reply closes it by absorbing into that row in
+            // place — preamble part only (envelope-synthesized texts like invite
+            // confirmations keep their own bubbles), positional + peer-scoped,
+            // never text-matched (a text match ate legitimate replies;
+            // donpark/idfon#69).
+            // Sync note: mac/Sources/Idfon/ChatStore.swift mirrors this clause
+            // and rules minus the mergedIds bookkeeping (its restore() covers
+            // consumed event ids via per-stored-id seen inserts). Keep in sync.
+            // shortcut: a plain reply landing while an earlier turn's unit row is still unclosed absorbs into that row — one row, no duplicate, but the later turn is then lost to the voice loop (the row keeps the older unit's id, which waitForReply's snapshot filter excludes, so that turn times out unspoken); upgrade (bound absorption to the current turn) if that ordering ever matters.
+            if preamble != nil, index == 0, case .text = part.1,
+               let existing = messages.lastIndex(where: {
+                   guard $0.peerId == peerId, !$0.outgoing else { return false }
+                   if case .callTranscript(let current) = $0.kind {
+                       return current.role == "agent" && !current.final
+                   }
+                   return false
+               }) {
+                messages[existing].kind = part.1
+                messages[existing].mergedIds.append(messageID)
+                continue
             }
             messages.append(ChatMessage(id: partID, peerId: peerId, kind: part.1, outgoing: false, timestamp: timestamp, conversation: event.conversationId))
         }
@@ -401,10 +425,12 @@ final class ChatStore {
         let outgoing: Bool
         let timestamp: Date
         let conversation: String?
+        let mergedIds: [String]?
 
         init(_ message: ChatMessage) {
             id = message.id; peerId = message.peerId; outgoing = message.outgoing
             timestamp = message.timestamp; conversation = message.conversation
+            mergedIds = message.mergedIds
             switch message.kind {
             case .text(let value): kind = "text"; text = value; ticket = nil; name = nil; sizeBytes = nil; durationMs = nil
             case .recording(let value, let duration, _): kind = "recording"; text = nil; ticket = value; name = nil; sizeBytes = nil; durationMs = duration
@@ -455,7 +481,7 @@ final class ChatStore {
             case "artifact", "reference", "call", "render", "session": messageKind = MessageKind.parse(text ?? "")
             default: messageKind = .text(text ?? "")
             }
-            return ChatMessage(id: id, peerId: peerId, kind: messageKind, outgoing: outgoing, timestamp: timestamp, conversation: conversation)
+            return ChatMessage(id: id, peerId: peerId, kind: messageKind, outgoing: outgoing, timestamp: timestamp, conversation: conversation, mergedIds: mergedIds ?? [])
         }
     }
 
@@ -475,12 +501,19 @@ final class ChatStore {
                    return false
                }) {
                 loaded[existing].kind = message.kind
+                loaded[existing].mergedIds.append(contentsOf: message.mergedIds)
                 continue
             }
             loaded.append(message)
         }
         messages = loaded
-        seenMessageIDs = Set(messages.map { "\($0.peerId)|\($0.id)" })
+        // Row ids miss merged event ids (issue #69), which the daemon replay
+        // re-delivers; union them back in or relaunch re-duplicates.
+        var seen = Set(messages.map { "\($0.peerId)|\($0.id)" })
+        for message in messages {
+            for id in message.mergedIds { seen.insert("\(message.peerId)|\(id)") }
+        }
+        seenMessageIDs = seen
     }
 
     private func persistMessages() {

@@ -506,7 +506,9 @@ final class VoiceAgentSession: NSObject {
                 peerId: peerId, callId: callId, turnId: spokenTurnId,
                 role: "agent", text: spoken, replacing: target)
             if target != message.id { ChatStore.shared.removeMessage(id: message.id) }
-        } else if let unitRow = unitRowId {
+        } else if let unitRow = unitRowId, unitRow != message.id {
+            // After reply-delta absorption the unit row IS the reply row
+            // (donpark/idfon#69): removing it would delete the reply.
             ChatStore.shared.removeMessage(id: unitRow)
         }
         unitRowId = nil
