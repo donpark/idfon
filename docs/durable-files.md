@@ -131,7 +131,8 @@ Configuration on the daemon: `IDFON_EDGE_URL` (base, e.g.
   settings matter:
   - **Smart Cache must stay OFF** — it restricts caching to a known extension
     list, and content URLs are extensionless.
-  - cache overrides stay `0` (respect origin): the edge sends
+  - cache overrides stay `-1` (bunny's "no override", not `0` — `0` means
+    "cache for zero seconds" and bypasses caching): the edge sends
     `max-age=<remaining>`, `immutable`, or `no-store`, so the CDN follows the
     rental term and never caches a mutable name.
   The app's `defaultPackURL` must point at `https://files.idfon.net/...` to use

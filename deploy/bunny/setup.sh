@@ -71,8 +71,9 @@ jget() { python3 -c "import json,sys; z=json.load(sys.stdin); print($1)" 2>/dev/
 
 # The writeable settings this pull zone converges to. Smart Cache stays OFF:
 # it restricts caching to known extensions, and content URLs are extensionless
-# hex paths. Cache overrides stay 0 = respect the origin's Cache-Control, which
-# is where the rental TTL and no-store for mutable names live.
+# hex paths. Cache overrides stay -1 (bunny's "no override") so the origin's
+# Cache-Control is authoritative — that is where the rental TTL and the
+# no-store for mutable names live. 0 would mean "cache for 0 seconds".
 SETTINGS=$(python3 - "$ORIGIN" <<'PY'
 import json, sys
 print(json.dumps({
@@ -83,9 +84,10 @@ print(json.dumps({
     "VerifyOriginSSL": True,
     "FollowRedirects": False,
     "EnableSmartCache": False,
-    "CacheControlMaxAgeOverride": 0,
-    "CacheControlPublicMaxAgeOverride": 0,
-    "CacheControlBrowserMaxAgeOverride": 0,
+    "CacheControlMaxAgeOverride": -1,
+    "CacheControlPublicMaxAgeOverride": -1,
+    "CacheControlBrowserMaxAgeOverride": -1,
+    "IgnoreQueryStrings": False,
     "EnableRequestCoalescing": True,
     "EnableOriginShield": False,
     "EnableCacheSlice": False,
@@ -145,7 +147,7 @@ origin_now=$(printf '%s' "$ZONE_JSON" | jget 'z.get("OriginUrl") or ""')
 smart_now=$(printf '%s' "$ZONE_JSON" | jget 'z.get("EnableSmartCache")')
 cache_now=$(printf '%s' "$ZONE_JSON" | jget 'z.get("CacheControlMaxAgeOverride")')
 info "origin   $origin_now"
-info "smart cache $smart_now, cache override ${cache_now}s (0 = origin)"
+info "smart cache $smart_now, cache override ${cache_now}s (-1 = origin)"
 [ -n "$CNAME" ] || die "bunny returned no CnameDomain"
 
 say "custom hostname $HOST"
@@ -196,7 +198,10 @@ if command -v doctl >/dev/null && [ -n "${DIGITALOCEAN_API_KEY:-}" ]; then
             done
         fi
         if ! doctl compute domain records list "$DOMAIN" --format Type,Name,Data --no-header \
-            | awk -v n="$DNAME" -v c="$CNAME" '$1 == "CNAME" && $2 == n && $3 == c "." { found=1 } END { exit !found }'; then
+            | awk -v n="$DNAME" -v c="$CNAME" '
+                { data = $3; sub(/\.$/, "", data) }
+                $1 == "CNAME" && $2 == n && data == c { found = 1 }
+                END { exit !found }'; then
             doctl compute domain records create "$DOMAIN" --record-type CNAME \
                 --record-name "$DNAME" --record-data "$CNAME." --record-ttl 300 >/dev/null
             info "created CNAME"
