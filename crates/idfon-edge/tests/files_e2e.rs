@@ -146,10 +146,13 @@ async fn read_response(
     path: &str,
 ) -> (u16, String, Vec<u8>) {
     let mut raw = Vec::new();
-    stream
-        .read_to_end(&mut raw)
-        .await
-        .unwrap_or_else(|error| panic!("{method} {path}: {error}"));
+    if let Err(error) = stream.read_to_end(&mut raw).await {
+        // A route that refuses before reading the body may answer and then
+        // reset; keep whatever response bytes arrived.
+        if raw.is_empty() {
+            panic!("{method} {path}: {error}");
+        }
+    }
     let split = raw
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -569,7 +572,7 @@ async fn deletion_requires_the_ops_token_and_removes_the_pin() {
     assert!(pins["pins"].get(&format!("sha256/{hash}")).is_none());
 
     // A takedown is sticky: the same hash cannot be re-published.
-    let (status, _, _) = request_with(addr, "PUT", &path, Some("ops"), &[], &body).await;
+    let (status, _, _) = request_with(addr, "PUT", &path, Some("ops"), &[], b"").await;
     assert_eq!(status, 403);
 
     // Names are removable too.
@@ -616,13 +619,16 @@ async fn write_rate_limit_applies_per_role() {
         .enumerate()
     {
         let hash = sha256(&body);
+        // The refused request is answered before the body is read; an empty
+        // body keeps the connection from being reset mid-write.
+        let payload: &[u8] = if index < 2 { &body } else { &[] };
         let (status, _, _) = request_with(
             addr,
             "PUT",
             &format!("/files/sha256/{hash}"),
             Some("secret"),
             &[],
-            &body,
+            payload,
         )
         .await;
         assert_eq!(status, if index < 2 { 201 } else { 429 });
