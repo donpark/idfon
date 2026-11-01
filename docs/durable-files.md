@@ -221,10 +221,13 @@ rsync -a --chmod=D755,F644 dist/speech-packs/phonon-31m/sha256/ \
   <droplet>:/srv/idfon-edge/files/sha256/
 rsync -a --chmod=D755,F644 dist/speech-packs/phonon-31m/bundle.json \
   <droplet>:/srv/idfon-edge/files/phonon-31m/bundle.json
+ssh <droplet> 'chown -R 10001:10001 /srv/idfon-edge/files'
 ```
 
-The `--chmod` matters: the edge runs as uid 10001, and pack voice files are
-created mode 600 locally — root-owned 600 objects return 404 to the edge.
+Permissions matter: the edge runs as uid 10001. Pack voice files are created
+mode 600 locally, so root-owned 600 objects return 404; and a root-owned
+`sha256/` directory makes uploads fail with `500 Permission denied`. The
+deploy now chowns the store; a manual rsync needs the `chown` above.
 
 Verified: the manifest and all 40 files served through `files.idfon.net` with
 the right sizes, MISS → HIT, immutable caching. Remaining: the fresh-install
