@@ -49,7 +49,8 @@ idfon publish bundle.json --name site/bundle.json
   the edge answers `410`, then deletes the bytes after its grace period.
 - `--permanent` marks a file the service needs (model packs, manifests): it
   never expires and uses the edge operations token (`IDFON_FILES_OPS_TOKEN`).
-- User uploads are capped per file by the edge (default 100 MB); an oversized
+- User uploads are capped per file by the edge (default 2 MB, about four
+  minutes of 64 kbps Opus speech); an oversized
   file fails with `413`. Live `send --stream`/calls are not affected.
 - Edge config: `IDFON_EDGE_URL`, and `IDFON_FILES_TOKEN` (falls back to
   `IDFON_EDGE_TOKEN`) for the upload bearer. `--url` and `--token` override.

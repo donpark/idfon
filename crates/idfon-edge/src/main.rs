@@ -58,7 +58,7 @@ OPTIONS:
   --files-grace-days N    Keep expired bytes this long (default 30)
   --files-ops-token VALUE Bearer token for permanent (operational) pins
   --files-user-expiry-hours N  User pin term (default 24; 0 = no default)
-  --files-max-upload-mb N Per-file cap for user publishes (default 100; 0 = none)
+  --files-max-upload-mb N Per-file cap for user publishes (default 2; 0 = none)
   --help, -h              Print this help
 
 ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let mut files_grace_days: u64 = 30;
     let mut files_ops_token: Option<String> = None;
     let mut files_user_expiry_hours: u64 = 24;
-    let mut files_max_upload_mb: u64 = 100;
+    let mut files_max_upload_mb: u64 = 2;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
