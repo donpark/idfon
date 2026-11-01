@@ -56,7 +56,8 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
 | `GET`/`HEAD /files/<name...>` | mutable named file (`cache-control: no-store`) |
 | `GET`/`HEAD /files/<prefix...>/sha256/<hash>` | content object (`cache-control: … immutable`) |
 | `GET`/`HEAD /models/<name...>` | alias for model packs (`/models/phonon-31m/...`) |
-| `PUT` on either form | publish (requires `--files-token`) |
+| `PUT` on either form | publish (user or operations token) |
+| `DELETE` on either form | operational takedown: removes bytes + pin (operations token only) |
 
 - Uploads stream: the request body is never collected or capped at the
   gateway's `MAX_RESOURCE_BYTES`; files of any size go through.
@@ -78,6 +79,9 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
   it).
 - Names are `[A-Za-z0-9._-]` segments; `..`, empty segments and traversal are
   refused. Uploading a name overwrites it in place.
+- `DELETE` is the takedown path: it needs the **operations token**, removes the
+  bytes and any pin, and is idempotent (`204`). Reports go to the operator; a
+  self-service report UI/blocklist is tracked in #109.
 - No `Range` support yet: a resumed download refetches the whole object (the
   apps verify size + SHA-256 per file anyway).
 
