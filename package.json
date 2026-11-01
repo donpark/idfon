@@ -16,6 +16,7 @@
     "iroh": "bash ./scripts/iroh.sh",
     "idfond": "bash ./scripts/idfond.sh",
     "voice": "bash ./scripts/voice.sh",
+    "tyger": "bash ./scripts/tyger-model.sh",
     "pair": "bash ./scripts/pair-apple-channels.sh",
     "agent": "bash ./scripts/agent.sh",
     "ane": "bash ./scripts/ane.sh",
