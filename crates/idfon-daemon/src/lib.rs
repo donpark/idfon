@@ -1835,10 +1835,20 @@ async fn publish_file(request: &Request) -> Result<serde_json::Value, String> {
         .ok_or("no edge configured (pass url or set IDFON_EDGE_URL)")?
         .trim_end_matches('/')
         .to_owned();
-    let token = request_text(&request.params, "token")
-        .or_else(|| env_value("IDFON_FILES_TOKEN"))
-        .or_else(|| env_value("IDFON_EDGE_TOKEN"))
-        .ok_or("no upload token (pass token or set IDFON_FILES_TOKEN)")?;
+    // Permanent pins are an operations privilege: they need the ops token.
+    let permanent = request
+        .params
+        .get("permanent")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let token = match request_text(&request.params, "token") {
+        Some(token) => token,
+        None if permanent => env_value("IDFON_FILES_OPS_TOKEN")
+            .ok_or("no operations token (set IDFON_FILES_OPS_TOKEN)")?,
+        None => env_value("IDFON_FILES_TOKEN")
+            .or_else(|| env_value("IDFON_EDGE_TOKEN"))
+            .ok_or("no upload token (pass token or set IDFON_FILES_TOKEN)")?,
+    };
 
     let (sha256, size) = hash_file(&path)
         .await
@@ -1864,6 +1874,7 @@ async fn publish_file(request: &Request) -> Result<serde_json::Value, String> {
             &path,
             size,
             expires_in,
+            permanent,
         )
         .await?;
     }
@@ -1876,6 +1887,7 @@ async fn publish_file(request: &Request) -> Result<serde_json::Value, String> {
             &path,
             size,
             expires_in,
+            permanent,
         )
         .await?;
     }
@@ -1885,6 +1897,7 @@ async fn publish_file(request: &Request) -> Result<serde_json::Value, String> {
         "size": size,
         "existed": existed,
         "expires_in": expires_in,
+        "permanent": permanent,
     }))
 }
 
@@ -1905,6 +1918,7 @@ async fn upload(
     file: &str,
     size: u64,
     expires_in: Option<u64>,
+    permanent: bool,
 ) -> Result<(), String> {
     let body = tokio::fs::File::open(file)
         .await
@@ -1915,6 +1929,9 @@ async fn upload(
         .header(reqwest::header::CONTENT_LENGTH, size);
     if let Some(seconds) = expires_in {
         request = request.header("x-idfon-expires-in", seconds);
+    }
+    if permanent {
+        request = request.header("x-idfon-pin", "permanent");
     }
     let response = request
         .body(reqwest::Body::from(body))

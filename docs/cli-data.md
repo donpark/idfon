@@ -44,9 +44,11 @@ idfon publish bundle.json --name site/bundle.json
   `https://<edge>/files[/<dir>]/sha256/<hash>`.
 - `--name NAME` also writes the bytes at the stable mutable path
   `/files/<NAME>` (use it for a `bundle.json` next to hashed files).
-- `--expires-in 30d` sets a rental term (`s`/`m`/`h`/`d`/`w`; no flag =
-  permanent). The edge serves the URL until the term ends, then `410`; bytes
-  are deleted after its grace period. The edge may cap the term.
+- User pins last **24 hours** by default and at most 24 hours (no paid tier
+  yet); `--expires-in 1h` shortens it (`s`/`m`/`h`/`d`/`w`). After the term
+  the edge answers `410`, then deletes the bytes after its grace period.
+- `--permanent` marks a file the service needs (model packs, manifests): it
+  never expires and uses the edge operations token (`IDFON_FILES_OPS_TOKEN`).
 - Edge config: `IDFON_EDGE_URL`, and `IDFON_FILES_TOKEN` (falls back to
   `IDFON_EDGE_TOKEN`) for the upload bearer. `--url` and `--token` override.
 

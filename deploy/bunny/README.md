@@ -53,6 +53,9 @@ resolves to bunny.net — re-run if the first run reports it is not issued yet.
   `max-age=<remaining>` for a rented object (so the CDN cannot outlive the
   rental), `immutable` for a permanent one, and `no-store` for mutable names
   (`bundle.json`). No purges are needed.
+- **Terms drive the TTL.** User pins last 24h, so their `max-age` is at most a
+  day; operational pins (`--permanent`) are `immutable`. Mutable names are
+  `no-store` and are never cached.
 - **Origin is the droplet, HTTPS verified.** The wildcard cert covers
   `idfon.net` and `*.idfon.net` (`deploy/digitalocean/acme-issue.sh`), so the
   apex origin validates.

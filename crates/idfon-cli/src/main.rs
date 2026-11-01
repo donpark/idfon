@@ -577,10 +577,14 @@ struct PublishArgs {
     /// Upload token (default IDFON_FILES_TOKEN, then IDFON_EDGE_TOKEN)
     #[arg(long)]
     token: Option<String>,
-    /// Rental term, e.g. 30d, 12h, 90m (the edge may cap it). Without it the
-    /// pin does not expire.
+    /// Rental term, e.g. 30d, 12h, 90m (the edge may cap it). User publishes
+    /// default to 24h; without a paid tier a user pin cannot exceed that.
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     expires_in: Option<u64>,
+    /// Operational file: never expires (requires the edge operations token,
+    /// IDFON_FILES_OPS_TOKEN).
+    #[arg(long, conflicts_with = "expires_in")]
+    permanent: bool,
 }
 
 /// `30d`, `12h`, `90m`, `60s`; a bare number is seconds.
@@ -699,6 +703,9 @@ fn run() -> io::Result<()> {
             }
             if let Some(seconds) = args.expires_in {
                 params["expires_in"] = json!(seconds);
+            }
+            if args.permanent {
+                params["permanent"] = json!(true);
             }
             let response = send_rpc(socket, "files.publish", params, identity, false)?;
             if json {

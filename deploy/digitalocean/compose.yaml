@@ -55,6 +55,10 @@ services:
       - ${IDFON_FILES_DIR:-/var/lib/idfon/files}
       - --files-token
       - ${IDFON_FILES_TOKEN:-}
+      - --files-ops-token
+      - ${IDFON_FILES_OPS_TOKEN:-}
+      - --files-user-expiry-hours
+      - ${IDFON_FILES_USER_EXPIRY_HOURS:-24}
       - --files-quota-mb
       - ${IDFON_FILES_QUOTA_MB:-10240}
       - --files-max-expiry-days
