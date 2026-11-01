@@ -220,7 +220,7 @@ content-addressed URL is the artifact; the free tier is `media.resource.put`
 
 | method | params | result |
 |---|---|---|
-| `files.publish` | `{ path, name?, url?, token?, expires_in? }` | `{ url, sha256, size, existed, expires_in }` — computes SHA-256, skips the upload when the edge already has the object, streams the file, optionally writes the same bytes under a mutable `name`, and sets a rental term (`expires_in` seconds; the edge answers `410` after it and may clamp it) |
+| `files.publish` | `{ path, name?, url?, token?, expires_in?, permanent? }` | `{ url, sha256, size, existed, expires_in, permanent }` — computes SHA-256, skips the upload when the edge already has the object, streams the file, and optionally writes the same bytes under a mutable `name`. User pins default to and are capped at 24h (`expires_in` can shorten); the edge answers `410` after the term. `permanent` requires `IDFON_FILES_OPS_TOKEN` and never expires |
 
 `url` defaults to `IDFON_EDGE_URL`; `token` defaults to `IDFON_FILES_TOKEN`,
 then `IDFON_EDGE_TOKEN`. The edge verifies the body against the hash, so the

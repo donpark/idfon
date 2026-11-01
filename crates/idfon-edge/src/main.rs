@@ -6,6 +6,7 @@
 //!            [--health-path PATH] [--rate-limit N]
 //!            [--files-dir PATH] [--files-token VALUE] [--files-quota-mb N]
 //!            [--files-max-expiry-days N] [--files-grace-days N]
+//!            [--files-ops-token VALUE] [--files-user-expiry-hours N]
 //! ```
 //!
 //! Env fallbacks: `IDFON_EDGE_TOKEN`, `IDFON_EDGE_KEY` (64 hex, takes
@@ -54,6 +55,8 @@ OPTIONS:
   --files-quota-mb N      Storage quota for published files (0 = unlimited)
   --files-max-expiry-days N  Cap on a requested rental term (0 = no cap)
   --files-grace-days N    Keep expired bytes this long (default 30)
+  --files-ops-token VALUE Bearer token for permanent (operational) pins
+  --files-user-expiry-hours N  User pin term (default 24; 0 = no default)
   --help, -h              Print this help
 
 ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
@@ -96,6 +99,8 @@ async fn main() -> anyhow::Result<()> {
     let mut files_quota_mb: u64 = 0;
     let mut files_max_expiry_days: u64 = 0;
     let mut files_grace_days: u64 = 30;
+    let mut files_ops_token: Option<String> = None;
+    let mut files_user_expiry_hours: u64 = 24;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -191,6 +196,17 @@ async fn main() -> anyhow::Result<()> {
                     .context("--files-grace-days is a number")?;
                 i += 2;
             }
+            "--files-ops-token" => {
+                let value = args[i + 1].clone();
+                files_ops_token = (!value.is_empty()).then_some(value);
+                i += 2;
+            }
+            "--files-user-expiry-hours" => {
+                files_user_expiry_hours = args[i + 1]
+                    .parse()
+                    .context("--files-user-expiry-hours is a number")?;
+                i += 2;
+            }
             "--key-file" => {
                 key_file = PathBuf::from(&args[i + 1]);
                 i += 2;
@@ -246,7 +262,9 @@ async fn main() -> anyhow::Result<()> {
         let routes = Arc::new(
             FilesRoutes::new(dir, files_quota_mb * 1024 * 1024, files_token.clone())
                 .with_context(|| format!("opening files dir {}", dir.display()))?
-                .with_expiry(files_max_expiry_days, files_grace_days),
+                .with_expiry(files_max_expiry_days, files_grace_days)
+                .with_ops_token(files_ops_token.clone())
+                .with_user_expiry_hours(files_user_expiry_hours),
         );
         routes.spawn_sweeper();
         local_routes.push(routes);
@@ -284,13 +302,18 @@ async fn main() -> anyhow::Result<()> {
     );
     if let Some(dir) = &files_dir {
         println!(
-            "files:  {scheme}://{}/files/<name> and /files/.../sha256/<hash> (dir {}{})",
+            "files:  {scheme}://{}/files/<name> and /files/.../sha256/<hash> (dir {}{}{})",
             handle.addr,
             dir.display(),
             if files_token.is_some() {
-                ", uploads enabled"
+                ", user pins {files_user_expiry_hours}h"
             } else {
                 ", read-only"
+            },
+            if files_ops_token.is_some() {
+                ", ops token set"
+            } else {
+                ""
             }
         );
     }

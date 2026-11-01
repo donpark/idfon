@@ -20,10 +20,14 @@ tier.
 | Tier | Where bytes are served | Durability |
 | --- | --- | --- |
 | **Free** | from the publisher while connected — `BlobTicket` fetch (`idfon put` / `idfon get`), or the edge proxy `<ref>.idfon.net/<path>` | none beyond the publisher's own storage. No edge copy. |
-| **Paid** | from the edge's durable store (and, when configured, the CDN) at a content-addressed URL | pinned independent of publisher liveness; quota per tier (storage + egress) |
+| **Free pin (today)** | from the edge's durable store (and the CDN) at a content-addressed URL | **24 hours**; a user publish defaults to and is capped at 24h until a paid tier exists |
+| **Operational** | the same store, published with the operations token | **never expires** (`idfon publish --permanent`, or rsync the directory) |
+| **Paid** | the same store, longer terms | not built |
 
 The free tier is harsh but the economics are what they are: an always-on copy
-of everyone's files is the thing being sold.
+of everyone's files is the thing being sold. Until that is sold, every
+user-facing pin is a 24-hour trial; files the service itself needs (model
+packs, manifests) are pinned permanently with the operations token.
 
 ## Content-addressed URLs
 
@@ -59,8 +63,10 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
   idempotent: a `HEAD` hit or a second `PUT` reports `existed: true`.
 - `--files-quota-mb N` (default 0 = unlimited) caps the store. Over quota
   stops new pins with `507` and never deletes existing ones.
-- `--files-max-expiry-days N` (default 0 = no cap) clamps a requested rental
-  term; `--files-grace-days N` (default 30) keeps expired bytes before delete.
+- `--files-max-expiry-days N` (default 0 = no cap) clamps a requested term;
+  `--files-grace-days N` (default 30) keeps expired bytes before delete.
+- `--files-user-expiry-hours N` (default 24, `0` = no default) is the user
+  pin term; `--files-ops-token` enables permanent operational pins.
 - Names are `[A-Za-z0-9._-]` segments; `..`, empty segments and traversal are
   refused. Uploading a name overwrites it in place.
 - No `Range` support yet: a resumed download refetches the whole object (the
@@ -72,49 +78,55 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
 # Free tier: connected-only ticket (the publisher must stay online).
 idfon put --file report.pdf            # prints a BlobTicket
 
-# Paid/durable tier: an always-on copy at a hash URL.
-idfon publish report.pdf               # prints https://<edge>/files/sha256/<hash>
-idfon publish bundle.json --name phonon-31m/bundle.json
-idfon publish pack/ --expires-in 30d   # a rental term (s/m/h/d/w)
+# Durable tier: an always-on copy at a hash URL.
+idfon publish report.pdf               # user pin: 24h
+idfon publish report.pdf --expires-in 1h
+idfon publish bundle.json --name phonon-31m/bundle.json --permanent   # ops pin
 ```
 
-## Rental terms (expiring pins)
-
-A pin can carry an expiry, which is what a paid rental sells. The same store
-serves it until then and stops after:
-
-- The edge takes `x-idfon-expires-in` (seconds) or `x-idfon-expires-at` (unix);
-  `idfon publish --expires-in 30d` sends the former. A request without a term
-  is a permanent pin.
-- Expiry is keyed by **object** (`sha256/<hash>`) or **name** (`name/<segments>`),
-  so every URL form of an object shares one term, and the latest grant wins: a
-  renewal extends, and a re-upload without a TTL never shortens a paid term.
-- At expiry the route answers `410 Gone` with `cache-control: no-store`. A
-  content URL with time left is served `public, max-age=<remaining>`, so a CDN
-  in front cannot outlive the rental (no purge dependency). Names are
-  `no-store`, so a CDN never serves a stale `bundle.json`.
-- Bytes are deleted only after the grace period (`--files-grace-days`, default
-  30), so a lapse is reversible by renewing inside the window; the sweep runs
-  hourly, at startup, and before each upload. Expired-but-not-yet-deleted pins still
-  count against quota.
-- The term is granted by whoever holds the upload token. Billing is not on the
-  edge: the control plane (account service) sets terms, and
-  `--files-max-expiry-days` stops a client from minting an unbounded one. Real
-  per-renter enforcement needs per-owner upload credentials (capability
-  tickets) — see "Not built yet".
-
-
-`idfon publish` (daemon `files.publish { path, name?, url?, token? }`):
+`idfon publish` (daemon `files.publish { path, name?, url?, token?, expires_in?, permanent? }`):
 
 1. computes SHA-256 client-side (the daemon reads the file, not the socket),
 2. `HEAD`s the content URL and skips the upload if the edge already has it,
 3. streams the file to the edge, which verifies the hash and stores it,
-4. returns `{ url, sha256, size, existed }`; the URL sits in the name's
-   directory so relative bundle paths resolve.
+4. returns `{ url, sha256, size, existed, expires_in, permanent }`; the URL
+   sits in the name's directory so relative bundle paths resolve.
 
-Configuration on the daemon: `IDFON_EDGE_URL` (base, e.g.
-`https://idfon.net`) and `IDFON_FILES_TOKEN` (upload bearer; falls back to
-`IDFON_EDGE_TOKEN`). `--url` / `--token` override per call.
+Configuration on the daemon: `IDFON_EDGE_URL` (base, e.g. `https://idfon.net`),
+`IDFON_FILES_TOKEN` (user bearer; falls back to `IDFON_EDGE_TOKEN`) and
+`IDFON_FILES_OPS_TOKEN` (operations bearer, used by `--permanent`). `--url` /
+`--token` override per call.
+
+## Pin terms: 24h user pins, permanent operational files
+
+Two upload tokens, two policies:
+
+- **`--files-token` (user)** — every pin lasts **24 hours**: no term defaults
+  to 24h, an explicit term is capped at 24h (a shorter one is honored). Set
+  `--files-user-expiry-hours N` to change the default/cap; `0` restores the
+  old unlimited behavior for a self-host. `--expires-in` is
+  `x-idfon-expires-in` (seconds) or `x-idfon-expires-at` (unix).
+- **`--files-ops-token` (operations)** — publishes are **permanent** unless a
+  term is requested. `x-idfon-pin: permanent` (CLI: `idfon publish
+  --permanent`) forces it; a user-token request for it is refused with `403`.
+  Ops can still set a temporary term with `--expires-in`.
+
+- Expiry is keyed by **object** (`sha256/<hash>`) or **name**
+  (`name/<segments>`), so every URL form of an object shares one term, and the
+  latest grant wins. A later 24h user pin does not shorten a permanent object
+  (it has no pin).
+- At expiry the route answers `410 Gone` with `cache-control: no-store`. A
+  content URL with time left is served `public, max-age=<remaining>`, so a CDN
+  in front cannot outlive the term (no purge dependency). Names are
+  `no-store`, so a CDN never serves a stale `bundle.json`; permanent objects
+  are `immutable`.
+- Bytes are deleted only after the grace period (`--files-grace-days`, default
+  30), so a lapse is reversible inside the window; the sweep runs hourly, at
+  startup, and before each upload. Expired-but-not-yet-deleted pins still
+  count against quota.
+- `--files-max-expiry-days` still caps any requested term (ops included).
+- Billing is not on the edge: a paid tier would need per-owner upload
+  credentials and per-renter pin records — see "Not built yet".
 
 ## Origin and deployment
 

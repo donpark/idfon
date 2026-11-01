@@ -50,6 +50,15 @@ const MUTABLE: &str = "no-store";
 /// so every URL form of an object shares one term.
 const PINS_FILE: &str = "pins.json";
 const DAY_SECONDS: u64 = 24 * 60 * 60;
+/// `x-idfon-pin: permanent` — operational pins never expire. Only the
+/// operations token may ask for it.
+const PIN_HEADER: &str = "x-idfon-pin";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    User,
+    Ops,
+}
 
 #[derive(Default, Deserialize, Serialize)]
 struct Pins {
@@ -62,7 +71,12 @@ struct Pins {
 pub struct FilesRoutes {
     root: PathBuf,
     quota_bytes: u64,
+    /// User publishes: default and cap for their pin term.
     token: Option<String>,
+    /// Operational publishes: permanent unless a term is requested.
+    ops_token: Option<String>,
+    /// User pin term (`0` = no default, i.e. permanent). Default 24 hours.
+    user_expiry_secs: u64,
     pins: Mutex<Pins>,
     /// Cap on a requested expiry (`0` = no cap). The control plane sets the
     /// term; this stops a client from minting an unbounded one.
@@ -96,6 +110,8 @@ impl FilesRoutes {
             root,
             quota_bytes,
             token,
+            ops_token: None,
+            user_expiry_secs: DAY_SECONDS,
             pins: Mutex::new(pins),
             max_expiry_days: 0,
             grace_days: 30,
@@ -109,6 +125,37 @@ impl FilesRoutes {
         self.max_expiry_days = max_expiry_days;
         self.grace_days = grace_days;
         self
+    }
+
+    /// The operations token: publishes are permanent unless a term is asked for.
+    pub fn with_ops_token(mut self, token: Option<String>) -> Self {
+        self.ops_token = token;
+        self
+    }
+
+    /// Default (and cap) for user pins, in hours. `0` = no default.
+    pub fn with_user_expiry_hours(mut self, hours: u64) -> Self {
+        self.user_expiry_secs = hours.saturating_mul(60 * 60);
+        self
+    }
+
+    fn role(&self, headers: &HeaderMap) -> Option<Role> {
+        let presented = bearer(headers)?;
+        if self
+            .ops_token
+            .as_deref()
+            .is_some_and(|token| constant_time_eq(presented, token))
+        {
+            return Some(Role::Ops);
+        }
+        if self
+            .token
+            .as_deref()
+            .is_some_and(|token| constant_time_eq(presented, token))
+        {
+            return Some(Role::User);
+        }
+        None
     }
 
     /// Deletes expired pins' bytes after the grace period, hourly (also at
@@ -229,12 +276,13 @@ impl FilesRoutes {
         path: &str,
         body: &mut Incoming,
     ) -> Response<ResponseBody> {
-        let Some(token) = self.token.as_deref() else {
-            return text(StatusCode::FORBIDDEN, "publishing is disabled");
+        let role = match self.role(headers) {
+            Some(role) => role,
+            None if self.token.is_none() && self.ops_token.is_none() => {
+                return text(StatusCode::FORBIDDEN, "publishing is disabled")
+            }
+            None => return text(StatusCode::UNAUTHORIZED, "missing or invalid upload token"),
         };
-        if !bearer(headers).is_some_and(|given| constant_time_eq(given, token)) {
-            return text(StatusCode::UNAUTHORIZED, "missing or invalid upload token");
-        }
         let now = now_secs();
         self.sweep(now);
         let (dest, expected_hash, pin_key) = match (content_hash(path), name_path(path)) {
@@ -250,17 +298,38 @@ impl FilesRoutes {
             ),
             _ => return text(StatusCode::BAD_REQUEST, "invalid path"),
         };
-        let expires_at = match requested_expiry(headers, now) {
+        // `permanent` is an operations privilege: a user publish always has a
+        // term (24h by default), so "no expiry" cannot be bought by a client.
+        let permanent = header_value(headers, PIN_HEADER) == Some("permanent");
+        if permanent && role == Role::User {
+            return text(
+                StatusCode::FORBIDDEN,
+                "permanent pins require the operations token",
+            );
+        }
+        let requested = match requested_expiry(headers, now) {
             Ok(expires_at) => expires_at,
             Err(message) => return text(StatusCode::BAD_REQUEST, message),
-        }
-        .map(|at| {
+        };
+        let cap = |at: u64| {
             if self.max_expiry_days > 0 {
                 at.min(now.saturating_add(self.max_expiry_days.saturating_mul(DAY_SECONDS)))
             } else {
                 at
             }
-        });
+        };
+        let expires_at = match role {
+            // Operational files are permanent unless a term is requested.
+            Role::Ops if permanent => None,
+            Role::Ops => requested.map(cap),
+            // No paid tier yet: user pins last 24h by default and at most 24h.
+            // `user_expiry_secs == 0` is the self-host opt-out (no default).
+            Role::User if self.user_expiry_secs == 0 => requested,
+            Role::User => {
+                let until = now.saturating_add(self.user_expiry_secs);
+                Some(requested.unwrap_or(until).min(until))
+            }
+        };
 
         // Content-addressed writes are idempotent: an object we already have is
         // reported instead of rewritten (the "server already has it" contract).

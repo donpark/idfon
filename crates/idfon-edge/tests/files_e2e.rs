@@ -35,7 +35,20 @@ impl Authorizer for AllowAll {
 }
 
 async fn start(root: &std::path::Path, quota: u64, token: Option<&str>) -> (Addr, GatewayHandle) {
-    let routes = FilesRoutes::new(root, quota, token.map(str::to_owned)).expect("routes");
+    start_full(root, quota, token, None, 24).await
+}
+
+async fn start_full(
+    root: &std::path::Path,
+    quota: u64,
+    token: Option<&str>,
+    ops_token: Option<&str>,
+    user_hours: u64,
+) -> (Addr, GatewayHandle) {
+    let routes = FilesRoutes::new(root, quota, token.map(str::to_owned))
+        .expect("routes")
+        .with_ops_token(ops_token.map(str::to_owned))
+        .with_user_expiry_hours(user_hours);
     let handle = serve(
         Config {
             local_routes: vec![Arc::new(routes)],
@@ -306,6 +319,119 @@ async fn expires_pins_and_bounds_the_cache_ttl() {
     let (status, head, _) = request_with(addr, "GET", &path, None, &[], b"").await;
     assert_eq!(status, 410);
     assert!(head.to_ascii_lowercase().contains("cache-control: no-store"));
+
+    handle.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+#[tokio::test]
+async fn user_pins_default_to_24h_and_cannot_exceed_it() {
+    let root = temp_root("user-term");
+    let (addr, handle) = start(&root, 0, Some("secret")).await;
+    let body = b"user file".to_vec();
+    let hash = sha256(&body);
+    let path = format!("/files/sha256/{hash}");
+
+    let (status, _, created) = request_with(addr, "PUT", &path, Some("secret"), &[], &body).await;
+    assert_eq!(status, 201);
+    let created: serde_json::Value = serde_json::from_slice(&created).unwrap();
+    let expires = created["expires_at"].as_u64().expect("default term");
+    let expected = now_secs() + 24 * 60 * 60;
+    assert!(
+        expires.abs_diff(expected) < 90,
+        "24h default, got {expires} (now+24h {expected})"
+    );
+
+    // A longer request is clamped, not rejected.
+    let body = b"longer file".to_vec();
+    let hash2 = sha256(&body);
+    let (status, _, created) = request_with(
+        addr,
+        "PUT",
+        &format!("/files/sha256/{hash2}"),
+        Some("secret"),
+        &[("x-idfon-expires-in", "2592000")],
+        &body,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let created: serde_json::Value = serde_json::from_slice(&created).unwrap();
+    let expires = created["expires_at"].as_u64().unwrap();
+    assert!(
+        expires.abs_diff(now_secs() + 24 * 60 * 60) < 90,
+        "30d request clamped to 24h"
+    );
+
+    // A permanent pin is an operations privilege.
+    let (status, _, _) = request_with(
+        addr,
+        "PUT",
+        &format!("/files/sha256/{}", sha256(b"perm")),
+        Some("secret"),
+        &[("x-idfon-pin", "permanent")],
+        b"",
+    )
+    .await;
+    assert_eq!(status, 403);
+
+    handle.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn ops_pins_are_permanent_unless_a_term_is_asked() {
+    let root = temp_root("ops-term");
+    let (addr, handle) = start_full(&root, 0, Some("secret"), Some("ops"), 24).await;
+
+    let body = b"operational".to_vec();
+    let hash = sha256(&body);
+    let path = format!("/files/sha256/{hash}");
+    let (status, _, created) = request_with(addr, "PUT", &path, Some("ops"), &[], &body).await;
+    assert_eq!(status, 201);
+    let created: serde_json::Value = serde_json::from_slice(&created).unwrap();
+    assert!(created["expires_at"].is_null(), "ops default is permanent");
+    let (status, head, _) = request_with(addr, "GET", &path, None, &[], b"").await;
+    assert_eq!(status, 200);
+    assert!(head.contains("cache-control: public, max-age=31536000, immutable"));
+
+    // Ops may still set a temporary term.
+    let body = b"ops temporary".to_vec();
+    let hash = sha256(&body);
+    let (status, _, created) = request_with(
+        addr,
+        "PUT",
+        &format!("/files/sha256/{hash}"),
+        Some("ops"),
+        &[("x-idfon-expires-in", "60")],
+        &body,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let created: serde_json::Value = serde_json::from_slice(&created).unwrap();
+    assert!(created["expires_at"].as_u64().unwrap().abs_diff(now_secs() + 60) < 5);
+
+    // `permanent` wins over a term, and only for the ops token.
+    let body = b"ops permanent".to_vec();
+    let hash = sha256(&body);
+    let (status, _, created) = request_with(
+        addr,
+        "PUT",
+        &format!("/files/sha256/{hash}"),
+        Some("ops"),
+        &[("x-idfon-pin", "permanent"), ("x-idfon-expires-in", "60")],
+        &body,
+    )
+    .await;
+    assert_eq!(status, 201);
+    let created: serde_json::Value = serde_json::from_slice(&created).unwrap();
+    assert!(created["expires_at"].is_null());
 
     handle.shutdown();
     let _ = std::fs::remove_dir_all(&root);
