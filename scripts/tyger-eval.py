@@ -207,7 +207,9 @@ def main():
         codes = {ch: np.array(row[f"codes_{ch}"], dtype=np.int16).reshape(T, 8)[:limit] for ch in ("ch0", "ch1")}
         labels = {f"{k}_{ch}": np.array(row[f"{k}_{ch}"], dtype=np.int8)[:limit] for k in ("vad", "eot", "hold", "bot", "bc") for ch in ("ch0", "ch1")}
         floor = floor_series(labels, len(labels["bot_ch0"]))
-        n_int = int(((labels["bot_ch0"] == 1) & (floor == 2)).sum())
+        floor_pre = np.r_[0, floor[:-1]]  # floor BEFORE each frame: floor_series flips at the bot frame,
+        # so an interrupting onset must be tested against the floor it interrupted (dead code otherwise)
+        n_int = int(((labels["bot_ch0"] == 1) & (floor_pre == 2)).sum())
         if n_int < args.min_interrupts:
             print(f"skip {row['session_id']}: {n_int} interrupting onsets in slice", flush=True)
             continue
@@ -239,7 +241,7 @@ def main():
         eot_frames = np.flatnonzero(lab["eot_ch0"])
         turn_frames = np.flatnonzero((lab["vad_ch0"] == 1) & (lab["eot_ch0"] == 0))
         hold_frames = np.flatnonzero(lab["hold_ch0"] == 1)
-        bot_int = np.flatnonzero((lab["bot_ch0"] == 1) & (floor[:L] == 2))
+        bot_int = np.flatnonzero((lab["bot_ch0"] == 1) & (np.r_[0, floor[: L - 1]] == 2))
         overlap_neg = np.flatnonzero((lab["vad_ch0"] == 1) & (lab["vad_ch1"] == 1) & (lab["bot_ch0"] == 0))
         barge_neg = overlap_neg if len(overlap_neg) else turn_frames
         bc_frames = np.flatnonzero(lab["bc_ch0"] == 1)
