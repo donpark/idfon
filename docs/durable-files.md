@@ -21,7 +21,7 @@ tier.
 | --- | --- | --- |
 | **Free** | from the publisher while connected — `BlobTicket` fetch (`idfon put` / `idfon get`), or the edge proxy `<ref>.idfon.net/<path>` | none beyond the publisher's own storage. No edge copy. |
 | **Free pin (today)** | from the edge's durable store (and the CDN) at a content-addressed URL | **24 hours**; a user publish defaults to and is capped at 24h until a paid tier exists |
-| **Operational** | the same store, published with the operations token | **never expires** (`idfon publish --permanent`, or rsync the directory) |
+| **Operational** | the same store, published with the operations token | **never expires, no per-file limit** (`idfon publish --permanent`, or rsync the directory); the disk is the only bound |
 | **Paid** | the same store, longer terms | not built |
 
 The free tier is harsh but the economics are what they are: an always-on copy
@@ -68,7 +68,9 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
 - `--files-user-expiry-hours N` (default 24, `0` = no default) is the user
   pin term; `--files-ops-token` enables permanent operational pins.
 - `--files-max-upload-mb N` (default 2, `0` = unlimited) caps a single
-  **user** upload; operations uploads are trusted and bound by the store quota.
+  **user** upload. Operations uploads have no per-file limit and are exempt
+  from the store quota (the disk is the bound); the quota is a user-abuse
+  control.
   Two megabytes is roughly four minutes of 64 kbps Opus speech (a 24–32 kbps
   voice memo is ~0.7–1 MB). A user upload over the cap is refused with `413` (checked from
   `Content-Length` and again while streaming, so a chunked body cannot bypass
