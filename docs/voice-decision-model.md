@@ -140,6 +140,20 @@ CoreML/CoreAI step tiers (`ports/tyger-coreml/quantize.py`) and the corpus
 decision gate (`decision-parity.mjs`, 99% bar) when sessions are prepped.
 
 **P1 — our own student: ~1–1.5M params, ≤ 6 MB fp32 / ~1.5 MB int8.**
+**Built (2026-10-31): `ports/tyger-student/`** — a decision-head platform, not a
+copycat: a registry of decision points (type, label source, loss, gate) over a
+shared ~1.3M trunk, so the next decision point is a registry entry plus labels
+(`hold` is seeded as the first one the teacher does not have; `outcome:`/`gold:`
+label sources from the decision log are declared for the fine-tuning loop).
+Its train.py doubles as the per-head gate report.
+**Status 2026-11-01: shipped as three gated delivery tiers** — ONNX 5.28 MB fp32
+(int8 group-8 2.16 MB kept as the shelf variant for constrained tiers), Core ML
+5.3 MB fp32, Core AI 5.3 MB fp32 + AOT container. Inside the product bars on every
+measured axis (endpoint latency/early/miss, barge catch/false, bc precision/recall
+— `pnpm tyger bench`); the rules thresholds are a per-model fit
+(`ports/tyger-student/student.traits.json`: 0.9146/0.4/0.4, matching tyger-s2s's
+live tuning). Remaining to swap it in: the L15/L4 tap (issue #102), live-call
+traits validation, and the app-loader swap.
 The task is temporal integration of two 1,024-dim feature streams + energy over
 a few seconds of history — a width-256 2-layer GRU (or a small dilated causal
 TCN) with linear heads fits it; the 768-wide recurrence exists because it shared
