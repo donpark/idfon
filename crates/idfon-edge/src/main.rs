@@ -7,6 +7,7 @@
 //!            [--files-dir PATH] [--files-token VALUE] [--files-quota-mb N]
 //!            [--files-max-expiry-days N] [--files-grace-days N]
 //!            [--files-ops-token VALUE] [--files-user-expiry-hours N]
+//!            [--files-max-upload-mb N]
 //! ```
 //!
 //! Env fallbacks: `IDFON_EDGE_TOKEN`, `IDFON_EDGE_KEY` (64 hex, takes
@@ -57,6 +58,7 @@ OPTIONS:
   --files-grace-days N    Keep expired bytes this long (default 30)
   --files-ops-token VALUE Bearer token for permanent (operational) pins
   --files-user-expiry-hours N  User pin term (default 24; 0 = no default)
+  --files-max-upload-mb N Per-file cap for user publishes (default 100; 0 = none)
   --help, -h              Print this help
 
 ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
@@ -101,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let mut files_grace_days: u64 = 30;
     let mut files_ops_token: Option<String> = None;
     let mut files_user_expiry_hours: u64 = 24;
+    let mut files_max_upload_mb: u64 = 100;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -207,6 +210,12 @@ async fn main() -> anyhow::Result<()> {
                     .context("--files-user-expiry-hours is a number")?;
                 i += 2;
             }
+            "--files-max-upload-mb" => {
+                files_max_upload_mb = args[i + 1]
+                    .parse()
+                    .context("--files-max-upload-mb is a number")?;
+                i += 2;
+            }
             "--key-file" => {
                 key_file = PathBuf::from(&args[i + 1]);
                 i += 2;
@@ -264,7 +273,8 @@ async fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("opening files dir {}", dir.display()))?
                 .with_expiry(files_max_expiry_days, files_grace_days)
                 .with_ops_token(files_ops_token.clone())
-                .with_user_expiry_hours(files_user_expiry_hours),
+                .with_user_expiry_hours(files_user_expiry_hours)
+                .with_max_upload_bytes(files_max_upload_mb.saturating_mul(1024 * 1024)),
         );
         routes.spawn_sweeper();
         local_routes.push(routes);
@@ -306,7 +316,11 @@ async fn main() -> anyhow::Result<()> {
             handle.addr,
             dir.display(),
             if files_token.is_some() {
-                ", user pins {files_user_expiry_hours}h"
+                if files_max_upload_mb > 0 {
+                    ", user pins {files_user_expiry_hours}h, files {files_max_upload_mb} MB"
+                } else {
+                    ", user pins {files_user_expiry_hours}h"
+                }
             } else {
                 ", read-only"
             },
