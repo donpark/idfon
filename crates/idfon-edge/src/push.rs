@@ -30,8 +30,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http::{HeaderMap, Method, Response, StatusCode, Uri};
-use http_body_util::Full;
-use idfon_gateway::LocalRoute;
+use hyper::body::Incoming;
+use idfon_gateway::{LocalRoute, ResponseBody};
 use idfon_protocol::CapabilityTicket;
 
 /// Ring fan-out boundary: Apple's APNs in production, a recorder in tests.
@@ -356,7 +356,7 @@ impl PushRoutes {
 }
 
 impl LocalRoute for PushRoutes {
-    fn matches(&self, method: &Method, path: &str) -> bool {
+    fn matches(&self, method: &Method, _account: &str, path: &str) -> bool {
         method == Method::POST
             && matches!(
                 path,
@@ -366,12 +366,13 @@ impl LocalRoute for PushRoutes {
 
     fn handle(
         &self,
+        _method: &Method,
         account: &str,
         path: &str,
         headers: &HeaderMap,
         uri: &Uri,
-        body: Bytes,
-    ) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send + '_>> {
+        body: Incoming,
+    ) -> Pin<Box<dyn Future<Output = Response<ResponseBody>> + Send + '_>> {
         let action = path.trim_start_matches("/_push/").to_owned();
         let account = account.to_owned();
         // The route owns auth (LocalRoute): a capability ticket issued by the
@@ -379,6 +380,27 @@ impl LocalRoute for PushRoutes {
         // requesters (a WKWebView carrying the ticket).
         let ticket_raw = crate::ticket_from(headers, uri);
         Box::pin(async move {
+            let body = match idfon_gateway::collect_limited(body, idfon_gateway::MAX_RESOURCE_BYTES)
+                .await
+            {
+                Ok(body) => body,
+                Err(status) => return json(status, "body too large"),
+            };
+            self.handle_body(&account, &action, ticket_raw, body).await
+        })
+    }
+}
+
+impl PushRoutes {
+    /// Route body after body collection, shared by the gateway path and the
+    /// tests (which have no `Incoming` to hand over).
+    async fn handle_body(
+        &self,
+        account: &str,
+        action: &str,
+        ticket_raw: Option<String>,
+        body: Bytes,
+    ) -> Response<ResponseBody> {
             let Some(ticket) = ticket_raw.and_then(|raw| {
                 serde_json::from_str::<CapabilityTicket>(&raw).ok()
             }) else {
@@ -396,14 +418,14 @@ impl LocalRoute for PushRoutes {
             {
                 return json(StatusCode::UNAUTHORIZED, "ticket expired");
             }
-            let issued_by_ref = same_ref(&ticket.issuer, &account);
+            let issued_by_ref = same_ref(&ticket.issuer, account);
             if !self.allow(&ticket.issuer) {
                 return json(StatusCode::TOO_MANY_REQUESTS, "rate limited");
             }
             let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
                 return json(StatusCode::BAD_REQUEST, "body must be JSON");
             };
-            match action.as_str() {
+            match action {
                 "register" | "unregister" => {
                     // Only the identity's holder may claim its wake channel.
                     if !issued_by_ref {
@@ -427,9 +449,9 @@ impl LocalRoute for PushRoutes {
                                 _ => return json(StatusCode::BAD_REQUEST, "topic invalid"),
                             },
                         };
-                        self.store.register(&account, token, &topic);
+                        self.store.register(account, token, &topic);
                     } else {
-                        self.store.unregister(&account, token);
+                        self.store.unregister(account, token);
                     }
                     json(StatusCode::OK, "{}")
                 }
@@ -476,7 +498,7 @@ impl LocalRoute for PushRoutes {
                     } else {
                         serde_json::json!({ "call_uuid": call_uuid, "cancel": true })
                     };
-                    let entries = self.store.entries(&account);
+                    let entries = self.store.entries(account);
                     let mut sent = 0;
                     for (token, topic) in &entries {
                         match apns.send(token, topic, payload.clone()).await {
@@ -493,7 +515,6 @@ impl LocalRoute for PushRoutes {
                 }
                 _ => json(StatusCode::NOT_FOUND, "unknown push action"),
             }
-        })
     }
 }
 
@@ -513,7 +534,7 @@ fn now_seconds() -> u64 {
         .unwrap_or(0)
 }
 
-fn json(status: StatusCode, body: impl Into<serde_json::Value>) -> Response<Full<Bytes>> {
+fn json(status: StatusCode, body: impl Into<serde_json::Value>) -> Response<ResponseBody> {
     // Strings are error messages; objects pass through as-is.
     let payload = match body.into() {
         serde_json::Value::String(message) => serde_json::json!({ "error": message }).to_string(),
@@ -522,7 +543,7 @@ fn json(status: StatusCode, body: impl Into<serde_json::Value>) -> Response<Full
     Response::builder()
         .status(status)
         .header(http::header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(payload)))
+        .body(idfon_gateway::bytes_body(payload))
         .expect("static headers")
 }
 
@@ -595,17 +616,11 @@ mod tests {
         ticket: Option<&CapabilityTicket>,
         body: serde_json::Value,
     ) -> (StatusCode, serde_json::Value) {
-        let mut headers = HeaderMap::new();
-        let uri: Uri = "/".parse().unwrap();
-        if let Some(ticket) = ticket {
-            let raw = serde_json::to_string(ticket).unwrap();
-            headers.insert("x-idfon-ticket", raw.parse().unwrap());
-        }
-        let response = block_on(route.handle(
+        let ticket_raw = ticket.map(|ticket| serde_json::to_string(ticket).unwrap());
+        let response = block_on(route.handle_body(
             account,
-            path,
-            &headers,
-            &uri,
+            path.trim_start_matches("/_push/"),
+            ticket_raw,
             Bytes::from(body.to_string()),
         ));
         let status = response.status();

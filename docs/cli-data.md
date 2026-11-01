@@ -29,6 +29,27 @@ idfon get "$(cat ticket.txt)" --out copy.wav
   and can be overridden with `--mime`.
 - `--socket PATH` / `--identity ID` select the daemon and identity as usual.
 
+## Durable publication
+
+`put` is liveness-bound: the sender must stay online to serve the ticket. To
+pin a file on the edge's always-on store (`docs/durable-files.md`):
+
+```sh
+idfon publish report.pdf                 # prints the content-addressed URL
+idfon publish bundle.json --name site/bundle.json
+```
+
+- The daemon computes SHA-256, skips the upload when the edge already has the
+  object, and streams the file (no size cap); the returned URL is
+  `https://<edge>/files[/<dir>]/sha256/<hash>`.
+- `--name NAME` also writes the bytes at the stable mutable path
+  `/files/<NAME>` (use it for a `bundle.json` next to hashed files).
+- `--expires-in 30d` sets a rental term (`s`/`m`/`h`/`d`/`w`; no flag =
+  permanent). The edge serves the URL until the term ends, then `410`; bytes
+  are deleted after its grace period. The edge may cap the term.
+- Edge config: `IDFON_EDGE_URL`, and `IDFON_FILES_TOKEN` (falls back to
+  `IDFON_EDGE_TOKEN`) for the upload bearer. `--url` and `--token` override.
+
 ## Chunking
 
 The CLI splits transfers into 200 KB chunks:

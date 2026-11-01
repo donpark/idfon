@@ -28,7 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
-use http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
+use http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
@@ -45,6 +46,26 @@ use tokio_rustls::TlsAcceptor;
 
 /// Upper bound on a single fetched resource body.
 pub const MAX_RESOURCE_BYTES: usize = 8 * 1024 * 1024;
+
+/// A response body: collected bytes or a stream (a file served from disk).
+pub type ResponseBody = BoxBody<Bytes, std::io::Error>;
+
+/// A collected body, boxed for [`ResponseBody`].
+pub fn bytes_body(bytes: impl Into<Bytes>) -> ResponseBody {
+    Full::new(bytes.into())
+        .map_err(|never| match never {})
+        .boxed()
+}
+
+/// Collects a request body, refusing (413) at `limit` bytes. Local routes own
+/// their own limits; a route that streams a large body reads frames itself.
+pub async fn collect_limited(body: Incoming, limit: usize) -> Result<Bytes, StatusCode> {
+    http_body_util::Limited::new(body, limit)
+        .collect()
+        .await
+        .map(|collected| collected.to_bytes())
+        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)
+}
 
 /// A fetched resource body.
 #[derive(Debug, Clone)]
@@ -123,19 +144,21 @@ pub trait RequestObserver: Send + Sync + 'static {
 /// signed credential instead (a browser cannot get one). Direct-IP LAN clients
 /// are accepted here on purpose (donpark/idfon#53).
 pub trait LocalRoute: Send + Sync + 'static {
-    /// Whether this route serves `path` (the account-stripped path) for `method`.
-    fn matches(&self, method: &http::Method, path: &str) -> bool;
+    /// Whether this route serves `path` (the account-stripped path) for
+    /// `method` and `account` (empty when the request names none).
+    fn matches(&self, method: &http::Method, account: &str, path: &str) -> bool;
     /// Serves the request. `account` is the resolved ref (empty when the
-    /// request names none); `body` is the collected request body (at most
-    /// [`MAX_RESOURCE_BYTES`]).
+    /// request names none); `body` is the raw request stream, so the route owns
+    /// its own size limit (use [`collect_limited`] for a bounded body).
     fn handle(
         &self,
+        method: &Method,
         account: &str,
         path: &str,
         headers: &HeaderMap,
         uri: &Uri,
-        body: Bytes,
-    ) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send + '_>>;
+        body: Incoming,
+    ) -> Pin<Box<dyn Future<Output = Response<ResponseBody>> + Send + '_>>;
 }
 
 /// The loopback gateway's shared-secret bearer token.
@@ -340,7 +363,7 @@ where
 /// Defense-in-depth response headers. HSTS only over TLS (browsers ignore it
 /// on plain HTTP); the framing CSP blocks embedding without restricting the
 /// resource's own scripts/styles.
-fn add_security_headers(response: &mut Response<Full<Bytes>>, tls: bool) {
+fn add_security_headers(response: &mut Response<ResponseBody>, tls: bool) {
     let headers = response.headers_mut();
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -466,7 +489,7 @@ impl ResolvesServerCert for ReloadingCert {
 async fn handle<B: Backend, A: Authorizer>(
     shared: Arc<Shared<B, A>>,
     request: Request<Incoming>,
-) -> Response<Full<Bytes>> {
+) -> Response<ResponseBody> {
     let started = Instant::now();
     let method = request.method().clone();
     let uri = request.uri().clone();
@@ -500,7 +523,7 @@ async fn handle_inner<B: Backend, A: Authorizer>(
     shared: Arc<Shared<B, A>>,
     request: Request<Incoming>,
     uri: &Uri,
-) -> (Response<Full<Bytes>>, Option<String>, Option<String>) {
+) -> (Response<ResponseBody>, Option<String>, Option<String>) {
     // Local routes run before requester authentication and the method gate:
     // they own their policy (see [`LocalRoute`]).
     if !shared.local_routes.is_empty() {
@@ -510,26 +533,12 @@ async fn handle_inner<B: Backend, A: Authorizer>(
         if let Some(route) = shared
             .local_routes
             .iter()
-            .find(|route| route.matches(request.method(), &path))
+            .find(|route| route.matches(request.method(), &account, &path))
         {
-            let body = match request.into_body().collect().await {
-                Ok(collected) => collected.to_bytes(),
-                Err(_) => {
-                    return (
-                        plain(StatusCode::BAD_REQUEST, "unreadable body"),
-                        None,
-                        None,
-                    )
-                }
-            };
-            if body.len() > MAX_RESOURCE_BYTES {
-                return (
-                    plain(StatusCode::PAYLOAD_TOO_LARGE, "body too large"),
-                    None,
-                    None,
-                );
-            }
-            let response = route.handle(&account, &path, &headers, uri, body).await;
+            let method = request.method().clone();
+            let response = route
+                .handle(&method, &account, &path, &headers, uri, request.into_body())
+                .await;
             return (response, None, Some(account));
         }
     }
@@ -601,7 +610,7 @@ async fn handle_inner<B: Backend, A: Authorizer>(
         Ok(resource) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, resource.content_type)
-            .body(Full::new(Bytes::from(resource.body)))
+            .body(bytes_body(resource.body))
             .unwrap_or_else(|_| plain(StatusCode::INTERNAL_SERVER_ERROR, "response error")),
         Err(GatewayError::UnknownAccount(account)) => plain(
             StatusCode::NOT_FOUND,
@@ -622,22 +631,22 @@ async fn handle_inner<B: Backend, A: Authorizer>(
 }
 
 /// Prometheus text exposition (the probe body, not an app response).
-fn plain_metrics(body: &str) -> Response<Full<Bytes>> {
+fn plain_metrics(body: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(StatusCode::OK)
         .header(
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )
-        .body(Full::new(Bytes::from(body.to_owned())))
+        .body(bytes_body(body.to_owned()))
         .expect("static response builds")
 }
 
-fn plain(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
+fn plain(status: StatusCode, body: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from(body.to_owned())))
+        .body(bytes_body(body.to_owned()))
         .expect("static response builds")
 }
 
