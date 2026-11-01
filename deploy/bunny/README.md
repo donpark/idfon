@@ -48,7 +48,8 @@ resolves to bunny.net — re-run if the first run reports it is not issued yet.
   list. Content URLs are extensionless `sha256/<hash>` paths, so it would make
   every download an origin hit. Off, bunny caches any response with cacheable
   headers — which is exactly what the edge sends.
-- **Cache overrides = 0 (respect origin).** The edge sends
+- **Cache overrides = -1 (no override; `0` means "cache for 0 seconds").**
+  The edge sends
   `max-age=<remaining>` for a rented object (so the CDN cannot outlive the
   rental), `immutable` for a permanent one, and `no-store` for mutable names
   (`bundle.json`). No purges are needed.
