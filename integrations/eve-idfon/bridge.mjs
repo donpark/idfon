@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createConnection } from "node:net";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { logger } from "./log.mjs";
 
 const args = new Map();
@@ -164,7 +165,7 @@ const server = createServer(async (request, response) => {
     request.on("close", () => sseClients.delete(response));
     return;
   }
-  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/voice/info", "/stream/append", "/live/audio", "/input", "/send", "/card", "/status", "/live/publish", "/live/stop"].includes(request.url)) {
+  if (request.method !== "POST" || !["/reply", "/room/member", "/room/members", "/blob", "/blob/put", "/records/drain", "/voice/info", "/stream/append", "/live/audio", "/input", "/send", "/card", "/status", "/live/publish", "/files/publish", "/live/stop"].includes(request.url)) {
     response.writeHead(request.url === "/health" ? 200 : 404);
     response.end(request.url === "/health" ? "ok\n" : "not found\n");
     return;
@@ -422,6 +423,95 @@ const server = createServer(async (request, response) => {
     } catch (error) {
       pending.delete(body.request_id);
       response.writeHead(502); response.end(`${error}\n`);
+    }
+    return;
+  }
+  if (request.url === "/files/publish") {
+    // Durable publish: the agent's bytes go straight to the edge (the bridge
+    // is local and trusted); the same request would work through the daemon,
+    // but an agent has no daemon socket. The 2 MB / 24 h policy and the
+    // permanent ops pin are enforced by the edge, not here.
+    const base = (process.env.IDFON_EDGE_URL ?? "").replace(/\/+$/, "");
+    const permanent = body.permanent === true;
+    const token = permanent
+      ? process.env.IDFON_FILES_OPS_TOKEN
+      : process.env.IDFON_FILES_TOKEN;
+    if (!base) {
+      response.writeHead(400); response.end("IDFON_EDGE_URL is not set on the bridge\n"); return;
+    }
+    if (!token) {
+      response.writeHead(400);
+      response.end((permanent ? "IDFON_FILES_OPS_TOKEN" : "IDFON_FILES_TOKEN") + " is not set on the bridge\n");
+      return;
+    }
+    if (typeof body.bytes_base64 !== "string" || !body.bytes_base64) {
+      response.writeHead(400); response.end("invalid file data\n"); return;
+    }
+    if (permanent && body.expires_in != null) {
+      response.writeHead(400); response.end("permanent and expires_in are exclusive\n"); return;
+    }
+    let name = typeof body.name === "string" && body.name ? body.name : null;
+    if (name != null) {
+      const valid = name.split("/").every((segment) =>
+        segment && segment !== "." && segment !== ".." && /^[A-Za-z0-9._-]+$/.test(segment));
+      if (!valid) { response.writeHead(400); response.end("invalid name\n"); return; }
+    }
+    const bytes = Buffer.from(body.bytes_base64, "base64");
+    if (bytes.length === 0) { response.writeHead(400); response.end("invalid file data\n"); return; }
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const dir = name && name.includes("/") ? name.slice(0, name.lastIndexOf("/")) : "";
+    const contentPath = `/files${dir ? "/" + dir : ""}/sha256/${sha256}`;
+    const auth = { authorization: `Bearer ${token}` };
+    const extras = {};
+    if (permanent) extras["x-idfon-pin"] = "permanent";
+    if (Number.isInteger(body.expires_in) && body.expires_in > 0) {
+      extras["x-idfon-expires-in"] = String(body.expires_in);
+    }
+    try {
+      let existed = false;
+      const head = await fetch(base + contentPath, { method: "HEAD", headers: auth });
+      existed = head.ok;
+      let expiresAt;
+      if (!existed) {
+        const put = await fetch(base + contentPath, {
+          method: "PUT",
+          headers: { ...auth, ...extras, "content-length": String(bytes.length) },
+          body: bytes,
+        });
+        if (!put.ok) {
+          response.writeHead(put.status, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: (await put.text()).trim() }));
+          return;
+        }
+        const created = await put.json().catch(() => ({}));
+        expiresAt = created.expires_at ?? undefined;
+      }
+      if (name) {
+        const named = await fetch(`${base}/files/${name}`, {
+          method: "PUT",
+          headers: { ...auth, ...extras, "content-length": String(bytes.length) },
+          body: bytes,
+        });
+        if (!named.ok) {
+          response.writeHead(named.status, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: (await named.text()).trim() }));
+          return;
+        }
+      }
+      const cdn = (process.env.IDFON_FILES_CDN_URL ?? "").replace(/\/+$/, "");
+      const result = {
+        url: base + contentPath,
+        sha256,
+        size: bytes.length,
+        existed,
+        ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
+        ...(cdn ? { cdn_url: cdn + contentPath } : {}),
+        ...(name ? { name_url: `${base}/files/${name}` } : {}),
+      };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      response.writeHead(502); response.end(`publish failed: ${error}\n`);
     }
     return;
   }

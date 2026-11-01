@@ -110,6 +110,23 @@ Configuration on the daemon: `IDFON_EDGE_URL` (base, e.g. `https://idfon.net`),
 `IDFON_FILES_OPS_TOKEN` (operations bearer, used by `--permanent`). `--url` /
 `--token` override per call.
 
+### Agent tool
+
+The Eve ingress exposes `publish_file` (`integrations/eve-idfon`):
+
+- `path` or `content`, optional `name`, `durable` (default true),
+  `expires_in`, `permanent`.
+- The local bridge (`POST /files/publish`) forwards the bytes to the edge with
+  `IDFON_FILES_TOKEN`, or `IDFON_FILES_OPS_TOKEN` for `permanent`; the edge
+  applies the same 2 MB / 24 h and permanent rules. Errors (413, 403, quota,
+  hash mismatch) come back verbatim.
+- `durable: false` returns a connected-only `BlobTicket` through the existing
+  blob store. The bridge accepts request bodies up to 8 MB (base64), which fits
+  a 2 MB user file with headroom; larger operational files should use the CLI
+  or rsync.
+- Quota is the deployment's (the bridge's edge token), not the calling
+  contact's. Per-owner credentials are tracked in #108.
+
 ## Pin terms: 24h user pins, permanent operational files
 
 Two upload tokens, two policies:
