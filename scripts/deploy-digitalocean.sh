@@ -284,7 +284,8 @@ ssh $SSH_OPTS "root@$PUBLIC_IP" \
 
 info "starting idfon-edge"
 ssh $SSH_OPTS "root@$PUBLIC_IP" \
-  "printf 'IDFON_EDGE_IMAGE=%s\nIDFON_EDGE_DOMAIN=%s\n${RELAY_ENV}${FILES_ENV}' '$EDGE_IMAGE' '$DOMAIN' > /srv/idfon-edge/.env
+  "mkdir -p /srv/idfon-edge/files && chown -R 10001:10001 /srv/idfon-edge/files
+   printf 'IDFON_EDGE_IMAGE=%s\nIDFON_EDGE_DOMAIN=%s\n${RELAY_ENV}${FILES_ENV}' '$EDGE_IMAGE' '$DOMAIN' > /srv/idfon-edge/.env
    cd /srv/idfon-edge && docker compose $COMPOSE_FILES pull -q && docker compose $COMPOSE_FILES up -d --remove-orphans"
 # compose does not recreate the relay when only the bind-mounted config.toml
 # changed (access-mode switches!) — restart it so the new access policy is

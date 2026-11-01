@@ -91,3 +91,4 @@ echo "serve:  scripts/serve-speech-pack.sh $out   (pack URL: <base>/phonon-31m/)
 echo "publish:"
 echo "  rsync -a --chmod=D755,F644 '$pack/sha256/' <droplet>:/srv/idfon-edge/files/sha256/"
 echo "  rsync -a --chmod=D755,F644 '$pack/bundle.json' <droplet>:/srv/idfon-edge/files/$(basename "$pack")/bundle.json"
+echo "  ssh <droplet> 'chown -R 10001:10001 /srv/idfon-edge/files'   # the edge runs as 10001"
