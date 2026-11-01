@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Serve a built speech-model pack (see `scripts/build-speech-pack.sh`) over
-# plain HTTP on the LAN, for device provisioning.
+# Serve a built speech-model pack (see `scripts/build-speech-pack.sh` and
+# `scripts/build-phonon-pack.sh`) over plain HTTP on the LAN, for device
+# provisioning.
 #
 # Usage: scripts/serve-speech-pack.sh [pack-root] [port]
 #        (defaults: dist/speech-packs, 8788)
@@ -8,6 +9,7 @@
 # Prints the base URL to pass to the app:
 #   xcrun devicectl device process launch --console --device <UDID> \
 #     --terminate-existing com.idfon.ios -- -speechpackurl <base>/kokoro-ane/
+# Phonon packs: -phononpack <base>/phonon-31m/
 set -euo pipefail
 
 dir="${1:-dist/speech-packs}"

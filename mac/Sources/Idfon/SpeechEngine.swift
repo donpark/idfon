@@ -561,10 +561,12 @@ final class PocketTtsEngine: NSObject, TtsEngine {
 /// Phonon 31m (gradium via the `ptts` Swift package) — build-time engine
 /// (`IDFON_TTS_PHONON=1` at build, then `IDFON_TTS=phonon` or per-contact).
 /// Models: `scripts/fetch-phonon-31m.sh` provisions the Core ML bundle into
-/// `ModelStore.root/phonon` (or `IDFON_PHONON_PACK_URL` serves the export's
-/// `bundle.json` layout for `PhononModels.download`). Custom voices are 256KB
+/// `ModelStore.root/phonon` (or `IDFON_PHONON_PACK_URL` / the baked-in
+/// `defaultPackURL` serves the export's `bundle.json` layout for
+/// `PhononModels.download`). Custom voices are 256KB
 /// `.safetensors` embeddings dropped in `phonon/voices/NAME.safetensors` and
-/// picked with `IDFON_TTS_VOICE=NAME`. Falls back to Apple per-utterance when
+/// picked with `IDFON_TTS_VOICE=NAME` (default: Clara, an idfon blend voice).
+/// Falls back to Apple per-utterance when
 /// the models cannot load.
 @MainActor
 final class PhononTtsEngine: NSObject, TtsEngine {
@@ -588,11 +590,10 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                     Automation.mark("voice: phonon initializing")
                     let models = try await Self.modelsDirectory()
                     let phonon = try await Phonon.load(models: models, language: .english)
-                    if let voice = Self.env("IDFON_TTS_VOICE") {
-                        do { try await phonon.setVoice(voice) }
-                        catch {
-                            Automation.mark("voice: phonon voice '\(voice)' failed: \(error.localizedDescription)")
-                        }
+                    let voice = Self.env("IDFON_TTS_VOICE") ?? "Clara"
+                    do { try await phonon.setVoice(voice) }
+                    catch {
+                        Automation.mark("voice: phonon voice '\(voice)' failed: \(error.localizedDescription)")
                     }
                     self.phonon = phonon
                     self.prepared = true
@@ -684,9 +685,12 @@ final class PhononTtsEngine: NSObject, TtsEngine {
     /// The Core ML bundle at `ModelStore.root/phonon`, provisioned by
     /// scripts/fetch-phonon-31m.sh or downloaded from IDFON_PHONON_PACK_URL
     /// (a PhononModels export served whole: bundle.json + the files it lists).
+    /// Dev override: IDFON_PHONON_PACK_URL. nil disables fetching.
+    static let defaultPackURL: String? = nil
+
     private static func modelsDirectory() async throws -> URL {
         let dir = ModelStore.root.appendingPathComponent("phonon")
-        if let base = env("IDFON_PHONON_PACK_URL"), let url = URL(string: base) {
+        if let base = env("IDFON_PHONON_PACK_URL") ?? defaultPackURL, let url = URL(string: base) {
             return try await PhononModels.download(from: url, to: dir)
         }
         guard PhononModels.isInstalled(at: dir) else {

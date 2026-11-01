@@ -606,9 +606,10 @@ extension KokoroTtsEngine: AVAudioPlayerDelegate {
 /// (`IDFON_TTS_PHONON=1` at build, then `IDFON_TTS=phonon` or per-contact).
 /// Models: the Core ML bundle at `Documents/phonon` (side-loaded, or fetched
 /// from `IDFON_PHONON_PACK_URL` — a PhononModels export served whole:
-/// bundle.json + the files it lists). Custom voices are 256KB `.safetensors`
+/// bundle.json + the files it lists — or from `defaultPackURL`, the baked-in
+/// production pack). Custom voices are 256KB `.safetensors`
 /// embeddings dropped in `phonon/voices/NAME.safetensors`, picked with
-/// `IDFON_TTS_VOICE=NAME`. Falls back to Apple per-utterance when the models
+/// `IDFON_TTS_VOICE=NAME` (default: Clara, an idfon blend voice). Falls back to Apple per-utterance when the models
 /// cannot load. iOS 18+ (the ptts package floor).
 @available(iOS 18.0, *)
 @MainActor
@@ -645,11 +646,10 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                 do {
                     let models = try await Self.modelsDirectory()
                     let phonon = try await Phonon.load(models: models, language: .english)
-                    if let voice = Self.env("IDFON_TTS_VOICE") {
-                        do { try await phonon.setVoice(voice) }
-                        catch {
-                            Automation.mark("voice: phonon voice '\(voice)' failed: \(error.localizedDescription)")
-                        }
+                    let voice = Self.env("IDFON_TTS_VOICE") ?? "Clara"
+                    do { try await phonon.setVoice(voice) }
+                    catch {
+                        Automation.mark("voice: phonon voice '\(voice)' failed: \(error.localizedDescription)")
                     }
                     Automation.mark("voice: phonon ready (voice=\(phonon.voice))")
                     return phonon
@@ -779,11 +779,15 @@ final class PhononTtsEngine: NSObject, TtsEngine {
     /// The Core ML bundle in `Library/Application Support/phonon`, side-loaded
     /// or fetched from IDFON_PHONON_PACK_URL / `-phononpack <url>`
     /// (scripts/fetch-phonon-31m.sh builds the layout).
+    /// Dev overrides: IDFON_PHONON_PACK_URL / -phononpack. nil disables fetching.
+    static let defaultPackURL: String? = nil
+
     private static func modelsDirectory() async throws -> URL {
         let dir = modelSupportDirectory("phonon")
         // The launch arg mirrors the env var: devicectl launch cannot set
         // environment variables.
-        if let base = env("IDFON_PHONON_PACK_URL") ?? launchString("-phononpack"), let url = URL(string: base) {
+        if let base = env("IDFON_PHONON_PACK_URL") ?? launchString("-phononpack") ?? defaultPackURL,
+           let url = URL(string: base) {
             return try await PhononModels.download(from: url, to: dir)
         }
         guard PhononModels.isInstalled(at: dir) else {
