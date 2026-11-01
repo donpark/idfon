@@ -67,9 +67,10 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
   `--files-grace-days N` (default 30) keeps expired bytes before delete.
 - `--files-user-expiry-hours N` (default 24, `0` = no default) is the user
   pin term; `--files-ops-token` enables permanent operational pins.
-- `--files-max-upload-mb N` (default 100, `0` = unlimited) caps a single
+- `--files-max-upload-mb N` (default 2, `0` = unlimited) caps a single
   **user** upload; operations uploads are trusted and bound by the store quota.
-  A user upload over the cap is refused with `413` (checked from
+  Two megabytes is roughly four minutes of 64 kbps Opus speech (a 24–32 kbps
+  voice memo is ~0.7–1 MB). A user upload over the cap is refused with `413` (checked from
   `Content-Length` and again while streaming, so a chunked body cannot bypass
   it).
 - Names are `[A-Za-z0-9._-]` segments; `..`, empty segments and traversal are

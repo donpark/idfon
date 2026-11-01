@@ -54,8 +54,9 @@ const DAY_SECONDS: u64 = 24 * 60 * 60;
 /// operations token may ask for it.
 const PIN_HEADER: &str = "x-idfon-pin";
 /// Default per-file cap for user uploads (operational uploads are trusted and
-/// bound by the store quota instead).
-const DEFAULT_MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+/// bound by the store quota instead). 2 MiB is about four minutes of 64 kbps
+/// Opus speech (a 24–32 kbps voice memo fits in ~0.7–1 MB).
+const DEFAULT_MAX_UPLOAD_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -80,7 +81,7 @@ pub struct FilesRoutes {
     ops_token: Option<String>,
     /// User pin term (`0` = no default, i.e. permanent). Default 24 hours.
     user_expiry_secs: u64,
-    /// Per-file cap for user publishes (`0` = unlimited). Default 100 MB.
+    /// Per-file cap for user publishes (`0` = unlimited). Default 2 MB.
     max_upload_bytes: u64,
     pins: Mutex<Pins>,
     /// Cap on a requested expiry (`0` = no cap). The control plane sets the
@@ -309,7 +310,8 @@ impl FilesRoutes {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok());
         if limit > 0 && declared.is_some_and(|size| size > limit) {
-            drain(body).await;
+            // Answer before reading the body: the client must not upload a
+            // 5 GB file only to be told it is too large.
             return too_large(limit);
         }
         let (dest, expected_hash, pin_key) = match (content_hash(path), name_path(path)) {
@@ -800,6 +802,19 @@ mod tests {
         assert_eq!(name_path("/files/../etc/passwd"), None);
         assert_eq!(name_path("/files/a//b"), None);
         assert_eq!(name_path("/elsewhere/a.json"), None);
+    }
+
+    #[test]
+    fn user_upload_cap_defaults_to_2mb() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("idfon-files-cap-{}-{nanos}", std::process::id()));
+        let routes = FilesRoutes::new(&root, 0, None).unwrap();
+        assert_eq!(routes.max_upload_bytes, 2 * 1024 * 1024);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
