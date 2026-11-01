@@ -2,7 +2,8 @@
 
 > **Status:** as-built (2026-11-01) for the origin store and the publish path:
 > `FilesRoutes` in `crates/idfon-edge` (`/files/*`, `/models/*`), the daemon's
-> `files.publish` RPC and `idfon publish`, plus expiring rental pins. The
+> `files.publish` RPC and `idfon publish`, plus expiring rental pins, the
+> Phonon pack delivery (content-addressed objects + app downloader), and the
 > BunnyCDN pull zone, `files.idfon.net`, signed URLs, per-tier quotas,
 > per-renter ownership and takedown are not built; today the droplet serves the
 > bytes directly and a CDN can be put in front of the same paths without code
@@ -170,20 +171,43 @@ Two upload tokens, two policies:
 
 ## First customer: the Phonon model pack
 
-`scripts/build-phonon-pack.sh` already emits `bundle.json` (a content-derived
-`built` stamp plus every file's size and SHA-256). The pack shape maps directly:
+Delivered end to end (2026-11-01). The pack is still the same bundle — a
+content-derived `built` stamp plus every file's size and SHA-256 — but the
+served bytes are content-addressed while the installed layout is unchanged:
 
-- `bundle.json` → a named file (`--name phonon-31m/bundle.json`), stable URL,
-  `no-store`;
-- every listed file → `sha256/<hash>` (write the hashed copies in the build
-  script and list those relative paths);
-- the app keeps `PhononTtsEngine.defaultPackURL` at
-  `https://idfon.net/models/phonon-31m/` — `/models` is an alias of the same
-  store, so the baked-in URL works without an app change.
+- `scripts/build-phonon-pack.sh` writes the pack layout and `bundle.json`,
+  then `scripts/link-phonon-sha256.py` verifies every listed size/hash and
+  hardlinks it at `<pack>/sha256/<sha256>` (no doubled disk).
+- `bundle.json` is a **name** (`/models/phonon-31m/bundle.json`, `no-store`).
+  Each `path` is the install location; each `sha256` is the URL
+  (`/models/phonon-31m/sha256/<hash>`, immutable). Two flow weights are
+  byte-identical, so 40 files dedupe to 39 objects.
+- The apps' `PhononPack` downloader fetches the manifest, then each file from
+  `sha256/<sha256>`, verifies size + SHA-256, and installs it at the manifest
+  `path` (Core ML directories and voice filenames survive). It keeps an
+  already-installed pack usable when the network is down. This local
+  downloader exists because upstream `xn-ptts`'s `PhononModels.download` uses
+  `path` for both URL and destination, and the package is pull-only.
+- `PhononTtsEngine.defaultPackURL` is
+  `https://files.idfon.net/models/phonon-31m/` in both apps; env/launch-arg
+  overrides still work for local pack servers (which now need the `sha256/`
+  tree too).
 
-Remaining for #101: emit hashed paths in the pack build, rsync
-`dist/speech-packs/` to the droplet's files dir (or publish them), and run the
-fresh-install device E2E.
+Deploy:
+
+```sh
+rsync -a --chmod=D755,F644 dist/speech-packs/phonon-31m/sha256/ \
+  <droplet>:/srv/idfon-edge/files/sha256/
+rsync -a --chmod=D755,F644 dist/speech-packs/phonon-31m/bundle.json \
+  <droplet>:/srv/idfon-edge/files/phonon-31m/bundle.json
+```
+
+The `--chmod` matters: the edge runs as uid 10001, and pack voice files are
+created mode 600 locally — root-owned 600 objects return 404 to the edge.
+
+Verified: the manifest and all 40 files served through `files.idfon.net` with
+the right sizes, MISS → HIT, immutable caching. Remaining: the fresh-install
+device E2E (`docs/voice-side-channel.md`), which needs a physical iPhone.
 
 ## Not built yet
 

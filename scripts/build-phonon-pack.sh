@@ -44,6 +44,7 @@ echo "adding $(ls "$voices"/*.safetensors | wc -l | tr -d ' ') voices …"
 mkdir -p "$pack/voices"
 cp "$voices"/*.safetensors "$pack/voices/"
 
+rm -rf "$pack/sha256"   # stale content-addressed links
 echo "writing bundle.json …"
 python3 - "$pack" <<'PY'
 import hashlib, json, os, sys
@@ -82,5 +83,11 @@ v = [f for f in files if f["path"].startswith("voices/")]
 print(f"  {len(files)} files ({sum(f['size'] for f in files)/1e6:.1f} MB), {len(v)} voices, built={built}")
 PY
 
+# Content-addressed copies for the app downloader and the CDN (hardlinks).
+python3 "$root/scripts/link-phonon-sha256.py" "$pack"
+
 echo "done -> $pack"
 echo "serve:  scripts/serve-speech-pack.sh $out   (pack URL: <base>/phonon-31m/)"
+echo "publish:"
+echo "  rsync -a --chmod=D755,F644 '$pack/sha256/' <droplet>:/srv/idfon-edge/files/sha256/"
+echo "  rsync -a --chmod=D755,F644 '$pack/bundle.json' <droplet>:/srv/idfon-edge/files/$(basename "$pack")/bundle.json"
