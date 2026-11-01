@@ -47,7 +47,14 @@ def quantize(a: np.ndarray, group: int, axis: int):
     scale = (mx - mn) / 255.0
     zero = scale <= 0
     scale = np.where(zero, 1.0, scale)
-    zp = np.round(-mn / scale) - 128.0  # deq = (q - zp) * scale, q ∈ [-128, 127]
+    zp = -mn / scale  # uint8-style anchor; in [0,255] only when the group straddles zero
+    # one-sided groups (all-positive / all-negative slices) push the anchor out of range —
+    # the old clip below silently corrupted them (measured: finer groups got WORSE). Rescale
+    # so both ends of the representable range cover the data instead.
+    scale = np.where(zp < 0, mx / 255.0, scale)
+    scale = np.where(zp > 255, -mn / 255.0, scale)
+    scale = np.where(zero, 1.0, scale)
+    zp = np.round(zp) - 128.0  # deq = (q - zp) * scale, q ∈ [-128, 127]
     zp = np.clip(zp, -128, 127)
     q = np.clip(np.round(bb / scale[:, None]) + zp[:, None], -128, 127).astype(np.int8)
     return q, scale.astype(np.float32), zp.astype(np.int8)
