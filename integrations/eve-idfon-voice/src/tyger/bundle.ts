@@ -6,7 +6,7 @@
 // Resolution: IDFON_TYGER_BUNDLE (a bundle dir), else ~/.idfon/models/tyger.
 
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -49,6 +49,9 @@ export function loadBundle(dir?: string): TygerBundle {
     dir: root,
     manifest,
     encoderPath: join(root, "TygerEncoderDyn.onnx"),
-    stepPath: join(root, "TygerStep.onnx"),
+    // the P0 int8-stored step (GRU+fuse int8 group-16, heads fp32) when packed
+    stepPath: existsSync(join(root, "TygerStepInt8.onnx"))
+      ? join(root, "TygerStepInt8.onnx")
+      : join(root, "TygerStep.onnx"),
   };
 }
