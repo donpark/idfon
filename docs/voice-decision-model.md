@@ -17,10 +17,16 @@ turn-decision model that replaces Tyger's), `voice-tyger-streaming-plan.md`
 ## The premise the size brief rests on
 
 The 2026-10-25 ruling: **Nemotron streaming ASR + Tyger-class turn management +
-Phonon mouth**, core tier-neutral. Nemotron's encoder ships for ASR regardless
-— its layer-15 tap feeds the turn heads natively (streaming-plan candidate A,
-decided 2026-10-22). So the *marginal* cost of turn decisions is the turn-taker
-alone, not the 397M "decision path" of the standalone bundle. That marginal
+Phonon mouth**, core tier-neutral. The ASR half has **shipped** —
+`NemotronStreamingAsr` (FluidAudio `StreamingNemotronAsrManager`) is the call
+ASR in both apps. What has **not** shipped is the mid-layer **L15 tap**
+(streaming-plan candidate A's one open detail): today the streaming encoder
+throws its layer-15 hidden state away, so every Tyger delivery still bundles
+its own L15-truncated encoder copy (`TygerEncoderDyn`, ~1.5 GB of the ~2.9 GB
+an iOS 27 tier downloads) purely to featurize the turn heads. The tap makes the
+encoder shared and the *marginal* cost of turn decisions the turn-taker alone —
+not the 397M "decision path" of the standalone bundle. The size brief below is
+written for that target state; the turn-taker cut (P0) is valid either way. That marginal
 model is what must shrink.
 
 ## How Tyger is used today (integration surface)

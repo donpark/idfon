@@ -14,7 +14,7 @@ options). The on-device tiers are `ports/tyger-{coreml,coreai,mlx,swift}`.
 | --- | --- | --- |
 | `TygerStep.onnx` (+`.data`, 56 MB) | the 14M GRU turn-taker (fp32 reference) | hu/ha (1,1,1024) + act_db + prev_state (i64) + state (3,1,768) → out (1,1,8) + state. `act_db` normalization `((db+50)/25).clamp(-3,3)` is baked in (head_step semantics) |
 | `TygerStepInt8.onnx` (+`.data`, 23 MB) | the same turn-taker, P0 size cut (`quantize_step.py`): GRU + fuse weights int8 group-16, heads/norms/emb fp32, dequantized in-graph (compute stays fp32) | identical I/O |
-| `TygerEncoderDyn.onnx` (+`.data`, 1.53 GB) | the 638M Nemotron encoder, masked + dynamic | mel (1,T,128) + mask (1,T) → hidden L15 (1,T',1024); **mel lengths are 8k−7** (33, 41, …, 801) |
+| `TygerEncoderDyn.onnx` (+`.data`, 1.53 GB) | the Nemotron ASR encoder **truncated at L15** (~383M params: front 5.1M + layers-to-L15 378M — the heads read L15 only), masked + dynamic | mel (1,T,128) + mask (1,T) → hidden L15 (1,T',1024); **mel lengths are 8k−7** (33, 41, …, 801) |
 | `TygerEncoder.onnx` (1.53 GB) | static 801-mel encoder (superseded by Dyn for the engine) | mel (1,801,128) → hidden |
 | `step-oracle.json`, `enc-oracle.json` | oracle pairs for the gates | |
 
