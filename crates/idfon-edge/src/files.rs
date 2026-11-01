@@ -17,12 +17,12 @@
 //! `<root>/<name...>`. The hash in the URL is verified against the body before
 //! the object is kept; publishing the same content twice is a no-op.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use futures_util::TryStreamExt;
@@ -68,6 +68,9 @@ enum Role {
 struct Pins {
     /// Expiry (unix seconds) per pin key; the latest grant wins.
     pins: BTreeMap<String, u64>,
+    /// Taken-down keys: cannot be re-published or served.
+    #[serde(default)]
+    blocked: BTreeSet<String>,
 }
 
 /// Routes backed by a directory of pinned bytes. `quota_bytes == 0` is
@@ -89,6 +92,10 @@ pub struct FilesRoutes {
     max_expiry_days: u64,
     /// Keep expired bytes this long before deleting them (`0` = delete now).
     grace_days: u64,
+    /// Write requests per minute per role (`0` = unlimited). Local routes do
+    /// not pass through the gateway's rate limiter, so the store owns this.
+    write_limit: u32,
+    writes: Mutex<HashMap<String, (Instant, u32)>>,
 }
 
 impl FilesRoutes {
@@ -122,6 +129,8 @@ impl FilesRoutes {
             pins: Mutex::new(pins),
             max_expiry_days: 0,
             grace_days: 30,
+            write_limit: 0,
+            writes: Mutex::new(HashMap::new()),
         };
         routes.sweep(now_secs());
         Ok(routes)
@@ -150,6 +159,49 @@ impl FilesRoutes {
     pub fn with_max_upload_bytes(mut self, bytes: u64) -> Self {
         self.max_upload_bytes = bytes;
         self
+    }
+
+    /// PUT/DELETE requests per minute per role (`0` = unlimited).
+    pub fn with_write_limit(mut self, per_minute: u32) -> Self {
+        self.write_limit = per_minute;
+        self
+    }
+
+    fn write_allowed(&self, role: Role) -> bool {
+        if self.write_limit == 0 {
+            return true;
+        }
+        let key = match role {
+            Role::User => "user",
+            Role::Ops => "ops",
+        };
+        let now = Instant::now();
+        let mut writes = self
+            .writes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let entry = writes.entry(key.to_owned()).or_insert((now, 0));
+        if now.duration_since(entry.0) >= Duration::from_secs(60) {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1 <= self.write_limit
+    }
+
+    fn is_blocked(&self, key: &str) -> bool {
+        self.pins
+            .lock()
+            .map(|pins| pins.blocked.contains(key))
+            .unwrap_or(false)
+    }
+
+    fn block(&self, key: &str) {
+        let Ok(mut pins) = self.pins.lock() else {
+            return;
+        };
+        if pins.blocked.insert(key.to_owned()) {
+            self.persist_pins(&pins);
+        }
     }
 
     fn role(&self, headers: &HeaderMap) -> Option<Role> {
@@ -251,7 +303,11 @@ impl FilesRoutes {
         let head = method == Method::HEAD;
         let now = now_secs();
         if let Some(hash) = content_hash(path) {
-            let expires_at = self.expires_at(&format!("sha256/{hash}"));
+            let key = format!("sha256/{hash}");
+            if self.is_blocked(&key) {
+                return blocked();
+            }
+            let expires_at = self.expires_at(&key);
             if expires_at.is_some_and(|at| now >= at) {
                 return expired();
             }
@@ -272,6 +328,9 @@ impl FilesRoutes {
             return not_found();
         };
         let key = format!("name/{}", name.join("/"));
+        if self.is_blocked(&key) {
+            return blocked();
+        }
         let expires_at = self.expires_at(&key);
         if expires_at.is_some_and(|at| now >= at) {
             return expired();
@@ -294,6 +353,9 @@ impl FilesRoutes {
             }
             None => return text(StatusCode::UNAUTHORIZED, "missing or invalid upload token"),
         };
+        if !self.write_allowed(role) {
+            return text(StatusCode::TOO_MANY_REQUESTS, "too many writes; retry shortly");
+        }
         let now = now_secs();
         self.sweep(now);
         // The size cap applies to user publishes; operational uploads are
@@ -325,6 +387,9 @@ impl FilesRoutes {
             ),
             _ => return text(StatusCode::BAD_REQUEST, "invalid path"),
         };
+        if self.is_blocked(&pin_key) {
+            return text(StatusCode::FORBIDDEN, "this object has been taken down");
+        }
         // `permanent` is an operations privilege: a user publish always has a
         // term (24h by default), so "no expiry" cannot be bought by a client.
         let permanent = header_value(headers, PIN_HEADER) == Some("permanent");
@@ -486,6 +551,9 @@ impl FilesRoutes {
                 "deletion requires the operations token",
             );
         }
+        if !self.write_allowed(Role::Ops) {
+            return text(StatusCode::TOO_MANY_REQUESTS, "too many writes; retry shortly");
+        }
         let (file, key) = if let Some(hash) = content_hash(path) {
             (self.root.join("sha256").join(hash), format!("sha256/{hash}"))
         } else if let Some(name) = name_path(path) {
@@ -495,7 +563,9 @@ impl FilesRoutes {
         };
         remove(&file).await;
         if let Ok(mut pins) = self.pins.lock() {
-            if pins.pins.remove(&key).is_some() {
+            let had_pin = pins.pins.remove(&key).is_some();
+            let blocked = pins.blocked.insert(key);
+            if had_pin || blocked {
                 self.persist_pins(&pins);
             }
         }
@@ -536,6 +606,16 @@ fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .ok()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+/// A taken-down key: gone, and not safely cacheable as "not found".
+fn blocked() -> Response<ResponseBody> {
+    Response::builder()
+        .status(StatusCode::GONE)
+        .header(http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(http::header::CACHE_CONTROL, "no-store")
+        .body(idfon_gateway::bytes_body("unavailable"))
+        .expect("static response")
 }
 
 fn expired() -> Response<ResponseBody> {

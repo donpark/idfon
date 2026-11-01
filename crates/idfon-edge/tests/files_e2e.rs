@@ -561,14 +561,16 @@ async fn deletion_requires_the_ops_token_and_removes_the_pin() {
     let (status, _, _) = request_with(addr, "DELETE", &path, Some("ops"), &[], b"").await;
     assert_eq!(status, 204);
     let (status, _) = request(addr, "GET", &path, None, b"").await;
-    assert_eq!(status, 404);
+    assert_eq!(status, 410);
 
-    // The pin went with the bytes: a permanent (ops) republish has no
-    // inherited expiry.
-    let (status, _, created) = request_with(addr, "PUT", &path, Some("ops"), &[], &body).await;
-    assert_eq!(status, 201);
-    let created: serde_json::Value = serde_json::from_slice(&created).unwrap();
-    assert!(created["expires_at"].is_null());
+    // The pin went with the bytes.
+    let pins: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("pins.json")).unwrap()).unwrap();
+    assert!(pins["pins"].get(&format!("sha256/{hash}")).is_none());
+
+    // A takedown is sticky: the same hash cannot be re-published.
+    let (status, _, _) = request_with(addr, "PUT", &path, Some("ops"), &[], &body).await;
+    assert_eq!(status, 403);
 
     // Names are removable too.
     let (status, _, _) = request_with(
@@ -585,7 +587,46 @@ async fn deletion_requires_the_ops_token_and_removes_the_pin() {
         request_with(addr, "DELETE", "/files/site/page.html", Some("ops"), &[], b"").await;
     assert_eq!(status, 204);
     let (status, _) = request(addr, "GET", "/files/site/page.html", None, b"").await;
-    assert_eq!(status, 404);
+    assert_eq!(status, 410);
+
+    handle.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn write_rate_limit_applies_per_role() {
+    let root = temp_root("rate");
+    let routes = FilesRoutes::new(&root, 0, Some("secret".to_owned()))
+        .unwrap()
+        .with_write_limit(2);
+    let handle = serve(
+        Config {
+            local_routes: vec![Arc::new(routes)],
+            ..Config::default()
+        },
+        NoBackend,
+        AllowAll,
+    )
+    .await
+    .unwrap();
+    let addr = Addr(handle.local_addr());
+
+    for (index, body) in [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        .into_iter()
+        .enumerate()
+    {
+        let hash = sha256(&body);
+        let (status, _, _) = request_with(
+            addr,
+            "PUT",
+            &format!("/files/sha256/{hash}"),
+            Some("secret"),
+            &[],
+            &body,
+        )
+        .await;
+        assert_eq!(status, if index < 2 { 201 } else { 429 });
+    }
 
     handle.shutdown();
     let _ = std::fs::remove_dir_all(&root);

@@ -3,11 +3,11 @@
 > **Status:** as-built (2026-11-01) for the origin store and the publish path:
 > `FilesRoutes` in `crates/idfon-edge` (`/files/*`, `/models/*`), the daemon's
 > `files.publish` RPC and `idfon publish`, plus expiring rental pins, the
-> Phonon pack delivery (content-addressed objects + app downloader), and the
-> BunnyCDN pull zone, `files.idfon.net`, signed URLs, per-tier quotas,
-> per-renter ownership and takedown are not built; today the droplet serves the
-> bytes directly and a CDN can be put in front of the same paths without code
-> changes.
+> Phonon pack delivery (content-addressed objects + app downloader), the
+> BunnyCDN pull zone (`files.idfon.net`), an ops-only takedown with a sticky
+> blocklist, and per-role write rate limits. Paid tiers, private/signed URLs
+> and per-owner credentials are intentionally not planned; the free and
+> operational policies are the product.
 
 Agents and users need to serve files **independent of chat sessions and agent
 life cycles**. The connected-only story is `iroh-blobs` + `BlobTicket`
@@ -21,12 +21,11 @@ tier.
 | Tier | Where bytes are served | Durability |
 | --- | --- | --- |
 | **Free** | from the publisher while connected — `BlobTicket` fetch (`idfon put` / `idfon get`), or the edge proxy `<ref>.idfon.net/<path>` | none beyond the publisher's own storage. No edge copy. |
-| **Free pin (today)** | from the edge's durable store (and the CDN) at a content-addressed URL | **24 hours**; a user publish defaults to and is capped at 24h until a paid tier exists |
+| **Free pin** | from the edge's durable store (and the CDN) at a content-addressed URL | **24 hours**; a user publish defaults to and is capped at 24h |
 | **Operational** | the same store, published with the operations token | **never expires, no per-file limit** (`idfon publish --permanent`, or rsync the directory); the disk is the only bound |
-| **Paid** | the same store, longer terms | not built |
 
 The free tier is harsh but the economics are what they are: an always-on copy
-of everyone's files is the thing being sold. Until that is sold, every
+of everyone's files is the thing being sold. There is no paid tier, so every
 user-facing pin is a 24-hour trial; files the service itself needs (model
 packs, manifests) are pinned permanently with the operations token.
 
@@ -69,6 +68,9 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
   `--files-grace-days N` (default 30) keeps expired bytes before delete.
 - `--files-user-expiry-hours N` (default 24, `0` = no default) is the user
   pin term; `--files-ops-token` enables permanent operational pins.
+- `--files-writes-per-minute N` (default 60, `0` = unlimited) caps PUT/DELETE
+  per role. Local routes bypass the gateway's rate limiter, so the store owns
+  this one.
 - `--files-max-upload-mb N` (default 2, `0` = unlimited) caps a single
   **user** upload. Operations uploads have no per-file limit and are exempt
   from the store quota (the disk is the bound); the quota is a user-abuse
@@ -80,8 +82,10 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
 - Names are `[A-Za-z0-9._-]` segments; `..`, empty segments and traversal are
   refused. Uploading a name overwrites it in place.
 - `DELETE` is the takedown path: it needs the **operations token**, removes the
-  bytes and any pin, and is idempotent (`204`). Reports go to the operator; a
-  self-service report UI/blocklist is tracked in #109.
+  bytes and any pin, is idempotent (`204`), and records the key in the
+  persisted **blocklist** (`blocked` in `pins.json`) so the same hash/name
+  cannot be re-published. Reads of a blocked key answer `410`. Reports go to
+  the operator; there is no self-service report UI.
 - No `Range` support yet: a resumed download refetches the whole object (the
   apps verify size + SHA-256 per file anyway).
 
@@ -125,7 +129,7 @@ The Eve ingress exposes `publish_file` (`integrations/eve-idfon`):
   a 2 MB user file with headroom; larger operational files should use the CLI
   or rsync.
 - Quota is the deployment's (the bridge's edge token), not the calling
-  contact's. Per-owner credentials are tracked in #108.
+  contact's; per-owner credentials are intentionally not built.
 
 ## Pin terms: 24h user pins, permanent operational files
 
@@ -155,8 +159,6 @@ Two upload tokens, two policies:
   startup, and before each upload. Expired-but-not-yet-deleted pins still
   count against quota.
 - `--files-max-expiry-days` still caps any requested term (ops included).
-- Billing is not on the edge: a paid tier would need per-owner upload
-  credentials and per-renter pin records — see "Not built yet".
 - **Scope: published resources only.** The size cap (and the 24h term) cover
   the durable store. Live audio/video (`idfon send --stream`), 1:1 calls, and
   connected-only `BlobTicket` transfers are runtime streams from the
@@ -187,8 +189,6 @@ Two upload tokens, two policies:
   either host).
 - **Cloudflare R2** stays the alternative only if DNS ever moves to
   Cloudflare; its zero egress fee is the draw.
-- Private files would use provider-standard signed URLs with a TTL (not
-  built). Today every published object is public by URL possession.
 
 ## First customer: the Phonon model pack
 
@@ -232,12 +232,8 @@ device E2E (`docs/voice-side-channel.md`), which needs a physical iPhone.
 
 ## Not built yet
 
-- Bunny pull zone + `files.idfon.net` CNAME (ops).
-- Signed URLs for private files; public-by-default is today's choice.
-- Per-owner upload credentials and per-renter pin records: with one shared
-  upload token the edge cannot tell renters apart, so expiry is one grant per
-  object/name (the control plane owns billing).
-- Tier quota numbers/pricing, automated renewal, abuse/takedown path.
-- An agent-facing tool (`idfon-mcp` / Eve bridge) beside `idfon publish`;
-  today agents get `blob.put`/`blob.fetch` tickets only.
 - Upload retries/resume and `Range` downloads.
+- A self-service abuse-report UI (takedown is operator-driven and sticky).
+- Per-owner upload credentials: with one shared token the edge cannot tell
+  publishers apart; that is a deliberate limit of the current no-paid-tier
+  product.

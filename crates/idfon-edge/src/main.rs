@@ -7,7 +7,7 @@
 //!            [--files-dir PATH] [--files-token VALUE] [--files-quota-mb N]
 //!            [--files-max-expiry-days N] [--files-grace-days N]
 //!            [--files-ops-token VALUE] [--files-user-expiry-hours N]
-//!            [--files-max-upload-mb N]
+//!            [--files-max-upload-mb N] [--files-writes-per-minute N]
 //! ```
 //!
 //! Env fallbacks: `IDFON_EDGE_TOKEN`, `IDFON_EDGE_KEY` (64 hex, takes
@@ -59,6 +59,7 @@ OPTIONS:
   --files-ops-token VALUE Bearer token for permanent (operational) pins
   --files-user-expiry-hours N  User pin term (default 24; 0 = no default)
   --files-max-upload-mb N Per-file cap for user publishes (default 2; 0 = none)
+  --files-writes-per-minute N  PUT/DELETE limit per role (default 60; 0 = none)
   --help, -h              Print this help
 
 ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
@@ -104,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
     let mut files_ops_token: Option<String> = None;
     let mut files_user_expiry_hours: u64 = 24;
     let mut files_max_upload_mb: u64 = 2;
+    let mut files_writes_per_minute: u32 = 60;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -216,6 +218,12 @@ async fn main() -> anyhow::Result<()> {
                     .context("--files-max-upload-mb is a number")?;
                 i += 2;
             }
+            "--files-writes-per-minute" => {
+                files_writes_per_minute = args[i + 1]
+                    .parse()
+                    .context("--files-writes-per-minute is a number")?;
+                i += 2;
+            }
             "--key-file" => {
                 key_file = PathBuf::from(&args[i + 1]);
                 i += 2;
@@ -274,7 +282,8 @@ async fn main() -> anyhow::Result<()> {
                 .with_expiry(files_max_expiry_days, files_grace_days)
                 .with_ops_token(files_ops_token.clone())
                 .with_user_expiry_hours(files_user_expiry_hours)
-                .with_max_upload_bytes(files_max_upload_mb.saturating_mul(1024 * 1024)),
+                .with_max_upload_bytes(files_max_upload_mb.saturating_mul(1024 * 1024))
+                .with_write_limit(files_writes_per_minute),
         );
         routes.spawn_sweeper();
         local_routes.push(routes);
