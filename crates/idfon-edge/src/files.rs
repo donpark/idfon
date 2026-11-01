@@ -53,6 +53,9 @@ const DAY_SECONDS: u64 = 24 * 60 * 60;
 /// `x-idfon-pin: permanent` — operational pins never expire. Only the
 /// operations token may ask for it.
 const PIN_HEADER: &str = "x-idfon-pin";
+/// Default per-file cap for user uploads (operational uploads are trusted and
+/// bound by the store quota instead).
+const DEFAULT_MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -77,6 +80,8 @@ pub struct FilesRoutes {
     ops_token: Option<String>,
     /// User pin term (`0` = no default, i.e. permanent). Default 24 hours.
     user_expiry_secs: u64,
+    /// Per-file cap for user publishes (`0` = unlimited). Default 100 MB.
+    max_upload_bytes: u64,
     pins: Mutex<Pins>,
     /// Cap on a requested expiry (`0` = no cap). The control plane sets the
     /// term; this stops a client from minting an unbounded one.
@@ -112,6 +117,7 @@ impl FilesRoutes {
             token,
             ops_token: None,
             user_expiry_secs: DAY_SECONDS,
+            max_upload_bytes: DEFAULT_MAX_UPLOAD_BYTES,
             pins: Mutex::new(pins),
             max_expiry_days: 0,
             grace_days: 30,
@@ -136,6 +142,12 @@ impl FilesRoutes {
     /// Default (and cap) for user pins, in hours. `0` = no default.
     pub fn with_user_expiry_hours(mut self, hours: u64) -> Self {
         self.user_expiry_secs = hours.saturating_mul(60 * 60);
+        self
+    }
+
+    /// Per-file cap for user uploads, in bytes (`0` = unlimited).
+    pub fn with_max_upload_bytes(mut self, bytes: u64) -> Self {
+        self.max_upload_bytes = bytes;
         self
     }
 
@@ -285,6 +297,21 @@ impl FilesRoutes {
         };
         let now = now_secs();
         self.sweep(now);
+        // The size cap applies to user publishes; operational uploads are
+        // trusted and bound by the store quota.
+        let limit = if role == Role::User {
+            self.max_upload_bytes
+        } else {
+            0
+        };
+        let declared = headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        if limit > 0 && declared.is_some_and(|size| size > limit) {
+            drain(body).await;
+            return too_large(limit);
+        }
         let (dest, expected_hash, pin_key) = match (content_hash(path), name_path(path)) {
             (Some(hash), _) => (
                 self.root.join("sha256").join(hash),
@@ -334,7 +361,9 @@ impl FilesRoutes {
         // Content-addressed writes are idempotent: an object we already have is
         // reported instead of rewritten (the "server already has it" contract).
         if expected_hash.is_some() && tokio::fs::metadata(&dest).await.is_ok() {
-            drain(body).await;
+            if !drain_limited(body, limit).await {
+                return too_large(limit);
+            }
             if let Some(at) = expires_at {
                 self.grant(&pin_key, at);
             }
@@ -349,10 +378,6 @@ impl FilesRoutes {
         }
 
         let used = used_bytes(&self.root);
-        let declared = headers
-            .get(http::header::CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok());
         if self.quota_bytes > 0
             && declared.is_some_and(|size| used.saturating_add(size) > self.quota_bytes)
         {
@@ -392,6 +417,10 @@ impl FilesRoutes {
                 continue;
             };
             size = size.saturating_add(data.len() as u64);
+            if limit > 0 && size > limit {
+                remove(&temp).await;
+                return too_large(limit);
+            }
             if self.quota_bytes > 0 && used.saturating_add(size) > self.quota_bytes {
                 remove(&temp).await;
                 return text(StatusCode::INSUFFICIENT_STORAGE, "storage quota exceeded");
@@ -611,6 +640,44 @@ fn used_bytes(root: &Path) -> u64 {
 
 async fn drain(body: &mut Incoming) {
     while body.frame().await.is_some() {}
+}
+
+/// Discards a body, refusing once it exceeds `limit` (0 = unlimited).
+async fn drain_limited(body: &mut Incoming, limit: u64) -> bool {
+    if limit == 0 {
+        drain(body).await;
+        return true;
+    }
+    let mut total = 0u64;
+    while let Some(frame) = body.frame().await {
+        let Ok(frame) = frame else {
+            return true;
+        };
+        if let Some(data) = frame.data_ref() {
+            total = total.saturating_add(data.len() as u64);
+            if total > limit {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn too_large(limit: u64) -> Response<ResponseBody> {
+    text(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        &format!("file exceeds the {} upload limit", pretty_bytes(limit)),
+    )
+}
+
+fn pretty_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
+        format!("{} MB", bytes / (1024 * 1024))
+    } else if bytes >= 1024 && bytes % 1024 == 0 {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{bytes} byte")
+    }
 }
 
 async fn remove(path: &Path) {

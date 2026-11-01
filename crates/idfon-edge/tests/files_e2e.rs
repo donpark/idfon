@@ -101,6 +101,50 @@ async fn request_with(
     head.push_str("\r\n");
     stream.write_all(head.as_bytes()).await.unwrap();
     stream.write_all(body).await.unwrap();
+    read_response(stream, method, path).await
+}
+
+/// Same request, but with a chunked body (no `Content-Length`) so the edge's
+/// streaming size cap is what stops an oversized upload.
+async fn request_chunked(
+    addr: Addr,
+    path: &str,
+    token: Option<&str>,
+    extra: &[(&str, &str)],
+    body: &[u8],
+) -> (u16, String, Vec<u8>) {
+    let mut stream = tokio::net::TcpStream::connect(addr.0)
+        .await
+        .expect("connect");
+    let mut head = format!(
+        "PUT {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n",
+        addr.0
+    );
+    if let Some(token) = token {
+        head.push_str(&format!("Authorization: Bearer {token}\r\n"));
+    }
+    for (name, value) in extra {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).await.unwrap();
+    for chunk in body.chunks(8) {
+        stream
+            .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+            .await
+            .unwrap();
+        stream.write_all(chunk).await.unwrap();
+        stream.write_all(b"\r\n").await.unwrap();
+    }
+    stream.write_all(b"0\r\n\r\n").await.unwrap();
+    read_response(stream, "PUT", path).await
+}
+
+async fn read_response(
+    mut stream: tokio::net::TcpStream,
+    method: &str,
+    path: &str,
+) -> (u16, String, Vec<u8>) {
     let mut raw = Vec::new();
     stream
         .read_to_end(&mut raw)
@@ -432,6 +476,61 @@ async fn ops_pins_are_permanent_unless_a_term_is_asked() {
     assert_eq!(status, 201);
     let created: serde_json::Value = serde_json::from_slice(&created).unwrap();
     assert!(created["expires_at"].is_null());
+
+    handle.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn user_uploads_are_capped_but_ops_is_not() {
+    let root = temp_root("upload-cap");
+    let routes = FilesRoutes::new(&root, 0, Some("secret".to_owned()))
+        .unwrap()
+        .with_ops_token(Some("ops".to_owned()))
+        .with_max_upload_bytes(16);
+    let handle = serve(
+        Config {
+            local_routes: vec![Arc::new(routes)],
+            ..Config::default()
+        },
+        NoBackend,
+        AllowAll,
+    )
+    .await
+    .unwrap();
+    let addr = Addr(handle.local_addr());
+
+    // Under the cap: fine.
+    let small = b"0123456789".to_vec();
+    let (status, _, _) = request_with(
+        addr,
+        "PUT",
+        &format!("/files/sha256/{}", sha256(&small)),
+        Some("secret"),
+        &[],
+        &small,
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    // Declared size over the cap: 413 before reading the body.
+    let big = vec![7u8; 32];
+    let big_path = format!("/files/sha256/{}", sha256(&big));
+    let (status, _, _) = request_with(addr, "PUT", &big_path, Some("secret"), &[], &big).await;
+    assert_eq!(status, 413);
+    let (status, _) = request(addr, "GET", &big_path, None, b"").await;
+    assert_eq!(status, 404);
+
+    // Chunked (no Content-Length) is stopped by the streaming cap.
+    let (status, _, _) = request_chunked(addr, &big_path, Some("secret"), &[], &big).await;
+    assert_eq!(status, 413);
+
+    // The operations token is trusted: the same bytes are accepted.
+    let (status, _, _) = request_with(addr, "PUT", &big_path, Some("ops"), &[], &big).await;
+    assert_eq!(status, 201);
+    let (status, body) = request(addr, "GET", &big_path, None, b"").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, big);
 
     handle.shutdown();
     let _ = std::fs::remove_dir_all(&root);

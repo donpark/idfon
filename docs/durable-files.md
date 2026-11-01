@@ -67,6 +67,11 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
   `--files-grace-days N` (default 30) keeps expired bytes before delete.
 - `--files-user-expiry-hours N` (default 24, `0` = no default) is the user
   pin term; `--files-ops-token` enables permanent operational pins.
+- `--files-max-upload-mb N` (default 100, `0` = unlimited) caps a single
+  **user** upload; operations uploads are trusted and bound by the store quota.
+  A user upload over the cap is refused with `413` (checked from
+  `Content-Length` and again while streaming, so a chunked body cannot bypass
+  it).
 - Names are `[A-Za-z0-9._-]` segments; `..`, empty segments and traversal are
   refused. Uploading a name overwrites it in place.
 - No `Range` support yet: a resumed download refetches the whole object (the
@@ -127,6 +132,11 @@ Two upload tokens, two policies:
 - `--files-max-expiry-days` still caps any requested term (ops included).
 - Billing is not on the edge: a paid tier would need per-owner upload
   credentials and per-renter pin records — see "Not built yet".
+- **Scope: published resources only.** The size cap (and the 24h term) cover
+  the durable store. Live audio/video (`idfon send --stream`), 1:1 calls, and
+  connected-only `BlobTicket` transfers are runtime streams from the
+  publisher's endpoint; they are gated by grants/tickets but not by this cap.
+  A streaming/media policy would be a separate control.
 
 ## Origin and deployment
 
