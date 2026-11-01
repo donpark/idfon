@@ -23,11 +23,13 @@ const out = argOf("--out") ?? join(homedir(), ".idfon/models/tyger");
 const urlBase = argOf("--url-base");
 const src = join(root, "bench-results/onnx");
 
+const stepPair = existsSync(join(src, "TygerStepInt8.onnx"))
+  ? ["TygerStepInt8.onnx", "TygerStepInt8.onnx.data"] // P0 int8 GRU + fp32 heads (ports/tyger-onnx/quantize_step.py)
+  : ["TygerStep.onnx", "TygerStep.onnx.data"];
 const FILES = [
   "TygerEncoderDyn.onnx",
   "TygerEncoderDyn.onnx.data",
-  "TygerStep.onnx",
-  "TygerStep.onnx.data",
+  ...stepPair,
 ];
 for (const f of FILES) {
   if (!existsSync(join(src, f))) {
@@ -55,7 +57,9 @@ const manifest = {
   source: {
     // the weights' origin (the HF bundle the exports were run against)
     bundle: "nineninesix/tyger",
-    note: "regenerable via ports/tyger-onnx/export_step.py --dyn + --only step",
+    note: stepPair[0] === "TygerStepInt8.onnx"
+      ? "step weights int8 group-16 (GRU+fuse, heads fp32, dequantized in-graph); regenerable via quantize_step.py + qstep-parity.mjs gate"
+      : "regenerable via ports/tyger-onnx/export_step.py --dyn + --only step",
   },
   url_base: urlBase ?? null,
   files,
