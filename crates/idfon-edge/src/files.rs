@@ -379,16 +379,22 @@ impl FilesRoutes {
             );
         }
 
-        let used = used_bytes(&self.root);
-        if self.quota_bytes > 0
-            && declared.is_some_and(|size| used.saturating_add(size) > self.quota_bytes)
-        {
-            drain(body).await;
-            return text(StatusCode::INSUFFICIENT_STORAGE, "storage quota exceeded");
-        }
-        if self.quota_bytes > 0 && used >= self.quota_bytes {
-            drain(body).await;
-            return text(StatusCode::INSUFFICIENT_STORAGE, "storage quota exceeded");
+        // The store quota is a user-abuse control; the operations token is the
+        // service itself and is bound by the disk, not by this cap.
+        let used = if role == Role::User {
+            used_bytes(&self.root)
+        } else {
+            0
+        };
+        if role == Role::User && self.quota_bytes > 0 {
+            if declared.is_some_and(|size| used.saturating_add(size) > self.quota_bytes) {
+                drain(body).await;
+                return text(StatusCode::INSUFFICIENT_STORAGE, "storage quota exceeded");
+            }
+            if used >= self.quota_bytes {
+                drain(body).await;
+                return text(StatusCode::INSUFFICIENT_STORAGE, "storage quota exceeded");
+            }
         }
 
         if let Some(parent) = dest.parent() {
@@ -423,7 +429,10 @@ impl FilesRoutes {
                 remove(&temp).await;
                 return too_large(limit);
             }
-            if self.quota_bytes > 0 && used.saturating_add(size) > self.quota_bytes {
+            if role == Role::User
+                && self.quota_bytes > 0
+                && used.saturating_add(size) > self.quota_bytes
+            {
                 remove(&temp).await;
                 return text(StatusCode::INSUFFICIENT_STORAGE, "storage quota exceeded");
             }

@@ -312,22 +312,19 @@ async fn named_files_are_mutable_and_guarded() {
 }
 
 #[tokio::test]
-async fn quota_stops_new_pins() {
+async fn quota_stops_user_pins_but_ops_is_exempt() {
     let root = temp_root("quota");
-    let (addr, handle) = start(&root, 16, Some("secret")).await;
+    let (addr, handle) = start_full(&root, 16, Some("secret"), Some("ops"), 24).await;
     let body = vec![7u8; 32];
     let hash = sha256(&body);
-    let (status, _) = request(
-        addr,
-        "PUT",
-        &format!("/files/sha256/{hash}"),
-        Some("secret"),
-        &body,
-    )
-    .await;
+    let path = format!("/files/sha256/{hash}");
+    let (status, _) = request(addr, "PUT", &path, Some("secret"), &body).await;
     assert_eq!(status, 507);
-    let (status, _) = request(addr, "GET", &format!("/files/sha256/{hash}"), None, b"").await;
+    let (status, _) = request(addr, "GET", &path, None, b"").await;
     assert_eq!(status, 404);
+    // Operational files are the service itself: the user quota does not apply.
+    let (status, _) = request(addr, "PUT", &path, Some("ops"), &body).await;
+    assert_eq!(status, 201);
     handle.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
