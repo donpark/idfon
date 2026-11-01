@@ -209,6 +209,10 @@ managed-child packaging the attestation is the IPC channel itself.
   ticket**; file-backed audio and fragmented-MP4 video are delivered through
   the pinned `idfon-media`/MoQ plane and referenced in the turn. It has no Eve
   session equivalent.
+- **Durable publication**: the extension's `publish_file` tool publishes a
+  sandbox file or text to a content-addressed edge URL (user pins: 2 MB / 24 h;
+  `permanent`: operations token), or returns a connected-only `BlobTicket` with
+  `durable: false`. See `docs/durable-files.md`.
 - **Typing/status**: optional, from `turn.started` / `actions.requested`.
 
 ### Media is where idfon exceeds Slack
