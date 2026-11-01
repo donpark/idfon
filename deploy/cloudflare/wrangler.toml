@@ -5,12 +5,15 @@ compatibility_flags = ["nodejs_compat"]
 # iroh's wasm build uses WebSocket/fetch/crypto, all present in workerd.
 
 # Wildcard ingress: `<ref>.idfon.net` and the `/ref/...` fallback on the apex.
-# Requires the `idfon.net` zone to be active in this Cloudflare account. Remove
-# these while developing (routes need a deployed zone).
-routes = [
-  { pattern = "*.idfon.net/*", zone_name = "idfon.net" },
-  { pattern = "idfon.net/*", zone_name = "idfon.net" },
-]
+# Requires the `idfon.net` zone to be active in this Cloudflare account — it is
+# still served by the native edge on the DigitalOcean droplet (NS =
+# ns*.digitalocean.com), so these routes are commented out until the zone
+# moves here. Uncomment as part of that cutover; until then the Worker deploys
+# to workers.dev only and serves no idfon.net traffic.
+# routes = [
+#   { pattern = "*.idfon.net/*", zone_name = "idfon.net" },
+#   { pattern = "idfon.net/*", zone_name = "idfon.net" },
+# ]
 
 [vars]
 # Virtual-host base domain. The Worker serves `<ref>.<EDGE_DOMAIN>` plus
