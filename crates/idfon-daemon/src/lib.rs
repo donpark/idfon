@@ -39,6 +39,7 @@ use iroh::endpoint::Connection;
 use iroh::EndpointAddr;
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use rusqlite::OptionalExtension;
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
@@ -976,6 +977,9 @@ async fn handle_request(
     if request.method == "web.url" {
         return encode_json(&web_url(&request)).map_err(io::Error::other);
     }
+    if request.method == "files.publish" {
+        return encode_json(&files_publish(&request).await).map_err(io::Error::other);
+    }
     if request.method == "provider.start" {
         let identity = request_text(&request.params, "identity")
             .unwrap_or_else(|| session_identity.clone());
@@ -1798,6 +1802,159 @@ fn web_url(request: &Request) -> Response {
             false,
         ),
     }
+}
+
+/// `files.publish { path, name?, url?, token? }` — pin a file on the edge's
+/// durable store (`docs/durable-files.md`) and return its content-addressed URL.
+/// The free tier is `idfon put` (a connected-only `BlobTicket`), not this path.
+async fn files_publish(request: &Request) -> Response {
+    match publish_file(request).await {
+        Ok(result) => success(request, result),
+        Err(message) => error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            message,
+            false,
+        ),
+    }
+}
+
+async fn publish_file(request: &Request) -> Result<serde_json::Value, String> {
+    let path = request_text(&request.params, "path").ok_or("path is required")?;
+    let name = request_text(&request.params, "name").filter(|name| !name.is_empty());
+    // Rental term, in seconds; the edge clamps it to its configured cap.
+    let expires_in = request
+        .params
+        .get("expires_in")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|seconds| *seconds > 0);
+    let (configured, _) = edge_config();
+    let base = request_text(&request.params, "url")
+        .or(configured)
+        .ok_or("no edge configured (pass url or set IDFON_EDGE_URL)")?
+        .trim_end_matches('/')
+        .to_owned();
+    let token = request_text(&request.params, "token")
+        .or_else(|| env_value("IDFON_FILES_TOKEN"))
+        .or_else(|| env_value("IDFON_EDGE_TOKEN"))
+        .ok_or("no upload token (pass token or set IDFON_FILES_TOKEN)")?;
+
+    let (sha256, size) = hash_file(&path)
+        .await
+        .map_err(|error| format!("reading {path}: {error}"))?;
+    // The content URL sits under the name's directory so a bundle can list
+    // relative `sha256/<hash>` paths.
+    let content_path = content_path(name.as_deref(), &sha256);
+
+    let client = reqwest::Client::new();
+    let uploaded = client
+        .head(format!("{base}{content_path}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|error| format!("edge unreachable: {error}"))?;
+    let existed = uploaded.status().is_success();
+    if !existed {
+        upload(
+            &client,
+            &base,
+            &content_path,
+            &token,
+            &path,
+            size,
+            expires_in,
+        )
+        .await?;
+    }
+    if let Some(name) = &name {
+        upload(
+            &client,
+            &base,
+            &format!("/files/{name}"),
+            &token,
+            &path,
+            size,
+            expires_in,
+        )
+        .await?;
+    }
+    Ok(serde_json::json!({
+        "url": format!("{base}{content_path}"),
+        "sha256": sha256,
+        "size": size,
+        "existed": existed,
+        "expires_in": expires_in,
+    }))
+}
+
+/// The content URL sits under the name's directory, so a bundle published by
+/// name can list relative `sha256/<hash>` paths.
+fn content_path(name: Option<&str>, sha256: &str) -> String {
+    match name.and_then(|name| name.rsplit_once('/')) {
+        Some((dir, _)) if !dir.is_empty() => format!("/files/{dir}/sha256/{sha256}"),
+        _ => format!("/files/sha256/{sha256}"),
+    }
+}
+
+async fn upload(
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    token: &str,
+    file: &str,
+    size: u64,
+    expires_in: Option<u64>,
+) -> Result<(), String> {
+    let body = tokio::fs::File::open(file)
+        .await
+        .map_err(|error| format!("reading {file}: {error}"))?;
+    let mut request = client
+        .put(format!("{base}{path}"))
+        .bearer_auth(token)
+        .header(reqwest::header::CONTENT_LENGTH, size);
+    if let Some(seconds) = expires_in {
+        request = request.header("x-idfon-expires-in", seconds);
+    }
+    let response = request
+        .body(reqwest::Body::from(body))
+        .send()
+        .await
+        .map_err(|error| format!("uploading to {base}{path}: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("edge returned {status}: {}", body.trim()));
+    }
+    Ok(())
+}
+
+async fn hash_file(path: &str) -> std::io::Result<(String, u64)> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    let mut size = 0u64;
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        size += read as u64;
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    Ok((hex, size))
+}
+
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 /// The public edge URL for a resource. A real endpoint id on an `https://`
@@ -7144,6 +7301,16 @@ mod tests {
         assert!(send("k1", None).ok);
         // An explicit identity wins — and the Work peer is not on Personal.
         assert!(!send("k2", Some("Personal")).ok);
+    }
+
+    #[test]
+    fn publish_content_path_follows_the_name_directory() {
+        assert_eq!(content_path(None, "ab"), "/files/sha256/ab");
+        assert_eq!(
+            content_path(Some("phonon-31m/bundle.json"), "ab"),
+            "/files/phonon-31m/sha256/ab"
+        );
+        assert_eq!(content_path(Some("bundle.json"), "ab"), "/files/sha256/ab");
     }
 
     #[test]

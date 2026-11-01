@@ -1558,6 +1558,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer",
+ "const-oid",
  "crypto-common 0.2.2",
  "ctutils",
 ]
@@ -3049,6 +3050,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
 ]
@@ -3077,8 +3079,11 @@ dependencies = [
  "axum",
  "bytes",
  "ed25519-dalek",
+ "futures-util",
  "http",
+ "http-body",
  "http-body-util",
+ "hyper",
  "idfon-core",
  "idfon-gateway",
  "idfon-h3",
@@ -3088,7 +3093,9 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

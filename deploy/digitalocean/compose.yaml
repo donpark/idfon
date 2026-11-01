@@ -48,3 +48,16 @@ services:
       - ${IDFON_EDGE_PUSH_URL:-https://api.push.apple.com}
       - --push-state
       - /var/lib/idfon/edge-push.json
+      # Durable files (docs/durable-files.md): the state volume holds the
+      # content-addressed store. An empty token leaves it read-only (rsync
+      # deployments); set IDFON_FILES_TOKEN to enable `idfon publish`.
+      - --files-dir
+      - ${IDFON_FILES_DIR:-/var/lib/idfon/files}
+      - --files-token
+      - ${IDFON_FILES_TOKEN:-}
+      - --files-quota-mb
+      - ${IDFON_FILES_QUOTA_MB:-10240}
+      - --files-max-expiry-days
+      - ${IDFON_FILES_MAX_EXPIRY_DAYS:-0}
+      - --files-grace-days
+      - ${IDFON_FILES_GRACE_DAYS:-30}

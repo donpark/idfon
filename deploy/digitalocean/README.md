@@ -264,3 +264,10 @@ Point a DigitalOcean Uptime check at `https://idfon.net/healthz`.
   unreachable; verify it is online and that outbound UDP/TCP is allowed.
 - `<ref>.idfon.net` resolves but the edge returns 404: the ref is not a 64-hex
   endpoint id, or DNS does not include the `*` record.
+
+## Durable-files CDN
+
+The optional bunny.net pull zone in front of the edge's file store is
+provisioned separately: `BUNNYNET_API_KEY=... deploy/bunny/setup.sh` (see
+`deploy/bunny/README.md`). It adds the `files` CNAME to this zone when
+`DIGITALOCEAN_API_KEY` is set, so run it after the first deploy.

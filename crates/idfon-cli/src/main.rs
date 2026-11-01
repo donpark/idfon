@@ -125,6 +125,9 @@ enum Command {
     Mcp(McpCmd),
     /// Store stdin/FILE as a blob; prints the BlobTicket
     Put(PutArgs),
+    /// Publish FILE to the edge's durable files store; prints its URL
+    /// (the free tier is `idfon put`, a connected-only BlobTicket)
+    Publish(PublishArgs),
     /// Fetch a ticket to stdout or --out FILE (blob tickets fetch bytes,
     /// iroh-live: tickets capture live audio)
     Get(GetArgs),
@@ -561,6 +564,49 @@ struct PutArgs {
 }
 
 #[derive(clap::Args)]
+struct PublishArgs {
+    /// File to publish
+    file: String,
+    /// Stable mutable name, e.g. phonon-31m/bundle.json (content still gets a
+    /// hashed URL; the name points at the same bytes)
+    #[arg(long)]
+    name: Option<String>,
+    /// Edge base URL (default IDFON_EDGE_URL on the daemon)
+    #[arg(long)]
+    url: Option<String>,
+    /// Upload token (default IDFON_FILES_TOKEN, then IDFON_EDGE_TOKEN)
+    #[arg(long)]
+    token: Option<String>,
+    /// Rental term, e.g. 30d, 12h, 90m (the edge may cap it). Without it the
+    /// pin does not expire.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    expires_in: Option<u64>,
+}
+
+/// `30d`, `12h`, `90m`, `60s`; a bare number is seconds.
+fn parse_duration(value: &str) -> Result<u64, String> {
+    let split = value
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(value.len());
+    let (digits, unit) = value.split_at(split);
+    let amount: u64 = digits
+        .parse()
+        .map_err(|_| format!("invalid duration {value:?}"))?;
+    let scale = match unit {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        "w" => 604_800,
+        _ => return Err(format!("invalid duration unit {unit:?} (use s, m, h, d, w)")),
+    };
+    amount
+        .checked_mul(scale)
+        .filter(|seconds| *seconds > 0)
+        .ok_or_else(|| format!("invalid duration {value:?}"))
+}
+
+#[derive(clap::Args)]
 struct GetArgs {
     ticket: String,
     #[arg(long)]
@@ -636,6 +682,39 @@ fn run() -> io::Result<()> {
             json,
             identity,
         ),
+        Command::Publish(args) => {
+            // The daemon may run with another cwd; hand it an absolute path.
+            let path = std::fs::canonicalize(&args.file).map_err(|error| {
+                io::Error::new(error.kind(), format!("cannot read {}: {error}", args.file))
+            })?;
+            let mut params = json!({"path": path.display().to_string()});
+            if let Some(name) = args.name {
+                params["name"] = json!(name);
+            }
+            if let Some(url) = args.url {
+                params["url"] = json!(url);
+            }
+            if let Some(token) = args.token {
+                params["token"] = json!(token);
+            }
+            if let Some(seconds) = args.expires_in {
+                params["expires_in"] = json!(seconds);
+            }
+            let response = send_rpc(socket, "files.publish", params, identity, false)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&response).map_err(io::Error::other)?
+                );
+                return Ok(());
+            }
+            if response.ok {
+                println!("{}", result_str(&response, "url"));
+                Ok(())
+            } else {
+                finish(response, false)
+            }
+        }
         Command::Get(args) => {
             // Tickets are self-describing: live tickets carry an "iroh-live:"
             // scheme prefix, blob tickets start with "blob".
@@ -2326,5 +2405,16 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(body, b"hello");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn parses_rental_durations() {
+        assert_eq!(parse_duration("60"), Ok(60));
+        assert_eq!(parse_duration("45m"), Ok(2_700));
+        assert_eq!(parse_duration("12h"), Ok(43_200));
+        assert_eq!(parse_duration("30d"), Ok(2_592_000));
+        assert!(parse_duration("0d").is_err());
+        assert!(parse_duration("30y").is_err());
+        assert!(parse_duration("d").is_err());
     }
 }

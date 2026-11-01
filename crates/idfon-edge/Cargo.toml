@@ -8,7 +8,10 @@ license.workspace = true
 anyhow = "1"
 bytes = "1"
 http = "1"
+http-body = "1"
 http-body-util = "0.1"
+futures-util = "0.3"
+hyper = "1"
 idfon-core = { path = "../idfon-core" }
 idfon-gateway = { path = "../idfon-gateway" }
 idfon-protocol = { path = "../idfon-protocol" }
@@ -16,8 +19,10 @@ iroh = "1"
 jsonwebtoken = "11"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

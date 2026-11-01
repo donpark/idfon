@@ -4,6 +4,8 @@
 //! idfon-edge [--bind HOST:PORT] [--token VALUE] [--key-file PATH] [--allow ID]...
 //!            [--require-ticket CAP] [--domain DOMAIN] [--tls-cert PATH] [--tls-key PATH]
 //!            [--health-path PATH] [--rate-limit N]
+//!            [--files-dir PATH] [--files-token VALUE] [--files-quota-mb N]
+//!            [--files-max-expiry-days N] [--files-grace-days N]
 //! ```
 //!
 //! Env fallbacks: `IDFON_EDGE_TOKEN`, `IDFON_EDGE_KEY` (64 hex, takes
@@ -18,7 +20,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context};
 use idfon_core::{decode_signing_key, encode_signing_key, generate_identity, signing_key_bytes};
 use idfon_edge::{
-    run, ApnsConfig, ApnsSender, EdgeAuth, EdgeConfig, HttpApns, PushRoutes, PushStore,
+    run, ApnsConfig, ApnsSender, EdgeAuth, EdgeConfig, FilesRoutes, HttpApns, PushRoutes, PushStore,
 };
 use idfon_gateway::{LocalRoute, TlsConfig};
 
@@ -47,6 +49,11 @@ OPTIONS:
   --push-apns-topic T     VoIP topic (default com.idfon.ios.voip)
   --push-apns-url URL     APNs host (default https://api.push.apple.com)
   --push-state PATH       Push-token registry (default KEY.push.json)
+  --files-dir PATH        Serve durable files from PATH (docs/durable-files.md)
+  --files-token VALUE     Bearer token for file uploads (default: read-only)
+  --files-quota-mb N      Storage quota for published files (0 = unlimited)
+  --files-max-expiry-days N  Cap on a requested rental term (0 = no cap)
+  --files-grace-days N    Keep expired bytes this long (default 30)
   --help, -h              Print this help
 
 ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
@@ -84,6 +91,11 @@ async fn main() -> anyhow::Result<()> {
     let mut push_apns_topic: Option<String> = None;
     let mut push_apns_url: Option<String> = None;
     let mut push_state: Option<PathBuf> = None;
+    let mut files_dir: Option<PathBuf> = None;
+    let mut files_token: Option<String> = None;
+    let mut files_quota_mb: u64 = 0;
+    let mut files_max_expiry_days: u64 = 0;
+    let mut files_grace_days: u64 = 30;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -151,6 +163,34 @@ async fn main() -> anyhow::Result<()> {
                 push_state = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
+            "--files-dir" => {
+                let value = args[i + 1].clone();
+                files_dir = (!value.is_empty()).then(|| PathBuf::from(value));
+                i += 2;
+            }
+            "--files-token" => {
+                let value = args[i + 1].clone();
+                files_token = (!value.is_empty()).then_some(value);
+                i += 2;
+            }
+            "--files-quota-mb" => {
+                files_quota_mb = args[i + 1]
+                    .parse()
+                    .context("--files-quota-mb is a number")?;
+                i += 2;
+            }
+            "--files-max-expiry-days" => {
+                files_max_expiry_days = args[i + 1]
+                    .parse()
+                    .context("--files-max-expiry-days is a number")?;
+                i += 2;
+            }
+            "--files-grace-days" => {
+                files_grace_days = args[i + 1]
+                    .parse()
+                    .context("--files-grace-days is a number")?;
+                i += 2;
+            }
             "--key-file" => {
                 key_file = PathBuf::from(&args[i + 1]);
                 i += 2;
@@ -197,11 +237,20 @@ async fn main() -> anyhow::Result<()> {
         };
     let push_enabled = apns.is_some();
     let push_state = push_state.unwrap_or_else(|| key_file.with_extension("push.json"));
-    let local_routes: Vec<Arc<dyn LocalRoute>> = vec![Arc::new(PushRoutes::new(
+    let mut local_routes: Vec<Arc<dyn LocalRoute>> = vec![Arc::new(PushRoutes::new(
         Arc::new(PushStore::load(push_state)),
         apns,
         default_topic,
     ))];
+    if let Some(dir) = &files_dir {
+        let routes = Arc::new(
+            FilesRoutes::new(dir, files_quota_mb * 1024 * 1024, files_token.clone())
+                .with_context(|| format!("opening files dir {}", dir.display()))?
+                .with_expiry(files_max_expiry_days, files_grace_days),
+        );
+        routes.spawn_sweeper();
+        local_routes.push(routes);
+    }
     let handle = run(EdgeConfig {
         bind,
         key,
@@ -233,6 +282,18 @@ async fn main() -> anyhow::Result<()> {
         "metrics: {scheme}://{}/metrics (requester auth required)",
         handle.addr
     );
+    if let Some(dir) = &files_dir {
+        println!(
+            "files:  {scheme}://{}/files/<name> and /files/.../sha256/<hash> (dir {}{})",
+            handle.addr,
+            dir.display(),
+            if files_token.is_some() {
+                ", uploads enabled"
+            } else {
+                ", read-only"
+            }
+        );
+    }
     println!();
     println!("owner pairing (run on the resource owner's machine):");
     println!(

@@ -265,13 +265,22 @@ if [ "$DEPLOY_RELAY" = "1" ]; then
   fi
 fi
 
+# Durable files (docs/durable-files.md): the state volume already holds the
+# store; pass the upload policy through when the local env/.env sets it. No
+# token = a read-only origin (rsync deployments).
+FILES_ENV=""
+[ -n "${IDFON_FILES_TOKEN:-}" ] && FILES_ENV="IDFON_FILES_TOKEN=${IDFON_FILES_TOKEN}\n"
+[ -n "${IDFON_FILES_QUOTA_MB:-}" ] && FILES_ENV="${FILES_ENV}IDFON_FILES_QUOTA_MB=${IDFON_FILES_QUOTA_MB}\n"
+[ -n "${IDFON_FILES_MAX_EXPIRY_DAYS:-}" ] && FILES_ENV="${FILES_ENV}IDFON_FILES_MAX_EXPIRY_DAYS=${IDFON_FILES_MAX_EXPIRY_DAYS}\n"
+[ -n "${IDFON_FILES_GRACE_DAYS:-}" ] && FILES_ENV="${FILES_ENV}IDFON_FILES_GRACE_DAYS=${IDFON_FILES_GRACE_DAYS}\n"
+
 info "issuing wildcard certificate (DNS-01)"
 ssh $SSH_OPTS "root@$PUBLIC_IP" \
   "DIGITALOCEAN_API_KEY='$TOKEN' sh /root/acme-issue.sh '$DOMAIN' '$EMAIL'"
 
 info "starting idfon-edge"
 ssh $SSH_OPTS "root@$PUBLIC_IP" \
-  "printf 'IDFON_EDGE_IMAGE=%s\nIDFON_EDGE_DOMAIN=%s\n${RELAY_ENV}' '$EDGE_IMAGE' '$DOMAIN' > /srv/idfon-edge/.env
+  "printf 'IDFON_EDGE_IMAGE=%s\nIDFON_EDGE_DOMAIN=%s\n${RELAY_ENV}${FILES_ENV}' '$EDGE_IMAGE' '$DOMAIN' > /srv/idfon-edge/.env
    cd /srv/idfon-edge && docker compose $COMPOSE_FILES pull -q && docker compose $COMPOSE_FILES up -d --remove-orphans"
 # compose does not recreate the relay when only the bind-mounted config.toml
 # changed (access-mode switches!) — restart it so the new access policy is

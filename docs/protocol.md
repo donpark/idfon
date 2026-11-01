@@ -212,6 +212,20 @@ fetch).
 | `media.live.stop` | `{ id }` | graceful stop |
 | `media.sessions` / `media.session.start` / `media.session.stop` | — | session registry |
 
+### Durable files
+
+Pins a file on the edge's always-on store (`docs/durable-files.md`). The
+content-addressed URL is the artifact; the free tier is `media.resource.put`
+(a connected-only `BlobTicket`) instead.
+
+| method | params | result |
+|---|---|---|
+| `files.publish` | `{ path, name?, url?, token?, expires_in? }` | `{ url, sha256, size, existed, expires_in }` — computes SHA-256, skips the upload when the edge already has the object, streams the file, optionally writes the same bytes under a mutable `name`, and sets a rental term (`expires_in` seconds; the edge answers `410` after it and may clamp it) |
+
+`url` defaults to `IDFON_EDGE_URL`; `token` defaults to `IDFON_FILES_TOKEN`,
+then `IDFON_EDGE_TOKEN`. The edge verifies the body against the hash, so the
+URL is also the integrity check.
+
 ### Policy
 
 | method | params | result |

@@ -25,7 +25,7 @@ kept because it records decisions; **design** = not all implemented.
 | `native-architecture.md` | Native-SDK (web-content) shell |
 | `idfon-web-analysis.md` | viewing P2P pages in `WKWebView` (`idfon:` scheme vs local proxy), TLS/WebMCP/security notes (as-built analysis; resolved by the hybrid transport) |
 | `idfon-edge.md` | public `idfon.net` gateway + on-device adapter + P2P backbone + VoIP push channel (as-built; P0–P7 landed; public edge on a DigitalOcean droplet + co-located relay; residual issues #27–#29) |
-| `durable-files.md` | CDN-backed file publication independent of sessions/agent lifecycle: tiers (free = connected-only BlobTicket, paid = CDN pin), content-addressed URLs, BunnyCDN over the droplet origin; design |
+| `durable-files.md` | Durable file publication independent of sessions/agent lifecycle: the edge's content-addressed store (`/files`, `/models`), `idfon publish`, expiring rental pins, tiers (free = connected-only BlobTicket, paid = always-on pin), BunnyCDN over the droplet origin; as-built (CDN/signed URLs pending) |
 | `edge-deploy-checklist.md` | the CallKit test rig (local edge + app config), session teardown (`scripts/e2e-teardown.sh`), droplet deploy incl. the APNs push wiring (#54) |
 | `callkit-integration.md` | CallKit + incoming-call presentation; as-built + plan (P0–P2 landed incl. mac ring sender, iOS 26.4 wake requirement; P3 macOS LiveCommunicationKit deferred) |
 | `contact-exchange.md` | vCard contact cards: the NameDrop substitute, `idfon://add/` deep links, QR, import/export surfaces |

@@ -34,6 +34,8 @@ use idfon_gateway::{
 use idfon_protocol::{Capability, CapabilityTicket};
 use iroh::{EndpointAddr, EndpointId};
 
+pub mod files;
+pub use files::FilesRoutes;
 pub mod push;
 pub use push::{ApnsConfig, ApnsSender, HttpApns, PushRoutes, PushStore};
 
