@@ -334,10 +334,11 @@ endpoint id needs an entry before it can use the relay. Find the id:
 
   ssh root@$PUBLIC_IP 'cd /srv/idfon-edge && docker compose logs idfon-edge | grep -i endpoint'
 
-then admit it (long lease; revoke any time with DELETE /owner/entries/<id>):
+then admit it (long lease; revoke any time with DELETE /owner/entries/<id>).
+The admin bearer is IDFON_RELAY_ADMIN_TOKEN in your local .env (not printed):
 
   curl -sS -X POST https://relay.$DOMAIN:9443/owner/entries \\
-    -H "authorization: Bearer $RELAY_ADMIN_TOKEN" \\
+    -H "authorization: Bearer \$IDFON_RELAY_ADMIN_TOKEN" \\
     -H 'content-type: application/json' \\
     -d '{"endpoint_id":"<edge endpoint id>","label":"edge","lease_days":3650}'
 EOF

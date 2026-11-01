@@ -54,8 +54,8 @@ const DAY_SECONDS: u64 = 24 * 60 * 60;
 /// operations token may ask for it.
 const PIN_HEADER: &str = "x-idfon-pin";
 /// Default per-file cap for user uploads (operational uploads are trusted and
-/// bound by the store quota instead). 2 MiB is about four minutes of 64 kbps
-/// Opus speech (a 24–32 kbps voice memo fits in ~0.7–1 MB).
+/// bound by the store quota instead). 2 MiB is about four minutes of 32–48 kbps
+/// Opus speech (32 kbps ≈ 1.4 MB, 48 kbps ≈ 1.9 MB; 64 kbps exceeds it).
 const DEFAULT_MAX_UPLOAD_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

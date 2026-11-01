@@ -50,7 +50,7 @@ idfon publish bundle.json --name site/bundle.json
 - `--permanent` marks a file the service needs (model packs, manifests): it
   never expires and uses the edge operations token (`IDFON_FILES_OPS_TOKEN`).
 - User uploads are capped per file by the edge (default 2 MB, about four
-  minutes of 64 kbps Opus speech; enough for a self-contained HTML file with
+  minutes of 32–48 kbps Opus speech; enough for a self-contained HTML file with
   inline images and scripts). System/operational files have no per-file limit.
   An oversized
   file fails with `413`. Live `send --stream`/calls are not affected.

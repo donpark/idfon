@@ -71,8 +71,8 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
   **user** upload. Operations uploads have no per-file limit and are exempt
   from the store quota (the disk is the bound); the quota is a user-abuse
   control.
-  Two megabytes is roughly four minutes of 64 kbps Opus speech (a 24–32 kbps
-  voice memo is ~0.7–1 MB). A user upload over the cap is refused with `413` (checked from
+  Two megabytes is roughly four minutes of 32–48 kbps Opus speech (32 kbps
+  ≈ 1.4 MB, 48 kbps ≈ 1.9 MB; 64 kbps exceeds it). A user upload over the cap is refused with `413` (checked from
   `Content-Length` and again while streaming, so a chunked body cannot bypass
   it).
 - Names are `[A-Za-z0-9._-]` segments; `..`, empty segments and traversal are
