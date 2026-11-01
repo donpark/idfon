@@ -532,3 +532,61 @@ async fn user_uploads_are_capped_but_ops_is_not() {
     handle.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[tokio::test]
+async fn deletion_requires_the_ops_token_and_removes_the_pin() {
+    let root = temp_root("delete");
+    let (addr, handle) = start_full(&root, 0, Some("secret"), Some("ops"), 24).await;
+    let body = b"delete me".to_vec();
+    let hash = sha256(&body);
+    let path = format!("/files/sha256/{hash}");
+
+    let (status, _, _) = request_with(
+        addr,
+        "PUT",
+        &path,
+        Some("secret"),
+        &[("x-idfon-expires-in", "60")],
+        &body,
+    )
+    .await;
+    assert_eq!(status, 201);
+
+    // A user token cannot remove other people's files.
+    let (status, _, _) = request_with(addr, "DELETE", &path, Some("secret"), &[], b"").await;
+    assert_eq!(status, 403);
+    let (status, _) = request(addr, "GET", &path, None, b"").await;
+    assert_eq!(status, 200);
+
+    let (status, _, _) = request_with(addr, "DELETE", &path, Some("ops"), &[], b"").await;
+    assert_eq!(status, 204);
+    let (status, _) = request(addr, "GET", &path, None, b"").await;
+    assert_eq!(status, 404);
+
+    // The pin went with the bytes: a permanent (ops) republish has no
+    // inherited expiry.
+    let (status, _, created) = request_with(addr, "PUT", &path, Some("ops"), &[], &body).await;
+    assert_eq!(status, 201);
+    let created: serde_json::Value = serde_json::from_slice(&created).unwrap();
+    assert!(created["expires_at"].is_null());
+
+    // Names are removable too.
+    let (status, _, _) = request_with(
+        addr,
+        "PUT",
+        "/files/site/page.html",
+        Some("secret"),
+        &[],
+        b"<h1>x</h1>",
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (status, _, _) =
+        request_with(addr, "DELETE", "/files/site/page.html", Some("ops"), &[], b"").await;
+    assert_eq!(status, 204);
+    let (status, _) = request(addr, "GET", "/files/site/page.html", None, b"").await;
+    assert_eq!(status, 404);
+
+    handle.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}

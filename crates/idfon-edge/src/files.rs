@@ -202,9 +202,13 @@ impl FilesRoutes {
             return;
         }
         *entry = expires_at;
+        self.persist_pins(&pins);
+    }
+
+    fn persist_pins(&self, pins: &Pins) {
         let path = self.root.join(PINS_FILE);
         let temp = path.with_extension("json.tmp");
-        if let Ok(bytes) = serde_json::to_vec_pretty(&*pins) {
+        if let Ok(bytes) = serde_json::to_vec_pretty(pins) {
             if std::fs::write(&temp, bytes).is_ok() {
                 let _ = std::fs::rename(&temp, &path);
             }
@@ -239,13 +243,7 @@ impl FilesRoutes {
             for key in due {
                 pins.pins.remove(&key);
             }
-            let path = self.root.join(PINS_FILE);
-            let temp = path.with_extension("json.tmp");
-            if let Ok(bytes) = serde_json::to_vec_pretty(&*pins) {
-                if std::fs::write(&temp, bytes).is_ok() {
-                    let _ = std::fs::rename(&temp, &path);
-                }
-            }
+            self.persist_pins(&pins);
         }
     }
 
@@ -472,6 +470,40 @@ impl FilesRoutes {
             }),
         )
     }
+
+    /// Operational takedown: removes the bytes and the pin. Idempotent. Needs
+    /// the operations token — a user token cannot delete other people's files.
+    async fn unpublish(&self, headers: &HeaderMap, path: &str) -> Response<ResponseBody> {
+        let Some(ops) = self.ops_token.as_deref() else {
+            return text(
+                StatusCode::FORBIDDEN,
+                "deletion requires the operations token",
+            );
+        };
+        if !bearer(headers).is_some_and(|given| constant_time_eq(given, ops)) {
+            return text(
+                StatusCode::FORBIDDEN,
+                "deletion requires the operations token",
+            );
+        }
+        let (file, key) = if let Some(hash) = content_hash(path) {
+            (self.root.join("sha256").join(hash), format!("sha256/{hash}"))
+        } else if let Some(name) = name_path(path) {
+            (self.root.join(name.join("/")), format!("name/{}", name.join("/")))
+        } else {
+            return text(StatusCode::BAD_REQUEST, "invalid path");
+        };
+        remove(&file).await;
+        if let Ok(mut pins) = self.pins.lock() {
+            if pins.pins.remove(&key).is_some() {
+                self.persist_pins(&pins);
+            }
+        }
+        Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(idfon_gateway::bytes_body(Bytes::new()))
+            .expect("static response")
+    }
 }
 
 /// Reads `x-idfon-expires-in` (seconds) or `x-idfon-expires-at` (unix seconds).
@@ -518,7 +550,7 @@ fn expired() -> Response<ResponseBody> {
 impl LocalRoute for FilesRoutes {
     fn matches(&self, method: &Method, account: &str, path: &str) -> bool {
         let read = matches!(*method, Method::GET | Method::HEAD);
-        if !(read || *method == Method::PUT) {
+        if !(read || matches!(*method, Method::PUT | Method::DELETE)) {
             return false;
         }
         let path = routed_path(account, path);
@@ -541,6 +573,7 @@ impl LocalRoute for FilesRoutes {
             match method {
                 Method::GET | Method::HEAD => self.serve(&method, &path).await,
                 Method::PUT => self.publish(&headers, &path, &mut body).await,
+                Method::DELETE => self.unpublish(&headers, &path).await,
                 _ => text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
             }
         })
