@@ -324,7 +324,7 @@ impl FilesRoutes {
             )
             .await;
         }
-        let Some(name) = name_path(path) else {
+        let Some(name) = page_path(path) else {
             return not_found();
         };
         let key = format!("name/{}", name.join("/"));
@@ -683,6 +683,24 @@ fn content_hash(path: &str) -> Option<&str> {
 }
 
 /// A validated `/files/<name...>` or `/models/<name...>` path, as segments.
+/// First segments stay out of the routes that live beside them.
+const RESERVED_NAMES: &[&str] = &["sha256"];
+
+/// A public name is a handle: lowercase, 1–32 of `[a-z0-9_-]`, starting with a
+/// letter or digit (Twitter-like, hyphens allowed for `talk-radio`). The first
+/// segment names the namespace, so it is the claim; later segments are just
+/// files and keep the looser rule below.
+fn valid_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    name.len() <= 32
+        && (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && !RESERVED_NAMES.contains(&name)
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 fn name_path(path: &str) -> Option<Vec<&str>> {
     let rest = NAME_PREFIXES
         .iter()
@@ -700,7 +718,27 @@ fn name_path(path: &str) -> Option<Vec<&str>> {
             return None;
         }
     }
+    // A namespace is a handle; a flat file is just a file (legacy names keep
+    // working), so the rule applies only once a path nests under its first
+    // segment.
+    let (first, rest) = segments.split_first()?;
+    if !rest.is_empty() && !valid_name(first) {
+        return None;
+    }
     Some(segments)
+}
+
+/// A directory URL serves its `index.html`, so `/<name>/` is a page and
+/// `/<name>/<topic>` is one file under that namespace.
+fn page_path(path: &str) -> Option<Vec<&str>> {
+    match path.strip_suffix('/') {
+        Some(dir) => {
+            let mut segments = name_path(dir)?;
+            segments.push("index.html");
+            Some(segments)
+        }
+        None => name_path(path),
+    }
 }
 
 async fn static_file(
@@ -915,8 +953,46 @@ mod tests {
     }
 
     #[test]
+    fn names_are_handles() {
+        assert!(valid_name("talk-radio"));
+        assert!(valid_name("tyger_2"));
+        assert!(valid_name("phonon-31m"));
+        assert!(!valid_name("TalkRadio"), "lowercase only");
+        assert!(!valid_name("-leading"));
+        assert!(!valid_name("_x"));
+        assert!(!valid_name("has.dot"));
+        assert!(!valid_name(""));
+        assert!(!valid_name(&"a".repeat(33)));
+        assert!(!valid_name("sha256"), "reserved for the content route");
+    }
+
+    #[test]
+    fn a_directory_url_serves_its_index() {
+        assert_eq!(
+            page_path("/files/talk-radio/"),
+            Some(vec!["talk-radio", "index.html"])
+        );
+        assert_eq!(
+            page_path("/files/talk-radio/topics.html"),
+            Some(vec!["talk-radio", "topics.html"])
+        );
+        assert_eq!(
+            page_path("/models/tyger/"),
+            Some(vec!["tyger", "index.html"])
+        );
+        assert_eq!(page_path("/files/"), None);
+    }
+
+    #[test]
     fn named_paths_are_guarded() {
         assert_eq!(name_path("/files/a/b.json"), Some(vec!["a", "b.json"]));
+        assert_eq!(name_path("/files/Talk/b.json"), None, "handle rule");
+        assert_eq!(
+            name_path("/files/README.html"),
+            Some(vec!["README.html"]),
+            "a flat file is not a namespace claim"
+        );
+        assert_eq!(name_path("/files/sha256/b.json"), None, "reserved");
         assert_eq!(
             name_path("/models/phonon-31m/bundle.json"),
             Some(vec!["phonon-31m", "bundle.json"])
