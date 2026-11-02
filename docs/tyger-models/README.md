@@ -37,11 +37,12 @@ inference code.
 
 | Path | Model | Format | Size |
 | --- | --- | --- | ---: |
-| `coreai/` | TYGER chain (encoder + turn heads) | Core AI `.aimodel` — **fp32 default rung** + A18 (`.h17p`) AOT containers; fp16 pair opt-in | 1.53 GB (fp32) / ~0.77 GB (fp16) |
-| `coreml/` | TYGER chain | Core ML `.mlpackage` (encoder fp16, step fp32) | ~0.86 GB |
-| `mlx/` | TYGER chain | MLX int8-g16 `.safetensors` (pre-27 macOS) | 1.58 GB¹ |
+| `coreai/` | TYGER chain, **L4 cut** (encoder + turn heads) | Core AI AOT-only encoder (`TygerEncoderL4`) + student step; A18 (`.h17p`) | **433 MB** (iOS A18) |
+| `coreml/` | TYGER chain, **L4 cut** | Core ML `.mlpackage` (static + dynamic encoder, student step) | **835 MB** |
+| `onnx/` | student turn heads | ONNX `StudentStep.onnx` | **5.3 MB** |
+| `mlx/` | TYGER chain | MLX int8-g16 `.safetensors` (pre-27 macOS) | 1.58 GB¹ (not in the current durable manifest) |
 | `pathc/` | **TYGER-Step-Student** (turn heads only) — **removed from distribution 2026-10-25** (section below kept as record) | Core ML `.mlpackage`, fp32 | **56 MB** |
-| `manifest.json` | — | delivery manifest (sha256 per file) | — |
+| `manifest.json` | — | one delivery manifest; clients fetch only their tier (full union 1.28 GB) | — |
 
 ¹ the artifact stores dequantized fp32 weights.
 
@@ -126,9 +127,11 @@ decisions, not for non-English speech.
 `manifest.json` pins every file (`name`, `asset`, `sha256`, `bytes`) with a
 `url_base`. Files are flattened (`/` → `__`); `name` keeps the bundle-relative
 path so a client can recreate the `.mlpackage`/`.aimodel` directory trees and
-verify each byte before installing. The format is what an app-side
-download-on-first-use store consumes: fetch the manifest, fetch only the
-active tier's files.
+verify each byte before installing. It is **one manifest, not two**: the
+`coreai/` and `coreml/` tiers are entries in the same file, and the client
+filters by tier (plus the AOT `platform` tag). The 1.28 GB total is the union
+of every tier; an iPhone 16 on iOS 27 downloads 433 MB, a pre-27 iOS device
+835 MB.
 
 ## License
 
