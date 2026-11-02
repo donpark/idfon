@@ -50,9 +50,9 @@ impl ModelRegistry {
         Self { models }
     }
 
-    /// The built-in catalog: the offline stub plus representative downloadable
-    /// engines from the candidate list. Licenses are recorded; re-check at
-    /// adoption.
+    /// The built-in catalog: the offline stub. Downloadable rows are added by
+    /// the deployment's config; the tree ships no engine of its own (the
+    /// on-device voices are the apps' streaming engines, 2026-11-01).
     pub fn bundled() -> Self {
         Self::new(vec![
             VoiceModel {
@@ -63,26 +63,6 @@ impl ModelRegistry {
                 license: "MIT OR Apache-2.0".into(),
                 languages: vec!["en".into()],
                 size_bytes: 0,
-                sha256: None,
-            },
-            VoiceModel {
-                engine: "kokoro".into(),
-                model: "kokoro-82m".into(),
-                voice: "af_heart".into(),
-                tier: ModelTier::Downloadable,
-                license: "Apache-2.0".into(),
-                languages: vec!["en".into(), "es".into(), "fr".into()],
-                size_bytes: 326_000_000,
-                sha256: None,
-            },
-            VoiceModel {
-                engine: "kokoro".into(),
-                model: "kokoro-7m-distill".into(),
-                voice: "af_msa".into(),
-                tier: ModelTier::Downloadable,
-                license: "Apache-2.0".into(),
-                languages: vec!["en".into()],
-                size_bytes: 28_700_000,
                 sha256: None,
             },
         ])
@@ -130,32 +110,7 @@ mod tests {
 
         assert_eq!(registry.resolve("default").unwrap(), default);
         assert_eq!(registry.resolve(&default.id()).unwrap(), default);
-        assert_eq!(
-            registry
-                .resolve("kokoro:kokoro-82m:af_heart")
-                .unwrap()
-                .engine,
-            "kokoro"
-        );
-        assert_eq!(
-            registry.resolve("af_msa").unwrap().model,
-            "kokoro-7m-distill"
-        );
         assert_eq!(registry.resolve("nope"), None);
     }
 
-    #[test]
-    fn downloadable_models_carry_license_and_size() {
-        let registry = ModelRegistry::bundled();
-        let downloadable: Vec<_> = registry
-            .models()
-            .iter()
-            .filter(|model| model.tier == ModelTier::Downloadable)
-            .collect();
-        assert!(!downloadable.is_empty());
-        for model in downloadable {
-            assert!(!model.license.is_empty(), "{} missing license", model.id());
-            assert!(model.size_bytes > 0, "{} missing size", model.id());
-        }
-    }
 }

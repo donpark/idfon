@@ -56,7 +56,7 @@ fn build_provider(value: &Value) -> Result<Arc<dyn VoiceEngine>> {
         "deepgram" => Ok(Arc::new(DeepgramEngine::from_config(value)?)),
         "elevenlabs" => Ok(Arc::new(ElevenLabsTtsEngine::from_config(value)?)),
         "cartesia" => Ok(Arc::new(CartesiaTtsEngine::from_config(value)?)),
-        // Local command engine: wire any CLI (Kokoro, Whistle, Parakeet, …).
+        // Local command engine: wire any CLI.
         "command" | "local" => Ok(Arc::new(ProcessVoiceEngine::from_config(
             value,
             AudioFormat::PCM_24K_MONO,
@@ -67,9 +67,6 @@ fn build_provider(value: &Value) -> Result<Arc<dyn VoiceEngine>> {
         // can run the cascade with one half on-device and the other vendored.
         #[cfg(feature = "apple-ffi")]
         "apple" | "on-device" | "app" => Ok(Arc::new(crate::apple_ffi::AppleVoiceEngine::new())),
-        // Kokoro served by its OpenAI-compatible server (kokoro-fastapi) on
-        // localhost, no API key. `stt` falls back to the same server's ASR.
-        "kokoro" => Ok(Arc::new(OpenAiCompatEngine::new(kokoro_profile(value)?))),
         other => Err(anyhow!("unknown voice provider '{other}'")),
     }
 }
@@ -110,22 +107,3 @@ impl VoiceEngine for CompositeVoiceEngine {
     }
 }
 
-/// Kokoro/OpenAI-compatible local server defaults, overlaid by config. Kokoro
-/// is typically served by `kokoro-fastapi`, which exposes the OpenAI audio API
-/// on localhost and needs no key.
-fn kokoro_profile(value: &Value) -> Result<Profile> {
-    let mut merged = serde_json::json!({
-        "provider": "openai-compatible",
-        "base_url": "http://127.0.0.1:8880/v1",
-        "stt_model": "Systran/faster-whisper-small",
-        "tts_model": "kokoro",
-        "voice": "af_bella",
-        "allow_missing_key": true,
-    });
-    if let (Some(base), Some(config)) = (merged.as_object_mut(), value.as_object()) {
-        for (key, item) in config {
-            base.insert(key.clone(), item.clone());
-        }
-    }
-    Profile::from_value(Some(&merged))
-}

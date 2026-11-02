@@ -1,15 +1,14 @@
 // TypeScript voice-provider seam.
 //
 // A voice agent's STT/TTS run here, in the agent's Node process — so
-// open-source models that bundle (WASM/ONNX/npm: Kokoro, Whisper, Parakeet,
-// …) are ordinary `import`s, with no Rust rebuild. Cloud and
+// open-source models that bundle (WASM/ONNX/npm) are ordinary `import`s, with no Rust rebuild. Cloud and
 // OpenAI-compatible local servers use the same seam.
 //
 // Config is the same shape as the Rust engine block, passed via the
 // `IDFON_VOICE_ENGINE` env (JSON) or the channel's `voice` config:
 //
 //   { "stt": { "provider": "command", "stt_cmd": "whisper {input}" },
-//     "tts": { "provider": "kokoro", "voice": "af_bella" } }
+//     "tts": { "provider": "openai", "voice": "alloy" } }
 //
 // A single `{ "provider": ... }` applies to both directions.
 
@@ -66,21 +65,7 @@ export async function createVoiceProvider(
     case "openai":
     case "openai-compatible":
       return openaiProvider(cfg, kind);
-    case "kokoro":
-      return kokoroProvider(cfg);
     case "module":
-      return moduleProvider(cfg);
-    // Open-source ASR packages expose their own JS/WASM APIs; wire them with
-    // `"provider": "module", "module": "<pkg>", "factory": "<export>"`, whose
-    // factory returns `{ transcribe }` (or point at a local server with
-    // `openai-compatible`). Named here so the intent is discoverable.
-    case "whisper":
-    case "parakeet":
-      if (!cfg.module) {
-        throw new Error(
-          `provider '${provider}' needs \`module\` (or use "command"/"openai-compatible")`,
-        );
-      }
       return moduleProvider(cfg);
     default:
       throw new Error(`unknown voice provider '${provider}'`);
@@ -142,7 +127,7 @@ async function commandProvider(cfg: ProviderConfig, kind: "stt" | "tts"): Promis
   };
 }
 
-/** OpenAI audio API — cloud or an OpenAI-compatible local server (Kokoro, …). */
+/** OpenAI audio API — cloud or an OpenAI-compatible local server. */
 async function openaiProvider(cfg: ProviderConfig, kind: "stt" | "tts"): Promise<VoiceProvider> {
   const base = String(cfg.base_url ?? "https://ai-gateway.vercel.sh/v1").replace(/\/$/, "");
   const authHeaders = (): Record<string, string> => {
@@ -201,27 +186,4 @@ async function moduleProvider(cfg: ProviderConfig): Promise<VoiceProvider> {
   return await factory(cfg);
 }
 
-/** Kokoro TTS via the `kokoro-js` package (bundlable ONNX). */
-async function kokoroProvider(cfg: ProviderConfig): Promise<VoiceProvider> {
-  const pkg = String(cfg.module ?? "kokoro-js");
-  const { KokoroTTS } = (await optionalImport(pkg)) as unknown as {
-    KokoroTTS: {
-      from_pretrained(model: string, options?: Record<string, unknown>): Promise<{
-        generate(text: string, options?: Record<string, unknown>): Promise<{ toWav(): ArrayBuffer }>;
-      }>;
-    };
-  };
-  const tts = await KokoroTTS.from_pretrained(
-    String(cfg.model ?? "onnx-community/Kokoro-82M-v1.0-ONNX"),
-    { dtype: String(cfg.dtype ?? "q8"), device: String(cfg.device ?? "wasm") },
-  );
-  const voice = String(cfg.voice ?? "af_bella");
-  return {
-    name: "kokoro",
-    async synthesize(text: string) {
-      const audio = await tts.generate(text, { voice });
-      return wavToPcm(Buffer.from(audio.toWav()));
-    },
-  };
-}
 

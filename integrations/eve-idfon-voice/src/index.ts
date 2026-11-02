@@ -4,7 +4,7 @@
 // diverse configurations (cloud/local engines, wrapping/injecting,
 // self-answering) are **config + persona**, not copied tool implementations.
 //
-// - providers: STT/TTS seam (openai-compatible, command, module, kokoro)
+// - providers: STT/TTS seam (openai-compatible, command, module)
 // - audio: Ogg Opus → PCM, WAV wrap/parse
 // - bridge: blob upload + agent→agent send/await
 // - tools: voiceRelay / voiceTranscribe / voiceSpeak factories
