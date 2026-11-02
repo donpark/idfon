@@ -225,6 +225,12 @@ impl AudioQueue {
         self.samples.lock().map(|samples| samples.is_empty()).unwrap_or(true)
     }
 
+    /// Samples waiting for the encoder; a source tops up against this rather
+    /// than a wall clock, so it cannot drift from the publisher's cadence.
+    pub fn queued_samples(&self) -> usize {
+        self.samples.lock().map(|samples| samples.len()).unwrap_or(0)
+    }
+
     fn fill(&self, output: &mut [i16]) -> usize {
         let Ok(mut samples) = self.samples.lock() else {
             output.fill(0);

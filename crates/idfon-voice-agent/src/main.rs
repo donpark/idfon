@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use eve_idfon::live::LiveCallRegistry;
-use idfon_voice_agent::{CascadeFactory, RelayFactory, VoiceAgentHandler};
+use idfon_voice_agent::{CascadeFactory, RelayFactory, StreamFactory, VoiceAgentHandler};
 #[cfg(feature = "gpt-live")]
 use idfon_voice_agent::GptLiveFactory;
 
@@ -16,7 +16,8 @@ async fn main() -> Result<()> {
     let mut registry = LiveCallRegistry::new();
     let handler = VoiceAgentHandler::new()
         .with(Arc::new(CascadeFactory))
-        .with(Arc::new(RelayFactory));
+        .with(Arc::new(RelayFactory))
+        .with(Arc::new(StreamFactory));
     #[cfg(feature = "gpt-live")]
     let handler = handler.with(Arc::new(GptLiveFactory));
     registry.register(Arc::new(handler));
