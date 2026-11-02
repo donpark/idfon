@@ -40,9 +40,12 @@ per model and travel with the step: the P1 L15 student's live-calibrated triple
 is **0.85/0.4/0.4** (`ports/tyger-student/student.traits.json`; the teacher's
 0.9146 lost 9 pts of event agreement on real call captures —
 `bench-results/live-calibration.md`), while the **L4 student the live bundle
-ships** carries its own **0.9/0.5/0.6** (`ports/tyger-student/student-l4.traits.json`,
-byte-identical to the published 181-byte file). Barge remains unmeasured for both
-(no interrupting onsets in the captures).
+ships** carries its own **0.75/0.5/0.5** (`ports/tyger-student/student-l4.traits.json`,
+byte-identical to the published 182-byte file) — the pooled 13-session live fit.
+Barge is measured on both: 20 live-call onsets (student 2/20 = teacher 2/20 at
+barge_thr 0.5, but the teacher catches more below 0.5 — the student's yield head
+is amplitude-compressed) and Open Yap 1K (59 onsets; L4 and L15
+indistinguishable). See `bench-results/barge-live.md`.
 
 **Core AI AOT packaging constraint (2026-11-01 incident).** The AOT containers
 this machine produces (`MetalToolchain-v27.2.47.0`, `coreai-build-3605.6.3`)

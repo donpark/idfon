@@ -171,7 +171,9 @@ knobs. On 8 distinct captures (18.2 min, 244 teacher events, one Mac):
 0.85 wins under leave-one-session-out every time (63.1–66.5%); bc 0.4 is
 confirmed (64.4% vs 60.6% at 0.5). **Barge is measured** on two audio paths:
 7 live captures (20 energy-VAD onsets; student 2/20 = teacher 2/20 at barge_thr
-0.5 — parity, no false-fire inflation) and Open Yap 1K dual-channel conversation
+0.5 — parity at a threshold where both are nearly deaf: at 0.30–0.40 the teacher
+catches 6/20–4/20 vs the student's 3/20–2/20, the yield head's amplitude
+compression) and Open Yap 1K dual-channel conversation
 (59 onsets, 30 min; L4 vs L15 students operationally indistinguishable on yield:
 79.7% vs 76.3% at 0.05 and 6.8% vs 8.5% at 0.5). The layer-sweep barge-MSE edge
 for L15 does not survive real interruptions — L4 carries the barge signal. The
