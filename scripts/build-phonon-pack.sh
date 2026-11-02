@@ -45,7 +45,16 @@ mkdir -p "$pack/voices"
 cp "$voices"/*.safetensors "$pack/voices/"
 
 rm -rf "$pack/sha256"   # stale content-addressed links
-echo "writing bundle.json …"
+# The model metadata `bundle.json` (dims/ctx/languages — what Phonon's engine
+# reads) comes from the upstream export. The download index is `pack.json`:
+# writing the index over `bundle.json` is how the shipped pack lost the very
+# metadata Phonon.load requires ("bundle.json has no dims", 2026-11-01).
+if ! python3 -c "import json,sys; sys.exit(0 if 'dims' in json.load(open(sys.argv[1])) else 1)" \
+        "$pack/bundle.json" 2>/dev/null; then
+    echo "error: $pack/bundle.json has no dims — re-run scripts/fetch-phonon-31m.sh" >&2
+    exit 1
+fi
+echo "writing pack.json …"
 python3 - "$pack" <<'PY'
 import hashlib, json, os, sys
 pack = sys.argv[1]
@@ -60,7 +69,7 @@ def sha256(path):
 files = []
 for base, _dirs, names in os.walk(pack):
     for name in names:
-        if name == "bundle.json":
+        if name == "pack.json":
             continue
         full = os.path.join(base, name)
         files.append({
@@ -76,7 +85,7 @@ stamp = hashlib.sha256(
 ).digest()
 built = int.from_bytes(stamp[:8], "big") >> 1  # positive Int64 for Swift's decoder
 manifest = {"built": built, "files": files}
-with open(os.path.join(pack, "bundle.json"), "w") as f:
+with open(os.path.join(pack, "pack.json"), "w") as f:
     json.dump(manifest, f, indent=2)
     f.write("\n")
 v = [f for f in files if f["path"].startswith("voices/")]
@@ -90,5 +99,5 @@ echo "done -> $pack"
 echo "serve:  scripts/serve-speech-pack.sh $out   (pack URL: <base>/phonon-31m/)"
 echo "publish:"
 echo "  rsync -a --chmod=D755,F644 '$pack/sha256/' <droplet>:/srv/idfon-edge/files/sha256/"
-echo "  rsync -a --chmod=D755,F644 '$pack/bundle.json' <droplet>:/srv/idfon-edge/files/$(basename "$pack")/bundle.json"
+echo "  rsync -a --chmod=D755,F644 '$pack/pack.json' <droplet>:/srv/idfon-edge/files/$(basename "$pack")/pack.json"
 echo "  ssh <droplet> 'chown -R 10001:10001 /srv/idfon-edge/files'   # the edge runs as 10001"

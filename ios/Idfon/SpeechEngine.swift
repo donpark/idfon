@@ -604,10 +604,14 @@ extension KokoroTtsEngine: AVAudioPlayerDelegate {
 }
 
 #if PHONON_TTS
-/// Downloads a Phonon pack from a content-addressed base. `bundle.json` lives
-/// at the base (mutable, `no-store`); every file is fetched from
+/// Downloads a Phonon pack from a content-addressed base. The download index is
+/// `pack.json` at the base (mutable, `no-store`); every file is fetched from
 /// `sha256/<sha256>` (immutable) and installed at its manifest `path`, so the
 /// Core ML package layout and the voice filenames survive the move to the CDN.
+///
+/// `bundle.json` is **not** ours: it is Phonon's model metadata (dims, ctx,
+/// languages) and ships as a regular listed file. Writing the index over it is
+/// what made every pack since 2026-11-01 unloadable ("bundle.json has no dims").
 enum PhononPack {
     struct Manifest: Decodable {
         struct File: Decodable {
@@ -627,8 +631,8 @@ enum PhononPack {
         let data: Data
         do {
             let (remote, response) = try await URLSession.shared.data(
-                from: base.appending(path: "bundle.json"))
-            try check(response, "bundle.json")
+                from: base.appending(path: "pack.json"))
+            try check(response, "pack.json")
             data = remote
         } catch {
             if PhononModels.isInstalled(at: dir) { return dir }
@@ -657,7 +661,7 @@ enum PhononPack {
             try fm.moveItem(at: tmp, to: dest)
         }
 
-        try data.write(to: staging.appending(path: "bundle.json"))
+        try data.write(to: staging.appending(path: "pack.json"))
         try? fm.removeItem(at: dir)
         try fm.moveItem(at: staging, to: dir)
         var url = dir
@@ -668,7 +672,10 @@ enum PhononPack {
     }
 
     private static func installedBuilt(at dir: URL) -> Int64? {
-        guard let data = try? Data(contentsOf: dir.appending(path: "bundle.json")),
+        // `pack.json` only exists on a fixed install; a pre-fix install (index
+        // written to bundle.json) reads as unknown here and re-downloads, which
+        // also repairs the clobbered metadata file.
+        guard let data = try? Data(contentsOf: dir.appending(path: "pack.json")),
               let manifest = try? JSONDecoder().decode(Manifest.self, from: data),
               PhononModels.isInstalled(at: dir) else { return nil }
         return manifest.built
@@ -697,7 +704,8 @@ enum PhononPack {
 /// (`IDFON_TTS_PHONON=1` at build, then `IDFON_TTS=phonon` or per-contact).
 /// Models: the Core ML bundle at `Documents/phonon` (side-loaded, or fetched
 /// from `IDFON_PHONON_PACK_URL` — a PhononModels export served whole:
-/// bundle.json + files fetched from `sha256/<hash>` — or from `defaultPackURL`, the baked-in
+/// pack.json (index) + bundle.json (model metadata) + files fetched from
+/// `sha256/<hash>` — or from `defaultPackURL`, the baked-in
 /// production pack). Custom voices are 256KB `.safetensors`
 /// embeddings dropped in `phonon/voices/NAME.safetensors`, picked with
 /// `IDFON_TTS_VOICE=NAME` (default: Clara, an idfon blend voice). Falls back to Apple per-utterance when the models
