@@ -2476,9 +2476,6 @@ fn validate_message<'a>(
     if message.sender.endpoint_id != remote_endpoint_id {
         return Err(HolderError::Unauthorized);
     }
-    if !allow.is_empty() && !allow.iter().any(|peer| peer == &message.sender.peer_id) {
-        return Err(HolderError::Unauthorized);
-    }
     let Some(ticket) = &message.capability_ticket else {
         return Err(HolderError::CapabilityDenied);
     };
@@ -2499,6 +2496,15 @@ fn validate_message<'a>(
         || !ticket.capabilities.contains(&Capability::MessageReceive)
     {
         return Err(HolderError::CapabilityDenied);
+    }
+    // The allow list is a second filter, but a public station cannot also
+    // require senders to be listed — that is what "public" means. A
+    // subject-bound ticket still has to satisfy it.
+    if !allow.is_empty()
+        && !public_admits
+        && !allow.iter().any(|peer| peer == &message.sender.peer_id)
+    {
+        return Err(HolderError::Unauthorized);
     }
     if ticket.expires_at.as_deref().is_some_and(expiry_is_past) {
         return Err(HolderError::ExpiredTicket);
@@ -2934,6 +2940,9 @@ mod tests {
         )
         .unwrap();
         assert!(validate_message(&public_message, &sender_id, &[], &holder_id, true).is_ok());
+        // ... and the allow list must not undo it, or a public station could
+        // never be reached by anyone it has not pre-listed.
+        assert!(validate_message(&public_message, &sender_id, &["someone".into()], &holder_id, true).is_ok());
         assert!(matches!(
             validate_message(&public_message, &sender_id, &[], &holder_id, false),
             Err(HolderError::CapabilityDenied)
