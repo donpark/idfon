@@ -25,15 +25,19 @@ export interface OrtSession {
 }
 
 export class TygerEngine {
-  state = new Float32Array(3 * 768);
+  state: Float32Array;
   winU: number[] = [];
   winA: number[] = [];
   private encoder: OrtSession;
   private step: OrtSession;
+  /// The step's carried-state shape — teacher (3,1,768) or student (2,1,256).
+  private stateShape: number[];
 
-  constructor(encoder: OrtSession, step: OrtSession) {
+  constructor(encoder: OrtSession, step: OrtSession, stateShape: number[] = [3, 1, 768]) {
     this.encoder = encoder;
     this.step = step;
+    this.stateShape = stateShape;
+    this.state = new Float32Array(stateShape.reduce((a, b) => a * b, 1));
   }
 
   reset(): void {
@@ -97,7 +101,7 @@ export class TygerEngine {
       ha: new ort.Tensor("float32", ha, [1, 1, 1024]),
       act_db: new ort.Tensor("float32", Float32Array.from([actDb]), [1, 1]),
       prev_state: new ort.Tensor("int64", BigInt64Array.from([BigInt(prevState)]), [1, 1]),
-      state: new ort.Tensor("float32", this.state, [3, 1, 768]),
+      state: new ort.Tensor("float32", this.state, this.stateShape),
     });
     // copy: ORT may recycle the output buffer on the next run() — aliasing it as
     // the next call's state feed silently threads the WRONG state

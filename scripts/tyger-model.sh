@@ -51,6 +51,17 @@ build)
     "$PY" "$S/export_coreml.py" --student "$STUDENT/student.pt" --shards "$SHARDS/val"
     echo "== export Core AI (apps OS-27, + AOT container)"
     "$PY" "$S/export_coreai.py" --student "$STUDENT/student.pt" --shards "$SHARDS/val"
+    echo
+    echo "== stage the student tiers beside the teacher's (loaders prefer the student; packers read these dirs)"
+    mkdir -p "$root/bench-results/onnx" "$root/bench-results/coreml" "$root/bench-results/coreai"
+    for pair in "bench-results/student-coreai/student_step_float32.aimodel:bench-results/coreai" \
+                "bench-results/student-coreai/student_step_float32.compiled.aimodel:bench-results/coreai" \
+                "bench-results/student-coreml/StudentStep.mlpackage:bench-results/coreml"; do
+        src=${pair%%:*}; dest=${pair##*:}
+        rm -rf "$root/$dest/$(basename "$src")" # a stale per-arch .aimodelc must not survive
+        cp -R "$root/$src" "$root/$dest/"
+    done
+    cp "$root/bench-results/student-onnx/StudentStep.onnx" "$root/bench-results/onnx/"
     ;;
 clean)
     du -sh "$root/bench-results" 2>/dev/null || true

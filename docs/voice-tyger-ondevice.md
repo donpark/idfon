@@ -23,10 +23,21 @@ rulings and measurements further down are the record that produced it.
 ¹ the artifact stores dequantized fp32 weights ("380 MB" is the quantized
 weight estimate, not the file).
 
-The student tier was removed 2026-10-25 (user ruling: a copycat with ~50%
-decision parity; its backchannel head never fired). `TurnShadow.start()`
-selects the teacher tiers below, and classic turn-taking when nothing loads.
-The `pathc` tier is gone from the packed manifest (`scripts/pack-tyger-models.mjs`).
+The `pathc` student was removed 2026-10-25 (user ruling: a Parakeet-tap
+copycat with ~50% decision parity; its backchannel head never fired) and is gone
+from the packed manifest. It is **not** the P1 distilled student
+(`ports/tyger-student`, `docs/voice-decision-model.md`): that one reads the same
+L15 tap and emits the same 8-vector, inside the product bars.
+
+**Step swap (issue #104, 2026-11-01)**: the encoder tier is unchanged, but every
+step loader now prefers the student over the teacher step —
+`StudentStep.mlpackage` (CoreML), `student_step_float32.aimodel` (CoreAI, with
+its AOT container beside it), `StudentStep.onnx` (eve TS bundle) — and falls
+back to the teacher step, then to classic turn-taking. The carried GRU state is
+read from the artifact (CoreML model description, the bundle's `io` contract)
+or sized by step family (CoreAI: student 2x256, teacher 3x768). The student's
+thresholds are still the teacher-tuned 0.9146/0.4/0.4 (`ports/tyger-student/
+student.traits.json`); calibrating them on live calls is the open half of #104.
 
 - **Loading**: `CoreAITurnModel` loads the float32 pair by default (the
   2026-10-27 ruling: the fp16 pair drifts `p_end` ≈ 0.03 and never ends a

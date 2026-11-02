@@ -23,17 +23,31 @@ const out = argOf("--out") ?? join(homedir(), ".idfon/models/tyger");
 const urlBase = argOf("--url-base");
 const src = join(root, "bench-results/onnx");
 
-const stepPair = existsSync(join(src, "TygerStepInt8.onnx"))
-  ? ["TygerStepInt8.onnx", "TygerStepInt8.onnx.data"] // P0 int8 GRU + fp32 heads (ports/tyger-onnx/quantize_step.py)
-  : ["TygerStep.onnx", "TygerStep.onnx.data"];
+// Step preference (bundle.ts picks the same order): the distilled student
+// (5.3 MB fp32, ports/tyger-student/export.py) over the teacher's int8/fp32
+// steps (23/56 MB). One step per bundle — the fallback above the seam is
+// classic turn-taking, not the teacher.
+const steps = [
+  { name: "StudentStep.onnx", files: ["StudentStep.onnx"], state: ["2", "1", "256"],
+    note: "distilled student (ports/tyger-student/export.py), fp32" },
+  { name: "TygerStepInt8.onnx", files: ["TygerStepInt8.onnx", "TygerStepInt8.onnx.data"], state: ["3", "1", "768"],
+    note: "step weights int8 group-16 (GRU+fuse, heads fp32, dequantized in-graph); regenerable via quantize_step.py + qstep-parity.mjs gate" },
+  { name: "TygerStep.onnx", files: ["TygerStep.onnx", "TygerStep.onnx.data"], state: ["3", "1", "768"],
+    note: "regenerable via ports/tyger-onnx/export_step.py --dyn + --only step" },
+];
+const step = steps.find((s) => existsSync(join(src, s.files[0])));
+if (!step) {
+  console.error(`no step in ${src} — run ports/tyger-onnx/export_step.py [--dyn] or the student export first`);
+  process.exit(2);
+}
 const FILES = [
   "TygerEncoderDyn.onnx",
   "TygerEncoderDyn.onnx.data",
-  ...stepPair,
+  ...step.files,
 ];
 for (const f of FILES) {
   if (!existsSync(join(src, f))) {
-    console.error(`missing ${join(src, f)} — run ports/tyger-onnx/export_step.py [--dyn] first`);
+    console.error(`missing ${join(src, f)} — the ${step.name} pair is incomplete`);
     process.exit(2);
   }
 }
@@ -57,17 +71,15 @@ const manifest = {
   source: {
     // the weights' origin (the HF bundle the exports were run against)
     bundle: "nineninesix/tyger",
-    note: stepPair[0] === "TygerStepInt8.onnx"
-      ? "step weights int8 group-16 (GRU+fuse, heads fp32, dequantized in-graph); regenerable via quantize_step.py + qstep-parity.mjs gate"
-      : "regenerable via ports/tyger-onnx/export_step.py --dyn + --only step",
+    note: step.note,
   },
   url_base: urlBase ?? null,
   files,
   io: {
     encoder: { inputs: { mel: ["1", "T", "128"], mask: ["1", "T"] }, outputs: { hidden: ["1", "T/8+1", "1024"] },
                contract: "mel lengths are 8k-7 (33, 41, ..., 801)" },
-    step: { inputs: { hu: ["1", "1", "1024"], ha: ["1", "1", "1024"], act_db: ["1", "1"], prev_state: ["1", "1"], state: ["3", "1", "768"] },
-            outputs: { out: ["1", "1", "8"], state_out: ["3", "1", "768"] },
+    step: { inputs: { hu: ["1", "1", "1024"], ha: ["1", "1", "1024"], act_db: ["1", "1"], prev_state: ["1", "1"], state: step.state },
+            outputs: { out: ["1", "1", "8"], state_out: step.state },
             contract: "act_db normalization ((db+50)/25 clamp) is baked into the graph" },
   },
 };

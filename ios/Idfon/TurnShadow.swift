@@ -260,8 +260,8 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         if #available(iOS 27.0, *) {
             do {
                 let coreai = try CoreAITurnModel(directory: dir.appendingPathComponent("coreai"))
-                Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU)")
-                Diag.log("turnmodel", ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32", "ok": true])
+                Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU, \(coreai.stepModelName))")
+                Diag.log("turnmodel", ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32", "step": coreai.stepModelName, "ok": true])
                 return TurnShadow(model: coreai)
             } catch {
                 // The 2026-10-27 class: an install can end up with no usable
@@ -271,7 +271,11 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         }
         let enc = dir.appendingPathComponent("TygerEncoder.mlpackage")
         let dyn = dir.appendingPathComponent("TygerEncoderDyn.mlpackage")
-        let step = dir.appendingPathComponent("TygerStep.mlpackage")
+        // Step preference: the distilled student, teacher as fallback (the
+        // encoder is shared; StudentStep.mlpackage is 5.3 MB vs 56 MB).
+        let student = dir.appendingPathComponent("StudentStep.mlpackage")
+        let teacher = dir.appendingPathComponent("TygerStep.mlpackage")
+        let step = FileManager.default.fileExists(atPath: student.path) ? student : teacher
         guard FileManager.default.fileExists(atPath: enc.path),
               FileManager.default.fileExists(atPath: dyn.path),
               FileManager.default.fileExists(atPath: step.path) else {
@@ -284,8 +288,8 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
             Diag.log("turnmodel", ["tier": "coreml", "ok": false, "error": "load failed"])
             return nil
         }
-        Automation.mark("turn-shadow: tier CoreML (fp16/ANE)")
-        Diag.log("turnmodel", ["tier": "coreml", "rung": "fp16-ane", "ok": true])
+        Automation.mark("turn-shadow: tier CoreML (fp16/ANE, \(model.stepModelName))")
+        Diag.log("turnmodel", ["tier": "coreml", "rung": "fp16-ane", "step": model.stepModelName, "ok": true])
         return TurnShadow(model: model)
     }
 

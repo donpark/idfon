@@ -81,3 +81,5 @@ docs/voice-audition-audio/
 
 # voice-compare renders and blended voices (regenerate: scripts/phonon-voice-compare.py)
 docs/voice-compare-audio/
+
+.env

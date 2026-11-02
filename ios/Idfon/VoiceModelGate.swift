@@ -40,9 +40,13 @@ enum VoiceModelGate {
         let fm = FileManager.default
         if #available(iOS 27.0, *) {
             let coreai = dir.appendingPathComponent("coreai")
+            func present(_ name: String) -> Bool {
+                fm.fileExists(atPath: coreai.appendingPathComponent(name).path)
+            }
+            // A rung needs the (shared) encoder plus either step family.
             for rung in ["float32", "float16"] {
-                if fm.fileExists(atPath: coreai.appendingPathComponent("tyger_encoder_\(rung).aimodel").path),
-                   fm.fileExists(atPath: coreai.appendingPathComponent("tyger_step_\(rung).aimodel").path) {
+                if present("tyger_encoder_\(rung).aimodel"),
+                   present("student_step_\(rung).aimodel") || present("tyger_step_\(rung).aimodel") {
                     return true
                 }
             }
@@ -50,7 +54,8 @@ enum VoiceModelGate {
         }
         return fm.fileExists(atPath: dir.appendingPathComponent("TygerEncoder.mlpackage").path)
             && fm.fileExists(atPath: dir.appendingPathComponent("TygerEncoderDyn.mlpackage").path)
-            && fm.fileExists(atPath: dir.appendingPathComponent("TygerStep.mlpackage").path)
+            && (fm.fileExists(atPath: dir.appendingPathComponent("StudentStep.mlpackage").path)
+                || fm.fileExists(atPath: dir.appendingPathComponent("TygerStep.mlpackage").path))
     }
 
     /// A voice-agent call may start: models are present and no download can

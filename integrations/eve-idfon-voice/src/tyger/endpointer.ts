@@ -78,7 +78,7 @@ export async function createTygerEndpointer(): Promise<TygerEndpointer> {
   const ort = createRequire(import.meta.url)("onnxruntime-node");
   const enc = await ort.InferenceSession.create(bundle.encoderPath);
   const step = await ort.InferenceSession.create(bundle.stepPath);
-  return new TygerEndpointer(new TygerEngine(enc, step));
+  return new TygerEndpointer(new TygerEngine(enc, step, bundle.stateShape));
 }
 
 export type { Event };
