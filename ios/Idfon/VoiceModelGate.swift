@@ -1,3 +1,4 @@
+import TygerVoiceCoreAI
 import UIKit
 
 /// Download approval gate for the voice/turn models (2026-10-27 rule): model
@@ -41,7 +42,8 @@ enum VoiceModelGate {
         if #available(iOS 27.0, *) {
             let coreai = dir.appendingPathComponent("coreai")
             func present(_ name: String) -> Bool {
-                fm.fileExists(atPath: coreai.appendingPathComponent(name).path)
+                // A tier may carry only the AOT container (no source .aimodel).
+                CoreAITurnModel.present(coreai.appendingPathComponent(name))
             }
             // A rung needs the (shared) encoder plus either step family.
             for rung in ["float32", "float16"] {

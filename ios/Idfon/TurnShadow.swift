@@ -24,6 +24,8 @@ enum TygerModelStore {
             let asset: String
             let sha256: String
             let bytes: Int
+            /// "ios" | "mac" for an AOT arch child; nil = every platform.
+            let platform: String?
         }
         let url_base: String
         let files: [Entry]
@@ -34,7 +36,14 @@ enum TygerModelStore {
     /// (`scripts/pack-tyger-models.mjs` uploads to one).
     static var manifestURL: URL? {
         if let override = overrideURL(), let url = URL(string: override) { return url }
-        return URL(string: "https://huggingface.co/donpark/tyger-models/resolve/main/manifest.json")
+        return URL(string: "https://files.idfon.net/models/tyger/manifest.json")
+    }
+
+    /// Mirror used only when the durable host cannot serve the manifest at all.
+    /// Ignored with an explicit override (a test override must not silently
+    /// fall back to a release set).
+    static var mirrorManifestURL: URL? {
+        URL(string: "https://huggingface.co/donpark/tyger-models/resolve/main/manifest.json")
     }
 
     private static func overrideURL() -> String? {
@@ -42,6 +51,16 @@ enum TygerModelStore {
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "-tygermodels"), i + 1 < args.count { return args[i + 1] }
         return nil
+    }
+
+    /// Which AOT arch children this process needs. A Core AI container ships one
+    /// child per architecture (iPhone vs Mac), each a full copy of the weights.
+    static var platform: String {
+        #if os(macOS)
+        "mac"
+        #else
+        "ios"
+        #endif
     }
 
     /// The install root: `Library/Caches/tyger-models` (2026-10-27) — the
@@ -130,12 +149,23 @@ enum TygerModelStore {
     }
 
     private static func fetch(tier: String) async -> Bool {
-        guard let manifestURL else { return false }
+        var urls: [URL] = []
+        if let primary = manifestURL { urls.append(primary) }
+        if overrideURL() == nil, let mirror = mirrorManifestURL { urls.append(mirror) }
+        for url in urls {
+            if await fetch(manifest: url, tier: tier) { return true }
+        }
+        return false
+    }
+
+    private static func fetch(manifest url: URL, tier: String) async -> Bool {
         do {
-            let (data, _) = try await URLSession.shared.data(from: manifestURL)
+            let (data, _) = try await URLSession.shared.data(from: url)
             let manifest = try JSONDecoder().decode(Manifest.self, from: data)
             guard let base = URL(string: manifest.url_base) else { return false }
-            let wanted = manifest.files.filter { $0.name.hasPrefix("\(tier)/") }
+            let wanted = manifest.files.filter {
+                $0.name.hasPrefix("\(tier)/") && ($0.platform == nil || $0.platform == Self.platform)
+            }
             guard !wanted.isEmpty else { return false }
             // Parallel fetches: a tier is a handful of large files and the
             // host is a CDN — the wall time drops roughly with the width.

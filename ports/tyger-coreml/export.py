@@ -97,6 +97,19 @@ class EncTailWrap(nn.Module):
         return x
 
 
+class EncCutWrap(nn.Module):
+    """mel -> hidden_states[cut] in one graph: the L4 cut (#102/B2) reuses the
+    proven front + tail split, with the tail stopping before the cut layer."""
+
+    def __init__(self, asr, cut):
+        super().__init__()
+        self.front = EncFrontWrap(asr)
+        self.tail = EncTailWrap(asr, first=1, cut=cut)
+
+    def forward(self, feats):
+        return self.tail(self.front(feats))
+
+
 class StepWrap(nn.Module):
     def __init__(self, tt):
         super().__init__()
@@ -126,9 +139,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--precision", default="float16", choices=["float16", "float32"])
     ap.add_argument("--only", default="both", choices=["both", "enc", "step", "front", "tail", "check", "enc-dyn"])
+    ap.add_argument("--cut", type=int, default=15, help="encoder layer the graph stops at (B2: 4)")
+    ap.add_argument("--out-dir", default=None, help="override the output dir")
     ap.add_argument("--target", default="ios18", choices=["ios17", "ios18"],
                     help="ios18 unlocks per-block/per-grouped-channel quantization")
     args = ap.parse_args()
+
+    global OUT
+    if args.out_dir:
+        OUT = Path(args.out_dir)
 
     import coremltools as ct
     from coremltools.converters.mil import Builder as mb
@@ -169,6 +188,17 @@ def main():
     print(f"precision: {args.precision}, out: {OUT}")
 
     if args.only == "check":
+        if args.cut != 15:
+            cutwrap = EncCutWrap(asr, args.cut).eval()
+            ex = torch.randn(1, 201, 128) * 0.05 - 4.0
+            with torch.no_grad():
+                ref = asr.encoder(input_features=ex, num_lookahead_tokens=0,
+                              output_hidden_states=True).hidden_states[args.cut][0]
+                got = cutwrap(ex)[0]
+            d = float((ref - got).abs().max())
+            print(f"cut {args.cut} == hidden_states[{args.cut}] over {tuple(ref.shape)}: "
+                  f"max|Δ| {d:.3e}  ({'PASS' if d < 1e-5 else 'FAIL'})")
+            sys.exit(0 if d < 1e-5 else 1)
         enc_full, front, tail = EncWrap(asr).eval(), EncFrontWrap(asr).eval(), EncTailWrap(asr).eval()
         ex = torch.zeros(1, MEL_FRAMES, 128)
         with torch.no_grad():
@@ -181,7 +211,7 @@ def main():
     if args.only == "enc-dyn":
         # Dynamic mel length = the startup contract: the app feeds true growing
         # windows (33·h+1 frames), matching the oracle exactly — no padding tricks.
-        enc = EncWrap(asr).eval()
+        enc = (EncWrap(asr) if args.cut == 15 else EncCutWrap(asr, args.cut)).eval()
         ex = torch.zeros(1, 33, 128)
         _mel = torch.export.Dim("_mel", min=5, max=101)  # mel lengths are 8k-7 (33, 41, ..., 801)
         dim = 8 * _mel - 7
@@ -196,7 +226,8 @@ def main():
                         outputs=[ct.TensorType(name="hu")],
                         compute_precision=prec, compute_units=ct.ComputeUnit.CPU_ONLY,
                         minimum_deployment_target=target)
-        ml.save(OUT / "TygerEncoderDyn.mlpackage")
+        ml.save(OUT / ("TygerEncoderDyn.mlpackage" if args.cut == 15
+                       else f"TygerEncoderL{args.cut}Dyn.mlpackage"))
         print("encoder-dyn saved")
         return
 
@@ -227,7 +258,7 @@ def main():
         ml.save(OUT / "TygerTail.mlpackage")
 
     if args.only in ("both", "enc"):
-        enc = EncWrap(asr).eval()
+        enc = (EncWrap(asr) if args.cut == 15 else EncCutWrap(asr, args.cut)).eval()
         ex = torch.zeros(1, MEL_FRAMES, 128)
         with torch.no_grad():
             ref = enc(ex)
@@ -236,7 +267,7 @@ def main():
                         inputs=[ct.TensorType(name="feats", shape=ex.shape)],
                         compute_precision=prec, compute_units=ct.ComputeUnit.ALL,
                         minimum_deployment_target=target)
-        ml.save(OUT / "TygerEncoder.mlpackage")
+        ml.save(OUT / ("TygerEncoder.mlpackage" if args.cut == 15 else f"TygerEncoderL{args.cut}.mlpackage"))
 
     if args.only in ("both", "step"):
         step = StepWrap(tt).eval()

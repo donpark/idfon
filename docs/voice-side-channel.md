@@ -17,7 +17,8 @@
 > [`idfon-eve.md`](idfon-eve.md) (channel model).
 >
 > **Client-cascade call UX (2026-10-04).** iOS on-device TTS/ASR seams
-> (Kokoro default, Parakeet opt-in), live-call cues, greet-on-connect, and
+> (Kokoro/Parakeet then — **superseded 2026-10-25**: Phonon is the TTS mouth and
+> Nemotron the call ASR), live-call cues, greet-on-connect, and
 > `· spoken` transcript bubbles in the chat; verified on an iPhone 16. mac has
 > the cues, greeting, and spoken turns but still uses the Apple engines. See
 > §Client integration (A1).
@@ -576,15 +577,17 @@ script; the daemon's is derived from its data dir. See `idfon-eve.md`.
 
 The A1 cascade's on-device neural engines sit behind seams in
 `ios/Idfon/SpeechEngine.swift` and `mac/Sources/Idfon/SpeechEngine.swift`.
-Both apps offer the same choices: **Apple** and **Parakeet** (FluidAudio, ANE)
-for recognition, and **Kokoro** (FluidAudio ANE) vs **Apple** for reply speech.
+Both apps offer the same choices: **Apple**/**Nemotron**/**Parakeet**
+(FluidAudio, ANE) for recognition, and **Phonon** (streaming) / **Kokoro**
+(FluidAudio ANE) / **Apple** for reply speech.
 Neither app has a global picker — the language rule above sets the default and
 Contact Detail picks per contact. mac needs macOS 14 (FluidAudio).
 
-**Defaults follow the system language.** Parakeet Redux and the Kokoro ANE
-pipeline are English-only, so an English `Locale.preferredLanguages.first`
-defaults to Parakeet + Kokoro, and every other language defaults to the Apple
-built-ins, whose voices/recognizers follow the system locale
+**Defaults follow the system language and the build.** Reply speech is Phonon
+whenever the build carries it (the streaming mouth the duplex loop needs); in a
+build without Phonon, Parakeet Redux and the Kokoro ANE pipeline are
+English-only, so an English `Locale.preferredLanguages.first` defaults to
+Parakeet + Kokoro, and every other language defaults to the Apple built-ins, whose voices/recognizers follow the system locale
 (`SpeechVoice.callLanguage`, `Locale.current`). The two halves fall back
 independently: recognition, reply speech, or both can be on-device. A persisted
 explicit choice still wins; the language gate only sets the default.
@@ -600,12 +603,13 @@ explicit choice still wins; the language gate only sets the default.
   synthesis (short calls are fine); the escape hatch is Chatterbox Nano or
   Kokoro ONNX.
   (2026-10-25 ruling: Kokoro is out as the voice-agent mouth — whole-clip,
-  no streaming, which the duplex loop needs. Phonon is the mouth. Kokoro
-stays in the tree for possible future use cases; this bullet remains the
-as-built default until the streaming pair lands.)
-- **TTS (build-time option)** — `PhononTtsEngine` (gradium phonon-31m, 24 kHz
-  streaming; `ptts`/xn-ptts runtime, not FluidAudio) is compiled in only when
-  the build sets `IDFON_TTS_PHONON=1` (mac: selects the package in
+  no streaming, which the duplex loop needs. Phonon is the mouth and the
+  build default; this bullet is the fallback for builds compiled without
+  Phonon. Kokoro stays in the tree for possible future use cases.)
+- **TTS (the default) — `PhononTtsEngine`** (gradium phonon-31m, 24 kHz
+  streaming; `ptts`/xn-ptts runtime, not FluidAudio). Compiled in **by default**
+  (2026-10-25: it is the voice-agent mouth, because the duplex loop needs a
+  streaming mouth); `IDFON_TTS_PHONON=0` opts out (mac: selects the package in
   `mac/Package.swift` + `-DPHONON_TTS`; iOS: `SWIFT_ACTIVE_COMPILATION_CONDITIONS`
   in `ios/build.sh`, the `ptts` product is referenced either way and stripped
   when unused). Selected like any backend (`IDFON_TTS=phonon`, per-contact);
