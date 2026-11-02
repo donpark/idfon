@@ -324,7 +324,7 @@ impl FilesRoutes {
             )
             .await;
         }
-        let Some(name) = page_path(path) else {
+        let Some(name) = name_path(path) else {
             return not_found();
         };
         let key = format!("name/{}", name.join("/"));
@@ -702,10 +702,26 @@ fn valid_name(name: &str) -> bool {
 }
 
 fn name_path(path: &str) -> Option<Vec<&str>> {
-    let rest = NAME_PREFIXES
-        .iter()
-        .find_map(|prefix| path.strip_prefix(prefix))?;
-    let segments: Vec<&str> = rest.split('/').collect();
+    // A directory URL keeps its trailing slash; drop it for the prefix match and
+    // the segment split, then resolve the directory to its index document.
+    let (path, is_dir) = match path.strip_suffix('/') {
+        Some(dir) => (dir, true),
+        None => (path, false),
+    };
+    let rest = NAME_PREFIXES.iter().find_map(|prefix| {
+        // `/files` and `/files/` mount the same tree.
+        let base = prefix.trim_end_matches('/');
+        let rest = path.strip_prefix(base)?;
+        if rest.is_empty() || rest.starts_with('/') {
+            Some(rest.strip_prefix('/').unwrap_or(rest))
+        } else {
+            None
+        }
+    })?;
+    if rest.is_empty() {
+        return None; // the mount root has no index of its own
+    }
+    let mut segments: Vec<&str> = rest.split('/').collect();
     for segment in &segments {
         let valid = !segment.is_empty()
             && *segment != "."
@@ -725,20 +741,10 @@ fn name_path(path: &str) -> Option<Vec<&str>> {
     if !rest.is_empty() && !valid_name(first) {
         return None;
     }
-    Some(segments)
-}
-
-/// A directory URL serves its `index.html`, so `/<name>/` is a page and
-/// `/<name>/<topic>` is one file under that namespace.
-fn page_path(path: &str) -> Option<Vec<&str>> {
-    match path.strip_suffix('/') {
-        Some(dir) => {
-            let mut segments = name_path(dir)?;
-            segments.push("index.html");
-            Some(segments)
-        }
-        None => name_path(path),
+    if is_dir {
+        segments.push("index.html");
     }
+    Some(segments)
 }
 
 async fn static_file(
@@ -967,26 +973,21 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_url_serves_its_index() {
-        assert_eq!(
-            page_path("/files/talk-radio/"),
-            Some(vec!["talk-radio", "index.html"])
-        );
-        assert_eq!(
-            page_path("/files/talk-radio/topics.html"),
-            Some(vec!["talk-radio", "topics.html"])
-        );
-        assert_eq!(
-            page_path("/models/tyger/"),
-            Some(vec!["tyger", "index.html"])
-        );
-        assert_eq!(page_path("/files/"), None);
-    }
-
-    #[test]
     fn named_paths_are_guarded() {
         assert_eq!(name_path("/files/a/b.json"), Some(vec!["a", "b.json"]));
         assert_eq!(name_path("/files/Talk/b.json"), None, "handle rule");
+        assert_eq!(
+            name_path("/files/talk-radio/"),
+            Some(vec!["talk-radio", "index.html"]),
+            "a directory serves its index"
+        );
+        assert_eq!(
+            name_path("/files/talk-radio/topics.html"),
+            Some(vec!["talk-radio", "topics.html"])
+        );
+        assert_eq!(name_path("/models/tyger/"), Some(vec!["tyger", "index.html"]));
+        assert_eq!(name_path("/files/"), None);
+        assert_eq!(name_path("/files"), None);
         assert_eq!(
             name_path("/files/README.html"),
             Some(vec!["README.html"]),
