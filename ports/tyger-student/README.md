@@ -78,8 +78,20 @@ the packers pick it up without a second path:
 | `integrations/eve-idfon-voice/src/tyger/` | `bundle.ts` (`StudentStep.onnx`) | manifest `io.step.inputs.state` |
 | `scripts/pack-tyger-models.mjs` | ships both steps, student first | — |
 
-Still open in #104: the live-call traits pass (the shipped triple is the
-teacher's), and the barge gate needs real interrupting onsets.
+Traits: the shipped triple is **0.85/0.4/0.4**. `ep_thr` moved off the teacher's
+0.9146 after the 2026-11-01 live-call pass (8 app captures, 18 min of real call
+audio: 64.4% event agreement at 0.85 vs 55.7% at 0.9146, stable
+leave-one-session-out; bc 0.4 confirmed; barge still unmeasured — 0 interrupting
+onsets). Re-run it as captures accumulate:
+
+```sh
+ports/tyger-student/.venv/bin/python ports/tyger-student/featurize.py \
+    --wavs "$HOME/Library/Application Support/Idfon/turn-captures" --out bench-results/live-shards
+ports/tyger-student/.venv/bin/python ports/tyger-student/calibrate.py \
+    --shards bench-results/live-shards --student bench-results/student/student.pt
+```
+
+Still open in #104: the barge gate needs real interrupting onsets.
 
 ## The organic loop: new batches of real conversations
 
@@ -101,8 +113,9 @@ pnpm tyger clean    # remove bench-results/ (gitignored scratch; insights live i
 ```
 
 `build` reproduces the student byte-exact (seeded) and copies the tracked
-`student.traits.json` (the shipped thresholds — the measured triple
-0.9146/0.4/0.4) into place, so `clean` is always safe. Featurizing shards is the
+`student.traits.json` (the shipped thresholds — **0.85/0.4/0.4**; `ep_thr` is
+live-call calibrated, `bench-results/live-calibration.md`) into place, so
+`clean` is always safe. Featurizing shards is the
 only slow step and lives behind `featurize.py` directly:
 
 ```sh

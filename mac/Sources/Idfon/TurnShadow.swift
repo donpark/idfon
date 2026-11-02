@@ -75,17 +75,31 @@ final class TurnShadow: AudioPlaybackObserver {
         }
         var rung: String?
         var step: String?
+        var traits: String?
         if #available(macOS 27.0, *), let core = model as? CoreAITurnModel {
             rung = core.usesFloat16 ? "fp16" : "fp32"
             step = core.stepModelName
+            traits = traitsJSON(in: core.directory, step: core.stepModelName)
         }
-        Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))\(rung.map { "(\($0))" } ?? "")\(step.map { ", \($0)" } ?? "")")
-        Diag.log("turnmodel", ["tier": String(describing: type(of: model)), "rung": rung ?? "-", "step": step ?? "-", "ok": true])
-        return TurnShadow(model: model)
+        Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))\(rung.map { "(\($0))" } ?? "")\(step.map { ", \($0)" } ?? ""), traits \(traits == nil ? "default" : "student")")
+        Diag.log("turnmodel", ["tier": String(describing: type(of: model)), "rung": rung ?? "-", "step": step ?? "-", "traits": traits == nil ? "default" : "student", "ok": true])
+        return TurnShadow(model: model, traits: traits)
     }
 
-    private init(model: TurnModel) {
-        engine = TurnEngine(model: model, rules: TurnRulesCABI())
+    /// The rules knobs that travel with the student step (`student.traits.json`:
+    /// `{"name", "decider": {ep_thr, …}}`) — thresholds are per-model. nil
+    /// (teacher step or no file): the bundled live-tuned defaults.
+    private static func traitsJSON(in dir: URL, step: String) -> String? {
+        guard step.hasPrefix("StudentStep") || step.hasPrefix("student_step_") else { return nil }
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("student.traits.json")),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let decider = root["decider"],
+              let json = try? JSONSerialization.data(withJSONObject: decider) else { return nil }
+        return String(data: json, encoding: .utf8)
+    }
+
+    private init(model: TurnModel, traits: String? = nil) {
+        engine = TurnEngine(model: model, rules: TurnRulesCABI(thresholdsJSON: traits))
         tap = TurnTap(hopSize: TurnRuntime.hopSamples)
         agentTap = TurnTap(hopSize: TurnRuntime.hopSamples)
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

@@ -25,6 +25,7 @@ export class TygerEndpointer {
   private mode = "listen";
 
   constructor(engine: TygerEngine, sess: TurnSession = new TurnSession()) {
+    // (callers building the session from the bundle pass the per-model traits)
     this.engine = engine;
     this.sess = sess;
     this.resampleU = makeResampler();
@@ -78,7 +79,8 @@ export async function createTygerEndpointer(): Promise<TygerEndpointer> {
   const ort = createRequire(import.meta.url)("onnxruntime-node");
   const enc = await ort.InferenceSession.create(bundle.encoderPath);
   const step = await ort.InferenceSession.create(bundle.stepPath);
-  return new TygerEndpointer(new TygerEngine(enc, step, bundle.stateShape));
+  const sess = new TurnSession(bundle.traits ?? {});
+  return new TygerEndpointer(new TygerEngine(enc, step, bundle.stateShape), sess);
 }
 
 export type { Event };

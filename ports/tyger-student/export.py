@@ -42,7 +42,7 @@ from registry import HEADS, by_id, seam_heads  # noqa: E402
 
 FP32_GATE = 1e-4
 INT8_GATE = 2e-3  # per-slot probs; the teacher's qstep envelope
-TRAIT_THRS = {5: 0.4, 6: 0.4, 7: 0.9146}  # yield/bc/p_end at the student's traits: crossing flips are the rules-visible errors
+TRAIT_THRS = {5: 0.4, 6: 0.4, 7: 0.85}  # yield/bc/p_end at the student's traits: crossing flips are the rules-visible errors
 
 
 class StepWrap(nn.Module):
