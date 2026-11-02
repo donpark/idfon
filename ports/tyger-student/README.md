@@ -82,7 +82,7 @@ Traits are **per model**, so both live here:
 
 | File | Model | Triple | Where it came from |
 | --- | --- | --- | --- |
-| `student.traits.json` | the P1 L15 student (this README's pipeline) | 0.85/0.4/0.4 | the 2026-11-01 live-call pass: 64.4% event agreement at 0.85 vs 55.7% at 0.9146 on 8 app captures (18 min), stable leave-one-session-out; bc 0.4 confirmed; barge unmeasured (0 interrupting onsets) |
+| `student.traits.json` | the P1 L15 student (this README's pipeline) | 0.85/0.4/0.4 | the 2026-11-01 live-call pass: 64.4% event agreement at 0.85 vs 55.7% at 0.9146 on 8 app captures (18 min), stable leave-one-session-out; bc 0.4 confirmed; barge measured on the 7-capture follow-up: 4/20 at 0.40 (12 false; 4 during playback), 15/20 at 0.10 but 128 false; no Open Yap edge over L4 |
 | `student-l4.traits.json` | the L4 student shipped with the L4 encoder cut (#102) | 0.75/0.5/0.5 | the pooled 13-session live fit: 56.60% event agreement vs 48.81% at 0.9146; this is the file the live bundle carries (`coreai|coreml/student.traits.json`, 182 B) |
 
 `pnpm tyger build` stages `student.traits.json` beside its own student. The L4
