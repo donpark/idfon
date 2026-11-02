@@ -628,7 +628,12 @@ async function page() {
       // One scan adds the contact AND the receive-only credential any sender
       // may present. Refused unless this station's live config opted in.
       const capability = await publicTicket(station);
-      payload = JSON.stringify({ contact: JSON.parse(contact), capability: JSON.parse(capability) });
+      // `label` is not part of an EndpointAddr but serde ignores it; the app
+      // reads it to name the contact ("Add Tech Talk?") instead of "Contact".
+      payload = JSON.stringify({
+        contact: { ...JSON.parse(contact), label: station.name ?? station.instance },
+        capability: JSON.parse(capability),
+      });
     }
     const link = `idfon://add/${Buffer.from(payload, "utf8").toString("base64url")}`;
     // Long payloads need a lower error-correction tier or the code gets too

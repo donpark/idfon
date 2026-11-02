@@ -44,6 +44,9 @@ enum ContactExchange {
             return nil
         }
         if let id = ticket["endpoint_id"] as? String, !id.isEmpty { return id }
+        // A station's card in the add link is a bare endpoint address
+        // (`{id, addrs}`), not a ContactTicket — the id is the first field.
+        if let id = ticket["id"] as? String, !id.isEmpty { return id }
         guard let address = ticket["endpoint_addr"] as? String,
               let transport = try? JSONSerialization.jsonObject(with: Data(address.utf8)) as? [String: Any] else {
             return nil
