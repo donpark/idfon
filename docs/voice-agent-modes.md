@@ -48,7 +48,7 @@ On-device voice agents are what make a free tier possible.
 Consequences:
 
 - **The free tier runs the on-device cascade** — on-device ASR/TTS
-  (Parakeet/Kokoro/Apple) + the on-device decision model (the tyger port) + an
+  (Nemotron streaming / Phonon, Apple as the fallback) + the on-device decision model (the tyger port) + an
   on-device agent or a local wrap. No marginal cost per turn; the tyger
   turn-taker is what makes the free tier's experience good rather than merely
   cheap.
