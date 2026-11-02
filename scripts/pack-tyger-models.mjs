@@ -25,7 +25,13 @@
 // not on this machine). `--all` packs every bundle incl. fp32 fallbacks and
 // bench variants (Q8/…).
 // Bundle directories become relative `name` paths (so the store can recreate
-// them); `asset` is the flat download filename (`/` -> `__`).
+// them); `asset` is the content hash in the default hash mode (or the flat
+// download filename with `--asset name`, `/` -> `__`).
+//
+// A tier root that carries a student step must also carry `student.traits.json`
+// beside it (`pnpm tyger build` stages it): the apps apply its `decider` to the
+// rules seam, so a bundle without it silently falls back to the teacher-tuned
+// thresholds.
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
