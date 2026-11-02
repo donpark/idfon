@@ -1,4 +1,5 @@
 import AVFAudio
+import TygerVoiceCoreAI
 import UIKit
 
 @main
@@ -215,6 +216,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             let i = args.firstIndex(of: "-turnshadow")!
             let hold = args.count > i + 1 ? (Double(args[i + 1]) ?? 8) : 8
             Task.detached {
+                // Exercise the delivery path too (a tier can be one 183-byte
+                // traits file short); the smoke is not a call, so fetching here
+                // cannot surprise one.
+                await VoiceModelGate.ensureTurnTier()
                 guard let shadow = await TurnShadow.start() else {
                     Automation.mark("voice: turnshadow UNAVAILABLE")
                     return

@@ -20,6 +20,21 @@ final class CoreAISoakTests: XCTestCase {
         }
     }
 
+    /// Loads the tier the store installs (`TYGER_TIER_DIR`) and runs the encoder.
+    /// `encode` swallows runtime failures and returns `[]`, so an empty result is
+    /// the signal that an AOT container cannot import on this runtime.
+    func testInstalledTierEncodes() throws {
+        guard let raw = ProcessInfo.processInfo.environment["TYGER_TIER_DIR"] else {
+            throw XCTSkip("set TYGER_TIER_DIR to an installed coreai tier")
+        }
+        let model = try CoreAITurnModel(directory: URL(fileURLWithPath: raw))
+        let rows = model.encode([Float](repeating: 0, count: 16_000))
+        XCTAssertFalse(rows.isEmpty, "encoder produced no rows (\(raw))")
+        XCTAssertEqual(rows.last?.count, 1024)
+        let v = model.step(hu: rows.last ?? [], ha: rows.last ?? [], actDb: -60, prevState: 0)
+        XCTAssertEqual(v.count, 8)
+    }
+
     /// 30k step calls ≈ a 30-minute call's worth — past the Python cliff at ~9k.
     func testSoak30kStepCalls() throws {
         let model = try modelOrSkip()
