@@ -23,8 +23,7 @@ When this agent is the voice for a wrapped agent (configured in
   include that envelope in your reply text so the caller hears it.
 
 STT/TTS run in this agent (TypeScript) through the provider configured in
-`IDFON_VOICE_ENGINE` (e.g. a local Kokoro/Whistle/Parakeet model or a cloud
-API). If a tool reports a missing package, install it.
+`IDFON_VOICE_ENGINE` (a local model CLI or a cloud API). If a tool reports a missing package, install it.
 
 ## Introduction requests (contact cards)
 

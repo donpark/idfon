@@ -309,13 +309,11 @@ cascade behaviours are worth knowing:
   otherwise, dropping the agent's reply before it reaches the live session.
 
 Open-source / local providers:
-- `kokoro` — Kokoro TTS (and ASR) via `kokoro-fastapi`, an OpenAI-compatible
-  server on localhost, no key. `providers/kokoro.json`.
 - `command` — shell out to any model CLI: `stt_cmd` reads the WAV at `{input}`
   and prints the transcript (or writes `{output}`); `tts_cmd` reads the text at
-  `{text}` and writes a WAV to `{output}`. That covers Whisper, Parakeet TDT,
-  Piper, Kokoro CLI, … — `providers/parakeet.json` is a template (adjust the
-  command to your install).
+  `{text}` and writes a WAV to `{output}`. That covers Whisper, Piper, … —
+  point it at your install. (Kokoro and Parakeet Redux were removed from the
+  tree on 2026-11-01; the on-device engines are streaming-only.)
 
 idfon's value here is the **real-use harness**: add a contact per provider and
 actually converse, then compare latency/cost/quality — not a synthetic

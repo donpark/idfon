@@ -2776,7 +2776,7 @@ mod tests {
                 "model": "openai/gpt-live-1",
                 "idfon_manifest": {
                     "name": "GPT-6-Luna",
-                    "voice": { "options": [ { "id": "on-device:parakeet", "kind": "stt", "label": "Parakeet", "side": "client" } ] }
+                    "voice": { "options": [ { "id": "on-device:nemotron", "kind": "stt", "label": "Nemotron", "side": "client" } ] }
                 }
             }),
             &[],
@@ -2787,7 +2787,7 @@ mod tests {
         // Config-derived full-duplex option plus the agent's client option.
         let options = manifest["voice"]["options"].as_array().unwrap();
         assert!(options.iter().any(|o| o["kind"] == "full-duplex"));
-        assert!(options.iter().any(|o| o["id"] == "on-device:parakeet"));
+        assert!(options.iter().any(|o| o["id"] == "on-device:nemotron"));
     }
 
     #[test]
@@ -2836,7 +2836,7 @@ mod tests {
                         "tts": { "provider": "elevenlabs", "model": "eleven_turbo_v2_5" } },
             "idfon_manifest": { "voice": { "options": [
                 { "id": "deepgram:nova-3", "kind": "stt", "label": "Deepgram (fast)" },
-                { "id": "on-device:parakeet", "kind": "stt", "label": "Parakeet", "side": "client" }
+                { "id": "on-device:nemotron", "kind": "stt", "label": "Nemotron", "side": "client" }
             ] } }
         }),
             &[],
@@ -2844,7 +2844,7 @@ mod tests {
         assert_eq!(merged.len(), 3);
         let deepgram = merged.iter().find(|o| o["id"] == "deepgram:nova-3").unwrap();
         assert_eq!(deepgram["label"], "Deepgram (fast)");
-        assert!(merged.iter().any(|o| o["id"] == "on-device:parakeet"));
+        assert!(merged.iter().any(|o| o["id"] == "on-device:nemotron"));
     }
 
     #[test]
