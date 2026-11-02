@@ -4,7 +4,7 @@
 //! idfon-edge [--bind HOST:PORT] [--token VALUE] [--key-file PATH] [--allow ID]...
 //!            [--require-ticket CAP] [--domain DOMAIN] [--tls-cert PATH] [--tls-key PATH]
 //!            [--health-path PATH] [--rate-limit N]
-//!            [--files-dir PATH] [--files-token VALUE] [--files-quota-mb N]
+//!            [--files-dir PATH] [--files-token VALUE] [--files-alias NAME[,NAME]]
 //!            [--files-max-expiry-days N] [--files-grace-days N]
 //!            [--files-ops-token VALUE] [--files-user-expiry-hours N]
 //!            [--files-max-upload-mb N] [--files-writes-per-minute N]
@@ -52,6 +52,7 @@ OPTIONS:
   --push-apns-url URL     APNs host (default https://api.push.apple.com)
   --push-state PATH       Push-token registry (default KEY.push.json)
   --files-dir PATH        Serve durable files from PATH (docs/durable-files.md)
+  --files-alias NAME,..   Also mount a top-level namespace (e.g. talk-radio/)
   --files-token VALUE     Bearer token for file uploads (default: read-only)
   --files-quota-mb N      Storage quota for published files (0 = unlimited)
   --files-max-expiry-days N  Cap on a requested rental term (0 = no cap)
@@ -106,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
     let mut files_user_expiry_hours: u64 = 24;
     let mut files_max_upload_mb: u64 = 2;
     let mut files_writes_per_minute: u32 = 60;
+    let mut files_aliases: Vec<String> = Vec::new();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -201,6 +203,20 @@ async fn main() -> anyhow::Result<()> {
                     .context("--files-grace-days is a number")?;
                 i += 2;
             }
+            "--files-alias" => {
+                // A top-level namespace this deployment publishes (comma
+                // separated): `/talk-radio/...` then reads the store's
+                // `talk-radio/...`, which is what a pass-through CDN needs.
+                let value = args[i + 1].clone();
+                files_aliases.extend(
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|alias| !alias.is_empty())
+                        .map(str::to_owned),
+                );
+                i += 2;
+            }
             "--files-ops-token" => {
                 let value = args[i + 1].clone();
                 files_ops_token = (!value.is_empty()).then_some(value);
@@ -276,15 +292,24 @@ async fn main() -> anyhow::Result<()> {
         default_topic,
     ))];
     if let Some(dir) = &files_dir {
-        let routes = Arc::new(
+        let mut files =
             FilesRoutes::new(dir, files_quota_mb * 1024 * 1024, files_token.clone())
                 .with_context(|| format!("opening files dir {}", dir.display()))?
                 .with_expiry(files_max_expiry_days, files_grace_days)
                 .with_ops_token(files_ops_token.clone())
                 .with_user_expiry_hours(files_user_expiry_hours)
                 .with_max_upload_bytes(files_max_upload_mb.saturating_mul(1024 * 1024))
-                .with_write_limit(files_writes_per_minute),
-        );
+                .with_write_limit(files_writes_per_minute);
+        for alias in &files_aliases {
+            let (next, ok) = files.with_alias(alias);
+            if !ok {
+                return Err(anyhow!(
+                    "--files-alias {alias:?} is not a handle (lowercase 1-32 of a-z 0-9 - _)"
+                ));
+            }
+            files = next;
+        }
+        let routes = Arc::new(files);
         routes.spawn_sweeper();
         local_routes.push(routes);
     }

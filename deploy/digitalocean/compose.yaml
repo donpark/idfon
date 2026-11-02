@@ -55,6 +55,11 @@ services:
       - ${IDFON_FILES_DIR:-/var/lib/idfon/files}
       - --files-token
       - ${IDFON_FILES_TOKEN:-}
+      # A top-level namespace published to this edge (e.g. `talk-radio`). The
+      # CDN passes paths through unchanged, so this is what makes
+      # https://files.idfon.net/talk-radio/ read `talk-radio/index.html`.
+      - --files-alias
+      - ${IDFON_FILES_ALIAS:-}
       - --files-ops-token
       - ${IDFON_FILES_OPS_TOKEN:-}
       - --files-user-expiry-hours

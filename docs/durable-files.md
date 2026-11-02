@@ -59,6 +59,11 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
 | `PUT` on either form | publish (user or operations token) |
 | `DELETE` on either form | operational takedown: removes bytes + pin (operations token only) |
 
+- **A top-level name can be mounted** with `--files-alias talk-radio`: the CDN
+  passes paths through unchanged (`origin = https://idfon.net`), so without an
+  alias `https://files.idfon.net/talk-radio/` reaches the *resource* router and
+  401s. The alias is deployment config, not a rewrite rule; `/files/` and
+  `/models/` stay the origin's own mounts.
 - **Names are handles**: the first segment of a nested path is a namespace
   claim and must be lowercase, 1–32 of `a-z 0-9 - _`, starting with a letter or
   digit (`valid_name`); `sha256` is reserved. A flat filename is not a claim and

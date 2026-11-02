@@ -28,6 +28,7 @@
 #   IDFON_RELAY_ADMIN_TOKEN  ops bearer for relay-auth (generated if unset)
 #   IDFON_RELAY_OPEN      1 = deliberately deploy an OPEN relay; without any
 #                         auth config above the deploy refuses (fail-closed)
+#   IDFON_FILES_ALIAS      top-level namespace(s) also served as files (talk-radio)
 #   IDFON_EDGE_IMAGE       default ghcr.io/donpark/idfon-edge:latest
 set -euo pipefail
 
@@ -277,6 +278,7 @@ FILES_ENV=""
 [ -n "${IDFON_FILES_QUOTA_MB:-}" ] && FILES_ENV="${FILES_ENV}IDFON_FILES_QUOTA_MB=${IDFON_FILES_QUOTA_MB}\n"
 [ -n "${IDFON_FILES_MAX_EXPIRY_DAYS:-}" ] && FILES_ENV="${FILES_ENV}IDFON_FILES_MAX_EXPIRY_DAYS=${IDFON_FILES_MAX_EXPIRY_DAYS}\n"
 [ -n "${IDFON_FILES_GRACE_DAYS:-}" ] && FILES_ENV="${FILES_ENV}IDFON_FILES_GRACE_DAYS=${IDFON_FILES_GRACE_DAYS}\n"
+[ -n "${IDFON_FILES_ALIAS:-}" ] && FILES_ENV="${FILES_ENV}IDFON_FILES_ALIAS=${IDFON_FILES_ALIAS}\n"
 
 info "issuing wildcard certificate (DNS-01)"
 ssh $SSH_OPTS "root@$PUBLIC_IP" \
