@@ -1,0 +1,8 @@
+{
+  "_comment": "Derived: `scripts/radio-program.mjs compile` rewrites this from submissions.jsonl + candidates.jsonl. `file` paths are relative to this file. Live edits made here are lost on the next compile.",
+  "brief": {
+    "topics": [],
+    "notes": []
+  },
+  "slots": []
+}

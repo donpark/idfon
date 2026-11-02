@@ -1,0 +1,14 @@
+{
+  "_comment": "Talk-radio contact: a one-way 'broadcast' (docs/live-radio.md). backend=stream plays the active schedule slot into the call's return leg and never listens; voice_route.mode=broadcast tells the apps the holder only sends audio, so a call is dialed instead of a text turn. `schedule` is the programme (agents/radio/schedule.json, written by `scripts/radio-program.mjs compile` from submissions + found episodes); `file` is the fallback clip that loops when no slot is active: the whole station can be just this one clip (`scripts/radio-program.mjs fallback <clip>`), and scheduling is additive on top. Both paths are relative to the working directory. Clips must be PCM WAV at 24 kHz mono and voice_route.audio must stay pcm24k to match: there is no decoder dependency, so the script converts with ffmpeg. `log` gets one JSONL line per second plus every slot change and any agent-side stall, which is what makes two walks comparable. `topic` is the default programme name; a caller can override it per call by pushing a `topic=<value>` line in the invite's per-contact context (one agent, many topic contacts).",
+  "backend": "stream",
+  "schedule": "agents/radio/schedule.json",
+  "file": "agents/radio/fallback.wav",
+  "topic": "talk radio",
+  "loop": true,
+  "log": "/tmp/idfon-radio-soak.jsonl",
+  "broadcast": "idfon-radio",
+  "voice_route": {
+    "mode": "broadcast",
+    "audio": "pcm24k"
+  }
+}
