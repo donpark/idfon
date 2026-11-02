@@ -208,6 +208,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if args.contains("-voices") {
             SpeechVoice.dump()
         }
+        // On-device turn-model smoke (`-turnshadow [seconds]`): load the tier the
+        // store installed and push a second of silence through it — proves the
+        // encoder + step load and run without needing a call or a peer.
+        if args.contains("-turnshadow") {
+            let i = args.firstIndex(of: "-turnshadow")!
+            let hold = args.count > i + 1 ? (Double(args[i + 1]) ?? 8) : 8
+            Task.detached {
+                guard let shadow = await TurnShadow.start() else {
+                    Automation.mark("voice: turnshadow UNAVAILABLE")
+                    return
+                }
+                Automation.mark("voice: turnshadow READY")
+                shadow.feed([Float](repeating: 0, count: 16_000), rate: 16_000)
+                try? await Task.sleep(nanoseconds: UInt64(hold * 1_000_000_000))
+                shadow.stop()
+                Automation.mark("voice: turnshadow DONE")
+            }
+        }
         if args.contains("-bargein") {
             // Off main: synthesizePCM blocks its caller while the synthesizer
             // runs on main, so the caller must not be main.

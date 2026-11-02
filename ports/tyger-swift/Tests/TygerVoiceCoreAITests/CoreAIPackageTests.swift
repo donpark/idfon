@@ -31,12 +31,34 @@ final class CoreAIPackageTests: XCTestCase {
         return dir
     }
 
-    func testNewerPackageIsNotLoadable() throws {
+    func testNewerPackageIsRejectedWhenTheCeilingIsLower() throws {
+        CoreAITurnModel.packageCeilingOverride = [7, 0, 80]
+        defer { CoreAITurnModel.packageCeilingOverride = nil }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("coreai-gate-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let dir = try tier(version: "7.1.5", in: root)
-        XCTAssertFalse(CoreAITurnModel.loadable(in: dir), "7.1.5 exceeds the 7.0.80 runtime ceiling")
+        XCTAssertFalse(CoreAITurnModel.loadable(in: dir), "7.1.5 exceeds a 7.0.80 ceiling")
         XCTAssertThrowsError(try CoreAITurnModel(directory: dir))
+    }
+
+    func testNewerPackageIsAcceptedWhenTheCeilingAllowsIt() throws {
+        CoreAITurnModel.packageCeilingOverride = [7, 1, 5]
+        defer { CoreAITurnModel.packageCeilingOverride = nil }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("coreai-gate-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = try tier(version: "7.1.5", in: root)
+        XCTAssertTrue(CoreAITurnModel.loadable(in: dir), "7.1.5 is within a 7.1.5 ceiling")
+    }
+
+    /// The OS table: 27.2+ accepts the 27.2 toolchain's 7.1.5, 27.0/27.1 do not.
+    func testDefaultCeilingFollowsTheOS() throws {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let expected = os.majorVersion > 27 || (os.majorVersion == 27 && os.minorVersion >= 2)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("coreai-gate-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = try tier(version: "7.1.5", in: root)
+        XCTAssertEqual(CoreAITurnModel.loadable(in: dir), expected,
+                       "27.2+ must accept 7.1.5; earlier 27.x must refuse it")
     }
 
     func testOlderPackageIsLoadable() throws {

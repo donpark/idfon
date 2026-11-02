@@ -296,7 +296,8 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
                 return TurnShadow(model: coreai, traits: traits)
             } catch {
                 // The 2026-10-27 class: an install can end up with no usable
-                // turn pair — record why the tier failed.
+                // turn pair — record why the tier failed (console + diag).
+                idfonLog("turnmodel: coreai load failed: \(error)")
                 Diag.log("turnmodel", ["tier": "coreai", "ok": false, "error": String(describing: error)])
             }
         }

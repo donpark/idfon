@@ -184,9 +184,26 @@ public final class CoreAITurnModel: TurnModel {
     /// by a newer toolchain (the 2026-11-01 build: `coreai-build 3605.6.3` emits
     /// 7.1.5) therefore crash the app on 27.0.1 unless checked first.
     /// `IDFON_TURN_AOT_MAX` raises the gate for a newer runtime.
+    /// The newest MPSGraph package this OS can load. Apple does not expose it,
+    /// so it is a per-OS table: 27.0/27.1 cap at 7.0.80, 27.2+ at 7.1.5. A
+    /// newer AOT container makes the runtime abort (signal 11), so this guard is
+    /// what turns an incompatible tier into a clean fail-open. `IDFON_TURN_AOT_MAX`
+    /// overrides it for experiments; update the table when a new OS ships.
     static var maxPackageVersion: [Int] {
-        (ProcessInfo.processInfo.environment["IDFON_TURN_AOT_MAX"] ?? "7.0.80").split(separator: ".").compactMap { Int($0) }
+        if let forced = packageCeilingOverride { return forced }
+        if let forced = ProcessInfo.processInfo.environment["IDFON_TURN_AOT_MAX"], !forced.isEmpty {
+            return forced.split(separator: ".").compactMap { Int($0) }
+        }
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        if os.majorVersion > 27 || (os.majorVersion == 27 && os.minorVersion >= 2) {
+            return [7, 1, 5]
+        }
+        return [7, 0, 80]
     }
+
+    /// Test seam: pin the ceiling without touching the process environment
+    /// (`ProcessInfo.environment` is not reliably writable in-process).
+    static var packageCeilingOverride: [Int]?
 
     struct Selection { let enc: URL; let step: URL; let fp16: Bool }
 
