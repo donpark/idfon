@@ -19,13 +19,8 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${1:-$root/dist/speech-packs}"
-voices="${2:-$root/docs/voice-compare-audio/voices}"
+voices="${2:-}"   # legacy override; blends are now computed from the export
 pack="$out/phonon-31m"
-
-if [ ! -d "$voices" ] || ! ls "$voices"/*.safetensors >/dev/null 2>&1; then
-    echo "error: no *.safetensors voices in $voices (run scripts/phonon-voice-compare.py)" >&2
-    exit 1
-fi
 
 echo "provisioning the pinned phonon-31m export …"
 rm -rf "$pack/voices"   # clean voice slate: the export ships 38 stock voices
@@ -34,15 +29,22 @@ rm -rf "$pack/voices"   # clean voice slate: the export ships 38 stock voices
 # The 18 blend parents + stock Miles stay out of shipped packs (2026-10-31
 # curation): they are confusable with the idfon blends above. Kept stock rides
 # along from the export; the blends add on top.
+# Blends are computed from the export's own `emb` tensors, before pruning: the
+# old docs/voice-compare-audio files are the pre-export `speaker_wavs` form and
+# the engine rejects them ("voice Ada has no `emb` tensor", 2026-11-01).
+echo "blending the idfon voices from the export …"
+python3 "$root/scripts/blend-phonon-voices.py" "$pack/voices"
+
 echo "pruning the confusable stock voices …"
 for n in Maeve Harper Everly Imogen Hadley Delia Zoey Freya Elodie-Rose Juniper \
          Edwin Preston Easton Alfie Trevor Micah Hugh Spencer Miles; do
     rm -f "$pack/voices/$n.safetensors"
 done
 
-echo "adding $(ls "$voices"/*.safetensors | wc -l | tr -d ' ') voices …"
-mkdir -p "$pack/voices"
-cp "$voices"/*.safetensors "$pack/voices/"
+if [ -n "$voices" ] && ls "$voices"/*.safetensors >/dev/null 2>&1; then
+    echo "adding $(ls "$voices"/*.safetensors | wc -l | tr -d ' ') extra voices from $voices …"
+    cp "$voices"/*.safetensors "$pack/voices/"
+fi
 
 rm -rf "$pack/sha256"   # stale content-addressed links
 # The model metadata `bundle.json` (dims/ctx/languages — what Phonon's engine
