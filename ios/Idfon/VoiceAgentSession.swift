@@ -146,6 +146,7 @@ final class VoiceAgentSession: NSObject {
             return
         }
         isActive = true
+        callStartedAt = Date()
         localAgent = agent
         stopRequested = false
         ChatStore.shared.addObserver(self)
@@ -184,7 +185,7 @@ final class VoiceAgentSession: NSObject {
                 peer = resolved
             }
             agentPeerId = peer.id
-            Automation.mark("voice-agent: start peer=\(peer.id)")
+            mark("start peer=\(peer.id)")
             if localAgent == nil {
                 // Reset the model history before a new call: the session log is
                 // the medium, never the model's context (docs/session-context.md).
@@ -392,7 +393,7 @@ final class VoiceAgentSession: NSObject {
         noSpeechTurns = 0
         silencePrompted = false
         Automation.mark("turn-taker: \(TurnTakerSetting.usesModel(for: activePeerId, modelAvailable: turnShadow != nil) ? "tyger" : "classic")")
-        Automation.mark("voice-agent: heard=\(heard)")
+        mark("heard=\(heard)")
         if let asrReference, !asrReference.isEmpty {
             let wer = AsrScore.wer(reference: asrReference, hypothesis: heard)
             Automation.mark("voice-agent: wer=\(String(format: "%.3f", wer)) backend=\(asr?.name ?? "sfspeech") ref=\"\(asrReference)\" heard=\"\(heard)\"")
@@ -439,7 +440,7 @@ final class VoiceAgentSession: NSObject {
         awaitingReply = false
         await cancelFiller()
         let replyMs = Int(Date().timeIntervalSince(replyStart) * 1000)
-        Automation.mark("voice-agent: reply=\(result.display)")
+        mark("reply=\(result.display)")
         var speakMs = 0
         if !result.spoken.isEmpty {
             setState(.speaking(result.spoken))
@@ -566,6 +567,16 @@ final class VoiceAgentSession: NSObject {
         }
         unitRowId = nil
         return (display, spoken)
+    }
+
+    /// When this session started (the marks below are relative to it).
+    private var callStartedAt = Date()
+
+    /// Session-relative seconds for the interaction-quality marks (the console
+    /// lines carry no timestamps, so latency was unmeasurable).
+    private func mark(_ text: String) {
+        let t = Date().timeIntervalSince(callStartedAt)
+        Automation.mark(String(format: "voice-agent: +%.2fs %@", t, text))
     }
 
     private func finish() {
@@ -968,7 +979,7 @@ final class VoiceAgentSession: NSObject {
     }
 
     private func speak(_ text: String) async -> String? {
-        Automation.mark("voice-agent: speak begin chars=\(text.count)")
+        mark("speak begin chars=\(text.count)")
         // A reply supersedes voice feedback still playing: ENDPOINT can land
         // inside a "mm-hm". Stop it and await the drained task so two speaks
         // never overlap (each engine is single-utterance).
@@ -992,7 +1003,7 @@ final class VoiceAgentSession: NSObject {
             played += tts.playedSeconds
         }
         lastPlayedSeconds = played
-        Automation.mark("voice-agent: speak done")
+        mark("speak done")
         let interrupted = endSpeech()
         // Hold the tap gate closed so the speaker's physical flush and VPIO's
         // residual tail decay before the next turn re-arms the mic; 800 ms
