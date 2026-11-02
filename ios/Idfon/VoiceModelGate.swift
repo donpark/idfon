@@ -95,25 +95,31 @@ enum VoiceModelGate {
     static func start(asr: String? = nil, tts: String? = nil) {
         guard approved else { return }
         SpeechEngines.prewarm(asr: asr, tts: tts)
-        Task {
-            // Tier choice follows what this OS can *load*, not its version: the
-            // 2026-11-01 AOT artifacts (coreai-build 3605.6.3, MPSGraph package
-            // 7.1.5) exceed what iOS 27.0.x accepts (≤ 7.0.80) and segfault the
-            // Core AI loader, so such a device falls back to the CoreML tier.
-            // Rebuilding the AOT with the older Metal toolchain flips this back
-            // without a code change (the files then load).
-            let tier: String
-            if #available(iOS 27.0, *),
-               CoreAITurnModel.loadable(in: TygerModelStore.root.appendingPathComponent("coreai")) {
-                tier = "coreai"
-            } else {
-                tier = "coreml"
-            }
-            if await TygerModelStore.ensure(tier: tier) {
-                Automation.mark("voice: turn tier ready (\(tier))")
-            } else {
-                Automation.mark("voice: turn tier download failed (\(tier))")
-            }
+        Task { await ensureTurnTier() }
+    }
+
+    /// Fetch whatever the on-disk turn tier is missing (the 183-byte
+    /// `student.traits.json` included — a tier whose step is present but whose
+    /// traits are not counts as not ready). Returns the tier that ended up ready.
+    @MainActor
+    @discardableResult
+    static func ensureTurnTier() async -> String? {
+        guard approved else { return nil }
+        // Tier choice follows what this OS can *load*, not its version: the
+        // 2026-11-01 AOT artifacts (coreai-build 3605.6.3, MPSGraph package
+        // 7.1.5) exceed what iOS 27.0.x accepts (≤ 7.0.80) and segfault the
+        // Core AI loader, so such a device falls back to the CoreML tier.
+        // Rebuilding the AOT with the older Metal toolchain flips this back
+        // without a code change (the files then load).
+        let tier: String
+        if #available(iOS 27.0, *),
+           CoreAITurnModel.loadable(in: TygerModelStore.root.appendingPathComponent("coreai")) {
+            tier = "coreai"
+        } else {
+            tier = "coreml"
         }
+        let ready = await TygerModelStore.ensure(tier: tier)
+        Automation.mark("voice: turn tier \(ready ? "ready" : "download failed") (\(tier))")
+        return ready ? tier : nil
     }
 }
