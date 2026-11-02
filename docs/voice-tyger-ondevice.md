@@ -12,11 +12,12 @@ rulings are the history — **the tier table is the current state.**
 The shipping decision layer by platform. This table is authoritative; the
 rulings and measurements further down are the record that produced it.
 
-| Platform | Tier | Decision guard (24 × 3 min, 72 min corpus) | Size |
+| Platform | Tier | Guard / note | Size |
 | --- | --- | --- | --- |
 | **All platforms (2026-10-22; removed 2026-10-25)** | ~~path-C student~~ deleted: a Parakeet-tap copycat with ~50% decision parity and a backchannel head that never fired | — | — |
-| **macOS 27+ / iOS 27+** | **CoreAI fp32** — `ports/tyger-coreai` (default rung, loader-enforced 2026-10-27) | **100%** (917/917 identical frames) | 1.53 GB |
-| — same platforms, opt-in rung | CoreAI fp16 (fp16 compute, fp32 I/O) — `IDFON_TURN_PRECISION=fp16` | 99.67% aligned ±2 frames on the corpus — but **0 endpoints on the corner gate** (fp16 `p_end` drift); opt-in only | ~0.77 GB |
+| **macOS 27+ / iOS 27+** | **CoreAI fp32, L4 cut** — `bench-results/tier-l4/coreai` (the shipped pair: `TygerEncoderL4` = `hidden_states[4]`, max|Δ| 0, + `student_step`) | encoder exact; student 56.6% live event agreement (13 captures) | 418 MB |
+| — fallback | CoreAI fp32 L15 — `bench-results/coreai` | **100%** (917/917 identical frames) | 1.53 GB |
+| — fallback, opt-in rung | CoreAI fp16 (fp16 compute, fp32 I/O) — `IDFON_TURN_PRECISION=fp16` | 99.67% aligned ±2 frames on the corpus — but **0 endpoints on the corner gate** (fp16 `p_end` drift); opt-in only | ~0.77 GB |
 | macOS 14–26 | MLX int8-g16 (stem + layers.0 fp32) — `TygerVoiceMLX` | 99.5% (3 flips in 917) | 1.58 GB on disk¹ |
 | iOS 18–26 | CoreML fp16 encoder (ANE) + fp32 step — `TygerVoice` | 95.9% (21 flips; accepted jitter) | ~0.86 GB |
 
@@ -27,10 +28,12 @@ The `pathc` student was removed 2026-10-25 (user ruling: a Parakeet-tap
 copycat with ~50% decision parity; its backchannel head never fired) and is gone
 from the packed manifest. It is **not** the P1 distilled student
 (`ports/tyger-student`, `docs/voice-decision-model.md`): that one reads the same
-L15 tap and emits the same 8-vector, inside the product bars.
+1,024-d encoder tap (L15; L4 for the shipped L4 student) and emits the same
+8-vector, inside the product bars.
 
-**Step swap (issue #104, 2026-11-01)**: the encoder tier is unchanged, but every
-step loader now prefers the student over the teacher step —
+**Step swap (issue #104, 2026-11-01)**: the encoder tier is now the **L4 cut**
+(`TygerEncoderL4`, `hidden_states[4]`; the L15 `bench-results/coreai` is the
+fallback), and every step loader now prefers the student over the teacher step —
 `StudentStep.mlpackage` (CoreML), `student_step_float32.aimodel` (CoreAI, with
 its AOT container beside it), `StudentStep.onnx` (eve TS bundle) — and falls
 back to the teacher step, then to classic turn-taking. The carried GRU state is
@@ -48,6 +51,11 @@ matched false-fire budgets the catches match — the student's yield head is
 compressed (L4 0.42×teacher), so a common threshold under-reads it) and Open Yap
 1K (59 onsets; L4 and L15 indistinguishable). See
 `bench-results/barge-live.md`.
+
+The ASR's own encoder does **not** expose L4: FluidAudio's
+`StreamingNemotronAsrManager` returns text and token timings, and the compiled
+encoder has no L4 output. The shipped L4 cut is a private export of the same
+Nemotron encoder; the true ASR tap is still open (#102).
 
 **Core AI AOT packaging constraint (2026-11-01 incident).** The AOT containers
 this machine produces (`MetalToolchain-v27.2.47.0`, `coreai-build-3605.6.3`)
@@ -107,6 +115,10 @@ soak passes on them.
   measurements stand.
 
 ## What must run per hop (measured, from the bundle's `model.safetensors`)
+
+> This is the L15 teacher/fallback anatomy. The shipped L4 cut stops at layer 4:
+> 106.0M params, 389 MB fp32, and the L4 student reads `hidden_states[4]`
+> (`bench-results/tier-l4/coreai`).
 
 | part | params | needed for |
 | --- | ---: | --- |

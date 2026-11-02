@@ -8,7 +8,7 @@ registry entry plus labels — not another bolted-on model.
 | File | Role |
 | --- | --- |
 | `registry.py` | **the investment surface** — every decision point: type, label source, loss, gate |
-| `model.py` | the student (width-256 2-layer GRU over two L15 streams + energy + floor state) and the unchanged rules-seam 8-vector |
+| `model.py` | the student (width-256 2-layer GRU over two 1,024-d feature streams — L15 or L4 — + energy + floor state) and the unchanged rules-seam 8-vector |
 | `featurize.py` | corpus → training shards: what the model sees + what the teacher answered + the teacher's events, per 80 ms frame |
 | `data.py` | the shard format (the wire between featurize, train and gate) |
 | `train.py` | distillation + label training, per-head score gate report, warm start for batch N+1 (`--selfcheck` for a synthetic smoke) |
@@ -22,8 +22,9 @@ registry entry plus labels — not another bolted-on model.
 
 ## Contract (unchanged above the seam)
 
-Same inputs as the teacher's turn-taker (caller L15 1,024-dim + agent L15 + frame
-energy + previous floor state per 80 ms frame), same 8-vector out (4 state logits,
+Same inputs as the teacher's turn-taker (caller/agent 1,024-d features — L15 for
+the teacher/L15 student, L4 for the shipped L4 student — + frame energy +
+previous floor state per 80 ms frame), same 8-vector out (4 state logits,
 hazard, yield, bc, p_end), same rules seam (`crates/idfon-voice/src/turns.rs`,
 `TurnRulesCABI`) — so `TurnShadow`, traits, and the decision log consume the student
 identically. Fail-open to classic is untouched.
@@ -74,7 +75,7 @@ the packers pick it up without a second path:
 | Consumer | Preference | State shape source |
 | --- | --- | --- |
 | `ios/Idfon/TurnShadow.swift` (CoreAI / CoreML) | `CoreAITurnModel`, `CoreMLTurnModel` | model description / step family |
-| `mac/Sources/Idfon/TurnShadow.swift` (CoreAI) | same, over the checkout's `bench-results/coreai` | step family |
+| `mac/Sources/Idfon/TurnShadow.swift` (CoreAI) | same, over the checkout's `bench-results/tier-l4/coreai` (L15 `bench-results/coreai` fallback) | step family |
 | `integrations/eve-idfon-voice/src/tyger/` | `bundle.ts` (`StudentStep.onnx`) | manifest `io.step.inputs.state` |
 | `scripts/pack-tyger-models.mjs` | ships both steps, student first | — |
 
