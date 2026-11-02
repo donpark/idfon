@@ -34,7 +34,10 @@ final class TurnCapture {
     func finish() -> URL? {
         guard !user.isEmpty else { return nil }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let name = "turn-\(ISO8601DateFormatter().string(from: started)).wav"
+        // No colons: the simulator/macOS path layer mangles them and
+        // `devicectl copy from` cannot address the file at all.
+        let stamp = ISO8601DateFormatter().string(from: started).replacingOccurrences(of: ":", with: "-")
+        let name = "turn-\(stamp).wav"
         let url = dir.appendingPathComponent(name)
         let frames = user.count
         var data = Data(capacity: 44 + frames * 4)
