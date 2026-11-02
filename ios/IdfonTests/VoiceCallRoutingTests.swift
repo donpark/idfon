@@ -17,9 +17,9 @@ final class VoiceCallRoutingTests: XCTestCase {
     }
 
     func testClientCascadeNeverRoutesToMediaCallDespiteServerPick() {
-        let catalog = [option(id: "kokoro-server", kind: .tts, side: .server)]
+        let catalog = [option(id: "phonon-server", kind: .tts, side: .server)]
         XCTAssertEqual(
-            VoiceCallRouting.decide(selection: (stt: nil, tts: "kokoro-server"),
+            VoiceCallRouting.decide(selection: (stt: nil, tts: "phonon-server"),
                                     catalog: catalog,
                                     signed: route(.clientCascade),
                                     holderTicket: true,
@@ -30,7 +30,7 @@ final class VoiceCallRoutingTests: XCTestCase {
     func testClientCascadeWithOnDevicePicksStaysOnDevice() {
         XCTAssertEqual(
             VoiceCallRouting.decide(selection: (stt: nil, tts: nil),
-                                    onDevice: (stt: "parakeet", tts: "kokoro"),
+                                    onDevice: (stt: "nemotron", tts: "phonon"),
                                     catalog: [],
                                     signed: route(.clientCascade),
                                     holderTicket: true,
