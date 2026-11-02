@@ -315,6 +315,7 @@
 					"-weak_framework",
 					FoundationModels,
 				);
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) PHONON_TTS";
 				PRODUCT_BUNDLE_IDENTIFIER = com.idfon.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -364,6 +365,7 @@
 					"-weak_framework",
 					FoundationModels,
 				);
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) PHONON_TTS";
 				PRODUCT_BUNDLE_IDENTIFIER = com.idfon.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
