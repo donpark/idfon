@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Build the content-addressed CDN tree for a built Phonon pack.
 
-Reads <pack>/bundle.json, verifies each listed file's size and SHA-256, and
+Reads <pack>/pack.json (the download index; `bundle.json` is the model
+metadata and is one of the listed files), verifies each listed file's size and
+SHA-256, and
 places a hardlink at <pack>/sha256/<sha256> (copying if the filesystem refuses
 the link). The app downloads `base/sha256/<sha256>` and installs at the
 manifest `path`, so the Core ML layout and voice filenames are preserved while
@@ -28,7 +30,7 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__.strip())
     pack = sys.argv[1]
-    with open(os.path.join(pack, "bundle.json")) as f:
+    with open(os.path.join(pack, "pack.json")) as f:
         manifest = json.load(f)
     out = os.path.join(pack, "sha256")
     os.makedirs(out, exist_ok=True)
