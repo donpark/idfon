@@ -82,4 +82,10 @@ docs/voice-audition-audio/
 # voice-compare renders and blended voices (regenerate: scripts/phonon-voice-compare.py)
 docs/voice-compare-audio/
 
-.env
+# radio programming content: downloaded/submitted audio is not ours to publish
+agents/radio/content/
+agents/radio/briefs/
+agents/radio/segments/
+agents/radio/page/
+agents/radio/*.wav
+agents/radio/instances/
