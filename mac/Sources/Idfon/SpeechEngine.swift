@@ -9,13 +9,16 @@ import PhononTTS
 /// Reply-speech backend for the on-device voice loop (macOS port of
 /// `ios/Idfon/SpeechEngine.swift`).
 ///
-/// Kokoro (FluidAudio, ANE) is the default for English and Apple's
-/// `AVSpeechSynthesizer` is the default for every other system language (and
-/// the offline fallback, and the explicit alternative). Selection:
+/// Phonon 31m (streaming) is the default when the build carries it
+/// (`PHONON_TTS`, the default since the 2026-10-25 ruling: the duplex loop
+/// needs a streaming mouth). Without Phonon the default is Kokoro (FluidAudio,
+/// ANE) for English and Apple's `AVSpeechSynthesizer` for every other system
+/// language (also the offline fallback and the explicit alternative).
+/// Selection:
 /// `IDFON_TTS=kokoro|pocket|phonon|apple` (env) or `-ttsbackend <name>`
 /// (launch arg). `pocket` is the Pocket TTS trial (voice cloning;
 /// `IDFON_TTS_VOICE`, `IDFON_TTS_CLONE` — see `PocketTtsEngine`). `phonon` is
-/// the Phonon 31m option, only in builds made with `IDFON_TTS_PHONON=1`
+/// the Phonon 31m mouth, in the build by default (`IDFON_TTS_PHONON=0` opts out)
 /// (see `PhononTtsEngine`).
 @MainActor
 protocol TtsEngine: AnyObject {

@@ -89,15 +89,18 @@ class EncMixed(torch.nn.Module):
         return x16.to(torch.float32)
 
 
-def enc_model(asr, prec):
+def enc_model(asr, prec, cut=15):
     """The encoder for a rung (export and gate share one builder)."""
     if prec == "float16":
+        assert cut == 15, "the fp16 mixed rung is L15-only"
         return EncMixed(asr.eval())
+    if cut != 15:
+        return CE.EncCutWrap(asr, cut).to(torch.float32).eval()
     return CE.EncWrap(asr).to(torch.float32).eval()
 
 
-def export_encoder(asr, dtype, prec):
-    enc = enc_model(asr, prec)
+def export_encoder(asr, dtype, prec, cut=15):
+    enc = enc_model(asr, prec, cut)
     ex = {"feats": torch.zeros(1, 33, 128)}
     # mel lengths are 8k-7 (33, 41, ..., 801): the derived dim the startup
     # contract needs (same expression as the Core ML enc-dyn export)
@@ -107,7 +110,8 @@ def export_encoder(asr, dtype, prec):
     prog = export_to_coreai(
         enc, ex, dynamic_shapes=dyn,
         input_names=("mel_features",), output_names=("encoder_hidden_state",))
-    path = OUT / f"tyger_encoder_{prec}.aimodel"
+    suffix = "" if cut == 15 else f"L{cut}_"
+    path = OUT / f"tyger_encoder_{suffix}{prec}.aimodel"
     shutil.rmtree(path, ignore_errors=True)
     prog.save_asset(path, rt.AIModelAssetMetadata())
     return path
@@ -171,6 +175,9 @@ async def gate(path, feeds, wants, units=("gpu", "cpu")):
     return ok_all
 
 
+PLATFORM = "macOS"
+
+
 def compile_asset(path, arch):
     """AOT-compile `path` into `<name>.compiled.aimodel/<name>.<arch>.aimodelc`.
     Swift loaders prefer that container: loading a source .aimodel makes the
@@ -203,7 +210,7 @@ def compile_asset(path, arch):
         print(f"[compile] {kid.name} up to date")
         return
     subprocess.run(["xcrun", "coreai-build", "compile", str(path),
-                    "--output", str(out), "--platform", "macOS",
+                    "--output", str(out), "--platform", PLATFORM,
                     "--preferred-compute", "gpu", "--architecture", arch],
                    check=True)
     sz = sum(f.stat().st_size for f in out.rglob("*") if f.is_file()) / 1e6
@@ -250,10 +257,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="both", choices=["both", "enc", "step", "gate"])
     ap.add_argument("--precision", default="float32", choices=["float32", "float16"])
+    ap.add_argument("--cut", type=int, default=15, help="encoder layer the graph stops at (B2: 4)")
+    ap.add_argument("--out-dir", default=None, help="override bench-results/coreai")
+    ap.add_argument("--platform", default="macOS", choices=["macOS", "iOS"])
     ap.add_argument("--arch", default=None,
                     help="arch token for the AOT compile (default: read from an "
                          "existing compiled container, e.g. h16s)")
     args = ap.parse_args()
+
+    global OUT, PLATFORM
+    PLATFORM = args.platform
+    if args.out_dir:
+        OUT = Path(args.out_dir)
 
     import torch  # noqa
     asr, proc, tt, _cfg = CE.bundle_load(Path(BUNDLE))
@@ -264,7 +279,7 @@ def main():
 
     enc_path = step_path = None
     if args.only in ("both", "enc"):
-        enc_path = export_encoder(asr, dtype, args.precision)
+        enc_path = export_encoder(asr, dtype, args.precision, args.cut)
         sz = sum(f.stat().st_size for f in enc_path.rglob("*") if f.is_file()) / 1e6
         print(f"[save] {enc_path} ({sz:.1f} MB)")
     if args.only in ("both", "step"):
@@ -275,9 +290,10 @@ def main():
     # gates: engine vs the same torch wrappers, on real fixture audio
     mels = fixture_inputs(asr, proc, dtype)
     if args.only in ("both", "enc", "gate"):
-        p = enc_path or OUT / f"tyger_encoder_{args.precision}.aimodel"
+        suffix = "" if args.cut == 15 else f"L{args.cut}_"
+        p = enc_path or OUT / f"tyger_encoder_{suffix}{args.precision}.aimodel"
         if p.exists():
-            enc = enc_model(asr, args.precision)
+            enc = enc_model(asr, args.precision, args.cut)
             feeds, wants = [], []
             with torch.no_grad():
                 for mel in mels:

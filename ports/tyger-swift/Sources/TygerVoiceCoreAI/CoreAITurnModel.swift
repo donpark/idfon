@@ -82,8 +82,7 @@ public final class CoreAITurnModel: TurnModel {
         let fp32 = (directory.appendingPathComponent("tyger_encoder_float32.aimodel"), step("float32"))
         let have = { (pair: (URL, URL?)) in
             guard let step = pair.1 else { return false }
-            return FileManager.default.fileExists(atPath: pair.0.path)
-                && FileManager.default.fileExists(atPath: step.path)
+            return Self.present(pair.0) && Self.present(step)
         }
         // fp32 is the gated reference rung. fp16 is opt-in via
         // IDFON_TURN_PRECISION=fp16 — and the fallback when only the fp16 pair
@@ -98,7 +97,7 @@ public final class CoreAITurnModel: TurnModel {
         self.stepModelName = stepURL.lastPathComponent
         // The student's GRU: 2 layers x width 256 (ports/tyger-student/model.py).
         self.stateCount = stepURL.lastPathComponent.hasPrefix("student_step_") ? 2 * 256 : 3 * 768
-        for u in [encURL, stepURL] where !FileManager.default.fileExists(atPath: u.path) {
+        for u in [encURL, stepURL] where !Self.present(u) {
             throw LoadError.missingArtifact(u.lastPathComponent)
         }
         let encModel = try Self.prepare(encURL, dynamic: true)
@@ -144,6 +143,18 @@ public final class CoreAITurnModel: TurnModel {
         self.gruIn = NDArray(descriptor: sd)
         self.gruOut = NDArray(descriptor: sn)
         self.clearState()
+    }
+
+    /// A tier may ship only the AOT container (the source `.aimodel` is 400 MB+
+    /// and the loader prefers the compiled child anyway). `prepare` derives the
+    /// container path from the source URL, so existence is container-aware here.
+    public static func present(_ url: URL) -> Bool {
+        if FileManager.default.fileExists(atPath: url.path) { return true }
+        let compiled = url.deletingLastPathComponent().appendingPathComponent(
+            url.deletingPathExtension().lastPathComponent + ".compiled.aimodel")
+        let kids = (try? FileManager.default.contentsOfDirectory(
+            at: compiled, includingPropertiesForKeys: nil)) ?? []
+        return kids.contains { $0.pathExtension == "aimodelc" }
     }
 
     private static func prepare(_ url: URL, dynamic: Bool) throws -> AIModel {

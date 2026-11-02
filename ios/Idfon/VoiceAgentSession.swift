@@ -26,7 +26,8 @@ final class VoiceAgentSession: NSObject {
 
     private let voice = OnDeviceVoice.shared
     /// Reply speech backend; resolved per contact at `start` (else the global
-    /// default: Apple fallback, Kokoro opt-in via `IDFON_TTS`).
+    /// default: Phonon streaming when the build carries it, otherwise the
+    /// language rule; per-engine opt-ins live in `SpeechEngines`).
     private var tts: TtsEngine = SpeechEngines.tts
     private var ttsBackend = SpeechEngines.backend
     /// Recognizer backend; resolved per contact at `start`.

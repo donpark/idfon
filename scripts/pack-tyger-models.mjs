@@ -35,17 +35,44 @@ const arg = (flag) => {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
 };
-const urlBase = arg("--url-base") ?? "https://huggingface.co/donpark/tyger-models/resolve/main";
+// Content-addressed by default (durable files: url_base/<sha256>, immutable).
+// `--asset name` emits the HF-style flat filenames for the mirror manifest.
+const assetMode = arg("--asset") ?? "hash";
+if (!["hash", "name"].includes(assetMode)) {
+  console.error(`--asset must be hash|name, got ${assetMode}`);
+  process.exit(2);
+}
+const urlBase = arg("--url-base") ?? (assetMode === "hash"
+  ? "https://files.idfon.net/sha256/"
+  : "https://huggingface.co/donpark/tyger-models/resolve/main");
+// AOT containers carry one child per architecture (`.h17p.aimodelc` = A18 Pro /
+// iPhone, `.h16s` = M4 / Mac). Tag entries so a device downloads only its own
+// child; untagged entries are shared by every platform.
+const iosArchs = (arg("--ios-arch") ?? "h17p").split(",");
+const macArchs = (arg("--mac-arch") ?? "h16s").split(",");
+const platformOf = (name) => {
+  const m = name.match(/\.([a-z0-9]+)\.aimodelc\//);
+  if (!m) return undefined;
+  if (iosArchs.includes(m[1])) return "ios";
+  if (macArchs.includes(m[1])) return "mac";
+  return undefined; // unknown arch token: ship to everyone rather than drop it
+};
+
 const out = resolve(arg("--out") ?? "dist/tyger-models");
 const all = args.includes("--all");
-const root = resolve("bench-results");
+const root = resolve(arg("--root") ?? "bench-results");
 
-const tiers = ["coreai", "coreml", "mlx"];
+const tiers = ["coreai", "coreml", "mlx", "onnx"];
 let bundles = all
-  ? tiers.flatMap((tier) =>
-      readdirSync(join(root, tier), { withFileTypes: true })
-        .filter((e) => e.name !== ".DS_Store")
-        .map((e) => `${tier}/${e.name}`))
+  ? tiers.flatMap((tier) => {
+      try {
+        return readdirSync(join(root, tier), { withFileTypes: true })
+          .filter((e) => e.name !== ".DS_Store")
+          .map((e) => `${tier}/${e.name}`);
+      } catch {
+        return []; // a tier this set does not carry (e.g. mlx on an app-only pack)
+      }
+    })
   : [
       "coreai/tyger_encoder_float32.aimodel",
       "coreai/student_step_float32.aimodel",
@@ -87,22 +114,30 @@ for (const bundle of bundles) {
   else walk(dir, bundle, picked);
   for (const f of picked) {
     const buf = readFileSync(f.path);
-    const asset = f.name.replaceAll("/", "__");
+    const sha = createHash("sha256").update(buf).digest("hex");
+    const asset = assetMode === "hash" ? sha : f.name.replaceAll("/", "__");
     writeFileSync(join(out, asset), buf);
-    files.push({
-      name: f.name,
-      asset,
-      sha256: createHash("sha256").update(buf).digest("hex"),
-      bytes: buf.length,
-    });
+    const platform = platformOf(f.name);
+    files.push({ name: f.name, asset, sha256: sha, bytes: buf.length,
+                 ...(platform ? { platform } : {}) });
     console.log(`  ${f.name}  ${(buf.length / 1e6).toFixed(0)} MB`);
   }
 }
 
+// The agent reads io.step.inputs.state to size the carried GRU state. Both
+// steps are packed; the student is preferred, so its state is the contract.
+const studentStep = files.some((f) => /student_step/i.test(f.name));
 const manifest = {
   version: 1,
   packed_from: "bench-results",
   url_base: urlBase,
+  io: {
+    step: {
+      inputs: { state: studentStep ? ["2", "1", "256"] : ["3", "1", "768"] },
+      outputs: { state_out: studentStep ? ["2", "1", "256"] : ["3", "1", "768"] },
+      contract: "act_db normalization ((db+50)/25 clamp) is baked into the graph",
+    },
+  },
   files,
 };
 writeFileSync(join(out, "manifest.json"), JSON.stringify(manifest, null, 2));
