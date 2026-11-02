@@ -16,10 +16,17 @@ text-only by design, see `corpus/voice-interactions/`).
 It is a soak rig, not a station browser. The number it produces is the
 agent-side JSONL record plus the phone's playout timeline, not an impression.
 
-Two things stay apart, deliberately:
+Three things stay apart, deliberately:
 
+- **the station** — `crates/idfon-radio`: the programme (schedule, clips,
+  frames) and nothing else. It knows no transport: an idfon one-way call is one
+  adapter, an HLS or HTTP stream would be another, all consuming the same port
+  (`Programme::sync` against the clock, then `Programme::frame`).
 - **programming** — what plays, when. Data (`schedule.json`), deterministic,
   no model, no network at call time.
+- **the idfon adapter** — `backend: "stream"` in `crates/idfon-voice-agent`:
+  pumps the programme into a one-way call's return leg, drains the caller's
+  leg, and writes the JSONL record. It owns transport, not taste.
 - **the jockey** — anything that *speaks between* items. Its non-speaking half
   is implemented: a segment generated from sourced facts fills an empty station
   (**Filler**, below). Live banter is not, and the call path never needs a
@@ -60,6 +67,20 @@ It is also the **most comparable** soak: every run plays identical audio, so a
 walk before a change and a walk after it differ only in the thing you changed.
 Programming buys realism and spends that comparability — use repeat mode to
 measure, programming to listen.
+
+## Config: station vs adapter
+
+Two files, so the boundary is visible:
+
+- `programme.json` — **station-owned**: `schedule`, `file` (the clip that loops
+  when nothing is scheduled), `topic`, `loop`. Paths are relative to the file.
+- `live.json` — **idfon-owned**: `backend`, `programme` (points at the file
+  above), `log`, `broadcast`, `voice_route`, and `public` for admission.
+
+`scripts/radio-program.mjs config` writes both into the instance directory with
+absolute paths (the holder resolves no relatives). A `live.json` with the old
+inline `schedule`/`file` keys still works — that is what the shipped
+`agents/radio/live.json` uses for the single-station case.
 
 ## Programming (optional)
 

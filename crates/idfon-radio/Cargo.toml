@@ -1,0 +1,11 @@
+[package]
+name = "idfon-radio"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+description = "Talk-radio station programming: schedule, clips, and the frames a transport pumps"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+serde_json = "1"

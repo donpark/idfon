@@ -1,0 +1,7 @@
+{
+  "_comment": "The station's programme: what plays and when (docs/live-radio.md). Station-owned — paths are relative to this file. `schedule` is the slot table (`scripts/radio-program.mjs compile` writes it); `file` is the clip that loops whenever no slot is active, so a station with no schedule is just this one clip; `topic` is what the station is about. The idfon adapter (live.json) points at this file and adds only transport concerns: backend, log, broadcast, voice routing, public admission.",
+  "schedule": "schedule.json",
+  "file": "fallback.wav",
+  "topic": "talk radio",
+  "loop": true
+}

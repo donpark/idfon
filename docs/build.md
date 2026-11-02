@@ -48,6 +48,7 @@ the iOS link args.
 | `native/src/*`, `native/build.zig`, `native/app.json` | `pnpm native build` |
 | `integrations/eve-idfon` or `agents/*` | `pnpm eve build` or `pnpm agent build <name>` |
 | `crates/idfon-voice`, `crates/idfon-voice-agent` | `pnpm voice build` (dylib + the `eve-idfon-voice` holder + the `agents/voice` bundle) |
+| `crates/idfon-radio` (station programming) | `cargo test -p idfon-radio`; the holder links it, so `pnpm voice build` ships it |
 | docs only | nothing |
 
 Note: `idfond` is a workspace member whose `build.rs` links the release c-FFI

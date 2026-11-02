@@ -39,7 +39,6 @@ pub mod cascade;
 #[cfg(feature = "gpt-live")]
 pub mod gpt_live;
 pub mod metrics;
-pub mod programming;
 pub mod relay;
 pub mod stream;
 pub use cascade::CascadeFactory;

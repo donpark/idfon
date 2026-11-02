@@ -26,6 +26,7 @@ eve-idfon = { path = "../eve-idfon" }
 futures-util = { version = "0.3", optional = true }
 idfon-core = { path = "../idfon-core" }
 idfon-live-media = { path = "../idfon-live-media" }
+idfon-radio = { path = "../idfon-radio" }
 idfon-protocol = { path = "../idfon-protocol" }
 idfon-voice = { path = "../idfon-voice", features = ["gateway"] }
 iroh = "1"
