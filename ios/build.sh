@@ -14,6 +14,9 @@ ios_dir="$root/ios"
 extra=()
 if [ "${IDFON_TTS_PHONON:-1}" = "1" ]; then
   extra=(SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PHONON_TTS')
+else
+  # The project sets PHONON_TTS by default; the opt-out must override it.
+  extra=(SWIFT_ACTIVE_COMPILATION_CONDITIONS='')
 fi
 
 xcodebuild -project "$ios_dir/Idfon.xcodeproj" -scheme Idfon \
