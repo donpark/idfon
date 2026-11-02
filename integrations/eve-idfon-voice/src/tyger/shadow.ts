@@ -36,7 +36,7 @@ export async function runShadow(opts: ShadowOptions): Promise<void> {
   const bundle = loadBundle();
   const enc = await ort.InferenceSession.create(bundle.encoderPath);
   const step = await ort.InferenceSession.create(bundle.stepPath);
-  const engine = new TygerEngine(enc, step);
+  const engine = new TygerEngine(enc, step, bundle.stateShape);
   const sess = new TurnSession();
   const resample = makeResampler();
   let pending: number[] = [];

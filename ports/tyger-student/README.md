@@ -47,10 +47,6 @@ identically. Fail-open to classic is untouched.
    the student with its own `<student>.traits.json` — optima don't transfer between
    models (see bench-results/gate-calibration.md). Always report **both** default and
    calibrated agreement: default = self-contained behavior, calibrated = product config.
-5. **Calibrate** (`calibrate.py`): fit the rules' threshold knobs per model and ship
-   the student with its own `<student>.traits.json` — optima don't transfer between
-   models (see bench-results/gate-calibration.md). Always report **both** default and
-   calibrated agreement: default = self-contained behavior, calibrated = product config.
 6. **Export** (done — all three delivery tiers, all gated):
    - ONNX (`export.py`): `StudentStep.onnx` (5.28 MB fp32; probs Δ 2.4e-7) and
      `StudentStepInt8.onnx` (2.16 MB int8 group-8; probs Δ 1.63e-3 ≤ 2e-3, 0 argmax
@@ -67,6 +63,23 @@ identically. Fail-open to classic is untouched.
    **QAT not needed** — every gate passes post-training. Env note: coreai-models
    installs from `~/dev/coreai-models/python` (the `~/dev/github/coreai-models`
    checkout is stale and its converter crashes on fused LayerNorm locs).
+
+## In the product (step swap, issue #104)
+
+`pnpm tyger build` stages each export beside the teacher's artifact
+(`bench-results/coreai/student_step_float32.*`, `bench-results/coreml/StudentStep.mlpackage`,
+`bench-results/onnx/StudentStep.onnx`), so every loader prefers the student and
+the packers pick it up without a second path:
+
+| Consumer | Preference | State shape source |
+| --- | --- | --- |
+| `ios/Idfon/TurnShadow.swift` (CoreAI / CoreML) | `CoreAITurnModel`, `CoreMLTurnModel` | model description / step family |
+| `mac/Sources/Idfon/TurnShadow.swift` (CoreAI) | same, over the checkout's `bench-results/coreai` | step family |
+| `integrations/eve-idfon-voice/src/tyger/` | `bundle.ts` (`StudentStep.onnx`) | manifest `io.step.inputs.state` |
+| `scripts/pack-tyger-models.mjs` | ships both steps, student first | — |
+
+Still open in #104: the live-call traits pass (the shipped triple is the
+teacher's), and the barge gate needs real interrupting onsets.
 
 ## The organic loop: new batches of real conversations
 

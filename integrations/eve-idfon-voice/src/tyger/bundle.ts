@@ -28,7 +28,13 @@ export interface TygerBundle {
   manifest: BundleManifest;
   encoderPath: string;
   stepPath: string;
+  /// The step's carried GRU state shape: teacher 3x768, student 2x256.
+  stateShape: number[];
 }
+
+/// Step preference: the distilled student first (5.3 MB), then the teacher's
+/// int8/fp32 steps. The encoder is shared by both.
+const STEP_ORDER = ["StudentStep.onnx", "StudentStepInt8.onnx", "TygerStepInt8.onnx", "TygerStep.onnx"];
 
 /// Load (and verify) the bundle. Throws naming the file on any mismatch.
 export function loadBundle(dir?: string): TygerBundle {
@@ -45,13 +51,18 @@ export function loadBundle(dir?: string): TygerBundle {
       throw new Error(`bundle corrupt: ${f.name} sha256 ${sha.slice(0, 12)} != ${f.sha256.slice(0, 12)}`);
     }
   }
+  const step = STEP_ORDER.map((name) => join(root, name)).find((path) => existsSync(path))
+    ?? join(root, "TygerStep.onnx");
+  // `io.step.inputs.state` is the packer's contract (`pack-bundle.mjs`). Older
+  // bundles predate it — they only ever carried the teacher's 3x768 state.
+  const io = manifest.io?.step as { inputs?: Record<string, string[]> } | undefined;
+  const dims = io?.inputs?.state?.map(Number);
+  const stateShape = dims?.length === 3 && dims.every(Number.isFinite) ? dims : [3, 1, 768];
   return {
     dir: root,
     manifest,
     encoderPath: join(root, "TygerEncoderDyn.onnx"),
-    // the P0 int8-stored step (GRU+fuse int8 group-16, heads fp32) when packed
-    stepPath: existsSync(join(root, "TygerStepInt8.onnx"))
-      ? join(root, "TygerStepInt8.onnx")
-      : join(root, "TygerStep.onnx"),
+    stepPath: step,
+    stateShape,
   };
 }

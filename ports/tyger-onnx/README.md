@@ -76,8 +76,12 @@ codec-round-tripped audio and `license: other` (internal evaluation only).
 node ports/tyger-onnx/pack-bundle.mjs   # -> ~/.idfon/models/tyger/ + manifest.json (sha256 per file)
 ```
 
-Prefers `TygerStepInt8.onnx` when present (packed as the step; `bundle.ts`'s
-`stepPath` follows), else the fp32 pair.
+Step preference (both sides follow the same order): `StudentStep.onnx` (the
+distilled student, 5.3 MB — staged here by `pnpm tyger build`), then
+`TygerStepInt8.onnx`, then the fp32 pair. `manifest.io.step.inputs.state`
+carries the step's carried-state shape (student `2,1,256` / teacher `3,1,768`),
+which is how `bundle.ts` and `engine.ts` size the GRU state — one bundle carries
+one step; the fallback above the seam is classic turn-taking.
 
 `integrations/eve-idfon-voice/src/tyger/bundle.ts` verifies every byte before
 use (`IDFON_TYGER_BUNDLE` overrides the location). `manifest.url_base` is the

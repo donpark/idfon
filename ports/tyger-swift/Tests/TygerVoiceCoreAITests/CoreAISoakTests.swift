@@ -36,6 +36,10 @@ final class CoreAISoakTests: XCTestCase {
     }
 
     func testRuntimeMatchesTheOracle() throws {
+        // The expectations are the teacher tier's: pin it (the loader prefers
+        // the distilled student when the checkout has one).
+        setenv("IDFON_TURN_STEP", "tyger", 1)
+        defer { unsetenv("IDFON_TURN_STEP") }
         let model = try modelOrSkip()
         let here = URL(fileURLWithPath: #filePath)
         let pkg = here.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

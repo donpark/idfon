@@ -13,7 +13,9 @@ import TygerVoiceMLX
 /// and BARGE see the agent's own voice. Gaps: the Apple-TTS fallback plays via
 /// AVSpeechSynthesizer (system audio, no buffer seam) and a looping tone ring
 /// is fed once. Hops pair 1:1 from the two taps' queues.
-/// Tier: Core AI on macOS 27+ (oracle-exact), MLX below.
+/// Tier: Core AI on macOS 27+ (oracle-exact; the distilled StudentStep step is
+/// preferred when the checkout's `bench-results/coreai` has it, teacher
+/// otherwise), MLX below.
 final class TurnShadow: AudioPlaybackObserver {
     private let engine: TurnEngine
     private let tap: TurnTap
@@ -72,11 +74,13 @@ final class TurnShadow: AudioPlaybackObserver {
             return nil
         }
         var rung: String?
+        var step: String?
         if #available(macOS 27.0, *), let core = model as? CoreAITurnModel {
             rung = core.usesFloat16 ? "fp16" : "fp32"
+            step = core.stepModelName
         }
-        Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))\(rung.map { "(\($0))" } ?? "")")
-        Diag.log("turnmodel", ["tier": String(describing: type(of: model)), "rung": rung ?? "-", "ok": true])
+        Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))\(rung.map { "(\($0))" } ?? "")\(step.map { ", \($0)" } ?? "")")
+        Diag.log("turnmodel", ["tier": String(describing: type(of: model)), "rung": rung ?? "-", "step": step ?? "-", "ok": true])
         return TurnShadow(model: model)
     }
 

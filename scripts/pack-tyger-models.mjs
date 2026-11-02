@@ -12,11 +12,15 @@
 //
 //   node scripts/pack-tyger-models.mjs [--url-base URL] [--out DIR] [--all] [--only TIER]
 //
-// Default set: the coreai fp32 pair + their A18 (.h17p) AOT containers (the
-// gated default rung since 2026-10-27 — the fp16 pair drifts `p_end` near the
-// endpoint gate and is opt-in, side-loaded), the three coreml packages the
-// pre-27 loader needs (TygerEncoder, TygerEncoderDyn, TygerStep), and the
-// quantized MLX int8 chain (the pre-27 mac tier).
+// Default set: the coreai fp32 encoder + the distilled StudentStep (the
+// 5.3 MB step the loaders prefer) + their AOT containers (the gated default
+// rung since 2026-10-27 — the fp16 pair drifts `p_end` near the endpoint gate
+// and is opt-in, side-loaded), the teacher's TygerStep as the fallback step,
+// the pre-27 coreml packages (TygerEncoder, TygerEncoderDyn, StudentStep,
+// TygerStep), and the quantized MLX int8 chain (the pre-27 mac tier).
+//
+// AOT containers are packed as their whole `*.compiled.aimodel` directory: the
+// per-arch `<name>.<arch>.aimodelc` child depends on the build host.
 // `--only TIER` packs just that tier's default set (when other bundles are
 // not on this machine). `--all` packs every bundle incl. fp32 fallbacks and
 // bench variants (Q8/…).
@@ -44,11 +48,14 @@ let bundles = all
         .map((e) => `${tier}/${e.name}`))
   : [
       "coreai/tyger_encoder_float32.aimodel",
+      "coreai/student_step_float32.aimodel",
       "coreai/tyger_step_float32.aimodel",
-      "coreai/tyger_encoder_float32.compiled.aimodel/tyger_encoder_float32.h17p.aimodelc",
-      "coreai/tyger_step_float32.compiled.aimodel/tyger_step_float32.h17p.aimodelc",
+      "coreai/tyger_encoder_float32.compiled.aimodel",
+      "coreai/student_step_float32.compiled.aimodel",
+      "coreai/tyger_step_float32.compiled.aimodel",
       "coreml/TygerEncoder.mlpackage",
       "coreml/TygerEncoderDyn.mlpackage",
+      "coreml/StudentStep.mlpackage",
       "coreml/TygerStep.mlpackage",
       "mlx/TygerChainInt8.safetensors",
     ];

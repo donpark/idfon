@@ -28,6 +28,9 @@ public final class CoreAITurnModel: TurnModel {
     /// Which rung loaded: the shipping fp16 pair when present, else the fp32
     /// exact tier (acceptance envelopes differ — see CoreAISoakTests).
     public let usesFloat16: Bool
+    /// Which step loaded ("tyger_step_…" / "student_step_…") — the decision log
+    /// needs it when validating a tier on live calls.
+    public let stepModelName: String
 
     private let stepFn: InferenceFunction
     private let stepInNames: [String]
@@ -35,10 +38,12 @@ public final class CoreAITurnModel: TurnModel {
     private let stepInDescs: [String: NDArrayDescriptor]
     private let stepOutDescs: [String: NDArrayDescriptor]
 
-    // The carried GRU state (3, 1, 768), double-buffered so a step can write
-    // gru_state_next while gru_state is still in flight.
+    // The carried GRU state, double-buffered so a step can write gru_state_next
+    // while gru_state is still in flight.
     private var gruIn: NDArray
     private var gruOut: NDArray
+    /// Floats in the carried state: teacher 3x768, student 2x256.
+    private let stateCount: Int
 
     /// The tier's default artifacts (export_turn.py).
     public convenience init() throws {
@@ -59,21 +64,37 @@ public final class CoreAITurnModel: TurnModel {
         // sit on the margin. fp16 returns as the default when the export
         // keeps the GRU and heads in fp32 (the mixed-precision exemption).
         let forceFP16 = ProcessInfo.processInfo.environment["IDFON_TURN_PRECISION"] == "fp16"
-        let fp16 = (directory.appendingPathComponent("tyger_encoder_float16.aimodel"),
-                    directory.appendingPathComponent("tyger_step_float16.aimodel"))
-        let fp32 = (directory.appendingPathComponent("tyger_encoder_float32.aimodel"),
-                    directory.appendingPathComponent("tyger_step_float32.aimodel"))
-        let have = { (pair: (URL, URL)) in
-            FileManager.default.fileExists(atPath: pair.0.path)
-                && FileManager.default.fileExists(atPath: pair.1.path)
+        // Step preference: the distilled student first (StudentStep, 5.3 MB),
+        // the teacher (56 MB) as fallback. The encoder is shared. Calibration
+        // override `IDFON_TURN_STEP=tyger` pins the teacher (A/B on live calls,
+        // and the oracle test's expectations are the teacher's).
+        let preferStudent = ProcessInfo.processInfo.environment["IDFON_TURN_STEP"] != "tyger"
+        let step = { (rung: String) -> URL? in
+            (preferStudent ? ["student_step_\(rung).aimodel", "tyger_step_\(rung).aimodel"]
+                           : ["tyger_step_\(rung).aimodel"])
+                .map { directory.appendingPathComponent($0) }
+                .first { FileManager.default.fileExists(atPath: $0.path) }
+        }
+        let fp16 = (directory.appendingPathComponent("tyger_encoder_float16.aimodel"), step("float16"))
+        let fp32 = (directory.appendingPathComponent("tyger_encoder_float32.aimodel"), step("float32"))
+        let have = { (pair: (URL, URL?)) in
+            guard let step = pair.1 else { return false }
+            return FileManager.default.fileExists(atPath: pair.0.path)
+                && FileManager.default.fileExists(atPath: step.path)
         }
         // fp32 is the gated reference rung. fp16 is opt-in via
         // IDFON_TURN_PRECISION=fp16 — and the fallback when only the fp16 pair
         // is installed (a side-load), so an install without the fp32 pair
         // never loses the turn model. The ModelStore delivers the fp32 pair.
         let useFP16 = have(fp16) && (forceFP16 || !have(fp32))
-        let (encURL, stepURL) = useFP16 ? fp16 : fp32
+        let encURL = useFP16 ? fp16.0 : fp32.0
+        guard let stepURL = useFP16 ? fp16.1 : fp32.1 else {
+            throw LoadError.missingArtifact("step_float\(useFP16 ? 16 : 32).aimodel")
+        }
         self.usesFloat16 = useFP16
+        self.stepModelName = stepURL.lastPathComponent
+        // The student's GRU: 2 layers x width 256 (ports/tyger-student/model.py).
+        self.stateCount = stepURL.lastPathComponent.hasPrefix("student_step_") ? 2 * 256 : 3 * 768
         for u in [encURL, stepURL] where !FileManager.default.fileExists(atPath: u.path) {
             throw LoadError.missingArtifact(u.lastPathComponent)
         }
@@ -112,7 +133,8 @@ public final class CoreAITurnModel: TurnModel {
         self.stepInDescs = ins
         self.stepOutDescs = outs
 
-        // gru_state is the (3, 1, 768) input and gru_state_next its twin output
+        // gru_state is the carried-state input and gru_state_next its twin output
+        // (sized by the loaded tier: teacher 3x768, student 2x256)
         guard let sd = ins["gru_state"], let sn = outs["gru_state_next"] else {
             throw LoadError.missingFunction("gru_state")
         }
@@ -161,8 +183,8 @@ public final class CoreAITurnModel: TurnModel {
     }
 
     private func clearState() {
-        fillNDArray(&gruIn, as: Float.self, count: 3 * 768) { _ in 0 }
-        fillNDArray(&gruOut, as: Float.self, count: 3 * 768) { _ in 0 }
+        fillNDArray(&gruIn, as: Float.self, count: stateCount) { _ in 0 }
+        fillNDArray(&gruOut, as: Float.self, count: stateCount) { _ in 0 }
     }
 
     public func encode(_ window: [Float]) -> [[Float]] {
