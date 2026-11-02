@@ -456,9 +456,12 @@ impl VoiceRoute {
     pub fn stt_side(&self) -> VoiceHalf {
         self.stt.unwrap_or(match self.mode {
             VoiceMode::ClientCascade => VoiceHalf::Client,
-            VoiceMode::ServerCascade | VoiceMode::NativeDuplex | VoiceMode::Delegated => {
-                VoiceHalf::Server
-            }
+            // Broadcast runs neither half; `server` keeps "the holder owns the
+            // audio" true without inventing a third ownership answer.
+            VoiceMode::ServerCascade
+            | VoiceMode::NativeDuplex
+            | VoiceMode::Delegated
+            | VoiceMode::Broadcast => VoiceHalf::Server,
         })
     }
 
@@ -466,9 +469,10 @@ impl VoiceRoute {
     pub fn tts_side(&self) -> VoiceHalf {
         self.tts.unwrap_or(match self.mode {
             VoiceMode::ClientCascade => VoiceHalf::Client,
-            VoiceMode::ServerCascade | VoiceMode::NativeDuplex | VoiceMode::Delegated => {
-                VoiceHalf::Server
-            }
+            VoiceMode::ServerCascade
+            | VoiceMode::NativeDuplex
+            | VoiceMode::Delegated
+            | VoiceMode::Broadcast => VoiceHalf::Server,
         })
     }
 }
@@ -487,6 +491,9 @@ pub enum VoiceMode {
     ClientCascade,
     /// A separate voice agent speaks/renders for the peer.
     Delegated,
+    /// One-way: the holder plays audio to the caller and never listens.
+    /// A radio station, a talk-radio topic contact, a stream soak source.
+    Broadcast,
 }
 
 /// The voice agent that speaks for a `delegated` peer.

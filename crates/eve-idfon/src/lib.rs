@@ -1451,7 +1451,7 @@ async fn handle_message(
         let voice_mode = voice_route_from_live_params(&live_params).mode;
         if !matches!(
             voice_mode,
-            VoiceMode::NativeDuplex | VoiceMode::ServerCascade
+            VoiceMode::NativeDuplex | VoiceMode::ServerCascade | VoiceMode::Broadcast
         ) {
             tracing::info!(
                 target: "idfon.holder",

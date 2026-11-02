@@ -39,11 +39,14 @@ pub mod cascade;
 #[cfg(feature = "gpt-live")]
 pub mod gpt_live;
 pub mod metrics;
+pub mod programming;
 pub mod relay;
+pub mod stream;
 pub use cascade::CascadeFactory;
 #[cfg(feature = "gpt-live")]
 pub use gpt_live::GptLiveFactory;
 pub use relay::RelayFactory;
+pub use stream::StreamFactory;
 
 /// The async result of running one backend for one call.
 pub type BackendFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
@@ -382,6 +385,16 @@ fn apply_voice_selection(
     tts_side: Option<&str>,
 ) -> Value {
     if stt.is_none() && tts.is_none() && stt_side.is_none() && tts_side.is_none() {
+        return params.clone();
+    }
+    // A one-way source owns the call: a per-contact engine pick must not
+    // re-route it into a cascade that waits for caller audio.
+    if params
+        .get("voice_route")
+        .and_then(|route| route.get("mode"))
+        .and_then(Value::as_str)
+        == Some("broadcast")
+    {
         return params.clone();
     }
     // The engine-declared options (bridge `voice.options`) are advertisement
