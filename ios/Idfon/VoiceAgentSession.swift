@@ -254,8 +254,13 @@ final class VoiceAgentSession: NSObject {
                 }
             }
             // The line is answered only once the agent is about to speak, so the
-            // cue has no gap after it.
-            if !stopRequested { CallTonePlayer.shared.start(.answered) }
+            // cue has no gap after it. Mirror it to the system call in the same
+            // turn (an agent call is a CallKit call, which is what keeps call
+            // audio audible with the Ring/Silent switch on).
+            if !stopRequested {
+                CallKitController.shared.mirror(owner: .agent, phase: .inCall)
+                CallTonePlayer.shared.start(.answered)
+            }
             if let greeting, !greeting.spoken.isEmpty, !stopRequested {
                 setState(.speaking(greeting.spoken))
                 _ = await speak(greeting.spoken)
@@ -586,6 +591,9 @@ final class VoiceAgentSession: NSObject {
         noSpeechTurns = 0
         silencePrompted = false
         setState(.idle)
+        // Tell the system the call is over (no-op when this session was never
+        // mirrored — remote voice-agent calls), before the end cue plays.
+        CallKitController.shared.mirror(owner: .agent, phase: .idle)
         // Play the end cue, then release the session once it has played out.
         CallTonePlayer.shared.start(.ended)
         Task { @MainActor [weak self] in

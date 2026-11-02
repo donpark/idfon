@@ -18,9 +18,13 @@ import CallKit
 final class CallKitController: NSObject, CXProviderDelegate {
     static let shared = CallKitController()
 
-    /// Which machine a mirrored call belongs to — `LiveCall` and `VideoCall`
-    /// notify independently and must not end each other's system call.
-    enum Owner { case live, video }
+    /// Which machine a mirrored call belongs to — `LiveCall`, `VideoCall` and
+    /// the on-device voice agent notify independently and must not end each
+    /// other's system call. `.agent` exists for the audio semantics: a
+    /// CallKit-owned session is call audio and ignores the Ring/Silent switch,
+    /// while an app-configured `.playAndRecord` session is muted by it (the
+    /// 2026-11-01 "answered, heard nothing" report).
+    enum Owner { case live, video, agent }
 
     /// The lifecycle phase the machines report on every state change.
     enum Phase { case incoming, calling, inCall, idle }
@@ -195,6 +199,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
         switch call.owner {
         case .live: if case .inCall = LiveCall.shared.state { return true }
         case .video: if VideoCall.shared.state == .inCall { return true }
+        case .agent: if VoiceAgentSession.shared.isActive { return true }
         }
         return false
     }
@@ -283,11 +288,13 @@ final class CallKitController: NSObject, CXProviderDelegate {
     /// Wraps a machine's dial in the system call UI: `body` runs when the
     /// system performs `CXStartCallAction`, and the audio engine waits for
     /// `didActivate` (AudioIO defers while CallKit owns the session).
-    func startOutgoing(peerId: String, video: Bool, body: @escaping () -> Void) {
+    func startOutgoing(
+        peerId: String, video: Bool, owner: Owner? = nil, body: @escaping () -> Void
+    ) {
         let uuid = UUID()
         current = Call(
             uuid: uuid, peerId: peerId,
-            owner: video ? .video : .live,
+            owner: owner ?? (video ? .video : .live),
             video: video, outgoing: true)
         startBody = body
         AudioIO.shared.callKitWillStart()
@@ -475,6 +482,8 @@ final class CallKitController: NSObject, CXProviderDelegate {
                     LiveCall.shared.decline()
                 } else if call.owner == .video {
                     VideoCall.shared.hangUp()
+                } else if call.owner == .agent {
+                    VoiceAgentSession.shared.stop()
                 } else {
                     LiveCall.shared.hangUp()
                 }
@@ -491,6 +500,8 @@ final class CallKitController: NSObject, CXProviderDelegate {
                     VideoCall.shared.hangUp()
                 } else if LiveCall.shared.state != .idle {
                     LiveCall.shared.hangUp()
+                } else if VoiceAgentSession.shared.isActive {
+                    VoiceAgentSession.shared.stop()
                 }
             }
             gate.fulfill()
@@ -499,6 +510,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
             switch current?.owner {
             case .live: LiveCall.shared.setAudioEnabled(!muted.isMuted)
             case .video: VideoCall.shared.setAudioEnabled(!muted.isMuted)
+            case .agent: VoiceAgentSession.shared.setAudioEnabled(!muted.isMuted)
             case nil: break
             }
             gate.fulfill()
@@ -540,6 +552,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
         switch call.owner {
         case .live: LiveCall.shared.hangUp()
         case .video: VideoCall.shared.hangUp()
+        case .agent: VoiceAgentSession.shared.stop()
         }
     }
 
