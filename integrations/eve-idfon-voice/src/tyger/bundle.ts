@@ -10,6 +10,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import type { Thresholds } from "./rules.ts";
+
 export interface BundleFile {
   name: string;
   bytes: number;
@@ -30,6 +32,9 @@ export interface TygerBundle {
   stepPath: string;
   /// The step's carried GRU state shape: teacher 3x768, student 2x256.
   stateShape: number[];
+  /// The student's calibrated rules knobs (`student.traits.json`) — thresholds
+  /// are per-model and do not transfer from the teacher. null: bundle defaults.
+  traits: Partial<Thresholds> | null;
 }
 
 /// Step preference: the distilled student first (5.3 MB), then the teacher's
@@ -58,11 +63,22 @@ export function loadBundle(dir?: string): TygerBundle {
   const io = manifest.io?.step as { inputs?: Record<string, string[]> } | undefined;
   const dims = io?.inputs?.state?.map(Number);
   const stateShape = dims?.length === 3 && dims.every(Number.isFinite) ? dims : [3, 1, 768];
+  // The student ships its own calibrated knobs beside the step (the teacher's
+  // optimum costs it ~9 pts of event agreement on live audio). A bundle packed
+  // before 2026-11-01 has none: fall back to the rules defaults.
+  let traits: Partial<Thresholds> | null = null;
+  const traitsPath = join(root, "student.traits.json");
+  if (step.includes("StudentStep") && existsSync(traitsPath)) {
+    const decider = (JSON.parse(readFileSync(traitsPath, "utf8")) as { decider?: Partial<Thresholds> })
+      .decider;
+    if (decider) traits = decider;
+  }
   return {
     dir: root,
     manifest,
     encoderPath: join(root, "TygerEncoderDyn.onnx"),
     stepPath: step,
     stateShape,
+    traits,
   };
 }

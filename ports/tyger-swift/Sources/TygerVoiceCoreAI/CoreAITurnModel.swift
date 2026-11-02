@@ -31,6 +31,8 @@ public final class CoreAITurnModel: TurnModel {
     /// Which step loaded ("tyger_step_…" / "student_step_…") — the decision log
     /// needs it when validating a tier on live calls.
     public let stepModelName: String
+    /// Where the tier loaded from (the per-model `student.traits.json` sits here).
+    public let directory: URL
 
     private let stepFn: InferenceFunction
     private let stepInNames: [String]
@@ -54,6 +56,7 @@ public final class CoreAITurnModel: TurnModel {
     }
 
     public init(directory: URL) throws {
+        self.directory = directory
         // Rung selection (2026-10-27): **fp32 by default**, fp16 opt-in via
         // IDFON_TURN_PRECISION=fp16. The fp16 pair (the 2026-10-21 shipping
         // ruling) drifts `p_end` by ~0.03 — enough to shave near-threshold

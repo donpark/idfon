@@ -40,21 +40,27 @@ if (!step) {
   console.error(`no step in ${src} — run ports/tyger-onnx/export_step.py [--dyn] or the student export first`);
   process.exit(2);
 }
+// The student's calibrated rules knobs travel with the step (per-model
+// thresholds; the agent applies them to its TurnSession).
+const TRAITS = "student.traits.json";
+const traits = join(root, "ports/tyger-student", TRAITS);
 const FILES = [
   "TygerEncoderDyn.onnx",
   "TygerEncoderDyn.onnx.data",
   ...step.files,
+  ...(step.name.startsWith("StudentStep") && existsSync(traits) ? [TRAITS] : []),
 ];
+const source = (name) => (name === TRAITS ? traits : join(src, name));
 for (const f of FILES) {
-  if (!existsSync(join(src, f))) {
-    console.error(`missing ${join(src, f)} — the ${step.name} pair is incomplete`);
+  if (!existsSync(source(f))) {
+    console.error(`missing ${source(f)} — the ${step.name} pair is incomplete`);
     process.exit(2);
   }
 }
 
 mkdirSync(out, { recursive: true });
 const files = FILES.map((name) => {
-  const from = join(src, name);
+  const from = name === TRAITS ? traits : join(src, name);
   const to = join(out, name);
   copyFileSync(from, to);
   const buf = readFileSync(to);

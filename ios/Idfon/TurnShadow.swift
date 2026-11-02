@@ -260,9 +260,10 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         if #available(iOS 27.0, *) {
             do {
                 let coreai = try CoreAITurnModel(directory: dir.appendingPathComponent("coreai"))
-                Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU, \(coreai.stepModelName))")
-                Diag.log("turnmodel", ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32", "step": coreai.stepModelName, "ok": true])
-                return TurnShadow(model: coreai)
+                let traits = traitsJSON(in: coreai.directory, step: coreai.stepModelName)
+                Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU, \(coreai.stepModelName), traits \(traits == nil ? "default" : "student"))")
+                Diag.log("turnmodel", ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32", "step": coreai.stepModelName, "traits": traits == nil ? "default" : "student", "ok": true])
+                return TurnShadow(model: coreai, traits: traits)
             } catch {
                 // The 2026-10-27 class: an install can end up with no usable
                 // turn pair — record why the tier failed.
@@ -288,13 +289,27 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
             Diag.log("turnmodel", ["tier": "coreml", "ok": false, "error": "load failed"])
             return nil
         }
-        Automation.mark("turn-shadow: tier CoreML (fp16/ANE, \(model.stepModelName))")
-        Diag.log("turnmodel", ["tier": "coreml", "rung": "fp16-ane", "step": model.stepModelName, "ok": true])
-        return TurnShadow(model: model)
+        let traits = traitsJSON(in: dir, step: model.stepModelName)
+        Automation.mark("turn-shadow: tier CoreML (fp16/ANE, \(model.stepModelName), traits \(traits == nil ? "default" : "student"))")
+        Diag.log("turnmodel", ["tier": "coreml", "rung": "fp16-ane", "step": model.stepModelName, "traits": traits == nil ? "default" : "student", "ok": true])
+        return TurnShadow(model: model, traits: traits)
     }
 
-    private init(model: TurnModel) {
-        engine = TurnEngine(model: model, rules: TurnRulesCABI())
+    /// The rules knobs that travel with the student step (`student.traits.json`:
+    /// `{"name", "decider": {ep_thr, …}}`) — thresholds are per-model and the
+    /// teacher's triple costs the student ~9 pts of event agreement on live
+    /// audio. nil (teacher step or no file): the bundled live-tuned defaults.
+    private static func traitsJSON(in dir: URL, step: String) -> String? {
+        guard step.hasPrefix("StudentStep") || step.hasPrefix("student_step_") else { return nil }
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("student.traits.json")),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let decider = root["decider"],
+              let json = try? JSONSerialization.data(withJSONObject: decider) else { return nil }
+        return String(data: json, encoding: .utf8)
+    }
+
+    private init(model: TurnModel, traits: String? = nil) {
+        engine = TurnEngine(model: model, rules: TurnRulesCABI(thresholdsJSON: traits))
         tap = TurnTap(hopSize: TurnRuntime.hopSamples)
         agentTap = TurnTap(hopSize: TurnRuntime.hopSamples)
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

@@ -151,9 +151,27 @@ Its train.py doubles as the per-head gate report.
 5.3 MB fp32, Core AI 5.3 MB fp32 + AOT container. Inside the product bars on every
 measured axis (endpoint latency/early/miss, barge catch/false, bc precision/recall
 — `pnpm tyger bench`); the rules thresholds are a per-model fit
-(`ports/tyger-student/student.traits.json`: 0.9146/0.4/0.4, matching tyger-s2s's
-live tuning). Remaining to swap it in: the L15/L4 tap (issue #102), live-call
-traits validation, and the app-loader swap.
+(`ports/tyger-student/student.traits.json`: **0.85/0.4/0.4** — `ep_thr` came from
+the live-call pass below, not from the teacher's 0.9146). Remaining: the L15/L4
+tap (issue #102) and the barge gate (needs real interrupting onsets).
+
+**Live-call traits pass (2026-11-01).** The app already records the model's own
+input during calls (`TurnCapture`: stereo 16 kHz, ch0 mic / ch1 agent), so the
+fit runs on real call acoustics instead of Mimi-codec corpus audio.
+`featurize.py --wavs DIR` turns those captures into label-free shards (teacher
+events are the reference; never training input), and `calibrate.py` fits the
+knobs. On 8 distinct captures (18.2 min, 244 teacher events, one Mac):
+
+| ep_thr | 0.75 | 0.80 | **0.85** | 0.88 | 0.90 | 0.9146 | 0.93 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| event agreement | 58.3% | 62.6% | **64.4%** | 59.0% | 56.5% | 55.7% | 49.2% |
+
+0.85 wins under leave-one-session-out every time (63.1–66.5%); bc 0.4 is
+confirmed (64.4% vs 60.6% at 0.5); **barge is unmeasured** — the captures
+contain zero interrupting onsets (0 BARGE events), so 0.4 stays untested. The
+same checkpoint on the corpus val split calibrates to the bundle defaults, i.e.
+the two audio paths genuinely disagree on `ep_thr` — the item-2 concern was real.
+Full detail: `bench-results/live-calibration.md` (regenerable).
 The task is temporal integration of two 1,024-dim feature streams + energy over
 a few seconds of history — a width-256 2-layer GRU (or a small dilated causal
 TCN) with linear heads fits it; the 768-wide recurrence exists because it shared

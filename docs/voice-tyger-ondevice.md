@@ -35,9 +35,11 @@ step loader now prefers the student over the teacher step —
 its AOT container beside it), `StudentStep.onnx` (eve TS bundle) — and falls
 back to the teacher step, then to classic turn-taking. The carried GRU state is
 read from the artifact (CoreML model description, the bundle's `io` contract)
-or sized by step family (CoreAI: student 2x256, teacher 3x768). The student's
-thresholds are still the teacher-tuned 0.9146/0.4/0.4 (`ports/tyger-student/
-student.traits.json`); calibrating them on live calls is the open half of #104.
+or sized by step family (CoreAI: student 2x256, teacher 3x768). The student ships
+its own live-calibrated triple **0.85/0.4/0.4** (`ports/tyger-student/
+student.traits.json`; the teacher's 0.9146 lost 9 pts of event agreement on real
+call captures — `bench-results/live-calibration.md`). Barge remains unmeasured
+(no interrupting onsets in the captures).
 
 - **Loading**: `CoreAITurnModel` loads the float32 pair by default (the
   2026-10-27 ruling: the fp16 pair drifts `p_end` ≈ 0.03 and never ends a

@@ -30,9 +30,9 @@ bench)
     "$PY" "$S/train.py" --selfcheck
     [ -f "$STUDENT/student.pt" ] || { echo "no student at bench-results/student — run pnpm tyger build"; exit 1; }
     echo
-    echo "== product metrics: teacher vs student at the shipped traits (0.9146/0.4/0.4)"
+    echo "== product metrics: teacher vs student at the shipped traits (0.85/0.4/0.4 — ep live-calibrated 2026-11-01)"
     "$PY" "$S/harness.py" --shards "$SHARDS/val" --student "$STUDENT/student.pt" \
-        --ep-thr 0.9146 --barge-thr 0.4 --bc-thr 0.4
+        --ep-thr 0.85 --barge-thr 0.4 --bc-thr 0.4
     echo
     echo "== decision agreement vs recorded teacher events (bundle defaults; 99% is the same-weights bar, not the student's)"
     "$PY" "$S/gate.py" --shards "$SHARDS/val" --student "$STUDENT/student.pt" || true
@@ -62,6 +62,10 @@ build)
         cp -R "$root/$src" "$root/$dest/"
     done
     cp "$root/bench-results/student-onnx/StudentStep.onnx" "$root/bench-results/onnx/"
+    # Per-model rules knobs travel with the step (the apps apply them; the
+    # teacher's triple is not the student's — bench-results/live-calibration.md)
+    cp "$S/student.traits.json" "$root/bench-results/coreai/"
+    cp "$S/student.traits.json" "$root/bench-results/coreml/"
     ;;
 clean)
     du -sh "$root/bench-results" 2>/dev/null || true

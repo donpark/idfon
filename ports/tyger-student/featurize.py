@@ -15,12 +15,23 @@ Runs the teacher on MPS (~4 min per 3-min session):
     .venv/bin/python ports/tyger-student/featurize.py --split train --sessions 6 \
         --out bench-results/student-shards/train
 
+Live captures (the apps' `TurnCapture` stereo 16 kHz wavs: ch0 = mic, ch1 =
+agent) take the same path with `--wavs DIR` instead of a dataset split. They
+carry no corpus labels, so a live shard is for `calibrate.py` / `gate.py`
+(teacher events are the reference) — never for training. Exact duplicate files
+(the capture pipeline restarts) are skipped by content hash.
+
+    .venv/bin/python ports/tyger-student/featurize.py --wavs "$HOME/Library/Application Support/Idfon/turn-captures" \
+        --out bench-results/live-shards
+
 Resumable: existing shards are skipped. shortcut: batch sizes are stand-up scale —
 accumulate later batches in more dirs (or the same one) and warm-start train.py
 --init on the grown set.
 """
 import argparse
+import hashlib
 import os
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -97,11 +108,22 @@ def run_session(oracle, wavs, feature_layers=(15,)):
     return frames, events
 
 
+def read_capture(path):
+    """A TurnCapture wav: stereo 16 kHz s16, ch0 mic / ch1 agent. -> wavs dict."""
+    with wave.open(str(path)) as w:
+        assert (w.getnchannels(), w.getsampwidth(), w.getframerate()) == (2, 2, SR), path
+        raw = w.readframes(w.getnframes())
+    pcm = np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+    return {"ch0": pcm[0::2], "ch1": pcm[1::2]}, raw
+
+
 def main():
     import torch
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default="val")
+    ap.add_argument("--wavs", default=None,
+                    help="live captures: a dir of TurnCapture wavs (no labels; calibrate/gate only)")
     ap.add_argument("--skip", type=int, default=0, help="skip this many sessions of the split first")
     ap.add_argument("--sessions", type=int, default=6)
     ap.add_argument("--minutes", type=float, default=3.0)
@@ -117,13 +139,51 @@ def main():
     args = ap.parse_args()
 
     oracle = Oracle(device=args.device).load_bundle()
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    layers = [int(x) for x in args.feature_layers.split(",")]
+
+    if args.wavs:
+        paths = sorted(Path(args.wavs).glob("*.wav"))
+        if not paths:
+            print(f"no wavs in {args.wavs}")
+            return
+        seen = {}
+        made = 0
+        for path in paths[args.skip:]:
+            if args.sessions and made >= args.sessions:
+                break
+            wavs, raw = read_capture(path)
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest in seen:
+                print(f"{path.name} = {seen[digest]} (duplicate), skipped", flush=True)
+                continue
+            seen[digest] = path.name
+            sid = f"live-{path.stem}"
+            out_path = out / f"{sid}.npz"
+            if out_path.exists():
+                print(f"{sid[:24]}… cached", flush=True)
+                made += 1
+                continue
+            limit = int(args.minutes * 60 * SR)
+            wavs = {ch: x[:limit] for ch, x in wavs.items()}
+            frames, events = run_session(oracle, wavs, feature_layers=layers)
+            L = len(frames["energy"])
+            if not L:
+                print(f"{sid[:24]}… no frames scored, skipped", flush=True)
+                continue
+            save_shard(out_path, sid, frames, {},
+                       events=(np.array([f for f, _ in events], np.int32),
+                               np.array([k for _, k in events])))
+            made += 1
+            print(f"{sid[:24]}… {L} frames ({L / GRID:.0f}s), {len(events)} events -> {out_path.name}", flush=True)
+        print(f"\n{made} live shard(s) in {out}")
+        return
+
     from datasets import load_dataset
     from transformers import AutoModel
 
     mimi = AutoModel.from_pretrained("kyutai/mimi", dtype=torch.float32).eval()
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-
     rows = iter(load_dataset(args.dataset, split=args.split, streaming=True))
     for _ in range(args.skip):
         next(rows)
@@ -150,7 +210,6 @@ def main():
                 print(f"{sid[:16]}… {n_int} interrupting onsets < {args.min_interrupts}, skipped", flush=True)
                 continue
         wavs = {ch: resample16k(decode_channel(mimi, codes[ch])) for ch in ("ch0", "ch1")}
-        layers = [int(x) for x in args.feature_layers.split(",")]
         frames, events = run_session(oracle, wavs, feature_layers=layers)
         L = len(frames["energy"])
         if not L:

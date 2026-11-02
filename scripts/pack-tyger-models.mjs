@@ -49,6 +49,7 @@ let bundles = all
   : [
       "coreai/tyger_encoder_float32.aimodel",
       "coreai/student_step_float32.aimodel",
+      "coreai/student.traits.json",
       "coreai/tyger_step_float32.aimodel",
       "coreai/tyger_encoder_float32.compiled.aimodel",
       "coreai/student_step_float32.compiled.aimodel",
@@ -56,6 +57,7 @@ let bundles = all
       "coreml/TygerEncoder.mlpackage",
       "coreml/TygerEncoderDyn.mlpackage",
       "coreml/StudentStep.mlpackage",
+      "coreml/student.traits.json",
       "coreml/TygerStep.mlpackage",
       "mlx/TygerChainInt8.safetensors",
     ];

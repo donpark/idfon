@@ -50,6 +50,24 @@ test("student step is preferred and its state shape comes from the manifest", ()
   rmSync(dir, { recursive: true, force: true });
 });
 
+/// Per-model thresholds: the student ships its calibrated knobs beside the step
+/// (the teacher's optimum is not the student's).
+test("student bundle carries its calibrated rules knobs", () => {
+  const dir = join(tmpdir(), `tyger-student-traits-test-${process.pid}`);
+  rmSync(dir, { recursive: true, force: true });
+  fakeBundle(dir, ["StudentStep.onnx"], {
+    step: { inputs: { state: ["2", "1", "256"] }, outputs: { state_out: ["2", "1", "256"] } },
+  });
+  writeFileSync(join(dir, "student.traits.json"), JSON.stringify({
+    name: "student",
+    decider: { ep_thr: 0.85, ep_deb: 2, barge_thr: 0.4, barge_deb: 2, bc_thr: 0.4, bc_deb: 2, bc_refractory: 15 },
+  }));
+  assert.equal(loadBundle(dir).traits?.ep_thr, 0.85);
+  rmSync(join(dir, "student.traits.json"));
+  assert.equal(loadBundle(dir).traits, null); // no file -> rules defaults
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("teacher bundle without an io contract keeps 3x768", () => {
   const dir = join(tmpdir(), `tyger-teacher-bundle-test-${process.pid}`);
   rmSync(dir, { recursive: true, force: true });

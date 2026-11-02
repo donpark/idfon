@@ -265,6 +265,25 @@ mod turn_tests {
         assert_eq!(idfon_voice::turns::Thresholds::default().ep_thr, 0.9146);
     }
 
+    /// The apps pass `ports/tyger-student/student.traits.json`'s `decider` to
+    /// `idfon_voice_turn_new` (the file travels with the student tier). Pins
+    /// that the trait shape stays a valid threshold override — a shape change
+    /// would otherwise silently fall back to the tuned defaults.
+    #[test]
+    fn student_traits_decider_is_a_threshold_override() {
+        let traits: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../ports/tyger-student/student.traits.json"
+        ))
+        .unwrap();
+        let th: idfon_voice::turns::Thresholds =
+            serde_json::from_value(traits["decider"].clone()).unwrap();
+        assert_eq!(th.ep_thr, 0.85);
+        assert_eq!(th.barge_thr, 0.4);
+        assert_eq!(th.bc_thr, 0.4);
+        assert_eq!(th.ep_deb, 2);
+        assert_eq!(th.bc_refractory, 15);
+    }
+
     #[test]
     fn turn_abi_round_trip() {
         let bad = CString::new("{not json").unwrap().into_raw();
