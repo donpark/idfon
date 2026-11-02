@@ -174,8 +174,13 @@ def main():
     user_db, agent_db = frame_db(user)[:n], frame_db(agent)[:n]
     ons = onsets(user_db, agent_db)
     print(f"\ninterrupting onsets (mic starts while the agent plays): {len(ons)}")
-    print(f"  barge catch @{thr[1]}: student {catch(sv, ons, thr[1]):.2f}  "
-          f"teacher {catch(tv, ons, 0.5):.2f}")
+    for label, vecs in (("student", sv), ("teacher", tv)):
+        peaks = [max(float(vecs[f + k][5]) for k in range(8) if f + k < len(vecs))
+                 for f in ons]
+        print(f"  {label} yield peak per onset: {['%.2f' % p for p in peaks]}")
+    for t in (0.30, 0.35, 0.40, 0.45, 0.50):
+        print(f"  barge catch @{t:.2f}: student {catch(sv, ons, t):.2f}  "
+              f"teacher {catch(tv, ons, t):.2f}")
 
     se = events(sv, energy, oracle, thr)
     te = events(tv, energy, oracle, default_thr)
