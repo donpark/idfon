@@ -740,12 +740,12 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                     let voice = Self.env("IDFON_TTS_VOICE") ?? "Clara"
                     do { try await phonon.setVoice(voice) }
                     catch {
-                        Automation.mark("voice: phonon voice '\(voice)' failed: \(error.localizedDescription)")
+                        Automation.mark("voice: phonon voice '\(voice)' failed: \(error)")
                     }
                     Automation.mark("voice: phonon ready (voice=\(phonon.voice))")
                     return phonon
                 } catch {
-                    Automation.mark("voice: phonon init failed \(error.localizedDescription)")
+                    Automation.mark("voice: phonon init failed \(error)")
                     return nil
                 }
             }
@@ -793,7 +793,7 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                     playback.playStream(buffer, done: tracker.chunkDone)
                 }
             } catch {
-                Automation.mark("voice: phonon synth failed \(error.localizedDescription)")
+                Automation.mark("voice: phonon synth failed \(error)")
             }
             tracker.generatorDone()
         }
@@ -837,7 +837,7 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                     player.enqueue(buffer, done: tracker.chunkDone)
                 }
             } catch {
-                Automation.mark("voice: phonon synth failed \(error.localizedDescription)")
+                Automation.mark("voice: phonon synth failed \(error)")
             }
             tracker.generatorDone()
         }
