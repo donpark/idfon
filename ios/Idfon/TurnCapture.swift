@@ -12,6 +12,12 @@ final class TurnCapture {
     private let dir: URL
     private let started = Date()
     private var overflowed = false
+    /// Second-ear evidence, written beside the wav: if the agent channel stays
+    /// zero the model ran blind (the 2026-11-01 live call), and no threshold
+    /// tuning can be read from it.
+    private var agentHops = 0
+    private var agentNonSilent = 0
+    private var agentPeak: Float = 0
 
     /// `capSeconds` bounds the recording (default 10 min ≈ 38 MB).
     init(dir: URL, capSeconds: Double = 600) {
@@ -27,6 +33,10 @@ final class TurnCapture {
         }
         user.append(contentsOf: userHop)
         agent.append(contentsOf: agentHop)
+        agentHops += 1
+        let peak = agentHop.reduce(Float(0)) { max($0, abs($1)) }
+        if peak > 1e-4 { agentNonSilent += 1 }
+        agentPeak = max(agentPeak, peak)
     }
 
     /// Write the stereo wav; nil when nothing was captured.
@@ -52,6 +62,12 @@ final class TurnCapture {
             u16(UInt16(bitPattern: Int16(max(-1, min(1, agent[i])) * 32767)))
         }
         try? data.write(to: url)
+        let sidecar: [String: Any] = ["frames": frames, "agentHops": agentHops,
+                                      "agentNonSilent": agentNonSilent, "agentPeak": agentPeak]
+        if let json = try? JSONSerialization.data(withJSONObject: sidecar, options: [.sortedKeys]) {
+            try? json.write(to: url.deletingPathExtension().appendingPathExtension("json"))
+        }
+        Automation.mark("turn-capture: agent hops \(agentNonSilent)/\(agentHops) non-silent peak \(String(format: "%.4f", agentPeak))")
         return url
     }
 }

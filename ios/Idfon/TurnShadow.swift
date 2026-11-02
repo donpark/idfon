@@ -276,6 +276,8 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     }
 
     private var mode = "listen"
+    /// One-time mark: did the second ear ever receive playback audio?
+    private var sawAgentAudio = false
     /// The active-mode sink (the tyger option): non-FRAME decisions as they
     /// fire. The Automation marks stay either way (the diff log).
     var onDecision: ((String) -> Void)?
@@ -388,6 +390,13 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
     /// What the playback bus is about to play (TTS + remote call audio) — the
     /// agent channel. Hop timing pairs 1:1 with the user's in `consume`.
     func audioPlayback(_ buffer: AVAudioPCMBuffer) {
+        stateLock.lock()
+        let first = !sawAgentAudio
+        sawAgentAudio = true
+        stateLock.unlock()
+        if first {
+            Automation.mark("turn-shadow: agent audio first buffer frames=\(buffer.frameLength) rate=\(buffer.format.sampleRate)")
+        }
         guard let ch = buffer.floatChannelData else { return }
         let samples = Array(UnsafeBufferPointer(start: ch[0], count: Int(buffer.frameLength)))
         let rate = buffer.format.sampleRate
