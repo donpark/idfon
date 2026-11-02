@@ -99,13 +99,20 @@ def enc_model(asr, prec, cut=15):
     return CE.EncWrap(asr).to(torch.float32).eval()
 
 
-def export_encoder(asr, dtype, prec, cut=15):
+def export_encoder(asr, dtype, prec, cut=15, static=False):
     enc = enc_model(asr, prec, cut)
-    ex = {"feats": torch.zeros(1, 33, 128)}
-    # mel lengths are 8k-7 (33, 41, ..., 801): the derived dim the startup
-    # contract needs (same expression as the Core ML enc-dyn export)
-    mel = torch.export.Dim("_mel", min=5, max=101)
-    dyn = {"feats": {1: 8 * mel - 7}}
+    if static:
+        # fixed 8 s steady state: the dynamic graph's MPS import aborts on
+        # iOS 27.2 (bad_alloc), so the device tier can ship the static shape
+        # and pad short startup windows with silence instead.
+        ex = {"feats": torch.zeros(1, 801, 128)}
+        dyn = None
+    else:
+        ex = {"feats": torch.zeros(1, 33, 128)}
+        # mel lengths are 8k-7 (33, 41, ..., 801): the derived dim the startup
+        # contract needs (same expression as the Core ML enc-dyn export)
+        mel = torch.export.Dim("_mel", min=5, max=101)
+        dyn = {"feats": {1: 8 * mel - 7}}
     print("[export] encoder (dynamic mel 8k-7) -> Core AI ...", flush=True)
     prog = export_to_coreai(
         enc, ex, dynamic_shapes=dyn,
@@ -258,6 +265,7 @@ def main():
     ap.add_argument("--only", default="both", choices=["both", "enc", "step", "gate"])
     ap.add_argument("--precision", default="float32", choices=["float32", "float16"])
     ap.add_argument("--cut", type=int, default=15, help="encoder layer the graph stops at (B2: 4)")
+    ap.add_argument("--static", action="store_true", help="fixed 801-mel encoder (no dynamic shapes)")
     ap.add_argument("--out-dir", default=None, help="override bench-results/coreai")
     ap.add_argument("--platform", default="macOS", choices=["macOS", "iOS"])
     ap.add_argument("--arch", default=None,
@@ -279,7 +287,7 @@ def main():
 
     enc_path = step_path = None
     if args.only in ("both", "enc"):
-        enc_path = export_encoder(asr, dtype, args.precision, args.cut)
+        enc_path = export_encoder(asr, dtype, args.precision, args.cut, args.static)
         sz = sum(f.stat().st_size for f in enc_path.rglob("*") if f.is_file()) / 1e6
         print(f"[save] {enc_path} ({sz:.1f} MB)")
     if args.only in ("both", "step"):
@@ -289,6 +297,8 @@ def main():
 
     # gates: engine vs the same torch wrappers, on real fixture audio
     mels = fixture_inputs(asr, proc, dtype)
+    if args.static:
+        mels = [m for m in mels if m.shape[1] == 801]  # the static graph takes 8 s only
     if args.only in ("both", "enc", "gate"):
         suffix = "" if args.cut == 15 else f"L{args.cut}_"
         p = enc_path or OUT / f"tyger_encoder_{suffix}{args.precision}.aimodel"

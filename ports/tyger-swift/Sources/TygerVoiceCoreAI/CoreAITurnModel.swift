@@ -37,6 +37,11 @@ public final class CoreAITurnModel: TurnModel {
     public let directory: URL
 
     private let stepFn: InferenceFunction
+    /// Static-shape encoders take exactly one 8 s window; a startup window is
+    /// padded with silence (the history that does not exist yet). The dynamic
+    /// graph takes the true growing window, so the tier marks itself.
+    private let padsShortWindows: Bool
+
     private let stepInNames: [String]
     private let stepOutNames: [String]
     private let stepInDescs: [String: NDArrayDescriptor]
@@ -97,6 +102,8 @@ public final class CoreAITurnModel: TurnModel {
         }
         self.encInDesc = d
         self.encOutDesc = o
+        self.padsShortWindows = FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("encoder.static").path)
 
         guard let stepDesc = stepModel.functionDescriptor(for: "main"),
               let stepFn = try stepModel.loadFunction(named: "main") else {
@@ -312,7 +319,14 @@ public final class CoreAITurnModel: TurnModel {
     }
 
     public func encode(_ window: [Float]) -> [[Float]] {
-        let (frames, _) = MelFeatures.process(window)
+        var audio = window
+        if padsShortWindows {
+            let full = 8 * MelFeatures.sampleRate
+            if audio.count < full {
+                audio = [Float](repeating: 0, count: full - audio.count) + audio
+            }
+        }
+        let (frames, _) = MelFeatures.process(audio)
         let t = frames.count
         guard t > 0 else { return [] }
         // mel lengths are 8k-7; encoder frames = (T + 7) / 8 exactly
