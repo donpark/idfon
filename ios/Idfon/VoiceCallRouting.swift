@@ -327,7 +327,7 @@ enum VoiceCallRouting {
         switch signed.mode {
         case .clientCascade:
             return .onDevice
-        case .nativeDuplex, .serverCascade:
+        case .nativeDuplex, .serverCascade, .broadcast:
             return .live(resolved ?? signed)
         case .delegated:
             return .delegated(signed)
@@ -349,6 +349,8 @@ extension VoiceRoute {
             return "Agent speaks text; this device supplies STT + TTS"
         case .delegated:
             return "Calls route to a separate voice agent"
+        case .broadcast:
+            return "One-way: the agent plays audio, you listen"
         }
     }
 

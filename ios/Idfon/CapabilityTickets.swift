@@ -98,6 +98,8 @@ struct VoiceRoute: Equatable {
         case clientCascade = "client-cascade"
         /// A separate voice agent speaks/renders for the target.
         case delegated
+        /// One-way: the holder plays audio and never listens (a radio station).
+        case broadcast = "broadcast"
     }
 
     let mode: Mode

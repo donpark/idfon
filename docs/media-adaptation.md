@@ -415,7 +415,9 @@ Measure first — everything below needs the same instrumentation to prove out.
 6. **Loss/jitter/transition test harness** (test). Repeatable netem/link-
    conditioner profiles (clean, 1 % loss, bursty Wi-Fi, 300 kbps uplink,
    1 s blackhole = handover) run against the headless `ListenStats` path so
-   every change here is regression-tested.
+   every change here is regression-tested. Real-path counterpart: the
+   talk-radio walk soak in `docs/live-radio.md` (netem is repeatable, walking
+   is real — run both).
 7. **Auto video-off policy** (change, after 4). Sustained audio degradation
    (stall rate / loss above thresholds) → drop the video track and tell the
    UI ("video paused to protect audio"); restore on sustained recovery.
