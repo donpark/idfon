@@ -152,8 +152,10 @@ Its train.py doubles as the per-head gate report.
 measured axis (endpoint latency/early/miss, barge catch/false, bc precision/recall
 — `pnpm tyger bench`); the rules thresholds are a per-model fit
 (`ports/tyger-student/student.traits.json`: **0.85/0.4/0.4** — `ep_thr` came from
-the live-call pass below, not from the teacher's 0.9146). Remaining: the L15/L4
-tap (issue #102) and the barge gate (needs real interrupting onsets).
+the live-call pass below, not from the teacher's 0.9146; the L4 student that
+ships with the #102 encoder cut carries its own **0.9/0.5/0.6** in
+`student-l4.traits.json`). Remaining: the barge gate (needs real interrupting
+onsets).
 
 **Live-call traits pass (2026-11-01).** The app already records the model's own
 input during calls (`TurnCapture`: stereo 16 kHz, ch0 mic / ch1 agent), so the

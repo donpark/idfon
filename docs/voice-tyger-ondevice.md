@@ -35,10 +35,13 @@ step loader now prefers the student over the teacher step —
 its AOT container beside it), `StudentStep.onnx` (eve TS bundle) — and falls
 back to the teacher step, then to classic turn-taking. The carried GRU state is
 read from the artifact (CoreML model description, the bundle's `io` contract)
-or sized by step family (CoreAI: student 2x256, teacher 3x768). The student ships
-its own live-calibrated triple **0.85/0.4/0.4** (`ports/tyger-student/
-student.traits.json`; the teacher's 0.9146 lost 9 pts of event agreement on real
-call captures — `bench-results/live-calibration.md`). Barge remains unmeasured
+or sized by step family (CoreAI: student 2x256, teacher 3x768). Thresholds are
+per model and travel with the step: the P1 L15 student's live-calibrated triple
+is **0.85/0.4/0.4** (`ports/tyger-student/student.traits.json`; the teacher's
+0.9146 lost 9 pts of event agreement on real call captures —
+`bench-results/live-calibration.md`), while the **L4 student the live bundle
+ships** carries its own **0.9/0.5/0.6** (`ports/tyger-student/student-l4.traits.json`,
+byte-identical to the published 181-byte file). Barge remains unmeasured for both
 (no interrupting onsets in the captures).
 
 **Core AI AOT packaging constraint (2026-11-01 incident).** The AOT containers

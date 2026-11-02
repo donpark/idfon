@@ -1,0 +1,12 @@
+{
+  "name": "student",
+  "decider": {
+    "ep_thr": 0.9,
+    "ep_deb": 2,
+    "barge_thr": 0.5,
+    "barge_deb": 2,
+    "bc_thr": 0.6,
+    "bc_deb": 2,
+    "bc_refractory": 15
+  }
+}
