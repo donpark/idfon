@@ -41,21 +41,13 @@ enum VoiceModelGate {
         let fm = FileManager.default
         if #available(iOS 27.0, *) {
             let coreai = dir.appendingPathComponent("coreai")
-            func present(_ name: String) -> Bool {
-                // A tier may carry only the AOT container (no source .aimodel).
-                CoreAITurnModel.present(coreai.appendingPathComponent(name))
+            // Loadable = files + AOT container this OS accepts (`select`). A
+            // student step also needs its per-model traits (a 183-byte resume
+            // fetch; without this the calibrated knobs never land on upgrade).
+            if CoreAITurnModel.loadable(in: coreai) {
+                let student = CoreAITurnModel.studentStep(in: coreai)
+                if !student || CoreAITurnModel.hasTraits(in: coreai) { return true }
             }
-            // A rung needs the (shared) encoder plus either step family — and a
-            // student step needs its per-model traits (a 183-byte resume fetch;
-            // without this the calibrated knobs never land on an upgrade).
-            for rung in ["float32", "float16"] where present("tyger_encoder_\(rung).aimodel") {
-                if present("student_step_\(rung).aimodel") {
-                    if present("student.traits.json") { return true }
-                } else if present("tyger_step_\(rung).aimodel") {
-                    return true
-                }
-            }
-            return false
         }
         let present = { (name: String) in fm.fileExists(atPath: dir.appendingPathComponent(name).path) }
         guard present("TygerEncoder.mlpackage"), present("TygerEncoderDyn.mlpackage") else { return false }
@@ -104,8 +96,19 @@ enum VoiceModelGate {
         guard approved else { return }
         SpeechEngines.prewarm(asr: asr, tts: tts)
         Task {
+            // Tier choice follows what this OS can *load*, not its version: the
+            // 2026-11-01 AOT artifacts (coreai-build 3605.6.3, MPSGraph package
+            // 7.1.5) exceed what iOS 27.0.x accepts (≤ 7.0.80) and segfault the
+            // Core AI loader, so such a device falls back to the CoreML tier.
+            // Rebuilding the AOT with the older Metal toolchain flips this back
+            // without a code change (the files then load).
             let tier: String
-            if #available(iOS 27.0, *) { tier = "coreai" } else { tier = "coreml" }
+            if #available(iOS 27.0, *),
+               CoreAITurnModel.loadable(in: TygerModelStore.root.appendingPathComponent("coreai")) {
+                tier = "coreai"
+            } else {
+                tier = "coreml"
+            }
             if await TygerModelStore.ensure(tier: tier) {
                 Automation.mark("voice: turn tier ready (\(tier))")
             } else {
