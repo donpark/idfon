@@ -140,8 +140,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         if let i = args.firstIndex(of: "-voiceagent"), args.count > i + 1 {
             let ref = args[i + 1]
+            let turns = args.count > i + 2 ? (Int(args[i + 2]) ?? 1) : 1
             Task { @MainActor in
-                VoiceAgentSession.shared.start(peerRef: ref)
+                if let agent = OnDeviceAgents.shared.agent(forPeerId: ref) {
+                    // Same CallKit mirror the call button uses (call audio stays
+                    // audible with the Ring/Silent switch on), so the console run
+                    // exercises the real path.
+                    CallKitController.shared.startOutgoing(peerId: agent.name, video: false, owner: .agent) {
+                        VoiceAgentSession.shared.runOnDevice(agent: agent, turns: turns)
+                    }
+                } else {
+                    VoiceAgentSession.shared.start(peerRef: ref)
+                }
                 idfonLog("idfon voice agent started: \(ref)")
             }
         }
@@ -196,11 +206,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         if let i = args.firstIndex(of: "-voiceagenttext"), args.count > i + 2 {
             VoiceAgentSession.shared.runText(peerRef: args[i + 1], text: args[i + 2])
-        }
-        if let i = args.firstIndex(of: "-voiceagent"), args.count > i + 1 {
-            let ref = args[i + 1]
-            let turns = args.count > i + 2 ? (Int(args[i + 2]) ?? 1) : 1
-            VoiceAgentSession.shared.run(peerRef: ref, turns: turns)
         }
         // On-device director probe (#41): one real AFM turn + the trace.
         if let i = args.firstIndex(of: "-directortext"), args.count > i + 1 {

@@ -1483,8 +1483,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     func startCall() {
         Automation.mark("call: start peer=\(peer.id)")
         // On-device agents run entirely in-app: no dial, no peer, no network.
+        // They still get a CallKit call, for the audio semantics: a
+        // CallKit-owned session is call audio and stays audible with the
+        // Ring/Silent switch on, while the app-configured `.playAndRecord`
+        // session this path used to get is muted by it (2026-11-01 report:
+        // "answered, heard nothing"). CallKit is a mirror here as everywhere —
+        // `VoiceAgentSession` stays the source of truth.
         if let agent = OnDeviceAgents.shared.agent(forPeerId: peer.id) {
-            VoiceAgentSession.shared.runOnDevice(agent: agent)
+            CallKitController.shared.startOutgoing(peerId: agent.name, video: false, owner: .agent) {
+                VoiceAgentSession.shared.runOnDevice(agent: agent)
+            }
             return
         }
         // The per-contact STT/TTS selection (option ids from the agent's
