@@ -45,19 +45,21 @@ enum VoiceModelGate {
                 // A tier may carry only the AOT container (no source .aimodel).
                 CoreAITurnModel.present(coreai.appendingPathComponent(name))
             }
-            // A rung needs the (shared) encoder plus either step family.
-            for rung in ["float32", "float16"] {
-                if present("tyger_encoder_\(rung).aimodel"),
-                   present("student_step_\(rung).aimodel") || present("tyger_step_\(rung).aimodel") {
+            // A rung needs the (shared) encoder plus either step family — and a
+            // student step needs its per-model traits (a 183-byte resume fetch;
+            // without this the calibrated knobs never land on an upgrade).
+            for rung in ["float32", "float16"] where present("tyger_encoder_\(rung).aimodel") {
+                if present("student_step_\(rung).aimodel") {
+                    if present("student.traits.json") { return true }
+                } else if present("tyger_step_\(rung).aimodel") {
                     return true
                 }
             }
             return false
         }
-        return fm.fileExists(atPath: dir.appendingPathComponent("TygerEncoder.mlpackage").path)
-            && fm.fileExists(atPath: dir.appendingPathComponent("TygerEncoderDyn.mlpackage").path)
-            && (fm.fileExists(atPath: dir.appendingPathComponent("StudentStep.mlpackage").path)
-                || fm.fileExists(atPath: dir.appendingPathComponent("TygerStep.mlpackage").path))
+        let present = { (name: String) in fm.fileExists(atPath: dir.appendingPathComponent(name).path) }
+        guard present("TygerEncoder.mlpackage"), present("TygerEncoderDyn.mlpackage") else { return false }
+        return present("StudentStep.mlpackage") ? present("student.traits.json") : present("TygerStep.mlpackage")
     }
 
     /// A voice-agent call may start: models are present and no download can
