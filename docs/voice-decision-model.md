@@ -153,9 +153,9 @@ measured axis (endpoint latency/early/miss, barge catch/false, bc precision/reca
 — `pnpm tyger bench`); the rules thresholds are a per-model fit
 (`ports/tyger-student/student.traits.json`: **0.85/0.4/0.4** — `ep_thr` came from
 the live-call pass below, not from the teacher's 0.9146; the L4 student that
-ships with the #102 encoder cut carries its own **0.9/0.5/0.6** in
-`student-l4.traits.json`). Remaining: the barge gate (needs real interrupting
-onsets).
+ships with the #102 encoder cut carries its own **0.75/0.5/0.5** in
+`student-l4.traits.json` — the pooled 13-session live fit below, republished to
+the manifest). The barge gate is measured (below).
 
 **Live-call traits pass (2026-11-01).** The app already records the model's own
 input during calls (`TurnCapture`: stereo 16 kHz, ch0 mic / ch1 agent), so the
@@ -169,8 +169,12 @@ knobs. On 8 distinct captures (18.2 min, 244 teacher events, one Mac):
 | event agreement | 58.3% | 62.6% | **64.4%** | 59.0% | 56.5% | 55.7% | 49.2% |
 
 0.85 wins under leave-one-session-out every time (63.1–66.5%); bc 0.4 is
-confirmed (64.4% vs 60.6% at 0.5); **barge is unmeasured** — the captures
-contain zero interrupting onsets (0 BARGE events), so 0.4 stays untested. The
+confirmed (64.4% vs 60.6% at 0.5). **Barge is measured** on two audio paths:
+7 live captures (20 energy-VAD onsets; student 2/20 = teacher 2/20 at barge_thr
+0.5 — parity, no false-fire inflation) and Open Yap 1K dual-channel conversation
+(59 onsets, 30 min; L4 vs L15 students operationally indistinguishable on yield:
+79.7% vs 76.3% at 0.05 and 6.8% vs 8.5% at 0.5). The layer-sweep barge-MSE edge
+for L15 does not survive real interruptions — L4 carries the barge signal. The
 same checkpoint on the corpus val split calibrates to the bundle defaults, i.e.
 the two audio paths genuinely disagree on `ep_thr` — the item-2 concern was real.
 Full detail: `bench-results/live-calibration.md` (regenerable).
