@@ -54,12 +54,16 @@ public final class CoreAITurnModel: TurnModel {
     /// Floats in the carried state: teacher 3x768, student 2x256.
     private let stateCount: Int
 
-    /// The tier's default artifacts (export_turn.py).
+    /// The tier's default artifacts (export_turn.py). Prefer the shipped L4 cut
+    /// (`bench-results/tier-l4/coreai`, 3.9× smaller); keep the L15 bench tier
+    /// as the fallback for a checkout that has not staged the L4 pair.
     public convenience init() throws {
         let pkg = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        try self.init(directory: pkg.appendingPathComponent("bench-results/coreai"))
+        let l4 = pkg.appendingPathComponent("bench-results/tier-l4/coreai")
+        let l15 = pkg.appendingPathComponent("bench-results/coreai")
+        try self.init(directory: Self.loadable(in: l4) ? l4 : l15)
     }
 
     public init(directory: URL) throws {

@@ -14,7 +14,8 @@ import TygerVoiceMLX
 /// AVSpeechSynthesizer (system audio, no buffer seam) and a looping tone ring
 /// is fed once. Hops pair 1:1 from the two taps' queues.
 /// Tier: Core AI on macOS 27+ (oracle-exact; the distilled StudentStep step is
-/// preferred when the checkout's `bench-results/coreai` has it, teacher
+/// preferred when the checkout's `bench-results/tier-l4/coreai` (the shipped
+/// L4 cut) has it; the L15 `bench-results/coreai` is the fallback, teacher
 /// otherwise), MLX below.
 final class TurnShadow: AudioPlaybackObserver {
     private let engine: TurnEngine

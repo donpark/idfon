@@ -61,7 +61,7 @@ audio `K` kept apart, done `D` with `barged`/`bc`/`proactive` flavors.
 | Speech recognition | NVIDIA Nemotron 3.5 ASR Streaming 0.6B, **frozen, bundled** |
 | Turn-taker | causal GRU, 3 layers × 768, 14M params (652M total, FP32, 2.61 GB) |
 | Input | two aligned mono 16 kHz streams: the caller's mic and the agent's playback |
-| Features | Nemotron layer 15 (1,024 dims), 1 frame / 80 ms, no lookahead |
+| Features | Nemotron layer 15 (1,024 dims; the shipped L4 student reads layer 4), 1 frame / 80 ms, no lookahead |
 | Streaming | 320 ms hops; Nemotron re-encodes an 8 s window per stream each hop |
 | Output, per frame | turn state (listen/hold/speak/backchannel) + hazard, barge-in, backchannel, endpoint scores |
 | State per call | 9 KiB GRU state; the state input is the app's LISTEN/SPEAK, never the model's guess |

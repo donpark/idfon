@@ -19,14 +19,15 @@ turn-decision model that replaces Tyger's), `voice-tyger-streaming-plan.md`
 The 2026-10-25 ruling: **Nemotron streaming ASR + Tyger-class turn management +
 Phonon mouth**, core tier-neutral. The ASR half has **shipped** —
 `NemotronStreamingAsr` (FluidAudio `StreamingNemotronAsrManager`) is the call
-ASR in both apps. What has **not** shipped is the mid-layer **L15 tap**
-(streaming-plan candidate A's one open detail): today the streaming encoder
-throws its layer-15 hidden state away, so every Tyger delivery still bundles
-its own L15-truncated encoder copy (`TygerEncoderDyn`, ~1.5 GB of the ~2.9 GB
-an iOS 27 tier downloads) purely to featurize the turn heads. The tap makes the
-encoder shared and the *marginal* cost of turn decisions the turn-taker alone —
-not the 397M "decision path" of the standalone bundle. The size brief below is
-written for that target state; the turn-taker cut (P0) is valid either way. That marginal
+ASR in both apps. What has **not** shipped is the mid-layer **ASR tap**
+(streaming-plan candidate A's one open detail): the streaming encoder throws its
+hidden states away, so the turn heads still need their own encoder pass. The
+shipped tier uses a private **L4 cut** of the same Nemotron encoder
+(`TygerEncoderL4`, 106M / 389 MB fp32) and the L4 student; the L15 copy
+(`TygerEncoderDyn`, ~1.5 GB) is the fallback. The tap makes the encoder shared
+and the *marginal* cost of turn decisions the turn-taker alone — not the 397M
+"decision path" of the standalone bundle. The size brief below is written for
+that target state; the turn-taker cut (P0) is valid either way. That marginal
 model is what must shrink.
 
 ## How Tyger is used today (integration surface)
@@ -42,8 +43,9 @@ model is what must shrink.
 ## What Tyger decides (the decision surface)
 
 **Inputs, per 80 ms frame** (12.5 Hz; fed in 320 ms hops, 8 s re-encoded window
-per stream): caller's Nemotron L15 features (1,024-dim), the **agent's own**
-L15 features (the second ear — echo awareness by construction), the caller's
+per stream): the caller's Nemotron features (1,024-dim) and the **agent's own**
+features at the same layer (the second ear — echo awareness by construction;
+L15 for the teacher/L15 student, L4 for the shipped L4 student), the caller's
 normalized frame energy, the **app-fed floor state** (LISTEN/SPEAK — never the
 model's guess), and the carried GRU state (9 KiB per call).
 
@@ -201,10 +203,11 @@ fp32 Tyger); then the weak axes (barge/echo with a real playback clock,
 backchannel precision) get trained on **our** calls — which is also where
 per-user personalization enters.
 
-**P2 — decouple from the feature space.** The heads read Nemotron L15; that
-binds the decision model to one ASR's mid-layer. A student trained on our own
-calls can move to a cheaper/native tap of the streaming encoder (or a distilled
-feature), keeping the decision model independent of the ASR choice per contact.
+**P2 — decouple from the feature space.** The teacher and the L15 student read
+Nemotron L15; the shipped L4 student reads L4. Either binds the decision model
+to one ASR's mid-layer. A student trained on our own calls can move to a
+cheaper/native tap of the streaming encoder (or a distilled feature), keeping
+the decision model independent of the ASR choice per contact.
 
 **P3 — fold into classic's contract** (`voice-tyger-option.md` P3): classic
 behavior stays; its endpointing/yield decisions get the model's quality, traits
