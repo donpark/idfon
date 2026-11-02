@@ -15,7 +15,7 @@ rulings and measurements further down are the record that produced it.
 | Platform | Tier | Guard / note | Size |
 | --- | --- | --- | --- |
 | **All platforms (2026-10-22; removed 2026-10-25)** | ~~path-C student~~ deleted: a Parakeet-tap copycat with ~50% decision parity and a backchannel head that never fired | — | — |
-| **macOS 27+ / iOS 27+** | **CoreAI fp32, L4 cut** — `bench-results/tier-l4/coreai` (the shipped pair: `TygerEncoderL4` = `hidden_states[4]`, max|Δ| 0, + `student_step`) | encoder exact; student 56.6% live event agreement (13 captures) | 418 MB |
+| **macOS 27+ / iOS 27+** | **CoreAI fp32, L4 cut** — `bench-results/tier-l4/coreai` (the shipped pair: `TygerEncoderL4` = `hidden_states[4]`, max|Δ| 0, + `student_step`) | encoder exact; student 56.6% live event agreement (13 captures) | 433 MB |
 | — fallback | CoreAI fp32 L15 — `bench-results/coreai` | **100%** (917/917 identical frames) | 1.53 GB |
 | — fallback, opt-in rung | CoreAI fp16 (fp16 compute, fp32 I/O) — `IDFON_TURN_PRECISION=fp16` | 99.67% aligned ±2 frames on the corpus — but **0 endpoints on the corner gate** (fp16 `p_end` drift); opt-in only | ~0.77 GB |
 | macOS 14–26 | MLX int8-g16 (stem + layers.0 fp32) — `TygerVoiceMLX` | 99.5% (3 flips in 917) | 1.58 GB on disk¹ |
