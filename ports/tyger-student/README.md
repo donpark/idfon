@@ -97,9 +97,11 @@ ports/tyger-student/.venv/bin/python ports/tyger-student/calibrate.py \
     --shards bench-results/live-shards --student bench-results/student/student.pt
 ```
 
-Barge is measured on two paths (20 live-call onsets + Open Yap 1K); the live
-captures show the student's yield head under-fires vs the teacher below
-barge_thr 0.5 — see `bench-results/barge-live.md`.
+Barge is measured on two paths (20 live-call onsets + Open Yap 1K); on the live
+captures the student's compressed yield head (L4 0.42×teacher) under-fires vs the
+teacher below barge_thr 0.5, but at 0.5 it fires 8× fewer false barges (2 vs 16)
+and matches the teacher's catch at equal false-fire budgets — see
+`bench-results/barge-live.md`.
 
 ## The organic loop: new batches of real conversations
 

@@ -7,6 +7,10 @@ this is the live-call version of the harness: no labels, the axes are
   interrupting onsets   mic starts while the agent is still playing (energy VAD)
   barge catch           student/teacher yield crosses the threshold within
                         640 ms of an onset
+  barge false fire      a barge event outside every onset window; "playing"
+                        also requires agent audio (the false fires that can
+                        actually interrupt)
+  yield distribution    student vs teacher yield stats and fit on the same audio
   endpoint timing       student vs teacher ENDPOINT events on the same audio
 
 Features: the windowed re-encode the heads trained on (8 s window per 320 ms
@@ -113,6 +117,27 @@ def events(vecs, energy, oracle, thr):
     return out
 
 
+def fires(vecs, barge_thr, deb=2):
+    """Rising-edge barge events: the first frame of `deb` consecutive yield >= thr."""
+    run = 0
+    out = []
+    for f in range(len(vecs)):
+        if vecs[f][5] >= barge_thr:
+            run += 1
+            if run == deb:
+                out.append(f - deb + 1)
+        else:
+            run = 0
+    return out
+
+
+def false_fires(vecs, onsets_frames, barge_thr, agent_db, window=8, deb=2):
+    """Barge events outside every onset window; `playing` also requires agent audio."""
+    ev = fires(vecs, barge_thr, deb)
+    outside = [f for f in ev if not any(b <= f < b + window for b in onsets_frames)]
+    return len(outside), sum(1 for f in outside if agent_db[f] > -45.0)
+
+
 def catch(vecs, onsets_frames, barge_thr, window=8, deb=2):
     """Fraction of interrupting onsets with `deb` consecutive yield >= thr in the window."""
     hit = 0
@@ -173,14 +198,25 @@ def main():
 
     user_db, agent_db = frame_db(user)[:n], frame_db(agent)[:n]
     ons = onsets(user_db, agent_db)
+    for name, vecs in (("student", sv), ("teacher", tv)):
+        y = vecs[:, 5]
+        print(f"  {name} yield: mean {y.mean():.3f}  std {y.std():.3f}  "
+              f"p99 {np.percentile(y, 99):.3f}  max {y.max():.3f}")
+    print(f"  yield corr {np.corrcoef(sv[:, 5], tv[:, 5])[0, 1]:.3f}  "
+          f"MSE {np.mean((sv[:, 5] - tv[:, 5]) ** 2):.4f}  "
+          f"fit {np.polyfit(tv[:, 5], sv[:, 5], 1)[0]:.2f}*teacher"
+          f"{np.polyfit(tv[:, 5], sv[:, 5], 1)[1]:+.2f}")
     print(f"\ninterrupting onsets (mic starts while the agent plays): {len(ons)}")
     for label, vecs in (("student", sv), ("teacher", tv)):
         peaks = [max(float(vecs[f + k][5]) for k in range(8) if f + k < len(vecs))
                  for f in ons]
         print(f"  {label} yield peak per onset: {['%.2f' % p for p in peaks]}")
-    for t in (0.30, 0.35, 0.40, 0.45, 0.50):
-        print(f"  barge catch @{t:.2f}: student {catch(sv, ons, t):.2f}  "
-              f"teacher {catch(tv, ons, t):.2f}")
+    for t in (0.10, 0.12, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50):
+        s_false, s_playing = false_fires(sv, ons, t, agent_db)
+        t_false, t_playing = false_fires(tv, ons, t, agent_db)
+        print(f"  barge @{t:.2f}: catch student {catch(sv, ons, t):.2f}  "
+              f"teacher {catch(tv, ons, t):.2f}  | false student {s_false} ({s_playing} playing)  "
+              f"teacher {t_false} ({t_playing} playing)")
 
     se = events(sv, energy, oracle, thr)
     te = events(tv, energy, oracle, default_thr)
