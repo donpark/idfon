@@ -135,8 +135,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .answer:
                 waitForIncomingCall(video: false)
             case .add(let payload):
-                if let ticketJSON = ContactExchange.ticketJSON(fromLink: payload) {
-                    ContactExchange.confirmAdd(ticketJSON: ticketJSON, app: app)
+                if let link = ContactExchange.decodeLink(payload) {
+                    ContactExchange.confirmAdd(
+                        ticketJSON: link.ticketJSON, capabilityJSON: link.capabilityJSON, app: app)
                 }
             }
         }

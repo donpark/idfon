@@ -1,7 +1,16 @@
 {
-  "_comment": "Topic stations, one per topic (docs/live-radio.md). Each entry is an already-servable radio contact with its OWN state and identity: `instance` keys both the state dir (agents/radio/instances/<instance>/) and the holder home (~/.idfon/<instance>), so schedules, briefs, submissions and content never mix. Start one with `scripts/radio-serve.sh <topic|instance|name>`; programme it with `scripts/radio-program.mjs ... --instance <instance>`. `topic` is also the live-call context topic, so the same agent directory serves every station. Shape mirrors agents/agency/roster.json on purpose: a switchboard is a roster of already-running contacts, not a spawner.",
+  "_comment": "Topic stations, one per topic (docs/live-radio.md). Each entry is an already-servable radio contact with its OWN state and identity: `instance` keys both the state dir (agents/radio/instances/<instance>/) and the holder home (~/.idfon/<instance>), so schedules, briefs, submissions and content never mix. Start one with `scripts/radio-serve.sh <topic|instance|name>`; programme it with `scripts/radio-program.mjs ... --instance <instance>`. `topic` is also the live-call context topic, so the same agent directory serves every station. `\"public\": true` publishes the station on the index page with a subject-less receive-only ticket: anyone who scans it can listen (and message it), which is what a public station is for. Omit it for a station that should only take `scripts/radio-admit.sh` tickets. Shape mirrors agents/agency/roster.json on purpose: a switchboard is a roster of already-running contacts, not a spawner.",
   "stations": [
-    { "name": "Tech Talk", "topic": "tech talk", "instance": "radio-tech" },
-    { "name": "Wildlife Hour", "topic": "wildlife", "instance": "radio-wildlife" }
+    {
+      "name": "Tech Talk",
+      "topic": "tech talk",
+      "instance": "radio-tech",
+      "public": true
+    },
+    {
+      "name": "Wildlife Hour",
+      "topic": "wildlife",
+      "instance": "radio-wildlife"
+    }
   ]
 }

@@ -115,8 +115,14 @@ enum Mode {
     },
     /// Issue a holder-signed message.receive ticket for initial provisioning.
     Ticket {
-        #[arg(long, value_name = "PEER_ID")]
-        subject: String,
+        /// Sender this ticket is bound to. Omit with --public.
+        #[arg(long, value_name = "PEER_ID", required_unless_present = "public")]
+        subject: Option<String>,
+        /// Issue a public ticket (no subject): any sender may present it, for
+        /// `message.receive` only. The holder must also opt in with
+        /// `"public": true` in its live config.
+        #[arg(long, conflicts_with = "subject")]
+        public: bool,
         /// Additional grant names to include alongside message.receive.
         #[arg(long = "capability")]
         capabilities: Vec<String>,
@@ -464,6 +470,7 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
         }
         Mode::Ticket {
             subject,
+            public,
             capabilities,
             expires_at,
             ticket_id,
@@ -472,8 +479,11 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
             let live_params = load_live_params(live_config.as_deref())?;
             let ticket_id = ticket_id.unwrap_or_else(|| format!("eve-ticket-{}", now_seconds()));
             let voice = voice_route_from_live_params(&live_params);
-            if voice.mode == VoiceMode::Delegated {
-                admit_delegate_caller(&live_params, &subject);
+            if public && !live_params.get("public").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+                anyhow::bail!("--public needs \"public\": true in the live config, or the holder rejects it");
+            }
+            if let (VoiceMode::Delegated, Some(subject)) = (voice.mode, subject.as_deref()) {
+                admit_delegate_caller(&live_params, subject);
             }
             let mut grants = vec![Capability::MessageReceive];
             grants.extend(capabilities.into_iter().map(Capability::new));
@@ -481,7 +491,7 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
                 "{}",
                 serde_json::to_string(&issue_capability_ticket_with_voice(
                     &key,
-                    Some(subject),
+                    subject,
                     None,
                     grants,
                     expires_at,
@@ -1317,7 +1327,17 @@ async fn handle_message(
 ) -> std::result::Result<MessageAck, TransportError> {
     let ticket = {
         let allow = allow.read().await;
-        match validate_message(&message, &remote_endpoint_id, allow.as_slice(), &holder_peer_id) {
+        let public = live_params
+            .get("public")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        match validate_message(
+            &message,
+            &remote_endpoint_id,
+            allow.as_slice(),
+            &holder_peer_id,
+            public,
+        ) {
             Ok(ticket) => ticket,
             Err(error) => {
                 tracing::warn!(
@@ -2450,6 +2470,7 @@ fn validate_message<'a>(
     remote_endpoint_id: &str,
     allow: &[String],
     holder_peer_id: &str,
+    public: bool,
 ) -> std::result::Result<&'a CapabilityTicket, HolderError> {
     verify_message(message).map_err(HolderError::Auth)?;
     if message.sender.endpoint_id != remote_endpoint_id {
@@ -2462,8 +2483,19 @@ fn validate_message<'a>(
         return Err(HolderError::CapabilityDenied);
     };
     verify_capability_ticket(ticket).map_err(HolderError::Auth)?;
+    // A public ticket carries no subject: any sender may present it, but only
+    // for receive, and only when the holder opted in (`"public": true` in the
+    // live config). That is a shared bearer credential — revoking it means
+    // rotating the holder's identity.
+    let subject_matches = ticket.subject.as_deref() == Some(message.sender.peer_id.as_str());
+    let public_admits = public
+        && ticket.subject.is_none()
+        && ticket
+            .capabilities
+            .iter()
+            .all(|capability| *capability == Capability::MessageReceive);
     if ticket.issuer != holder_peer_id
-        || ticket.subject.as_deref() != Some(message.sender.peer_id.as_str())
+        || !(subject_matches || public_admits)
         || !ticket.capabilities.contains(&Capability::MessageReceive)
     {
         return Err(HolderError::CapabilityDenied);
@@ -2834,7 +2866,7 @@ mod tests {
             Some(ticket),
         )
         .unwrap();
-        assert!(validate_message(&message, &sender_id, &[], &holder_id).is_ok());
+        assert!(validate_message(&message, &sender_id, &[], &holder_id, false).is_ok());
 
         let no_ticket = sign_message(
             &sender,
@@ -2848,11 +2880,11 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            validate_message(&no_ticket, &sender_id, &[], &holder_id),
+            validate_message(&no_ticket, &sender_id, &[], &holder_id, false),
             Err(HolderError::CapabilityDenied)
         ));
         assert!(matches!(
-            validate_message(&message, "wrong-endpoint", &[], &holder_id),
+            validate_message(&message, "wrong-endpoint", &[], &holder_id, false),
             Err(HolderError::Unauthorized)
         ));
 
@@ -2876,8 +2908,58 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            validate_message(&expired_message, &sender_id, &[], &holder_id),
+            validate_message(&expired_message, &sender_id, &[], &holder_id, false),
             Err(HolderError::ExpiredTicket)
+        ));
+
+        // A public ticket has no subject: admitted only by an opted-in holder,
+        // and only while it grants nothing beyond receive.
+        let public_ticket = issue_capability_ticket(
+            &holder,
+            None,
+            vec![Capability::MessageReceive],
+            None,
+            "ticket-public",
+        );
+        let public_message = sign_message_with_ticket(
+            &sender,
+            sender_id.clone(),
+            "msg-4",
+            MessageContent::Text {
+                text: "hello".into(),
+            },
+            "key-4",
+            None,
+            Some(public_ticket.clone()),
+        )
+        .unwrap();
+        assert!(validate_message(&public_message, &sender_id, &[], &holder_id, true).is_ok());
+        assert!(matches!(
+            validate_message(&public_message, &sender_id, &[], &holder_id, false),
+            Err(HolderError::CapabilityDenied)
+        ));
+        let public_write = issue_capability_ticket(
+            &holder,
+            None,
+            vec![Capability::MessageReceive, Capability::MessageSend],
+            None,
+            "ticket-public-wide",
+        );
+        let wide_message = sign_message_with_ticket(
+            &sender,
+            sender_id.clone(),
+            "msg-5",
+            MessageContent::Text {
+                text: "hello".into(),
+            },
+            "key-5",
+            None,
+            Some(public_write),
+        )
+        .unwrap();
+        assert!(matches!(
+            validate_message(&wide_message, &sender_id, &[], &holder_id, true),
+            Err(HolderError::CapabilityDenied)
         ));
     }
 
