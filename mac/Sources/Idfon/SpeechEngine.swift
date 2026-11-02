@@ -43,14 +43,12 @@ extension TtsEngine {
 
 /// Reply-speech backend choice, persisted across launches.
 enum TtsBackend: String, CaseIterable {
-    case kokoro
     case pocket
     case phonon
     case apple
 
     var title: String {
         switch self {
-        case .kokoro: return "Kokoro (on-device)"
         case .pocket: return "Pocket TTS (on-device)"
         case .phonon: return "Phonon 31m (on-device)"
         case .apple: return "Apple Built-in"
@@ -115,22 +113,18 @@ extension AsrEngine {
 enum AsrBackend: String, CaseIterable {
     case system
     case nemotron
-    case parakeet
 
     var title: String {
         switch self {
         case .system: return "Apple Built-in"
         case .nemotron: return "Nemotron Streaming (on-device)"
-        case .parakeet: return "Parakeet Redux (on-device)"
         }
     }
 }
 
-/// The on-device neural engines are English-only: Parakeet Redux and the
-/// Kokoro ANE pipeline are built with English weights and a text frontend.
+/// The on-device neural engines are English-only (Nemotron ASR, Phonon TTS).
 /// Other system languages get the Apple built-ins, which follow the system
-/// locale. (Kokoro's zh/ja/es/fr ANE variants exist in FluidAudio but are not
-/// wired up here.)
+/// locale.
 ///
 /// Assumes the spoken language matches the system language; a caller who
 /// wants to override can pick an engine explicitly per contact in Contact
@@ -156,7 +150,7 @@ enum SpeechEngines {
         #if PHONON_TTS
         return .phonon
         #else
-        return OnDeviceSpeechLanguage.isEnglish ? .kokoro : .apple
+        return .apple
         #endif
     }
 
@@ -168,10 +162,6 @@ enum SpeechEngines {
         case .nemotron:
             Task {
                 if #available(macOS 15.0, *) { await NemotronStreamingAsr.warmCache() }
-            }
-        case .parakeet:
-            Task {
-                if #available(macOS 15.0, *) { await ParakeetReduxAsr.warmCache() }
             }
         case .system:
             break
@@ -200,10 +190,6 @@ enum SpeechEngines {
             guard #available(macOS 15.0, *) else { return nil }
             Automation.mark("voice: asr backend=nemotron")
             return NemotronStreamingAsr()
-        case .parakeet:
-            guard #available(macOS 15.0, *) else { return nil }
-            Automation.mark("voice: asr backend=parakeet")
-            return ParakeetReduxAsr()
         case .system:
             if #available(macOS 26.0, *) {
                 Automation.mark("voice: asr backend=system")
@@ -219,7 +205,6 @@ enum SpeechEngines {
         Automation.mark("voice: tts backend=\(backend.rawValue)")
         switch backend {
         case .apple: return AppleTtsEngine()
-        case .kokoro: return KokoroTtsEngine()
         case .pocket: return PocketTtsEngine()
         case .phonon:
             #if PHONON_TTS
@@ -324,97 +309,6 @@ final class SpeechCompletion: NSObject, AVSpeechSynthesizerDelegate {
 
 /// Kokoro-82M via FluidAudio's ANE pipeline. Falls back to Apple per-utterance
 /// if the model cannot load or synthesize.
-@MainActor
-final class KokoroTtsEngine: NSObject, TtsEngine {
-    let name = "kokoro"
-    private var manager: KokoroAneManager?
-    private let fallback = AppleTtsEngine()
-    private var prepared = false
-    private var prepareTask: Task<Void, Never>?
-    private var finish: (() -> Void)?
-    /// Set by `stop()` so a cancel during ANE synthesis does not start playback.
-    private var stopRequested = false
-    private(set) var lastLatencyMs: Int?
-
-    func prepare() async {
-        if prepared { return }
-        if prepareTask == nil {
-            prepareTask = Task { [weak self] in
-                guard let self else { return }
-                do {
-                    Automation.mark("voice: kokoro initializing")
-                    let directory = await SpeechProvisioning.directory(for: .kokoroAne)
-                    if directory == nil, !VoiceModelGate.approved {
-                        Automation.mark("voice: kokoro model download not approved")
-                        return
-                    }
-                    let manager = KokoroAneManager(variant: .english, directory: directory)
-                    try await manager.initialize()
-                    self.manager = manager
-                    self.prepared = true
-                    Automation.mark("voice: kokoro ready")
-                } catch {
-                    Automation.mark("voice: kokoro init failed \(error.localizedDescription)")
-                }
-            }
-        }
-        await prepareTask?.value
-    }
-
-    func speak(_ text: String) async {
-        stopRequested = false
-        await prepare()
-        guard prepared, let manager else {
-            Automation.mark("voice: kokoro unavailable, using apple")
-            await fallback.speak(text)
-            return
-        }
-        do {
-            let start = Date()
-            let wav = try await manager.synthesize(text: text)
-            if stopRequested { return }  // cancelled while synthesizing
-            lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
-            Automation.mark("voice: kokoro wav bytes=\(wav.count) in \(lastLatencyMs ?? 0)ms")
-            await play(wav)
-        } catch {
-            Automation.mark("voice: kokoro synth failed \(error.localizedDescription); using apple")
-            await fallback.speak(text)
-        }
-    }
-
-    func stop() {
-        stopRequested = true
-        AudioMeter.stopPlayback()
-        finish?()
-        finish = nil
-        fallback.stop()
-    }
-
-    private func play(_ wav: Data) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            // The shared playback bus (the AEC reference) replaces AVAudioPlayer;
-            // PlaybackBus.notify (the second ear) rides inside AudioMeter.play.
-            guard let buffer = AudioMeter.buffer(wav: wav) else {
-                Automation.mark("voice: kokoro play failed (decode)")
-                continuation.resume()
-                return
-            }
-            finish = { continuation.resume() }
-            AudioMeter.play(buffer) { [weak self] in
-                guard let self else { return }
-                self.finish?()
-                self.finish = nil
-            }
-        }
-    }
-}
-
-/// Pocket TTS (Kyutai via FluidAudio) — the v4 reward-tuned small model
-/// (`english_18m_refl_2026-10`; `scripts/fetch-pocket-v4.sh` provisions the
-/// pack into the store root below). Trial backend (`IDFON_TTS=pocket`):
-/// `IDFON_TTS_VOICE=<name>` picks a catalog voice (default alba),
-/// `IDFON_TTS_CLONE=/path/voice.wav` clones a voice from a clip and speaks
-/// with it. Falls back to Apple per-utterance when the model cannot load.
 @MainActor
 final class PocketTtsEngine: NSObject, TtsEngine {
     let name = "pocket"

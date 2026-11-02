@@ -577,20 +577,21 @@ script; the daemon's is derived from its data dir. See `idfon-eve.md`.
 
 The A1 cascade's on-device neural engines sit behind seams in
 `ios/Idfon/SpeechEngine.swift` and `mac/Sources/Idfon/SpeechEngine.swift`.
-Both apps offer the same choices: **Apple**/**Nemotron**/**Parakeet**
-(FluidAudio, ANE) for recognition, and **Phonon** (streaming) / **Kokoro**
-(FluidAudio ANE) / **Apple** for reply speech.
+Both apps offer the same choices: **Apple**/**Nemotron Streaming** for
+recognition, and **Phonon** (streaming) / **Apple** for reply speech.
+Kokoro (TTS) and Parakeet Redux (ASR) were **removed from the tree on
+2026-11-01** — they are not streaming engines; the bullets below keep them as
+history.
 Neither app has a global picker — the language rule above sets the default and
 Contact Detail picks per contact. mac needs macOS 14 (FluidAudio).
 
-**Defaults follow the system language and the build.** Reply speech is Phonon
-whenever the build carries it (the streaming mouth the duplex loop needs); in a
-build without Phonon, Parakeet Redux and the Kokoro ANE pipeline are
-English-only, so an English `Locale.preferredLanguages.first` defaults to
-Parakeet + Kokoro, and every other language defaults to the Apple built-ins, whose voices/recognizers follow the system locale
+**Defaults follow the build.** Reply speech is Phonon whenever the build
+carries it (the streaming mouth the duplex loop needs) and Apple otherwise.
+Recognition is Nemotron Streaming (iOS 18+/macOS 15+); Apple's recognizers
+cover other languages and older OS versions, and follow the system locale
 (`SpeechVoice.callLanguage`, `Locale.current`). The two halves fall back
 independently: recognition, reply speech, or both can be on-device. A persisted
-explicit choice still wins; the language gate only sets the default.
+explicit choice still wins.
 
 - **TTS** — `KokoroTtsEngine` (FluidAudio's Kokoro-82M ANE pipeline, 24 kHz
   WAV) is the English default; `AppleTtsEngine` (`AVSpeechSynthesizer`, honoring
@@ -640,15 +641,15 @@ explicit choice still wins; the language gate only sets the default.
   **Parakeet > Apple ≫ Whistle**, and its batch (no-partials) shape felt worse.
   (2026-10-25 ruling: Parakeet Redux is out as the *target* call ASR — it has
   no streaming and the duplex loop needs streaming input. Nemotron streaming
-  ASR is the swap, per `voice-tyger-streaming-plan.md`; until then this bullet
-describes the shipping ASR.)
+  ASR is the swap, per `voice-tyger-streaming-plan.md`. Parakeet was **removed
+  from the tree on 2026-11-01**.)
 - **Selection** — persisted per device; Contact Detail picks per contact on
   both apps, and the language rule sets the default when there is no pick.
   `IDFON_TTS`/`-ttsbackend` and `IDFON_ASR`/`-asrbackend` override for testing.
   The seams stay multi-backend (cloud services included); the voice-agent
   path itself requires streaming engines end-to-end — the 2026-10-25
   streaming contract in `voice-tyger-streaming-plan.md`.
-- **Provisioning** — `SpeechProvisioning.directory(for:)` resolves the Kokoro
+- **Provisioning (removed 2026-11-01 with Kokoro)** — `SpeechProvisioning.directory(for:)` resolved the Kokoro
   model directory in priority order: an Apple-managed `BAAssetPackManager` pack
   (`IDFON_KOKORO_PACK`, iOS 26+; that path needs a managed downloader extension
   + app group and is **not wired up**), then a **directly downloaded pack**

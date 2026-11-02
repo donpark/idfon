@@ -78,7 +78,7 @@ struct LiveActivityBarModel: Equatable {
     var videoAvailable = true
     var elapsed: TimeInterval = 0 // in-call timer; host advances and re-renders
     /// Subtle live readout for the active call, e.g. "Whistle 100 ms ·
-    /// Kokoro 0.7 s". Voice (client-cascade) calls only; nil hides it.
+    /// Phonon 0.5 s". Voice (client-cascade) calls only; nil hides it.
     var stats: String?
     /// True for the client-cascade voice call: shows a subtle on-device
     /// provenance glyph that explains where the audio is processed.

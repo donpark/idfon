@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AudioPlaybackSink.shared.register()
         Task { await DaemonClient().startSharedProvider() }
         // Warm the selected reply voice early, so the first call's greeting is
-        // not blocked by a cold Kokoro download/compile — behind the download
+        // not blocked by a cold TTS download/compile — behind the download
         // approval gate (2026-10-27 rule): silent resume once approved.
         Task { @MainActor in VoiceModelGate.resume() }
         LiveCall.shared.recoverStaleCall()

@@ -29,7 +29,7 @@ enum VoiceModelGate {
         case .nemotron:
             let dir = NemotronStreamingAsr.modelDirectory()
             return !((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).isEmpty
-        case .parakeet, .system:
+        case .system:
             return true
         }
     }

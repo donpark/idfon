@@ -44,7 +44,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         Diag.send = { peer, text in try await IdfonClient().sendText(to: peer, text) }
         Diag.log("config", ["edge": EdgeClient.shared.baseURL?.absoluteString ?? "none"])
         Diag.flush()
-        // Warm the TTS model (Kokoro) so the first call reply is not blocked by
+        // Warm the TTS model so the first call reply is not blocked by
         // a cold model download/compile. Deferred until the app is active: a
         // push wake must stay light — the warmup's memory spike is what killed
         // the woken process (and the ring with it), donpark/idfon#55. The

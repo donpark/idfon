@@ -49,7 +49,7 @@ final class VoiceAgentSession: NSObject {
     /// Shadow turn-taker (decision-log diff only; see TurnShadow).
     nonisolated(unsafe) private var turnShadow: TurnShadow?
     /// One-line live model/latency readout for the call bar, e.g.
-    /// "Whistle 100 ms · Kokoro 0.7 s".
+    /// "Whistle 100 ms · Phonon 0.5 s".
     private(set) var stats: String?
     /// Capture->final time of the last turn, used when the engine streams
     /// without a discrete transcribe step.
@@ -625,7 +625,6 @@ final class VoiceAgentSession: NSObject {
     private func updateStats() {
         let asrLabel: String
         switch asr?.name {
-        case "parakeet-redux": asrLabel = "Parakeet"
         case "system": asrLabel = "Apple"
         default: asrLabel = asr?.name ?? "speech"
         }
@@ -637,7 +636,7 @@ final class VoiceAgentSession: NSObject {
         } else {
             parts.append(asrLabel)
         }
-        let ttsLabel = tts.name == "kokoro" ? "Kokoro" : tts.name.capitalized
+        let ttsLabel = tts.name.capitalized
         if let ms = tts.lastLatencyMs {
             parts.append("\(ttsLabel) \(String(format: "%.1f", Double(ms) / 1000)) s")
         } else {
@@ -736,7 +735,7 @@ final class VoiceAgentSession: NSObject {
         // Parakeet is English-only and downloads/compiles on first use, so a
         // failure falls back to the built-in recognizer (system language)
         // rather than dropping the call.
-        let backends: [AsrBackend] = asrBackend == .parakeet ? [.parakeet, .system] : [asrBackend]
+        let backends: [AsrBackend] = [asrBackend]
         var lastError: Error?
         for backend in backends {
             guard let engine = SpeechEngines.makeAsr(backend) else { continue }

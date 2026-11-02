@@ -551,7 +551,7 @@ final class VoiceAgentSession: NSObject {
         // Parakeet is English-only and downloads/compiles on first use, so a
         // failure falls back to the built-in recognizer (system language)
         // rather than dropping the call.
-        let backends: [AsrBackend] = asrBackend == .parakeet ? [.parakeet, .system] : [asrBackend]
+        let backends: [AsrBackend] = [asrBackend]
         var lastError: Error?
         for backend in backends {
             guard let engine = SpeechEngines.makeAsr(backend) else { continue }

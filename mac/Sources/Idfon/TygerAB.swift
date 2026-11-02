@@ -1,12 +1,12 @@
 import AVFAudio
 import Foundation
 
-/// `-tygerab kokoro|phonon`: scripted falsification run for the "turn-model
+/// `-tygerab phonon|pocket`: scripted falsification run for the "turn-model
 /// behavior is TTS-shaped" hypothesis. One fixed script — a user utterance, a
 /// reply through the selected engine, a mid-reply interruption — driven
 /// through the REAL turn shadow (both channels: scripted mic feed +
 /// PlaybackBus agent stream) so the only variable between runs is the engine's
-/// playback timing (Kokoro whole-clip vs Phonon streaming). Decisions and
+/// playback timing (whole-clip vs streaming). Decisions and
 /// timeline events are marked `tygerab t=…`; diff the two runs' traces.
 ///
 /// v1 logs decisions without reacting to them (fixed schedule): it measures
@@ -74,7 +74,7 @@ enum TygerAB {
             try? await Task.sleep(nanoseconds: 400_000_000)
 
             // Phase 2: the agent replies through the engine under test. The
-            // engine's own marks carry its latency (kokoro: "wav … in Xms";
+            // engine's own marks carry its latency (whole-clip: "wav … in Xms";
             // phonon: "first audio Xms"); this is the A/B variable.
             shadow.setMode("speaking")
             mark("reply start")
