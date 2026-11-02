@@ -384,7 +384,7 @@ final class AudioIO: AudioSource, AudioSink {
         case .voiceAgent:
             try? session.setCategory(
                 .playAndRecord, mode: .voiceChat,
-                options: [.defaultToSpeaker, .allowBluetoothHFP])
+                options: Self.voiceCategoryOptions())
         case .recording:
             try? session.setCategory(
                 .playAndRecord, mode: .default,
@@ -418,10 +418,23 @@ final class AudioIO: AudioSource, AudioSink {
         let session = AVAudioSession.sharedInstance()
         // Set the mode in the category call; move the route override last
         // (setMode(.voiceChat) after the override re-evaluates the route).
+        // `defaultToSpeaker` only when no headset is wired: with AirPods (or a
+        // wired headset) the speaker default makes iOS activate on the speaker
+        // and then re-route to HFP, which flapped mid-call (2026-11-01:
+        // BluetoothHFP -> Speaker -> BluetoothHFP, reasons 3/4/1).
         try? session.setCategory(
             .playAndRecord, mode: Self.skipVoiceProcessing() ? .default : .voiceChat,
-            options: [.allowBluetoothHFP, .defaultToSpeaker])
+            options: Self.voiceCategoryOptions())
         try? session.setPreferredIOBufferDuration(0.01)
+    }
+
+    /// `defaultToSpeaker` unless a headset is already on the route — the caller
+    /// chose it, and the speaker default fights the system's HFP choice.
+    private static func voiceCategoryOptions() -> AVAudioSession.CategoryOptions {
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType)
+        let headset = outputs.contains(.headphones) || outputs.contains(.bluetoothHFP)
+            || outputs.contains(.usbAudio) || outputs.contains(.bluetoothA2DP)
+        return headset ? [.allowBluetoothHFP] : [.allowBluetoothHFP, .defaultToSpeaker]
     }
 
     private func installSessionObservers() {
