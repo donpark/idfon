@@ -41,6 +41,26 @@ student.traits.json`; the teacher's 0.9146 lost 9 pts of event agreement on real
 call captures — `bench-results/live-calibration.md`). Barge remains unmeasured
 (no interrupting onsets in the captures).
 
+**Core AI AOT packaging constraint (2026-11-01 incident).** The AOT containers
+this machine produces (`MetalToolchain-v27.2.47.0`, `coreai-build-3605.6.3`)
+carry **MPSGraph package version 7.1.5**; iOS 27.0.1 and macOS 27.2 accept at
+most **7.0.80**, and the Core AI loader does not error on the mismatch — it
+**segfaults** inside MPSGraph (`EXC_BAD_ACCESS` on an `llvm-worker` thread) and
+takes the app down (live-call crash, `Idfon-2026-11-01-171742.ips`; the installed
+tier was exactly the two 7.1.5 containers). The October containers from the
+older toolchain (`MetalToolchain-v27.1.266.1`, 7.0.63) load fine — the 30k-call
+soak passes on them.
+
+- Code mitigation: `CoreAITurnModel.select` treats a package above 7.0.80 as not
+  loadable (`IDFON_TURN_AOT_MAX` raises the gate), so the tier is refused and the
+  app falls back instead of crashing; `VoiceModelGate.start` downloads the
+  **CoreML** tier on iOS while the Core AI files on disk are not loadable.
+- Real fix: rebuild the AOT containers with a toolchain that emits ≤ 7.0.80 (the
+  27.1 Metal toolchain, root-only here) and republish. `TygerModelStore.fetch`
+  keeps files that already exist, so a same-name republish will not replace an
+  installed bad container — bump the artifact names (or verify hashes) when
+  shipping the replacement.
+
 - **Loading**: `CoreAITurnModel` loads the float32 pair by default (the
   2026-10-27 ruling: the fp16 pair drifts `p_end` ≈ 0.03 and never ends a
   margin turn on the corner gate); fp16 is opt-in via

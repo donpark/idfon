@@ -17,6 +17,8 @@ public final class CoreAITurnModel: TurnModel {
     public enum LoadError: Error {
         case missingFunction(String)
         case missingArtifact(String)
+        /// The AOT package needs a newer OS than this one (see `checkPackage`).
+        case incompatiblePackage(String)
     }
 
     private let encFn: InferenceFunction
@@ -66,33 +68,12 @@ public final class CoreAITurnModel: TurnModel {
         // decision guard did not catch it because real conversations rarely
         // sit on the margin. fp16 returns as the default when the export
         // keeps the GRU and heads in fp32 (the mixed-precision exemption).
-        let forceFP16 = ProcessInfo.processInfo.environment["IDFON_TURN_PRECISION"] == "fp16"
-        // Step preference: the distilled student first (StudentStep, 5.3 MB),
-        // the teacher (56 MB) as fallback. The encoder is shared. Calibration
-        // override `IDFON_TURN_STEP=tyger` pins the teacher (A/B on live calls,
-        // and the oracle test's expectations are the teacher's).
-        let preferStudent = ProcessInfo.processInfo.environment["IDFON_TURN_STEP"] != "tyger"
-        let step = { (rung: String) -> URL? in
-            (preferStudent ? ["student_step_\(rung).aimodel", "tyger_step_\(rung).aimodel"]
-                           : ["tyger_step_\(rung).aimodel"])
-                .map { directory.appendingPathComponent($0) }
-                .first { FileManager.default.fileExists(atPath: $0.path) }
+        // Rung + step selection lives in `select` so the download gate asks the
+        // same question the loader will (`loadable`).
+        guard let picked = Self.select(in: directory) else {
+            throw LoadError.missingArtifact("no loadable tier in \(directory.path)")
         }
-        let fp16 = (directory.appendingPathComponent("tyger_encoder_float16.aimodel"), step("float16"))
-        let fp32 = (directory.appendingPathComponent("tyger_encoder_float32.aimodel"), step("float32"))
-        let have = { (pair: (URL, URL?)) in
-            guard let step = pair.1 else { return false }
-            return Self.present(pair.0) && Self.present(step)
-        }
-        // fp32 is the gated reference rung. fp16 is opt-in via
-        // IDFON_TURN_PRECISION=fp16 — and the fallback when only the fp16 pair
-        // is installed (a side-load), so an install without the fp32 pair
-        // never loses the turn model. The ModelStore delivers the fp32 pair.
-        let useFP16 = have(fp16) && (forceFP16 || !have(fp32))
-        let encURL = useFP16 ? fp16.0 : fp32.0
-        guard let stepURL = useFP16 ? fp16.1 : fp32.1 else {
-            throw LoadError.missingArtifact("step_float\(useFP16 ? 16 : 32).aimodel")
-        }
+        let (encURL, stepURL, useFP16) = (picked.enc, picked.step, picked.fp16)
         self.usesFloat16 = useFP16
         self.stepModelName = stepURL.lastPathComponent
         // The student's GRU: 2 layers x width 256 (ports/tyger-student/model.py).
@@ -175,7 +156,10 @@ public final class CoreAITurnModel: TurnModel {
             return try runSync { () async throws -> AIModel in
                 var firstErr: Error?
                 for kid in kids {
-                    do { return try await AIModel(contentsOf: kid) } catch { firstErr = firstErr ?? error }
+                    do {
+                        try Self.checkPackage(kid)
+                        return try await AIModel(contentsOf: kid)
+                    } catch { firstErr = firstErr ?? error }
                 }
                 throw firstErr ?? LoadError.missingArtifact(compiled.path)
             }
@@ -190,6 +174,115 @@ public final class CoreAITurnModel: TurnModel {
             opts.expectFrequentReshapes = false
             return try await AIModel(contentsOf: url, options: opts)
         }
+    }
+
+    /// The oldest OS this tier supports (27.0.x) loads MPSGraph packages up to
+    /// this version. A newer package does not raise an error — the Core AI
+    /// loader **segfaults** inside MPSGraph (`EXC_BAD_ACCESS` on an llvm-worker
+    /// thread, "No valid MPSGraph Package Version found … This OS supports up to
+    /// 7.0.80" one line before), which is uncatchable in-process. Assets built
+    /// by a newer toolchain (the 2026-11-01 build: `coreai-build 3605.6.3` emits
+    /// 7.1.5) therefore crash the app on 27.0.1 unless checked first.
+    /// `IDFON_TURN_AOT_MAX` raises the gate for a newer runtime.
+    static var maxPackageVersion: [Int] {
+        (ProcessInfo.processInfo.environment["IDFON_TURN_AOT_MAX"] ?? "7.0.80").split(separator: ".").compactMap { Int($0) }
+    }
+
+    struct Selection { let enc: URL; let step: URL; let fp16: Bool }
+
+    /// The tier this directory offers: fp32 by default (the gated reference
+    /// rung), fp16 opt-in via `IDFON_TURN_PRECISION=fp16` and the fallback when
+    /// only the fp16 pair is *installed*; the distilled student step first, the
+    /// teacher second (`IDFON_TURN_STEP=tyger` pins the teacher for A/B and for
+    /// the oracle test's teacher expectations).
+    ///
+    /// Two different questions, deliberately:
+    /// - *installed* (`present`) decides the rung and the step — a bad student
+    ///   step falls back to the teacher step, and fp32 never silently becomes
+    ///   fp16 (the 2026-10-27 `p_end` ruling);
+    /// - *loadable* (`packageOK`) gates the result: an AOT package newer than the
+    ///   OS accepts segfaults the loader, so the tier must be refused instead
+    ///   (fall back to CoreML / MLX / classic).
+    static func select(in directory: URL) -> Selection? {
+        let forceFP16 = ProcessInfo.processInfo.environment["IDFON_TURN_PRECISION"] == "fp16"
+        let preferStudent = ProcessInfo.processInfo.environment["IDFON_TURN_STEP"] != "tyger"
+        let step = { (rung: String) -> URL? in
+            (preferStudent ? ["student_step_\(rung).aimodel", "tyger_step_\(rung).aimodel"]
+                           : ["tyger_step_\(rung).aimodel"])
+                .map { directory.appendingPathComponent($0) }
+                .first { Self.present($0) && Self.packageOK($0) }
+        }
+        let fp16 = (directory.appendingPathComponent("tyger_encoder_float16.aimodel"), step("float16"))
+        let fp32 = (directory.appendingPathComponent("tyger_encoder_float32.aimodel"), step("float32"))
+        let present = { (pair: (URL, URL?)) in
+            guard let step = pair.1 else { return false }
+            return Self.present(pair.0) && Self.present(step)
+        }
+        let useFP16 = present(fp16) && (forceFP16 || !present(fp32))
+        let (enc, s) = useFP16 ? fp16 : fp32
+        guard let s, Self.packageOK(enc), Self.packageOK(s) else { return nil }
+        return Selection(enc: enc, step: s, fp16: useFP16)
+    }
+
+    /// Whether this directory can actually load on this OS (no model load).
+    /// The apps use it to pick the tier to download, so a phone never fetches a
+    /// Core AI set its runtime would reject (and crash on).
+    public static func loadable(in directory: URL) -> Bool {
+        select(in: directory) != nil
+    }
+
+    /// Whether the loadable tier would use the student step (the apps apply the
+    /// student's per-model traits only then).
+    public static func studentStep(in directory: URL) -> Bool {
+        select(in: directory)?.step.lastPathComponent.hasPrefix("student_step_") ?? false
+    }
+
+    /// Whether the tier carries the per-model rules traits with its step.
+    public static func hasTraits(in directory: URL) -> Bool {
+        FileManager.default.fileExists(atPath: directory.appendingPathComponent("student.traits.json").path)
+    }
+
+    /// Every AOT child of `url` that the OS can load.
+    private static func packageOK(_ url: URL) -> Bool {
+        let kids = containerKids(url)
+        return kids.contains { (try? checkPackage($0)) != nil }
+    }
+
+    private static func containerKids(_ url: URL) -> [URL] {
+        let compiled = url.deletingLastPathComponent().appendingPathComponent(
+            url.deletingPathExtension().lastPathComponent + ".compiled.aimodel")
+        return ((try? FileManager.default.contentsOfDirectory(at: compiled, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "aimodelc" }
+    }
+
+    /// Refuse to hand the runtime a package newer than the OS can load.
+    private static func checkPackage(_ kid: URL) throws {
+        let plists = ((try? FileManager.default.subpathsOfDirectory(atPath: kid.path)) ?? [])
+            .filter { $0.hasSuffix(".mpsgraphpackage/manifest.plist") }
+        for sub in plists {
+            let url = kid.appendingPathComponent(sub)
+            guard let data = try? Data(contentsOf: url),
+                  let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                  let versions = (plist["Package Version"] as? [String: Any])?.keys,
+                  let newest = versions.compactMap({ Self.version($0) }).max(by: Self.older)
+            else { continue }
+            if Self.older(Self.maxPackageVersion, newest) {
+                throw LoadError.incompatiblePackage(newest.map(String.init).joined(separator: "."))
+            }
+        }
+    }
+
+    private static func version(_ text: String) -> [Int] {
+        text.split(separator: ".").compactMap { Int($0) }
+    }
+
+    /// a < b, numerically (`7.0.80` > `7.0.63`, `7.1.5` > `7.0.80`).
+    private static func older(_ a: [Int], _ b: [Int]) -> Bool {
+        for i in 0..<max(a.count, b.count) {
+            let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
+            if x != y { return x < y }
+        }
+        return false
     }
 
     public func reset() {
