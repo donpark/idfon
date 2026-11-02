@@ -302,12 +302,31 @@ starting with a letter or digit. Enforced in both the page command and the edge
 (`valid_name`); `sha256` is reserved for the content route. Hyphens are allowed
 because the station names have them (`talk-radio`, `phonon-31m`).
 
-**What the QR does today:** it adds the contact (`idfon://add/<b64>`, the same
-link the app's contact card carries). It does **not** install the capability
-ticket — the add path has no slot for one — so a scanner still runs
-`scripts/radio-admit.sh` and one `-pair-ticket` launch. The page becomes
-self-service the day the add link carries the ticket; until then it is an
-operator-facing index with a very good QR.
+**A public station's QR is self-service.** The roster entry says `"public": true`,
+`config` carries that into the live config, and `page` asks the station to sign
+a **subject-less, receive-only** ticket (`ticket --public`). The link becomes an
+envelope:
+
+```
+idfon://add/<b64url({ "contact": <card>, "capability": <station ticket> })>
+```
+
+The apps decode the envelope, add the contact, and store the capability ticket
+under that peer — so one scan both adds the topic and makes it callable. A
+legacy contact-only link still works (the payload is then the card).
+
+**A private station omits `public`**: its card carries no ticket, the QR only
+adds the contact, and admission stays `scripts/radio-admit.sh` + one
+`-pair-ticket` launch. There is no in-app paste for a ticket; the add link is
+the only delivery path.
+
+**What `public` gives away.** The ticket is a shared bearer credential: anyone
+who scans can message that station, so its chat (listener submissions
+included) is world-writable and the holder honours it only because its live
+config opted in (`ticket --public` refuses without it). Revoking it means
+rotating the station's identity — which invalidates every printed QR, so the
+page must be republished with fresh ones. Rate-limit before opening one to the
+world.
 
 ## The schedule
 

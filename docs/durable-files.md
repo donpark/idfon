@@ -55,9 +55,16 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
 | `GET`/`HEAD /files/<name...>` | mutable named file (`cache-control: no-store`) |
 | `GET`/`HEAD /files/<prefix...>/sha256/<hash>` | content object (`cache-control: … immutable`) |
 | `GET`/`HEAD /models/<name...>` | alias for model packs (`/models/phonon-31m/...`) |
+| `GET`/`HEAD /<prefix>/<name>/` | a directory serves its `index.html` (`page_path`) |
 | `PUT` on either form | publish (user or operations token) |
 | `DELETE` on either form | operational takedown: removes bytes + pin (operations token only) |
 
+- **Names are handles**: the first segment of a nested path is a namespace
+  claim and must be lowercase, 1–32 of `a-z 0-9 - _`, starting with a letter or
+  digit (`valid_name`); `sha256` is reserved. A flat filename is not a claim and
+  keeps the looser rule. `files.idfon.net/<handle>/` reaches it because the CDN
+  rewrites its root onto this `/files/` mount — the prefix is the origin's, and
+  the place a path-scoped token would enforce the claim.
 - Uploads stream: the request body is never collected or capped at the
   gateway's `MAX_RESOURCE_BYTES`; files of any size go through.
 - Content writes are verified against the URL hash (mismatch = `400`) and

@@ -561,6 +561,9 @@ async function config() {
   const live = {
     _comment: `Generated for station "${station.name}" by scripts/radio-program.mjs config — edit ${path.relative(ROOT, BASE_CONFIG)} and re-run instead.`,
     backend: base.backend ?? "stream",
+    // Public stations admit any sender presenting the page's ticket (subject-
+    // less, receive-only). Private stations only take `radio-admit.sh` tickets.
+    ...(station.public ? { public: true } : {}),
     schedule,
     ...(fallback ? { file: fallback } : {}),
     ...(station.topic ? { topic: station.topic } : {}),
@@ -620,15 +623,25 @@ async function page() {
     }
     // The same deep link the app's contact card carries (vcf.rs `link_for_json`).
     const contact = (await readFile(ticketFile, "utf8")).trim().split("\n")[0];
-    const link = `idfon://add/${Buffer.from(contact, "utf8").toString("base64url")}`;
-    const qr = qrcode(0, "M");
+    let payload = contact;
+    if (station.public) {
+      // One scan adds the contact AND the receive-only credential any sender
+      // may present. Refused unless this station's live config opted in.
+      const capability = await publicTicket(station);
+      payload = JSON.stringify({ contact: JSON.parse(contact), capability: JSON.parse(capability) });
+    }
+    const link = `idfon://add/${Buffer.from(payload, "utf8").toString("base64url")}`;
+    // Long payloads need a lower error-correction tier or the code gets too
+    // dense to read off a screen; the page is scanned, not printed and creased.
+    const qr = qrcode(0, station.public ? "L" : "M");
     qr.addData(link);
     qr.make();
     cards.push({
       name: station.name ?? station.instance,
       topic: station.topic ?? "",
+      public: Boolean(station.public),
       link,
-      qr: qr.createSvgTag({ cellSize: 3, margin: 2, scalable: true }),
+      qr: qr.createSvgTag({ cellSize: 3, margin: 4, scalable: true }),
     });
   }
   if (!cards.length) throw new Error("no station has a contact yet; serve one first");
@@ -643,6 +656,26 @@ async function page() {
   console.log();
   console.log("publish:");
   console.log(`  idfon publish ${rel} --name ${name}/index.html --permanent`);
+}
+
+/// A subject-less, receive-only ticket the station signs for itself. The holder
+/// only honours it when its live config says `"public": true`; `config` copies
+/// that from the roster entry.
+async function publicTicket(station) {
+  const home = path.join(os.homedir(), ".idfon", station.instance);
+  const live = path.join(RADIO, "instances", station.instance, "live.json");
+  const bin = path.join(ROOT, "target", "release", "eve-idfon-voice");
+  if (!existsSync(live)) {
+    throw new Error(`${station.instance} has no live config yet — run \`radio-serve.sh\` once`);
+  }
+  if (!existsSync(bin)) throw new Error(`missing ${path.relative(ROOT, bin)} — run \`pnpm voice build\``);
+  const minted = spawnSync(
+    bin,
+    ["--key-file", path.join(home, "holder.key"), "--live-config", live, "ticket", "--public"],
+    { encoding: "utf8" }
+  );
+  if (minted.status !== 0) throw new Error(`ticket mint failed for ${station.instance}: ${(minted.stderr ?? "").trim()}`);
+  return minted.stdout.trim();
 }
 
 function escapeHtml(text) {
@@ -663,7 +696,7 @@ function renderIndex(name, cards, base) {
   <div class="body">
     <h2>${escapeHtml(card.topic || card.name)}</h2>
     <p class="station">${escapeHtml(card.name)}</p>
-    <p class="hint">Scan with the Idfon app to add this ${escapeHtml(card.topic ? "topic" : "station")} as a contact.</p>
+    <p class="hint">Scan with the Idfon app to add ${escapeHtml(card.topic || card.name)} as a contact${card.public ? " — listen straight away" : ""}.</p>
     <p class="link"><a href="${escapeHtml(card.link)}">${escapeHtml(card.link)}</a></p>
   </div>
 </li>`
@@ -685,8 +718,8 @@ function renderIndex(name, cards, base) {
   @media (min-width: 40rem) { ul { grid-template-columns: 1fr 1fr; } }
   .card { display: flex; gap: 1rem; padding: 1rem; border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
           border-radius: 14px; align-items: flex-start; }
-  .qr { flex: none; width: 148px; line-height: 0; padding: 8px; background: #fff; border-radius: 8px; }
-  .qr svg { width: 132px; height: 132px; display: block; }
+  .qr { flex: none; width: 200px; line-height: 0; padding: 8px; background: #fff; border-radius: 8px; }
+  .qr svg { width: 184px; height: 184px; display: block; }
   h2 { font-size: 1rem; margin: 0 0 .15rem; }
   .station, .hint { margin: 0 0 .5rem; font-size: .85rem; opacity: .7; }
   .link { margin: 0; font-size: .7rem; overflow-wrap: anywhere; opacity: .5; }

@@ -126,9 +126,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDeleg
         case .answer:
             NotificationCenter.default.post(name: .init("idfon.answer"), object: nil)
         case .add(let payload):
-            guard let ticketJSON = ContactExchange.ticketJSON(fromLink: payload),
+            guard let link = ContactExchange.decodeLink(payload),
                   let presenter = window?.rootViewController else { return }
-            ContactExchange.confirmAdd(ticketJSON: ticketJSON, from: presenter) { [weak self] in
+            ContactExchange.confirmAdd(
+                ticketJSON: link.ticketJSON, capabilityJSON: link.capabilityJSON, from: presenter
+            ) { [weak self] in
                 (self?.window?.rootViewController as? UITabBarController)?.selectedIndex = 0
             }
         case .resource(let ref, let path):

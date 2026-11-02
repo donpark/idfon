@@ -15,11 +15,44 @@ import UIKit
 enum ContactExchange {
     /// Ticket JSON from an `idfon://add/<base64url>` deep-link payload.
     static func ticketJSON(fromLink payload: String) -> String? {
+        decodeLink(payload)?.ticketJSON
+    }
+
+    /// A link carries either a contact ticket (legacy) or an envelope
+    /// `{ "contact": …, "capability": … }`. A station signs the capability
+    /// ticket that admits this device, so one scan both adds the contact and
+    /// makes it callable — the add path's only way to deliver a credential.
+    static func decodeLink(_ payload: String) -> (ticketJSON: String, capabilityJSON: String?)? {
         var base64 = payload.replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
         while base64.count % 4 != 0 { base64 += "=" }
-        guard let data = Data(base64Encoded: base64) else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard let data = Data(base64Encoded: base64),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let contact = object["contact"] as? [String: Any] else {
+            return (text, nil) // legacy: the payload is the ticket itself
+        }
+        guard let contactData = try? JSONSerialization.data(withJSONObject: contact),
+              let contactJSON = String(data: contactData, encoding: .utf8) else { return nil }
+        let capabilityJSON = (object["capability"] as? [String: Any]).flatMap { capability in
+            (try? JSONSerialization.data(withJSONObject: capability))
+                .flatMap { String(data: $0, encoding: .utf8) }
+        }
+        return (contactJSON, capabilityJSON)
+    }
+
+    /// The peer id a channel contact is keyed by — the ticket's `endpoint_id`,
+    /// else the endpoint address's `id` (the rule `-pair` uses).
+    static func endpointId(ofTicketJSON ticketJSON: String) -> String? {
+        guard let ticket = try? JSONSerialization.jsonObject(with: Data(ticketJSON.utf8)) as? [String: Any] else {
+            return nil
+        }
+        if let id = ticket["endpoint_id"] as? String, !id.isEmpty { return id }
+        guard let address = ticket["endpoint_addr"] as? String,
+              let transport = try? JSONSerialization.jsonObject(with: Data(address.utf8)) as? [String: Any] else {
+            return nil
+        }
+        return (transport["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// A ticket's display name: the `label` the sharer chose, else the account id.
@@ -35,6 +68,7 @@ enum ContactExchange {
     /// (peer.add + the default chat grants).
     static func confirmAdd(
         ticketJSON: String,
+        capabilityJSON: String? = nil,
         from viewController: UIViewController,
         client: IdfonClient = IdfonClient(),
         onAdded: @escaping () -> Void = {}
@@ -48,6 +82,9 @@ enum ContactExchange {
                 do {
                     let identity = (try? await client.identityId()) ?? "default"
                     try await client.addChannel(name: name, ticketJSON: ticketJSON, identity: identity)
+                    if let capabilityJSON, let peer = endpointId(ofTicketJSON: ticketJSON) {
+                        _ = CapabilityTickets.store(capabilityJSON, for: peer)
+                    }
                     await MainActor.run { onAdded() }
                 } catch {
                     await MainActor.run {
