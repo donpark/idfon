@@ -96,6 +96,10 @@ pub struct FilesRoutes {
     /// not pass through the gateway's rate limiter, so the store owns this.
     write_limit: u32,
     writes: Mutex<HashMap<String, (Instant, u32)>>,
+    /// Mount points for named files: `/files/` and `/models/` always, plus any
+    /// deployment-declared top-level name (e.g. `talk-radio/`), so a CDN that
+    /// passes paths through unchanged reaches the store without a rewrite.
+    prefixes: Vec<String>,
 }
 
 impl FilesRoutes {
@@ -131,9 +135,25 @@ impl FilesRoutes {
             grace_days: 30,
             write_limit: 0,
             writes: Mutex::new(HashMap::new()),
+            prefixes: NAME_PREFIXES.iter().map(|prefix| (*prefix).to_owned()).collect(),
         };
         routes.sweep(now_secs());
         Ok(routes)
+    }
+
+    /// Mount an extra top-level name as a files namespace (`talk-radio` →
+    /// `/talk-radio/...`). The name must be a handle; a reserved or malformed
+    /// one is ignored (`false`).
+    pub fn with_alias(mut self, name: &str) -> (Self, bool) {
+        let name = name.trim().trim_matches('/');
+        if name.is_empty() {
+            return (self, true);
+        }
+        if !valid_name(name) {
+            return (self, false);
+        }
+        self.prefixes.push(format!("/{name}/"));
+        (self, true)
     }
 
     /// Expiry policy: `max_expiry_days == 0` accepts any term.
@@ -324,7 +344,8 @@ impl FilesRoutes {
             )
             .await;
         }
-        let Some(name) = name_path(path) else {
+        let prefixes: Vec<&str> = self.prefixes.iter().map(String::as_str).collect();
+        let Some(name) = name_path_in(&prefixes, path) else {
             return not_found();
         };
         let key = format!("name/{}", name.join("/"));
@@ -374,7 +395,9 @@ impl FilesRoutes {
             // 5 GB file only to be told it is too large.
             return too_large(limit);
         }
-        let (dest, expected_hash, pin_key) = match (content_hash(path), name_path(path)) {
+        let prefixes: Vec<&str> = self.prefixes.iter().map(String::as_str).collect();
+        let (dest, expected_hash, pin_key) =
+            match (content_hash(path), name_path_in(&prefixes, path)) {
             (Some(hash), _) => (
                 self.root.join("sha256").join(hash),
                 Some(hash.to_owned()),
@@ -633,8 +656,9 @@ impl LocalRoute for FilesRoutes {
         if !(read || matches!(*method, Method::PUT | Method::DELETE)) {
             return false;
         }
-        let path = routed_path(account, path);
-        content_hash(&path).is_some() || name_path(&path).is_some()
+        let prefixes: Vec<&str> = self.prefixes.iter().map(String::as_str).collect();
+        let path = routed_path(&prefixes, account, path);
+        content_hash(&path).is_some() || name_path_in(&prefixes, &path).is_some()
     }
 
     fn handle(
@@ -648,7 +672,8 @@ impl LocalRoute for FilesRoutes {
     ) -> Pin<Box<dyn Future<Output = Response<ResponseBody>> + Send + '_>> {
         let method = method.clone();
         let headers = headers.clone();
-        let path = routed_path(account, path);
+        let prefixes: Vec<&str> = self.prefixes.iter().map(String::as_str).collect();
+        let path = routed_path(&prefixes, account, path);
         Box::pin(async move {
             match method {
                 Method::GET | Method::HEAD => self.serve(&method, &path).await,
@@ -662,10 +687,17 @@ impl LocalRoute for FilesRoutes {
 
 /// On an IP/localhost edge the gateway strips the first path segment into
 /// `account`; `/files/...` and `/models/...` must still address the same store.
-fn routed_path(account: &str, path: &str) -> String {
-    match account {
-        "files" | "models" => format!("/{account}{path}"),
-        _ => path.to_owned(),
+/// The gateway strips the first segment as the request's `account`, so a
+/// mounted namespace has to be put back before the store sees the path.
+fn routed_path(prefixes: &[&str], account: &str, path: &str) -> String {
+    if !account.is_empty()
+        && prefixes
+            .iter()
+            .any(|prefix| prefix.trim_matches('/') == account)
+    {
+        format!("/{account}{path}")
+    } else {
+        path.to_owned()
     }
 }
 
@@ -702,26 +734,44 @@ fn valid_name(name: &str) -> bool {
 }
 
 fn name_path(path: &str) -> Option<Vec<&str>> {
+    name_path_in(&NAME_PREFIXES, path)
+}
+
+fn name_path_in<'a>(prefixes: &[&'a str], path: &'a str) -> Option<Vec<&'a str>> {
     // A directory URL keeps its trailing slash; drop it for the prefix match and
     // the segment split, then resolve the directory to its index document.
     let (path, is_dir) = match path.strip_suffix('/') {
         Some(dir) => (dir, true),
         None => (path, false),
     };
-    let rest = NAME_PREFIXES.iter().find_map(|prefix| {
+    let (rest, alias) = prefixes.iter().find_map(|prefix| {
         // `/files` and `/files/` mount the same tree.
         let base = prefix.trim_end_matches('/');
         let rest = path.strip_prefix(base)?;
-        if rest.is_empty() || rest.starts_with('/') {
-            Some(rest.strip_prefix('/').unwrap_or(rest))
-        } else {
-            None
+        if !(rest.is_empty() || rest.starts_with('/')) {
+            return None;
         }
+        // `/files/` and `/models/` mount the store as-is. Any other prefix is a
+        // top-level namespace alias that also names the store directory, so the
+        // name goes back into the path: `/talk-radio/x` → `talk-radio/x`.
+        let as_is = NAME_PREFIXES.iter().any(|mounted| mounted == prefix);
+        let alias = (!as_is).then(|| base.trim_start_matches('/'));
+        Some((rest.strip_prefix('/').unwrap_or(rest), alias))
     })?;
-    if rest.is_empty() {
+
+    let mut segments: Vec<&str> = Vec::new();
+    if let Some(alias) = alias {
+        segments.push(alias);
+    }
+    if !rest.is_empty() {
+        segments.extend(rest.split('/'));
+    }
+    if segments.is_empty() {
         return None; // the mount root has no index of its own
     }
-    let mut segments: Vec<&str> = rest.split('/').collect();
+    if is_dir {
+        segments.push("index.html");
+    }
     for segment in &segments {
         let valid = !segment.is_empty()
             && *segment != "."
@@ -740,9 +790,6 @@ fn name_path(path: &str) -> Option<Vec<&str>> {
     let (first, rest) = segments.split_first()?;
     if !rest.is_empty() && !valid_name(first) {
         return None;
-    }
-    if is_dir {
-        segments.push("index.html");
     }
     Some(segments)
 }
@@ -988,6 +1035,19 @@ mod tests {
         assert_eq!(name_path("/models/tyger/"), Some(vec!["tyger", "index.html"]));
         assert_eq!(name_path("/files/"), None);
         assert_eq!(name_path("/files"), None);
+        // A deployment-declared alias mounts a top-level name as a namespace:
+        // `/talk-radio/` serves `talk-radio/index.html`.
+        let aliased: Vec<&str> = vec!["/files/", "/models/", "/talk-radio/"];
+        assert_eq!(
+            name_path_in(&aliased, "/talk-radio/"),
+            Some(vec!["talk-radio", "index.html"])
+        );
+        assert_eq!(
+            name_path_in(&aliased, "/talk-radio/tech-talk.html"),
+            Some(vec!["talk-radio", "tech-talk.html"])
+        );
+        // Without the alias it stays a resource path, not a file.
+        assert_eq!(name_path("/talk-radio/"), None);
         assert_eq!(
             name_path("/files/README.html"),
             Some(vec!["README.html"]),
@@ -1001,6 +1061,27 @@ mod tests {
         assert_eq!(name_path("/files/../etc/passwd"), None);
         assert_eq!(name_path("/files/a//b"), None);
         assert_eq!(name_path("/elsewhere/a.json"), None);
+    }
+
+    #[test]
+    fn an_alias_serves_and_accepts_writes() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("idfon-files-alias-{}-{nanos}", std::process::id()));
+        let (routes, ok) = FilesRoutes::new(&root, 0, Some("t".into()))
+            .unwrap()
+            .with_alias("talk-radio");
+        assert!(ok);
+        assert!(routes.matches(&Method::GET, "talk-radio", "/"));
+        assert!(routes.matches(&Method::PUT, "", "/talk-radio/index.html"));
+        assert!(!routes.matches(&Method::GET, "other", "/"));
+        let (routes, ok) = FilesRoutes::new(&root, 0, None).unwrap().with_alias("Talk");
+        assert!(!ok, "not a handle");
+        let _ = routes;
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
