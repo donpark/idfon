@@ -1,14 +1,12 @@
-//! Programming: which clip a broadcast call plays, and when.
+//! The schedule: which clip plays, and when.
 //!
 //! The schedule is data (`agents/radio/schedule.json`): slots carry a local
 //! start time, the weekdays they start on, and the clip that fills the slot.
 //! A slot holds the air until the next one starts, wrapping past midnight; with
-//! no slot active the call falls back to the backend's `file`.
+//! no slot active the programme falls back to its fallback clip.
 //!
-//! Playback is call-relative — nothing plays when no call is up — so this is a
-//! programme, not a timer. It is also independent of a radio jockey: the
-//! schedule says what plays, a jockey (elsewhere) would be what speaks between
-//! items.
+//! Time is the station's own: this module knows nothing about transports,
+//! calls, or who is listening.
 
 use std::path::{Path, PathBuf};
 

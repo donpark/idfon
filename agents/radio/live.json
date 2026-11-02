@@ -1,14 +1,8 @@
 {
-  "_comment": "Talk-radio contact: a one-way 'broadcast' (docs/live-radio.md). backend=stream plays the active schedule slot into the call's return leg and never listens; voice_route.mode=broadcast tells the apps the holder only sends audio, so a call is dialed instead of a text turn. `schedule` is the programme (agents/radio/schedule.json, written by `scripts/radio-program.mjs compile` from submissions + found episodes); `file` is the fallback clip that loops when no slot is active: the whole station can be just this one clip (`scripts/radio-program.mjs fallback <clip>`), and scheduling is additive on top. Both paths are relative to the working directory. Clips must be PCM WAV at 24 kHz mono and voice_route.audio must stay pcm24k to match: there is no decoder dependency, so the script converts with ffmpeg. `log` gets one JSONL line per second plus every slot change and any agent-side stall, which is what makes two walks comparable. `topic` is the default programme name; a caller can override it per call by pushing a `topic=<value>` line in the invite's per-contact context (one agent, many topic contacts).",
+  "_comment": "The idfon adapter for a talk-radio station (docs/live-radio.md). It carries only transport concerns and points at the station's own programme file; `scripts/radio-program.mjs config` writes a per-instance copy with absolute paths. backend=stream pumps the programme into a one-way live call; voice_route.mode=broadcast tells callers the holder only sends audio, so the app dials a listen call instead of a text turn. `log` gets one JSONL line per second plus every slot change and any agent-side stall. `public: true` (written from the roster entry) makes the holder accept the subject-less ticket the page hands out; without it only `scripts/radio-admit.sh` tickets are accepted.",
   "backend": "stream",
-  "schedule": "agents/radio/schedule.json",
-  "file": "agents/radio/fallback.wav",
-  "topic": "talk radio",
-  "loop": true,
+  "programme": "programme.json",
   "log": "/tmp/idfon-radio-soak.jsonl",
   "broadcast": "idfon-radio",
-  "voice_route": {
-    "mode": "broadcast",
-    "audio": "pcm24k"
-  }
+  "voice_route": { "mode": "broadcast", "audio": "pcm24k" }
 }
