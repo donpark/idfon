@@ -137,7 +137,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .add(let payload):
                 if let link = ContactExchange.decodeLink(payload) {
                     ContactExchange.confirmAdd(
-                        ticketJSON: link.ticketJSON, capabilityJSON: link.capabilityJSON, app: app)
+                        ticketJSON: link.ticketJSON, capabilityJSON: link.capabilityJSON,
+                        auth: link.auth, app: app)
                 }
             }
         }

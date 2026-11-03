@@ -129,7 +129,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDeleg
             guard let link = ContactExchange.decodeLink(payload),
                   let presenter = window?.rootViewController else { return }
             ContactExchange.confirmAdd(
-                ticketJSON: link.ticketJSON, capabilityJSON: link.capabilityJSON, from: presenter
+                ticketJSON: link.ticketJSON, capabilityJSON: link.capabilityJSON, auth: link.auth,
+                from: presenter
             ) { [weak self] in
                 (self?.window?.rootViewController as? UITabBarController)?.selectedIndex = 0
             }

@@ -49,6 +49,32 @@ app "Share Contact Card"                                      ▼
 The apps delegate all codec work to the daemon RPCs; the only client-side
 decoding is base64url of the deep-link payload.
 
+## Approval modal (the add flow)
+
+Tapping an `idfon://add/` link opens the approval modal: the name is editable
+(rename before adding) and the user either adds or **denies**. A protected
+contact's envelope carries an `auth` block instead of a capability ticket:
+
+```json
+{ "contact": …, "auth": { "kind": "code", "label": "Admission code",
+  "criteria": "…", "url": "http://<host>:<port>/redeem" } }
+```
+
+The modal shows the agent's `criteria`, collects the admission code, and
+redeems it (`POST {code, subject}` with the device's own peer id) for the
+sender-bound capability ticket — the `radio-admit.sh` contract
+(`allowed-peers` + `ticket --subject <peer>`) with no console round-trip.
+Codes are one-shot.
+
+## The test-contacts page (testing without pairing)
+
+`node scripts/test-contacts-page.mjs --serve` renders every holder identity
+under `~/.idfon` as a card (QR + tap link) on the local network. Public agents
+get subject-less tickets in the link; protected ones get a per-load admission
+code that the modal redeems. This replaces the `-pair` / `-pair-ticket` +
+`devicectl` pairing dance for testing (see `docs/live-radio.md` "Pairing the
+iPhone"); the holder's sender binding stays.
+
 ## Policy notes
 
 - Imports apply the same default grants as Add Contact (the four chat
