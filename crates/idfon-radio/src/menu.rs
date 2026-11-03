@@ -19,7 +19,7 @@
 //! ```
 //!
 //! shortcut: no feed fetching or cache management here. Nothing downloads or
-//! refreshes entries; when source ingest lands (#119) the far-end arm plays.
+//! refreshes entries; far-end sources decode at play time in the adapter.
 
 use std::path::{Path, PathBuf};
 

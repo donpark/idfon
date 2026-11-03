@@ -65,8 +65,14 @@ side-channel), never audio-prompt navigation.
   context as `topic=` — `News/Morning Briefing`, or 1-based indices like `1/2`
   (segments are case-insensitive and mixable). It beats the station default:
   the call plays the chosen show and nothing else.
-- Far-end sources do not play yet: live source ingest lands with the HLS work
-  (epic #118 / #119) and the error says so. Cache-only until then.
+- Far-end sources play too: ffmpeg decodes the stream (HLS, ICY/MP3, AAC) to
+  the station's 24 kHz at call time (`stream.rs` `run_stream`). shortcut: a
+  dropped source ends the call (`eof`); retry-with-backoff is shared ingest
+  recovery (#119).
+- `scripts/radio-stations-opml.mjs` curates a starter menu from real online
+  talk stations (Radio Browser discovery + a liveness probe that reads real
+  audio bytes) — its output is the `shows.opml` above; the end-to-end run is
+  the #135 acceptance gate.
 - The holder exposes the OPML as a resource — `idfon://<holder>/menu.opml`,
   advertised as `menu.opml` in the `idfon.json` manifest (an agent-supplied
   `menu` block wins) — fetched by the apps like the voice catalog. A manifest
