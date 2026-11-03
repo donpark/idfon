@@ -3231,6 +3231,7 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "quick-xml",
  "serde_json",
 ]
 

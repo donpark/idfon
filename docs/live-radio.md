@@ -48,6 +48,28 @@ it wins over the config's `topic` default. That is one agent, many topic
 contacts, no new wire field. The app does not send that line yet — until it
 does, the config default applies.
 
+## Menu contact: an OPML catalogue of shows
+
+The broadcast station serves many callers at one shared position. The menu
+contact serves one caller: it is configured with an OPML resource — a nested
+outline of shows, parsed by `crates/idfon-radio/src/menu.rs` — and the caller
+plays one show on demand. OPML is data; our own UI renders the menu
+(navigation-surface choice recorded on #133).
+
+- `live.json` gains `opml: "shows.opml"`. Entries label with `text`, play with
+  `url` (or `xmlUrl`): a URL with a scheme is the **far end**, a bare path is a
+  copy in the **local download cache**, and `cache` names the cached copy of a
+  far-end source. A cached file that exists wins; otherwise the far end serves.
+- The caller selects with a `show=<menu path>` line in the same per-contact
+  context as `topic=` — `News/Morning Briefing`, or 1-based indices like `1/2`
+  (segments are case-insensitive and mixable). It beats the station default:
+  the call plays the chosen show and nothing else.
+- Far-end sources do not play yet: live source ingest lands with the HLS work
+  (epic #118 / #119) and the error says so. Cache-only until then.
+
+Navigation only: no feed fetching, update badges, or cache management — the
+epic's standing exclusion. See #133 for the slice ledger.
+
 ## Repeat mode (start here)
 
 One clip, looped forever. That is a complete station, and it is the jockey in

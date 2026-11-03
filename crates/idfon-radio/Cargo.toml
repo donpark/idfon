@@ -8,4 +8,5 @@ description = "Talk-radio station programming: schedule, clips, and the frames a
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+quick-xml = "0.42.0"
 serde_json = "1"
