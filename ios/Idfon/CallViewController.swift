@@ -100,6 +100,7 @@ final class CallViewController: UIViewController {
         observers.append(center.addObserver(forName: .idfonVideoChanged, object: nil, queue: .main) { [weak self] _ in self?.sync() })
         observers.append(center.addObserver(forName: .idfonVideoFrame, object: nil, queue: .main) { [weak self] note in
             self?.videoView.image = note.object as? UIImage
+            self?.sync()
         })
         sync()
     }
@@ -121,7 +122,7 @@ final class CallViewController: UIViewController {
             videoView.isHidden = true
         case .inCall:
             statusLabel.text = "In video call"
-            videoView.isHidden = false
+            videoView.isHidden = videoView.image == nil
         }
         hangUpButton.isHidden = call.state == .incoming || call.state == .idle
         answerButton.isHidden = call.state != .incoming

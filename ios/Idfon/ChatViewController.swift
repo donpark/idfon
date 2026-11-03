@@ -448,8 +448,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             self?.syncVideoBar()
         })
         videoObservers.append(NotificationCenter.default.addObserver(forName: .idfonVideoFrame, object: nil, queue: .main) { [weak self] note in
-            if let image = note.object as? UIImage { self?.inlineVideoImage?.image = image }
+            guard let self else { return }
+            self.inlineVideoImage?.image = note.object as? UIImage
+            self.syncVideoBar()
         })
+        syncVideoBar()
         // Call feedback from the call singletons ("No voice call available",
         // "No live calls …", "A call is already in progress").
         videoObservers.append(NotificationCenter.default.addObserver(forName: .idfonCallStatus, object: nil, queue: .main) { [weak self] note in
@@ -1443,10 +1446,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func syncVideoBar() {
         let call = VideoCall.shared
-        let active = call.state == .inCall || call.state == .calling
+        let active = (call.state == .inCall || call.state == .calling) && inlineVideoImage?.image != nil
         videoBar.isHidden = !active
         videoBarHeight.constant = active ? 180 : 0
-        if !active { inlineVideoImage?.image = nil }
+        if call.state == .idle || call.state == .incoming { inlineVideoImage?.image = nil }
         view.layoutIfNeeded()
     }
 
