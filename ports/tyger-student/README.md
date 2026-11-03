@@ -19,6 +19,7 @@ registry entry plus labels — not another bolted-on model.
 | `export_coreai.py` | the apps' OS-27 tier: `student_step_float32.aimodel` + AOT `.aimodelc` container (loader-enforced; source loads leak ANE compiles) + coreai.runtime gate |
 | `harness.py` | the product-metric gate (the P1 brief's judgment): endpoint latency/early/miss, barge catch/false, bc precision/recall — teacher vs student on the same axes (`scripts/tyger-eval.py` definitions; proposed bars in `bench-results/harness-gate.md`) |
 | `oracle.py` | the tyger-s2s seam (reference chain + rules + Mimi decode), one env contract |
+| `probe.py` | the tap probe survey (#132 P0): per-tap ridge probes (R²/cosine) of the teacher's 8-vector per decision axis, held-out sessions; the tap-quality table that drives the per-axis adapter loss weights (`bench-results/tap-probes.md`, findings in `docs/voice-decision-model.md` P2) |
 
 ## Contract (unchanged above the seam)
 
