@@ -209,6 +209,37 @@ to one ASR's mid-layer. A student trained on our own calls can move to a
 cheaper/native tap of the streaming encoder (or a distilled feature), keeping
 the decision model independent of the ASR choice per contact.
 
+**Tap probe survey (2026-11-03, epic #132 P0).** Per-tap ridge probes (R² /
+cosine, `ports/tyger-student/probe.py`, held-out sessions; tap features alone —
+no energy/prev_state) of the teacher's 8-vector per axis. Full regenerable
+table: `bench-results/tap-probes.md`. Headline rows (R² per axis):
+
+| tap | data | state | hazard | yield | bc | p_end |
+| --- | --- | --- | --- | --- | --- | --- |
+| L15 windowed (teacher inputs) | dualturn 60+8 | 0.80 | 0.67 | 0.44 | 0.46 | 0.79 |
+| L4 windowed (shipped cut) | dualturn 60+8 | 0.75 | 0.55 | 0.39 | 0.43 | 0.75 |
+| **L4 streaming (the ASR's tap)** | dualturn 60+8 | 0.73 | 0.53 | 0.39 | 0.41 | 0.75 |
+| L15 windowed | live 8 captures | 0.82 | 0.53 | −0.02 | 0.31 | 0.55 |
+| L4 windowed | live 8 captures | 0.81 | 0.44 | **0.09** | **0.56** | 0.44 |
+| L15 windowed | Open Yap 16×5 min | 0.82 | 0.65 | 0.49 | 0.75 | 0.51 |
+| L24 streaming (ASR final layer) | Open Yap 16×5 min | 0.55 | 0.09 | 0.32 | 0.33 | 0.16 |
+
+1. **The streaming tap is at parity with the private pass** — L4 streaming
+   tracks L4 windowed within 0.01–0.02 R² on every axis. The hidden states the
+   ASR computes and throws away carry the decision signal; #132's footprint
+   premise holds at the linear-probe level.
+2. **No single best tap; ranking is per axis and per audio path** — on live
+   captures L4 decodes yield and bc better (0.09 vs −0.02; 0.56 vs 0.31) while
+   L15 decodes p_end better (0.55 vs 0.44); on corpus bc favors L15 (0.46 vs
+   0.43, Open Yap 0.75 vs 0.65). This is the evidence behind per-axis teacher
+   weighting in the shared-latent student (never averaged).
+3. **L24 is poor overall** (hazard 0.09, p_end 0.16 vs L15's 0.65/0.51) — the
+   feature-adapter R² ≈ .30 finding generalized per axis; the ASR's final layer
+   is not a drop-in tap.
+4. **Yield is the least linearly decodable axis everywhere** (−0.25…0.49) —
+   the axis that most needs temporal integration, and the one the consistency
+   loss must not starve.
+
 **P3 — fold into classic's contract** (`voice-tyger-option.md` P3): classic
 behavior stays; its endpointing/yield decisions get the model's quality, traits
 stay as the knobs, fail-open stays.
