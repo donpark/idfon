@@ -88,6 +88,63 @@ constant costs are visible by design: 1.2 s segmenter gap + 800 ms post-roll);
 `reply_ms` dominating → compare with §1 (relay RTT + stalls); `speak_ms`
 dominating → TTS backend (Kokoro vs Apple) or device load.
 
+### Answer time (time to "answered" + greeting)
+
+The apps write one `answer` marker per answered call at the answered cue (mac
++ iOS `VoiceAgentSession`), the stage that gates "time to answer":
+
+```
+idfon-auto: voice-agent: answer label=call peers_ms=12 rotate_ms=40 asr_ms=310 tts_ms=80 sleep_ms=1500 director_ms=620 greet_ms=1900 total_ms=3200
+```
+
+| Field | Stage |
+| --- | --- |
+| `peers_ms` | contact resolution (daemon `peers` RPC) |
+| `rotate_ms` | session-rotate message send |
+| `asr_ms` | recognizer start (model load / first-use compile) |
+| `tts_ms` | reply-voice load (iOS only) |
+| `sleep_ms` | fixed hydration settle (iOS only, 1.5 s) |
+| `director_ms` | on-device AFM director load + warm (proxy calls) |
+| `greet_ms` | the greeting turn round trip — network + agent turn (model); the floor of "time to answer" |
+| `total_ms` | ringback start → answered cue (mac runs the greet concurrently with `asr_ms`/`director_ms`, so stages do not sum to the total) |
+
+Absent keys are stages that did not run (e.g. no `rotate_ms` for an on-device
+agent). `label=call` is the app; the greet bench below emits its own labels.
+
+### Greet floor — `node agents/bench/lib/bench.ts greet`
+
+The model-free floor of `greet_ms`: N greet-style text round trips through a
+real `eve-idfon` holder with an instant-reply fixture agent (the
+`scripts/eve-holder-e2e.sh` shape, driven from TS). Measures two message
+transports (invite + reply), holder ingest, and the agent-IPC hop — never
+model time. The first exchange is its own `greet-floor-cold` sample: a send
+racing the endpoint's first pkarr publish fails and DNS-negative-caches the
+peer's endpoints, poisoning fast retries (see §1's `first` column: 110 ms–1.6 s
+cold vs 10–230 ms warm on one host, and relay-only can exceed the 30 s
+operation timeout). The bench settles 3 s after holder start (`GREET_SETTLE_MS`)
+so samples measure the exchange, not the race.
+
+```sh
+node agents/bench/lib/bench.ts greet --count 10   # markers + summary
+```
+
+### Baselines — regression check
+
+`report` turns any marker log (turn + answer markers) into tables and can
+compare against a stored baseline, failing (exit 1) when a metric's p95
+regresses past the budget (default +25%):
+
+```sh
+scripts/voice-latency-report.sh call.log --baseline agents/bench/baselines/voice-baseline.json
+… | scripts/voice-latency-report.sh --write-baseline agents/bench/baselines/voice-baseline.json
+```
+
+The committed baseline (`agents/bench/baselines/voice-baseline.json`) is
+seeded from the greet floor; re-seed it from a captured call log to add the
+`call.` (app answer path) and turn metrics, then every later capture checks
+against it. History rows stay in the gitignored `bench-results/`
+(`greet-<date>.jsonl`), same as §1.
+
 ## 3. The bench peer — `agents/bench`
 
 A dialable measurement service (pair it like any agent contact:

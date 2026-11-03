@@ -12,6 +12,13 @@ set -eu
 # Reads the per-turn marker VoiceAgentSession writes (iOS + mac apps):
 #   idfon-auto: voice-agent: turn=3 asr_gap_ms=1240 listen_ms=2100 reply_ms=870
 #               speak_ms=2600 total_ms=6810
+# and the per-call answer marker (time-to-answer stages, docs/benchmarks.md §2):
+#   idfon-auto: voice-agent: answer label=call peers_ms=12 rotate_ms=40
+#               asr_ms=310 greet_ms=1900 total_ms=2400
+#
+#   --baseline FILE          check p95 against the stored baseline (exit 1 on
+#                            regression); --write-baseline FILE re-seeds it
+#   --tolerance 0.25         regression budget on p95 (default 25%)
 #
 #   asr_gap_ms  turn detection: recognizer's last update -> commit (the
 #               VoicePromptSegmenter silence gap; ~1200-1500 on the fallback
