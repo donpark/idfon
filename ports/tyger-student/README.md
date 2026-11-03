@@ -7,8 +7,8 @@ registry entry plus labels — not another bolted-on model.
 
 | File | Role |
 | --- | --- |
-| `registry.py` | **the investment surface** — every decision point: type, label source, loss, gate |
-| `model.py` | the student (width-256 2-layer GRU over two 1,024-d feature streams — L15 or L4 — + energy + floor state) and the unchanged rules-seam 8-vector |
+| `registry.py` | **the investment surface** — every decision point: type, label source, loss, gate; plus the shared-latent spec (epic #132): `ADAPTERS` (per-tap z-adapters) + `LATENT_WIDTH` |
+| `model.py` | the student (width-256 2-layer GRU over two 1,024-d feature streams — L15 or L4 — + energy + floor state) and the unchanged rules-seam 8-vector; `SharedLatentStudent` (epic #132): per-tap adapters → one shared causal latent `z` → one decoder, same 8-vector |
 | `featurize.py` | corpus → training shards: what the model sees + what the teacher answered + the teacher's events, per 80 ms frame |
 | `data.py` | the shard format (the wire between featurize, train and gate) |
 | `train.py` | distillation + label training, per-head score gate report, warm start for batch N+1 (`--selfcheck` for a synthetic smoke) |
@@ -20,6 +20,7 @@ registry entry plus labels — not another bolted-on model.
 | `harness.py` | the product-metric gate (the P1 brief's judgment): endpoint latency/early/miss, barge catch/false, bc precision/recall — teacher vs student on the same axes (`scripts/tyger-eval.py` definitions; proposed bars in `bench-results/harness-gate.md`) |
 | `oracle.py` | the tyger-s2s seam (reference chain + rules + Mimi decode), one env contract |
 | `probe.py` | the tap probe survey (#132 P0): per-tap ridge probes (R²/cosine) of the teacher's 8-vector per decision axis, held-out sessions; the tap-quality table that drives the per-axis adapter loss weights (`bench-results/tap-probes.md`, findings in `docs/voice-decision-model.md` P2) |
+| `test_model.py` | the shipped checkpoint-layout pin (student.pt loads by name) + the shared-latent seam smoke |
 
 ## Contract (unchanged above the seam)
 
@@ -29,6 +30,25 @@ previous floor state per 80 ms frame), same 8-vector out (4 state logits,
 hazard, yield, bc, p_end), same rules seam (`crates/idfon-voice/src/turns.rs`,
 `TurnRulesCABI`) — so `TurnShadow`, traits, and the decision log consume the student
 identically. Fail-open to classic is untouched.
+
+## The shared latent (epic #132, P1)
+
+The multi-tap contract behind the P2/P3 work, encoded in `registry.py` and
+instantiated by `model.py`'s `SharedLatentStudent`:
+
+- **Adapters** (`registry.ADAPTERS`) map one tap's two streams into the fuse
+  width — one per (layer, pass): `l15-windowed`, `l4-windowed`, `l4-streaming`
+  (the deploy target), `l24-streaming`, `l15-streaming` (declared, extraction
+  unwired). `kind: "aux"` is reserved for auxiliary-signal adapters (#131).
+- **One shared causal latent `z`** (width-256 2-layer GRU over the summed fuse
+  inputs) and **one decoder** (out_norm + registry heads) behind the unchanged
+  8-vector seam. Every adapter trains toward the same decision endpoint; deploy
+  exactly one adapter — the tap the streaming ASR already computes.
+- Cross-adapter calls on the same frames are the P3 consistency-loss surface
+  (KL between decisions via tap A and tap B). Per-axis teacher weighting (P2)
+  comes from `probe.py`'s tap-quality table, never from averaged teachers.
+- The existing `Student` is untouched — its checkpoint layout is pinned by
+  `test_model.py` (the shipped tiers load by name).
 
 ## The loop: add a decision point
 

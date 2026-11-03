@@ -89,3 +89,43 @@ def teacher_cols(head):
 def corpus_key(head):
     """The shard label key a corpus-sourced head trains on, or None."""
     return head.source.split(":", 1)[1] if head.source.startswith("corpus:") else None
+
+
+# --- the shared decision latent + tap adapters (epic #132) ---------------------
+# z is the shared causal decision latent: z_t = GRU(z_{t-1}, sum of the available
+# inputs), with ONE decoder (out_norm + the heads above) behind it. Each adapter
+# maps one tap's two streams into the fuse width, so every tap path is trained
+# toward the same decision endpoint (consistency distillation, #132 P3) and the
+# deployed student runs one pass from whichever tap the streaming ASR already
+# computes — no second encoder pass. Adapter ids are per (layer, pass) because
+# the passes are not interchangeable without their own adapter + calibration fit
+# (probe quality per tap: bench-results/tap-probes.md). Auxiliary signals (VAD/BCD
+# posteriors, #131) enter as extra adapters of kind "aux", not extra models.
+
+LATENT_WIDTH = 256   # z_t width — the shared trunk's width
+
+
+@dataclass(frozen=True)
+class Adapter:
+    id: str        # unique tap identity, e.g. "l4-streaming"
+    kind: str      # "tap" (encoder hidden state) | "aux" (posterior/signal)
+    width: int     # feature width per stream (1024 for the Nemotron taps)
+    note: str
+
+
+ADAPTERS = (
+    Adapter("l15-windowed", "tap", 1024, "the teacher's own inputs (Tyger windowed re-encode)"),
+    Adapter("l4-windowed", "tap", 1024, "the shipped L4 encoder cut (#102)"),
+    Adapter("l4-streaming", "tap", 1024,
+            "the streaming ASR's L4 tap — the deploy target (probe parity with l4-windowed)"),
+    Adapter("l24-streaming", "tap", 1024,
+            "the ASR's final layer — the portability baseline (probe-poor, #134)"),
+    Adapter("l15-streaming", "tap", 1024, "declared: streaming L15 tap, extraction not wired yet"),
+)
+
+
+def adapter_by_id(adapter_id):
+    for a in ADAPTERS:
+        if a.id == adapter_id:
+            return a
+    raise KeyError(f"no such adapter: {adapter_id!r} (registry.py)")
