@@ -8,6 +8,17 @@ import CoreImage
 /// `idfon://add/` deep link, open a .vcf document, save a card to the system
 /// Contacts app, and show the QR form of the link. QR scanning is phone-side:
 /// the Mac shows the code for the phone's camera.
+/// How a protected contact admits a device — the `auth` block of an add
+/// envelope. The approval modal runs it: agent criteria shown, an admission
+/// code collected, and redeemed for the sender-bound capability ticket (the
+/// `radio-admit.sh` contract, over `redeem`).
+struct AddAuth: Equatable {
+    var kind: String
+    var label: String
+    var criteria: String?
+    var redeemURL: String
+}
+
 enum ContactExchange {
     /// Ticket JSON from an `idfon://add/<base64url>` deep-link payload.
     static func ticketJSON(fromLink payload: String) -> String? {
@@ -15,10 +26,12 @@ enum ContactExchange {
     }
 
     /// A link carries either a contact ticket (legacy) or an envelope
-    /// `{ "contact": …, "capability": … }`. A station signs the capability
-    /// ticket that admits this device, so one scan both adds the contact and
-    /// makes it callable — the add path's only way to deliver a credential.
-    static func decodeLink(_ payload: String) -> (ticketJSON: String, capabilityJSON: String?)? {
+    /// `{ "contact": …, "capability": …, "auth": … }`. A station signs the
+    /// capability ticket that admits this device, so one scan both adds the
+    /// contact and makes it callable — the add path's only way to deliver a
+    /// credential. A protected contact ships `auth` instead: its admission
+    /// flow runs in the approval modal (`AddAuth`).
+    static func decodeLink(_ payload: String) -> (ticketJSON: String, capabilityJSON: String?, auth: AddAuth?)? {
         var base64 = payload.replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
         while base64.count % 4 != 0 { base64 += "=" }
@@ -26,7 +39,7 @@ enum ContactExchange {
               let text = String(data: data, encoding: .utf8) else { return nil }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let contact = object["contact"] as? [String: Any] else {
-            return (text, nil) // legacy: the payload is the ticket itself
+            return (text, nil, nil) // legacy: the payload is the ticket itself
         }
         guard let contactData = try? JSONSerialization.data(withJSONObject: contact),
               let contactJSON = String(data: contactData, encoding: .utf8) else { return nil }
@@ -34,7 +47,15 @@ enum ContactExchange {
             (try? JSONSerialization.data(withJSONObject: capability))
                 .flatMap { String(data: $0, encoding: .utf8) }
         }
-        return (contactJSON, capabilityJSON)
+        let auth = (object["auth"] as? [String: Any]).flatMap { auth -> AddAuth? in
+            guard let kind = auth["kind"] as? String, let url = auth["url"] as? String else { return nil }
+            return AddAuth(
+                kind: kind,
+                label: (auth["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Admission code",
+                criteria: (auth["criteria"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                redeemURL: url)
+        }
+        return (contactJSON, capabilityJSON, auth)
     }
 
     /// The peer id a channel contact is keyed by — the ticket's `endpoint_id`,
@@ -66,22 +87,87 @@ enum ContactExchange {
     /// Confirm-and-add for a received ticket (`idfon://add/` taps, .vcf
     /// documents). Mirrors the Add Channel flow's default grants.
     @MainActor
-    static func confirmAdd(ticketJSON: String, capabilityJSON: String? = nil, app: AppModel) {
+    static func confirmAdd(
+        ticketJSON: String,
+        capabilityJSON: String? = nil,
+        auth: AddAuth? = nil,
+        app: AppModel
+    ) {
         let name = name(ofTicketJSON: ticketJSON) ?? "Contact"
         let alert = NSAlert()
         alert.messageText = "Add \(name)?"
-        alert.informativeText = "Add this contact to Idfon."
+        alert.informativeText = auth?.criteria ?? "Add this contact to Idfon."
         alert.addButton(withTitle: "Add")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Deny")
+        // The rename opportunity, and the admission code when the contact is
+        // protected (its auth flow runs below).
+        let nameField = NSTextField(string: name)
+        nameField.placeholderString = "Name"
+        let codeField = auth.map { auth -> NSTextField in
+            let field = NSTextField(string: "")
+            field.placeholderString = auth.label
+            return field
+        }
+        let stack = NSStackView(views: [nameField] + (codeField.map { [$0] } ?? []))
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        alert.accessoryView = stack
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let typed = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+        let renamed = typed.isEmpty ? name : typed
+        let code = codeField?.stringValue
         Task {
-            if let error = await app.addChannel(name: name, ticketJSON: ticketJSON) {
-                await MainActor.run { plainSheet(title: "Contact Failed", message: error) }
-            } else if let capabilityJSON, let peer = endpointId(ofTicketJSON: ticketJSON) {
-                _ = CapabilityTickets.store(capabilityJSON, for: peer)
+            do {
+                var credential = capabilityJSON
+                if let auth {
+                    // Protected: redeem the admission code for the
+                    // sender-bound ticket this device presents.
+                    credential = try await redeem(auth: auth, code: code, client: app.client)
+                }
+                if let error = await app.addChannel(name: renamed, ticketJSON: ticketJSON) {
+                    await MainActor.run { plainSheet(title: "Contact Failed", message: error) }
+                } else if let credential, let peer = endpointId(ofTicketJSON: ticketJSON) {
+                    _ = CapabilityTickets.store(credential, for: peer)
+                }
+            } catch {
+                await MainActor.run {
+                    plainSheet(
+                        title: auth != nil ? "Admission Failed" : "Contact Failed",
+                        message: error.localizedDescription)
+                }
             }
         }
+    }
+
+    /// Redeems an admission code for the sender-bound capability ticket:
+    /// `POST {code, subject}` to the envelope's `auth.url`, where the page
+    /// allow-lists this device and mints `ticket --subject <peer>` for it
+    /// (the `radio-admit.sh` contract, no console round-trip).
+    private static func redeem(auth: AddAuth, code: String?, client: DaemonClient) async throws -> String {
+        guard let code = code?.trimmingCharacters(in: .whitespaces), !code.isEmpty else {
+            throw NSError(domain: "idfon.add", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "An admission code is required."])
+        }
+        let selfTicket = try await client.contactTicket()
+        guard let subject = endpointId(ofTicketJSON: selfTicket), !subject.isEmpty else {
+            throw NSError(domain: "idfon.add", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "Cannot read this device's peer id."])
+        }
+        var request = URLRequest(url: URL(string: auth.redeemURL)!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: ["code": code, "subject": subject])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ticket = reply["ticket"] as? String, !ticket.isEmpty else {
+            throw NSError(domain: "idfon.add", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "The admission code was not accepted."])
+        }
+        return ticket
     }
 
     /// Imports a received .vcf (document open) via `contact.import`, with the

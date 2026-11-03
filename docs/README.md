@@ -28,7 +28,7 @@ kept because it records decisions; **design** = not all implemented.
 | `durable-files.md` | Durable file publication independent of sessions/agent lifecycle: the edge's content-addressed store (`/files`, `/models`), `idfon publish`, 24 h user pins / permanent operational pins, the agent tool, BunnyCDN, ops-only takedown with a sticky blocklist and write rate limits; as-built (no paid tier) |
 | `edge-deploy-checklist.md` | the CallKit test rig (local edge + app config), session teardown (`scripts/e2e-teardown.sh`), droplet deploy incl. the APNs push wiring (#54) |
 | `callkit-integration.md` | CallKit + incoming-call presentation; as-built + plan (P0–P2 landed incl. mac ring sender, iOS 26.4 wake requirement; P3 macOS LiveCommunicationKit deferred) |
-| `contact-exchange.md` | vCard contact cards: the NameDrop substitute, `idfon://add/` deep links, QR, import/export surfaces |
+| `contact-exchange.md` | vCard contact cards: the NameDrop substitute, `idfon://add/` deep links, QR, import/export surfaces, the approval modal (rename/deny, admission-code auth), the test-contacts page (`scripts/test-contacts-page.mjs`) |
 | `live-activity-bar-layout.md` | live-call bar UIKit layout |
 | `ios-ui-design.md` | structural UX design for the iOS app (tabs, rows, chat timeline, sessions, identity) — design, for implementation |
 | `ui-design-notes.md` | UX/visual system spec (live activity bar, session tray) |
