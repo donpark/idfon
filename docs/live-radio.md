@@ -53,8 +53,9 @@ does, the config default applies.
 The broadcast station serves many callers at one shared position. The menu
 contact serves one caller: it is configured with an OPML resource — a nested
 outline of shows, parsed by `crates/idfon-radio/src/menu.rs` — and the caller
-plays one show on demand. OPML is data; our own UI renders the menu
-(navigation-surface choice recorded on #133).
+plays one show on demand. OPML is data; **the app renders the menu** (decided
+2026-11-03: the screen carries the choices, speech is the complementary
+side-channel), never audio-prompt navigation.
 
 - `live.json` gains `opml: "shows.opml"`. Entries label with `text`, play with
   `url` (or `xmlUrl`): a URL with a scheme is the **far end**, a bare path is a
@@ -66,6 +67,13 @@ plays one show on demand. OPML is data; our own UI renders the menu
   the call plays the chosen show and nothing else.
 - Far-end sources do not play yet: live source ingest lands with the HLS work
   (epic #118 / #119) and the error says so. Cache-only until then.
+- The holder exposes the OPML as a resource — `idfon://<holder>/menu.opml`,
+  advertised as `menu.opml` in the `idfon.json` manifest (an agent-supplied
+  `menu` block wins) — fetched by the apps like the voice catalog. A manifest
+  `opml` that is an http(s) URL (a station's public OPML) is fetched directly.
+- The apps render the outline when a call to the contact would start (iOS: one
+  push per level; mac: an outline sheet); picking a show dials with `show=` and
+  the call plays it.
 
 Navigation only: no feed fetching, update badges, or cache management — the
 epic's standing exclusion. See #133 for the slice ledger.

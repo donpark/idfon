@@ -1260,8 +1260,22 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         }
         if let route, route.isHybrid {
             HybridVoice.shared.start(peerRef: peer.id, route: route)
-        } else {
-            live.dial(peer.id)
+            return
+        }
+        // A menu contact shows its menu first: the screen carries the choices
+        // and the call plays the selection (docs/live-radio.md "Menu contact").
+        // No menu: dial the station default, as before.
+        let peerID = peer.id
+        let client = self.client
+        Task { @MainActor in
+            guard let menu = await ContactMenus.menu(for: peerID, client: client),
+                  !menu.entries.isEmpty else {
+                live.dial(peerID)
+                return
+            }
+            self.presentAsSheet(MenuViewController(entries: menu.entries) { show in
+                self.live.dial(peerID, show: show)
+            })
         }
     }
 

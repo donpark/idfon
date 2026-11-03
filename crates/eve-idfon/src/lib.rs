@@ -629,6 +629,14 @@ pub fn idfon_manifest(params: &serde_json::Value, engine: &[serde_json::Value]) 
         .unwrap_or_else(|| serde_json::json!({}));
     if let Some(object) = manifest.as_object_mut() {
         object.insert("voice".into(), voice_info(params, engine));
+        // A menu contact exposes its OPML resource (docs/live-radio.md "Menu
+        // contact"): served at `/menu.opml`, advertised here so callers render
+        // the menu. An agent-supplied `menu` block wins.
+        if !object.contains_key("menu")
+            && params.get("opml").and_then(serde_json::Value::as_str).is_some()
+        {
+            object.insert("menu".into(), serde_json::json!({ "opml": "/menu.opml" }));
+        }
     }
     manifest
 }
@@ -836,24 +844,48 @@ async fn serve(
     // `voice.options` and is merged in per request, so the phone's pickers
     // see the server-side engines as soon as the engine declares them.
     let engine_options = Arc::new(tokio::sync::RwLock::new(Vec::<serde_json::Value>::new()));
-    let _manifest_h3 = idfon_h3::serve_router(
-        &transport,
-        axum::Router::new().route(
-            "/idfon.json",
-            axum::routing::get({
+    // A menu contact's OPML resource (`/menu.opml`), from the same `opml`
+    // config the stream backend plays: the app renders it and sends `show=`
+    // selections back. Served per request so an edit lands without a restart.
+    use axum::response::IntoResponse;
+    let mut manifest_router = axum::Router::new().route(
+        "/idfon.json",
+        axum::routing::get({
+            let live_params = live_params.clone();
+            let engine_options = Arc::clone(&engine_options);
+            move || {
                 let live_params = live_params.clone();
                 let engine_options = Arc::clone(&engine_options);
-                move || {
-                    let live_params = live_params.clone();
-                    let engine_options = Arc::clone(&engine_options);
-                    async move {
-                        let engine = engine_options.read().await.clone();
-                        axum::Json(idfon_manifest(&live_params, &engine))
+                async move {
+                    let engine = engine_options.read().await.clone();
+                    axum::Json(idfon_manifest(&live_params, &engine))
+                }
+            }
+        }),
+    );
+    if let Some(opml) = live_params
+        .get("opml")
+        .and_then(serde_json::Value::as_str)
+        .map(std::path::PathBuf::from)
+    {
+        manifest_router = manifest_router.route(
+            "/menu.opml",
+            axum::routing::get(move || {
+                let opml = opml.clone();
+                async move {
+                    match tokio::fs::read(&opml).await {
+                        Ok(bytes) => (
+                            [(axum::http::header::CONTENT_TYPE, "text/x-opml; charset=utf-8")],
+                            bytes,
+                        )
+                            .into_response(),
+                        Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
                     }
                 }
             }),
-        ),
-    );
+        );
+    }
+    let _manifest_h3 = idfon_h3::serve_router(&transport, manifest_router);
     println!(
         "{}",
         serde_json::to_string(&transport.endpoint().addr()).context("serialize endpoint ticket")?
@@ -2615,6 +2647,25 @@ mod tests {
         // The per-process token keeps ids distinct from a bare counter, so a
         // restarted holder cannot reissue an id a receiver already saw.
         assert_ne!(a, "eve_reply_1");
+    }
+
+    #[test]
+    fn manifest_advertises_the_menu_resource() {
+        // A menu contact (`opml` in the live config): the OPML is advertised.
+        let manifest = idfon_manifest(&serde_json::json!({ "opml": "/x/shows.opml" }), &[]);
+        assert_eq!(manifest["menu"]["opml"], "/menu.opml");
+        // No menu config: nothing advertised.
+        let manifest = idfon_manifest(&serde_json::json!({}), &[]);
+        assert!(manifest.get("menu").is_none());
+        // An agent-supplied `menu` block wins over the derived one.
+        let manifest = idfon_manifest(
+            &serde_json::json!({
+                "opml": "/x/shows.opml",
+                "idfon_manifest": { "menu": { "opml": "https://example.com/stations.opml" } },
+            }),
+            &[],
+        );
+        assert_eq!(manifest["menu"]["opml"], "https://example.com/stations.opml");
     }
 
     #[test]

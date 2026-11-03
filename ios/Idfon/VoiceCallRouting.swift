@@ -77,6 +77,54 @@ enum VoiceCatalog {
     static func invalidate(for peerID: String) { cache.removeValue(forKey: peerID) }
 }
 
+/// The menu a contact exposes: `menu.opml` in its `idfon.json` manifest — a
+/// holder path (`/menu.opml`) or an http(s) URL. Fetched and cached like the
+/// catalog; nil when the contact advertises none (older agent, unreachable),
+/// and the call then dials without a selection.
+enum ContactMenus {
+    private static var cache: [String: MenuDocument?] = [:]
+
+    static func menu(for peerID: String, client: IdfonClient) async -> MenuDocument? {
+        if let cached = cache[peerID] { return cached }
+        let data = await withTaskGroup(of: Data?.self) { group in
+            group.addTask { try? await client.fetchRemoteResource(account: peerID, path: "/idfon.json") }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(3))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        guard let data,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let menu = root["menu"] as? [String: Any],
+              let ref = (menu["opml"] as? String)?.trimmingCharacters(in: .whitespaces),
+              !ref.isEmpty else {
+            cache[peerID] = .some(nil)
+            return nil
+        }
+        let document = await fetchOPML(ref, peerID: peerID, client: client)
+            .flatMap(MenuDocument.parse)
+        cache[peerID] = .some(document)
+        return document
+    }
+
+    /// A leading slash is a resource on the contact's own holder; anything
+    /// else must be an http(s) URL (an online station's public OPML).
+    private static func fetchOPML(_ ref: String, peerID: String, client: IdfonClient) async -> Data? {
+        if ref.hasPrefix("/") {
+            return try? await client.fetchRemoteResource(account: peerID, path: ref)
+        }
+        guard let url = URL(string: ref), ["http", "https"].contains(url.scheme ?? "") else {
+            return nil
+        }
+        return try? await URLSession.shared.data(from: url).0
+    }
+
+    static func invalidate(for peerID: String) { cache.removeValue(forKey: peerID) }
+}
+
 /// Per-contact STT/TTS option ids chosen from the agent's catalog. Stored like
 /// the audio profile: UserDefaults keyed by peer id, no server state.
 enum ContactVoiceSelection {
