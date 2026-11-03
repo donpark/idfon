@@ -34,7 +34,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     // video panel
     private var videoPanel: NSView?
     private let videoView = NSImageView()
-    private let videoSpinner = NSProgressIndicator()
 
     // live call UI (fullscreen stage; the Live Activity Bar owns the inline
     // call chrome, so there is no in-chat live bar any more)
@@ -336,13 +335,9 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private func buildVideoPanel() {
         videoView.imageScaling = .scaleProportionallyUpOrDown
         videoView.translatesAutoresizingMaskIntoConstraints = false
-        videoSpinner.isIndeterminate = true
-        videoSpinner.style = .spinning
-        videoSpinner.translatesAutoresizingMaskIntoConstraints = false
         let panel = NSView()
         panel.translatesAutoresizingMaskIntoConstraints = false
         panel.addSubview(videoView)
-        panel.addSubview(videoSpinner)
         // Inline video stage: tap anywhere (or the expand button) to go fullscreen.
         let expand = headerSymbolButton("arrow.up.left.and.arrow.down.right", #selector(liveExpandTapped), "Expand call")
         expand.translatesAutoresizingMaskIntoConstraints = false
@@ -354,8 +349,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             videoView.trailingAnchor.constraint(equalTo: panel.trailingAnchor),
             videoView.topAnchor.constraint(equalTo: panel.topAnchor),
             videoView.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
-            videoSpinner.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
-            videoSpinner.centerYAnchor.constraint(equalTo: panel.centerYAnchor),
             expand.topAnchor.constraint(equalTo: panel.topAnchor, constant: 8),
             expand.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
         ])
@@ -389,9 +382,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             stopCallMeter()
             return
         }
-        videoPanel?.isHidden = !(videoActive() && !isLiveFullscreen)
-        if videoActive(), video.lastFrame == nil { videoSpinner.startAnimation(nil) }
-        else { videoSpinner.stopAnimation(nil) }
+        videoPanel?.isHidden = !(videoActive() && video.lastFrame != nil && !isLiveFullscreen)
         // The Live Activity Bar owns the inline call chrome now; the fullscreen
         // stage still needs the meter for its waveform.
         _ = ensureCallMeter()
@@ -482,7 +473,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// Rebuilds the fullscreen stage contents for the current call state.
     private func rebuildFullscreenContent() {
-        let showVideo = videoActive()
+        let showVideo = videoActive() && video.lastFrame != nil
         fullscreenVideoView.isHidden = !showVideo
         fullscreenVideoView.image = showVideo ? videoView.image : nil
         fullscreenWaveView?.isHidden = showVideo
@@ -500,7 +491,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 buttons = [headerButton("Cancel", #selector(endCallTapped))]
             default: break
             }
-        } else if showVideo {
+        } else if videoActive() {
             switch video.state {
             case .inCall:
                 title = "In video call"
@@ -721,7 +712,6 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     private func updateVideoFrame(_ image: NSImage?) {
-        videoSpinner.stopAnimation(nil)
         videoView.image = image
         fullscreenVideoView.image = image
         updateLiveUI()
