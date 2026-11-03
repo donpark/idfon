@@ -240,6 +240,12 @@ table: `bench-results/tap-probes.md`. Headline rows (R² per axis):
    the axis that most needs temporal integration, and the one the consistency
    loss must not starve.
 
+**Shared-latent spec (P1, #136).** The contract now lives where the epic says:
+`ports/tyger-student/registry.py` (`ADAPTERS` per (layer, pass) tap +
+`LATENT_WIDTH`) and `model.py`'s `SharedLatentStudent` — per-tap adapters → one
+shared causal `z` (width-256 GRU) → one decoder, unchanged 8-vector seam; the
+shipped `Student` is untouched (checkpoint layout pinned by `test_model.py`).
+
 **P3 — fold into classic's contract** (`voice-tyger-option.md` P3): classic
 behavior stays; its endpointing/yield decisions get the model's quality, traits
 stay as the knobs, fail-open stays.
