@@ -10,6 +10,7 @@
 //! so this is a programme, not a timer.
 
 mod clip;
+pub mod menu;
 pub mod programming;
 
 use std::{

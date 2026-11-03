@@ -16,10 +16,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::Local;
 use idfon_live_media::AudioQueue;
-use idfon_radio::{Event, Programme, ProgrammeConfig, FRAME_SAMPLES, FRAME_MS};
+use idfon_radio::{
+    menu::{Menu, Source},
+    Event, Programme, ProgrammeConfig, FRAME_SAMPLES, FRAME_MS,
+};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -46,11 +49,16 @@ impl VoiceBackendFactory for StreamFactory {
     }
 
     fn create(&self, params: &Value) -> Result<Box<dyn VoiceBackend>> {
-        // The station's own file (`programme: "programme.json"`) wins; the
-        // adapter keys (`schedule`/`file`/`loop`) stay for a bare config.
-        let config = match params.get("programme").and_then(Value::as_str) {
-            Some(path) => ProgrammeConfig::load(Path::new(path))?,
-            None => ProgrammeConfig::parse(params, Path::new("."))?,
+        // A per-caller `show=` selection plays from the contact's OPML menu and
+        // beats the station default, the way `topic=` beats the topic. Else the
+        // station's own file (`programme: "programme.json"`) wins; the adapter
+        // keys (`schedule`/`file`/`loop`) stay for a bare config.
+        let config = match show_from(params) {
+            Some(show) => show_config(params, &show)?,
+            None => match params.get("programme").and_then(Value::as_str) {
+                Some(path) => ProgrammeConfig::load(Path::new(path))?,
+                None => ProgrammeConfig::parse(params, Path::new("."))?,
+            },
         };
         let topic = config.topic.clone();
         Ok(Box::new(StreamBackend {
@@ -67,13 +75,54 @@ impl VoiceBackendFactory for StreamFactory {
 /// `topic=<value>` line in the live invite's per-contact context, so one agent
 /// serves many topic contacts without a new wire field.
 fn topic_from(params: &Value) -> Option<String> {
+    caller_line(params, "topic=")
+}
+
+/// The caller's show selection: a menu path like `News/Morning Briefing`, same
+/// channel as `topic=`.
+fn show_from(params: &Value) -> Option<String> {
+    caller_line(params, "show=")
+}
+
+/// A line the caller pushed in the live invite's per-contact context.
+fn caller_line(params: &Value, prefix: &str) -> Option<String> {
     params
         .get("caller_context")
         .and_then(Value::as_str)
-        .and_then(|context| context.lines().find_map(|line| line.strip_prefix("topic=")))
+        .and_then(|context| context.lines().find_map(|line| line.strip_prefix(prefix)))
         .map(str::trim)
-        .filter(|topic| !topic.is_empty())
+        .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+/// The programme for a menu selection: just the chosen show. The `opml` menu is
+/// the contact's config; its cached copy plays now, a far-end source plays when
+/// source ingest lands (#119).
+fn show_config(params: &Value, show: &str) -> Result<ProgrammeConfig> {
+    let path = params
+        .get("opml")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .context("a `show=` selection needs an `opml` menu in the agent config")?;
+    let menu = Menu::load(Path::new(path))?;
+    let entry = menu.resolve(show)?;
+    let file = match entry.source()? {
+        Source::Local(path) => path,
+        Source::Remote(url) => bail!(
+            "{url} is not in the local download cache; live source ingest lands with #119"
+        ),
+    };
+    Ok(ProgrammeConfig {
+        schedule: None,
+        fallback: Some(file),
+        loop_fallback: params.get("loop").and_then(Value::as_bool).unwrap_or(true),
+        topic: params
+            .get("topic")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|topic| !topic.is_empty())
+            .map(str::to_owned),
+    })
 }
 
 pub struct StreamBackend {
@@ -358,6 +407,73 @@ mod tests {
         });
         assert_eq!(topic_from(&pushed).as_deref(), Some("tech news"));
         assert_eq!(topic_from(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn the_callers_show_selects_a_menu_entry() {
+        let pushed = serde_json::json!({ "caller_context": "stt=client\nshow=News/Morning\n" });
+        assert_eq!(show_from(&pushed).as_deref(), Some("News/Morning"));
+        assert_eq!(show_from(&serde_json::json!({})), None);
+    }
+
+    fn menu_dir(kind: &str, outline: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("idfon-stream-{}-{kind}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let opml = dir.join("shows.opml");
+        std::fs::write(&opml, outline).expect("opml");
+        (dir, opml)
+    }
+
+    #[test]
+    fn factory_plays_the_selected_show_from_the_download_cache() {
+        let (dir, opml) = menu_dir(
+            "menu-cache",
+            r#"<opml version="2.0"><body><outline text="News">
+                <outline text="Morning" url="https://example.com/morning.m3u8" cache="morning.wav" />
+            </outline></body></opml>"#,
+        );
+        std::fs::write(dir.join("morning.wav"), wav(&[0; FRAME_SAMPLES], 24_000)).expect("clip");
+        let params = serde_json::json!({
+            "backend": "stream",
+            "opml": opml.to_str().expect("utf8"),
+            "caller_context": "show=News/Morning\n",
+            "log": "/dev/null",
+        });
+        assert!(StreamFactory.create(&params).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn factory_refuses_a_live_show_until_source_ingest_lands() {
+        let (dir, opml) = menu_dir(
+            "menu-remote",
+            r#"<opml version="2.0"><body><outline text="News">
+                <outline text="Morning" url="https://example.com/morning.m3u8" />
+            </outline></body></opml>"#,
+        );
+        let params = serde_json::json!({
+            "backend": "stream",
+            "opml": opml.to_str().expect("utf8"),
+            "caller_context": "show=News/Morning\n",
+        });
+        let error = match StreamFactory.create(&params) {
+            Ok(_) => panic!("a far-end show must not play before source ingest lands"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("#119"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn factory_needs_a_menu_for_a_show_selection() {
+        let error = match StreamFactory.create(&serde_json::json!({
+            "backend": "stream",
+            "caller_context": "show=News\n",
+        })) {
+            Ok(_) => panic!("a show selection without a menu must decline"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("opml"), "{error}");
     }
 
     #[tokio::test]
