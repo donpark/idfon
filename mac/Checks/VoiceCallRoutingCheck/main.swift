@@ -3,7 +3,7 @@
 // and runs on the host:
 //
 //   swiftc -o /tmp/mac-vcrcheck mac/Sources/Idfon/CapabilityTickets.swift \
-//     mac/Sources/Idfon/VoiceCallRouting.swift \
+//     mac/Sources/Idfon/MenuDocument.swift mac/Sources/Idfon/VoiceCallRouting.swift \
 //     mac/Checks/VoiceCallRoutingCheck/main.swift
 //   /tmp/mac-vcrcheck
 //

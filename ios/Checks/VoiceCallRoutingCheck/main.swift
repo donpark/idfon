@@ -3,7 +3,8 @@
 // and runs on the host — no simulator needed:
 //
 //   swiftc -o /tmp/vcrcheck ios/Idfon/AnyEncodable.swift \
-//     ios/Idfon/CapabilityTickets.swift ios/Idfon/VoiceCallRouting.swift \
+//     ios/Idfon/CapabilityTickets.swift ios/Idfon/MenuDocument.swift \
+//     ios/Idfon/VoiceCallRouting.swift \
 //     ios/Checks/VoiceCallRoutingCheck/main.swift
 //   /tmp/vcrcheck
 //

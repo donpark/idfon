@@ -144,7 +144,7 @@ final class LiveCall {
 
     // MARK: - Caller
 
-    func dial(_ peerId: String) {
+    func dial(_ peerId: String, show: String? = nil) {
         guard case .idle = life.phase else {
             CallFeedback.post("A call is already in progress.")
             return
@@ -213,8 +213,14 @@ final class LiveCall {
                 Automation.mark("live: sending invite peer=\(peerId) ticket_len=\(ticket.count)")
                 // Tell the agent which half(s) this device runs (hybrid route);
                 // nil when the holder runs both, so no context line is sent.
-                let inviteContext = SpeechEngines.clientHalfContext(
-                    for: peerId, route: CapabilityTickets.voiceRoute(for: peerId))
+                // The menu selection rides the caller context as `show=<path>`
+                // (the `topic=` channel): one agent, many menu contacts.
+                var context = SpeechEngines.clientHalfContext(
+                    for: peerId, route: CapabilityTickets.voiceRoute(for: peerId)) ?? ""
+                if let show, !show.isEmpty {
+                    context += context.isEmpty ? "show=\(show)" : "\nshow=\(show)"
+                }
+                let inviteContext = context.isEmpty ? nil : context
                 // Reset the model history before the call: the session log is the
                 // medium, never the model's context (docs/session-context.md).
                 try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")

@@ -274,8 +274,8 @@ final class LiveCall {
 
     // MARK: - Caller
 
-    func dial(_ peerRef: String) {
-        Automation.mark("live: dial ref=\(peerRef)")
+    func dial(_ peerRef: String, show: String? = nil) {
+        Automation.mark("live: dial ref=\(peerRef)\(show.map { " show=\($0)" } ?? "")")
         guard case .idle = life.phase else {
             CallFeedback.post("A call is already in progress.")
             return
@@ -284,14 +284,14 @@ final class LiveCall {
         // the whole call lifecycle, both directions (docs/callkit-integration.md).
         if IncomingCallRouter.shared.ownsPresentation(for: peerRef) {
             CallKitController.shared.startOutgoing(peerId: peerRef, video: false) { [weak self] in
-                self?.dialNow(peerRef)
+                self?.dialNow(peerRef, show: show)
             }
         } else {
-            dialNow(peerRef)
+            dialNow(peerRef, show: show)
         }
     }
 
-    private func dialNow(_ peerRef: String) {
+    private func dialNow(_ peerRef: String, show: String? = nil) {
         operation?.cancel()
         audioEnabled = audioAvailable // this session carries audio from the start
         apply(.dial(peer: peerRef))
@@ -357,8 +357,14 @@ final class LiveCall {
                 let encodedAddr = Data(returnAddr.utf8).base64EncodedString()
                 // Tell the agent which half(s) this device runs (hybrid route);
                 // nil when the holder runs both, so no context line is sent.
-                let inviteContext = SpeechEngines.clientHalfContext(
-                    for: peerId, route: CapabilityTickets.voiceRoute(for: peerId))
+                // The menu selection rides the caller context as `show=<path>`
+                // (the `topic=` channel): one agent, many menu contacts.
+                var context = SpeechEngines.clientHalfContext(
+                    for: peerId, route: CapabilityTickets.voiceRoute(for: peerId)) ?? ""
+                if let show, !show.isEmpty {
+                    context += context.isEmpty ? "show=\(show)" : "\nshow=\(show)"
+                }
+                let inviteContext = context.isEmpty ? nil : context
                 // Reset the model history before the call: the session log is the
                 // medium, never the model's context (docs/session-context.md).
                 _ = try? await client.sendText(to: peerId, "IDFON-SESSION/1\naction=rotate")
