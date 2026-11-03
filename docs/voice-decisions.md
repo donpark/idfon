@@ -195,6 +195,76 @@ One record per state, with every question and answer in it.
 - **Privacy.** The on-device decision log is personal data. Only derived features and labels
   can leave, and only under a grant.
 
+### Shareable duplex teacher records (v0.1)
+
+The Tyger-to-small-model corpus reuses this Jev/System-One shape; it does not invent a
+second event-tag schema. One record represents one 80 ms Tyger decision frame. The source
+locator is provenance, not model input, so it sits beside the decision record:
+
+```json
+{
+  "schema_version": "IDFON-VOICE-DECISION/1",
+  "source_ref": {
+    "dataset": "TheAgenticDataCompany/open-yap-1k",
+    "revision": "<dataset revision>",
+    "conversation_id": "<public sample key>",
+    "start_ms": 12480,
+    "end_ms": 12560,
+    "channels": { "user": "a.flac", "agent": "b.flac" }
+  },
+  "trace": "openyap-v1:<conversation_id>",
+  "turn_id": "<conversation_id>:f156",
+  "ts": 12.48,
+  "tier": "on_device",
+  "model": "nineninesix/tyger@<revision>/TygerStepInt8.onnx",
+  "policy": { "rules_revision": "idfon-voice-turns@<revision>", "frame_ms": 80, "thresholds": { "ep_thr": 0.9146, "barge_thr": 0.5, "bc_thr": 0.5 } },
+  "state": { "mode": "speaking", "prev_state": "SPEAK", "energy_db": -31.2 },
+  "questions": {
+    "turn_state": {
+      "type": "choice", "instructions": "Which Tyger turn state is likeliest?",
+      "criteria": { "listen": "...", "hold": "...", "speak": "...", "backchannel": "..." }
+    },
+    "end_of_turn": { "type": "noul", "instructions": "Has the caller finished?", "criteria": { "true": "...", "false": "..." } },
+    "barge_in": { "type": "noul", "instructions": "Is the caller cutting in while the agent is speaking?", "criteria": { "true": "Stop agent playback and yield.", "false": "The agent should keep speaking." } },
+    "assistant_backchannel": { "type": "noul", "instructions": "Should the agent briefly acknowledge while the caller keeps the floor?", "criteria": { "true": "The agent may interject a brief acknowledgement.", "false": "The agent should keep listening silently." } }
+  },
+  "answers": {
+    "turn_state": { "type": "choice", "choice": "speak", "probabilities": { "listen": 0.01, "hold": 0.04, "speak": 0.94, "backchannel": 0.01 } },
+    "end_of_turn": { "type": "noul", "noul": 0.08 },
+    "barge_in": { "type": "noul", "noul": 0.12 },
+    "assistant_backchannel": { "type": "noul", "noul": 0.12 }
+  },
+  "action": { "id": "not_executed", "executed": false },
+  "teacher_proposal": { "source": "tyger-rules", "events": [] },
+  "outcome": null,
+  "label": null,
+  "teacher_scores": { "heads": ["state_listen", "state_hold", "state_speak", "state_backchannel", "hazard", "yield", "bc", "p_end"], "values": [-4.61, -3.22, -0.06, -4.61, 0.05, 0.12, 0.12, 0.08] }
+}
+```
+
+The Jev fields retain the typed questions, teacher answers, action, weak outcome, and
+optional human label. For an offline pseudo-label, `action` is explicitly `not_executed`;
+Tyger's thresholded rule proposals are recorded separately, not represented as live actions.
+`teacher_scores` preserves the exact model vector for distillation; `source_ref` points back
+to the licensed conversation without embedding audio. The question set and rules/threshold
+revision are pinned once in the release manifest and identified by version on each record.
+The machine-readable envelope is
+[`voice-decision-record.schema.json`](voice-decision-record.schema.json).
+
+V0.1 questions are limited to Tyger's target: `turn_state`, `end_of_turn`, `barge_in`, and
+`assistant_backchannel`. These are agent-side decisions. In particular, Tyger's
+`BACKCHANNEL` means the agent should briefly acknowledge a caller who still holds the
+floor; it is **not** the caller's backchannel. Pipecat BCD's `backchannel` means the user is
+backchannelling while the bot speaks—the opposite direction. Compare BCD to Tyger's
+`barge_in` only, not to `assistant_backchannel`. Endpointing remains a separate
+rule/model. Emotion, sarcasm, and expressive-TTS labels are not Tyger targets and are
+deferred to a separately licensed and annotated release.
+
+For a public release, use only a source subset whose terms permit redistribution of derived
+annotations, attribute the dataset, retain only source keys/channel labels/times (no speaker
+profiles or external identities), and publish no audio. Tyger outputs carry no separate
+sharing restriction under OpenMDW-1.1; that does not override the source dataset's terms.
+
 ## Fine-tuning loop
 
 1. Start from a fine-tunable base per decision set: Laya for the remote tier, or a local

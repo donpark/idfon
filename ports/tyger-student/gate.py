@@ -34,23 +34,32 @@ def aligned_count(a, b, tol):
 
 
 def student_events(model, oracle, frames, layer=15, thr=(0.9146, 0.5, 0.5), deb=(2, 2, 2)):
-    """One shard session through the student with rules feedback -> events [(frame_1based, kind)]."""
+    """Replay one shard using its mode track (older shards default to listen-only)."""
     hu_all, ha_all = pick_features(frames, layer)
     sess = oracle.EarsSession(0, ep_thr=thr[0], ep_deb=deb[0], barge_thr=thr[1],
                               barge_deb=deb[1], bc_thr=thr[2], bc_deb=deb[2])
     hidden = None
+    last_mode = None
+    modes = frames.get("mode")
     events = []
     T = len(frames["energy"])
     with torch.no_grad():
         for f in range(T):
+            mode = "speaking" if modes is not None and int(modes[f]) else "listen"
+            if mode != last_mode:
+                if oracle.rules.switch_mode(sess, mode):
+                    hidden = None
+                last_mode = mode
             hu = torch.from_numpy(hu_all[f : f + 1])[None]
             ha = torch.from_numpy(ha_all[f : f + 1])[None]
             act = torch.tensor([[float(frames["energy"][f])]])
             prev = torch.tensor([[int(sess.prev_state)]])  # the rules' state, live semantics
             outs, hidden = model(hu, ha, act, prev, hidden)
             out = model.eight_vector(outs)[0, 0].to(torch.float64).numpy()
-            evs, _final, _reset = oracle.rules.on_frame(
-                sess, "response", out, float(frames["energy"][f]), left=3 - (f % HOP_FRAMES))
+            evs, _final, reset = oracle.rules.on_frame(
+                sess, mode, out, float(frames["energy"][f]), left=3 - (f % HOP_FRAMES))
+            if reset:
+                hidden = None
             for e in evs:
                 if e["kind"] != "FRAME":
                     events.append((f + 1, e["kind"]))  # parity7 counts frames 1-based

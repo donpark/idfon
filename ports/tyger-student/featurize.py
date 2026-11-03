@@ -16,10 +16,11 @@ Runs the teacher on MPS (~4 min per 3-min session):
         --out bench-results/student-shards/train
 
 Live captures (the apps' `TurnCapture` stereo 16 kHz wavs: ch0 = mic, ch1 =
-agent) take the same path with `--wavs DIR` instead of a dataset split. They
-carry no corpus labels, so a live shard is for `calibrate.py` / `gate.py`
-(teacher events are the reference) — never for training. Exact duplicate files
-(the capture pipeline restarts) are skipped by content hash.
+agent) take the same path with `--wavs DIR` instead of a dataset split. Live
+shards are for `calibrate.py` / `gate.py`, not training. Approved teacher-only
+pseudo-label shards may train with `train.py --head-set teacher-seam`; that
+head set does not consume corpus labels. Exact duplicate files (the capture
+pipeline restarts) are skipped by content hash.
 
     .venv/bin/python ports/tyger-student/featurize.py --wavs "$HOME/Library/Application Support/Idfon/turn-captures" \
         --out bench-results/live-shards
@@ -37,7 +38,7 @@ from pathlib import Path
 import numpy as np
 
 from data import save_shard
-from oracle import GRID, HOP, HOP_FRAMES, SR, WIN_S, Oracle, decode_channel, resample16k
+from oracle import GRID, HOP, HOP_FRAMES, SR, Oracle, decode_channel, resample16k
 
 DATASET = "anyreach-ai/dualturn-otospeech-turn-taking"
 LABEL_KEYS = ("vad", "eot", "hold", "bot", "bc")
@@ -62,25 +63,46 @@ def count_interrupts(labels, T):
     return int(((labels["bot_ch0"] == 1) & (pre == 2)).sum())
 
 
+def next_speaking_mode(agent_loud, speaking, quiet_hops):
+    """Latch playback as SPEAKING, releasing after seven quiet 320 ms hops."""
+    if agent_loud:
+        return True, 0
+    if not speaking:
+        return False, 0
+    quiet_hops += 1
+    return (True, quiet_hops) if quiet_hops <= 6 else (False, 0)
+
+
 def run_session(oracle, wavs, feature_layers=(15,)):
-    """parity7's feed loop, recording per frame. Canonical hu/ha are the L15 rows (the
-    teacher's own inputs); every other requested layer is recorded as hu_l{K}/ha_l{K}
-    from the same encoder pass (output_hidden_states gives all layers for free).
-    Returns (frames dict, events list of (frame_1based, kind))."""
+    """ReferenceEars.feed's paired-stream loop, recording each 80 ms frame.
+
+    Open Yap has a partner track rather than actual bot-playback metadata, so infer
+    SPEAKING from agent-channel energy with the trainer's 6-quiet-hop hysteresis.
+    """
     sess = oracle.EarsSession(0)
     cache = None
-    hus, has_, acts, prevs, outs = [], [], [], [], []
+    speaking = False
+    quiet_hops = 0
+    hus, has_, acts, prevs, modes, outs = [], [], [], [], [], []
     extra = {k: ([], []) for k in feature_layers if k != 15}
     events = []
     frame = 0
     n_hops = min(len(wavs["ch0"]), len(wavs["ch1"])) // HOP
     for h in range(n_hops):
         x = (h + 1) * HOP
-        win = {ch: wavs[ch][max(0, x - WIN_S * SR):x] for ch in ("ch0", "ch1")}
-        hs_u, hs_a = oracle.encode_hidden(win["ch0"]), oracle.encode_hidden(win["ch1"])
+        hop_u, hop_a = wavs["ch0"][x - HOP:x], wavs["ch1"][x - HOP:x]
+        agent_loud = np.any(oracle.rules.frame_energy(hop_a) > oracle.rules.VAD_DB)
+        speaking, quiet_hops = next_speaking_mode(agent_loud, speaking, quiet_hops)
+        mode = "speaking" if speaking else "listen"
+        if oracle.rules.begin_hop(sess, hop_u, hop_a, mode):
+            cache = None
+        hs_u, hs_a = oracle.encode_hidden(sess.win_u), oracle.encode_hidden(sess.win_a)
         hu, ha = hs_u[15], hs_a[15]  # the teacher reads L15 whatever the student trains on
-        act = oracle.rules.frame_energy(win["ch0"])
-        for i in range(-min(HOP_FRAMES, len(hu), len(ha), len(act)), 0):
+        act = oracle.rules.frame_energy(sess.win_u)
+        if oracle.rules.switch_mode(sess, mode):
+            cache = None
+        n = min(HOP_FRAMES, len(hu), len(ha), len(act))
+        for i in range(-n, 0):
             frame += 1  # parity7 counts frames 1-based
             prev = int(sess.prev_state)
             o, cache = oracle.head_step(hu[i], ha[i], float(act[i]), prev, cache)
@@ -91,8 +113,11 @@ def run_session(oracle, wavs, feature_layers=(15,)):
                 la.append(hs_a[k][i])
             acts.append(float(act[i]))
             prevs.append(prev)
+            modes.append(int(speaking))
             outs.append(o)
-            evs, _final, _reset = oracle.rules.on_frame(sess, "response", o, float(act[i]), left=-i - 1)
+            evs, _final, reset = oracle.rules.on_frame(sess, mode, o, float(act[i]), left=-i - 1)
+            if reset:
+                cache = None
             for e in evs:
                 if e["kind"] != "FRAME":
                     events.append((frame, e["kind"]))
@@ -101,6 +126,7 @@ def run_session(oracle, wavs, feature_layers=(15,)):
         "ha": np.asarray(has_, np.float32),
         "energy": np.asarray(acts, np.float32),
         "prev_state": np.asarray(prevs, np.int64),
+        "mode": np.asarray(modes, np.int8),
         "teacher": np.asarray(outs, np.float32),
     }
     frames.update({f"hu_l{k}": np.asarray(v[0], np.float32) for k, v in extra.items()})
