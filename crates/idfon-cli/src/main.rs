@@ -1467,7 +1467,7 @@ fn http_get(addr: &str, path: &str, token: &str) -> io::Result<(u16, Vec<u8>)> {
 
     let mut stream = std::net::TcpStream::connect(addr)?;
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
     );
     stream.write_all(request.as_bytes())?;
     let mut raw = Vec::new();

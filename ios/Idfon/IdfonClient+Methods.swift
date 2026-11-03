@@ -346,10 +346,18 @@ extension IdfonClient {
         }
     }
 
-    /// Binds this identity's loopback gateway. Returns the base address
-    /// (host:port) and the bearer token every request must carry.
-    func gatewayStart() async throws -> (addr: String, token: String) {
-        guard let result = try await request(method: "gateway.start"),
+    /// Binds this identity's loopback gateway. Passing an account/path asks the
+    /// daemon for a short-lived credential scoped to that peer's resource folder.
+    func gatewayStart(account: String? = nil, path: String? = nil) async throws -> (addr: String, token: String) {
+        guard (account == nil) == (path == nil) else {
+            throw RequestError.request("gateway.start requires account and path together")
+        }
+        var params: [String: AnyEncodable] = [:]
+        if let account, let path {
+            params["account"] = AnyEncodable(account)
+            params["path"] = AnyEncodable(path)
+        }
+        guard let result = try await request(method: "gateway.start", params: params),
               let addr = result["addr"]?.stringValue,
               let token = result["token"]?.stringValue else {
             throw RequestError.request("gateway.start returned no address")

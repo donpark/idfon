@@ -4,8 +4,8 @@ import Foundation
 /// itself fetches direct, with the daemon's edge fallback) or the **public
 /// edge** directly when no local daemon answers.
 ///
-/// A `WKWebView` cannot set request headers, so the loopback bearer token rides
-/// as `?token=` and the edge requester ticket as a cookie. See
+/// A `WKWebView` cannot set request headers, so loopback and edge credentials
+/// ride in HttpOnly cookies. See
 /// `docs/idfon-edge.md` (P2/P4).
 struct GatewayArtifactSource {
     enum Route {
@@ -15,10 +15,8 @@ struct GatewayArtifactSource {
 
     let route: Route
     let url: URL
-    /// Set for the edge route; `nil` for loopback (token is in the URL).
-    let cookie: HTTPCookie?
-    /// The only host the web view is allowed to load from.
-    let host: String
+    /// Scoped HttpOnly credential carried by this WebView.
+    let cookie: HTTPCookie
 }
 
 enum ArtifactGateway {
@@ -32,23 +30,44 @@ enum ArtifactGateway {
     }
 
     private static func loopback(account: String, path: String) async -> GatewayArtifactSource? {
-        guard let gateway = try? await DaemonClient().gatewayStart(),
-              var components = URLComponents(string: "http://\(gateway.addr)/\(account)\(path)") else {
+        var resource = URLComponents()
+        resource.path = path
+        let scopedPath = resource.percentEncodedPath
+        guard let gateway = try? await DaemonClient().gatewayStart(account: account, path: scopedPath),
+              let port = URLComponents(string: "http://\(gateway.addr)")?.port else {
             return nil
         }
-        // The gateway accepts the bearer token as `?token=` on top of the
-        // `Authorization` header, which a web view cannot set.
-        components.queryItems = [URLQueryItem(name: "token", value: gateway.token)]
-        guard let url = components.url else { return nil }
-        return GatewayArtifactSource(route: .loopback, url: url, cookie: nil, host: "127.0.0.1")
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "localhost"
+        components.port = port
+        components.path = "/\(account)\(path)"
+        guard let url = components.url,
+              let cookie = loopbackCookie(token: gateway.token, for: url) else { return nil }
+        return GatewayArtifactSource(route: .loopback, url: url, cookie: cookie)
+    }
+
+    static func loopbackCookie(token: String, for url: URL) -> HTTPCookie? {
+        guard url.scheme == "http", url.host == "localhost", !token.isEmpty else { return nil }
+        let encodedPath = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
+        return HTTPCookie(properties: [
+            .name: "idfon_gateway",
+            .value: token,
+            .domain: "localhost",
+            .path: resourcePathPrefix(encodedPath),
+            HTTPCookiePropertyKey("HttpOnly"): "TRUE",
+        ])
+    }
+
+    private static func resourcePathPrefix(_ path: String) -> String {
+        if path.hasSuffix("/") { return path }
+        guard let slash = path.lastIndex(of: "/") else { return "/" }
+        return slash == path.startIndex ? "/" : String(path[...slash])
     }
 
     private static func remote(account: String, path: String) -> GatewayArtifactSource? {
-        guard let url = EdgeClient.shared.url(account: account, path: path) else { return nil }
-        return GatewayArtifactSource(
-            route: .edge,
-            url: url,
-            cookie: EdgeClient.shared.cookie(for: url),
-            host: url.host ?? "")
+        guard let url = EdgeClient.shared.url(account: account, path: path),
+              let cookie = EdgeClient.shared.cookie(for: url) else { return nil }
+        return GatewayArtifactSource(route: .edge, url: url, cookie: cookie)
     }
 }

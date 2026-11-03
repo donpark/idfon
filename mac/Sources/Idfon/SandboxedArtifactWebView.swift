@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import WebKit
 
 /// Serves artifact bytes to the web view from memory under a private scheme,
@@ -39,15 +40,18 @@ private final class ArtifactSchemeHandler: NSObject, WKURLSchemeHandler {
 }
 
 /// A locked-down web view for untrusted artifact content: non-persistent data
-/// store, no native bridge, and every load except the in-memory artifact bytes
-/// blocked. HTML renders as itself; other media is wrapped in a minimal shell.
+/// store, no privileged action/tool bridge (selection only), and every load
+/// except the in-memory artifact bytes blocked. HTML renders as itself; other
+/// media is wrapped in a minimal shell.
 final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptMessageHandler {
     private var handler: ArtifactSchemeHandler!
     /// Reports the clicked element as a text range over the artifact's source
     /// bytes, so the existing text resolver handles it (no HTML parser needed).
     var onElementSelection: ((ArtifactSelector) -> Void)?
-    /// When the document is gateway-loaded, the only non-artifact origin allowed.
-    private var allowedOrigin: (scheme: String, host: String)?
+    /// Exact gateway origin and directory allowed for the source-loaded page.
+    /// `nil` for byte-injected content.
+    private var allowedOrigin: URL?
+    private var allowedPathPrefix: String?
 
     init(data: Data, mime: String, frame: NSRect = NSRect(x: 0, y: 0, width: 660, height: 460)) {
         let handler = ArtifactSchemeHandler()
@@ -76,7 +80,8 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
     /// Loads the artifact from a **gateway** URL (the loopback gateway or the
     /// public edge) instead of injecting bytes, so relative subresources
     /// resolve and the gateway does the fetch. Same sandbox: non-persistent
-    /// store, no bridge, and only the gateway host (plus inline `data:`) loads.
+    /// store, selection channel only, and only the scoped gateway origin/path
+    /// (plus inline `data:`) loads.
     init(source: GatewayArtifactSource, frame: NSRect = NSRect(x: 0, y: 0, width: 660, height: 460)) {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -87,15 +92,17 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
         navigationDelegate = self
         allowsLinkPreview = false
         autoresizingMask = [.width, .height]
-        allowedOrigin = (source.url.scheme ?? "https", source.host)
-        addContentRules(allowing: source.host)
-        let load = { [weak self] in _ = self?.load(URLRequest(url: source.url)) }
-        if let cookie = source.cookie {
-            configuration.websiteDataStore.httpCookieStore.setCookie(cookie) {
-                DispatchQueue.main.async { load() }
+        allowedOrigin = source.url
+        let pathPrefix = Self.resourcePathPrefix(source.url)
+        allowedPathPrefix = pathPrefix
+        addContentRules(allowing: source.url, pathPrefix: pathPrefix) { [weak self] installed in
+            guard installed, let self else { return }
+            configuration.websiteDataStore.httpCookieStore.setCookie(source.cookie) { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    _ = self.load(URLRequest(url: source.url))
+                }
             }
-        } else {
-            load()
         }
     }
 
@@ -128,19 +135,83 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
         """
     }
 
-    /// Allow only one gateway host (and inline data:), block the rest.
-    private func addContentRules(allowing host: String) {
-        let escaped = NSRegularExpression.escapedPattern(for: host)
+    /// Allow only the exact gateway origin and resource directory (plus inline
+    /// data:), blocking alternate ports, peer paths and external redirects.
+    private func addContentRules(
+        allowing url: URL,
+        pathPrefix: String,
+        completion: @escaping (Bool) -> Void
+    ) {
+        let scheme = NSRegularExpression.escapedPattern(for: url.scheme ?? "https")
+        let host = NSRegularExpression.escapedPattern(for: url.host ?? "")
+        let authority = url.port.map { "\(host):\($0)" } ?? host
+        let path = NSRegularExpression.escapedPattern(for: pathPrefix)
+        let pathID = SHA256.hash(data: Data(pathPrefix.utf8)).prefix(8)
+            .map { String(format: "%02x", $0) }.joined()
+        let filter = "^\(scheme)://\(authority)\(path)"
+        let unsafePathRules = ["%2[eE]", "%2[fF]", "%5[cC]", "%25"].map {
+            #"{"trigger":{"url-filter":"\#(filter).*\#($0)"},"action":{"type":"block"}}"#
+        }.joined(separator: ",")
         let json = """
         [{"trigger":{"url-filter":".*"},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"^https?://\(escaped)[/:]"},"action":{"type":"ignore-previous-rules"}},
-         {"trigger":{"url-filter":"^data:"},"action":{"type":"ignore-previous-rules"}}]
+         {"trigger":{"url-filter":"\(filter)"},"action":{"type":"ignore-previous-rules"}},
+         {"trigger":{"url-filter":"^data:"},"action":{"type":"ignore-previous-rules"}},
+         \(unsafePathRules)]
         """
         WKContentRuleListStore.default().compileContentRuleList(
-            forIdentifier: "idfon-gateway-block-\(escaped)", encodedContentRuleList: json
+            forIdentifier: "idfon-gateway-block-\(host)-\(url.port ?? 0)-\(pathID)", encodedContentRuleList: json
         ) { [weak self] list, _ in
-            guard let list else { return }
-            self?.configuration.userContentController.add(list)
+            guard let self, let list else {
+                completion(false)
+                return
+            }
+            DispatchQueue.main.async {
+                self.configuration.userContentController.add(list)
+                completion(true)
+            }
+        }
+    }
+
+    private static func resourcePathPrefix(_ url: URL) -> String {
+        let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
+        if path.hasSuffix("/") { return path }
+        guard let slash = path.lastIndex(of: "/") else { return "/" }
+        return slash == path.startIndex ? "/" : String(path[...slash])
+    }
+
+    static func allowsGatewayURL(_ url: URL, origin: URL, pathPrefix: String) -> Bool {
+        let scheme = origin.scheme?.lowercased()
+        guard url.scheme?.lowercased() == scheme,
+              url.host?.lowercased() == origin.host?.lowercased(),
+              effectivePort(url) == effectivePort(origin) else { return false }
+        let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? url.path
+        return safeResourcePath(path) && path.hasPrefix(pathPrefix)
+    }
+
+    private static func safeResourcePath(_ path: String) -> Bool {
+        guard path.hasPrefix("/"), !path.contains("\\") else { return false }
+        let segments = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+        return segments.enumerated().allSatisfy { index, segment in
+            if segment.isEmpty { return index == segments.count - 1 }
+            var decoded = String(segment)
+            for _ in 0..<8 {
+                if decoded == "." || decoded == ".." || decoded.contains("/") || decoded.contains("\\") {
+                    return false
+                }
+                guard let next = decoded.removingPercentEncoding else { return true }
+                if next == decoded { return true }
+                decoded = next
+            }
+            return false
+        }
+    }
+
+    private static func effectivePort(_ url: URL) -> Int? {
+        if let port = url.port { return port }
+        switch url.scheme?.lowercased() {
+        case "http": return 80
+        case "https": return 443
+        default: return nil
         }
     }
 
@@ -197,7 +268,8 @@ final class SandboxedArtifactWebView: WKWebView, WKNavigationDelegate, WKScriptM
             decisionHandler(.allow)
             return
         }
-        if let origin = allowedOrigin, url.scheme == origin.scheme, url.host == origin.host {
+        if let origin = allowedOrigin, let pathPrefix = allowedPathPrefix,
+           Self.allowsGatewayURL(url, origin: origin, pathPrefix: pathPrefix) {
             decisionHandler(.allow)
             return
         }

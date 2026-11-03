@@ -5,8 +5,9 @@
 > `iroh-relay`); the Cloudflare Worker (`deploy/cloudflare`) is a source-landed,
 > policy-gated experiment. Companion to `idfon-web-analysis.md`; this records the
 > **hybrid transport** that analysis closes with. Residual security items are
-> tracked as issues (#27 cookie tossing, #28 `?ticket=` in URLs, #29 rebuild the
-> vendored libs for the relay knob). Written 2026-10-07; as-built 2026-10-09.
+> tracked as issues (#29 rebuild the vendored libs for the relay knob). Cookie
+> tossing (#27) is mitigated with a host-only `__Host-` cookie; URL-ticket auth
+> (#28) is removed. Written 2026-10-07; as-built 2026-10-09.
 
 `idfon-web-analysis.md` ends on a three-tier hybrid: a public `https://idfon.net` gateway
 as ingress, an on-device adapter, and the iroh swarm as backbone — with a
@@ -170,10 +171,11 @@ verified **caller context**, not just `(account, path)`.
   scene-based, so `AppDelegate.applicationWillEnterForeground` never fires.
   `UIBackgroundModes` gains `fetch`; the download delegate stages only a `200`
   (an error body is not an artifact).
-- Also landed: the edge accepts the ticket from an `idfon_ticket` cookie (or
-  `?ticket=`) as well as the header; iOS `EdgeWebView` injects the cookie into a
-  non-persistent `WKWebView`, and `SceneDelegate` routes `.resource` there. The
-  edge percent-decodes cookie/query values.
+- Also landed: the edge accepts the ticket from the `x-idfon-ticket` header or
+  the HTTPS-only host-only `__Host-idfon_ticket` cookie; URL-ticket auth is
+  rejected. iOS `EdgeWebView` injects the Secure+HttpOnly cookie into a
+  non-persistent `WKWebView`, and `SceneDelegate` routes `.resource` there.
+  HTTP edges remain available to native fetches but cannot serve WebViews.
 - Also landed: artifacts whose content is a peer shared-root path render by
   loading the **gateway URL** in the sandboxed web view (`ArtifactGateway` →
   loopback gateway first, public edge second) instead of injecting bytes, so
@@ -210,7 +212,8 @@ verified **caller context**, not just `(account, path)`.
 
 - `deploy/cloudflare`: the P0–P3 ingress as a `workers-rs`/`wasm-bindgen`
   Worker. Cloudflare terminates TLS and owns the wildcard origin; the Worker
-  verifies the ticket (header/cookie/query), forwards it, and GETs the peer
+  verifies the ticket (header/host-only `__Host-` cookie), rejects URL tokens,
+  forwards it, and GETs the peer
   over `idfon/http3/1` via iroh's wasm relay transport. Same trust model as
   `crates/idfon-edge`; `idfon-core` gained a wasm build (its `transport` module
   is native-only, tokio `rt-multi-thread` is target-gated).
@@ -292,11 +295,11 @@ land. Security residuals are filed as issues.
 
 ### Security residuals (filed as issues)
 
-- [ ] #27 — peer content can set a parent-domain cookie (cookie tossing) on
-  `<ref>.<domain>`; needs a `__Host-` host-only credential or peer content on a
-  distinct registrable domain.
-- [ ] #28 — `?ticket=` exposes the requester ticket in URLs; restrict it to
-  loopback/plain-HTTP binds or exchange it for a cookie.
+- [x] #27 — WebViews now use a Secure, HttpOnly, host-only `__Host-` cookie;
+  plain-HTTP edge pages are refused. This prevents peer content from tossing a
+  parent-domain requester cookie.
+- [x] #28 — URL-ticket auth was removed; the edge accepts only the header or
+  the HTTPS WebView cookie.
 - [ ] #29 — rebuild the vendored libs so `IDFON_RELAY_*` takes effect in the
   apps (the transport knob post-dates `libiroh_c_ffi.a`/`idfond`).
 
@@ -304,8 +307,8 @@ land. Security residuals are filed as issues.
 
 - [x] **Run the real `idfon-edge` as the phone's ingress.** `scripts/edge-e2e.sh`
   runs two real `idfond` daemons plus the `idfon-edge` binary (not the crate's
-  fake H3 router) and asserts: ticket auth via header/cookie/`?ticket=`, the
-  `<ref>.localhost` virtual-host form, health bypass, unknown-ref 404, option A
+  fake H3 router) and asserts: ticket auth via header/cookie, URL-ticket
+  rejection, the `<ref>.localhost` virtual-host form, health bypass, unknown-ref 404, option A
   (token auth + `resource.read` grant to the edge endpoint), P2's
   `idfon fetch --prefer edge` (`EdgeBackend`), and TLS termination. `--domain`
   wildcard DNS and per-IP rate limiting remain untested here.
@@ -324,13 +327,11 @@ land. Security residuals are filed as issues.
   session gaps. Residual: the download completed before the app was suspended,
   so "completes *during* suspension" and a system cold-start relaunch were not
   separately observed.
-- [x] **`EdgeWebView` deep link (`idfon://<ref>/<path>`) and `idfon web open`.**
-  `idfon web open <ref>/<path>` composes the edge URL (verified against a real
-  daemon + edge). On device, `idfon://<ref>/fs/index.html` routed to
-  `EdgeWebView` and rendered the edge-served HTML (edge `200`). Fixed on the way:
-  the `idfon_ticket` cookie was always `Secure`, so WebKit dropped it over a
-  plain-HTTP self-hosted edge; it is now `Secure` only for HTTPS, and a
-  non-HTTPS edge also carries `?ticket=` (which the edge accepts). Residual: a
+- [ ] **`EdgeWebView` deep link (`idfon://<ref>/<path>`) and `idfon web open`.**
+  Previous device testing covered the HTTPS production edge. WebViews now use
+  only the Secure+HttpOnly, host-only `__Host-` cookie; HTTP edges remain
+  available to native fetches but cannot serve pages, and URL tickets are no
+  longer accepted. Re-run the page-load test on device. Residual: a
   non-endpoint-id ref (name/alias) is not resolved to an endpoint id before the
   edge URL is built, so a configured-edge deep link only works with the 64-hex
   ref.

@@ -1,11 +1,8 @@
 import UIKit
-import WebKit
 
-/// A `WKWebView` pointed at the public edge for one peer resource
-/// (`docs/idfon-edge.md`, P4). A WebView cannot set request headers,
-/// so the requester ticket is injected as a cookie for the edge domain before
-/// the first load; the edge reads `idfon_ticket`. Uses a **non-persistent**
-/// store so the credential is never written to disk.
+/// Opens one public-edge resource through the same origin/path sandbox as
+/// artifact pages (`docs/idfon-edge.md`, P4). The HTTPS requester credential
+/// is a host-only HttpOnly cookie in a **non-persistent** store.
 final class EdgeWebView: UIViewController {
     private let account: String
     private let resourcePath: String
@@ -27,33 +24,20 @@ final class EdgeWebView: UIViewController {
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             barButtonSystemItem: .done, target: self, action: #selector(close))
 
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        let webView = WKWebView(frame: view.bounds, configuration: config)
-        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(webView)
-
         guard let url = EdgeClient.shared.url(account: account, path: resourcePath),
               let cookie = EdgeClient.shared.cookie(for: url) else {
-            webView.loadHTMLString("<p>Edge is not configured.</p>", baseURL: nil)
+            let message = UILabel(frame: view.bounds)
+            message.text = "A configured HTTPS edge is required."
+            message.textAlignment = .center
+            message.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            view.addSubview(message)
             return
         }
-        // A WebView cannot set request headers, so the edge credential rides the
-        // `idfon_ticket` cookie. Over plain HTTP (a self-hosted/LAN edge) WebKit
-        // does not send a cookie to an IP-literal host, so also carry the ticket
-        // as `?ticket=` (the edge accepts it). HTTPS keeps it cookie-only.
-        var loadURL = url
-        if url.scheme?.lowercased() != "https",
-           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
-            components.queryItems = [URLQueryItem(name: "ticket", value: EdgeClient.shared.ticket)]
-            loadURL = components.url ?? url
-        }
-        // Set the cookie first: the load must carry it.
-        config.websiteDataStore.httpCookieStore.setCookie(cookie) { [weak webView] in
-            DispatchQueue.main.async {
-                webView?.load(URLRequest(url: loadURL))
-            }
-        }
+        let source = GatewayArtifactSource(route: .edge, url: url, cookie: cookie)
+        let webView = SandboxedArtifactWebView(source: source)
+        webView.frame = view.bounds
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(webView)
     }
 
     @objc private func close() {

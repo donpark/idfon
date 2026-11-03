@@ -169,13 +169,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             // The deep link targets the public edge (parity with the iOS
             // EdgeWebView); the artifact screen is what uses loopback-first.
-            guard let url = EdgeClient.shared.url(account: ref, path: resourcePath) else {
+            guard let url = EdgeClient.shared.url(account: ref, path: resourcePath),
+                  let cookie = EdgeClient.shared.cookie(for: url) else {
                 openPeerThread(ref: ref)
                 return
             }
             let source = GatewayArtifactSource(
-                route: .edge, url: url,
-                cookie: EdgeClient.shared.cookie(for: url), host: url.host ?? "")
+                route: .edge, url: url, cookie: cookie)
             let web = SandboxedArtifactWebView(
                 source: source, frame: NSRect(x: 0, y: 0, width: 720, height: 560))
             let controller = NSViewController()

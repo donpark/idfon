@@ -3105,6 +3105,7 @@ name = "idfon-gateway"
 version = "0.9.0"
 dependencies = [
  "axum",
+ "blake3",
  "bytes",
  "http",
  "http-body-util",

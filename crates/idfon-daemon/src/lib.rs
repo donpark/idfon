@@ -26,8 +26,9 @@ use idfon_core::transport::{
     room_topic, FakeTransport, IrohTransport, MessageTransport, SideChannelGuard, SYNC_ALPN,
 };
 use idfon_gateway::{
-    AccountResolver, Authorizer, Backend, Caller, Config as GatewayConfig, EdgeBackend,
-    FallbackBackend, GatewayError, GatewayHandle, IrohBackend, Resource, StaticToken,
+    issue_scoped_token, resource_scope_path, AccountResolver, Authorizer, Backend, Caller,
+    Config as GatewayConfig, EdgeBackend, FallbackBackend, GatewayError, GatewayHandle,
+    IrohBackend, Resource, StaticToken,
 };
 use idfon_h3::{serve_router, H3Server, RemoteId};
 use idfon_media::service::MediaService;
@@ -1662,8 +1663,11 @@ impl AccountResolver for PeerStoreResolver {
 struct TokenOnly;
 
 impl Authorizer for TokenOnly {
-    fn authorize(&self, _caller: &Caller, _account: &str, _path: &str) -> bool {
-        true
+    fn authorize(&self, caller: &Caller, account: &str, path: &str) -> bool {
+        caller
+            .scope
+            .as_ref()
+            .is_none_or(|scope| scope.allows(account, path))
     }
 }
 
@@ -1690,6 +1694,7 @@ async fn start_gateway(
     let handle = idfon_gateway::serve(
         GatewayConfig {
             auth: Some(std::sync::Arc::new(StaticToken::new(token.clone()))),
+            strict_origin: true,
             ..GatewayConfig::default()
         },
         backend,
@@ -1702,6 +1707,16 @@ async fn start_gateway(
         prefer: prefer.as_str().to_owned(),
         _handle: handle,
     })
+}
+
+fn scoped_gateway_token(secret: &str, account: &str, path: &str) -> Option<String> {
+    let path_prefix = resource_scope_path(path)?;
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs()
+        .saturating_add(3600);
+    issue_scoped_token(secret, account, &path_prefix, expires_at)
 }
 
 fn gateway_value(
@@ -1729,6 +1744,34 @@ async fn gateway_start(
     let Some(transport) = transport else {
         return transport_not_ready(request);
     };
+    let scoped_to = match (
+        request_text(&request.params, "account"),
+        request_text(&request.params, "path"),
+    ) {
+        (None, None) => None,
+        (Some(account), Some(path)) if !account.is_empty() => Some((account, path)),
+        _ => {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::InvalidRequest,
+                "gateway.start account and path must be supplied together".into(),
+                false,
+            )
+        }
+    };
+    if scoped_to
+        .as_ref()
+        .is_some_and(|(_, path)| resource_scope_path(path).is_none())
+    {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "gateway.start path must be a safe absolute resource path".into(),
+            false,
+        );
+    }
     let prefer = Prefer::parse(request_text(&request.params, "prefer").as_deref());
     if let Some(instance) = gateways()
         .lock()
@@ -1736,9 +1779,22 @@ async fn gateway_start(
         .get(identity)
     {
         if instance.prefer == prefer.as_str() {
+            let token = scoped_to.as_ref().map_or_else(
+                || Some(instance.token.clone()),
+                |(account, path)| scoped_gateway_token(&instance.token, account, path),
+            );
+            let Some(token) = token else {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    "could not issue a scoped gateway credential".into(),
+                    false,
+                );
+            };
             return success(
                 request,
-                gateway_value(identity, instance.addr, &instance.token, &instance.prefer),
+                gateway_value(identity, instance.addr, &token, &instance.prefer),
             );
         }
     }
@@ -1758,7 +1814,20 @@ async fn gateway_start(
     };
     match start_gateway(Arc::clone(store), identity, &iroh, prefer).await {
         Ok(instance) => {
-            let value = gateway_value(identity, instance.addr, &instance.token, &instance.prefer);
+            let token = scoped_to.as_ref().map_or_else(
+                || Some(instance.token.clone()),
+                |(account, path)| scoped_gateway_token(&instance.token, account, path),
+            );
+            let Some(token) = token else {
+                return error_response(
+                    request.id.clone(),
+                    &request.method,
+                    ErrorCode::InvalidRequest,
+                    "could not issue a scoped gateway credential".into(),
+                    false,
+                );
+            };
+            let value = gateway_value(identity, instance.addr, &token, &instance.prefer);
             gateways()
                 .lock()
                 .expect("gateway registry poisoned")
@@ -7553,10 +7622,21 @@ mod tests {
             .is_none());
     }
 
-    async fn http_get(addr: std::net::SocketAddr, path: &str, token: &str) -> (u16, String) {
+    async fn http_get_with_credential(
+        addr: std::net::SocketAddr,
+        path: &str,
+        credential: &str,
+        cookie: bool,
+        host_port: u16,
+    ) -> (u16, String) {
         let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let auth = if cookie {
+            format!("Cookie: idfon_gateway={credential}\r\n")
+        } else {
+            format!("Authorization: Bearer {credential}\r\n")
+        };
         let request = format!(
-            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+            "GET {path} HTTP/1.1\r\nHost: localhost:{host_port}\r\n{auth}Connection: close\r\n\r\n"
         );
         stream.write_all(request.as_bytes()).await.expect("write");
         let mut raw = Vec::new();
@@ -7572,6 +7652,10 @@ mod tests {
             .map(|(_, body)| body.to_owned())
             .unwrap_or_default();
         (status, body)
+    }
+
+    async fn http_get(addr: std::net::SocketAddr, path: &str, token: &str) -> (u16, String) {
+        http_get_with_credential(addr, path, token, false, addr.port()).await
     }
 
     /// End-to-end: the daemon's embedded gateway resolves an `idfon://` account
@@ -7647,8 +7731,73 @@ mod tests {
         let (status, _) = http_get(addr, "/0000/fs/hello.txt", &token).await;
         assert_eq!(status, 404);
 
-        // The token is the boundary.
+        // The bearer token remains available only to the trusted native client.
         let (status, _) = http_get(addr, &format!("/{handle}/fs/hello.txt"), "wrong").await;
+        assert_eq!(status, 401);
+
+        // Web pages receive a signed credential scoped to one peer and the
+        // containing directory, not the identity-wide gateway token.
+        let scoped_request = Request {
+            version: PROTOCOL_VERSION,
+            id: "gateway-scoped".into(),
+            method: "gateway.start".into(),
+            params: serde_json::json!({
+                "identity": "default",
+                "account": handle.clone(),
+                "path": "/fs/hello.txt",
+            }),
+        };
+        let scoped_response = gateway_start(&scoped_request, &store, Some(&transport), "default").await;
+        let scoped = match scoped_response.body {
+            ResponseBody::Success { result, .. } => result["token"].as_str().unwrap().to_owned(),
+            ResponseBody::Failure { error, .. } => panic!("scoped gateway.start failed: {}", error.message),
+        };
+        let (status, body) = http_get_with_credential(
+            addr,
+            &format!("/{handle}/fs/hello.txt"),
+            &scoped,
+            true,
+            addr.port(),
+        )
+        .await;
+        assert_eq!((status, body.as_str()), (200, "hello from peer"));
+        let (status, _) = http_get_with_credential(
+            addr,
+            "/another-peer/fs/hello.txt",
+            &scoped,
+            true,
+            addr.port(),
+        )
+        .await;
+        assert_eq!(status, 403, "a leaked page credential cannot read another peer");
+        let (status, _) = http_get_with_credential(
+            addr,
+            &format!("/{handle}/private/secret.txt"),
+            &scoped,
+            true,
+            addr.port(),
+        )
+        .await;
+        assert_eq!(status, 403, "a page credential cannot escape its directory");
+        let (status, _) = http_get_with_credential(
+            addr,
+            &format!("/{handle}/fs/hello.txt"),
+            &scoped,
+            true,
+            addr.port().wrapping_add(1),
+        )
+        .await;
+        assert_eq!(status, 403, "alternate Host port is rejected");
+
+        // The identity-wide secret is never accepted from a page URL/cookie.
+        let (status, _) = http_get_with_credential(
+            addr,
+            &format!("/{handle}/fs/hello.txt"),
+            &token,
+            true,
+            addr.port(),
+        )
+        .await;
         assert_eq!(status, 401);
 
         gateways().lock().unwrap().remove("default");

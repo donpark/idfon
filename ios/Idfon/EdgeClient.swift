@@ -77,33 +77,22 @@ final class EdgeClient: NSObject, @unchecked Sendable {
         idfonLog("idfon edge: cleared")
     }
 
-    /// The edge URL for a resource (the credential rides a cookie/header, never
-    /// the URL). `nil` when unconfigured.
+    /// The edge URL for a resource (native callers send the credential in a
+    /// header; WebViews use the secure cookie). `nil` when unconfigured.
     func url(account: String, path: String) -> URL? {
         request(account: account, path: path)?.url
     }
 
-    /// The requester ticket as an `HTTPCookie` scoped to **this resource's
-    /// host**, so a `WKWebView` sends it only to that peer. Scoping to the bare
-    /// edge domain would send it to every `<ref>.<domain>` (and the path form's
-    /// single origin), leaking one endpoint's credential to another.
-    /// Percent-encoded: a cookie value cannot carry `,` / `;` / `"` reliably.
+    /// HTTPS-only, host-only requester cookie for a WebView. The `__Host-`
+    /// prefix prevents peer content from tossing a parent-domain cookie. HTTP
+    /// edges remain available to native fetches, but cannot safely serve pages.
     func cookie(for url: URL) -> HTTPCookie? {
-        guard let ticket, let host = url.host, !host.isEmpty else { return nil }
+        guard url.scheme?.lowercased() == "https",
+              let ticket, !ticket.isEmpty else { return nil }
         let encoded = ticket.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ticket
-        var properties: [HTTPCookiePropertyKey: Any] = [
-            .name: "idfon_ticket",
-            .value: encoded,
-            .domain: host,
-            .path: "/",
-        ]
-        // Mark Secure only for HTTPS. `HTTPCookie(properties:)` treats the key's
-        // presence as Secure regardless of the value, so it must be omitted for
-        // a self-hosted/LAN HTTP edge (WebKit drops a Secure cookie over http).
-        if url.scheme?.lowercased() == "https" {
-            properties[.secure] = "TRUE"
-        }
-        return HTTPCookie(properties: properties)
+        return HTTPCookie.cookies(withResponseHeaderFields: [
+            "Set-Cookie": "__Host-idfon_ticket=\(encoded); Path=/; Secure; HttpOnly; SameSite=Lax",
+        ], for: url).first
     }
 
     /// The edge URL for `account` with the requester ticket attached.

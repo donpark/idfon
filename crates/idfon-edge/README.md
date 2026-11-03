@@ -39,8 +39,9 @@ idfon-edge \
 ```
 
 `--require-ticket resource.read` verifies a capability ticket (`x-idfon-ticket`
-header, `idfon_ticket` cookie, or `?ticket=`) and forwards it to the peer, which
-authorizes the ticket's **issuer** (P3). `--token VALUE` is the simpler shared
+header or HTTPS WebView's host-only `__Host-idfon_ticket` cookie) and forwards it
+to the peer, which authorizes the ticket's **issuer** (P3). URL tickets are
+rejected because they leak through history, logs, and referrers. `--token VALUE` is the simpler shared
 bearer alternative. `--health-path` (default `/healthz`) answers probes before
 auth.
 
@@ -59,7 +60,8 @@ idfon access ticket --subject requester --capability resource.read \
 ```
 
 `scripts/edge-e2e.sh` runs the binary against a real `idfond` provider and
-covers both options, cookie/query auth, virtual hosts, and TLS.
+covers both options, header/cookie auth, URL-ticket rejection, virtual hosts,
+and TLS.
 
 ## Trust model
 

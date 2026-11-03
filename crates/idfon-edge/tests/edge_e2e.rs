@@ -202,11 +202,19 @@ async fn edge_accepts_a_capability_ticket() {
     assert_eq!(status, 200, "capability ticket admits the request");
     assert_eq!(body, format!("remote={} ticket=true", handle.endpoint_id));
 
-    // A WebView carries the ticket in a cookie (percent-encoded), not a header.
-    let cookie = format!("idfon_ticket={}", percent_encode(&ticket_json));
+    // An HTTPS WebView carries a host-only __Host- cookie, never a URL ticket.
+    let cookie = format!("__Host-idfon_ticket={}", percent_encode(&ticket_json));
     let (status, body) = http_get(handle.addr, &path, &[("Cookie", cookie)]).await;
     assert_eq!(status, 200, "cookie ticket admits the request");
     assert_eq!(body, format!("remote={} ticket=true", handle.endpoint_id));
+
+    let legacy_cookie = format!("idfon_ticket={}", percent_encode(&ticket_json));
+    let (status, _) = http_get(handle.addr, &path, &[("Cookie", legacy_cookie)]).await;
+    assert_eq!(status, 401, "domain cookies are not accepted");
+
+    let query_url = format!("{path}?ticket={}", percent_encode(&ticket_json));
+    let (status, _) = http_get(handle.addr, &query_url, &[]).await;
+    assert_eq!(status, 401, "URL tickets are not accepted");
 
     // A ticket missing the required capability is rejected.
     let wrong_cap = idfon_core::issue_capability_ticket(
