@@ -70,6 +70,42 @@ What Tyger does **not** decide: content, whether a turn *deserves* an answer,
 tools, channel. It is a timing instrument — endpoint / yield / backchannel —
 plus a turn-state estimate.
 
+## Where the GRU sits: the frame data flow
+
+What feeds the temporal core and where its output lands, per 80 ms frame
+(`ports/tyger-student/model.py` for the student, `integrations/eve-idfon-voice/
+src/tyger/engine.ts` + `rules.ts` at runtime; the teacher has the same shape
+with bigger numbers):
+
+```
+user mic audio ──► encoder/tap ──► hu (1,024) ─► proj_user ──┐
+agent playback ─► encoder/tap ──► ha (1,024) ─► proj_agent ──┤
+frame energy ───────────────────► act_db ─────► proj_energy ─┼─ sum ─► in_norm ─► GRU
+previous floor state ───────────► prev_state ─► state_emb ───┘      (256-d, 2 layers)
+
+GRU z ─► one linear head per axis ─► 8-vector = [4 floor-state logits
+         (listen/hold/speak/backchannel), hazard, yield, bc, p_end]
+       ─► rules.on_frame(mode, out8) ─► events: ENDPOINT / BARGE / BACKCHANNEL
+```
+
+- `hu`/`ha` are one feature vector per ear. The two-eared input is what lets
+  the model separate a user cut-in from the agent's own voice.
+- `prev_state` closes the loop: the floor state the rules chose on the previous
+  frame is an input to the next. GRU state resets at mode/rules reset points.
+- `engine.hop()` threads the GRU hidden state across frames (carried in the
+  ONNX step's `state` I/O: teacher 3×768, student 2×256).
+- The GRU is a temporal memory seam, stateless per frame otherwise: the
+  **rules** layer — thresholds, debounce, refractory, the 4-way state machine —
+  turns per-frame scores into events. The network never emits events itself.
+- The published HF annotation records capture exactly this seam:
+  `teacher_scores` is the per-frame 8-vector, `teacher_proposal` is what the
+  rules did with it (`donpark/open-yap-1k-turn-annotations`).
+- Epic #132's shared-latent variant changes only the left side: per-tap
+  adapters project whichever feature tap the streaming ASR offers (e.g.
+  `l4-streaming`) into the shared width, then one shared GRU → one decoder;
+  the GRU→heads→8-vector→rules seam is unchanged and is the portability
+  contract between tiers.
+
 ## Advantages to take
 
 1. **The two-stream design.** The second ear (agent playback as an input) is
