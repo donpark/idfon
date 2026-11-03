@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use chrono::Local;
 use idfon_live_media::AudioQueue;
 use idfon_radio::{
@@ -39,9 +39,19 @@ const MAX_FRAMES_PER_TICK: usize = 25;
 /// call's quality record, not noise.
 const LATE_MS: u128 = 40;
 const HEARTBEAT: Duration = Duration::from_secs(1);
+/// A far-end source silent this long is gone, not busy.
+const STALL_S: u64 = 30;
+const OUTPUT_RATE: u32 = idfon_radio::OUTPUT_RATE;
 
 /// `backend: "stream"` — one factory per runner, one backend per call.
 pub struct StreamFactory;
+
+/// What a call plays: a station programme (schedule or a cached clip), or a
+/// far-end source decoded at call time.
+enum Play {
+    Programme(Programme),
+    Remote(String),
+}
 
 impl VoiceBackendFactory for StreamFactory {
     fn kind(&self) -> &str {
@@ -53,19 +63,25 @@ impl VoiceBackendFactory for StreamFactory {
         // beats the station default, the way `topic=` beats the topic. Else the
         // station's own file (`programme: "programme.json"`) wins; the adapter
         // keys (`schedule`/`file`/`loop`) stay for a bare config.
-        let config = match show_from(params) {
-            Some(show) => show_config(params, &show)?,
-            None => match params.get("programme").and_then(Value::as_str) {
-                Some(path) => ProgrammeConfig::load(Path::new(path))?,
-                None => ProgrammeConfig::parse(params, Path::new("."))?,
-            },
+        let (play, topic) = match show_from(params) {
+            Some(show) => {
+                let (play, topic) = show_play(params, &show)?;
+                (play, topic_from(params).or(topic))
+            }
+            None => {
+                let config = match params.get("programme").and_then(Value::as_str) {
+                    Some(path) => ProgrammeConfig::load(Path::new(path))?,
+                    None => ProgrammeConfig::parse(params, Path::new("."))?,
+                };
+                let topic = topic_from(params).or(config.topic.clone());
+                (Play::Programme(Programme::open(config)?), topic)
+            }
         };
-        let topic = config.topic.clone();
         Ok(Box::new(StreamBackend {
-            programme: Programme::open(config)?,
+            play,
             // A caller may name the topic for this call (per-contact context);
             // the record says what the station is, unless the caller says more.
-            topic: topic_from(params).or(topic),
+            topic,
             log: params.get("log").and_then(Value::as_str).map(PathBuf::from),
         }))
     }
@@ -95,10 +111,10 @@ fn caller_line(params: &Value, prefix: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The programme for a menu selection: just the chosen show. The `opml` menu is
-/// the contact's config; its cached copy plays now, a far-end source plays when
-/// source ingest lands (#119).
-fn show_config(params: &Value, show: &str) -> Result<ProgrammeConfig> {
+/// The play target for a menu selection: the chosen show's cached clip as a
+/// one-item programme, or its far-end source — decoded to call frames at play
+/// time. The `opml` menu is the contact's config.
+fn show_play(params: &Value, show: &str) -> Result<(Play, Option<String>)> {
     let path = params
         .get("opml")
         .and_then(Value::as_str)
@@ -106,27 +122,26 @@ fn show_config(params: &Value, show: &str) -> Result<ProgrammeConfig> {
         .context("a `show=` selection needs an `opml` menu in the agent config")?;
     let menu = Menu::load(Path::new(path))?;
     let entry = menu.resolve(show)?;
-    let file = match entry.source()? {
-        Source::Local(path) => path,
-        Source::Remote(url) => bail!(
-            "{url} is not in the local download cache; live source ingest lands with #119"
-        ),
+    let play = match entry.source()? {
+        Source::Local(file) => Play::Programme(Programme::open(ProgrammeConfig {
+            schedule: None,
+            fallback: Some(file),
+            loop_fallback: params.get("loop").and_then(Value::as_bool).unwrap_or(true),
+            topic: None,
+        })?),
+        Source::Remote(url) => Play::Remote(url),
     };
-    Ok(ProgrammeConfig {
-        schedule: None,
-        fallback: Some(file),
-        loop_fallback: params.get("loop").and_then(Value::as_bool).unwrap_or(true),
-        topic: params
-            .get("topic")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|topic| !topic.is_empty())
-            .map(str::to_owned),
-    })
+    let topic = params
+        .get("topic")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|topic| !topic.is_empty())
+        .map(str::to_owned);
+    Ok((play, topic))
 }
 
 pub struct StreamBackend {
-    programme: Programme,
+    play: Play,
     topic: Option<String>,
     log: Option<PathBuf>,
 }
@@ -138,31 +153,58 @@ impl VoiceBackend for StreamBackend {
 
     fn run(&mut self, media: VoiceMedia) -> BackendFuture<'_> {
         let mut record = Recorder::new(self.log.clone(), self.topic.clone());
-        let programme = &mut self.programme;
-        Box::pin(async move {
-            // The station emits 24 kHz; a call carrying another rate would play
-            // it fast. `voice_route.audio = "pcm24k"` is what keeps them equal.
-            ensure!(
-                programme.rate() == media.profile.sample_rate,
-                "programme is {} Hz but the call carries {} Hz; set voice_route.audio = \"pcm24k\"",
-                programme.rate(),
-                media.profile.sample_rate
-            );
-            record.event(
-                "start",
-                [("rate", Value::from(programme.rate())), ("backend", Value::from("stream"))],
-            );
-            let result = run_call(
-                programme,
-                &media.audio,
-                &media.stop,
-                media.caller,
-                &mut record,
-            )
-            .await;
-            record.event("stop", []);
-            result
-        })
+        match &mut self.play {
+            Play::Programme(programme) => Box::pin(async move {
+                // The station emits 24 kHz; a call carrying another rate would
+                // play it fast. `voice_route.audio = "pcm24k"` keeps them equal.
+                ensure!(
+                    programme.rate() == media.profile.sample_rate,
+                    "programme is {} Hz but the call carries {} Hz; set voice_route.audio = \"pcm24k\"",
+                    programme.rate(),
+                    media.profile.sample_rate
+                );
+                record.event(
+                    "start",
+                    [("rate", Value::from(programme.rate())), ("backend", Value::from("stream"))],
+                );
+                let result = run_call(
+                    programme,
+                    &media.audio,
+                    &media.stop,
+                    media.caller,
+                    &mut record,
+                )
+                .await;
+                record.event("stop", []);
+                result
+            }),
+            Play::Remote(url) => Box::pin(async move {
+                // Far-end sources decode to the station's 24 kHz the same way.
+                ensure!(
+                    media.profile.sample_rate == idfon_radio::OUTPUT_RATE,
+                    "far-end sources decode to {} Hz but the call carries {} Hz; set voice_route.audio = \"pcm24k\"",
+                    idfon_radio::OUTPUT_RATE,
+                    media.profile.sample_rate
+                );
+                record.event(
+                    "start",
+                    [
+                        ("rate", Value::from(idfon_radio::OUTPUT_RATE)),
+                        ("backend", Value::from("ffmpeg")),
+                    ],
+                );
+                let result = run_stream(
+                    url,
+                    &media.audio,
+                    &media.stop,
+                    media.caller,
+                    &mut record,
+                )
+                .await;
+                record.event("stop", []);
+                result
+            }),
+        }
     }
 }
 
@@ -219,6 +261,92 @@ async fn run_call(
             );
         }
     }
+}
+
+/// Pump a far-end source into the return leg until it ends or the call stops:
+/// ffmpeg decodes any stream URL (HLS, ICY/MP3, AAC) to the station's 24 kHz
+/// PCM and the frames are paced like a programme's.
+/// shortcut: no reconnect on a dropped source — the call ends with `eof`;
+/// retry-with-backoff lands with #119's recovery semantics.
+async fn run_stream(
+    url: &str,
+    audio: &AudioQueue,
+    stop: &AtomicBool,
+    mut caller: mpsc::Receiver<Vec<i16>>,
+    record: &mut Recorder,
+) -> Result<()> {
+    let mut child = tokio::process::Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-nostdin", "-i", url])
+        .args(["-f", "s16le", "-ar", "24000", "-ac", "1", "-"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .context("spawn ffmpeg for the far-end source")?;
+    let mut stdout = child.stdout.take().context("ffmpeg stdout")?;
+    record.event("stream", [("url", Value::from(url))]);
+    let mut frame = vec![0i16; FRAME_SAMPLES];
+    let mut bytes = vec![0u8; FRAME_SAMPLES * 2];
+    let mut sent = 0u64;
+    let mut last_beat = Instant::now();
+    loop {
+        while caller.try_recv().is_ok() {}
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        // Pace off the queue (~100 ms ahead), like the programme pump.
+        if audio.queued_samples() >= TARGET_SAMPLES {
+            tokio::time::sleep(Duration::from_millis(FRAME_MS as u64)).await;
+            continue;
+        }
+        // One 20 ms frame per read; EOF or a stall ends the call like a
+        // non-looping clip (kill_on_drop reaps ffmpeg either way).
+        let read = tokio::time::timeout(
+            Duration::from_secs(STALL_S),
+            tokio::io::AsyncReadExt::read_exact(&mut stdout, &mut bytes),
+        )
+        .await;
+        match read {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => break, // EOF: the source ran out
+            Err(_) => {
+                record.event("error", [("message", Value::from("source stalled"))]);
+                break;
+            }
+        }
+        for (sample, chunk) in frame.iter_mut().zip(bytes.chunks_exact(2)) {
+            *sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+        }
+        audio.push_samples(&frame);
+        sent += frame.len() as u64;
+        if last_beat.elapsed() >= HEARTBEAT {
+            last_beat = Instant::now();
+            let queued_ms = audio.queued_samples() as u64 * 1_000 / OUTPUT_RATE as u64;
+            record.event(
+                "heartbeat",
+                [
+                    ("sent_s", Value::from(sent / OUTPUT_RATE as u64)),
+                    ("queued_ms", Value::from(queued_ms)),
+                ],
+            );
+        }
+    }
+    record.event("eof", [("sent_s", Value::from(sent / OUTPUT_RATE as u64))]);
+    // Say why the source ended when ffmpeg says so (its stderr is small at
+    // `-loglevel error`, so the pipe cannot fill before we read it).
+    if let Ok(status) = child.wait().await {
+        if !status.success() {
+            let mut message = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut message).await;
+            }
+            let message = message.trim();
+            if !message.is_empty() {
+                record.event("error", [("message", Value::from(message))]);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// JSONL soak record: one object per line, `t_ms` monotonic from the call.
@@ -444,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn factory_refuses_a_live_show_until_source_ingest_lands() {
+    fn factory_accepts_a_far_end_show() {
         let (dir, opml) = menu_dir(
             "menu-remote",
             r#"<opml version="2.0"><body><outline text="News">
@@ -456,12 +584,30 @@ mod tests {
             "opml": opml.to_str().expect("utf8"),
             "caller_context": "show=News/Morning\n",
         });
-        let error = match StreamFactory.create(&params) {
-            Ok(_) => panic!("a far-end show must not play before source ingest lands"),
-            Err(error) => error,
-        };
-        assert!(format!("{error}").contains("#119"), "{error}");
+        // The far end decodes at play time; nothing to open up front.
+        assert!(StreamFactory.create(&params).is_ok());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pumps_a_far_end_source_into_the_queue() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            eprintln!("skip: ffmpeg not installed");
+            return;
+        }
+        // A `file://` source exercises the same decode path as a live URL.
+        let path = temp("far-end", &wav(&vec![1; FRAME_SAMPLES * 2], 24_000));
+        let url = format!("file://{}", path.display());
+        let audio = AudioQueue::new();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (_caller_tx, caller) = mpsc::channel(4);
+        let mut record = Recorder::new(None, None);
+        run_stream(&url, &audio, &stop, caller, &mut record)
+            .await
+            .expect("run");
+        // Both frames arrived; the source ended and the call with it.
+        assert_eq!(audio.queued_samples(), FRAME_SAMPLES * 2);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
