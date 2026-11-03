@@ -92,13 +92,19 @@ def gate_check(head, metrics):
 
 
 def run(shard_dirs, val_dir, out_dir, epochs, window, lr, init=None, feature_layer=15, seed=0,
-        distill_loss="soft", pos_weight=1.0):
+        distill_loss="soft", pos_weight=1.0, head_set="all"):
     torch.manual_seed(seed)
     np.random.seed(seed)
-    if distill_loss == "mse":  # A/B instrument: old probability-matching distillation
-        heads = tuple(replace(h, loss="mse") if teacher_cols(h) is not None else h for h in HEADS)
+    if head_set == "teacher-seam":
+        base_heads = tuple(h for h in HEADS if teacher_cols(h) is not None)
+    elif head_set == "all":
+        base_heads = HEADS
     else:
-        heads = HEADS
+        raise ValueError(f"unknown head set: {head_set!r}")
+    if distill_loss == "mse":  # A/B instrument: old probability-matching distillation
+        heads = tuple(replace(h, loss="mse") if teacher_cols(h) is not None else h for h in base_heads)
+    else:
+        heads = base_heads
     if pos_weight != 1.0:  # A/B instrument: rare-fire frame weighting (barge/backchannel)
         heads = tuple(replace(h, pos_weight=pos_weight) if h.id in ("barge", "backchannel") else h
                       for h in heads)
@@ -117,12 +123,18 @@ def run(shard_dirs, val_dir, out_dir, epochs, window, lr, init=None, feature_lay
     model.window = window
     if init:
         ckpt = torch.load(init, map_location="cpu")
-        unexpected = model.load_state_dict(ckpt["state_dict"], strict=False)[1]
+        target_state = model.state_dict()
+        extra = set(ckpt["state_dict"]) - target_state.keys()
+        known_heads = {h.id for h in HEADS}
+        assert all(k.startswith("heads.") and k.split(".")[1] in known_heads for k in extra), \
+            f"checkpoint has unknown keys: {sorted(extra)}"
+        unexpected = model.load_state_dict({k: v for k, v in ckpt["state_dict"].items()
+                                            if k in target_state}, strict=False)[1]
         assert not unexpected, f"checkpoint has unknown keys: {unexpected}"
-        fresh = [h.id for h in HEADS if h.id not in ckpt.get("heads", [])]
+        fresh = [h.id for h in heads if h.id not in ckpt.get("heads", [])]
         print(f"warm start: {init} (batch N+1; fresh heads: {', '.join(fresh) or 'none'})")
     print(f"student: {count_params(model):,} params ({count_params(model) * 4 / 1e6:.1f} MB fp32), "
-          f"{len(train_sh)} shard(s), heads: {', '.join(h.id for h in HEADS)}")
+          f"{len(train_sh)} shard(s), heads: {', '.join(h.id for h in heads)}")
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     first = last = None
     for ep in range(epochs):
@@ -149,10 +161,11 @@ def run(shard_dirs, val_dir, out_dir, epochs, window, lr, init=None, feature_lay
     metrics = evaluate(model, val_sh, feature_layer)
     report = {"params": count_params(model), "window_frames": window, "epochs": epochs,
               "feature_layer": feature_layer, "distill_loss": distill_loss, "pos_weight": pos_weight,
+              "head_set": head_set,
               "shards": [os.path.basename(p) for p, _, _, _, _ in loaded], "heads": {}}
     ok = True
     print(f"\n{'head':<12} {'source':<18} {'val':>12} {'gate':>12}  status")
-    for h in HEADS:
+    for h in heads:
         m = metrics[h.id]
         shown = f"mse {m['mse']:.5f}" if "mse" in m else (f"auc {m['auc']:.3f}" if m.get("auc") is not None else "n/a")
         g = gate_check(h, m)
@@ -164,7 +177,7 @@ def run(shard_dirs, val_dir, out_dir, epochs, window, lr, init=None, feature_lay
 
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-        torch.save({"state_dict": model.state_dict(), "heads": [h.id for h in HEADS],
+        torch.save({"state_dict": model.state_dict(), "heads": [h.id for h in heads],
                     "width": model.width, "layers": model.layers, "params": count_params(model)},
                    os.path.join(out_dir, "student.pt"))
         with open(os.path.join(out_dir, "report.json"), "w") as f:
@@ -247,6 +260,8 @@ if __name__ == "__main__":
     ap.add_argument("--distill-loss", choices=("soft", "mse"), default="soft",
                     help="teacher-head loss: soft = cross-entropy on teacher probs (default), "
                          "mse = probability matching (the A/B baseline)")
+    ap.add_argument("--head-set", choices=("all", "teacher-seam"), default="all",
+                    help="all registered heads, or only the five Tyger teacher-seam heads")
     ap.add_argument("--pos-weight", type=float, default=1.0,
                     help="upweight rare-fire frames (barge/backchannel bce positives) in the loss")
     ap.add_argument("--out", default=None, help="write student.pt + report.json here")
@@ -260,7 +275,7 @@ if __name__ == "__main__":
     elif args.shards:
         ok, *_ = run(args.shards, args.val, args.out, args.epochs, args.window, args.lr,
                      init=args.init, feature_layer=args.feature_layer, seed=args.seed,
-                     distill_loss=args.distill_loss, pos_weight=args.pos_weight)
+                     distill_loss=args.distill_loss, pos_weight=args.pos_weight, head_set=args.head_set)
         sys.exit(0 if ok else 1)
     else:
         ap.error("need --shards or --selfcheck")

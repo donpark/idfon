@@ -6,6 +6,7 @@ the 80 ms frame grid the decision model runs on:
   ha          float32 [T, 1024]   the agent's own L15 frames (the second ear)
   energy      float32 [T]         frame energy in dB (normalized inside the model)
   prev_state  int64   [T]         the floor state the rules fed the teacher (0-3, 4=begin)
+  mode        int8    [T]         optional: 0=listen, 1=speaking; used by gate.py's rules replay
   teacher     float32 [T, 8]      the fp32 teacher's 8-vector per frame (state logits + probs)
   lab_<key>   int8    [T]         corpus labels, one array per anyreach key (vad/eot/hold/bot/bc x ch)
   ev_frames   int32   [K]         the teacher's events, frames 1-based (gate.py's reference)

@@ -40,6 +40,7 @@ identically. Fail-open to classic is untouched.
 2. **Labels in the shards**: `featurize.py` carries the corpus keys; a new key or a
    new source means a re-run (the loader fails loudly if the labels are missing).
 3. **Train**: `train.py --shards bench-results/student-shards/train --val bench-results/student-shards/val --out bench-results/student`.
+   For teacher-only pseudo-label shards (no `hold_ch0` human/corpus label), use `--head-set teacher-seam`; this trains only the five Tyger heads and keeps the same 8-vector seam.
 4. **Gates**: `train.py`'s report checks each head against its registry gate (`mse` ≤
    the 0.02 parity envelope for teacher heads; `auc` bars get set after run 1, the way
    parity6/7 did), and `gate.py` checks the decisions themselves (parity7 agreement

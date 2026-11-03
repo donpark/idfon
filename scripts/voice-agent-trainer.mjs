@@ -132,7 +132,7 @@ for (let h = 0; h < nHops; h++) {
   await engine.hop(hopU, hopA, sess.prev_state, (out8, _i, actDb, left) => {
     frame++;
     const t = frame * 0.08;
-    frames.push({ frame, t, mode, out: out8.map((v) => +v.toFixed(4)) });
+    frames.push({ frame, t, mode, prev_state: sess.prev_state, act_db: +actDb.toFixed(3), left, out: out8.map((v) => +v.toFixed(4)) });
     const vals = { p_end: out8[7], yield: out8[5], bc: out8[6] };
     for (const [k, v] of Object.entries(vals)) {
       if (v > heads[k].max) { heads[k].max = v; heads[k].at = t; }

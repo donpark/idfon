@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idfon.net/schemas/voice-decision-record-1.json",
+  "title": "Idfon Jev/System-One voice decision record",
+  "description": "One typed decision observation, with optional external source provenance and Tyger teacher scores. Audio is never embedded.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "trace",
+    "turn_id",
+    "ts",
+    "tier",
+    "model",
+    "policy",
+    "source_ref",
+    "state",
+    "questions",
+    "answers",
+    "action",
+    "teacher_proposal",
+    "outcome",
+    "label"
+  ],
+  "properties": {
+    "schema_version": { "const": "IDFON-VOICE-DECISION/1" },
+    "trace": { "type": "string", "minLength": 1 },
+    "turn_id": { "type": "string", "minLength": 1 },
+    "ts": { "type": "number", "minimum": 0, "description": "Seconds from the start of the source conversation." },
+    "tier": { "enum": ["on_device", "remote"] },
+    "model": { "type": "string", "minLength": 1 },
+    "policy": {
+      "type": "object",
+      "required": ["rules_revision", "frame_ms", "thresholds"],
+      "properties": {
+        "rules_revision": { "type": "string", "minLength": 1 },
+        "frame_ms": { "const": 80 },
+        "thresholds": { "type": "object", "additionalProperties": { "type": "number" } }
+      },
+      "additionalProperties": false
+    },
+    "source_ref": {
+      "type": "object",
+      "required": ["dataset", "revision", "conversation_id", "start_ms", "end_ms", "channels"],
+      "properties": {
+        "dataset": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "conversation_id": { "type": "string", "minLength": 1 },
+        "start_ms": { "type": "integer", "minimum": 0 },
+        "end_ms": { "type": "integer", "minimum": 1 },
+        "channels": {
+          "type": "object",
+          "required": ["user", "agent"],
+          "properties": {
+            "user": { "type": "string", "minLength": 1 },
+            "agent": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "state": { "type": "object", "description": "Only decision-time features; never raw audio or camera frames." },
+    "questions": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/question" }
+    },
+    "answers": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/answer" }
+    },
+    "action": {
+      "type": "object",
+      "required": ["id", "executed"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "executed": { "type": "boolean" } },
+      "additionalProperties": true
+    },
+    "teacher_proposal": {
+      "type": "object",
+      "required": ["source", "events"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": { "enum": ["ENDPOINT", "BARGE", "BACKCHANNEL"] },
+              "value": { "type": "number" },
+              "threshold": { "type": "number" },
+              "margin": { "type": "number" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "outcome": { "oneOf": [{ "type": "object" }, { "type": "null" }] },
+    "label": { "oneOf": [{ "type": "object" }, { "type": "null" }] },
+    "teacher_scores": {
+      "type": "object",
+      "required": ["heads", "values"],
+      "properties": {
+        "heads": {
+          "const": ["state_listen", "state_hold", "state_speak", "state_backchannel", "hazard", "yield", "bc", "p_end"]
+        },
+        "values": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "items": { "type": "number" }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "question": {
+      "type": "object",
+      "required": ["type", "instructions", "criteria"],
+      "properties": {
+        "type": { "enum": ["choice", "score", "noul"] },
+        "instructions": { "type": "string", "minLength": 1 },
+        "criteria": {
+          "oneOf": [
+            { "type": "object", "minProperties": 2, "additionalProperties": { "type": "string" } },
+            { "type": "array", "minItems": 2, "items": { "type": "string" } }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "answer": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "choice", "probabilities"],
+          "properties": {
+            "type": { "const": "choice" },
+            "choice": { "type": "string" },
+            "probabilities": { "$ref": "#/$defs/probabilities" },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": ["type", "noul"],
+          "properties": {
+            "type": { "const": "noul" },
+            "noul": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "score", "confidence"],
+          "properties": {
+            "type": { "const": "score" },
+            "score": { "type": "number", "minimum": 0, "maximum": 1 },
+            "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+            "legend": { "type": "object" },
+            "probabilities": { "$ref": "#/$defs/probabilities" }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "probabilities": {
+      "type": "object",
+      "minProperties": 2,
+      "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+    }
+  }
+}
