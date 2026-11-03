@@ -30,7 +30,7 @@ use worker::*;
 
 const ALPN: &[u8] = b"idfon/http3/1";
 const TICKET_HEADER: &str = "x-idfon-ticket";
-const TICKET_COOKIE: &str = "idfon_ticket";
+const TICKET_COOKIE: &str = "__Host-idfon_ticket";
 const DEFAULT_DOMAIN: &str = "idfon.net";
 const DEFAULT_CAPABILITY: &str = "resource.read";
 const RATE_WINDOW_SECS: u64 = 60;
@@ -82,7 +82,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         Ok(auth) => auth,
         Err(error) => return error_response(&error, 500),
     };
-    let caller = match authenticate(&auth, req.headers(), &url) {
+    let caller = match authenticate(&auth, req.headers()) {
         Some(caller) => caller,
         None => return error_response("unauthorized", 401),
     };
@@ -117,7 +117,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 // --- authentication -------------------------------------------------------
 
 enum Auth {
-    /// Shared bearer token (`Authorization: Bearer` or `?token=`).
+    /// Shared bearer token (`Authorization: Bearer` only).
     Token(String),
     /// A capability ticket (default `resource.read`), forwarded to the peer.
     Ticket(Capability),
@@ -137,22 +137,21 @@ fn authenticator(env: &Env) -> std::result::Result<Auth, String> {
     Ok(Auth::Ticket(Capability::new(capability)))
 }
 
-fn authenticate(auth: &Auth, headers: &Headers, url: &Url) -> Option<Caller> {
+fn authenticate(auth: &Auth, headers: &Headers) -> Option<Caller> {
     match auth {
         Auth::Token(expected) => {
             let presented = headers
                 .get("authorization")
                 .ok()
                 .flatten()
-                .and_then(|value| value.strip_prefix("Bearer ").map(str::to_owned))
-                .or_else(|| query_param(url, "token"));
+                .and_then(|value| value.strip_prefix("Bearer ").map(str::to_owned));
             (presented.as_deref() == Some(expected.as_str())).then(|| Caller {
                 subject: "token".to_owned(),
                 ticket: None,
             })
         }
         Auth::Ticket(required) => {
-            let raw = ticket_from(headers, url)?;
+            let raw = ticket_from(headers)?;
             let ticket: CapabilityTicket = serde_json::from_str(&raw).ok()?;
             verify_capability_ticket(&ticket).ok()?;
             if !ticket.capabilities.contains(required) {
@@ -170,7 +169,7 @@ fn authenticate(auth: &Auth, headers: &Headers, url: &Url) -> Option<Caller> {
     }
 }
 
-fn ticket_from(headers: &Headers, url: &Url) -> Option<String> {
+fn ticket_from(headers: &Headers) -> Option<String> {
     if let Some(value) = headers.get(TICKET_HEADER).ok().flatten() {
         return Some(value);
     }
@@ -179,13 +178,7 @@ fn ticket_from(headers: &Headers, url: &Url) -> Option<String> {
             return Some(percent_decode(&value));
         }
     }
-    query_param(url, "ticket").map(|value| percent_decode(&value))
-}
-
-fn query_param(url: &Url, name: &str) -> Option<String> {
-    url.query_pairs()
-        .find(|(key, _)| key == name)
-        .map(|(_, value)| value.into_owned())
+    None
 }
 
 fn cookie_value(cookies: &str, name: &str) -> Option<String> {
@@ -195,7 +188,7 @@ fn cookie_value(cookies: &str, name: &str) -> Option<String> {
     })
 }
 
-/// Minimal percent-decoder (`%XX` and `+`), enough for a URL/cookie ticket.
+/// Minimal percent-decoder (`%XX` and `+`) for encoded cookie values.
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

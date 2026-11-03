@@ -5,7 +5,7 @@ set -eu
 # provider (idfond `provider.start`), not the fake H3 router the crate tests
 # use. Covers the paths the device pass never exercised:
 #
-#   - ticket requester auth (header, cookie, ?ticket=), forwarded over H3 and
+#   - ticket requester auth (header, host-only cookie; URL tickets rejected), forwarded over H3 and
 #     authorized by the provider as an owner-issued bearer ticket (P3)
 #   - path_scope: a scoped ticket reads its prefix and is refused outside it
 #   - the `<ref>.localhost` virtual-host form (the wildcard URL shape)
@@ -103,10 +103,11 @@ assert_code 401 "$U1/fs/public/hello.txt"
 assert_body hello-public "$U1/fs/public/hello.txt" -H "x-idfon-ticket: $SCOPED"
 echo "PASS: ticket header admits the request"
 
-# A WKWebView carries the ticket in a cookie or query, not a header.
-assert_body hello-public "$U1/fs/public/hello.txt" -H "Cookie: idfon_ticket=$SCOPED"
-assert_body hello-public -G --data-urlencode "ticket=$SCOPED" "$U1/fs/public/hello.txt"
-echo "PASS: cookie and ?ticket= admit the request"
+# A WKWebView carries the ticket in a host-only __Host- cookie, never a URL.
+assert_body hello-public "$U1/fs/public/hello.txt" -H "Cookie: __Host-idfon_ticket=$SCOPED"
+assert_code 401 "$U1/fs/public/hello.txt" -H "Cookie: idfon_ticket=$SCOPED"
+assert_code 401 "$U1/fs/public/hello.txt" -G --data-urlencode "ticket=$SCOPED"
+echo "PASS: __Host- cookie admits the request; URL ticket is rejected"
 
 # path_scope is enforced by the provider, and the refusal is a 403 (not 502).
 assert_code 403 "$U1/fs/private/secret.txt" -H "x-idfon-ticket: $SCOPED"

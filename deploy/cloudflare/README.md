@@ -144,10 +144,11 @@ native provider) or a trivial `iroh-h3-axum` echo server.
 
 ## Auth and limits
 
-- Ticket (default): `x-idfon-ticket` header, `idfon_ticket` cookie, or
-  `?ticket=`; signature/expiry/capability are verified and the raw ticket is
-  forwarded so the peer authorizes the issuer (P3).
-- Token: `EDGE_TOKEN` + `Authorization: Bearer <token>` or `?token=`.
+- Ticket (default): `x-idfon-ticket` header or HTTPS WebView's host-only
+  `__Host-idfon_ticket` cookie; signature/expiry/capability are verified and
+  the raw ticket is forwarded so the peer authorizes the issuer (P3). URL
+  tickets are rejected.
+- Token: `EDGE_TOKEN` + `Authorization: Bearer <token>`; URL tokens are rejected.
 - `RATE_LIMIT` is per authenticated subject per minute, **per isolate** — best
   effort, not global. Use Cloudflare's Rate Limiting rules for a hard limit.
 - `/healthz` answers before auth; a 64-hex ref that cannot be resolved/dialed

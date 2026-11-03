@@ -80,13 +80,17 @@ an unresolved ref is a 404. MCP resources remain available over `idfon/mcp/1`
 for MCP hosts, independent of the gateway.
 
 The daemon embeds one loopback gateway per identity on demand. `gateway.start`
-(over the 0600 socket) binds it and returns `{addr, url, token}`;
-`gateway.stop` drops it. The CLI exposes these as `idfon gateway start` /
-`idfon gateway stop`, and `idfon fetch idfon://<account>/fs/<path>` fetches a
-resource through the running gateway to stdout or `--out FILE`. The
-`AccountResolver` reads the same peer store as message send (id, name, alias,
-endpoint id → `dial_targets()`), and the bearer token is the boundary — loopback
-alone is not.
+(over the 0600 socket) binds it and returns `{addr, url, token}`. Trusted native
+fetches use that bearer token in an `Authorization` header. A browser caller
+passes `account` and `path` to `gateway.start` to receive a one-hour signed
+credential bound to that peer and the resource's containing directory; the
+WebView carries it in a path-scoped HttpOnly cookie, never in the URL. The
+loopback listener checks the complete origin and its own port. `gateway.stop`
+drops it. The CLI exposes these as `idfon gateway start` / `idfon gateway stop`,
+and `idfon fetch idfon://<account>/fs/<path>` fetches a resource through the
+running gateway to stdout or `--out FILE`. The `AccountResolver` reads the same
+peer store as message send (id, name, alias, endpoint id → `dial_targets()`),
+and the bearer token is the boundary — loopback alone is not.
 
 The daemon can also serve a **live, user-visible directory** in place.
 `provider.start {root}` exposes `GET /fs/<path>` over H3, gated by a

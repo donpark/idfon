@@ -370,15 +370,15 @@ impl LocalRoute for PushRoutes {
         account: &str,
         path: &str,
         headers: &HeaderMap,
-        uri: &Uri,
+        _uri: &Uri,
         body: Incoming,
     ) -> Pin<Box<dyn Future<Output = Response<ResponseBody>> + Send + '_>> {
         let action = path.trim_start_matches("/_push/").to_owned();
         let account = account.to_owned();
         // The route owns auth (LocalRoute): a capability ticket issued by the
-        // target ref. `?ticket=`/cookie fallbacks mirror the gateway's other
-        // requesters (a WKWebView carrying the ticket).
-        let ticket_raw = crate::ticket_from(headers, uri);
+        // target ref. The header/host-only cookie are shared with WebView auth;
+        // URL-ticket fallback is deliberately disabled.
+        let ticket_raw = crate::ticket_from(headers);
         Box::pin(async move {
             let body = match idfon_gateway::collect_limited(body, idfon_gateway::MAX_RESOURCE_BYTES)
                 .await

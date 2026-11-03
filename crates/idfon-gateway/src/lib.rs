@@ -25,7 +25,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -98,6 +98,98 @@ pub struct Caller {
     /// Opaque caller credential (e.g. an `x-idfon-ticket` value) to forward to
     /// the peer over H3. `None` for bearer-token callers.
     pub ticket: Option<String>,
+    /// Resource boundary carried by a gateway-issued, page-scoped credential.
+    pub scope: Option<ResourceScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceScope {
+    pub account: String,
+    pub path_prefix: String,
+}
+
+impl ResourceScope {
+    pub fn allows(&self, account: &str, path: &str) -> bool {
+        self.account == account && safe_resource_path(path) && path.starts_with(&self.path_prefix)
+    }
+}
+
+/// The containing directory that a page may load relative resources from.
+pub fn resource_scope_path(path: &str) -> Option<String> {
+    if !safe_resource_path(path) || !path.starts_with('/') {
+        return None;
+    }
+    if path.ends_with('/') {
+        return Some(path.to_owned());
+    }
+    let parent = path.rsplit_once('/')?.0;
+    Some(if parent.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("{parent}/")
+    })
+}
+
+fn safe_resource_path(path: &str) -> bool {
+    if !path.starts_with('/') || path.contains('\\') || path.contains('?') || path.contains('#') {
+        return false;
+    }
+    let Some(relative) = path.strip_prefix('/') else {
+        return false;
+    };
+    if relative.is_empty() {
+        return true;
+    }
+    let segments: Vec<_> = relative.split('/').collect();
+    segments.iter().enumerate().all(|(index, segment)| {
+        if segment.is_empty() {
+            return index + 1 == segments.len() && path.ends_with('/');
+        }
+        let mut decoded = (*segment).to_owned();
+        for _ in 0..8 {
+            if matches!(decoded.as_str(), "." | "..")
+                || decoded.contains('/')
+                || decoded.contains('\\')
+            {
+                return false;
+            }
+            let next = percent_decode_path_segment(&decoded);
+            if next == decoded {
+                return true;
+            }
+            decoded = next;
+        }
+        false
+    })
+}
+
+fn percent_decode_path_segment(segment: &str) -> String {
+    let bytes = segment.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_nibble(bytes[index + 1]), hex_nibble(bytes[index + 2]))
+            {
+                decoded.push((high << 4) | low);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 impl Caller {
@@ -172,12 +264,102 @@ impl StaticToken {
 
 impl Authenticator for StaticToken {
     fn authenticate(&self, headers: &HeaderMap, uri: &Uri) -> Option<Caller> {
-        let presented = bearer(headers).or_else(|| query_token(uri))?;
-        constant_time_eq(presented.as_bytes(), self.0.as_bytes()).then(|| Caller {
+        if bearer(headers)
+            .is_some_and(|presented| constant_time_eq(presented.as_bytes(), self.0.as_bytes()))
+        {
+            return Some(Caller {
+                subject: "local".to_owned(),
+                ticket: None,
+                scope: None,
+            });
+        }
+        let presented = cookie_value(headers, "idfon_gateway").or_else(|| query_token(uri))?;
+        let scope = verify_scoped_token(&self.0, &presented)?;
+        Some(Caller {
             subject: "local".to_owned(),
             ticket: None,
+            scope: Some(scope),
         })
     }
+}
+
+/// Issues a short-lived credential that is valid only for one account and one
+/// resource directory. The gateway master token never needs to enter a page.
+pub fn issue_scoped_token(
+    secret: &str,
+    account: &str,
+    path_prefix: &str,
+    expires_at: u64,
+) -> Option<String> {
+    if account.is_empty() || !path_prefix.ends_with('/') || !safe_resource_path(path_prefix) {
+        return None;
+    }
+    let account = hex(account.as_bytes());
+    let path = hex(path_prefix.as_bytes());
+    let payload = format!("v1.{expires_at}.{account}.{path}");
+    let key = *blake3::hash(secret.as_bytes()).as_bytes();
+    let signature = blake3::keyed_hash(&key, payload.as_bytes());
+    Some(format!("{payload}.{}", hex(signature.as_bytes())))
+}
+
+fn verify_scoped_token(secret: &str, token: &str) -> Option<ResourceScope> {
+    if token.len() > 8192 {
+        return None;
+    }
+    let mut fields = token.split('.');
+    if fields.next()? != "v1" {
+        return None;
+    }
+    let expiry = fields.next()?.parse::<u64>().ok()?;
+    let account_hex = fields.next()?;
+    let path_hex = fields.next()?;
+    let signature_hex = fields.next()?;
+    if fields.next().is_some() || expiry <= now_seconds() {
+        return None;
+    }
+    let payload = format!("v1.{expiry}.{account_hex}.{path_hex}");
+    let key = *blake3::hash(secret.as_bytes()).as_bytes();
+    let expected = hex(blake3::keyed_hash(&key, payload.as_bytes()).as_bytes());
+    if !constant_time_eq(signature_hex.as_bytes(), expected.as_bytes()) {
+        return None;
+    }
+    let account = String::from_utf8(unhex(account_hex)?).ok()?;
+    let path_prefix = String::from_utf8(unhex(path_hex)?).ok()?;
+    if account.is_empty() || !path_prefix.ends_with('/') || !safe_resource_path(&path_prefix) {
+        return None;
+    }
+    Some(ResourceScope {
+        account,
+        path_prefix,
+    })
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(DIGITS[(byte >> 4) as usize] as char);
+        output.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn unhex(value: &str) -> Option<Vec<u8>> {
+    let bytes = value.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    bytes
+        .chunks_exact(2)
+        .map(|pair| Some((hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?))
+        .collect()
+}
+
+fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -210,6 +392,9 @@ pub struct Config {
     /// When set, `<ref>.<origin_domain>` is accepted as a virtual host in
     /// addition to loopback and `*.localhost` (e.g. `idfon.net`).
     pub origin_domain: Option<String>,
+    /// Require browser Host/Origin authorities to use this listener's port and
+    /// scheme. Intended for embedded loopback gateways, not reverse-proxied edges.
+    pub strict_origin: bool,
     /// Serve HTTPS with this cert/key. `None` serves plain HTTP (the loopback
     /// case; a public edge should set it or terminate TLS in front).
     pub tls: Option<TlsConfig>,
@@ -233,6 +418,7 @@ impl Default for Config {
             bind: ([127, 0, 0, 1], 0).into(),
             auth: None,
             origin_domain: None,
+            strict_origin: false,
             tls: None,
             health_path: None,
             metrics_path: None,
@@ -292,11 +478,20 @@ where
         .map(load_tls)
         .transpose()?
         .map(|tls| TlsAcceptor::from(Arc::new(tls)));
+    let strict_origin = config.strict_origin.then_some((
+        addr.port(),
+        if config.tls.is_some() {
+            "https"
+        } else {
+            "http"
+        },
+    ));
     let shared = Arc::new(Shared {
         backend,
         authorizer,
         auth: config.auth,
         origin_domain: config.origin_domain,
+        strict_origin,
         health_path: config.health_path,
         metrics_path: config.metrics_path,
         observer: config.observer,
@@ -330,6 +525,7 @@ struct Shared<B, A> {
     authorizer: A,
     auth: Option<Arc<dyn Authenticator>>,
     origin_domain: Option<String>,
+    strict_origin: Option<(u16, &'static str)>,
     health_path: Option<String>,
     metrics_path: Option<String>,
     observer: Option<Arc<dyn RequestObserver>>,
@@ -553,7 +749,11 @@ async fn handle_inner<B: Backend, A: Authorizer>(
     if shared.health_path.as_deref() == Some(uri.path()) {
         return (plain(StatusCode::OK, "ok"), None, None);
     }
-    if !hosts_allowed(headers, shared.origin_domain.as_deref()) {
+    if !hosts_allowed(
+        headers,
+        shared.origin_domain.as_deref(),
+        shared.strict_origin,
+    ) {
         return (plain(StatusCode::FORBIDDEN, "host not allowed"), None, None);
     }
     let caller = match &shared.auth {
@@ -653,20 +853,60 @@ fn plain(status: StatusCode, body: &str) -> Response<ResponseBody> {
 /// True when `Host` (and, if present, `Origin`) names a loopback authority, a
 /// `*.localhost` name, or `*.<origin_domain>`. Blocks DNS-rebinding from a
 /// foreign web origin.
-fn hosts_allowed(headers: &HeaderMap, origin_domain: Option<&str>) -> bool {
+fn hosts_allowed(
+    headers: &HeaderMap,
+    origin_domain: Option<&str>,
+    strict_origin: Option<(u16, &str)>,
+) -> bool {
+    let request_host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(|authority| host_without_port(authority).to_owned());
     let host_ok = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-        .map(host_without_port)
-        .is_some_and(|host| allowed_host(host, origin_domain));
+        .is_some_and(|authority| {
+            request_host
+                .as_deref()
+                .is_some_and(|host| allowed_host(host, origin_domain))
+                && strict_origin.is_none_or(|(port, _)| authority_port(authority) == Some(port))
+        });
     let origin_ok = match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
         None => true,
-        Some(origin) => Uri::try_from(origin)
-            .ok()
-            .and_then(|uri| uri.host().map(str::to_owned))
-            .is_some_and(|host| allowed_host(&host, origin_domain)),
+        Some(origin) => Uri::try_from(origin).ok().is_some_and(|uri| {
+            uri.host().is_some_and(|host| {
+                allowed_host(host, origin_domain)
+                    && strict_origin.is_none_or(|(port, scheme)| {
+                        uri.scheme_str() == Some(scheme)
+                            && effective_port(&uri) == Some(port)
+                            && request_host
+                                .as_deref()
+                                .is_some_and(|request_host| request_host.eq_ignore_ascii_case(host))
+                    })
+            })
+        }),
     };
     host_ok && origin_ok
+}
+
+fn authority_port(authority: &str) -> Option<u16> {
+    Uri::try_from(format!("http://{authority}"))
+        .ok()
+        .and_then(|uri| uri.port_u16())
+        .or_else(|| {
+            authority
+                .rsplit_once(':')
+                .and_then(|(_, port)| port.parse::<u16>().ok())
+                .filter(|_| authority.starts_with('['))
+        })
+}
+
+fn effective_port(uri: &Uri) -> Option<u16> {
+    uri.port_u16().or_else(|| match uri.scheme_str()? {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    })
 }
 
 fn allowed_host(host: &str, origin_domain: Option<&str>) -> bool {
@@ -743,11 +983,23 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 
 fn query_token(uri: &Uri) -> Option<String> {
     uri.query().and_then(|query| {
-        query
-            .split('&')
-            .find_map(|pair| pair.strip_prefix("token="))
-            .map(str::to_owned)
+        query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == "token").then(|| value.to_owned())
+        })
     })
+}
+
+fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key.trim() == name).then(|| value.trim().to_owned())
+        })
 }
 
 /// Length-independent comparison, so token checks don't leak length/prefix.
@@ -1048,6 +1300,7 @@ mod tests {
                 .map(|subject| Caller {
                     subject: subject.to_owned(),
                     ticket: None,
+                    scope: None,
                 })
         }
     }
@@ -1280,6 +1533,98 @@ mod tests {
             "metrics not observed"
         );
 
+        handle.shutdown();
+    }
+
+    #[test]
+    fn page_credentials_are_peer_and_directory_scoped() {
+        let prefix = resource_scope_path("/fs/charts/index.html").unwrap();
+        assert_eq!(prefix, "/fs/charts/");
+        assert_eq!(resource_scope_path("/index.html").as_deref(), Some("/"));
+        assert_eq!(
+            resource_scope_path("/fs/charts/").as_deref(),
+            Some("/fs/charts/")
+        );
+        assert!(resource_scope_path("/fs/../secret.html").is_none());
+        assert!(resource_scope_path("/fs/%2e%2e/secret.html").is_none());
+        assert!(resource_scope_path("/fs/%252e%252e/secret.html").is_none());
+        assert!(resource_scope_path("/fs%2fprivate/index.html").is_none());
+
+        let token = issue_scoped_token("master", "peer-a", &prefix, now_seconds() + 60).unwrap();
+        let auth = StaticToken::new("master");
+        let query_uri: Uri = "/?token=master".parse().unwrap();
+        assert!(auth.authenticate(&HeaderMap::new(), &query_uri).is_none());
+        let scoped_query: Uri = format!("/?token={token}").parse().unwrap();
+        assert!(auth
+            .authenticate(&HeaderMap::new(), &scoped_query)
+            .is_some());
+        let scope = verify_scoped_token("master", &token).unwrap();
+        assert!(scope.allows("peer-a", "/fs/charts/index.html"));
+        assert!(scope.allows("peer-a", "/fs/charts/data.json"));
+        assert!(!scope.allows("peer-b", "/fs/charts/data.json"));
+        assert!(!scope.allows("peer-a", "/fs/private/secret.txt"));
+        assert!(!scope.allows("peer-a", "/fs/charts/../private"));
+        assert!(!scope.allows("peer-a", "/fs/charts/%2e%2e/private"));
+        let tampered = format!(
+            "{}{}",
+            &token[..token.len() - 1],
+            if token.ends_with('0') { '1' } else { '0' }
+        );
+        assert!(verify_scoped_token("master", &tampered).is_none());
+        assert!(verify_scoped_token("wrong", &token).is_none());
+        let expired =
+            issue_scoped_token("master", "peer-a", &prefix, now_seconds().saturating_sub(1))
+                .unwrap();
+        assert!(verify_scoped_token("master", &expired).is_none());
+    }
+
+    #[tokio::test]
+    async fn strict_origin_rejects_alternate_ports() {
+        let mut map = HashMap::new();
+        map.insert(("acct".to_owned(), "/public/".to_owned()), b"hi".to_vec());
+        let handle = serve(
+            Config {
+                auth: Some(Arc::new(StaticToken::new("s3cret"))),
+                strict_origin: true,
+                ..Config::default()
+            },
+            Static(map),
+            PublicOnly,
+        )
+        .await
+        .expect("gateway binds");
+        let addr = handle.local_addr();
+        let host = format!("acct.localhost:{}", addr.port());
+        let origin = format!("http://{host}");
+        let (status, _) = get(addr, "/public/", &host, Some("s3cret"), Some(&origin)).await;
+        assert_eq!(status, 200);
+        let (status, _) = get(
+            addr,
+            "/public/",
+            &format!("acct.localhost:{}", addr.port() + 1),
+            Some("s3cret"),
+            Some(&origin),
+        )
+        .await;
+        assert_eq!(status, 403, "Host port must match the listener");
+        let (status, _) = get(
+            addr,
+            "/public/",
+            &host,
+            Some("s3cret"),
+            Some(&format!("http://acct.localhost:{}", addr.port() + 1)),
+        )
+        .await;
+        assert_eq!(status, 403, "Origin port must match the listener");
+        let (status, _) = get(
+            addr,
+            "/public/",
+            &host,
+            Some("s3cret"),
+            Some(&format!("http://other.localhost:{}", addr.port())),
+        )
+        .await;
+        assert_eq!(status, 403, "Origin host must match Host");
         handle.shutdown();
     }
 

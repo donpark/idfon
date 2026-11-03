@@ -47,7 +47,7 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum EdgeAuth {
     /// No requester auth. Loopback/dev only.
     Open,
-    /// A shared bearer token (`Authorization: Bearer` or `?token=`).
+    /// A shared bearer token (`Authorization: Bearer` only).
     Token(String),
     /// A capability ticket issued to this edge's endpoint id and carrying
     /// `capability` (e.g. `web.fetch`), presented in `x-idfon-ticket`. The
@@ -147,8 +147,8 @@ impl CapabilityTicketAuth {
 }
 
 impl Authenticator for CapabilityTicketAuth {
-    fn authenticate(&self, headers: &HeaderMap, uri: &Uri) -> Option<Caller> {
-        let raw = ticket_from(headers, uri)?;
+    fn authenticate(&self, headers: &HeaderMap, _uri: &Uri) -> Option<Caller> {
+        let raw = ticket_from(headers)?;
         let ticket: CapabilityTicket = serde_json::from_str(&raw).ok()?;
         idfon_core::verify_capability_ticket(&ticket).ok()?;
         if !ticket.capabilities.contains(&self.capability) {
@@ -161,23 +161,21 @@ impl Authenticator for CapabilityTicketAuth {
         Some(Caller {
             subject: ticket.issuer,
             ticket: Some(raw),
+            scope: None,
         })
     }
 }
 
 const TICKET_HEADER: &str = "x-idfon-ticket";
-const TICKET_COOKIE: &str = "idfon_ticket";
+const TICKET_COOKIE: &str = "__Host-idfon_ticket";
 
-/// The caller's ticket: `x-idfon-ticket` header, else the `idfon_ticket`
-/// cookie (how a `WKWebView` carries it), else `?ticket=`.
-fn ticket_from(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+/// The caller's ticket: `x-idfon-ticket` header, else the host-only, secure
+/// `__Host-idfon_ticket` cookie used by HTTPS WebViews. Never accept URL tokens.
+fn ticket_from(headers: &HeaderMap) -> Option<String> {
     if let Some(value) = headers.get(TICKET_HEADER).and_then(|v| v.to_str().ok()) {
         return Some(value.to_owned());
     }
-    if let Some(value) = cookie_value(headers, TICKET_COOKIE) {
-        return Some(percent_decode(&value));
-    }
-    query_param(uri, "ticket").map(|value| percent_decode(&value))
+    cookie_value(headers, TICKET_COOKIE).map(|value| percent_decode(&value))
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -188,15 +186,8 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
-fn query_param(uri: &Uri, name: &str) -> Option<String> {
-    uri.query()?.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        (key == name).then(|| value.to_owned())
-    })
-}
-
-/// Minimal percent-decoder (`%XX` and `+`), enough for a URL/cookie-encoded
-/// ticket. Invalid escapes pass through.
+/// Minimal percent-decoder (`%XX` and `+`) for encoded cookie values. Invalid
+/// escapes pass through.
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -439,6 +430,7 @@ pub async fn run(config: EdgeConfig) -> anyhow::Result<EdgeHandle> {
             bind,
             auth,
             origin_domain: domain,
+            strict_origin: false,
             tls,
             health_path,
             metrics_path: Some("/metrics".to_owned()),

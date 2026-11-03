@@ -19,7 +19,7 @@ compatibility_flags = ["nodejs_compat"]
 # Virtual-host base domain. The Worker serves `<ref>.<EDGE_DOMAIN>` plus
 # `<EDGE_DOMAIN>/<ref>/...`.
 EDGE_DOMAIN = "idfon.net"
-# Default: require a capability ticket (header/cookie/query) and forward it.
+# Default: require a capability ticket (header or host-only cookie) and forward it.
 # Set EDGE_TOKEN instead to use a shared bearer token.
 EDGE_REQUIRE_TICKET = "resource.read"
 # Requests per authenticated subject per minute; 0 disables.
