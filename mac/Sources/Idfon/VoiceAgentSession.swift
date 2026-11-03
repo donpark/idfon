@@ -146,10 +146,19 @@ final class VoiceAgentSession: NSObject {
         SpeechEngines.prewarm()
         segmenter.start()
         Task { @MainActor in
+            // Answer-path stage timings (docs/benchmarks.md §2): one
+            // `voice-agent: answer` marker at the answered cue, so "time to
+            // answer" is measurable per stage instead of guessed.
+            let setupStart = Date()
+            var stages: [String: Int] = [:]
+            func mark(_ key: String, _ start: Date) {
+                stages[key] = Int(Date().timeIntervalSince(start) * 1000)
+            }
             let peer: Peer
             if let localAgent {
                 peer = localAgent.peer
             } else {
+                let stage = Date()
                 let peers = (try? await client.peers()) ?? []
                 guard let resolved = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
                     Automation.mark("voice-agent: FAIL no peer \(peerRef)")
@@ -158,6 +167,7 @@ final class VoiceAgentSession: NSObject {
                     return
                 }
                 peer = resolved
+                mark("peers_ms", stage)
             }
             agentPeerId = peer.id
             Automation.mark("voice-agent: start peer=\(peer.id)")
@@ -166,7 +176,9 @@ final class VoiceAgentSession: NSObject {
             // Sent early; the engine prep and greeting that follow give the
             // clear time to land. An on-device agent has no peer to tell.
             if localAgent == nil {
+                let stage = Date()
                 try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
+                mark("rotate_ms", stage)
             }
             // Fetch the greeting concurrently with the engine prep below: it
             // only needs the transport (the peer's history was just rotated),
@@ -175,16 +187,17 @@ final class VoiceAgentSession: NSObject {
             // 1.5 s hydration sleep plus the agent's full round-trip — the
             // greeting is an agent turn and the round-trip is its floor.
             var greeting: (display: String, spoken: String)?
-            let greetTask: Task<(display: String, spoken: String)?, Never>? =
+            let greetTask: Task<(value: (display: String, spoken: String)?, ms: Int), Never>? =
                 (localAgent == nil && !stopRequested)
-                ? Task { [weak self] in
-                    guard let self else { return nil }
-                    return await self.sendAndAwait(
+                ? Task {
+                    let stage = Date()
+                    let value = await self.sendAndAwait(
                         peerId: peer.id,
                         text: "The caller just connected on a voice call. Greet them briefly and invite them to speak.",
                         logPrefix: "voice-agent-greet",
                         spokenTurnId: "\(callId)-greet"
                     )
+                    return (value, Int(Date().timeIntervalSince(stage) * 1000))
                 }
                 : nil
             // Per-contact on-device engines (else the app defaults). Resolved
@@ -196,16 +209,22 @@ final class VoiceAgentSession: NSObject {
             // No-op unless this contact is set to proxy (or `-directorcall`
             // forces it); an app-local agent uses `OnDeviceAgentRunner` instead.
             if localAgent == nil {
+                let stage = Date()
                 await DirectorRuntime.shared.startCall(
                     proxy: ContactVoiceTurnModes.mode(for: peer.id) == .proxy)
+                mark("director_ms", stage)
             }
             // Wait for the recognizer before the turn loop (first-run model).
+            let asrStage = Date()
             await startAnalyzer()
+            mark("asr_ms", asrStage)
             setState(.listening(""))
             // Greet like a live call, fetched before the cue so "answered" is
             // followed immediately by speech instead of dead air.
             if let greetTask {
-                greeting = await greetTask.value
+                let result = await greetTask.value
+                greeting = result.value
+                stages["greet_ms"] = result.ms
             } else if !stopRequested {
                 let greetTurn =
                     "The caller just connected on a voice call. Greet them briefly and invite them to speak."
@@ -213,13 +232,19 @@ final class VoiceAgentSession: NSObject {
                 // greets through the agent, so the caller never hears the
                 // director's persona (`docs/voice-agent-modes.md`).
                 if localAgent != nil {
+                    let stage = Date()
                     greeting = await reply(
                         peerId: peer.id, text: greetTurn,
                         logPrefix: "voice-agent-greet",
                         spokenTurnId: "\(callId)-greet"
                     )
+                    mark("greet_ms", stage)
                 }
             }
+            stages["total_ms"] = Int(Date().timeIntervalSince(setupStart) * 1000)
+            let stageLine = stages.sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+            Automation.mark("voice-agent: answer label=call \(stageLine)")
             CallTonePlayer.shared.start(.answered)
             if let greeting, !greeting.spoken.isEmpty, !stopRequested {
                 setState(.speaking(greeting.spoken))

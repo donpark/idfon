@@ -23,6 +23,7 @@ import { idfon, idfondBin, pair, stats, timed, waitReady, repoRoot } from "./idf
 export interface MatrixRow {
   label: string;
   n?: number;
+  first_ms?: number;
   msg_ms?: { p50: number; p95: number; max: number };
   stalls?: number;
   blob_mbps?: number;
@@ -83,7 +84,7 @@ export async function blobMbps(
   return (bytes * 8) / (ms * 1000);
 }
 
-type MatrixResult = Pick<MatrixRow, "msg_ms" | "stalls" | "blob_mbps" | "n" | "error">;
+type MatrixResult = Pick<MatrixRow, "first_ms" | "msg_ms" | "stalls" | "blob_mbps" | "n" | "error">;
 
 /** The measurement body shared by the matrix and the rtt command. */
 async function measureExchange(
@@ -94,8 +95,9 @@ async function measureExchange(
 ): Promise<MatrixResult> {
   try {
     // Warmup: the first send can race the endpoint's initial pkarr publish
-    // (DNS-negative-cached retries stall it); absorb that before timing.
-    await messageRttMs(socket, peer, "warmup");
+    // (DNS-negative-cached retries stall it); recorded as `first_ms` — the
+    // cold-connect sample the answer-time tail is made of.
+    const first = await messageRttMs(socket, peer, "warmup");
     const samples: number[] = [];
     let stalls = 0;
     for (let i = 0; i < count; i++) {
@@ -103,13 +105,13 @@ async function measureExchange(
       if (ms === null) stalls += 1;
       else samples.push(ms);
     }
-    if (samples.length === 0) return { error: `all ${count} messages stalled (no delivery ack)`, stalls };
+    if (samples.length === 0) return { error: `all ${count} messages stalled (no delivery ack)`, stalls, first_ms: first ?? undefined };
     const work = mkdtempSync(join(tmpdir(), "idfon-blob-"));
     try {
       const blob = join(work, "payload.bin");
       writeFileSync(blob, Buffer.alloc(blobBytes, 0x5a));
       const blob_mbps = await blobMbps(socket, peer, blob, blobBytes);
-      return { msg_ms: stats(samples), stalls, blob_mbps, n: count };
+      return { msg_ms: stats(samples), stalls, blob_mbps, n: count, first_ms: first ?? undefined };
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
@@ -193,7 +195,7 @@ export async function runRtt(opts: {
 
 export function formatMatrix(rows: MatrixRow[]): string {
   const header =
-    `${"label".padEnd(18)} ${"relays".padEnd(26)} ${"only".padEnd(5)} ${"msg p50".padStart(8)} ${"msg p95".padStart(8)} ${"msg max".padStart(8)} ${"stalls".padStart(7)} ${"Mbps".padStart(8)}`;
+    `${"label".padEnd(18)} ${"relays".padEnd(26)} ${"only".padEnd(5)} ${"first".padStart(8)} ${"msg p50".padStart(8)} ${"msg p95".padStart(8)} ${"msg max".padStart(8)} ${"stalls".padStart(7)} ${"Mbps".padStart(8)}`;
   const lines = [header, "-".repeat(header.length)];
   for (const row of rows) {
     if (row.error) {
@@ -202,6 +204,7 @@ export function formatMatrix(rows: MatrixRow[]): string {
     }
     lines.push(
       `${row.label.padEnd(18)} ${String(row.relay_urls).slice(0, 26).padEnd(26)} ${(row.relay_only ? "yes" : "no").padEnd(5)} ` +
+        `${(row.first_ms ?? 0).toFixed(1).padStart(8)} ` +
         `${row.msg_ms!.p50.toFixed(1).padStart(8)} ${row.msg_ms!.p95.toFixed(1).padStart(8)} ${row.msg_ms!.max.toFixed(1).padStart(8)} ` +
         `${String(`${row.stalls ?? 0}/${row.n}`).padStart(7)} ` +
         `${row.blob_mbps!.toFixed(1).padStart(8)}`,

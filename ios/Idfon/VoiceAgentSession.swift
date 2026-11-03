@@ -170,10 +170,19 @@ final class VoiceAgentSession: NSObject {
         segmenter.onCommit = { [weak self] text in self?.handleCommit(text) }
         segmenter.start()
         setupTask = Task { @MainActor in
+            // Answer-path stage timings (docs/benchmarks.md §2): one
+            // `voice-agent: answer` marker at the answered cue, so "time to
+            // answer" is measurable per stage instead of guessed.
+            let setupStart = Date()
+            var stages: [String: Int] = [:]
+            func timed(_ key: String, _ start: Date) {
+                stages[key] = Int(Date().timeIntervalSince(start) * 1000)
+            }
             let peer: Peer
             if let localAgent {
                 peer = localAgent.peer
             } else {
+                let stage = Date()
                 let peers = (try? await client.peers()) ?? []
                 guard !stopRequested else { finish(); return }
                 guard let resolved = peers.first(where: { $0.id == peerRef || $0.name == peerRef }) else {
@@ -183,6 +192,7 @@ final class VoiceAgentSession: NSObject {
                     return
                 }
                 peer = resolved
+                timed("peers_ms", stage)
             }
             agentPeerId = peer.id
             mark("start peer=\(peer.id)")
@@ -191,7 +201,9 @@ final class VoiceAgentSession: NSObject {
                 // the medium, never the model's context (docs/session-context.md).
                 // Sent early; the engine prep and greeting that follow give the
                 // clear time to land.
+                let stage = Date()
                 _ = try? await client.sendText(to: peer.id, "IDFON-SESSION/1\naction=rotate")
+                timed("rotate_ms", stage)
             }
             guard !stopRequested else { finish(); return }
             // Per-contact on-device engines (else the app defaults). Resolved
@@ -203,7 +215,9 @@ final class VoiceAgentSession: NSObject {
             // A recognizer may need a first-run download/CoreML compile;
             // block the turn loop until it is ready so the first listen does
             // not time out against a still-loading model.
+            let asrStage = Date()
             await startAnalyzer()
+            timed("asr_ms", asrStage)
             guard !stopRequested else { finish(); return }
             // Enabling voice processing re-evaluates the output route and can
             // drop `.voiceChat` back to the receiver; re-assert the loudspeaker.
@@ -214,23 +228,30 @@ final class VoiceAgentSession: NSObject {
             // Load the reply voice and fetch the greeting while ringback still
             // plays, so "answered" is followed immediately by speech instead
             // of dead air waiting on the model or the agent.
+            let ttsStage = Date()
             await tts.prepare()
+            timed("tts_ms", ttsStage)
             guard !stopRequested else { finish(); return }
             // Let ChatStore finish hydrating so the reply snapshot excludes
             // pre-existing history.
+            let sleepStage = Date()
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            timed("sleep_ms", sleepStage)
             guard !stopRequested else { finish(); return }
             // On-device director: load + warm the AFM session during call setup,
             // hidden behind the ringback. Runs when this contact is set to proxy
             // mode (`-directorcall` forces it for a probe). An on-device agent
             // uses `OnDeviceAgentRunner` instead.
             if localAgent == nil {
+                let stage = Date()
                 await DirectorRuntime.shared.startCall(
                     proxy: ContactVoiceTurnModes.mode(for: peer.id) == .proxy)
+                timed("director_ms", stage)
             }
             guard !stopRequested else { finish(); return }
             var greeting: (display: String, spoken: String)?
             if !stopRequested {
+                let greetStage = Date()
                 let greetTurn =
                     "The caller just connected on a voice call. Greet them briefly and invite them to speak."
                 // Proxy mode greets through the agent (so the caller never
@@ -253,7 +274,12 @@ final class VoiceAgentSession: NSObject {
                         spokenTurnId: "\(callId)-greet"
                     )
                 }
+                timed("greet_ms", greetStage)
             }
+            stages["total_ms"] = Int(Date().timeIntervalSince(setupStart) * 1000)
+            let stageLine = stages.sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+            mark("answer label=call \(stageLine)")
             // The line is answered only once the agent is about to speak, so the
             // cue has no gap after it. Mirror it to the system call in the same
             // turn (an agent call is a CallKit call, which is what keeps call
