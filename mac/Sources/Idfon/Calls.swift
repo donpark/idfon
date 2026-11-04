@@ -471,6 +471,12 @@ final class LiveCall {
         case .quiet:
             CallTonePlayer.shared.stop()
         case .ring(let peer):
+            // The ringtone shares the capture engine's playback bus, which is
+            // idle before a call: start it (and do not feed the encoder —
+            // nothing is published yet). The tone is deferred until the engine
+            // is up, so the ring is not dropped (the "didn't ring" report).
+            AudioMeter.shared.pushToEncoder = false
+            AudioMeter.shared.start()
             CallTonePlayer.shared.start(.ringtone)
             onIncoming?(peer)
         case .changed:
@@ -1050,7 +1056,11 @@ final class VideoCall {
         case .quiet:
             CallTonePlayer.shared.stop()
         case .ring(let peer):
-            if !pendingWatchOnly { CallTonePlayer.shared.start(.ringtone) }
+            if !pendingWatchOnly {
+                AudioMeter.shared.pushToEncoder = false
+                AudioMeter.shared.start()
+                CallTonePlayer.shared.start(.ringtone)
+            }
             onIncoming?(peer, pendingWatchOnly)
         case .changed:
             notify()

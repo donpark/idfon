@@ -51,6 +51,33 @@ renders on the app's single playback bus (`AudioIO`, see
 other-audio ducking is minimized. Verified on device (ringback and reply volume
 normal, no self-bleed).
 
+## Incoming call shows but does not ring / AirPods ring while the panel says Built-in (2026-11-04, FIXED)
+
+**Symptom.** A callable contact's app shows the incoming call, but no ringtone
+is heard. On the caller side the ringback comes from AirPods while the Live
+Activity panel highlights Built-in.
+
+**Causes and fixes.**
+
+- **macOS: the ringtone was dropped.** The tone renders on `AudioMeter`'s
+  playback bus, which is idle before a call. `playLooping` logged
+  `loop dropped engine idle` and returned, so a fresh incoming ring was silent
+  (the engine only started on answer). The ring path now starts the meter, and
+  a loop requested while idle is kept (`pendingLoop`) and started on the next
+  successful engine start. The outgoing ringback had the same race.
+- **iOS panel: Bluetooth was reported as Built-in.** `defaultAudioMode` mapped
+  only wired/USB to Earphone, so AirPods (`.bluetoothHFP`/`.bluetoothA2DP`) fell
+  through to Built-in. The radio group now classifies Bluetooth as Earphone and
+  follows `routeChangeNotification`, so it shows the route the audio is actually
+  on (the route settles only after session activation, and can change mid-call).
+- **iOS ring route:** an incoming ring now uses the `.ringing` profile, which
+  forces the loudspeaker. Answer/dial use the normal headset route — AirPods in
+  a case can no longer swallow the ring.
+- **No clue which device was rung:** the edge answers `200` even when no token
+  is registered. The apps now log the response's `rung` count
+  (`idfon push: … rung=0` = the ring reached no device; the iroh invite may
+  still ring a live app).
+
 ## Hangup "crashes" the app on an AFM contact (watchdog kill, not a crash) (2026-10-22, FIXED)
 
 Hanging up a voice call with an on-device agent (e.g. `AFM 3`) killed the app

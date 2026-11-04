@@ -68,6 +68,10 @@ final class AudioIO: AudioSource, AudioSink {
         /// (`.default` was tried to avoid VPIO's output-gain drop — it
         /// silently disables echo cancellation, docs/troubleshooting.md.)
         case liveCall
+        /// An incoming ring: same session shape as `liveCall`, but the tone is
+        /// forced to the loudspeaker. A ring must be heard even when a
+        /// connected headset (AirPods in the case) is the call route.
+        case ringing
         /// On-device cascade. `.voiceChat` is VPIO's native AEC mode.
         case voiceAgent
         /// Voice-memo recording: play-and-record so review playback shares the
@@ -418,7 +422,7 @@ final class AudioIO: AudioSource, AudioSink {
         }
         let session = AVAudioSession.sharedInstance()
         switch profile {
-        case .liveCall:
+        case .liveCall, .ringing:
             applyVoiceSessionConfig()
         case .voiceAgent:
             try? session.setCategory(
@@ -436,10 +440,20 @@ final class AudioIO: AudioSource, AudioSink {
             // within a beat and a mute call that logs like a healthy one.
             Automation.mark("audio: setActive FAILED \(error.localizedDescription)")
         }
-        // With an explicit audio mode the panel owns the route; on auto, force
-        // the speaker only on the handset/speaker path.
-        if Self.preferredMode == nil, !Self.stereoCaptureAllowed() {
+        // A ring always uses the loudspeaker: the callee may have a headset
+        // connected but not worn, and a silent ring is the "didn't ring"
+        // report. Call audio keeps the headset route (AirPods are a headset
+        // even though they cannot capture stereo).
+        if case .ringing = profile {
             try? session.overrideOutputAudioPort(.speaker)
+        } else if Self.preferredMode == nil {
+            // On auto, force the speaker only on the handset/speaker path; a
+            // headset (wired or Bluetooth) is the route the user chose.
+            if Self.headsetAvailable() {
+                try? session.overrideOutputAudioPort(.none)
+            } else {
+                try? session.overrideOutputAudioPort(.speaker)
+            }
         }
         Automation.mark(
             "audio: session category=\(session.category.rawValue) mode=\(session.mode.rawValue)"
@@ -470,10 +484,25 @@ final class AudioIO: AudioSource, AudioSink {
     /// `defaultToSpeaker` unless a headset is already on the route — the caller
     /// chose it, and the speaker default fights the system's HFP choice.
     private static func voiceCategoryOptions() -> AVAudioSession.CategoryOptions {
-        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType)
-        let headset = outputs.contains(.headphones) || outputs.contains(.bluetoothHFP)
-            || outputs.contains(.usbAudio) || outputs.contains(.bluetoothA2DP)
-        return headset ? [.allowBluetoothHFP] : [.allowBluetoothHFP, .defaultToSpeaker]
+        Self.headsetAvailable()
+            ? [.allowBluetoothHFP]
+            : [.allowBluetoothHFP, .defaultToSpeaker]
+    }
+
+    /// A headset is available for the call route: wired, USB, or Bluetooth.
+    /// `availableInputs` is the reliable signal once a category is set (the
+    /// current route can still name the ring's forced speaker), so both are
+    /// checked. Bluetooth is deliberately not a *stereo capture* route
+    /// (`stereoCaptureAllowed`), but it is still a headset.
+    private static func headsetAvailable() -> Bool {
+        let session = AVAudioSession.sharedInstance()
+        if session.availableInputs?.contains(where: {
+            $0.portType == .bluetoothHFP || $0.portType == .headsetMic || $0.portType == .usbAudio
+        }) == true { return true }
+        let outputs = session.currentRoute.outputs.map(\.portType)
+        return outputs.contains(.headphones) || outputs.contains(.bluetoothHFP)
+            || outputs.contains(.bluetoothA2DP) || outputs.contains(.bluetoothLE)
+            || outputs.contains(.usbAudio)
     }
 
     private func installSessionObservers() {

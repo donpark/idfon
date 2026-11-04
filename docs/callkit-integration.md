@@ -347,7 +347,9 @@ failure is invisible under the default log filter (`idfon_edge=info,idfon.edge.a
 — the push warns target `idfon.edge.push`), so add
 `RUST_LOG=idfon_edge=info,idfon.edge.access=info,idfon.edge.push=warn` and
 watch for `"rung": n` in the ring response (`rung: 0` = nothing was sent;
-the route answers 200 regardless). APNs rate limits answer 429
+the route answers 200 regardless). The caller apps now log that count too
+(`idfon push: … rung=0` / `idfon ring: … rung=0`), so a missing wake is
+visible from the device log without the edge log. APNs rate limits answer 429
 (`TooManyProviderTokenUpdates`, `TooManyRequests`); 403 is a key problem,
 not a limit.
 Both apps take `-edgeurl http://<mac-lan-ip>:<port> -edgeticket e2e`; the

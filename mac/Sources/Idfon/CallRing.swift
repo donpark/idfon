@@ -111,9 +111,18 @@ enum CallRing {
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            idfonLog("idfon ring: \(url.lastPathComponent) → \(status)")
+            // `rung` is the only evidence the ring reached a device: 0 means
+            // the peer has no registered token (the edge still answers 200).
+            let rung = (try? JSONSerialization.jsonObject(with: data))
+                .flatMap { ($0 as? [String: Any])?["rung"] as? Int }
+            if let rung {
+                Diag.log("push.ring", ["rung": rung, "status": status])
+                idfonLog("idfon ring: \(url.lastPathComponent) → \(status) rung=\(rung)")
+            } else {
+                idfonLog("idfon ring: \(url.lastPathComponent) → \(status)")
+            }
         } catch {
             idfonLog("idfon ring: \(url.lastPathComponent) failed: \(error.localizedDescription)")
         }
