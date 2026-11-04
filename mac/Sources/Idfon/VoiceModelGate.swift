@@ -7,8 +7,8 @@ import AppKit
 /// not gated here: the mac loads it from the checkout's `bench-results` (or
 /// the MLX bundle) — there is nothing to download.
 ///
-/// `shortcut: pocket TTS can still pull its own models on a cold call (load
-/// and download are coupled), gate it if it becomes a default.`
+/// `shortcut: the phonon TTS pack can still download on a cold call (load
+/// and download are coupled), gate it when it matters.`
 enum VoiceModelGate {
     private static let approvedKey = "voiceModelGate.approved"
 
