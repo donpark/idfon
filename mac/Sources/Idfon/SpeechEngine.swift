@@ -598,9 +598,11 @@ final class PhononTtsEngine: NSObject, TtsEngine {
         if let base = env("IDFON_PHONON_PACK_URL") ?? defaultPackURL, let url = URL(string: base) {
             return try await PhononPack.download(from: url, to: dir)
         }
-        guard PhononModels.isInstalled(at: dir) else {
+        // Off the main actor: this hashes the whole pack (47 ms on an M4 Pro).
+        let ok = await Task.detached { PhononPack.verified(at: dir) }.value
+        guard ok else {
             throw PhononError(
-                description: "no phonon models at \(dir.path); run scripts/fetch-phonon-31m.sh or set IDFON_PHONON_PACK_URL")
+                description: "phonon models at \(dir.path) are missing or damaged; run scripts/fetch-phonon-31m.sh or set IDFON_PHONON_PACK_URL")
         }
         return dir
     }
