@@ -1,7 +1,6 @@
 import AVFAudio
 import CryptoKit
 import Foundation
-import FluidAudio
 #if PHONON_TTS
 import PhononTTS
 #endif
@@ -11,15 +10,12 @@ import PhononTTS
 ///
 /// Phonon 31m (streaming) is the default when the build carries it
 /// (`PHONON_TTS`, the default since the 2026-10-25 ruling: the duplex loop
-/// needs a streaming mouth). Without Phonon the default is Kokoro (FluidAudio,
-/// ANE) for English and Apple's `AVSpeechSynthesizer` for every other system
-/// language (also the offline fallback and the explicit alternative).
-/// Selection:
-/// `IDFON_TTS=kokoro|pocket|phonon|apple` (env) or `-ttsbackend <name>`
-/// (launch arg). `pocket` is the Pocket TTS trial (voice cloning;
-/// `IDFON_TTS_VOICE`, `IDFON_TTS_CLONE` — see `PocketTtsEngine`). `phonon` is
-/// the Phonon 31m mouth, in the build by default (`IDFON_TTS_PHONON=0` opts out)
-/// (see `PhononTtsEngine`).
+/// needs a streaming mouth). Without Phonon the default is Apple's
+/// `AVSpeechSynthesizer` (also the offline fallback and the explicit
+/// alternative).
+/// Selection: `IDFON_TTS=phonon|apple` (env) or `-ttsbackend <name>`
+/// (launch arg). `phonon` is the Phonon 31m mouth, in the build by default
+/// (`IDFON_TTS_PHONON=0` opts out) (see `PhononTtsEngine`).
 @MainActor
 protocol TtsEngine: AnyObject {
     var name: String { get }
@@ -43,13 +39,11 @@ extension TtsEngine {
 
 /// Reply-speech backend choice, persisted across launches.
 enum TtsBackend: String, CaseIterable {
-    case pocket
     case phonon
     case apple
 
     var title: String {
         switch self {
-        case .pocket: return "Pocket TTS (on-device)"
         case .phonon: return "Phonon 31m (on-device)"
         case .apple: return "Apple Built-in"
         }
@@ -205,7 +199,6 @@ enum SpeechEngines {
         Automation.mark("voice: tts backend=\(backend.rawValue)")
         switch backend {
         case .apple: return AppleTtsEngine()
-        case .pocket: return PocketTtsEngine()
         case .phonon:
             #if PHONON_TTS
             return PhononTtsEngine()
@@ -304,154 +297,6 @@ final class SpeechCompletion: NSObject, AVSpeechSynthesizerDelegate {
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         complete()
-    }
-}
-
-/// Kokoro-82M via FluidAudio's ANE pipeline. Falls back to Apple per-utterance
-/// if the model cannot load or synthesize.
-@MainActor
-final class PocketTtsEngine: NSObject, TtsEngine {
-    let name = "pocket"
-    private var manager: PocketTtsManager?
-    private let fallback = AppleTtsEngine()
-    private var prepared = false
-    private var prepareTask: Task<Void, Never>?
-    private var clonedVoice: PocketTtsVoiceData?
-    private var finish: (() -> Void)?
-    /// Set by `stop()` so a cancel during synthesis does not start playback.
-    private var stopRequested = false
-    private(set) var lastLatencyMs: Int?
-
-    func prepare() async {
-        if prepared { return }
-        if prepareTask == nil {
-            prepareTask = Task { [weak self] in
-                guard let self else { return }
-                do {
-                    Automation.mark("voice: pocket initializing")
-                    guard #available(macOS 15.0, *) else {
-                        Automation.mark("voice: pocket needs macOS 15+")
-                        return
-                    }
-                    let voice = Self.env("IDFON_TTS_VOICE") ?? PocketTtsConstants.defaultVoice
-                    let manager = PocketTtsManager(
-                        defaultVoice: voice,
-                        language: .english,
-                        // The v4 pack lands at <root>/Models/pocket-tts-coreml/
-                        // v2.1/english (the store's languageRoot for .english),
-                        // so the store finds it present and downloads nothing.
-                        directory: ModelStore.root.appendingPathComponent("pocket"),
-                        placement: .aneState)
-                    try await manager.initialize()
-                    // Named cloned voices: the voices pack
-                    // (scripts/fetch-pocket-voices.sh) drops
-                    // <name>_audio_prompt.bin files in the voices dir.
-                    if let voice = Self.env("IDFON_TTS_VOICE") {
-                        let url = Self.voicesDir.appendingPathComponent("\(voice)_audio_prompt.bin")
-                        if let data = try? manager.loadClonedVoice(from: url) {
-                            self.clonedVoice = data
-                            Automation.mark("voice: pocket voice '\(voice)' <- cloned pack")
-                        }
-                    }
-                    if let path = Self.env("IDFON_TTS_CLONE") {
-                        let wav = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-                        self.clonedVoice = try await manager.cloneVoice(from: wav)
-                        Automation.mark("voice: pocket cloned voice <- \(wav.lastPathComponent)")
-                    }
-                    self.manager = manager
-                    self.prepared = true
-                    Automation.mark("voice: pocket ready (voice=\(voice))")
-                } catch {
-                    Automation.mark("voice: pocket init failed \(error.localizedDescription)")
-                }
-            }
-        }
-        await prepareTask?.value
-    }
-
-    func speak(_ text: String) async {
-        stopRequested = false
-        await prepare()
-        guard prepared, let manager else {
-            Automation.mark("voice: pocket unavailable, using apple")
-            await fallback.speak(text)
-            return
-        }
-        do {
-            let start = Date()
-            let cloned = clonedVoice
-            let wav = try await Self.synthesizeGuarded {
-                if let cloned {
-                    return try await manager.synthesize(text: text, voiceData: cloned)
-                }
-                return try await manager.synthesize(text: text)
-            }
-            if stopRequested { return }  // cancelled while synthesizing
-            lastLatencyMs = Int(Date().timeIntervalSince(start) * 1000)
-            Automation.mark("voice: pocket wav bytes=\(wav.count) in \(lastLatencyMs ?? 0)ms")
-            await play(wav)
-        } catch {
-            Automation.mark("voice: pocket synth failed \(error.localizedDescription); using apple")
-            await fallback.speak(text)
-        }
-    }
-
-    func stop() {
-        stopRequested = true
-        AudioMeter.stopPlayback()
-        finish?()
-        finish = nil
-        fallback.stop()
-    }
-
-    private func play(_ wav: Data) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            guard let buffer = AudioMeter.buffer(wav: wav) else {
-                Automation.mark("voice: pocket play failed (decode)")
-                continuation.resume()
-                return
-            }
-            finish = { continuation.resume() }
-            AudioMeter.play(buffer) { [weak self] in
-                guard let self else { return }
-                self.finish?()
-                self.finish = nil
-            }
-        }
-    }
-
-    private static func env(_ key: String) -> String? {
-        guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else { return nil }
-        return value
-    }
-
-    /// FluidAudio 0.17.x can silently lose a session's producer task and hang
-    /// synthesis forever (upstream patch: patches/FluidAudio-pocket-session-
-    /// lifetime.md). Race a deadline and retry once before giving up (the
-    /// caller falls back to Apple TTS).
-    private static func synthesizeGuarded(
-        _ body: @escaping @Sendable () async throws -> Data
-    ) async throws -> Data {
-        for attempt in 1...2 {
-            let winner: Data? = try await withThrowingTaskGroup(of: Data?.self) { group in
-                group.addTask { try await body() }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 10_000_000_000)
-                    return nil
-                }
-                let first = try await group.next() ?? nil
-                group.cancelAll()
-                return first
-            }
-            if let winner { return winner }
-            Automation.mark("voice: pocket synth deadline (attempt \(attempt))")
-        }
-        throw NSError(domain: "pocket-tts", code: 1)
-    }
-
-    /// Cloned-voice pack directory (matches scripts/fetch-pocket-voices.sh).
-    private static var voicesDir: URL {
-        ModelStore.root.appendingPathComponent("pocket/voices")
     }
 }
 
