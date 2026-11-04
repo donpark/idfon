@@ -31,6 +31,26 @@ class TapBound:
         return getattr(self._model, name)
 
 
+class TempScaled:
+    """Pre-seam temperature (epic #132 P4, the Kev-style per-checkpoint fit): the
+    model's decision logits divided by T before `eight_vector`, so the rules read
+    calibrated probabilities. Model-side only — the seam contract is unchanged.
+    Wraps Student or TapBound; delegates everything else."""
+
+    def __init__(self, model, temp):
+        self._model, self.temp = model, float(temp)
+
+    def __call__(self, *args, **kwargs):
+        outs, hidden = self._model(*args, **kwargs)
+        return {k: v / self.temp for k, v in outs.items()}, hidden
+
+    def eight_vector(self, outs):
+        return self._model.eight_vector(outs)
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+
 def save(path, model, heads, tap=None):
     """Write student.pt from a Student or SharedLatentStudent (pass `tap` for the
     latter — the adapter the eval tools should replay by default)."""
@@ -59,3 +79,22 @@ def load(path, tap=None, device="cpu"):
     model.load_state_dict(ckpt["state_dict"])
     model.to(device).eval()
     return model, ckpt
+
+
+def prune_to_tap(ckpt, tap):
+    """The deploy artifact's model: SharedLatentStudent with ONE adapter, weights
+    taken from the checkpoint's shared trunk/decoder + that adapter (ModuleDict
+    keys are adapter ids, so the state dict keys match verbatim)."""
+    if "adapters" not in ckpt:
+        raise ValueError("not a shared checkpoint")
+    if tap not in ckpt["adapters"]:
+        raise KeyError(f"checkpoint has no adapter {tap!r} (has: {ckpt['adapters']})")
+    heads = [by_id(i) for i in ckpt["heads"]]
+    model = SharedLatentStudent(heads, adapters=[adapter_by_id(tap)],
+                                width=ckpt["width"], layers=ckpt["layers"])
+    prefix = f"adapters.{tap}."
+    keep = {k: v for k, v in ckpt["state_dict"].items()
+            if not k.startswith("adapters.") or k.startswith(prefix)}
+    model.load_state_dict(keep)
+    model.eval()
+    return model

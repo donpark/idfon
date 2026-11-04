@@ -184,6 +184,8 @@ def main():
     ap.add_argument("--tap", default=None,
                     help="shared-latent checkpoints: which tap adapter to replay "
                          "(must match --feature-layer; default: the checkpoint's deploy tap)")
+    ap.add_argument("--temp", type=float, default=1.0,
+                    help="pre-seam temperature (calibrate.py --temp-grid fit; 1.0 = off)")
     ap.add_argument("--feature-layer", type=int, default=15,
                     help="which recorded encoder layer the student reads (must match training)")
     ap.add_argument("--ep-thr", type=float, default=0.9146, help="rules threshold knobs for the replay")
@@ -201,8 +203,10 @@ def main():
     if not paths:
         sys.exit("no shards")
 
-    from checkpoint import load as load_model
+    from checkpoint import TempScaled, load as load_model
     model, ckpt = load_model(args.student, tap=args.tap, device=args.device)
+    if args.temp != 1.0:
+        model = TempScaled(model, args.temp)
     heads = model.heads_spec
     oracle = Oracle(device="cpu")  # rules only; the student is its own chain here
     print(f"student: {args.student} ({ckpt.get('params', '?')} params, heads: {', '.join(h.id for h in heads)}), "

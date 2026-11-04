@@ -14,8 +14,13 @@ State width/depth differ from the teacher's (2x256 vs 3x768) — the seam is the
 student: GRU core + fuse projections stored int8 per-output-unit group-16, dequantized
 in-graph (compute stays fp32; heads/norms/state-emb bit-exact). Both variants are then
 gated against the torch model over real shard frames: fp32 max|d| <= 1e-4 (the teacher's
-step-parity gate), int8 per-slot probs <= 2e-3 (its qstep envelope). QAT is only needed
+step-parity gate), int8 per-slot probs <= 2e-3 (its qstep envelope), plus the P4 rules
+gates — identical threshold decisions and 0 state flips. QAT is only needed
 if these gates fail.
+
+Shared checkpoints (epic #132) export per adapter: `--tap ID` prunes the model to
+that one adapter + the shared trunk/decoder (the deploy artifact's bytes), so every
+covered tap gets its own step graph with the same I/O contract.
 
 Usage:
   .venv/bin/python ports/tyger-student/export.py [--student bench-results/student/student.pt]
@@ -26,6 +31,7 @@ import argparse
 import importlib.machinery
 import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -48,23 +54,34 @@ TRAIT_THRS = {5: 0.4, 6: 0.4, 7: 0.85}  # yield/bc/p_end at the student's traits
 class StepWrap(nn.Module):
     """The student as a single step graph. Thin delegation (like the teacher's
     ports/tyger-coreml StepWrap): the Core AI converter mis-fuses ops inlined at the
-    top-level forward, so the math stays inside the submodule calls."""
+    top-level forward, so the math stays inside the submodule calls. `tap` binds a
+    SharedLatentStudent's adapter (the pruned single-adapter model is the artifact)."""
 
-    def __init__(self, model):
+    def __init__(self, model, tap=None):
         super().__init__()
         self.model = model
+        self.tap = tap
 
     def forward(self, hu, ha, act_db, prev_state, state):
-        outs, state = self.model(hu, ha, act_db, prev_state, state)
+        if self.tap is None:
+            outs, state = self.model(hu, ha, act_db, prev_state, state)
+        else:
+            outs, state = self.model(self.tap, hu, ha, act_db, prev_state, state)
         return self.model.eight_vector(outs), state
 
 
-def load_student(path):
+def load_student(path, tap=None):
+    """-> (model, tap). Shared checkpoints are pruned to one adapter (the deploy
+    artifact); single-tap checkpoints load as before."""
     ckpt = torch.load(path, map_location="cpu")
+    if "adapters" in ckpt:
+        from checkpoint import prune_to_tap
+        tap = tap or ckpt.get("tap")
+        return prune_to_tap(ckpt, tap), tap
     model = Student([by_id(i) for i in ckpt["heads"]], width=ckpt["width"], layers=ckpt["layers"])
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
-    return model
+    return model, None
 
 
 def quantize_student(src, dst, group):
@@ -151,6 +168,8 @@ def run_frames(wrap, sess, frames, width, layers):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--student", default=str(ROOT / "bench-results/student/student.pt"))
+    ap.add_argument("--tap", default=None,
+                    help="shared checkpoints: adapter to prune to (default: the checkpoint's deploy tap)")
     ap.add_argument("--shards", default=None, help="real frames for the parity gate (default: seeded random)")
     ap.add_argument("--frames", type=int, default=248)
     ap.add_argument("--group", type=int, default=16)
@@ -158,20 +177,23 @@ def main():
     ap.add_argument("--no-quantize", action="store_true")
     args = ap.parse_args()
 
-    model = load_student(args.student)
-    wrap = StepWrap(model).eval()
+    model, tap = load_student(args.student, tap=args.tap)
+    wrap = StepWrap(model, tap=tap).eval()
     width, layers = model.width, model.layers
 
-    # sanity: StepWrap == Student.forward + eight_vector (the norm/assembly is in the graph)
+    # sanity: StepWrap == forward + eight_vector (the norm/assembly is in the graph)
     with torch.no_grad():
         hu = torch.randn(1, 2, 1024) * 0.5
         ha = torch.randn(1, 2, 1024) * 0.5
         act = torch.rand(1, 2) * 60 - 40
         prev = torch.randint(0, 5, (1, 2))
         o_w, _ = wrap(hu, ha, act, prev, torch.zeros(layers, 1, width))
-        outs, _ = model(hu, ha, act, prev)
+        if tap is None:
+            outs, _ = model(hu, ha, act, prev)
+        else:
+            outs, _ = model(tap, hu, ha, act, prev)
         o_t = model.eight_vector(outs)
-    assert (o_w - o_t).abs().max() < 1e-6, "StepWrap != Student.forward + eight_vector"
+    assert (o_w - o_t).abs().max() < 1e-6, "StepWrap != forward + eight_vector"
 
     if args.shards:
         from data import iter_shards
@@ -201,6 +223,18 @@ def main():
     def mb(p):
         return p.stat().st_size / 1e6 if p.exists() else 0.0
 
+    def latency_ms(sess, reps=200):
+        """Per-step ORT latency (ms), one frame — the deploy path's per-frame cost."""
+        feed = {"hu": np.zeros((1, 1, 1024), np.float32), "ha": np.zeros((1, 1, 1024), np.float32),
+                "act_db": np.zeros((1, 1), np.float32), "prev_state": np.zeros((1, 1), np.int64),
+                "state": np.zeros((layers, 1, width), np.float32)}
+        for _ in range(20):
+            sess.run(None, feed)
+        t0 = time.perf_counter()
+        for _ in range(reps):
+            sess.run(None, feed)
+        return (time.perf_counter() - t0) / reps * 1e3
+
     def gate(path, label, limit):
         sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
         outs_t, outs_o, st_diff = run_frames(wrap, sess, rng, width, layers)
@@ -209,17 +243,19 @@ def main():
         logits = float(np.abs(a_t[:, :4] - a_o[:, :4]).max())  # state logits: reported, gated via flips
         flips = int((a_t[:, :4].argmax(1) != a_o[:, :4].argmax(1)).sum())
         thr_flips = {s: int(((a_t[:, s] >= t) != (a_o[:, s] >= t)).sum()) for s, t in TRAIT_THRS.items()}
-        ok = probs <= limit
+        lat = latency_ms(sess)
+        ok = probs <= limit and flips == 0 and all(v == 0 for v in thr_flips.values())
         print(f"{label}: probs max|d| {probs:.2e} (gate {limit:.0e}), state-logits {logits:.2e}, "
-              f"argmax flips {flips}, threshold flips {thr_flips}, state max|d| {st_diff:.2e}  "
-              f"{'PASS' if ok else 'FAIL'}")
-        return probs, logits, flips, thr_flips, st_diff
+              f"argmax flips {flips}, threshold flips {thr_flips}, state max|d| {st_diff:.2e}, "
+              f"{lat:.3f} ms/step  {'PASS' if ok else 'FAIL'}")
+        return probs, logits, flips, thr_flips, st_diff, lat
 
     lines = [f"# StudentStep ONNX parity ({src})", "",
-             f"checkpoint: {os.path.relpath(args.student, ROOT)}  |  {width}x{layers} GRU", ""]
-    w, lg, fl, tfl, st = gate(onnx_path, "fp32 vs torch", FP32_GATE)
+             f"checkpoint: {os.path.relpath(args.student, ROOT)}  |  {width}x{layers} GRU"
+             + (f"  |  adapter: {tap}" if tap else ""), ""]
+    w, lg, fl, tfl, st, lat = gate(onnx_path, "fp32 vs torch", FP32_GATE)
     lines += [f"- **fp32**: probs max|d| {w:.2e} (gate {FP32_GATE:.0e}), state-logits {lg:.2e}, "
-              f"argmax flips {fl}, threshold flips {tfl}, state max|d| {st:.2e}",
+              f"argmax flips {fl}, threshold flips {tfl}, state max|d| {st:.2e}, {lat:.3f} ms/step",
               f"- sizes: StudentStep.onnx {mb(onnx_path):.2f} MB + .data "
               f"{mb(onnx_path.with_suffix('.onnx.data')):.2f} MB"]
 
@@ -227,10 +263,10 @@ def main():
         int8_path = out / "StudentStepInt8.onnx"
         n_t, n_p = quantize_student(onnx_path, int8_path, args.group)
         print(f"quantized {n_t} tensors ({n_p / 1e6:.2f}M params, group-{args.group}) -> {int8_path.name}")
-        w8, lg8, fl8, tfl8, st8 = gate(int8_path, "int8 vs torch", INT8_GATE)
+        w8, lg8, fl8, tfl8, st8, lat8 = gate(int8_path, "int8 vs torch", INT8_GATE)
         lines += [f"- **int8 group-{args.group}** ({n_p / 1e6:.2f}M params): probs max|d| {w8:.2e} "
                   f"(gate {INT8_GATE:.0e}), state-logits {lg8:.2e}, argmax flips {fl8}, "
-                  f"threshold flips {tfl8}, state max|d| {st8:.2e}",
+                  f"threshold flips {tfl8}, state max|d| {st8:.2e}, {lat8:.3f} ms/step",
                   f"- sizes: StudentStepInt8.onnx {mb(int8_path):.2f} MB + .data "
                   f"{mb(int8_path.with_suffix('.onnx.data')):.2f} MB"]
     (out / "parity.md").write_text("\n".join(lines) + "\n")
