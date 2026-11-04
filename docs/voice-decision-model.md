@@ -282,6 +282,49 @@ table: `bench-results/tap-probes.md`. Headline rows (R² per axis):
 shared causal `z` (width-256 GRU) → one decoder, unchanged 8-vector seam; the
 shipped `Student` is untouched (checkpoint layout pinned by `test_model.py`).
 
+**Weighted multi-teacher baseline (2026-11-03, epic #132 P2).**
+`ports/tyger-student/train_shared.py` trains one `SharedLatentStudent` over the
+three frame-aligned dualturn tap shard sets (`l15-windowed`, `l4-windowed`,
+`l4-streaming` = deploy target) with **per-axis teacher weights from the P0
+probe table** — `raw = max(val R² of the tap's ridge probe on the head's
+8-vector columns, 0)`, `w = raw / mean(raw over the five teacher heads)` (mean
+exactly 1.0 per tap; the corpus `hold` head fixed at 1.0), so the weighted loss
+`Σ w·L / n_heads` keeps train.py's plain-mean scale while each tap's batches
+emphasize the axes it measurably carries. Never averaged teachers. Weights land
+state/endpoint ≈ 1.23–1.29, hazard ≈ 0.91–1.01, bc ≈ 0.85, barge ≈ 0.67–0.68
+(probe R² per tap in `bench-results/*/weights.json`, one `probe.py` rerun away).
+Fixed baseline for P3: 60 epochs (40 @ lr 1e-3 + 20 @ 3e-4, seed 0). Measured
+(`bench-results/` scratch, all regenerable via `train_shared.py` + `gate.py` /
+`calibrate.py` / `harness.py` — full tables in issue #137):
+
+- **Score gates reproduce per path.** l15-windowed endpoint **.0129** (the
+  single-tap reference .0140), every head ≤ .02; the L4 paths land .0253–.0262
+  endpoint — better than the shipped L4 student's .0273 but over the ≤ .02
+  registry gate, which the shipped L4 student also misses (the gate is an
+  L15-path bar; L4 endpoint is the tap ceiling — probe R² .78 vs .81).
+- **Event agreement** (rules replay): live L4 pooled 13 captures **59.7%
+  calibrated** (bar 56.6%; current L4 student 56.8%) and corpus-val L4-family
+  58.4–60.5% (current 58.5%) reproduce; the **L15 family carries the residual**
+  — live 8 captures 62.5% (bar 64.4%), corpus val 66.3% default (current 69.1%).
+  (loss-ab's 71.3% predates the 2026-11-03 replay-semantics change: `gate.py`
+  now replays mode-less shards as listen, was response.)
+- **Attribution** (uniform-weights A/B, same seed/epochs): corpus l15 agreement
+  49.0% uniform vs 60.9% weighted — **+11.9 pts from the per-axis weighting**
+  alone; multi-tap training without it does not reproduce the single-tap student.
+- **Product metrics** (harness, 13 held-out sessions, 139 eots, 20 interrupting
+  onsets): latency / miss / barge / bc bars hold everywhere (miss −7 to −19 vs
+  teacher at the default triple); the early-cut bar (≤ teacher + 1 pt of eots =
+  1.4 events) rides inside threshold noise — early +4/miss −7 at the default
+  triple, early ±0/miss +2 at ep 0.93; the shipped L4 student is +5 early on the
+  same set. Early/miss is a traits-knob trade, not a model deficit.
+- **Negative results:** agreement climbs with epochs (l15 corpus 57.4 → 60.9 →
+  66.3% at 20/40/60) but the early/miss trade shifts toward early and l15
+  worst-session latency grows (+0.32 → +0.48 s); 80 epochs regresses (live
+  61.5%). hold AUC decays with epochs (.97 → .93). bc under-firing persists
+  (shared l15 fires 92 vs the single-tap student's 122 candidate backchannels
+  against 112 reference events) — the known product gap, amplified by the bc
+  down-weight its own probe quality dictates.
+
 **P3 — fold into classic's contract** (`voice-tyger-option.md` P3): classic
 behavior stays; its endpointing/yield decisions get the model's quality, traits
 stay as the knobs, fail-open stays.
