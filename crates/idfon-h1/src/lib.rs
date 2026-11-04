@@ -897,6 +897,82 @@ mod tests {
         server.await.expect("server");
     }
 
+    /// Is the 27 MiB/s iroh, or is it the h1 adapter? Same 12 MiB echo with no
+    /// hyper and no HTTP: one bi-stream, `pump` one way, raw writes the other.
+    #[tokio::test]
+    #[ignore = "throughput bench; needs no network"]
+    async fn iroh_raw_bulk() {
+        use idfon_core::transport::pump;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const RAW_ALPN: &[u8] = b"idfon/h1bench/1";
+
+        let (server, client_transport) = pair().await;
+        let (tx, mut rx) = mpsc::channel(4);
+        let _guard = server.add_side_channel(RAW_ALPN, tx);
+        tokio::spawn(async move {
+            while let Some(connection) = rx.recv().await {
+                tokio::spawn(async move {
+                    if let Ok((send, recv)) = connection.accept_bi().await {
+                        let _ = pump(recv, send).await;
+                    }
+                    // Keep the connection alive until the peer is done: dropping
+                    // it right after `finish()` discards unflushed bytes and the
+                    // reader sees ConnectionLost.
+                    connection.closed().await;
+                });
+            }
+        });
+        let accept = accept_messages(&server);
+
+        let addr = server.endpoint().addr();
+        let target = match server.endpoint().bound_sockets().first() {
+            Some(socket) => EndpointAddr::from_parts(
+                addr.id,
+                [iroh::TransportAddr::Ip(
+                    (std::net::Ipv4Addr::LOCALHOST, socket.port()).into(),
+                )],
+            ),
+            None => addr,
+        };
+
+        let (_connection, mut send, mut recv) = client_transport
+            .open_bi_stream(&target, RAW_ALPN)
+            .await
+            .expect("dial");
+
+        let mib: usize = std::env::var("BENCH_MIB")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(12);
+        let payload = vec![7u8; mib * 1024 * 1024];
+        let started = std::time::Instant::now();
+        let mut back = vec![0u8; payload.len()];
+        let (written, read) = tokio::join!(
+            async {
+                send.write_all(&payload).await.expect("write");
+                send.shutdown().await.expect("finish");
+            },
+            async {
+                recv.read_exact(&mut back).await.expect("read");
+            }
+        );
+        let elapsed = started.elapsed();
+        let _ = written;
+        let _ = read;
+        assert_eq!(back, payload);
+        eprintln!(
+            "MEASURE iroh raw {mib} MiB each way in {:?} = {:.1} MiB/s ({:.0} Mbps each way)",
+            elapsed,
+            mib as f64 / elapsed.as_secs_f64(),
+            mib as f64 * 8.0 * 1.048576 / elapsed.as_secs_f64()
+        );
+
+        accept.abort();
+        server.endpoint().close().await;
+        client_transport.endpoint().close().await;
+    }
+
     #[test]
     fn uri_normalizes_a_leading_slash() {
         let id: EndpointId = "0000000000000000000000000000000000000000000000000000000000000000"
