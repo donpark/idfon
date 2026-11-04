@@ -684,10 +684,12 @@ final class PhononTtsEngine: NSObject, TtsEngine {
     /// The Core ML bundle at `ModelStore.root/phonon`, provisioned by
     /// scripts/fetch-phonon-31m.sh or downloaded from IDFON_PHONON_PACK_URL
     /// (a PhononModels export served whole: bundle.json + the files it lists).
+    /// `PhononBundle` rather than `PhononModels.download`: the export ships the
+    /// flow LM's weights twice (see PhononBundle).
     private static func modelsDirectory() async throws -> URL {
         let dir = ModelStore.root.appendingPathComponent("phonon")
         if let base = env("IDFON_PHONON_PACK_URL"), let url = URL(string: base) {
-            return try await PhononModels.download(from: url, to: dir)
+            return try await PhononBundle.install(from: url, to: dir)
         }
         guard PhononModels.isInstalled(at: dir) else {
             throw PhononError(

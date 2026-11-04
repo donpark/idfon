@@ -63,8 +63,9 @@ command fails with `iroh-c-ffi dylib ... missing`.
   phonon builds raise the macOS floor to 15 (`ptts` in `mac/Package.swift`,
   `SWIFT_ACTIVE_COMPILATION_CONDITIONS=PHONON_TTS` in `ios/build.sh`), and
   the opt-out keeps the floor at 14 with the engine absent from the binary
-  and the picker. Models: `scripts/fetch-phonon-31m.sh`. Details:
-  `docs/voice-side-channel.md` ("TTS (build-time option)").
+  and the picker. Models: `scripts/fetch-phonon-31m.sh` (170 MB of files,
+  115 MB distinct — the flow LM's weights are exported twice and hardlinked).
+  Details: `docs/voice-side-channel.md` ("TTS (build-time option)").
 
 ## Consumer entrypoints
 

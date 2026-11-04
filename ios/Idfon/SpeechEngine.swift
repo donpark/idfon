@@ -778,13 +778,15 @@ final class PhononTtsEngine: NSObject, TtsEngine {
 
     /// The Core ML bundle in `Library/Application Support/phonon`, side-loaded
     /// or fetched from IDFON_PHONON_PACK_URL / `-phononpack <url>`
-    /// (scripts/fetch-phonon-31m.sh builds the layout).
+    /// (scripts/fetch-phonon-31m.sh builds the layout). `PhononBundle` rather
+    /// than `PhononModels.download`: the export ships the flow LM's weights
+    /// twice, and the phone downloads and keeps them once.
     private static func modelsDirectory() async throws -> URL {
         let dir = modelSupportDirectory("phonon")
         // The launch arg mirrors the env var: devicectl launch cannot set
         // environment variables.
         if let base = env("IDFON_PHONON_PACK_URL") ?? launchString("-phononpack"), let url = URL(string: base) {
-            return try await PhononModels.download(from: url, to: dir)
+            return try await PhononBundle.install(from: url, to: dir)
         }
         guard PhononModels.isInstalled(at: dir) else {
             throw PhononError(
