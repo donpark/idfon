@@ -59,8 +59,10 @@ final class ContactDetailViewController: UIViewController {
     private let generationButton = UIButton(type: .system)
     private let turnModeButton = UIButton(type: .system)
     private let turnModelButton = UIButton(type: .system)
+    private let codecButton = UIButton(type: .system)
     private let turnModeCaption = UILabel()
     private let turnModelCaption = UILabel()
+    private let codecCaption = UILabel()
 
     // MARK: Identity
 
@@ -107,7 +109,8 @@ final class ContactDetailViewController: UIViewController {
         nameField.returnKeyType = .done
         nameField.addTarget(self, action: #selector(save), for: .editingDidEndOnExit)
 
-        for button in [kindButton, recognitionButton, generationButton, turnModeButton, turnModelButton] {
+        for button in [kindButton, recognitionButton, generationButton, turnModeButton, turnModelButton,
+                       codecButton] {
             button.showsMenuAsPrimaryAction = true
             button.contentHorizontalAlignment = .leading
             button.titleLabel?.font = .preferredFont(forTextStyle: .body)
@@ -115,7 +118,7 @@ final class ContactDetailViewController: UIViewController {
         }
         instantSwitch.addTarget(self, action: #selector(pickChanged), for: .valueChanged)
         voiceSwitch.addTarget(self, action: #selector(pickChanged), for: .valueChanged)
-        for caption in [turnModeCaption, turnModelCaption] {
+        for caption in [turnModeCaption, turnModelCaption, codecCaption] {
             caption.font = .preferredFont(forTextStyle: .caption1)
             caption.textColor = .secondaryLabel
             caption.numberOfLines = 0
@@ -237,6 +240,23 @@ final class ContactDetailViewController: UIViewController {
             labeledRow("Recognition", settingsEditing ? recognitionButton : valueLabel(speechTitle(.recognition))),
             labeledRow("Generation", settingsEditing ? generationButton : valueLabel(speechTitle(.generation))),
         ]
+
+        // Codec choice on the 24 kHz agent plane (docs/voice-agent-modes.md):
+        // a holder advertises `pcm24k`; Opus there is the same plane at ~1/10
+        // the bandwidth, so the option is per contact, not global.
+        if let route = CapabilityTickets.voiceRoute(for: peer.id),
+           route.mode != .clientCascade,
+           ContactAudioProfiles.profile(for: peer.id).isAgentPlane
+        {
+            rebuildAudioCodec()
+            rows += [sectionLabel("Call audio")]
+            rows += [labeledRow(
+                "Codec",
+                settingsEditing
+                    ? codecButton
+                    : valueLabel(ContactAudioProfiles.profile(for: peer.id).title))]
+            if settingsEditing { rows += [codecCaption] }
+        }
 
         rebuildTurns()
         rows += [sectionLabel("Voice turns")]
@@ -404,6 +424,28 @@ final class ContactDetailViewController: UIViewController {
                 }
             })
         }
+    }
+
+    // MARK: - Call audio codec
+
+    /// The codec menu applies to the next call: the media session, the invite
+    /// and the holder's return leg all read the same profile.
+    private func rebuildAudioCodec() {
+        let current = ContactAudioProfiles.profile(for: peer.id)
+        codecButton.setTitle(current.title, for: .normal)
+        codecButton.menu = UIMenu(title: "Call audio codec",
+                                  children: ContactAudioProfiles.agentChoices.map { option in
+            UIAction(title: option.title,
+                     subtitle: option == .opus24k ? "~10x smaller, hides small losses" : nil,
+                     state: option == current ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                ContactAudioProfiles.set(option, for: self.peer.id)
+                self.rebuildAudioCodec()
+                self.rebuildRows()
+            }
+        })
+        codecCaption.text = "Applies to the next call with this agent. Opus uses about a tenth "
+            + "of raw PCM's bandwidth and carries FEC/DRED."
     }
 
     // MARK: - Voice turns

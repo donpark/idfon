@@ -66,6 +66,13 @@ pub fn parse_audio_profile(codec: Option<&str>, sample_rate: Option<u32>) -> Res
             codec: AudioCodec::Opus,
             sample_rate: 48_000,
         }),
+        // Opus on the 24 kHz agent plane: the caller's per-contact choice
+        // (docs/voice-agent-modes.md). Same rate the programme/TTS queue
+        // produces, so nothing has to resample.
+        (Some("opus"), Some(24_000)) => Ok(AudioProfile {
+            codec: AudioCodec::Opus,
+            sample_rate: 24_000,
+        }),
         (Some("pcm"), Some(24_000)) => Ok(AudioProfile {
             codec: AudioCodec::Pcm,
             sample_rate: 24_000,
@@ -613,6 +620,17 @@ mod tests {
 
     #[test]
     fn invite_parses_fields() {
+        let opus = parse_invite("IDFON-LIVE/1\naction=start\nticket=abc\naudio_codec=opus\naudio_sample_rate=24000")
+            .expect("opus 24k invite");
+        assert_eq!(opus.audio_codec.as_deref(), Some("opus"));
+        assert_eq!(opus.audio_sample_rate, Some(24_000));
+        assert_eq!(
+            parse_audio_profile(Some("opus"), Some(24_000)).expect("agent-plane opus"),
+            AudioProfile {
+                codec: AudioCodec::Opus,
+                sample_rate: 24_000,
+            }
+        );
         let text = "IDFON-LIVE/1\naction=start\nticket=abc\naudio_codec=pcm\naudio_sample_rate=24000";
         let invite = parse_invite(text).unwrap();
         assert!(invite.is_start);

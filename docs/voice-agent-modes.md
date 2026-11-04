@@ -110,6 +110,31 @@ config-derived catalog (`idfon-voice-agent::apply_voice_selection`):
 engine-declared options carry no backend/model fields to resolve, and a
 server pick is the config's pipeline.
 
+## Call audio codec (2026-11-04)
+
+A voice-agent holder terminates audio on a **24 kHz mono** plane, and its
+signed `voice.audio = "pcm24k"` is the default codec. The contact screen's
+**Call audio → Codec** row (agent contacts with a holder route, edit mode)
+chooses between that PCM default and **Opus at 24 kHz**:
+
+- Opus is the same plane at roughly a tenth of the bandwidth (384 kbps raw →
+  ~24–32 kbps), with libopus FEC (mono auto mode is LBRR) and, where the
+  profile asks for it, DRED.
+- Both ends already speak it: `iroh-c-ffi` accepts Opus/24 kHz for the
+  publisher, and the holder's `parse_audio_profile` accepts
+  `audio_codec=opus audio_sample_rate=24000` and decodes to 24 kHz for ASR.
+  Nothing resamples — TTS/programme queues are 24 kHz too.
+- The choice is per contact and rides the invite, so the holder's return leg
+  uses it as well. It applies to the next call; the media session, the dial
+  decision and the invite all read the same effective profile.
+- The 48 kHz default stays with the legacy/human path; the menu never offers
+  it (a 48 kHz agent plane would need a resampler on the holder).
+- Stereo remains unavailable on the 24 kHz plane whichever codec carries it.
+
+An un-updated holder rejects `opus/24000` (its parser allows only
+`opus/48000` and `pcm/24000`), so restart the holder with this build before
+selecting Opus.
+
 ## On-device agents are app-local contacts
 
 The built-in **AFM 3** is seeded when the OS ships that model (**iOS/macOS

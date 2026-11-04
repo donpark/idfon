@@ -1535,7 +1535,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let peerID = peer.id
         let client = self.client
         let legacyRemote = peer.name == "live-voice"
-            || ContactAudioProfiles.profile(for: peerID) == .pcm24k
+            || ContactAudioProfiles.profile(for: peerID).isAgentPlane
         let signed = CapabilityTickets.voiceRoute(for: peerID)
         let holderTicket = CapabilityTickets.hasTicket(for: peerID)
         let selection = ContactVoiceSelection.selection(for: peerID)
@@ -1600,9 +1600,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// live PCM media session (optionally hybrid) and the ordinary audio call.
     /// `route` is nil for a legacy ticket dialed on the name/profile heuristic.
     private func dialLive(_ route: VoiceRoute?) {
-        let pcm = route?.audio == "pcm24k"
-            || (route?.audio == nil && ContactAudioProfiles.profile(for: peer.id) == .pcm24k)
-        guard pcm else {
+        // The effective profile, not the signed string: a per-contact Opus
+        // choice keeps the same 24 kHz agent plane (and this path).
+        let agentPlane = ContactAudioProfiles.profile(for: peer.id).isAgentPlane
+            || route?.audio == "pcm24k"
+        guard agentPlane else {
             VideoCall.shared.dial(peer.id, audio: true, video: true, cameraOn: false)
             return
         }
