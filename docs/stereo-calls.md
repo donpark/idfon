@@ -98,8 +98,9 @@ invite is re-sent unchanged when a mode change re-publishes the leg.
   channel count. Metering reads channel 0 (acceptable).
 - Optional follow-up: a holder-signed `voice.audio_modes` capability field so
   “what the contact is willing to make available” is signed rather than derived
-  (today: `pcm24k` ⇒ no stereo, else willing; `ContactAudioModes` holds the user's
-  per-contact override).
+  (today: the 24 kHz agent plane ⇒ no stereo, whichever codec carries it
+  (`pcm24k` or the per-contact Opus choice), else willing; `ContactAudioModes`
+  holds the user's per-contact override).
 
 ### 3. Voice messages — **landed (phase 3)**
 

@@ -595,7 +595,9 @@ pub fn media_live_start_with_source(audio: u8, video: u8, source: char_p::Ref<'_
 fn supported_audio_profile(codec: AudioCodec, sample_rate: u32) -> bool {
     matches!(
         (codec, sample_rate),
-        (AudioCodec::Opus, 48_000) | (AudioCodec::Pcm, 24_000)
+        (AudioCodec::Opus, 48_000)
+            | (AudioCodec::Opus, 24_000)
+            | (AudioCodec::Pcm, 24_000)
     )
 }
 
@@ -802,6 +804,26 @@ static SUB_KICK: AtomicBool = AtomicBool::new(false);
 /// silent for 2 s.
 static PATH_CHANGED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
+/// The listen leg's endpoint, kept warm across retry attempts. Booting a
+/// fresh endpoint per attempt pays relay bootstrap, socket setup and home
+/// relay selection again — most of the 4.2 s Wi-Fi→cellular hole in the
+/// 2026-11-04 run. Cleared when the subscription ends.
+static SUBSCRIBER_LIVE: Mutex<Option<Live>> = Mutex::new(None);
+
+/// The cached listen endpoint, or a fresh one.
+async fn subscriber_live() -> anyhow::Result<Live> {
+    let cached = SUBSCRIBER_LIVE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    if let Some(live) = cached {
+        return Ok(live);
+    }
+    let live = Live::from_env().await?.spawn();
+    *SUBSCRIBER_LIVE.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(live.clone());
+    Ok(live)
+}
+
 fn set_sub_state(state: u8) {
     let previous = SUB_STATE.swap(state, Ordering::Relaxed);
     if previous != state {
@@ -883,7 +905,15 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                 if attempt > 1 {
                     set_sub_state(SUB_RECONNECTING);
                 }
+                let live = match subscriber_live().await {
+                    Ok(live) => live,
+                    Err(err) => {
+                        result = Err(err);
+                        break;
+                    }
+                };
                 let res = subscribe_decode_once(
+                    live,
                     ticket.clone(),
                     &thread_stop,
                     &mut samples,
@@ -927,6 +957,15 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                         break;
                     }
                 }
+            }
+            // The endpoint outlives a single attempt but not the subscription:
+            // shut it down here, inside the runtime its tasks live on.
+            if let Some(live) = SUBSCRIBER_LIVE
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take()
+            {
+                live.shutdown().await;
             }
             let received_wav = media_path("received.wav");
             let received_timing = media_path("received-timing.csv");
@@ -1016,6 +1055,7 @@ fn apply_playback_gain(data: &[u8]) -> Vec<u8> {
 /// Returns Ok(true) when the stop flag ended it, Ok(false) on an early track
 /// end (caller decides whether to retry), Err on transport/setup failure.
 async fn subscribe_decode_once(
+    live: Live,
     ticket: LiveTicket,
     stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     samples: &mut Vec<f32>,
@@ -1025,9 +1065,9 @@ async fn subscribe_decode_once(
     attempt: u32,
     channels_out: &mut u32,
 ) -> anyhow::Result<bool> {
-    let live = Live::from_env().await?.spawn();
-    // The subscriber owns nothing across attempts except the accumulators; a
-    // fresh Live per attempt avoids reusing a possibly-torn-down endpoint.
+    // The endpoint is the subscription's, not the attempt's: a retry after a
+    // path change dials from a warm endpoint instead of bootstrapping one
+    // (docs/media-adaptation.md §C2, the 4.2 s hole).
     let res = async {
         let subscription = live
             .subscribe(ticket.endpoint, &ticket.broadcast_name)
@@ -1240,9 +1280,7 @@ async fn subscribe_decode_once(
             }
         }
     };
-    let out = res.await;
-    live.shutdown().await;
-    out
+    res.await
 }
 
 /// Expected pts gap in µs for one frame: f32 samples at 48 kHz over `channels`.
@@ -1941,8 +1979,11 @@ mod tests {
     fn voice_agent_profiles_are_supported_but_other_rates_are_not() {
         assert!(super::supported_audio_profile(AudioCodec::Opus, 48_000));
         assert!(super::supported_audio_profile(AudioCodec::Pcm, 24_000));
+        // The agent plane runs at 24 kHz: Opus there is the per-contact
+        // alternative to raw PCM (384 kbps -> ~24-32 kbps, plus FEC/DRED).
+        assert!(super::supported_audio_profile(AudioCodec::Opus, 24_000));
         assert!(!super::supported_audio_profile(AudioCodec::Pcm, 48_000));
-        assert!(!super::supported_audio_profile(AudioCodec::Opus, 24_000));
+        assert!(!super::supported_audio_profile(AudioCodec::Opus, 16_000));
     }
 
     #[test]
@@ -2152,21 +2193,29 @@ mod tests {
         let mut timing = String::new();
         let mut decoded_total = 0;
         let mut channels = 0u32;
-        let ended = super::tokio_executor(super::subscribe_decode_once(
-            ticket,
-            &stop,
-            &mut samples,
-            &mut timing,
-            &mut decoded_total,
-            std::time::Instant::now(),
-            1,
-            &mut channels,
-        ));
+        let ended = super::tokio_executor(async {
+            let live = super::subscriber_live().await.expect("listen endpoint");
+            super::subscribe_decode_once(
+                live,
+                ticket,
+                &stop,
+                &mut samples,
+                &mut timing,
+                &mut decoded_total,
+                std::time::Instant::now(),
+                1,
+                &mut channels,
+            )
+            .await
+        });
         pusher.join().unwrap();
         stop.store(true, Ordering::Relaxed);
         watchdog.join().unwrap();
         super::media_live_stop();
         super::media_audio_clear_playback_cb();
+        if let Some(live) = super::SUBSCRIBER_LIVE.lock().unwrap().take() {
+            super::tokio_executor(live.shutdown());
+        }
         assert!(ended.expect("decode"), "watchdog should end the decode");
         assert_eq!(channels, 2, "stereo catalog must decode as stereo");
         assert!(samples.len() > 48_000, "capture too short: {}", samples.len());

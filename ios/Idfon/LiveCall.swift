@@ -128,9 +128,10 @@ final class LiveCall {
     func setAudioMode(_ mode: CallAudioMode) {
         setAudioEnabled(true)
         guard published, let peer = activePeer else { return }
-        let want = ContactAudioProfiles.profile(for: peer) == .pcm24k
-            ? 1
-            : AudioIO.captureChannelsForCall()
+        // The agent plane is mono at 24 kHz whichever codec carries it.
+        let want = ContactAudioProfiles.profile(for: peer).sampleRate == 48_000
+            ? AudioIO.captureChannelsForCall()
+            : 1
         guard want != publishedChannels else { return }
         Task { [weak self] in await self?.republishAudio(channels: want, peer: peer) }
     }
@@ -139,9 +140,9 @@ final class LiveCall {
     /// stream layout (silence at the new layout keeps a muted leg simple).
     func setStereo(_ on: Bool) {
         guard published, let peer = activePeer else { return }
-        let want = ContactAudioProfiles.profile(for: peer) == .pcm24k
-            ? 1
-            : AudioIO.captureChannelsForCall()
+        let want = ContactAudioProfiles.profile(for: peer).sampleRate == 48_000
+            ? AudioIO.captureChannelsForCall()
+            : 1
         guard want != publishedChannels else { return }
         Task { [weak self] in await self?.republishAudio(channels: want, peer: peer) }
     }
