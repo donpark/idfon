@@ -144,6 +144,13 @@ pub struct PathSwitch {
     pub path: String,
     /// Whether the new path is a relay path.
     pub relay: bool,
+    /// The selected path's local address (debug form). This is what tells a
+    /// Wi-Fi switch from a cellular one after the fact: `PathId(n)` alone
+    /// cannot (2026-11-04: a Wi-Fi return moved the path silently and the
+    /// record could not prove it).
+    pub local_addr: String,
+    /// The selected path's remote address (debug form).
+    pub remote_addr: String,
 }
 
 /// ListenStats-style measurements of the call's downlink decode path.

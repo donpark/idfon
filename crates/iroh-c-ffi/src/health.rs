@@ -101,14 +101,48 @@ struct CallSampler {
 static CALL: Mutex<Option<CallSampler>> = Mutex::new(None);
 
 /// The attached connection's selected path: id and relay flag.
-fn selected_path() -> Option<(String, bool)> {
+/// The attached connection's selected path: id, relay flag, and the addresses
+/// that identify *which* network it runs on (a `PathId` alone cannot).
+fn selected_path() -> Option<(String, bool, String, String)> {
     let conn = CONN
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .clone()?;
     let paths = conn.paths();
     let selected = paths.iter().find(|p| p.is_selected())?;
-    Some((format!("{:?}", selected.id()), selected.is_relay()))
+    Some((
+        format!("{:?}", selected.id()),
+        selected.is_relay(),
+        local_label(&format!("{:?}", selected.local_addr())),
+        selected.remote_addr().to_string(),
+    ))
+}
+
+/// The local interface IP from a path's local address, for the record and the
+/// shell's "which network is this call on" line. `LocalTransportAddr`'s
+/// variants are not public, so this reads its debug form (`Ip(Some(addr))`);
+/// anything else (relay, unknown) is reported as-is.
+fn local_label(local: &str) -> String {
+    local
+        .strip_prefix("Ip(Some(")
+        .and_then(|rest| rest.strip_suffix("))"))
+        .unwrap_or(local)
+        .to_string()
+}
+
+/// The selected path as one short line for the call UI: `direct 192.168.1.42`
+/// or `relay`. Empty when no connection is attached. The local IP is what
+/// says which network carries the call (192.168.x vs a cellular address) —
+/// the record keeps the same value, so one test answers "did it move?".
+#[ffi_export]
+pub fn media_live_path() -> char_p::Box {
+    match selected_path() {
+        Some((_, relay, _, _)) if relay => "relay".to_string(),
+        Some((_, _, local, _)) => format!("direct {local}"),
+        None => String::new(),
+    }
+    .try_into()
+    .unwrap()
 }
 
 /// Sample the attached session for the length of a call. Starts with
@@ -155,7 +189,7 @@ fn start_call_sampling() {
             let relay = path
                 .as_ref()
                 .or(thread_last_path.lock().unwrap_or_else(|p| p.into_inner()).as_ref())
-                .map(|(_, relay)| *relay)
+                .map(|(_, relay, _, _)| *relay)
                 .unwrap_or(false);
             if let Some(path) = path {
                 let mut last = thread_last_path.lock().unwrap_or_else(|p| p.into_inner());
@@ -167,6 +201,8 @@ fn start_call_sampling() {
                             t_ms,
                             path: path.0.clone(),
                             relay: path.1,
+                            local_addr: path.2.clone(),
+                            remote_addr: path.3.clone(),
                         });
                     *last = Some(path);
                 }
