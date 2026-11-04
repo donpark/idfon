@@ -51,7 +51,7 @@ xcrun swiftc -emit-library \
     -o Vendor/libidfon_director.dylib \
     -Xlinker -install_name -Xlinker @executable_path/libidfon_director.dylib \
     -Xlinker -exported_symbols_list -Xlinker Vendor/idfon_director.exports \
-    "$ROOT/target/aarch64-apple-darwin/release/libidfon_director.a" \
+    "$ROOT/target/release/libidfon_director.a" \
     -framework FoundationModels -framework SystemConfiguration -lc++
 
 # swift build links with -L .build/out/Products/Debug ahead of Vendor, so a

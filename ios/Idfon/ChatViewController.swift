@@ -1582,21 +1582,41 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // A menu contact shows its menu first: the screen carries the choices
         // and the call plays the selection (docs/live-radio.md "Menu contact").
         // No menu: dial the station default, as before.
-        let peerID = peer.id
-        let peerName = peer.name
-        let client = self.client
         Task { @MainActor in
-            guard let menu = await ContactMenus.menu(for: peerID, client: client),
-                  !menu.entries.isEmpty else {
-                LiveCall.shared.dial(peerID)
-                return
+            if await presentStationMenuIfAny() == false {
+                LiveCall.shared.dial(peer.id)
             }
-            let list = MenuViewController(entries: menu.entries) { show in
-                self.navigationController?.popToViewController(self, animated: true)
-                LiveCall.shared.dial(peerID, show: show)
-            }
-            list.title = peerName
-            self.navigationController?.pushViewController(list, animated: true)
+        }
+    }
+
+    /// A menu contact's station list is its detail surface (2026-11-03): shown
+    /// when the contact opens, not only before a call — the screen carries the
+    /// choices and the call plays the selection. Returns false when the
+    /// contact advertises no menu.
+    @discardableResult
+    private func presentStationMenuIfAny() async -> Bool {
+        guard let menu = await ContactMenus.menu(for: peer.id, client: client),
+              !menu.entries.isEmpty else { return false }
+        let peerID = peer.id
+        let list = MenuViewController(entries: menu.entries) { show in
+            self.navigationController?.popToViewController(self, animated: true)
+            // Picking a show while one plays switches the station: end any
+            // call first — the dial guard would otherwise refuse as busy.
+            LiveCall.shared.hangUp()
+            LiveCall.shared.dial(peerID, show: show)
+        }
+        list.title = peer.name
+        navigationController?.pushViewController(list, animated: true)
+        return true
+    }
+
+    private var stationMenuOffered = false
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if !stationMenuOffered, !conversation.isRoom {
+            stationMenuOffered = true
+            Task { await presentStationMenuIfAny() }
         }
     }
 
