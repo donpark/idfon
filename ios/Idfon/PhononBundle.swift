@@ -19,11 +19,12 @@ import Foundation
 /// Files are verified by size and SHA-256 every time, not by the manifest's
 /// `built` stamp: an edited or partial bundle never loads.
 ///
-/// shortcut: only the source packages are deduped. Core ML compiles each
-/// `.mlpackage` next to itself, so the `.mlmodelc` copies repeat the same 55 MB
-/// on disk after the first load; touch them only with a device to verify the
-/// ANE still maps a shared weight file. A served pack still sends both paths
-/// over HTTP — the saving is this side, one download per hash.
+/// The same bytes are duplicated a second time once Core ML compiles: it writes
+/// `<pkg>.mlmodelc` beside each package with its own `weights/weight.bin`.
+/// `relinkCompiled` links those too, after a load (that is what compiles them).
+///
+/// shortcut: a served pack still sends both paths over HTTP — the saving is
+/// this side, one download per hash.
 enum PhononBundle {
     /// A `bundle.json` as the exporter writes it.
     struct Manifest: Decodable {
@@ -83,6 +84,39 @@ enum PhononBundle {
         var dir = dir
         try? dir.setResourceValues(values)
         return dir
+    }
+
+    /// Core ML writes a `.mlmodelc` beside each package, weights included:
+    /// the t1 and t48 graphs repeat the same 55 MB a second time. Relink them
+    /// (the ANE maps the file read-only, so one copy serves both graphs). Call
+    /// after `Phonon.load`, which is what compiles them. No hashing: the
+    /// manifest's SHA-256 already says which sources are the same bytes.
+    static func relinkCompiled(at dir: URL) {
+        guard let manifest = manifest(at: dir) else { return }
+        var groups: [String: [URL]] = [:]
+        for file in manifest.files {
+            guard let compiled = compiledURL(for: file.path, in: dir) else { continue }
+            groups[file.sha256, default: []].append(compiled)
+        }
+        for paths in groups.values where paths.count > 1 {
+            guard let donor = paths.first(where: { FileManager.default.fileExists(atPath: $0.path) })
+            else { continue }
+            for path in paths where path != donor { try? link(donor, to: path) }
+        }
+    }
+
+    private static func manifest(at dir: URL) -> Manifest? {
+        (try? Data(contentsOf: dir.appendingPathComponent("bundle.json")))
+            .flatMap { try? JSONDecoder().decode(Manifest.self, from: $0) }
+    }
+
+    /// `<pkg>.mlpackage/Data/com.apple.CoreML/weights/x` becomes
+    /// `<pkg>.mlmodelc/weights/x` once compiled.
+    private static func compiledURL(for path: String, in dir: URL) -> URL? {
+        guard let tag = path.range(of: ".mlpackage/") else { return nil }
+        guard let name = path.split(separator: "/").last else { return nil }
+        return dir.appendingPathComponent(
+            "\(path[path.startIndex..<tag.lowerBound]).mlmodelc/weights/\(name)")
     }
 
     private static func fetch(_ url: URL) async throws -> Data {

@@ -613,8 +613,11 @@ as-built default until the streaming pair lands.)
   installed by `PhononBundle`: the manifest lists 170 MB of files but the flow
   LM's weights (`flow-c414-t1` and `-t48`, one 240 KB graph apart) are the same
   bytes, so the installer downloads 115 MB and hardlinks the second path — the
-  phone's download, disk and page cache hold one copy. Serving the pack over
-  HTTP still sends both paths; only a directory copy keeps the link);
+  phone's download, disk and page cache hold one copy; Core ML then compiles
+  the packages and repeats the same weights as two `.mlmodelc`, which
+  `PhononBundle.relinkCompiled` links after the first load (201 MB installed
+  here, from 306 MB before both steps). Serving the pack over HTTP still sends
+  both paths; only a directory copy keeps the link);
   custom voices are 256KB `.safetensors` embeddings in `voices/NAME.safetensors`
   (`IDFON_TTS_VOICE=NAME`; a *served* pack must list them in its
   `bundle.json`, which the fetch script rewrites after it restores a kept
