@@ -236,7 +236,8 @@ final class AudioIO: AudioSource, AudioSink {
         }
     }
 
-    /// The system activated the session: run any deferred start now.
+    /// The system activated the session: run any deferred start, or resume a
+    /// call that `callKitDidDeactivate` paused.
     func callKitDidActivate() {
         runOnAudio { [self] in
             callKitActivated = true
@@ -244,14 +245,40 @@ final class AudioIO: AudioSource, AudioSink {
             // log what CallKit actually activated so a device check can
             // confirm the voice session survived (or show what replaced it).
             markOutput("output at callkit didActivate")
-            guard let pending = pendingStart else { return }
-            pendingStart = nil
-            Automation.mark("audio: callkit didActivate — starting deferred profile=\(pending)")
-            start(profile: pending)
+            if let pending = pendingStart {
+                pendingStart = nil
+                Automation.mark("audio: callkit didActivate — starting deferred profile=\(pending)")
+                start(profile: pending)
+            } else if callKitOwnsSession, profile != nil, !running {
+                // The system took the session mid-call and handed it back
+                // (cellular interruption): the tap was torn down at
+                // `callKitDidDeactivate`, so recovery is a full rebuild (the
+                // interruption-end protocol) — but never a session config or
+                // activation: CallKit owns both (the one-way-audio rule).
+                Automation.mark("audio: callkit didActivate — resuming profile=\(String(describing: profile))")
+                startEngine()
+            }
             if let one = pendingOneShot {
                 pendingOneShot = nil
                 Task { await AudioIO.shared.play(one) }
             }
+        }
+    }
+
+    /// The system deactivated the session mid-call (cellular call, other
+    /// high-priority audio). Stop capture/playback but keep the profile: the
+    /// call must stay resumable, not frozen (docs/callkit-integration.md §8) —
+    /// `callKitDidActivate` rebuilds the engine when the system hands the
+    /// session back.
+    func callKitDidDeactivate() {
+        runOnAudio { [self] in
+            guard callKitOwnsSession else {
+                Automation.mark("audio: callkit didDeactivate ignored (session returned)")
+                return
+            }
+            callKitActivated = false
+            Automation.mark("audio: callkit didDeactivate running=\(running)")
+            if running { stopEngine() }
         }
     }
 
@@ -631,8 +658,9 @@ final class AudioIO: AudioSource, AudioSink {
 
     func play(_ buffer: AVAudioPCMBuffer) async {
         guard running else {
-            if pendingStart != nil {
-                // The engine waits for CallKit's didActivate: keep the cue and
+            if profile != nil {
+                // The engine is down but a call is live (waiting for CallKit's
+                // didActivate, or paused by didDeactivate): keep the cue and
                 // play it when the engine comes up (#50).
                 pendingOneShot = buffer
                 Automation.mark("audio: play deferred until callkit didActivate")
@@ -674,6 +702,13 @@ final class AudioIO: AudioSource, AudioSink {
     /// player in a rebuild) discards scheduled buffers. The loop and in-flight
     /// one-shots re-arm; their callers resume when the re-armed audio finishes.
     private func rearmPlayback() {
+        // A cue stashed while the engine was down (callkit deferral, or a
+        // didDeactivate pause) plays now, on any recovery path.
+        if let one = pendingOneShot {
+            pendingOneShot = nil
+            let id = UUID()
+            inFlightOneShots[id] = one
+        }
         if let loop = activeLoop {
             playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
             Automation.mark("audio: loop re-armed after engine restart")

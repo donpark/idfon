@@ -9,7 +9,8 @@
 //     ios/Idfon/LiveActivityBar.swift ios/Idfon/OverlayWindow.swift \
 //     ios/Idfon/LiveWaveformView.swift ios/Idfon/TransferCenter.swift \
 //     ios/Idfon/IdfonLog.swift ios/Idfon/AudioIO.swift ios/Idfon/Automation.swift \
-//     ios/Idfon/CallTones.swift ios/Checks/LiveActivityBarCheck/main.swift
+//     ios/Idfon/CallTones.swift ios/Idfon/FeedbackEar.swift \
+//     ios/Checks/LiveActivityBarCheck/main.swift
 //   /tmp/labcheck
 //
 // (Historically it ran through `simctl`; the Catalyst binary exercises the same
@@ -25,7 +26,7 @@ check(LiveActivityBar.clock(222) == "03:42", "clock m:ss")
 check(LiveActivityBar.clock(3723) == "1:02:03", "clock h:mm:ss")
 var m = LiveActivityBarModel(peerId: "p1", handle: "@janedoe")
 m.audioModes = CallAudioMode.displayOrder
-m.stereoAvailable = true
+m.stereo = true
 m.phase = .inCall; m.elapsed = 222
 m.rows = [.init(id: "r1", name: "Archive.zip", kind: .transfer(fraction: 0.42, bytesPerSecond: 12_000_000))]
 m.density = .compact

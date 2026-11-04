@@ -548,7 +548,12 @@ final class VideoCall: NSObject {
         case .sendStop(let peer, let ticket):
             // Empty ticket = the call never got a generation (ended before its
             // publish landed); an unticketed stop keeps the legacy behavior.
-            Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: true)) }
+            // Background-tasked: a lock-screen hang-up must deliver this even
+            // though the audio stop drops the app's suspension exemption.
+            let client = self.client
+            AppBackgroundTask.run {
+                try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: true))
+            }
         case .join(let ticket, let answersDial):
             Task { await self.join(ticket: ticket, answered: answersDial) }
         case .stopMedia:
@@ -560,7 +565,7 @@ final class VideoCall: NSObject {
             // AudioPusher tear-down must stay on the main queue (engine state is
             // main-serialized); only the blocking FFI calls go to the background.
             AudioPusher.shared.stop()
-            Task.detached(priority: .userInitiated) {
+            AppBackgroundTask.run {
                 CameraPusher.shared.stop()
                 media_live_stop()
                 Diag.logCallRecord() // the record folds inside the stop: ship once, here
