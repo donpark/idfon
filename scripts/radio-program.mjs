@@ -577,18 +577,26 @@ async function config() {
   const programmePath = path.join(dir, "programme.json");
   await writeFile(programmePath, JSON.stringify(programme, null, 2) + "\n");
   // Adapter-owned: transport and admission, pointing at the programme.
+  // Hand-edits to the instance's live.json survive regeneration (a menu
+  // contact's `opml` lives there); a relative `opml` resolves beside live.json,
+  // since the holder reads it against its own cwd.
+  const livePath = path.join(dir, "live.json");
+  const existing = existsSync(livePath) ? JSON.parse(await readFile(livePath, "utf8")) : {};
+  if (typeof existing.opml === "string" && existing.opml && !path.isAbsolute(existing.opml)) {
+    existing.opml = path.resolve(dir, existing.opml);
+  }
   const live = {
+    ...existing,
     _comment: `Generated for station "${station.name}" by scripts/radio-program.mjs config — edit ${path.relative(ROOT, BASE_CONFIG)} and re-run instead.`,
     backend: base.backend ?? "stream",
     programme: programmePath,
     // Public stations admit any sender presenting the page's ticket (subject-
     // less, receive-only). Private stations only take `radio-admit.sh` tickets.
-    ...(station.public ? { public: true } : {}),
+    public: station.public ? true : undefined,
     log: path.join(dir, "soak.jsonl"),
     broadcast: base.broadcast ?? "idfon-radio",
     voice_route: base.voice_route ?? { mode: "broadcast", audio: "pcm24k" },
   };
-  const livePath = path.join(dir, "live.json");
   await writeFile(livePath, JSON.stringify(live, null, 2) + "\n");
   // Machine-readable for radio-serve.sh; the note goes to stderr.
   console.error(`${path.relative(ROOT, livePath)} (${fallback ? "with" : "no"} fallback)`);
