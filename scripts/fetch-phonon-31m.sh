@@ -47,4 +47,37 @@ rm -rf "$DEST"
 mv "$DEST.tmp" "$DEST"
 if [ -d "$work/voices-keep" ]; then mv "$work/voices-keep" "$DEST/voices"; fi
 
+# The export writes the flow LM's weights into both flow-c414-t1 and
+# flow-c414-t48 (same bytes, same sha256 in bundle.json): 55 MB of the 170 MB
+# bundle for one 240 KB graph difference. Hardlink them so the pack, a served
+# copy and the phone's installed copy hold one (the apps' PhononBundle does
+# the same after a download).
+python3 - "$DEST" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+by = {}
+for f in json.load(open(os.path.join(root, "bundle.json")))["files"]:
+    if f["size"] >= 1 << 20:
+        by.setdefault(f["sha256"], []).append(os.path.join(root, f["path"]))
+saved = 0
+for paths in by.values():
+    donor = paths[0]
+    for path in paths[1:]:
+        if not os.path.exists(path) or os.stat(path).st_ino == os.stat(donor).st_ino:
+            continue
+        staged = path + ".link"
+        try:
+            os.link(donor, staged)
+            os.replace(staged, path)
+            saved += os.stat(path).st_size
+        except OSError:
+            if os.path.exists(staged):
+                os.remove(staged)
+print(f"deduped: {saved / 1e6:.1f} MB shared")
+PY
+
 echo "phonon models ready: $DEST ($(du -sh "$DEST" | cut -f1))"
+
+# Serving DEST over HTTP still transfers both paths (the client asks for each
+# file bundle.json lists); the saving there is the apps' PhononBundle, which
+# downloads one copy per hash. A directory copy (side-load) keeps the link.
