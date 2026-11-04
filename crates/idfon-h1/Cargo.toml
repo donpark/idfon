@@ -1,0 +1,26 @@
+[package]
+name = "idfon-h1"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+axum = "0.8"
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "client", "server"] }
+hyper-util = { version = "0.1", features = ["service", "tokio"] }
+idfon-core = { path = "../idfon-core" }
+iroh = "1"
+tokio = { version = "1", features = ["rt", "io-util", "sync", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+idfon-h3 = { path = "../idfon-h3" }
+idfon-protocol = { path = "../idfon-protocol" }
+iroh-h3-client = "0.5"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.29"
