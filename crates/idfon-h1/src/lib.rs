@@ -653,13 +653,14 @@ mod tests {
     /// Echoes `count` frames of `size` bytes and reports round-trip percentiles.
     /// The p95 is the ceiling for a stop-and-wait protocol (one frame in flight,
     /// ack before the next); a streaming sender is bounded by bandwidth instead.
-    async fn measure_frames(
-        label: &str,
-        socket: &mut tokio_tungstenite::WebSocketStream<TokioIo<Upgraded>>,
-        size: usize,
-        count: usize,
-    ) {
-        use futures_util::SinkExt;
+    async fn measure_frames<S, E>(label: &str, socket: &mut S, size: usize, count: usize)
+    where
+        S: futures_util::Sink<tokio_tungstenite::tungstenite::Message, Error = E>
+            + futures_util::Stream<Item = Result<tokio_tungstenite::tungstenite::Message, E>>
+            + Unpin,
+        E: std::fmt::Debug,
+    {
+        use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
         let frame = Bytes::from(vec![0xa5; size]);
         let mut samples = Vec::with_capacity(count);
@@ -833,6 +834,67 @@ mod tests {
         drop(h3);
         server.endpoint().close().await;
         client_transport.endpoint().close().await;
+    }
+
+    /// The baseline the whole decision rests on: plain TCP WebSocket echo on
+    /// loopback, same frame sizes as the iroh bench. Anything iroh adds over
+    /// this is QUIC's cost, not the adapter's.
+    #[tokio::test]
+    #[ignore = "throughput bench; needs no network"]
+    async fn tcp_ws_baseline() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("handshake");
+            while let Some(Ok(message)) = socket.next().await {
+                if message.is_binary() || message.is_text() {
+                    socket.send(message).await.expect("echo");
+                }
+            }
+        });
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let (mut socket, _) = tokio_tungstenite::client_async("ws://127.0.0.1/ws", stream)
+            .await
+            .expect("handshake");
+        measure_frames("tcp ws", &mut socket, 1024, 200).await;
+        measure_frames("tcp ws", &mut socket, 64 * 1024, 100).await;
+        socket.close(None).await.expect("close");
+        server.await.expect("server");
+
+        // Raw TCP bulk echo, 12 MiB each way, same payload as the h1 bench.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut buf = vec![0u8; 12 * 1024 * 1024];
+            stream.read_exact(&mut buf).await.expect("read");
+            stream.write_all(&buf).await.expect("write");
+        });
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let payload = vec![7u8; 12 * 1024 * 1024];
+        let started = std::time::Instant::now();
+        stream.write_all(&payload).await.expect("write");
+        let mut back = vec![0u8; payload.len()];
+        stream.read_exact(&mut back).await.expect("read");
+        let elapsed = started.elapsed();
+        assert_eq!(back, payload);
+        eprintln!(
+            "MEASURE tcp bulk 12 MiB round trip in {:?} = {:.1} MiB/s ({:.0} Mbps each way)",
+            elapsed,
+            12.0 / elapsed.as_secs_f64(),
+            12.0 * 8.0 * 1.048576 / elapsed.as_secs_f64()
+        );
+        server.await.expect("server");
     }
 
     #[test]

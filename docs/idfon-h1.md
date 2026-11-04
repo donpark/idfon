@@ -105,6 +105,54 @@ stream down when the reader disappears; WS echo with a 2 MiB binary payload
 the RFC 6455 handshake itself over a raw bi-stream (no idfon-h1 client code); and
 h1 + h3 + message ALPN on one endpoint.
 
+### Is this worth it? The TCP baseline
+
+`cargo test -p idfon-h1 -- --ignored --nocapture tcp_ws_baseline` runs the same
+WS echo and 12 MiB bulk over **plain TCP loopback**, which is the thing iroh has
+to beat or justify. Same host, same frame sizes:
+
+| transport | 1 KiB p95 | 64 KiB p95 | 12 MiB bulk |
+| --- | --- | --- | --- |
+| plain TCP (baseline) | 0.13 ms | 0.26 ms | ~3.1 GiB/s |
+| iroh direct, loopback | 0.26–0.39 ms | 4.0–4.9 ms | ~27 MiB/s |
+| iroh over N0 relay | ~48 ms | ~132 ms | ~1.7 MiB/s |
+
+Read this honestly: **iroh costs ~2× the frame latency and ~100× the bulk
+throughput of plain TCP on the same machine.** That is QUIC in userspace: packet
+pacing, congestion control, per-stream windows, encryption. It is not the h1
+adapter's fault — h1 is a thin duplex over the QUIC stream — and it does not go
+away with more engineering on this layer.
+
+So "is WS over iroh worthwhile?" depends entirely on what it replaces:
+
+- **Against a LAN TCP port you can already reach:** no. Bind a port and use
+  plain WS. iroh buys you nothing and costs you ~2× latency / ~100× bulk.
+- **Against "the user's server is behind NAT and you cannot port-forward":**
+  yes, and the numbers say it comfortably clears the voxl bar. 27 MiB/s is
+  ~220 Mbps, 15–40× what 1080p60 H.264 needs; 64 KiB frames at p95 4–5 ms leave
+  ~3× headroom at 60 fps. The value is zero-config NAT traversal, identity and
+  encryption — not throughput.
+- **Relay-only deployments:** the ~1.7 MiB/s / ~132 ms row is the constraint.
+  14 Mbps ≈ 29 KiB/frame at 60 fps: fine for control and audio, not full-motion
+  1080p. That is what channel sharding (slice 4) is for.
+
+The earlier loopback-only table is kept below as the adapter's own ceiling —
+what iroh+hyper can do with no network in the way — not as an end-to-end number.
+
+### Adapter ceiling (why the loopback row is not a network number)
+
+`iroh` is the transport (QUIC over UDP, userspace, with hole-punching and relay
+fallback). `hyper` is the Rust HTTP engine: it parses the HTTP/1.1 request,
+handles `Connection: Upgrade`, and hands back a raw byte stream after the `101`.
+The "adapter" is the ~200 lines in this crate that joins the two — iroh's
+`SendStream`/`RecvStream` become hyper's IO, and hyper's upgraded connection
+becomes the WebSocket. "Adapter ceiling" was my loose term for: both endpoints
+on one machine, so the only costs in the number are iroh's packet handling and
+hyper's parsing. It is the best case for the adapter and says nothing about
+Wi-Fi, congestion, or distance — which is why the relay row exists.
+
+### Raw numbers, both paths
+
 Throughput (`cargo test -p idfon-h1 -- --ignored --nocapture throughput`), 12 MiB
 each way. Two runs of the same bench, differing only in the path iroh selects:
 
@@ -120,9 +168,8 @@ the wrong path. Relay rows use `IDFON_RELAY_ONLY=1`, the same knob the apps hono
 `docs/benchmarks.md` uses it for the same reason. h3 measured 9 Mbps down on the
 same relay run; both protocols are relay-bound there.
 
-Frame latency over the WS echo path — this is the number that decides framerate
-(p95 is the ceiling for a stop-and-wait protocol; a pipelined sender is bounded
-by bandwidth instead):
+Frame latency over the WS echo path — p95 is the ceiling for a stop-and-wait
+protocol; a pipelined sender is bounded by bandwidth instead:
 
 | message | direct p95 | direct ceiling | relay p95 | relay ceiling |
 | --- | --- | --- | --- | --- |
