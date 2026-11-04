@@ -105,42 +105,42 @@ stream down when the reader disappears; WS echo with a 2 MiB binary payload
 the RFC 6455 handshake itself over a raw bi-stream (no idfon-h1 client code); and
 h1 + h3 + message ALPN on one endpoint.
 
-### Is this worth it? The TCP baseline
+### What the numbers actually support
 
-`cargo test -p idfon-h1 -- --ignored --nocapture tcp_ws_baseline` runs the same
-WS echo and 12 MiB bulk over **plain TCP loopback**, which is the thing iroh has
-to beat or justify. Same host, same frame sizes:
+Exactly **one** row here is a real-network measurement, and it is the relay:
 
-| transport | 1 KiB p95 | 64 KiB p95 | 12 MiB bulk |
+| path | status | throughput | frame p95 |
 | --- | --- | --- | --- |
-| plain TCP (baseline) | 0.13 ms | 0.26 ms | ~3.1 GiB/s |
-| iroh direct, loopback | 0.26–0.39 ms | 4.0–4.9 ms | ~27 MiB/s |
-| iroh over N0 relay | ~48 ms | ~132 ms | ~1.7 MiB/s |
+| public N0 relay (internet) | measured | ~10 Mbps | ~53 ms (1 KiB), ~142 ms (64 KiB) |
+| direct P2P over the internet | **not measured** | unknown | unknown |
+| LAN, two hosts | **not measured** | unknown | unknown |
+| loopback, any transport | diagnostic only | see below | see below |
 
-Read this honestly: **iroh costs ~2× the frame latency and ~100× the bulk
-throughput of plain TCP on the same machine.** That is QUIC in userspace: packet
-pacing, congestion control, per-stream windows, encryption. It is not the h1
-adapter's fault — `iroh_raw_bulk` runs the same 12 MiB echo as a bare bi-stream
-pump with no hyper and no HTTP, and gets the same aggregate (~27 MiB/s). Growing
-the payload does not close the gap either: 12 / 48 / 192 MiB give 13.1 / 15.9 /
-17.7 MiB/s per direction, so it is a steady-state ceiling, not slow-start ramp.
-It does not go away with more engineering on this layer.
+The measured internet ceiling for this crate is **~10 Mbps through the N0
+relay** — 64 KiB frames at ~7 fps, or ~20 KiB/frame at 60 fps. That is a *relay*
+number: it may be the free relay's per-connection limit, this host's VPN egress,
+or the path to `usw1-1`, and one measurement cannot separate them. A
+self-hosted relay (`IDFON_RELAY_URLS`) and a second host would.
 
-So "is WS over iroh worthwhile?" depends entirely on what it replaces:
+A **direct** peer-to-peer path over the internet is not measured at all. Its
+ceiling is bounded above by the stack's own ~410 Mbps on loopback and below by
+the slower uplink of the two peers; where it lands is the missing experiment.
 
-- **Against a LAN TCP port you can already reach:** no. Bind a port and use
-  plain WS. iroh buys you nothing and costs you ~2× latency / ~100× bulk.
-- **Against "the user's server is behind NAT and you cannot port-forward":**
-  yes, and the numbers say it comfortably clears the voxl bar. 27 MiB/s is
-  ~220 Mbps, 15–40× what 1080p60 H.264 needs; 64 KiB frames at p95 4–5 ms leave
-  ~3× headroom at 60 fps. The value is zero-config NAT traversal, identity and
-  encryption — not throughput.
-- **Relay-only deployments:** the ~1.7 MiB/s / ~132 ms row is the constraint.
-  14 Mbps ≈ 29 KiB/frame at 60 fps: fine for control and audio, not full-motion
-  1080p. That is what channel sharding (slice 4) is for.
+Loopback rows are diagnostics, never network results:
 
-The earlier loopback-only table is kept below as the adapter's own ceiling —
-what iroh+hyper can do with no network in the way — not as an end-to-end number.
+- **h1 vs a raw `pump` on loopback.** Same bytes, no HTTP, no network — the delta
+  is the adapter's cost, and it is ~0 (48 vs 40 MiB/s per direction). When h1 is
+  slow, iroh is slow.
+- **Loopback is a kernel fast path with no wire.** TCP moves ~3,900 MiB/s there
+  because loopback is a memcpy with GSO/GRO and no NIC; iroh moves ~48–51 MiB/s
+  because userspace QUIC pays a syscall, a crypto op and a pacing decision per
+  datagram. Comparing the two on loopback measures kernel shortcuts, not either
+  protocol on a network — which is why that comparison is not in the table above.
+
+**Harness note.** Earlier numbers on this page were taken on a single-threaded
+`#[tokio::test]` runtime (both endpoints, their QUIC stacks, hyper and the test
+sharing one core), which halved the loopback figures (27 → 48 MiB/s). The relay
+row was unchanged across runtime sizes, consistent with it being network-bound.
 
 ### Adapter ceiling (why the loopback row is not a network number)
 
@@ -154,42 +154,29 @@ on one machine, so the only costs in the number are iroh's packet handling and
 hyper's parsing. It is the best case for the adapter and says nothing about
 Wi-Fi, congestion, or distance — which is why the relay row exists.
 
-### Raw numbers, both paths
+### Raw numbers behind the rows
 
-Throughput (`cargo test -p idfon-h1 -- --ignored --nocapture throughput`), 12 MiB
-each way. Two runs of the same bench, differing only in the path iroh selects:
+`cargo test -p idfon-h1 -- --ignored --nocapture throughput`, 12 MiB each way,
+four worker threads, with the selected path printed by the bench itself.
+
+Loopback — the stack's ceiling, **not** a network number:
 
 | path | download | upload | 1 KiB WS p95 | 64 KiB WS p95 |
 | --- | --- | --- | --- | --- |
-| direct, loopback QUIC | ~217–270 Mbps | ~221–290 Mbps | ~0.3 ms | ~4.0–4.9 ms |
-| public N0 relay | ~14 Mbps | ~11 Mbps | ~48 ms | ~132 ms |
+| direct, loopback QUIC | ~404 Mbps | ~427 Mbps | ~0.24 ms | ~2.6–2.9 ms |
+| raw iroh pump, no HTTP | ~343 Mbps | — | — | — |
 
-Both rows print the selected path (`PATH direct (127.0.0.1)` vs
-`PATH relay-only (advertised)`), so a number cannot be silently attributed to
-the wrong path. Relay rows use `IDFON_RELAY_ONLY=1`, the same knob the apps honor
-(`idfon-core` clears IP transports, so only the relay address is published) —
-`docs/benchmarks.md` uses it for the same reason. h3 measured 9 Mbps down on the
-same relay run; both protocols are relay-bound there.
+Relay — the one real-network row (`IDFON_RELAY_ONLY=1`, the knob the apps honor:
+`idfon-core` clears IP transports, so only the relay address is published):
 
-Frame latency over the WS echo path — p95 is the ceiling for a stop-and-wait
-protocol; a pipelined sender is bounded by bandwidth instead:
-
-| message | direct p95 | direct ceiling | relay p95 | relay ceiling |
+| path | download | upload | 1 KiB WS p95 | 64 KiB WS p95 |
 | --- | --- | --- | --- | --- |
-| 1 KiB control | 0.26–0.39 ms | ~2,500–3,800 fps | ~48 ms | ~21 fps |
-| 64 KiB frame | 4.0–4.9 ms | ~205–250 fps | ~132 ms | ~8 fps |
+| public N0 relay | ~10 Mbps | ~10 Mbps | ~53 ms | ~142 ms |
 
-What that means for the demo:
-
-- **Direct P2P** has ~4× headroom at 60 fps for a 64 KiB frame, and the
-  217–258 Mbps budget is ~450 KiB/frame. Nothing here limits a LAN demo.
-- **Relay** does not carry 60 fps stop-and-wait: 8 fps at 64 KiB, 21 fps at
-  1 KiB, and ~29 KiB/frame at 60 fps from bandwidth alone. That is the number
-  that makes channel sharding and pipelining a *product* requirement rather
-  than a nicety, and why slice 4 exists.
-- The direct row is loopback, not a LAN. The two-host LAN/netem run in [#142]
-  is still the missing real-world "direct P2P" number; until then, treat
-  loopback as the best case and relay as the worst case.
+h3 tracks h1 on both (422 Mbps loopback, 8 Mbps relay). Stop-and-wait ceilings
+from the p95s: ~4,200 fps (1 KiB) and ~350–360 fps (64 KiB) on loopback,
+~19 fps and ~7 fps on the relay. A pipelined sender is bandwidth-bound instead:
+~830 KiB/frame at 60 fps on loopback, ~20 KiB/frame on the relay.
 
 ## Using it with an existing app (voxl recipe)
 
