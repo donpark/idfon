@@ -265,6 +265,11 @@ final class AudioMeter {
     /// tone-silence class). `dropping` marks the stop window so completions
     /// route into `pendingRearm` instead of finishing.
     private static var activeLoop: AVAudioPCMBuffer?
+    /// A loop requested while the engine was idle (an incoming ring starts
+    /// before any call capture). Dropping it was the mac "didn't ring" bug:
+    /// the tone only plays once the shared engine is up, so keep the buffer
+    /// and start it on the next successful start.
+    private static var pendingLoop: AVAudioPCMBuffer?
     private static var inFlightOneShots: [UUID: (buffer: AVAudioPCMBuffer, completion: (() -> Void)?)] = [:]
     private static var pendingRearm: [UUID: (buffer: AVAudioPCMBuffer, completion: (() -> Void)?)] = [:]
     private static var dropping = false
@@ -844,19 +849,36 @@ final class AudioMeter {
     /// Re-arm what a recovery stop discarded (the engine self-stop class).
     /// Deliberate stops keep their complete-and-drop semantics.
     static func rearmAfterRestart() {
-        guard dropping else { return }
-        dropping = false
-        if let loop = activeLoop {
-            playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
-            log("idfon audio meter: loop re-armed after engine restart")
+        if dropping {
+            dropping = false
+            if let loop = activeLoop {
+                playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
+                log("idfon audio meter: loop re-armed after engine restart")
+            }
+            for (id, entry) in inFlightOneShots {
+                scheduleOneShot(id: id, buffer: entry.buffer, completion: entry.completion)
+                log("idfon audio meter: one-shot re-armed after engine restart")
+            }
+            if (activeLoop != nil || !inFlightOneShots.isEmpty), !playbackPlayer.isPlaying {
+                playbackPlayer.play()
+            }
         }
-        for (id, entry) in inFlightOneShots {
-            scheduleOneShot(id: id, buffer: entry.buffer, completion: entry.completion)
-            log("idfon audio meter: one-shot re-armed after engine restart")
+        startPendingLoop()
+    }
+
+    /// Play a loop that arrived while the engine was down. The buffer is
+    /// converted here, when the bus format exists (the idle player has none).
+    private static func startPendingLoop() {
+        guard let loop = pendingLoop, inputEngine.isRunning else { return }
+        pendingLoop = nil
+        guard let converted = convert(loop, to: playbackPlayer.outputFormat(forBus: 0)) else {
+            log("idfon audio meter: deferred loop dropped convert failed")
+            return
         }
-        if (activeLoop != nil || !inFlightOneShots.isEmpty), !playbackPlayer.isPlaying {
-            playbackPlayer.play()
-        }
+        PlaybackBus.notify(converted) // the second ear
+        activeLoop = converted
+        playbackPlayer.scheduleBuffer(converted, at: nil, options: [.loops], completionHandler: nil)
+        if !playbackPlayer.isPlaying { playbackPlayer.play() }
     }
 
     /// A looping cue (the ring). Fed to the second ear once (its repeats are
@@ -865,9 +887,13 @@ final class AudioMeter {
     static func playLooping(_ buffer: AVAudioPCMBuffer) {
         DispatchQueue.main.async {
             guard inputEngine.isRunning else {
-                log("idfon audio meter: loop dropped engine idle")
+                // Keep the raw buffer: the bus format does not exist until the
+                // engine starts (an incoming ring starts the meter itself).
+                pendingLoop = buffer
+                log("idfon audio meter: loop deferred engine idle")
                 return
             }
+            pendingLoop = nil
             guard let converted = convert(buffer, to: playbackPlayer.outputFormat(forBus: 0)) else {
                 log("idfon audio meter: loop dropped convert failed")
                 return
@@ -883,6 +909,7 @@ final class AudioMeter {
     static func stopPlayback() {
         DispatchQueue.main.async {
             activeLoop = nil
+            pendingLoop = nil
             inFlightOneShots.removeAll() // deliberate stop: callers complete, audio is dropped
             playbackPlayer.stop()
             if inputEngine.isRunning { playbackPlayer.play() } // ready for the next schedule

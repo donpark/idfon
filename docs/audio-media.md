@@ -243,7 +243,8 @@ the fallback is for the other platforms).
 
 | profile | category / mode | used by |
 |---|---|---|
-| `.liveCall` | `.playAndRecord` / `.voiceChat` (+ speaker) | daemon-streamed live/video calls |
+| `.liveCall` | `.playAndRecord` / `.voiceChat` (headset route, else speaker) | daemon-streamed live/video calls |
+| `.ringing` | `.liveCall` shape, forced to the loudspeaker | an incoming ring before answer |
 | `.voiceAgent` | `.playAndRecord` / `.voiceChat` | on-device cascade |
 | `.recording` | `.playAndRecord` / `.default` (+ speaker) | voice memos |
 

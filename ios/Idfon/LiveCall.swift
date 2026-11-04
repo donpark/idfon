@@ -18,12 +18,14 @@ enum LiveCallHarness {
         IdfonPaths.dataDir.appendingPathComponent("last-call.wav").path
     }
 
-    /// Configure the audio session before any daemon audio starts.
-    static func activateAudioSession() {
+    /// Configure the audio session before any daemon audio starts. `ringing`
+    /// forces the ringtone to the loudspeaker (the call may have a connected
+    /// but unworn headset); answer/dial use the normal call route.
+    static func activateAudioSession(ringing: Bool = false) {
         // The single audio owner configures the session (`liveCall` profile:
         // `.voiceChat` + speaker, remote audio on its playback bus = the
         // AEC reference; docs/audio-media.md, docs/troubleshooting.md).
-        AudioIO.shared.start(profile: .liveCall)
+        AudioIO.shared.start(profile: ringing ? .ringing : .liveCall)
     }
 
     /// Dial a peer and stream the bundled WAV. Blocks until the callee hangs
@@ -234,7 +236,7 @@ final class LiveCall {
             // The system already rings (a push-first wake): no Bar ringtone and
             // no app-owned audio session alongside it.
             if !CallKitController.shared.isRinging(peer) {
-                LiveCallHarness.activateAudioSession()
+                LiveCallHarness.activateAudioSession(ringing: true)
                 CallTonePlayer.shared.start(.ringtone)
             }
         case .changed:
@@ -380,12 +382,12 @@ final class LiveCall {
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued. The call_uuid is the
                 // invite ticket's, so the callee's push report and the
-                // envelope land on the same system call.
-                if IncomingCallRouter.shared.ownsPresentation(for: peerId) {
-                    PushWake.shared.ring(
-                        peer: peerId, callUUID: CallUUID.from(ticket: ticket).uuidString,
-                        hasVideo: false)
-                }
+                // envelope land on the same system call. Not gated on this
+                // device's presentation: a local Bar fallback must not silence
+                // a suspended callee (the ring is about their device).
+                PushWake.shared.ring(
+                    peer: peerId, callUUID: CallUUID.from(ticket: ticket).uuidString,
+                    hasVideo: false)
                 // Dial watchdog: the invite was accepted for delivery, but if the
                 // return leg never lands (peer offline, relay flap, network
                 // transition), do not hang in .calling forever. Delivery is
