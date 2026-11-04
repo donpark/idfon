@@ -47,4 +47,65 @@ rm -rf "$DEST"
 mv "$DEST.tmp" "$DEST"
 if [ -d "$work/voices-keep" ]; then mv "$work/voices-keep" "$DEST/voices"; fi
 
+# The export writes the flow LM's weights into both flow-c414-t1 and
+# flow-c414-t48 (same bytes, same sha256 in bundle.json): 55 MB of the 170 MB
+# bundle for one 240 KB graph difference. Hardlink them so the pack, a served
+# copy and the phone's installed copy hold one (the apps' PhononPack does
+# the same after a download).
+python3 - "$DEST" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+by = {}
+for f in json.load(open(os.path.join(root, "bundle.json")))["files"]:
+    if f["size"] >= 1 << 20:
+        by.setdefault(f["sha256"], []).append(os.path.join(root, f["path"]))
+saved = 0
+for paths in by.values():
+    donor = paths[0]
+    for path in paths[1:]:
+        if not os.path.exists(path) or os.stat(path).st_ino == os.stat(donor).st_ino:
+            continue
+        staged = path + ".link"
+        try:
+            os.link(donor, staged)
+            os.replace(staged, path)
+            saved += os.stat(path).st_size
+        except OSError:
+            if os.path.exists(staged):
+                os.remove(staged)
+print(f"deduped: {saved / 1e6:.1f} MB shared")
+PY
+
+# A kept voices/ is user state (custom 256 KB embeddings) but bundle.json still
+# lists the export's voices: a served DEST then fails every client install on a
+# size/SHA-256 mismatch, which the app reports as a phonon failure and hides
+# behind the Apple fallback. Make the manifest describe what is on disk.
+python3 - "$DEST" <<'PY'
+import hashlib, json, os, sys
+root = sys.argv[1]
+path = os.path.join(root, "bundle.json")
+manifest = json.load(open(path))
+files, dropped, fixed = [], 0, 0
+for f in manifest["files"]:
+    if not f["path"].startswith("voices/"):
+        files.append(f)
+        continue
+    target = os.path.join(root, f["path"])
+    if not os.path.isfile(target):
+        dropped += 1
+        continue
+    digest = hashlib.sha256(open(target, "rb").read()).hexdigest()
+    size = os.path.getsize(target)
+    if (size, digest) != (f["size"], f["sha256"]):
+        fixed += 1
+    files.append({"path": f["path"], "size": size, "sha256": digest})
+manifest["files"] = files
+json.dump(manifest, open(path, "w"), indent=1)
+print(f"voices: {fixed} manifest entries updated, {dropped} dropped")
+PY
+
 echo "phonon models ready: $DEST ($(du -sh "$DEST" | cut -f1))"
+
+# Serving DEST over HTTP still transfers both paths (the client asks for each
+# file bundle.json lists); the saving there is the apps' PhononPack, which
+# downloads one copy per hash. A directory copy (side-load) keeps the link.

@@ -65,7 +65,9 @@ command fails with `iroh-c-ffi dylib ... missing`.
   voice-agent mouth). Phonon builds raise the macOS floor to 15 (`ptts` in
   `mac/Package.swift`), and the opt-out keeps the floor at 14 with the engine
   absent from the binary and the picker — such a build speaks through Apple's
-  synthesiser only (Kokoro was removed 2026-11-01). Models: `scripts/fetch-phonon-31m.sh`. Details:
+  synthesiser only (Kokoro was removed 2026-11-01). Models: `scripts/fetch-phonon-31m.sh`
+  (170 MB of files, 115 MB distinct — the flow LM's weights are exported twice
+  and hardlinked). Details:
   `docs/voice-side-channel.md` ("TTS (build-time option)").
 
 ## Consumer entrypoints

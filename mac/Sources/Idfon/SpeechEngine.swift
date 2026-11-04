@@ -460,91 +460,6 @@ final class PocketTtsEngine: NSObject, TtsEngine {
 /// at the base (mutable, `no-store`); every file is fetched from
 /// `sha256/<sha256>` (immutable) and installed at its manifest `path`, so the
 /// Core ML package layout and the voice filenames survive the move to the CDN.
-enum PhononPack {
-    struct Manifest: Decodable {
-        struct File: Decodable {
-            let path: String
-            let size: Int
-            let sha256: String
-        }
-        let built: Int64
-        let files: [File]
-    }
-
-    @discardableResult
-    static func download(from base: URL, to dir: URL) async throws -> URL {
-        let fm = FileManager.default
-        // An installed pack must stay usable offline: a failed manifest fetch
-        // is only fatal when there is nothing to fall back to.
-        let data: Data
-        do {
-            let (remote, response) = try await URLSession.shared.data(
-                from: base.appending(path: "bundle.json"))
-            try check(response, "bundle.json")
-            data = remote
-        } catch {
-            if PhononModels.isInstalled(at: dir) { return dir }
-            throw error
-        }
-        let want = try JSONDecoder().decode(Manifest.self, from: data)
-        if installedBuilt(at: dir) == want.built { return dir }
-
-        let staging = dir.deletingLastPathComponent()
-            .appending(path: "\(dir.lastPathComponent).partial-\(want.built)")
-        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
-
-        for file in want.files {
-            let dest = staging.appending(path: file.path)
-            if try matches(dest, file) { continue }
-            let (tmp, response) = try await URLSession.shared.download(
-                from: base.appending(path: "sha256/\(file.sha256)"))
-            try check(response, file.path)
-            guard try matches(tmp, file) else {
-                try? fm.removeItem(at: tmp)
-                throw PhononError(description: "\(file.path) does not match its size or SHA-256")
-            }
-            try fm.createDirectory(
-                at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? fm.removeItem(at: dest)
-            try fm.moveItem(at: tmp, to: dest)
-        }
-
-        try data.write(to: staging.appending(path: "bundle.json"))
-        try? fm.removeItem(at: dir)
-        try fm.moveItem(at: staging, to: dir)
-        var url = dir
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? url.setResourceValues(values)
-        return dir
-    }
-
-    private static func installedBuilt(at dir: URL) -> Int64? {
-        guard let data = try? Data(contentsOf: dir.appending(path: "bundle.json")),
-              let manifest = try? JSONDecoder().decode(Manifest.self, from: data),
-              PhononModels.isInstalled(at: dir) else { return nil }
-        return manifest.built
-    }
-
-    private static func check(_ response: URLResponse, _ what: String) throws {
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw PhononError(description: "\(what): HTTP \(http.statusCode)")
-        }
-    }
-
-    private static func matches(_ url: URL, _ file: Manifest.File) throws -> Bool {
-        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-              size == file.size else { return false }
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty {
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined() == file.sha256
-    }
-}
-
 /// Phonon 31m (gradium via the `ptts` Swift package) — build-time engine
 /// (`IDFON_TTS_PHONON=1` at build, then `IDFON_TTS=phonon` or per-contact).
 /// Models: `scripts/fetch-phonon-31m.sh` provisions the Core ML bundle into
@@ -577,6 +492,9 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                     Automation.mark("voice: phonon initializing")
                     let models = try await Self.modelsDirectory()
                     let phonon = try await Phonon.load(models: models, language: .english)
+                    // The load is what compiles the packages; link the compiled
+                    // copies of the duplicated flow weights (PhononPack).
+                    PhononPack.relinkCompiled(at: models)
                     let voice = Self.env("IDFON_TTS_VOICE") ?? "Clara"
                     do { try await phonon.setVoice(voice) }
                     catch {

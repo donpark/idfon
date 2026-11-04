@@ -287,7 +287,9 @@ honestly: the L15-truncation lever only applies to a *separate* turn-model
 encoder — with Nemotron as the call ASR the encoder runs to L24 for
 transcripts (L16–24 + RNN-T are transcripts-only per the measured anatomy),
 so the models total ≈820 MB as-is (626 ASR + 56 heads + 137 Phonon), not the
-≈640 MB the truncated row showed.
+≈640 MB the truncated row showed. (Phonon's manifest is 170 MB of files, 115 MB
+distinct since 2026-11-03: the flow LM's weights ship twice and are hardlinked
+— see `docs/voice-side-channel.md`.)
 
 Decided 2026-10-22: candidate **A** (Nemotron + native L15) is the path;
 candidate **B** (streaming Parakeet + retrained heads) = backup + future
