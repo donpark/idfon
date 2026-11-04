@@ -337,6 +337,23 @@ session** — the combined error is knob-independent (every measured model is
 within +2 events of the teacher's combined count), the early/miss *split* is
 report-only as a traits-knob trade.
 
+**Cross-tap consistency ablation (2026-11-03, epic #132 P3, issue #143).**
+`train_shared.py --consistency LAM` adds `LAM · symmetric-KL(seam decisions via
+tap A ‖ tap B)` on the same frames (paired windows, seeded partner tap per
+step; λ=0 verified bit-identical to the baseline recipe). A/B vs the fixed P2
+baseline at λ = 0.1 / 0.3: **λ=0.3 earns partial credit — kept.** At the
+product (calibrated) triples it improves 4/5 agreement measurements
+(+0.4…+0.6, both live fits included), closes ~25–30% of the l15 residual
+(live-cal 62.50 → 63.11 vs the 64.4 bar), improves both L4 endpoint gates
+(.0253/.0262 → .0230/.0256), and cuts missed turn-ends by 9 per 139 eots on
+every path with the highest barge catch. Negative results: λ=0.1 is mixed to
+negative; the term costs default-triple agreement (calibration shift, absorbed
+by the per-model fit — P4 territory); hold AUC decays further; and the l15
+residual is mostly *not* a tap-agreement problem (KL recovered only a quarter
+of it — the rest is per-tap head quality: bc under-fire + endpoint timing,
+pointing at P4 calibration and data). P5 should budget adapter + calibration
+cost, not plug-and-play.
+
 **P3 — fold into classic's contract** (`voice-tyger-option.md` P3): classic
 behavior stays; its endpointing/yield decisions get the model's quality, traits
 stay as the knobs, fail-open stays.
