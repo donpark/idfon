@@ -87,7 +87,7 @@ their numbers because other sections reference them.
 
 ```
 
-* **Active Elements:** The nav bar shows the live audio/video toggles and a prominent red `[End]`; the Bar (for the visible thread) carries the call timer/stats and any activity rows.
+* **Active Elements:** The nav bar shows the live audio/video toggles and a prominent red `[End]`; the Bar (for the visible thread) carries the stream position/stats and any activity rows. The position is its own monospaced readout at the leading edge of the media row (and of each tray stream row), gapped from the buttons — never a subtitle under the handle, where it competes with the identity for the column.
 * **Live In-Call Toggling:** `Mic` and `Cam` independently gate whether each outgoing stream is **sent** or **withheld** — mute/unmute and camera on/off — without tearing down the VoIP session. This is send/no-send gating, **not** track attach/detach: the session and its negotiation stay intact. A muted mic sends silence (capture stays open, unmute is instant); a disabled camera sends no frames (the peer holds the last frame). A call can only toggle streams it was started with: turning the camera on during an audio-only call, or vice versa, would require renegotiation and is out of scope.
 
 **Voice-first entry:** the thread's nav-bar `Call` item is the one call entry — it publishes
@@ -115,7 +115,7 @@ STATE B: CONTINUOUS MEDIA (STREAMING)
 +-----------------------------------------------------------------------+
 |  [<] @janedoe                       [ Mic ON ]  [ Cam OFF ]   [ End ] |
 |  -------------------------------------------------------------------  |
-|  > Streaming "Demo_Track.mp3" (01:45 / 03:20)                 [ Stop ]|
+|  > 01:45 / 03:20  Streaming "Demo_Track.mp3"       [II] [ Stop ]     |
 +-----------------------------------------------------------------------+
 
 ```
@@ -125,7 +125,7 @@ STATE B: CONTINUOUS MEDIA (STREAMING)
 | Session Type | Progress Indicator | Terminal Action | Action Result |
 | --- | --- | --- | --- |
 | **File Transfer** | Byte percentage (`42%`), Transfer speed (`12 MB/s`) | `[Cancel]` | Aborts P2P chunk transfer; purges partial temporary files on receiver device. |
-| **Media Stream** | Playhead time (`01:45 / 03:20`), Play/Pause | `[ Stop ]` | Tears down the active WebRTC media feed; closes synchronized stream player in chat feed. |
+| **Media Stream** | Playhead, leading and monospaced (`01:45 / 03:20`; the position alone when the length is unknown, as in a live call), Play/Pause | `[ Stop ]` | Tears down the active WebRTC media feed; closes synchronized stream player in chat feed. |
 
 ---
 
