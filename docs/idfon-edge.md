@@ -300,8 +300,13 @@ land. Security residuals are filed as issues.
   parent-domain requester cookie.
 - [x] #28 — URL-ticket auth was removed; the edge accepts only the header or
   the HTTPS WebView cookie.
-- [ ] #29 — rebuild the vendored libs so `IDFON_RELAY_*` takes effect in the
-  apps (the transport knob post-dates `libiroh_c_ffi.a`/`idfond`).
+- [x] #29 — the vendored libs were rebuilt (2026-11-03, `ios/build-deps.sh` +
+  `mac/build-deps.sh`) and relay selection is now a runtime configuration —
+  parameter > configuration > default (`docs/relay-config.md`): `idfond`/
+  `idfon` flags, the apps' Relay settings + launch args, `~/.idfon/relay.conf`,
+  `IDFON_RELAY_*`. All endpoint binds (message, call media, blobs) resolve it
+  at bind time. On-device acceptance (a relay-only app fetched through the
+  configured relay) remains a manual check.
 
 ### Not exercised end-to-end
 
@@ -377,9 +382,10 @@ land. Security residuals are filed as issues.
   7842/udp), and points the edge at it. Validated: a relay-only peer (its
   published address has no IP addrs) was fetched by the live edge through
   `relay.idfon.net:8443`. Every peer must share the relay; a peer left on N0
-  will not rendezvous. Clients configure it at runtime (iOS/mac **Relay**
-  settings, applied at daemon start; CLI/native/eve via env) — never compiled
-  in. Prefer an endpoint allowlist or HTTP callout (no client secret); a shared
+  will not rendezvous. Clients configure it at runtime (relays are never
+  compiled in): `docs/relay-config.md` — parameter (`idfond`/`idfon` flags,
+  app launch args, `IDFON_RELAY_*`) over configuration (iOS/mac **Relay**
+  settings, `~/.idfon/relay.conf`) over the N0 default. Prefer an endpoint allowlist or HTTP callout (no client secret); a shared
   token is runtime-only.
 
 - [ ] **Cloudflare policy sign-off for the public edge.** Checked 2026-10-08:

@@ -43,6 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let ticket { EdgeClient.configure(url: launchArgs[i + 1], ticket: ticket) }
         }
+        // Relay selection (docs/relay-config.md): launch args are a per-run
+        // parameter override; apply the resolved config to this process's Rust
+        // core before anything binds (the spawned idfond gets flags from
+        // DaemonRuntime instead).
+        RelaySettings.configureFromLaunchArgs(launchArgs)
+        RelaySettings.applyToProcess()
         ChatStore.shared.start()
         // Route decoded call audio onto the capture engine's playback bus (the
         // VoiceProcessingIO echo reference) instead of the bundled device.

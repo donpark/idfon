@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use iroh::{endpoint::presets, protocol::Router, Endpoint};
+use iroh::{protocol::Router, Endpoint};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 use iroh_live::{ticket::LiveTicket, Live};
 use moq_audio::encode::{
@@ -1556,7 +1556,7 @@ pub fn media_recording_persist(ticket: char_p::Ref<'_>) -> u8 {
         return 1;
     };
     let result = tokio_executor(async {
-        let endpoint = Endpoint::bind(presets::N0).await?;
+        let endpoint = idfon_core::relay::endpoint_builder().bind().await?;
         let root = media_path("persisted-blobs");
         let store = FsStore::load(&root).await?;
         store
@@ -1760,7 +1760,7 @@ pub fn media_live_recording_store() -> char_p::Box {
             .lock()
             .map_err(|_| anyhow::anyhow!("blob provider poisoned"))?;
         if guard.is_none() {
-            let endpoint = Endpoint::bind(presets::N0).await?;
+            let endpoint = idfon_core::relay::endpoint_builder().bind().await?;
             let store = FsStore::load(media_path("blobs")).await?;
             let router = Router::builder(endpoint.clone())
                 .accept(BLOBS_ALPN, BlobsProtocol::new(store.as_ref(), None))
@@ -1796,7 +1796,7 @@ pub fn media_blob_fetch(ticket: char_p::Ref<'_>) -> u8 {
         return 1;
     };
     let result = tokio_executor(async {
-        let endpoint = Endpoint::bind(presets::N0).await?;
+        let endpoint = idfon_core::relay::endpoint_builder().bind().await?;
         let root = media_path("fetched-blobs");
         let store = FsStore::load(&root).await?;
         store

@@ -25,6 +25,15 @@ int32_t idfon_client_request(char const *socket_path, uint8_t const *req, size_t
 
 void idfon_client_result_free(uint8_t *ptr, size_t len);
 
+// --- relay selection (src/daemon.rs; docs/relay-config.md) ---
+
+// Per-run relay selection parameter: wins over the persisted configuration
+// and IDFON_RELAY_* per field. Empty strings leave a field unset (a lower
+// source fills it). Call before any endpoint binds. Applies to the app's
+// in-process endpoints; the spawned idfond gets --relay-* flags instead.
+#include <stdbool.h>
+void idfon_relay_settings_set(const char *urls, const char *token, bool only);
+
 // --- media pipeline (src/media.rs + src/video.rs) ---
 
 // Own-media publish. Empty string return = failure (media_live_last_error
