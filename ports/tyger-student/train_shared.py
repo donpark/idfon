@@ -330,9 +330,16 @@ def selfcheck():
         assert c_last < c_first, f"consistency loss did not fall: {c_first} -> {c_last}"
 
         # 5. QAT: the torch fake-quant matches quantize_step's numpy grid bit-exactly,
-        # and the projected-gradient loop runs and learns (the export gate — int8 vs
-        # torch, export.py — is what pins shipped-grid parity)
+        # the projected set covers the GRU AND every adapter projection (the bug that
+        # shipped GRU-only QAT once), and the loop runs and learns (the export gate —
+        # int8 vs torch, export.py — pins shipped-grid parity)
         assert selfcheck_parity() == "ok"
+        probe = SharedLatentStudent(HEADS)
+        names = {n for n, _ in probe.named_parameters()}
+        targeted = {n for n, _p, _a in target_params(probe)}
+        assert any(n.startswith("adapters.") for n in targeted), "adapter projections not QAT-targeted"
+        assert targeted == {n for n in names if n.startswith("core.weight_")
+                            or (n.startswith("adapters.") and n.endswith((".user.weight", ".agent.weight")))}
         _, q_first, q_last, _ = run(roots, None, epochs=6, window=W, lr=5e-3, qat=16)
         assert q_last < q_first, f"QAT loss did not fall: {q_first} -> {q_last}"
     print("selfcheck ok")

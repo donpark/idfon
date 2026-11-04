@@ -45,21 +45,25 @@ def fake_quant(w, group, axis):
 
 
 def target_params(model):
-    """-> [(param, contraction axis)] — export.py's quantization targets."""
+    """-> [(name, param, contraction axis)] — export.py's quantization targets.
+
+    Every target is (out, in) in torch (nn.Linear and GRU weights alike): rows =
+    output units, contraction axis 1. The export's ONNX initializers are the
+    transposed (in, out) view with contract axis 0 — same grouping either way."""
     out = []
     for name, p in model.named_parameters():
-        if name.startswith("core.weight_"):            # GRU W/R: (3h, in/h), rows = output units
-            out.append((p, 1))
-        elif (name.startswith("adapters.") and name.endswith((".user.weight", ".agent.weight"))
-              and p.shape[0] == 1024):                 # fuse projections: (in, out)
-            out.append((p, 0))
+        if name.startswith("core.weight_"):            # GRU W/R: (3h, in/h)
+            out.append((name, p, 1))
+        elif name.startswith("adapters.") and name.endswith((".user.weight", ".agent.weight")):
+            assert p.shape[0] < p.shape[1], (name, tuple(p.shape))   # (out=width, in=1024)
+            out.append((name, p, 1))
     return out
 
 
 def project(model, group):
     """Quantize-dequantize every targeted parameter in place (post-step projection)."""
     with torch.no_grad():
-        for p, axis in target_params(model):
+        for _n, p, axis in target_params(model):
             p.copy_(fake_quant(p, group, axis))
 
 
