@@ -47,6 +47,7 @@ kept because it records decisions; **design** = not all implemented.
 | `chatrooms.md` | rooms, direct fan-out, gossip |
 | `mcp-transport.md` | idfon as an MCP transport binding (implemented) |
 | `idfon-h1.md` | HTTP/1.1 over iroh: serve an existing `axum::Router` with WebSockets, SSE and chunked bodies, `RemoteId` peer identity, client + upgrade handle (slices 1–2 of #142 tested; voxl demo pending) |
+| `idfon-channel.md` | message channels over iroh with no HTTP: WebSocket-shaped send/recv on one ordered bi-stream per channel, channel-name sharding and its isolation test, the measured WS-vs-channel overhead A/B (library; no consumer wired yet) |
 
 ## CLI and distribution
 

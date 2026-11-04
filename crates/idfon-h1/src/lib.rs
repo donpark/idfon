@@ -600,6 +600,96 @@ mod tests {
         }
     }
 
+    /// Channel sharding (#142 slice 4): one h1/WS connection per channel. A
+    /// channel whose consumer stops draining fills its flow-control window; a
+    /// second channel must stay responsive. On one WS connection the messages
+    /// share a single ordered stream, so they cannot (that is the head-of-line
+    /// behavior sharding removes) — and a stalled channel must still tear down
+    /// cleanly when its peer goes away.
+    ///
+    /// Needs no library change: sharding is N calls to `H1Client::connect`.
+    /// This asserts the isolation that buys, and stops a future change from
+    /// serializing connections behind one another.
+    #[tokio::test]
+    async fn stalled_channel_does_not_stall_another_connection() {
+        let (server, client_transport) = pair().await;
+        let (flood_done_tx, mut flood_done_rx) = oneshot::channel::<()>();
+        let flood_done_tx = Arc::new(std::sync::Mutex::new(Some(flood_done_tx)));
+
+        let app = Router::new()
+            .route(
+                "/whoami",
+                get(|RemoteId(peer): RemoteId| async move { peer.to_string() }),
+            )
+            .route(
+                "/flood",
+                get(move |upgrade: WebSocketUpgrade| {
+                    let done = Arc::clone(&flood_done_tx);
+                    async move {
+                        upgrade.on_upgrade(move |mut socket| async move {
+                            // 16 MiB is well past the default QUIC stream window
+                            // (1.25 MB), so the writes block once the peer stops
+                            // reading — a consumer applying backpressure.
+                            for _ in 0..256 {
+                                if socket
+                                    .send(WsMessage::Binary(vec![0u8; 64 * 1024].into()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            // Signalled on both paths so teardown is observable.
+                            if let Some(tx) = done.lock().expect("flood mutex").take() {
+                                let _ = tx.send(());
+                            }
+                        })
+                    }
+                }),
+            );
+
+        let _h1 = serve_router(&server, app);
+        let accept = accept_messages(&server);
+        let addr = server.endpoint().addr();
+        let client = H1Client::new(&client_transport);
+
+        // Channel A (video): subscribe and never read.
+        let stalled = ws_open(&client, &addr, "/flood").await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), &mut flood_done_rx)
+                .await
+                .is_err(),
+            "the flood should be blocked on flow control with no reader"
+        );
+
+        // Channel B (control): a separate connection keeps answering.
+        let who = tokio::time::timeout(Duration::from_secs(10), get_body(&client, &addr, "/whoami"))
+            .await
+            .expect("a second connection must not wait behind the stalled channel");
+        assert_eq!(
+            who.as_ref(),
+            client_transport.endpoint().id().to_string().as_bytes()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), &mut flood_done_rx)
+                .await
+                .is_err(),
+            "channel A should still be stalled"
+        );
+
+        // Dropping the stalled peer unblocks and tears the handler down.
+        drop(stalled);
+        tokio::time::timeout(Duration::from_secs(5), flood_done_rx)
+            .await
+            .expect("stalled channel tears down when the peer goes away")
+            .expect("flood handler signalled");
+
+        accept.abort();
+        server.endpoint().close().await;
+        client_transport.endpoint().close().await;
+    }
+
     /// h1, h3 and the message ALPN share one endpoint and identity.
     #[tokio::test]
     async fn h1_h3_and_message_path_coexist() {
@@ -632,12 +722,13 @@ mod tests {
     async fn ws_open(
         client: &H1Client,
         peer: &EndpointAddr,
+        path: &str,
     ) -> tokio_tungstenite::WebSocketStream<TokioIo<Upgraded>> {
         use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
         let mut connection = client.connect(peer).await.expect("ws connect");
         let request = Request::builder()
             .method(Method::GET)
-            .uri("/ws")
+            .uri(path)
             .header("connection", "upgrade")
             .header("upgrade", "websocket")
             .header("sec-websocket-version", "13")
@@ -816,7 +907,7 @@ mod tests {
 
         // Frame latency on the direct path: a 1 KiB control message and a
         // 64 KiB payload (roughly a compressed 1080p frame).
-        let mut socket = ws_open(&client, &target).await;
+        let mut socket = ws_open(&client, &target, "/ws").await;
         measure_frames("h1 ws direct", &mut socket, 1024, 200).await;
         measure_frames("h1 ws direct", &mut socket, 64 * 1024, 100).await;
         socket.close(None).await.expect("close");
@@ -824,7 +915,7 @@ mod tests {
         if !relay_only {
             // The advertised address on a normal run (relay or LAN, whichever
             // iroh selects); skipped when relay-only, where it is `target`.
-            let mut socket = ws_open(&client, &addr).await;
+            let mut socket = ws_open(&client, &addr, "/ws").await;
             measure_frames("h1 ws advertised", &mut socket, 1024, 60).await;
             measure_frames("h1 ws advertised", &mut socket, 64 * 1024, 30).await;
             socket.close(None).await.expect("close");
