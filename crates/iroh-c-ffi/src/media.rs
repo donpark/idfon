@@ -8,7 +8,7 @@ use std::{
     collections::VecDeque,
     ffi::c_void,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     sync::{Arc, Mutex},
 };
 
@@ -778,9 +778,80 @@ pub fn media_live_stop() {
         *queue = None;
     }
 }
+// --- Listen-leg state (docs/media-adaptation.md §C2) ----------------------
+
+/// What the listening leg is doing, for the shell's call UI. The media plane
+/// heals itself; this is how the UI stops claiming "playing" while it is
+/// silent (the 2026-11-04 Wi-Fi→cellular run: a 6 s hole with the bar still
+/// animating). States are the wire values of [`media_live_state`].
+const SUB_IDLE: u8 = 0;
+const SUB_CONNECTING: u8 = 1;
+const SUB_PLAYING: u8 = 2;
+const SUB_RECONNECTING: u8 = 3;
+/// The retry loop gave up (a hard transport error, not an early track end).
+/// The call can still be up with dead air until the shell rebuilds the leg.
+const SUB_FAILED: u8 = 4;
+
+static SUB_STATE: AtomicU8 = AtomicU8::new(SUB_IDLE);
+/// Set by the shell (foreground return) to shorten the stall window and skip
+/// the retry backoff; cleared as soon as a frame arrives again.
+static SUB_KICK: AtomicBool = AtomicBool::new(false);
+/// When the OS last reported an interface change (NWPathMonitor). For a short
+/// grace window the stall watchdog waits 500 ms instead of 2 s, so a path
+/// switch is caught as it happens rather than after the old path has been
+/// silent for 2 s.
+static PATH_CHANGED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+fn set_sub_state(state: u8) {
+    let previous = SUB_STATE.swap(state, Ordering::Relaxed);
+    if previous != state {
+        tracing::info!(target: "quality", from = previous, to = state, "subscribe state");
+        eprintln!("[media] subscribe state {previous} -> {state}");
+    }
+}
+
+/// What the listening leg is doing: 0 idle, 1 connecting, 2 playing,
+/// 3 reconnecting, 4 failed. Cheap; safe to poll from the call UI.
+#[ffi_export]
+pub fn media_live_state() -> u8 {
+    SUB_STATE.load(Ordering::Relaxed)
+}
+
+/// The shell returned to the foreground: answer a stalled subscription now
+/// instead of at the end of its backoff. No-op when nothing is subscribed.
+#[ffi_export]
+pub fn media_live_reconnect() {
+    SUB_KICK.store(true, Ordering::Relaxed);
+}
+
+/// The OS reports a network interface change. Shorten the stall watchdog for
+/// a grace window; if frames keep flowing this costs nothing.
+#[ffi_export]
+pub fn media_live_path_changed() {
+    *PATH_CHANGED_AT.lock().unwrap_or_else(|poison| poison.into_inner()) =
+        Some(std::time::Instant::now());
+}
+
+/// How long a silent subscription is tolerated before it is rebuilt: 2 s
+/// normally, 500 ms right after a path change or a foreground kick.
+fn stall_window() -> std::time::Duration {
+    let recent_path = PATH_CHANGED_AT
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .map(|at| at.elapsed() < std::time::Duration::from_secs(15))
+        .unwrap_or(false);
+    if recent_path || SUB_KICK.load(Ordering::Relaxed) {
+        std::time::Duration::from_millis(500)
+    } else {
+        std::time::Duration::from_secs(2)
+    }
+}
+
 #[ffi_export]
 pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
     media_live_unsubscribe();
+    SUB_KICK.store(false, Ordering::Relaxed);
+    set_sub_state(SUB_CONNECTING);
     let Ok(ticket) = ticket.to_str().parse::<LiveTicket>() else {
         return 1;
     };
@@ -809,6 +880,9 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                     break;
                 }
                 attempt += 1;
+                if attempt > 1 {
+                    set_sub_state(SUB_RECONNECTING);
+                }
                 let res = subscribe_decode_once(
                     ticket.clone(),
                     &thread_stop,
@@ -838,7 +912,15 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                             "[media] subscribe ended early attempt={attempt} decoded={decoded_total} frames; resubscribing in {}ms",
                             backoff.as_millis()
                         );
-                        tokio::time::sleep(backoff).await;
+                        // The shell can cut the wait short (foreground return):
+                        // poll instead of one long sleep.
+                        let deadline = tokio::time::Instant::now() + backoff;
+                        while tokio::time::Instant::now() < deadline {
+                            if SUB_KICK.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
                     }
                     Err(err) => {
                         result = Err(err);
@@ -855,6 +937,7 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
             result
         });
         if let Err(err) = result {
+            set_sub_state(SUB_FAILED);
             tracing::error!("live subscribe failed: {err:#}");
             eprintln!("live subscribe failed: {err:#}");
         }
@@ -1040,7 +1123,6 @@ async fn subscribe_decode_once(
         // subscription stalled (observed on iOS: the publisher's serve stream
         // died without SUBSCRIBE_END, and consumer.read() then never returns
         // — neither frames nor a track end). Treat it like an early end.
-        const FRAME_STALL: std::time::Duration = std::time::Duration::from_secs(2);
         let mut last_frame = std::time::Instant::now();
         loop {
             if stop.load(Ordering::Relaxed) {
@@ -1049,14 +1131,15 @@ async fn subscribe_decode_once(
                 }
                 return Ok(true);
             }
-            if last_frame.elapsed() >= FRAME_STALL {
+            if last_frame.elapsed() >= stall_window() {
                 tracing::warn!(
                     attempt,
                     decoded = *decoded_total,
                     media_secs = samples.len() as f64 / (48_000.0 * input.channels as f64),
                     stall_secs = last_frame.elapsed().as_secs_f64(),
-                    "subscribe stalled: no frames for 2s; treating as early track end"
+                    "subscribe stalled: no frames within the window; treating as early track end"
                 );
+                set_sub_state(SUB_RECONNECTING);
                 return Err(anyhow::anyhow!(SubscribeEndError::Transient));
             }
             let frame = match tokio::time::timeout(
@@ -1082,6 +1165,8 @@ async fn subscribe_decode_once(
                 return Err(anyhow::anyhow!(SubscribeEndError::Transient));
             };
             last_frame = std::time::Instant::now();
+            // Frames flow again: the foreground kick has done its job.
+            SUB_KICK.store(false, Ordering::Relaxed);
             let decoded = AUDIO_FRAMES_DECODED.fetch_add(1, Ordering::Relaxed) + 1;
             *decoded_total = decoded as usize;
             let arrived = std::time::Instant::now();
@@ -1148,6 +1233,8 @@ async fn subscribe_decode_once(
                 playback.write(&apply_playback_gain(data), pts_us as u64)?;
                 crate::av::anchor_audio(written_pts_us as u64, playback.buffered());
             }
+            // Audio has reached the sink: the call is audible again.
+            set_sub_state(SUB_PLAYING);
             for chunk in frame.data.chunks_exact(4) {
                 samples.push(f32::from_le_bytes(chunk.try_into().unwrap()));
             }
@@ -1250,6 +1337,8 @@ pub fn media_live_unsubscribe() {
             let _ = handle.join();
         }
     }
+    SUB_KICK.store(false, Ordering::Relaxed);
+    set_sub_state(SUB_IDLE);
 }
 #[ffi_export]
 pub fn media_video_push_frame(data: *const u8, len: usize, width: u32, height: u32, pts_ms: u64) {
@@ -1859,6 +1948,33 @@ mod tests {
     #[test]
     fn media_path_is_stable() {
         assert!(super::media_path("x").ends_with("x"));
+    }
+
+    /// The stall watchdog is 2 s normally and 500 ms after the shell asks for
+    /// an immediate answer (foreground return) or the OS reports a path
+    /// change. That shortening is what turns a 6 s transition hole into ~2 s.
+    #[test]
+    fn foreground_kick_and_path_change_shorten_the_stall_window() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *super::PATH_CHANGED_AT.lock().unwrap() = None;
+        super::SUB_KICK.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(super::stall_window(), std::time::Duration::from_secs(2));
+
+        super::media_live_reconnect();
+        assert_eq!(super::stall_window(), std::time::Duration::from_millis(500));
+        super::SUB_KICK.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        super::media_live_path_changed();
+        assert_eq!(super::stall_window(), std::time::Duration::from_millis(500));
+
+        // The state the shell polls maps to the documented wire values.
+        super::set_sub_state(super::SUB_RECONNECTING);
+        assert_eq!(super::media_live_state(), 3);
+        super::set_sub_state(super::SUB_IDLE);
+        assert_eq!(super::media_live_state(), 0);
+        *super::PATH_CHANGED_AT.lock().unwrap() = None;
     }
 
     #[test]

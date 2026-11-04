@@ -129,10 +129,14 @@ final class LiveActivityController: NSObject {
             }
         }
 
-        /// Live model/latency readout for the Bar (voice calls only).
+        /// Live model/latency readout for the Bar, and the listen-leg state
+        /// (media-adaptation §C2): "Reconnecting…" while the media plane is
+        /// rebuilding a subscription, rather than a bar that looks healthy
+        /// over silence.
         var stats: String? {
             switch self {
-            case .audio, .video: return nil
+            case .audio(let call): return call.mediaHint
+            case .video: return nil
             case .voice(let session): return session.stats
             }
         }

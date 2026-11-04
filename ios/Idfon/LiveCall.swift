@@ -179,10 +179,43 @@ final class LiveCall {
     /// Observed on the main queue whenever state (or error) changed.
     var onState: (() -> Void)?
 
+    /// What the listening leg is doing (media-adaptation §C2), for the call
+    /// UI: the plane retries on its own, and this is the only way the bar can
+    /// stop claiming "playing" while the audio is gone. Nil when audible.
+    var mediaHint: String? {
+        switch media_live_state() {
+        case 1: return "Connecting…"
+        case 3: return "Reconnecting…"
+        case 4: return "Audio lost"
+        default: return nil
+        }
+    }
+
+    /// The app came back to the foreground. iOS can suspend the process once
+    /// the audio stops, freezing the retry loop with it, so a call that would
+    /// have healed in the background must be asked again here: kick a stalled
+    /// leg, rebuild one the plane gave up on (state 4).
+    func foregrounded() {
+        guard life.phase != .idle else { return }
+        switch media_live_state() {
+        case 1, 3:
+            media_live_reconnect()
+        case 4:
+            guard let ticket = liveTicket else { return }
+            idfonLog("idfon live call: listen leg gave up; rebuilding on foreground")
+            Task { _ = await self.subscribe(ticket: ticket) }
+        default:
+            break
+        }
+    }
+
     private let client = IdfonClient()
     private var published = false
     /// The channel count the mic leg publishes (1 mono, 2 = the 2D mode).
     private var publishedChannels = 1
+    /// The ticket of the listen leg, kept so a leg the media plane gave up on
+    /// (state 4) can be rebuilt without another round-trip with the peer.
+    private var liveTicket: String?
     private var operation: Task<Void, Never>?
 
     /// Runs one transition and its effects, then syncs the crash-recovery
@@ -209,6 +242,7 @@ final class LiveCall {
             // The peer answered our dial (or re-published a fresh ticket):
             // cue and subscribe non-fatally — a failed subscribe must not tear
             // down a call we are already publishing into.
+            liveTicket = ticket
             CallTonePlayer.shared.start(.answered)
             Task {
                 if await !self.subscribe(ticket: ticket) {
@@ -223,6 +257,7 @@ final class LiveCall {
             videoEnabled = false
             HybridVoice.shared.stop()
             AudioPusher.shared.stop()
+            liveTicket = nil
             AppBackgroundTask.run {
                 media_live_stop()
                 Diag.logCallRecord() // the record folds inside the stop: ship once, here
