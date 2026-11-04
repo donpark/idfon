@@ -3161,6 +3161,7 @@ dependencies = [
  "idfon-protocol",
  "iroh",
  "iroh-h3-client",
+ "serde_json",
  "tokio",
  "tokio-tungstenite",
  "tracing",
