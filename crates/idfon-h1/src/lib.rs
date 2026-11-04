@@ -692,7 +692,7 @@ mod tests {
     /// this dials the server's bound port on 127.0.0.1 explicitly.
     ///
     /// Run with `cargo test -p idfon-h1 -- --ignored --nocapture throughput`.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "throughput bench, not a functional assertion"]
     async fn throughput_over_a_direct_path() {
         let (server, client_transport) = pair().await;
@@ -839,7 +839,7 @@ mod tests {
     /// The baseline the whole decision rests on: plain TCP WebSocket echo on
     /// loopback, same frame sizes as the iroh bench. Anything iroh adds over
     /// this is QUIC's cost, not the adapter's.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "throughput bench; needs no network"]
     async fn tcp_ws_baseline() {
         use futures_util::{SinkExt, StreamExt};
@@ -899,7 +899,7 @@ mod tests {
 
     /// Is the 27 MiB/s iroh, or is it the h1 adapter? Same 12 MiB echo with no
     /// hyper and no HTTP: one bi-stream, `pump` one way, raw writes the other.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "throughput bench; needs no network"]
     async fn iroh_raw_bulk() {
         use idfon_core::transport::pump;
