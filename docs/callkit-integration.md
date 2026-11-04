@@ -112,7 +112,12 @@ instance at app start. Flipping
    activates nothing itself. It *configures* the inactive session before the
    report/transaction (`.playAndRecord` / `.voiceChat`, Apple's CallKit audio
    checklist), then hands over: capture + playback start only in
-   `provider(_:didActivate:)` and stop in `provider(_:didDeactivate:)`.
+   `provider(_:didActivate:)` and stop in `provider(_:didDeactivate:)`
+   (**landed 2026-11-04**: `didDeactivate` pauses the engine keeping the
+   profile, `didActivate` rebuilds it — a cellular interruption leaves the
+   call resumable, not frozen. Backstop for the §4 "no `didActivate` back"
+   flake: the engine's configuration-change self-restart also rebuilds from
+   the paused state).
    Starting audio, calling `setActive`, or reconfiguring the session after
    activation is the documented one-way-audio bug (see the bug list below —
    the race is about activation timing, not about `setCategory` on an
