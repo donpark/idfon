@@ -35,9 +35,7 @@ import torch
 
 from data import load_shard
 from gate import student_events
-from model import Student
 from oracle import FRAME_MS, Oracle
-from registry import by_id
 
 FRAME_S = FRAME_MS / 1000
 BARGE_WINDOW = 8   # 640 ms at 80 ms frames: tyger-eval's "caught within" window
@@ -183,6 +181,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shards", required=True, help="gate shard dir (featurize.py --split val)")
     ap.add_argument("--student", required=True, help="student.pt from train.py --out")
+    ap.add_argument("--tap", default=None,
+                    help="shared-latent checkpoints: which tap adapter to replay "
+                         "(must match --feature-layer; default: the checkpoint's deploy tap)")
+    ap.add_argument("--temp", type=float, default=1.0,
+                    help="pre-seam temperature (calibrate.py --temp-grid fit; 1.0 = off)")
     ap.add_argument("--feature-layer", type=int, default=15,
                     help="which recorded encoder layer the student reads (must match training)")
     ap.add_argument("--ep-thr", type=float, default=0.9146, help="rules threshold knobs for the replay")
@@ -200,11 +203,11 @@ def main():
     if not paths:
         sys.exit("no shards")
 
-    ckpt = torch.load(args.student, map_location=args.device)
-    heads = [by_id(i) for i in ckpt["heads"]]
-    model = Student(heads, width=ckpt["width"], layers=ckpt["layers"]).to(args.device)
-    model.load_state_dict(ckpt["state_dict"])
-    model.eval()
+    from checkpoint import TempScaled, load as load_model
+    model, ckpt = load_model(args.student, tap=args.tap, device=args.device)
+    if args.temp != 1.0:
+        model = TempScaled(model, args.temp)
+    heads = model.heads_spec
     oracle = Oracle(device="cpu")  # rules only; the student is its own chain here
     print(f"student: {args.student} ({ckpt.get('params', '?')} params, heads: {', '.join(h.id for h in heads)}), "
           f"thresholds ep/barge/bc = {args.ep_thr}/{args.barge_thr}/{args.bc_thr}, "

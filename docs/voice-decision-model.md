@@ -282,6 +282,110 @@ table: `bench-results/tap-probes.md`. Headline rows (R² per axis):
 shared causal `z` (width-256 GRU) → one decoder, unchanged 8-vector seam; the
 shipped `Student` is untouched (checkpoint layout pinned by `test_model.py`).
 
+**Weighted multi-teacher baseline (2026-11-03, epic #132 P2).**
+`ports/tyger-student/train_shared.py` trains one `SharedLatentStudent` over the
+three frame-aligned dualturn tap shard sets (`l15-windowed`, `l4-windowed`,
+`l4-streaming` = deploy target) with **per-axis teacher weights from the P0
+probe table** — `raw = max(val R² of the tap's ridge probe on the head's
+8-vector columns, 0)`, `w = raw / mean(raw over the five teacher heads)` (mean
+exactly 1.0 per tap; the corpus `hold` head fixed at 1.0), so the weighted loss
+`Σ w·L / n_heads` keeps train.py's plain-mean scale while each tap's batches
+emphasize the axes it measurably carries. Never averaged teachers. Weights land
+state/endpoint ≈ 1.23–1.29, hazard ≈ 0.91–1.01, bc ≈ 0.85, barge ≈ 0.67–0.68
+(probe R² per tap in `bench-results/*/weights.json`, one `probe.py` rerun away).
+Fixed baseline for P3: 60 epochs (40 @ lr 1e-3 + 20 @ 3e-4, seed 0). Measured
+(`bench-results/` scratch, all regenerable via `train_shared.py` + `gate.py` /
+`calibrate.py` / `harness.py` — full tables in issue #137):
+
+- **Score gates reproduce per path.** l15-windowed endpoint **.0129** (the
+  single-tap reference .0140), every head ≤ .02; the L4 paths land .0253–.0262
+  endpoint — better than the shipped L4 student's .0273 but over the ≤ .02
+  registry gate, which the shipped L4 student also misses (the gate is an
+  L15-path bar; L4 endpoint is the tap ceiling — probe R² .78 vs .81).
+- **Event agreement** (rules replay): live L4 pooled 13 captures **59.7%
+  calibrated** (bar 56.6%; current L4 student 56.8%) and corpus-val L4-family
+  58.4–60.5% (current 58.5%) reproduce; the **L15 family carries the residual**
+  — live 8 captures 62.5% (bar 64.4%), corpus val 66.3% default (current 69.1%).
+  (loss-ab's 71.3% predates the 2026-11-03 replay-semantics change: `gate.py`
+  now replays mode-less shards as listen, was response.)
+- **Attribution** (uniform-weights A/B, same seed/epochs): corpus l15 agreement
+  49.0% uniform vs 60.9% weighted — **+11.9 pts from the per-axis weighting**
+  alone; multi-tap training without it does not reproduce the single-tap student.
+- **Product metrics** (harness, 13 held-out sessions, 139 eots, 20 interrupting
+  onsets): latency / miss / barge / bc bars hold everywhere (miss −7 to −19 vs
+  teacher at the default triple); the early-cut bar (≤ teacher + 1 pt of eots =
+  1.4 events) rides inside threshold noise — early +4/miss −7 at the default
+  triple, early ±0/miss +2 at ep 0.93; the shipped L4 student is +5 early on the
+  same set. Early/miss is a traits-knob trade, not a model deficit.
+- **Negative results:** agreement climbs with epochs (l15 corpus 57.4 → 60.9 →
+  66.3% at 20/40/60) but the early/miss trade shifts toward early and l15
+  worst-session latency grows (+0.32 → +0.48 s); 80 epochs regresses (live
+  61.5%). hold AUC decays with epochs (.97 → .93). bc under-firing persists
+  (shared l15 fires 92 vs the single-tap student's 122 candidate backchannels
+  against 112 reference events) — the known product gap, amplified by the bc
+  down-weight its own probe quality dictates.
+
+**Product-bar revision (2026-11-03, after the P2 measurement).** The proposed
+"early and miss each ≤ teacher + 1 pt of eots" bars are too tight to judge
+anything: on the 13-session/139-eot set the tolerance is 1.4 events while the
+ep knob moves the early/miss split by more than that (ep 0.93: early ±0/miss
++2; ep 0.9146: early +4/miss −7 — no triple satisfies both within noise), and
+the shipped L4 student is +5 early on the same set. Revised bar (what P3/P7
+judge against): **endpoint misses + early cuts combined ≤ teacher's combined
++ 2 pts of eots, and latency ≤ +160 ms mean-of-medians / +320 ms worst
+session** — the combined error is knob-independent (every measured model is
+within +2 events of the teacher's combined count), the early/miss *split* is
+report-only as a traits-knob trade.
+
+**Cross-tap consistency ablation (2026-11-03, epic #132 P3, issue #143).**
+`train_shared.py --consistency LAM` adds `LAM · symmetric-KL(seam decisions via
+tap A ‖ tap B)` on the same frames (paired windows, seeded partner tap per
+step; λ=0 verified bit-identical to the baseline recipe). A/B vs the fixed P2
+baseline at λ = 0.1 / 0.3: **λ=0.3 earns partial credit — kept.** At the
+product (calibrated) triples it improves 4/5 agreement measurements
+(+0.4…+0.6, both live fits included), closes ~25–30% of the l15 residual
+(live-cal 62.50 → 63.11 vs the 64.4 bar), improves both L4 endpoint gates
+(.0253/.0262 → .0230/.0256), and cuts missed turn-ends by 9 per 139 eots on
+every path with the highest barge catch. Negative results: λ=0.1 is mixed to
+negative; the term costs default-triple agreement (calibration shift, absorbed
+by the per-model fit — P4 territory); hold AUC decays further; and the l15
+residual is mostly *not* a tap-agreement problem (KL recovered only a quarter
+of it — the rest is per-tap head quality: bc under-fire + endpoint timing,
+pointing at P4 calibration and data). P5 should budget adapter + calibration
+cost, not plug-and-play.
+
+**Per-adapter calibration + quantization parity (2026-11-04, epic #132 P4,
+issue #145).** One temperature scalar per adapter (pre-seam logits/T,
+`calibrate.py --temp-grid`: NLL-to-teacher + agreement fit, both reported) — and
+the P3 residual turns out to be largely calibration: **live-L15 clears its bar
+(63.11 → 65.16% vs the 64.4% bar)** and default-triple behavior recovers +6.6
+pts at T-only. The fit is per adapter AND per domain (l15 wants sharpening
+T≈0.7–0.8; the l4-windowed live path wants T=1.0 and loses 2.9 pts at any
+other fit — one global T is a net negative). The corpus l15 residual (−1.9 vs
+anchor) survives calibration — per-tap head quality, per P3. At the fitted
+configs bc recall recovers to teacher level and misses drop to 7–8 per 139
+eots (latency below teacher; the sharpened split leans early — the combined
+bar holds with margin). Quantization: fp32 export passes clean (8e-7, 0
+flips, 0.08–0.15 ms/step, 5.28 MB = student-sized artifact); **int8 group-16
+AND group-8 fail the 2e-3 probs envelope on the shared tier** (3.1–6.1e-3)
+while the single-tap student passes at group-8 (1.63e-3) — so per the repo
+ruling **QAT is needed** (fragility is mostly the shared architecture, 2.33e-3
+for the P2 baseline; consistency adds ~0.7e-3). int8 buys bytes (1.75 MB) not
+CPU latency; rules decisions stayed identical in every quantized run.
+**QAT verdict (2026-11-04): done — fine-tune recipe.** `train_shared.py --qat N`
+projects the export's int8 group-N grid (GRU W/R + adapter projections) onto the
+weights after every step (`qat.py`, bit-identical to `quantize_step.py`); QAT
+fine-tuning (20 ep @ 1e-4 from the converged fp32 λ=0.3 model) makes the int8
+artifact **numerically indistinguishable from the torch model (6e-7…7e-6 vs the
+2e-3 envelope, 0 flips, all adapters)** at zero quality cost (gates unchanged,
+live-L15 exactly at its 64.4% bar) — deployable: 5.28 → 1.75 MB. Negative
+results: training on the grid *from scratch* costs the l15 path 5–7 pts (the
+epic's "from the start" is not free for this architecture — converge first,
+then adapt); a shape-convention bug (`nn.Linear` (out, in) vs the export's
+(in, out)) once shipped GRU-only QAT and was caught by the parity gate; group-8
+artifacts need `--qat 8` (grid mismatch); QAT shifts calibration again —
+per-model fits stay mandatory.
+
 **P3 — fold into classic's contract** (`voice-tyger-option.md` P3): classic
 behavior stays; its endpointing/yield decisions get the model's quality, traits
 stay as the knobs, fail-open stays.
