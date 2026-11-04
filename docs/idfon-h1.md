@@ -120,8 +120,11 @@ to beat or justify. Same host, same frame sizes:
 Read this honestly: **iroh costs ~2× the frame latency and ~100× the bulk
 throughput of plain TCP on the same machine.** That is QUIC in userspace: packet
 pacing, congestion control, per-stream windows, encryption. It is not the h1
-adapter's fault — h1 is a thin duplex over the QUIC stream — and it does not go
-away with more engineering on this layer.
+adapter's fault — `iroh_raw_bulk` runs the same 12 MiB echo as a bare bi-stream
+pump with no hyper and no HTTP, and gets the same aggregate (~27 MiB/s). Growing
+the payload does not close the gap either: 12 / 48 / 192 MiB give 13.1 / 15.9 /
+17.7 MiB/s per direction, so it is a steady-state ceiling, not slow-start ramp.
+It does not go away with more engineering on this layer.
 
 So "is WS over iroh worthwhile?" depends entirely on what it replaces:
 
