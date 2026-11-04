@@ -4,7 +4,7 @@ use std::{
 };
 
 use iroh::protocol::Router;
-use iroh::{address_lookup::memory::MemoryLookup, endpoint::presets, Endpoint};
+use iroh::{address_lookup::memory::MemoryLookup, Endpoint};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 
 struct BlobProvider {
@@ -38,7 +38,7 @@ pub async fn put(root: PathBuf, data: Vec<u8>) -> anyhow::Result<(BlobTicket, us
     let (endpoint, store) = match guard.as_ref() {
         Some(provider) => (provider.endpoint.clone(), provider.store.clone()),
         None => {
-            let endpoint = Endpoint::bind(presets::N0).await?;
+            let endpoint = idfon_core::relay::endpoint_builder().bind().await?;
             let store = FsStore::load(root).await?;
             let protocol = BlobsProtocol::new(store.as_ref(), None);
             let router = Router::builder(endpoint.clone())
@@ -79,7 +79,7 @@ pub async fn fetch(ticket: String, root: PathBuf) -> anyhow::Result<PathBuf> {
         // Seed them so the download does not depend on pkarr having propagated —
         // that race was the PeerOffline failure for freshly published blobs.
         let lookup = MemoryLookup::from_endpoint_info([ticket.addr().clone()]);
-        let endpoint = Endpoint::builder(presets::N0)
+        let endpoint = idfon_core::relay::endpoint_builder()
             .address_lookup(lookup)
             .bind()
             .await?;

@@ -10,6 +10,30 @@ pub const IDFON_DAEMON_OK: i32 = 0;
 pub const IDFON_DAEMON_EARG: i32 = -1; // null or non-UTF-8 argument
 pub const IDFON_DAEMON_EFAILED: i32 = -2; // daemon exited with an error (already printed to stderr)
 
+/// Per-run relay selection parameter (docs/relay-config.md): wins over the
+/// persisted configuration and `IDFON_RELAY_*` per field. Empty strings leave
+/// a field unset (a lower source fills it). Call before `idfon_daemon_run`;
+/// it applies to every endpoint this process binds.
+#[no_mangle]
+pub extern "C" fn idfon_relay_settings_set(urls: *const c_char, token: *const c_char, only: bool) {
+    let to_option = |pointer: *const c_char| -> Option<String> {
+        if pointer.is_null() {
+            return None;
+        }
+        unsafe { CStr::from_ptr(pointer) }
+            .to_str()
+            .ok()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    idfon_core::relay::set_parameter_override(idfon_core::relay::RelayConfig {
+        urls: to_option(urls),
+        token: to_option(token),
+        only,
+    });
+}
+
 /// Runs the daemon on the calling thread until it exits. `socket_path` and
 /// `data_dir` must be non-null; `transport` may be NULL for the default
 /// ("iroh"; the only other valid value is "fake"). Returns

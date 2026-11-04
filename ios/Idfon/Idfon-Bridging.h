@@ -12,6 +12,13 @@
 // shutdown never happens on iOS: the daemon lives with the process).
 int idfon_daemon_run(const char *socket_path, const char *data_dir, const char *transport);
 
+// Per-run relay selection parameter (docs/relay-config.md): wins over the
+// persisted configuration and IDFON_RELAY_* per field. Empty strings leave a
+// field unset (a lower source fills it). Call before idfon_daemon_run — it
+// applies to every endpoint this process binds.
+#include <stdbool.h>
+void idfon_relay_settings_set(const char *urls, const char *token, bool only);
+
 // One-shot JSON request/response over the daemon socket (the RPC bridge to
 // a separately-packaged daemon). Thread-safe; each call opens its own
 // connection. On IDFON_OK, *out/*out_len hold a heap-allocated response body

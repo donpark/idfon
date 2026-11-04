@@ -354,7 +354,9 @@ pub async fn subscribe_caller(
         if stop.load(Ordering::Relaxed) {
             anyhow::bail!("call stopped before subscribe");
         }
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+        // Relay selection at bind time (docs/relay-config.md), like every
+        // other endpoint — the caller may be relay-only behind enterprise NAT.
+        let endpoint = idfon_core::relay::endpoint_builder()
             .bind()
             .await
             .context("caller subscribe endpoint")?;

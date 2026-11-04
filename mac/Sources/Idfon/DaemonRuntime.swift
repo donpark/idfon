@@ -123,14 +123,16 @@ enum DaemonRuntime {
         }()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: idfond)
-        process.arguments = ["--socket", socket, "--data-dir", data]
+        // Relay selection rides on flags (docs/relay-config.md), not env vars.
+        process.arguments = ["--socket", socket, "--data-dir", data] + RelaySettings.daemonArguments()
         process.standardOutput = log
         process.standardError = log
-        // Enterprise relay config from settings (runtime, not compiled in).
-        let relayEnv = RelaySettings.environment()
-        if !relayEnv.isEmpty {
+        // Relay auto-enrollment env from settings (docs/relay-auth.md §6);
+        // selection itself goes through daemonArguments() above.
+        let enrollEnv = RelaySettings.enrollEnvironment()
+        if !enrollEnv.isEmpty {
             process.environment = ProcessInfo.processInfo.environment
-                .merging(relayEnv) { _, new in new }
+                .merging(enrollEnv) { _, new in new }
         }
         do {
             try process.run()

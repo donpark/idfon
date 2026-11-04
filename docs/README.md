@@ -41,6 +41,7 @@ kept because it records decisions; **design** = not all implemented.
 | --- | --- |
 | `idfon-gateway.md` | `idfon://` addressing, loopback gateway, HTTP/3 provider |
 | `multi-device.md` | one account across devices (design) |
+| `relay-config.md` | relay selection at runtime — parameter (flags / app launch args / FFI / `IDFON_RELAY_*`) > configuration (app Relay settings, `~/.idfon/relay.conf`) > default (N0); who honors it and why the vendored libs must be re-staged (as-built) | configuring a relay, changing relay without a binary rebuild, precedence questions |
 | `relay-auth.md` | relay access: identity→relay claiming, caller-bound grants, relay-issued owner/non-owner tokens, revocation (as-built for the auth service + grant contract + daemon owner-side auto-enrollment) |
 | `relay-test-plan.md` | hand-off test plan for relay auth: L0–L3 cases, pass criteria, known gaps, rollback |
 | `chatrooms.md` | rooms, direct fan-out, gossip |

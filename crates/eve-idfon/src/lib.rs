@@ -23,7 +23,7 @@ use idfon_protocol::{
     AckStatus, Capability, CapabilityTicket, MessageAck, MessageContent, MessageEnvelope,
     VoiceMode, VoiceRoute, MAX_FRAME_BYTES,
 };
-use iroh::{endpoint::presets, protocol::Router, Endpoint, EndpointAddr, EndpointId};
+use iroh::{protocol::Router, Endpoint, EndpointAddr, EndpointId};
 use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
@@ -825,7 +825,8 @@ async fn serve(
             .context("bind iroh endpoint")?,
     );
     let blob_store = FsStore::load(&blob_dir).await.context("load blob store")?;
-    let blob_endpoint = Endpoint::bind(presets::N0)
+    let blob_endpoint = idfon_core::relay::endpoint_builder()
+        .bind()
         .await
         .context("bind blob endpoint")?;
     let blob_router = Router::builder(blob_endpoint.clone())
@@ -2225,7 +2226,7 @@ async fn handle_blob_fetch(
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-        let endpoint = Endpoint::bind(presets::N0).await?;
+        let endpoint = idfon_core::relay::endpoint_builder().bind().await?;
         let result = fetch_blob_once(&ticket, &endpoint, store, root).await;
         endpoint.close().await;
         match result {
