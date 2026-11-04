@@ -24,7 +24,14 @@ private func logToIdfon(_ level: OSLogType, _ message: String, _ file: String) {
     // Mirror to stderr like NSLog did: `devicectl … --console` and the e2e
     // scripts grep these markers there (pair-apple-channels.sh,
     // ios-device-test.sh, mac-e2e.sh); os.Logger alone never reaches them.
-    FileHandle.standardError.write(Data("\(message)\n".utf8))
+    // POSIX write: FileHandle raises an uncatchable ObjC exception when the
+    // pipe breaks — every devicectl console drop SIGABRTed the app on its
+    // next log line (2026-11-03 crash traces).
+    var out = "\(message)\n"
+    out.withUTF8 { buf in
+        fcntl(STDERR_FILENO, F_SETNOSIGPIPE, 1)
+        _ = Darwin.write(STDERR_FILENO, buf.baseAddress, buf.count)
+    }
     IdfonLogFile.append(message)
 }
 
@@ -36,7 +43,11 @@ private func logToIdfon(_ level: OSLogType, _ message: String, _ file: String) {
 /// from earlier runs are removed at startup so the pull is unambiguous.
 enum IdfonLogFile {
     private static let lock = NSLock()
-    private static let handle: FileHandle? = {
+    // POSIX fd throughout: FileHandle.write raises uncatchable ObjC exceptions
+    // on a broken/closed handle, which SIGABRTed the app mid-dial (2026-11-03).
+    private static var fd: Int32 = -1
+
+    private static func openLogFile() -> Int32 {
         let dir = NSTemporaryDirectory()
         let me = ProcessInfo.processInfo.processIdentifier
         let fm = FileManager.default
@@ -49,29 +60,21 @@ enum IdfonLogFile {
         }
         let path = dir + "idfon-app-\(me).log"
         fm.createFile(atPath: path, contents: nil)
-        return FileHandle(forWritingAtPath: path)
-    }()
+        return open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+    }
 
     static func append(_ message: String) {
         lock.lock()
         defer { lock.unlock() }
         let stamp = ISO8601DateFormatter().string(from: Date())
-        let line = Data("\(stamp) \(message)\n".utf8)
-        if let handle {
-            try? handle.write(contentsOf: line)
-            return
-        }
+        var line = "\(stamp) \(message)\n"
         // Self-heal: the lazy create can fail at launch and the log file then
         // silently never appears (seen in the field — every E2E round ended
         // blind). Retry the creation per append.
-        let path = NSTemporaryDirectory() + "idfon-app-\(ProcessInfo.processInfo.processIdentifier).log"
-        if !FileManager.default.fileExists(atPath: path) {
-            FileManager.default.createFile(atPath: path, contents: nil)
-        }
-        if let retry = FileHandle(forWritingAtPath: path) {
-            _ = try? retry.seekToEnd()
-            try? retry.write(contentsOf: line)
-            try? retry.close()
+        if fd < 0 { fd = openLogFile() }
+        line.withUTF8 { buf in
+            fcntl(fd, F_SETNOSIGPIPE, 1)
+            _ = Darwin.write(fd, buf.baseAddress, buf.count)
         }
     }
 }
