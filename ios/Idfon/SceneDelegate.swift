@@ -75,6 +75,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDeleg
     func sceneWillEnterForeground(_ scene: UIScene) {
         _ = EdgeClient.shared.drainInbox()
         if EdgeClient.shared.isProbing { EdgeClient.shared.probeLog("scene willEnterForeground") }
+        // A network transition can leave the listen leg stalled or given up
+        // (media-adaptation §C2), and iOS may have suspended the retry loop
+        // with the app. Ask for the leg now instead of at its next backoff.
+        LiveCall.shared.foregrounded()
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {

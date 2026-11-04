@@ -424,13 +424,26 @@ Measure first — everything below needs the same instrumentation to prove out.
 8. **Adaptive jitter buffer** (change). PacedPlayback prebuffer target from
    recent arrival-jitter percentile (clamp ~30–150 ms) instead of fixed 50 ms.
    **Landed 2026-10-30**: `seam::ArrivalJitter` records each write's
-   wall-clock spacing against its media spacing; the p95 of that deviation
-   (clamped 30–150 ms, default 50 ms while warming up) is the prebuffer
-   target, recomputed per write and applied at the next (re)prebuffer and
-   at the overflow trim.
+   wall-clock spacing against its media spacing; that deviation sets the
+   prebuffer target, recomputed per write and applied at the next (re)prebuffer
+   and at the overflow trim.
+   **Retuned 2026-11-04** (WALM 2 HD run: 16 arrival gaps >100 ms, max 353 ms,
+   38 frames written into an empty sink, all heard as crackles): the target is
+   now the **worst** deviation over ~10 s (p95 over 2.5 s cannot see a sparse
+   burst), clamped **60–200 ms** (default 80 ms), with the overflow trim at
+   400 ms, the decoder's `max_age` raised 50→250 ms (a later group used to be
+   discarded on arrival, which no buffer can repair) and the sink trim cap
+   raised 80→400 ms (it undid the buffer a burst had just earned).
 9. **NWPathMonitor on ios/mac** (change). On interface change: announce it
    (quality record tag "transition"), proactively grow the jitter buffer and
    step video down one rung before the breakage hits.
+   **Probe half + watchdog landed 2026-11-04**: `ios/Idfon/PathMonitor.swift`
+   logs every status/interface/expensive/constrained change to `Diag` and the
+   pullable app log, and calls `media_live_path_changed()` so the subscribe
+   watchdog drops from 2 s to 500 ms for a 15 s grace window. The listen leg
+   also reports `media_live_state()` (idle/connecting/playing/reconnecting/
+   failed) for the call bar, and `media_live_reconnect()` lets a foreground
+   return cut the retry backoff. Pre-grow/pre-step stay open (profile layer).
 10. **Media profile + policy layer** (change, per B2 — mostly wiring). Thin
     per-call profile state over the *existing* knobs (FFI setters,
     `Producer::set_bitrate`, `enable_adaptation`/`requested`);

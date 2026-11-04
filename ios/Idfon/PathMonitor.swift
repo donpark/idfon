@@ -21,6 +21,10 @@ enum PathMonitor {
             last = line
             idfonLog("idfon net path: \(line)")
             Diag.log("netpath", ["path": line])
+            // Let the media plane catch a stall as it happens: it shortens
+            // the subscribe watchdog for a grace window (media-adaptation
+            // §C9's cheap half; pre-grow/pre-step stays for the policy layer).
+            media_live_path_changed()
         }
         monitor.start(queue: queue)
     }
