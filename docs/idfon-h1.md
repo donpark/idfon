@@ -147,6 +147,23 @@ Two caveats belong to the demo, not this crate:
   `handle_socket` **before** a second carrier exists, or the iroh path silently
   bypasses read-only mode.
 
+## Manual smoke test (two processes or two machines)
+
+```sh
+# machine A — prints the ticket and the iroh address
+cargo run -p idfon-h1 --example h1_demo -- serve
+# machine B
+cargo run -p idfon-h1 --example h1_demo -- get --peer '<ticket>' --path /whoami
+cargo run -p idfon-h1 --example h1_demo -- get --peer '<ticket>' --path /sse    # 3 events, 1/s
+cargo run -p idfon-h1 --example h1_demo -- ws  --peer '<ticket>' --path /ws     # 101 + echo
+```
+
+The ticket is the peer's `EndpointAddr` as JSON — endpoint id plus addresses. No
+port, certificate, or token is involved. Verified across two processes on one
+host: `GET /whoami` returned the client's endpoint id after a ~1.1 s dial, `/sse`
+delivered three events over ~3 s (streamed, not buffered), and `/ws` answered
+`101 Switching Protocols` and echoed two text messages.
+
 ## Tests
 
 ```sh
