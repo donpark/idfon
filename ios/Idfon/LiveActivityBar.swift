@@ -1,3 +1,4 @@
+import AVFAudio
 import UIKit
 
 /// The live panel's call audio routes: which audio path the call runs on.
@@ -31,6 +32,18 @@ enum CallAudioMode: String, CaseIterable {
         case .speaker: "Speaker"
         case .mute: "Mute"
         }
+    }
+
+    /// The mode that names an output route. Bluetooth is a headset route:
+    /// AirPods are not "Built-in" (the 2026-11-04 report: the AirPods rang
+    /// while the panel showed Built-in).
+    static func forOutputs(_ outputs: [AVAudioSession.Port]) -> CallAudioMode {
+        if outputs.contains(.builtInSpeaker) { return .speaker }
+        if outputs.contains(where: {
+            $0 == .headphones || $0 == .bluetoothHFP || $0 == .bluetoothA2DP
+                || $0 == .bluetoothLE || $0 == .usbAudio
+        }) { return .earphone }
+        return .builtIn
     }
 }
 

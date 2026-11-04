@@ -284,6 +284,12 @@ final class LiveActivityController: NSObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(appBecameActive),
             name: UIApplication.didBecomeActiveNotification, object: nil)
+        // The route settles after the session activates (and can change
+        // mid-call: AirPods connect/disconnect). The radio group must show the
+        // route the audio is actually on, not the pre-activation guess.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(audioRouteChanged),
+            name: AVAudioSession.routeChangeNotification, object: nil)
         // Session Tray rows refresh whenever a transfer progresses (§4).
         TransferCenter.shared.onChange = { [weak self] in self?.render() }
         // Take ownership of both machines' state hooks (the scene delegate no
@@ -305,6 +311,18 @@ final class LiveActivityController: NSObject {
 
     @objc private func appBecameActive() {
         sync()
+    }
+
+    /// Follow the live output route while a call is up. A user pick is a
+    /// command; if the system lands elsewhere, the panel shows the truth.
+    @objc private func audioRouteChanged() {
+        guard phase == .calling || phase == .inCall,
+              selectedAudioMode != .mute,
+              let peer = ActiveMachine.current?.peer ?? pendingCall else { return }
+        let mode = defaultAudioMode(for: peer)
+        guard mode != selectedAudioMode else { return }
+        selectedAudioMode = mode
+        render()
     }
 
     /// Re-derives the Bar from call state; called on every state change and
@@ -624,17 +642,8 @@ final class LiveActivityController: NSObject {
     /// machines run this same rule (`AudioIO.preferredMode` nil = auto).
     private func defaultAudioMode(for peerID: String?) -> CallAudioMode {
         let available = peerID.map(ContactAudioModes.availableRoutes(for:)) ?? CallAudioMode.displayOrder
-        let session = AVAudioSession.sharedInstance()
-        let preferred: CallAudioMode
-        if session.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
-            preferred = .speaker
-        } else if session.currentRoute.outputs.contains(where: {
-            $0.portType == .headphones || $0.portType == .usbAudio
-        }) {
-            preferred = .earphone
-        } else {
-            preferred = .builtIn
-        }
+        let preferred = CallAudioMode.forOutputs(
+            AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType))
         return available.contains(preferred) ? preferred : (available.first ?? .builtIn)
     }
 
