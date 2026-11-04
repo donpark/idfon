@@ -26,6 +26,16 @@ on, so the formula is one probe.py run away from the report.
         --tap l4-streaming=/path/to/tap4-shards \
         --out bench-results/shared-weighted [--epochs 20] [--weights auto|uniform|FILE]
 
+Cross-tap consistency (epic #132 P3, issue #143): `--consistency LAM` adds
+`LAM · symmetric-KL(decisions via tap A ‖ decisions via tap B)` on the SAME
+frames (the shard sets are frame-aligned per session), seam decisions only —
+the 8-vector: state softmax KL + four Bernoulli Kls, mean over the five heads.
+Per step a seeded random partner tap among the others is drawn (grads through
+both forwards); the teacher losses and per-axis weights are untouched — the
+term aligns taps to each other toward the same decision endpoint, it never
+replaces teacher targets. `--consistency 0` (default) reduces exactly to the
+baseline recipe (same items, same seeded shuffle, same loss).
+
 Each tap root holds train/ and val/ subdirs (the three dualturn sets are
 frame-aligned per session id — paired multi-tap batches for P3 need no matching).
 The report (report.json + stdout) prints the probe R2, the exact weights, and every
@@ -44,7 +54,7 @@ from dataclasses import replace
 from checkpoint import TapBound, load as load_checkpoint, save as save_checkpoint
 from data import iter_shards
 from model import SharedLatentStudent, count_params
-from registry import ADAPTERS, ADAPTER_GATE, HEADS, adapter_by_id, teacher_cols
+from registry import ADAPTERS, ADAPTER_GATE, HEADS, adapter_by_id, seam_heads, teacher_cols
 from train import batch, evaluate, gate_check, windows
 
 import probe as probe_mod
@@ -54,6 +64,34 @@ AXIS_BY_COLS = {tuple(cols): axis for axis, cols in probe_mod.AXES}
 HEAD_AXIS = {h.id: AXIS_BY_COLS[tuple(teacher_cols(h))]
              for h in HEADS if teacher_cols(h) is not None}
 DEPLOY_TAP = "l4-streaming"   # registry's deploy target; the checkpoint's default eval tap
+EPS = 1e-6
+
+
+def seam_kl(outs_a, outs_b):
+    """Symmetric KL between two taps' seam decisions on the same frames — the P3
+    consistency surface (the 8-vector the rules read): state softmax KL + four
+    Bernoulli Kls, mean over the five teacher-seam heads (hold excluded: its
+    corpus labels are identical on every tap). Zero iff the decisions agree."""
+    kls = []
+    for h in seam_heads():
+        a, b = outs_a[h.id], outs_b[h.id]
+        if h.kind == "choice":
+            pa, pb = torch.softmax(a, dim=-1), torch.softmax(b, dim=-1)
+            la, lb = pa.clamp_min(EPS).log(), pb.clamp_min(EPS).log()
+            kls.append(0.5 * ((pa * (la - lb)).sum(-1) + (pb * (lb - la)).sum(-1)))
+        else:
+            pa = torch.sigmoid(a.squeeze(-1)).clamp(EPS, 1 - EPS)
+            pb = torch.sigmoid(b.squeeze(-1)).clamp(EPS, 1 - EPS)
+            fwd = pa * (pa.log() - pb.log()) + (1 - pa) * ((1 - pa).log() - (1 - pb).log())
+            rev = pb * (pb.log() - pa.log()) + (1 - pb) * ((1 - pb).log() - (1 - pa).log())
+            kls.append(0.5 * (fwd + rev))
+    return torch.stack(kls).mean()
+
+
+def partner_streams(frames, sl):
+    """A partner tap's two feature streams for one window slice."""
+    t = lambda a: torch.from_numpy(np.ascontiguousarray(a[sl]))
+    return t(frames["hu"]), t(frames["ha"])
 
 
 def tap_probe_r2(tap_root, alpha=1.0):
@@ -98,10 +136,13 @@ def build_weights(tap_roots, mode, alpha=1.0):
 
 
 def load_tap_shards(tap_roots, split):
-    """-> {tap: [(frames, labels)]} for one split of every tap root."""
+    """-> {tap: {session_id: (frames, labels)}} for one split of every tap root
+    (session ids are the shard stems; the sets are frame-aligned per session)."""
     out = {}
     for tap, root in tap_roots.items():
-        shards = [(f, l) for _, f, l, _, _ in iter_shards(os.path.join(root, split))]
+        shards = {}
+        for p, f, l, _, _ in iter_shards(os.path.join(root, split)):
+            shards[os.path.splitext(os.path.basename(p))[0]] = (f, l)
         if not shards:
             sys.exit(f"no shards in {os.path.join(root, split)}")
         out[tap] = shards
@@ -109,7 +150,7 @@ def load_tap_shards(tap_roots, split):
 
 
 def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", weights="auto",
-        init=None, deploy_tap=None, val_split="val"):
+        init=None, deploy_tap=None, val_split="val", consistency=0.0):
     torch.manual_seed(seed)
     np.random.seed(seed)
     heads = HEADS
@@ -139,21 +180,36 @@ def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", wei
           f"adapters: {', '.join(tap_roots)}, heads: {', '.join(h.id for h in heads)}")
 
     train_sh = load_tap_shards(tap_roots, "train")
+    if consistency > 0:  # paired windows need the same sessions in every tap set
+        ids = [set(s) for s in train_sh.values()]
+        if any(s != ids[0] for s in ids[1:]):
+            sys.exit("consistency needs identical session ids in every tap set")
+        for sid in ids[0]:
+            lens = {len(train_sh[t][sid][0]["energy"]) for t in tap_roots}
+            if len(lens) != 1:
+                sys.exit(f"consistency needs frame-aligned sessions; {sid}: {sorted(lens)}")
     opt = torch.optim.Adam(model.parameters(), lr=lr)
+    partner_rng = np.random.default_rng(seed)  # only touched when consistency > 0
     first = last = None
     for ep in range(epochs):
-        items = [(tap, frames, labels, sl)
+        items = [(tap, sid, frames, labels, sl)
                  for tap, shards in train_sh.items()
-                 for frames, labels in shards
+                 for sid, (frames, labels) in sorted(shards.items())
                  for sl in windows(len(frames["energy"]), window)]
         total, steps = 0.0, 0
         for i in torch.randperm(len(items)).tolist():
-            tap, frames, labels, sl = items[i]
+            tap, sid, frames, labels, sl = items[i]
             hu, ha, energy, prev_state, teacher, lab = batch(frames, labels, sl)
             outs, _ = model(tap, hu, ha, energy, prev_state)
             losses = model.losses(outs, model.targets(teacher, lab))
             w = w_by_tap[tap]
             loss = torch.stack([w[h.id] * losses[h.id] for h in heads]).sum() / len(heads)
+            if consistency > 0:
+                others = [t for t in tap_roots if t != tap]
+                ptap = others[int(partner_rng.integers(len(others)))]
+                hu_p, ha_p = partner_streams(train_sh[ptap][sid][0], sl)
+                outs_p, _ = model(ptap, hu_p, ha_p, energy, prev_state)
+                loss = loss + consistency * seam_kl(outs, outs_p)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -166,6 +222,7 @@ def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", wei
     report = {"model": "SharedLatentStudent", "params": count_params(model),
               "taps": dict(tap_roots), "deploy_tap": deploy_tap,
               "weights_mode": weights, "probe_r2": r2_by_tap, "weights": w_by_tap,
+              "consistency_lambda": consistency,
               "window_frames": window, "epochs": epochs, "distill_loss": distill_loss,
               "seed": seed, "lr": lr, "train_loss_first": round(first, 5),
               "train_loss_last": round(last, 5), "heads": {}}
@@ -256,6 +313,15 @@ def selfcheck():
             raise AssertionError("unknown tap did not raise")
         except KeyError:
             pass
+
+        # 4. the P3 consistency term: zero iff the seam decisions agree, and the
+        # paired-window run trains (partner forward + KL on top of the same losses)
+        z = {h.id: torch.zeros(1, W, h.size) for h in HEADS}
+        o = {h.id: torch.ones(1, W, h.size) for h in HEADS}
+        assert float(seam_kl(z, z)) == 0.0
+        assert float(seam_kl(z, o)) > 0.0
+        _, c_first, c_last, _ = run(roots, None, epochs=8, window=W, lr=5e-3, consistency=0.1)
+        assert c_last < c_first, f"consistency loss did not fall: {c_first} -> {c_last}"
     print("selfcheck ok")
 
 
@@ -267,6 +333,9 @@ if __name__ == "__main__":
     ap.add_argument("--weights", default="auto",
                     help="auto = probe.py R2 per tap/axis (default), uniform = all 1.0 (the A/B), "
                          "or a weights.json from a previous run")
+    ap.add_argument("--consistency", type=float, default=0.0,
+                    help="P3 cross-tap KL weight: loss += LAM * symmetric-KL(seam decisions "
+                         "via tap A vs tap B) on the same frames (0 = the P2 baseline recipe)")
     ap.add_argument("--init", default=None, help="warm start from a previous shared student.pt")
     ap.add_argument("--deploy-tap", default=None,
                     help="adapter the checkpoint records for eval replay (default: l4-streaming)")
@@ -295,5 +364,6 @@ if __name__ == "__main__":
         tap_roots[tap] = root
     ok, *_ = run(tap_roots, args.out, args.epochs, args.window, args.lr,
                  seed=args.seed, distill_loss=args.distill_loss, weights=args.weights,
-                 init=args.init, deploy_tap=args.deploy_tap, val_split=args.val_split)
+                 init=args.init, deploy_tap=args.deploy_tap, val_split=args.val_split,
+                 consistency=args.consistency)
     sys.exit(0 if ok else 1)
