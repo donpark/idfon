@@ -273,6 +273,41 @@ Invariant, checked by inspection (`grep`): `AVAudioEngine()`, `installTap`, and
 used. The memo *review* player stays an `AVAudioPlayer` because it needs
 transport (pause/seek/progress) that `AudioSink` does not model.
 
+### Background and screen lock (iOS shell)
+
+Calls and audio keep working with the app backgrounded or the screen locked
+(2026-11-04 review). What makes that hold:
+
+- **`UIBackgroundModes` = `audio` + `voip`** (`Info.plist`): an active
+  `AVAudioSession` keeps the process alive while a call runs; `voip` covers the
+  PushKit wake path (docs/callkit-integration.md §P2). This is the sanctioned
+  route — the one both background-audio write-ups (AVPlayer playback; lock-screen
+  recording) converge on: background mode + an active session, nothing else.
+- **File protection:** the sandbox default is
+  `NSFileProtectionCompleteUntilFirstUserAuthentication` (Class C) — recordings,
+  logs, and daemon state keep writing while the screen is locked after first
+  unlock. Nothing in the tree overrides the class, so no per-file work is
+  needed; if a future file ever must be readable before first unlock, that is
+  where to look first.
+- **CallKit deactivation/resume** (callkit-integration.md §6/§8):
+  `provider(_:didDeactivate:)` pauses the engine keeping the profile,
+  `provider(_:didActivate:)` rebuilds it — a cellular interruption leaves a
+  `call_kit` call resumable instead of frozen. One-shot cues defer while a call
+  is live but the engine is down, and replay via `rearmPlayback()`.
+- **Teardown survives suspension:** call end effects (`sendStop` envelope,
+  `media_live_stop`/`media_live_unsubscribe`, the PushWake ring-cancel POST) run
+  inside `AppBackgroundTask.run` — a lock-screen hang-up must finish those
+  before iOS suspends the process, or the peer's call lingers until the
+  transport times out.
+
+Camera capture is foreground-only by platform rule (already deferred until
+`didBecomeActive` in `CameraPusher`); a backgrounded video call degrades to
+audio-only, which is expected.
+
+Known limit: voice-agent ASR/TTS model *loading* is not tuned for background
+warm-up (the wake saga's memory spike, #55) — audio for an already-running
+session is unaffected.
+
 ### macOS: one echo reference, kept minimal
 
 The macOS shell has no `AudioIO` merge (its mic owners stay split: `AudioMeter`
