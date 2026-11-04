@@ -729,17 +729,44 @@ mod tests {
         let _h1 = serve_router(&server, app);
         let accept = accept_messages(&server);
         let addr = server.endpoint().addr();
-        let port = server.endpoint().bound_sockets()[0].port();
-        let direct = EndpointAddr::from_parts(
-            addr.id,
-            [iroh::TransportAddr::Ip(
-                (std::net::Ipv4Addr::LOCALHOST, port).into(),
-            )],
-        );
+        // Relay-only endpoints publish no IP sockets, so `bound_sockets()` is
+        // empty; only build the explicit-loopback address when there is one.
+        let direct = server.endpoint().bound_sockets().first().map(|socket| {
+            EndpointAddr::from_parts(
+                addr.id,
+                [iroh::TransportAddr::Ip(
+                    (std::net::Ipv4Addr::LOCALHOST, socket.port()).into(),
+                )],
+            )
+        });
         let client = H1Client::new(&client_transport);
 
+        // `IDFON_RELAY_ONLY=1` forces the relay path (idfon-core clears the IP
+        // transports); the explicit-loopback dial cannot work then.
+        let relay_only = std::env::var("IDFON_RELAY_ONLY")
+            .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+        let target = match (&direct, relay_only) {
+            (Some(direct), false) => direct.clone(),
+            _ => addr.clone(),
+        };
+        let (probe, _send, _recv) = client_transport
+            .open_bi_stream(&target, ALPN)
+            .await
+            .expect("probe dial");
+        eprintln!(
+            "PATH {}({}): {:?}",
+            if relay_only { "relay-only " } else { "direct " },
+            if relay_only {
+                "advertised"
+            } else {
+                "127.0.0.1"
+            },
+            probe.paths()
+        );
+        probe.close(0u32.into(), b"probe");
+
         let started = std::time::Instant::now();
-        let response = client.get(&direct, "/blob").await.expect("h1 download");
+        let response = client.get(&target, "/blob").await.expect("h1 download");
         let elapsed = started.elapsed();
         assert_eq!(response.body().len(), payload.len());
         eprintln!(
@@ -753,7 +780,7 @@ mod tests {
         h3client.add_address(&addr);
         let started = std::time::Instant::now();
         let response = h3client
-            .get(&direct, "/blob")
+            .get(&target, "/blob")
             .send()
             .await
             .expect("h3 request");
@@ -770,7 +797,7 @@ mod tests {
         let started = std::time::Instant::now();
         let response = client
             .fetch(
-                &direct,
+                &target,
                 Request::post("/sink")
                     .body(Body::from(payload.clone()))
                     .expect("req"),
@@ -788,23 +815,19 @@ mod tests {
 
         // Frame latency on the direct path: a 1 KiB control message and a
         // 64 KiB payload (roughly a compressed 1080p frame).
-        let mut socket = ws_open(&client, &direct).await;
+        let mut socket = ws_open(&client, &target).await;
         measure_frames("h1 ws direct", &mut socket, 1024, 200).await;
         measure_frames("h1 ws direct", &mut socket, 64 * 1024, 100).await;
         socket.close(None).await.expect("close");
 
-        // Same over the advertised addresses. Print the selected path so the
-        // numbers say whether this dial went direct or through the relay.
-        let (probe, _send, _recv) = client_transport
-            .open_bi_stream(&addr, ALPN)
-            .await
-            .expect("probe dial");
-        eprintln!("PATH advertised: {:?}", probe.paths());
-        probe.close(0u32.into(), b"probe");
-        let mut socket = ws_open(&client, &addr).await;
-        measure_frames("h1 ws advertised", &mut socket, 1024, 60).await;
-        measure_frames("h1 ws advertised", &mut socket, 64 * 1024, 30).await;
-        socket.close(None).await.expect("close");
+        if !relay_only {
+            // The advertised address on a normal run (relay or LAN, whichever
+            // iroh selects); skipped when relay-only, where it is `target`.
+            let mut socket = ws_open(&client, &addr).await;
+            measure_frames("h1 ws advertised", &mut socket, 1024, 60).await;
+            measure_frames("h1 ws advertised", &mut socket, 64 * 1024, 30).await;
+            socket.close(None).await.expect("close");
+        }
 
         accept.abort();
         drop(h3);

@@ -106,31 +106,40 @@ the RFC 6455 handshake itself over a raw bi-stream (no idfon-h1 client code); an
 h1 + h3 + message ALPN on one endpoint.
 
 Throughput (`cargo test -p idfon-h1 -- --ignored --nocapture throughput`), 12 MiB
-each way over a **direct** QUIC path on loopback:
+each way. Two runs of the same bench, differing only in the path iroh selects:
 
-| path | download | upload |
-| --- | --- | --- |
-| h1 | ~217–270 Mbps | ~221–290 Mbps |
-| h3 (reference) | ~242–330 Mbps | — |
+| path | download | upload | 1 KiB WS p95 | 64 KiB WS p95 |
+| --- | --- | --- | --- | --- |
+| direct, loopback QUIC | ~217–270 Mbps | ~221–290 Mbps | ~0.3 ms | ~4.0–4.9 ms |
+| public N0 relay | ~14 Mbps | ~11 Mbps | ~48 ms | ~132 ms |
 
-Frame latency over the same WS echo path — this is the number that decides
-framerate (p95 is the ceiling for a stop-and-wait protocol; a pipelined sender is
-bounded by bandwidth instead):
+Both rows print the selected path (`PATH direct (127.0.0.1)` vs
+`PATH relay-only (advertised)`), so a number cannot be silently attributed to
+the wrong path. Relay rows use `IDFON_RELAY_ONLY=1`, the same knob the apps honor
+(`idfon-core` clears IP transports, so only the relay address is published) —
+`docs/benchmarks.md` uses it for the same reason. h3 measured 9 Mbps down on the
+same relay run; both protocols are relay-bound there.
 
-| message | p50 | p95 | stop-and-wait ceiling |
-| --- | --- | --- | --- |
-| 1 KiB control | 0.17–0.22 ms | 0.29–0.39 ms | ~2,500–3,400 fps |
-| 64 KiB frame | 3.6 ms | 4.0–4.9 ms | ~205–250 fps |
+Frame latency over the WS echo path — this is the number that decides framerate
+(p95 is the ceiling for a stop-and-wait protocol; a pipelined sender is bounded
+by bandwidth instead):
 
-At 60 fps (16.7 ms per frame) a 64 KiB frame has ~4× headroom even with an ack
-per frame, and the 217–258 Mbps budget is ~450 KiB/frame. The bench prints the
-selected QUIC path: on this host both the direct and the advertised dial resolve
-to loopback. Earlier runs that landed on the N0 relay sat at ~10 Mbps for h1
-**and** h3 — relay-bound, which is what would cap a real deployment at ~20 KiB
-per frame at 60 fps.
+| message | direct p95 | direct ceiling | relay p95 | relay ceiling |
+| --- | --- | --- | --- | --- |
+| 1 KiB control | 0.26–0.39 ms | ~2,500–3,800 fps | ~48 ms | ~21 fps |
+| 64 KiB frame | 4.0–4.9 ms | ~205–250 fps | ~132 ms | ~8 fps |
 
-These are loopback numbers, not a LAN bench. The LAN / 1% loss / voxl 55 fps
-acceptance in [#142] still needs the demo machine.
+What that means for the demo:
+
+- **Direct P2P** has ~4× headroom at 60 fps for a 64 KiB frame, and the
+  217–258 Mbps budget is ~450 KiB/frame. Nothing here limits a LAN demo.
+- **Relay** does not carry 60 fps stop-and-wait: 8 fps at 64 KiB, 21 fps at
+  1 KiB, and ~29 KiB/frame at 60 fps from bandwidth alone. That is the number
+  that makes channel sharding and pipelining a *product* requirement rather
+  than a nicety, and why slice 4 exists.
+- The direct row is loopback, not a LAN. The two-host LAN/netem run in [#142]
+  is still the missing real-world "direct P2P" number; until then, treat
+  loopback as the best case and relay as the worst case.
 
 ## Using it with an existing app (voxl recipe)
 
