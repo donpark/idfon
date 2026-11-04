@@ -628,6 +628,63 @@ mod tests {
         client_transport.endpoint().close().await;
     }
 
+    /// Opens a WebSocket on `peer` and returns the client-side stream.
+    async fn ws_open(
+        client: &H1Client,
+        peer: &EndpointAddr,
+    ) -> tokio_tungstenite::WebSocketStream<TokioIo<Upgraded>> {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        let mut connection = client.connect(peer).await.expect("ws connect");
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/ws")
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(Body::empty())
+            .expect("ws request");
+        let response = connection.send(request).await.expect("ws handshake");
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        let io = upgrade(response).await.expect("upgrade");
+        WebSocketStream::from_raw_socket(io, Role::Client, None).await
+    }
+
+    /// Echoes `count` frames of `size` bytes and reports round-trip percentiles.
+    /// The p95 is the ceiling for a stop-and-wait protocol (one frame in flight,
+    /// ack before the next); a streaming sender is bounded by bandwidth instead.
+    async fn measure_frames(
+        label: &str,
+        socket: &mut tokio_tungstenite::WebSocketStream<TokioIo<Upgraded>>,
+        size: usize,
+        count: usize,
+    ) {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+        let frame = Bytes::from(vec![0xa5; size]);
+        let mut samples = Vec::with_capacity(count);
+        for _ in 0..count {
+            let started = std::time::Instant::now();
+            socket
+                .send(Message::Binary(frame.clone()))
+                .await
+                .expect("send frame");
+            match socket.next().await.expect("echo").expect("echo ok") {
+                Message::Binary(data) => assert_eq!(data.len(), size),
+                other => panic!("unexpected message: {other:?}"),
+            }
+            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        samples.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let p50 = samples[count / 2];
+        let p95 = samples[(count * 95 / 100).min(count - 1)];
+        eprintln!(
+            "MEASURE {label}: {size}B x{count} round trip — p50 {p50:.2} ms, p95 {p95:.2} ms, max {:.2} ms; stop-and-wait ceiling {:.0} fps at p95",
+            samples[count - 1],
+            1000.0 / p95
+        );
+    }
+
     /// Measures h1 against h3 over a *direct* QUIC path (loopback). The
     /// advertised addresses can resolve to the relay instead — on a host with
     /// VPN-assigned interfaces both endpoints end up relayed at ~10 Mbps — so
@@ -651,6 +708,12 @@ mod tests {
             .route(
                 "/sink",
                 post(|body: Bytes| async move { body.len().to_string() }),
+            )
+            .route(
+                "/ws",
+                get(|ws: WebSocketUpgrade| async move {
+                    ws.on_upgrade(|socket| echo(socket, Arc::new(std::sync::Mutex::new(None))))
+                }),
             )
             .layer(axum::extract::DefaultBodyLimit::disable());
         let h3 = idfon_h3::serve_router(
@@ -722,6 +785,26 @@ mod tests {
             12.0 * 8.0 * 1.048576 / elapsed.as_secs_f64(),
             response.body()
         );
+
+        // Frame latency on the direct path: a 1 KiB control message and a
+        // 64 KiB payload (roughly a compressed 1080p frame).
+        let mut socket = ws_open(&client, &direct).await;
+        measure_frames("h1 ws direct", &mut socket, 1024, 200).await;
+        measure_frames("h1 ws direct", &mut socket, 64 * 1024, 100).await;
+        socket.close(None).await.expect("close");
+
+        // Same over the advertised addresses. Print the selected path so the
+        // numbers say whether this dial went direct or through the relay.
+        let (probe, _send, _recv) = client_transport
+            .open_bi_stream(&addr, ALPN)
+            .await
+            .expect("probe dial");
+        eprintln!("PATH advertised: {:?}", probe.paths());
+        probe.close(0u32.into(), b"probe");
+        let mut socket = ws_open(&client, &addr).await;
+        measure_frames("h1 ws advertised", &mut socket, 1024, 60).await;
+        measure_frames("h1 ws advertised", &mut socket, 64 * 1024, 30).await;
+        socket.close(None).await.expect("close");
 
         accept.abort();
         drop(h3);

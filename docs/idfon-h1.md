@@ -105,19 +105,32 @@ stream down when the reader disappears; WS echo with a 2 MiB binary payload
 the RFC 6455 handshake itself over a raw bi-stream (no idfon-h1 client code); and
 h1 + h3 + message ALPN on one endpoint.
 
-Throughput (`cargo test -p idfon-h1 -- --ignored --nocapture throughput`), on a
-**direct** QUIC path over loopback, 12 MiB each way:
+Throughput (`cargo test -p idfon-h1 -- --ignored --nocapture throughput`), 12 MiB
+each way over a **direct** QUIC path on loopback:
 
 | path | download | upload |
 | --- | --- | --- |
-| h1 | ~200–270 Mbps | ~255–290 Mbps |
-| h3 (reference) | ~270–330 Mbps | — |
+| h1 | ~217–270 Mbps | ~221–290 Mbps |
+| h3 (reference) | ~242–330 Mbps | — |
 
-These are loopback numbers, not a LAN bench. The same test dialed through the
-advertised addresses on this host lands on the **relay** path (VPN-assigned
-interfaces), where both h1 and h3 sit at ~10 Mbps — i.e. relay-bound, not
-adapter-bound. The LAN / 1% loss / voxl 55 fps acceptance in [#142] still needs
-the demo machine.
+Frame latency over the same WS echo path — this is the number that decides
+framerate (p95 is the ceiling for a stop-and-wait protocol; a pipelined sender is
+bounded by bandwidth instead):
+
+| message | p50 | p95 | stop-and-wait ceiling |
+| --- | --- | --- | --- |
+| 1 KiB control | 0.17–0.22 ms | 0.29–0.39 ms | ~2,500–3,400 fps |
+| 64 KiB frame | 3.6 ms | 4.0–4.9 ms | ~205–250 fps |
+
+At 60 fps (16.7 ms per frame) a 64 KiB frame has ~4× headroom even with an ack
+per frame, and the 217–258 Mbps budget is ~450 KiB/frame. The bench prints the
+selected QUIC path: on this host both the direct and the advertised dial resolve
+to loopback. Earlier runs that landed on the N0 relay sat at ~10 Mbps for h1
+**and** h3 — relay-bound, which is what would cap a real deployment at ~20 KiB
+per frame at 60 fps.
+
+These are loopback numbers, not a LAN bench. The LAN / 1% loss / voxl 55 fps
+acceptance in [#142] still needs the demo machine.
 
 ## Using it with an existing app (voxl recipe)
 
@@ -137,6 +150,14 @@ The recipe:
    calls `idfon_h1::upgrade`, wraps the stream in
    `WebSocketStream::from_raw_socket`, and speaks `web/src/protocol.ts`
    verbatim (text CSV commands + binary messages with a type byte).
+
+There is a working precedent for step 1 in voxl itself, on the local branch
+`idfon-h1-test`: `server::tests::serves_the_real_router_over_idfon_h1` serves
+`router(state)` through `idfon_h1::serve_router` and drives `/healthz`, `/stats`
+and `/ws` (the unmodified `ws_handler`/`handle_socket`: hello line arrives,
+`sz,640,480` reaches the hub) from a second endpoint. It is a dev-dependency
+experiment — the idfon crates are absolute paths into the idfon worktree until
+this branch is pushed or merged.
 
 Two caveats belong to the demo, not this crate:
 
