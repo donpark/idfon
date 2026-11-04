@@ -354,6 +354,25 @@ of it — the rest is per-tap head quality: bc under-fire + endpoint timing,
 pointing at P4 calibration and data). P5 should budget adapter + calibration
 cost, not plug-and-play.
 
+**Per-adapter calibration + quantization parity (2026-11-04, epic #132 P4,
+issue #145).** One temperature scalar per adapter (pre-seam logits/T,
+`calibrate.py --temp-grid`: NLL-to-teacher + agreement fit, both reported) — and
+the P3 residual turns out to be largely calibration: **live-L15 clears its bar
+(63.11 → 65.16% vs the 64.4% bar)** and default-triple behavior recovers +6.6
+pts at T-only. The fit is per adapter AND per domain (l15 wants sharpening
+T≈0.7–0.8; the l4-windowed live path wants T=1.0 and loses 2.9 pts at any
+other fit — one global T is a net negative). The corpus l15 residual (−1.9 vs
+anchor) survives calibration — per-tap head quality, per P3. At the fitted
+configs bc recall recovers to teacher level and misses drop to 7–8 per 139
+eots (latency below teacher; the sharpened split leans early — the combined
+bar holds with margin). Quantization: fp32 export passes clean (8e-7, 0
+flips, 0.08–0.15 ms/step, 5.28 MB = student-sized artifact); **int8 group-16
+AND group-8 fail the 2e-3 probs envelope on the shared tier** (3.1–6.1e-3)
+while the single-tap student passes at group-8 (1.63e-3) — so per the repo
+ruling **QAT is needed** (fragility is mostly the shared architecture, 2.33e-3
+for the P2 baseline; consistency adds ~0.7e-3). int8 buys bytes (1.75 MB) not
+CPU latency; rules decisions stayed identical in every quantized run.
+
 **P3 — fold into classic's contract** (`voice-tyger-option.md` P3): classic
 behavior stays; its endpointing/yield decisions get the model's quality, traits
 stay as the knobs, fail-open stays.

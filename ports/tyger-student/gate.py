@@ -71,6 +71,8 @@ def main():
     ap.add_argument("--tap", default=None,
                     help="shared-latent checkpoints: which tap adapter to replay "
                          "(must match --feature-layer; default: the checkpoint's deploy tap)")
+    ap.add_argument("--temp", type=float, default=1.0,
+                    help="pre-seam temperature (calibrate.py --temp-grid fit; 1.0 = off)")
     ap.add_argument("--tol", type=int, default=2, help="alignment tolerance in frames")
     ap.add_argument("--feature-layer", type=int, default=15,
                     help="which recorded encoder layer the student reads (must match training)")
@@ -84,8 +86,10 @@ def main():
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
 
-    from checkpoint import load as load_model
+    from checkpoint import TempScaled, load as load_model
     model, ckpt = load_model(args.student, tap=args.tap, device=args.device)
+    if args.temp != 1.0:
+        model = TempScaled(model, args.temp)
     heads = model.heads_spec
     oracle = Oracle(device="cpu")  # rules only; the student is its own chain here
     print(f"student: {args.student} ({ckpt.get('params', '?')} params, heads: {', '.join(h.id for h in heads)}), "
