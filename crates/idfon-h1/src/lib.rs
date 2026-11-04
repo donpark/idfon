@@ -396,6 +396,29 @@ mod tests {
             client_transport.endpoint().id().to_string().as_bytes()
         );
 
+        // Keep-alive: two requests, sequentially, on one h1 connection.
+        let expected = client_transport.endpoint().id().to_string();
+        let mut connection = client.connect(&addr).await.expect("connect");
+        for _ in 0..2 {
+            let response = connection
+                .send(
+                    Request::get("/whoami")
+                        .body(Body::empty())
+                        .expect("keep-alive request"),
+                )
+                .await
+                .expect("keep-alive response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("keep-alive body")
+                .to_bytes();
+            assert_eq!(body.as_ref(), expected.as_bytes());
+        }
+        drop(connection);
+
         // No Content-Length (a stream), so hyper frames it chunked.
         let body = Body::from_stream(stream::iter(vec![
             Ok::<_, std::io::Error>(Bytes::from_static(b"hello ")),
@@ -523,6 +546,29 @@ mod tests {
             .await
             .expect("server saw the socket close")
             .expect("server handler signaled");
+
+        // A stock WS client that only takes a byte stream works too: no
+        // idfon-h1 client code, tungstenite performs the RFC 6455 handshake
+        // itself over a raw bi-stream.
+        let (connection, send, recv) = client_transport
+            .open_bi_stream(&addr, ALPN)
+            .await
+            .expect("dial");
+        let raw = tokio::io::join(recv, send);
+        let (mut socket, response) = tokio_tungstenite::client_async("ws://idfon/ws", raw)
+            .await
+            .expect("stock ws handshake");
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        socket
+            .send(SocketMessage::Text("stock".into()))
+            .await
+            .expect("send text");
+        match socket.next().await.expect("echo").expect("echo ok") {
+            SocketMessage::Text(text) => assert_eq!(text.as_str(), "stock"),
+            other => panic!("unexpected message: {other:?}"),
+        }
+        socket.close(None).await.expect("close");
+        drop(connection);
 
         accept.abort();
         server.endpoint().close().await;

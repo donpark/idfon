@@ -13,6 +13,7 @@ on:
       - "crates/idfon-edge/**"
       - "crates/idfon-gateway/**"
       - "crates/idfon-h3/**"
+      - "crates/idfon-h1/**"
       - "crates/idfon-core/**"
       - "scripts/edge-e2e.sh"
       - "deploy/idfon-edge/**"
@@ -24,6 +25,7 @@ on:
       - "crates/idfon-edge/**"
       - "crates/idfon-gateway/**"
       - "crates/idfon-h3/**"
+      - "crates/idfon-h1/**"
       - "crates/idfon-core/**"
       - "scripts/edge-e2e.sh"
       - "deploy/idfon-edge/**"
@@ -43,7 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The crate tests use the in-process gateway/edge; the full real-ingress
       # scripts/edge-e2e.sh is macOS-only (rubber-stamped dylib + codesign).
-      - run: cargo test --locked -p idfon-gateway -p idfon-edge
+      - run: cargo test --locked -p idfon-gateway -p idfon-edge -p idfon-h1
 
   image:
     runs-on: ubuntu-24.04
