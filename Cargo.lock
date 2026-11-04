@@ -3599,6 +3599,7 @@ dependencies = [
  "bytes",
  "data-encoding",
  "idfon-client",
+ "idfon-core",
  "idfon-daemon",
  "idfon-media",
  "idfon-protocol",

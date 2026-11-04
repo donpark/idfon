@@ -12,6 +12,8 @@ pub mod path;
 // Gossip + tokio I/O are native-only; the wasm build (Cloudflare Worker) uses
 // only the security helpers in this file.
 #[cfg(not(target_family = "wasm"))]
+pub mod relay;
+#[cfg(not(target_family = "wasm"))]
 pub mod transport;
 
 #[derive(Debug, Error, PartialEq, Eq)]

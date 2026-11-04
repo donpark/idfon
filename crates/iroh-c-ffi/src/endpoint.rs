@@ -249,10 +249,16 @@ pub async fn endpoint_bind(
     );
 
     ffi_await!(async move {
-        let mut builder = iroh::Endpoint::builder(presets::N0)
-            .relay_mode(config.relay_mode.into())
-            .alpns(alpn_protocols)
-            .secret_key(config.secret_key.deref().into());
+        // RelayMode::Default resolves the process's relay selection at bind
+        // time (parameter > configuration > default, docs/relay-config.md);
+        // Disabled stays explicit. A custom relay map therefore needs no
+        // C-ABI surface — it is configured at runtime, never compiled in.
+        let mut builder = match config.relay_mode {
+            RelayMode::Default => idfon_core::relay::endpoint_builder(),
+            other => iroh::Endpoint::builder(presets::N0).relay_mode(other.into()),
+        }
+        .alpns(alpn_protocols)
+        .secret_key(config.secret_key.deref().into());
 
         // Add address lookup services based on config
         builder = add_address_lookup(builder, config.discovery_cfg);

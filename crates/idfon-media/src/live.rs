@@ -145,8 +145,10 @@ pub(crate) async fn build_endpoint(relay: bool) -> anyhow::Result<Endpoint> {
     // N0DisableRelay: no relay transport at all — direct connections only
     // (loopback/LAN tests, and keeps traffic off the rate-limited public
     // relays); DNS address lookup still resolves direct addresses.
+    // With relay on, the map follows the resolved relay selection — a
+    // self-hosted relay replaces the N0 fallback (docs/relay-config.md).
     let builder = if relay {
-        Endpoint::builder(iroh::endpoint::presets::N0)
+        idfon_core::relay::endpoint_builder()
     } else {
         Endpoint::builder(iroh::endpoint::presets::N0DisableRelay)
     };
