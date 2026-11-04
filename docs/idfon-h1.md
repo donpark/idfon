@@ -97,11 +97,13 @@ peer).
 
 ## Measured
 
-Functional suite (`cargo test -p idfon-h1`): plain GET with `RemoteId`, chunked
-(request streamed without `Content-Length`), SSE that streams event-by-event and
-tears its handler stream down when the reader disappears, WS echo with a 2 MiB
-binary payload (> one QUIC stream window) and clean close, and h1 + h3 + message
-ALPN on one endpoint.
+Functional suite (`cargo test -p idfon-h1`): plain GET with `RemoteId`;
+keep-alive (two sequential requests on one connection); chunked (request streamed
+without `Content-Length`); SSE that streams event-by-event and tears its handler
+stream down when the reader disappears; WS echo with a 2 MiB binary payload
+(> one QUIC stream window), clean close, and a **stock tungstenite client** doing
+the RFC 6455 handshake itself over a raw bi-stream (no idfon-h1 client code); and
+h1 + h3 + message ALPN on one endpoint.
 
 Throughput (`cargo test -p idfon-h1 -- --ignored --nocapture throughput`), on a
 **direct** QUIC path over loopback, 12 MiB each way:
