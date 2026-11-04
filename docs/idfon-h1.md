@@ -95,7 +95,19 @@ peer).
 
 `shortcut:` HTTP/1.1 only — no HTTP/2, no TLS, no content negotiation.
 
-## Measured
+## Sibling: no-HTTP channels
+
+When both ends are ours and the HTTP shape buys nothing, `idfon-channel`
+(`docs/idfon-channel.md`, issue [#142]) carries the same WebSocket-style
+send/recv API on a bare iroh bi-stream — one ordered reliable stream per
+channel, `[kind][len][payload]` framing, channel-name sharding, no hyper. Use
+it for per-channel isolation inside one app; use h1 whenever an existing
+`axum::Router`, a third-party developer's WS server, or a language's stock WS
+library is the point. Measured side by side (loopback, relay, and Wi-Fi
+two-host), the two are within noise of each other: the layer is not the cost,
+the path is.
+
+
 
 Functional suite (`cargo test -p idfon-h1`): plain GET with `RemoteId`;
 keep-alive (two sequential requests on one connection); chunked (request streamed
