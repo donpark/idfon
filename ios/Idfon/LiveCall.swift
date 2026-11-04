@@ -188,6 +188,14 @@ final class LiveCall {
         case 1: return "Connecting…"
         case 3: return "Reconnecting…"
         case 4: return "Audio lost"
+        case 2:
+            // The selected path names the network carrying the call: its local
+            // IP moves when the transport migrates, which is the only visible
+            // sign of a silent Wi-Fi return (2026-11-04).
+            guard let ptr = media_live_path() else { return nil }
+            let path = String(cString: ptr)
+            rust_free_string(ptr)
+            return path.isEmpty ? nil : path
         default: return nil
         }
     }
