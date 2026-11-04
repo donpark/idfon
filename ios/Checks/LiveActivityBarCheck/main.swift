@@ -21,6 +21,13 @@ import UIKit
 
 func check(_ cond: Bool, _ msg: String) { if !cond { print("FAIL:", msg); exit(1) } else { print("ok:", msg) } }
 
+// Route truth: Bluetooth (AirPods) is a headset route, not Built-in.
+check(CallAudioMode.forOutputs([.builtInSpeaker]) == .speaker, "speaker route")
+check(CallAudioMode.forOutputs([.builtInReceiver]) == .builtIn, "receiver is built-in")
+check(CallAudioMode.forOutputs([.bluetoothHFP]) == .earphone, "AirPods HFP is earphone")
+check(CallAudioMode.forOutputs([.bluetoothA2DP]) == .earphone, "Bluetooth A2DP is earphone")
+check(CallAudioMode.forOutputs([.headphones]) == .earphone, "wired headphones are earphone")
+
 // clock / compactText
 check(LiveActivityBar.clock(222) == "03:42", "clock m:ss")
 check(LiveActivityBar.clock(3723) == "1:02:03", "clock h:mm:ss")

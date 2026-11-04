@@ -370,12 +370,12 @@ final class VideoCall: NSObject {
                 try await client.sendText(to: id, LiveInvite.build(action: "start", ticket: ticket, call: true))
                 // Wake the peer's devices on a `call_kit` channel (P2): ring
                 // via the edge once the invite is queued (call_uuid = the
-                // invite ticket's, so push and envelope share one call).
-                if IncomingCallRouter.shared.ownsPresentation(for: id) {
-                    PushWake.shared.ring(
-                        peer: id, callUUID: CallUUID.from(ticket: ticket).uuidString,
-                        hasVideo: true)
-                }
+                // invite ticket's, so push and envelope share one call). Not
+                // gated on this device's presentation: a local Bar fallback
+                // must not silence a suspended callee.
+                PushWake.shared.ring(
+                    peer: id, callUUID: CallUUID.from(ticket: ticket).uuidString,
+                    hasVideo: true)
             } catch {
                 fail("Dial failed: \(error.localizedDescription)")
             }
@@ -591,7 +591,7 @@ final class VideoCall: NSObject {
             // The system already rings (a push-first wake): no Bar ringtone
             // and no app-owned audio session alongside it.
             if !CallKitController.shared.isRinging(peer) {
-                activateAudioSession()
+                LiveCallHarness.activateAudioSession(ringing: true)
                 CallTonePlayer.shared.start(.ringtone)
             }
         case .changed:
