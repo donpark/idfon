@@ -76,6 +76,34 @@ for paths in by.values():
 print(f"deduped: {saved / 1e6:.1f} MB shared")
 PY
 
+# A kept voices/ is user state (custom 256 KB embeddings) but bundle.json still
+# lists the export's voices: a served DEST then fails every client install on a
+# size/SHA-256 mismatch, which the app reports as a phonon failure and hides
+# behind the Apple fallback. Make the manifest describe what is on disk.
+python3 - "$DEST" <<'PY'
+import hashlib, json, os, sys
+root = sys.argv[1]
+path = os.path.join(root, "bundle.json")
+manifest = json.load(open(path))
+files, dropped, fixed = [], 0, 0
+for f in manifest["files"]:
+    if not f["path"].startswith("voices/"):
+        files.append(f)
+        continue
+    target = os.path.join(root, f["path"])
+    if not os.path.isfile(target):
+        dropped += 1
+        continue
+    digest = hashlib.sha256(open(target, "rb").read()).hexdigest()
+    size = os.path.getsize(target)
+    if (size, digest) != (f["size"], f["sha256"]):
+        fixed += 1
+    files.append({"path": f["path"], "size": size, "sha256": digest})
+manifest["files"] = files
+json.dump(manifest, open(path, "w"), indent=1)
+print(f"voices: {fixed} manifest entries updated, {dropped} dropped")
+PY
+
 echo "phonon models ready: $DEST ($(du -sh "$DEST" | cut -f1))"
 
 # Serving DEST over HTTP still transfers both paths (the client asks for each
