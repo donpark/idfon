@@ -370,6 +370,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // by LiveActivityController through `callChromeItem` — nav starts/stops
     // the call, the Bar operates it.
     private let overflowItem = UIBarButtonItem()
+    /// A menu contact's station list is opened over this chat; this item is the
+    /// visible way back to it after the chat is uncovered (docs/live-radio.md).
+    private var stationMenuItem: UIBarButtonItem?
+    private var stationMenuEntries: [MenuEntry]?
     /// The call-state nav item (idle call → calling → hang-up). Disabled —
     /// never hidden — while a call isn't available (an incoming ring, where
     /// the Bar shows Answer/Decline, or another peer's call owns the chrome).
@@ -598,7 +602,26 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func refreshNavChrome() {
-        navigationItem.rightBarButtonItems = [overflowItem] + (callChromeItem.map { [$0] } ?? [])
+        navigationItem.rightBarButtonItems = [overflowItem]
+            + (callChromeItem.map { [$0] } ?? [])
+            + (stationMenuItem.map { [$0] } ?? [])
+    }
+
+    /// The station list is a detail surface pushed over the chat; keep a nav
+    /// reference so "where did that screen go?" has an answer without leaving
+    /// and re-entering the contact.
+    private func installStationMenuItem() {
+        guard stationMenuItem == nil, let entries = stationMenuEntries, !entries.isEmpty else { return }
+        let item = UIBarButtonItem(title: "Stations", style: .plain,
+                                   target: self, action: #selector(stationsTapped))
+        item.accessibilityHint = "Opens the station list"
+        stationMenuItem = item
+        refreshNavChrome()
+    }
+
+    @objc private func stationsTapped() {
+        guard let entries = stationMenuEntries else { return }
+        pushStationMenu(entries)
     }
 
     /// D8 overflow. New Session writes the D21 marker; Share Screen's stream
@@ -1603,11 +1626,28 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// contact advertises no menu.
     @discardableResult
     private func presentStationMenuIfAny() async -> Bool {
-        guard let menu = await ContactMenus.menu(for: peer.id, client: client),
-              !menu.entries.isEmpty else { return false }
+        guard let entries = await stationMenu(), !entries.isEmpty else { return false }
+        installStationMenuItem()
+        pushStationMenu(entries)
+        return true
+    }
+
+    /// Cached after the first fetch so the chat's Stations item reopens the
+    /// list without another manifest/OPML round trip.
+    private func stationMenu() async -> [MenuEntry]? {
+        if let entries = stationMenuEntries { return entries }
+        guard let menu = await ContactMenus.menu(for: peer.id, client: client) else { return nil }
+        stationMenuEntries = menu.entries
+        return menu.entries
+    }
+
+    /// One station list per chat at a time: the auto-push and an instant call
+    /// can both ask before the first push lands (`PeerListViewController`).
+    private func pushStationMenu(_ entries: [MenuEntry]) {
+        guard !(navigationController?.viewControllers.contains { $0 is MenuViewController } ?? false)
+        else { return }
         let peerID = peer.id
-        let list = MenuViewController(entries: menu.entries) { show in
-            self.navigationController?.popToViewController(self, animated: true)
+        let list = MenuViewController(entries: entries, peerID: peerID) { show in
             // Picking a show while one plays switches the station: end any
             // call first — the dial guard would otherwise refuse as busy.
             LiveCall.shared.hangUp()
@@ -1615,7 +1655,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         list.title = peer.name
         navigationController?.pushViewController(list, animated: true)
-        return true
     }
 
     private var stationMenuOffered = false

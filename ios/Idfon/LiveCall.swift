@@ -592,6 +592,9 @@ final class LiveCall {
         if phase == .idle { PushWake.shared.cancelRing() }
         CallKitController.shared.mirror(owner: .live, phase: phase)
         onState?()
+        // Broadcast for screens that reflect the call but cannot own the
+        // single-consumer hook (a station's detail screen).
+        NotificationCenter.default.post(name: .idfonLiveCallState, object: nil)
     }
 
     private func ffiString(_ body: @escaping () -> UnsafeMutablePointer<CChar>?) async -> String {
