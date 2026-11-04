@@ -57,7 +57,10 @@ plays one show on demand. OPML is data; **the app renders the menu** (decided
 2026-11-03: the screen carries the choices, speech is the complementary
 side-channel), never audio-prompt navigation.
 
-- `live.json` gains `opml: "shows.opml"`. Entries label with `text`, play with
+- `live.json` gains `opml: "shows.opml"` — a hand-edited key survives
+  `radio-program.mjs config` regeneration (it re-runs on every
+  `radio-serve.sh`), and a relative `opml` resolves beside `live.json` because
+  the holder reads it against its own cwd. Entries label with `text`, play with
   `url` (or `xmlUrl`): a URL with a scheme is the **far end**, a bare path is a
   copy in the **local download cache**, and `cache` names the cached copy of a
   far-end source. A cached file that exists wins; otherwise the far end serves.
@@ -77,9 +80,11 @@ side-channel), never audio-prompt navigation.
   advertised as `menu.opml` in the `idfon.json` manifest (an agent-supplied
   `menu` block wins) — fetched by the apps like the voice catalog. A manifest
   `opml` that is an http(s) URL (a station's public OPML) is fetched directly.
-- The apps render the outline when a call to the contact would start (iOS: one
-  push per level; mac: an outline sheet); picking a show dials with `show=` and
-  the call plays it.
+- The outline is the contact's **detail surface**: the apps show it as soon as
+  the contact opens and again before a call would start (iOS: one push per
+  level; mac: an outline sheet). Picking a show dials with `show=` and the call
+  plays it; picking another show while one plays **switches** — the current
+  call ends and the new show dials (transitions are still unpolished).
 
 Navigation only: no feed fetching, update badges, or cache management — the
 epic's standing exclusion. See #133 for the slice ledger.

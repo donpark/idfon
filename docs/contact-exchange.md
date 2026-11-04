@@ -82,6 +82,10 @@ iPhone"); the holder's sender binding stays.
   `peer add`).
 - `contact.import` upserts per card (re-import is idempotent) and aborts on a
   card that fails `peer.add` validation; foreign vCards are skipped.
+- Capability tickets are **subject-bound** (`ticket.subject == sender peer id`
+  at the holder's ingress): a device whose peer id rotates (reinstall) must
+  re-redeem. The public page's subject-less bearer survives identity churn —
+  that is what makes public stations robust for testing.
 
 ## Open items / risks
 

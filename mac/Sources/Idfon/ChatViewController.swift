@@ -1265,17 +1265,38 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         // A menu contact shows its menu first: the screen carries the choices
         // and the call plays the selection (docs/live-radio.md "Menu contact").
         // No menu: dial the station default, as before.
-        let peerID = peer.id
-        let client = self.client
         Task { @MainActor in
-            guard let menu = await ContactMenus.menu(for: peerID, client: client),
-                  !menu.entries.isEmpty else {
-                live.dial(peerID)
-                return
+            if await presentStationMenuIfAny() == false {
+                live.dial(peer.id)
             }
-            self.presentAsSheet(MenuViewController(entries: menu.entries) { show in
-                self.live.dial(peerID, show: show)
-            })
+        }
+    }
+
+    /// A menu contact's station list is its detail surface (2026-11-03): shown
+    /// when the contact opens, not only before a call — the screen carries the
+    /// choices and the call plays the selection. Returns false when the
+    /// contact advertises no menu.
+    @discardableResult
+    private func presentStationMenuIfAny() async -> Bool {
+        guard let menu = await ContactMenus.menu(for: peer.id, client: client),
+              !menu.entries.isEmpty else { return false }
+        let peerID = peer.id
+        presentAsSheet(MenuViewController(entries: menu.entries) { show in
+            // Picking a show while one plays switches the station: end any
+            // call first — the dial guard would otherwise refuse as busy.
+            self.live.hangUp()
+            self.live.dial(peerID, show: show)
+        })
+        return true
+    }
+
+    private var stationMenuOffered = false
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        if !stationMenuOffered, !conversation.isRoom {
+            stationMenuOffered = true
+            Task { await presentStationMenuIfAny() }
         }
     }
 
