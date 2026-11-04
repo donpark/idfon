@@ -47,14 +47,17 @@ enum PhononPack {
             try check(response, "bundle.json")
             data = remote
         } catch {
-            if installed(at: dir) { return dir }
+            // Offline: the installed pack is still good if its own manifest
+            // says so — every file is verified, so a damaged one does not load.
+            if let local = manifest(at: dir), allMatch(local, at: dir) { return dir }
             throw error
         }
         let want = try JSONDecoder().decode(Manifest.self, from: data)
-        if installedBuilt(at: dir) == want.built {
-            linkDuplicates(want, at: dir)  // shrink a pack an older build wrote
-            return dir
-        }
+        // Link first (free, and it collapses the hashing below to one pass per
+        // distinct blob), then verify: the `built` stamp alone is not proof, a
+        // bit-rotted or hand-edited file must not reach Core ML.
+        linkDuplicates(want, at: dir)
+        if installedBuilt(at: dir) == want.built, allMatch(want, at: dir) { return dir }
 
         let staging = dir.deletingLastPathComponent()
             .appending(path: "\(dir.lastPathComponent).partial-\(want.built)")
@@ -95,6 +98,32 @@ enum PhononPack {
         values.isExcludedFromBackup = true
         try? url.setResourceValues(values)
         return dir
+    }
+
+    /// Verify the installed pack against its own manifest, no network. Every
+    /// launch checks size + SHA-256, so a damaged file re-downloads instead of
+    /// reaching Core ML. 47 ms on an M4 Pro for the current 115 MB pack; call
+    /// it off the main actor.
+    static func verified(at dir: URL) -> Bool {
+        guard let manifest = manifest(at: dir) else { return false }
+        linkDuplicates(manifest, at: dir)
+        return allMatch(manifest, at: dir)
+    }
+
+    /// Size and SHA-256 of every file the manifest lists, once per file: the
+    /// duplicate paths are linked by then, so a deduped pack is one pass over
+    /// its 115 MB of distinct bytes.
+    private static func allMatch(_ manifest: Manifest, at dir: URL) -> Bool {
+        var seen: [NSObject] = []
+        for file in manifest.files {
+            let url = dir.appending(path: file.path)
+            if let id = identity(url) {
+                if seen.contains(where: { $0.isEqual(id) }) { continue }  // same file
+                seen.append(id)
+            }
+            guard (try? matches(url, file)) == true else { return false }
+        }
+        return true
     }
 
     /// Whether `dir` holds every file the manifest lists.
@@ -180,16 +209,18 @@ enum PhononPack {
         }
     }
 
-    /// Same inode: the two paths already share one file. Fresh URLs: a URL
-    /// caches the resource values it has already read.
+    /// Same inode: the two paths already share one file.
     private static func sameFile(_ a: URL, _ b: URL) -> Bool {
-        func id(_ url: URL) -> NSObject? {
-            let fresh = URL(fileURLWithPath: url.path)
-            return (try? fresh.resourceValues(forKeys: [.fileResourceIdentifierKey])
-                .fileResourceIdentifier) as? NSObject
-        }
-        guard let x = id(a), let y = id(b) else { return false }
+        guard let x = identity(a), let y = identity(b) else { return false }
         return x.isEqual(y)
+    }
+
+    /// The file's identity. A fresh URL each time: a URL caches the resource
+    /// values it has already read.
+    private static func identity(_ url: URL) -> NSObject? {
+        let fresh = URL(fileURLWithPath: url.path)
+        return (try? fresh.resourceValues(forKeys: [.fileResourceIdentifierKey])
+            .fileResourceIdentifier) as? NSObject
     }
 
     private static func matches(_ url: URL, _ file: Manifest.File) throws -> Bool {

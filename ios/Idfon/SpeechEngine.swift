@@ -673,9 +673,11 @@ final class PhononTtsEngine: NSObject, TtsEngine {
            let url = URL(string: base) {
             return try await PhononPack.download(from: url, to: dir)
         }
-        guard PhononModels.isInstalled(at: dir) else {
+        // Off the main actor: this hashes the whole pack.
+        let ok = await Task.detached { PhononPack.verified(at: dir) }.value
+        guard ok else {
             throw PhononError(
-                description: "no phonon models at \(dir.path); side-load the bundle or set IDFON_PHONON_PACK_URL")
+                description: "phonon models at \(dir.path) are missing or damaged; side-load the bundle or set IDFON_PHONON_PACK_URL")
         }
         return dir
     }

@@ -618,7 +618,11 @@ explicit choice still wins.
   installed by `PhononPack`: the manifest lists 170 MB of files but the flow
   LM's weights (`flow-c414-t1` and `-t48`, one 240 KB graph apart) are the same
   bytes, so the installer downloads 115 MB and hardlinks the second path — the
-  phone's download, disk and page cache hold one copy; Core ML then compiles
+  phone's download, disk and page cache hold one copy. Every launch verifies
+  the pack (size + SHA-256 over the 115 MB, 47 ms on an M4 Pro, off the main
+  actor): a damaged file is re-downloaded, not handed to Core ML — offline the
+  installed manifest is the reference and a damaged pack is refused. Core ML
+  then compiles
   the packages and repeats the same weights as two `.mlmodelc`, which
   `PhononPack.relinkCompiled` links after the first load (201 MB installed
   here, from 306 MB before both steps). Serving the pack over HTTP still sends

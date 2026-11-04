@@ -85,29 +85,53 @@ again.wait()
 check(installError == nil, "relink succeeds")
 check(inode(c) == inode(d), "existing copies relinked")
 
-// 3. The `built` stamp is the contract: the same export is left alone (no
-// re-hash on every launch), a new export is fetched whole — and still deduped.
+// 3. Every launch verifies the pack, whatever the `built` stamp says: a
+// damaged file is re-fetched, not loaded.
 let e = installed.appendingPathComponent("flow-c414-t1.mlpackage/Data/com.apple.CoreML/weights/weight.bin")
-try! Data(repeating: 0, count: weights.count).write(to: e)
-func run(_ label: String) {
+func run(_ label: String, from base: URL = served, into dir: URL? = nil) {
     let done = DispatchSemaphore(value: 0)
     installError = nil
     Task {
-        do { _ = try await PhononPack.download(from: served, to: installed) } catch { installError = error }
+        do { _ = try await PhononPack.download(from: base, to: dir ?? installed) }
+        catch { installError = error }
         done.signal()
     }
     done.wait()
     check(installError == nil, "\(label) succeeds")
 }
-run("same built")
-check((try? Data(contentsOf: e)) == Data(repeating: 0, count: weights.count),
-      "same built stamp does not re-verify the installed pack")
+try! Data(repeating: 0, count: weights.count).write(to: e)
+run("damaged pack, same built")
+check((try? Data(contentsOf: e)) == weights, "damaged file replaced with the served bytes")
+check(inode(e) == inode(installed.appendingPathComponent("flow-c414-t48.mlpackage/Data/com.apple.CoreML/weights/weight.bin")),
+      "repair keeps the dedupe")
 try! Data(manifest.replacingOccurrences(of: "\"built\": 1", with: "\"built\": 2").utf8)
     .write(to: served.appendingPathComponent("bundle.json"))
 run("new built")
 check((try? Data(contentsOf: e)) == weights, "new built stamp replaces the pack")
 check(inode(e) == inode(installed.appendingPathComponent("flow-c414-t48.mlpackage/Data/com.apple.CoreML/weights/weight.bin")),
       "replaced pack is still deduped")
+
+// 3b. Offline: an intact pack is still returned, a damaged one is refused.
+let nowhere = URL(fileURLWithPath: root.appendingPathComponent("nowhere").path)
+run("offline, intact pack", from: nowhere)
+try! Data(repeating: 0, count: weights.count).write(to: e)
+installError = nil
+let offline = DispatchSemaphore(value: 0)
+Task {
+    do { _ = try await PhononPack.download(from: nowhere, to: installed) } catch { installError = error }
+    offline.signal()
+}
+offline.wait()
+check(installError != nil, "offline, damaged pack is refused")
+run("repair after offline refusal")
+check((try? Data(contentsOf: e)) == weights, "served bytes come back")
+
+// 3c. The local (no pack URL) path asks the same question.
+check(PhononPack.verified(at: installed), "installed pack verifies")
+try! Data(repeating: 0, count: weights.count).write(to: e)
+check(!PhononPack.verified(at: installed), "damaged pack does not verify")
+run("repair")
+check(PhononPack.verified(at: installed), "repaired pack verifies")
 
 // 4. The compiled copies Core ML writes are relinked too, and a bundle with
 // no compiled models yet is a no-op.
