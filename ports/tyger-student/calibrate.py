@@ -19,13 +19,9 @@ import json
 import os
 import sys
 
-import torch
-
 from gate import aligned_count, student_events
 from data import iter_shards
-from model import Student
 from oracle import Oracle
-from registry import by_id
 
 DEFAULTS = (0.9146, 0.5, 0.5)  # bundle defaults: the teacher's rules thresholds
 
@@ -56,6 +52,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shards", required=True, help="gate shard dir with recorded teacher events")
     ap.add_argument("--student", required=True)
+    ap.add_argument("--tap", default=None,
+                    help="shared-latent checkpoints: which tap adapter to replay "
+                         "(must match --feature-layer; default: the checkpoint's deploy tap)")
     ap.add_argument("--feature-layer", type=int, default=15)
     ap.add_argument("--tol", type=int, default=2)
     ap.add_argument("--sessions", type=int, default=0, help="limit sessions (0 = all); for quick passes")
@@ -66,10 +65,8 @@ def main():
     ap.add_argument("--out", default=None, help="traits JSON (default: <student>.traits.json)")
     args = ap.parse_args()
 
-    ckpt = torch.load(args.student, map_location="cpu")
-    model = Student([by_id(i) for i in ckpt["heads"]], width=ckpt["width"], layers=ckpt["layers"])
-    model.load_state_dict(ckpt["state_dict"])
-    model.eval()
+    from checkpoint import load as load_model
+    model, _ckpt = load_model(args.student, tap=args.tap)
     oracle = Oracle(device="cpu")
 
     sessions = []

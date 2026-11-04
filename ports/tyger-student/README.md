@@ -12,6 +12,8 @@ registry entry plus labels — not another bolted-on model.
 | `featurize.py` | corpus → training shards: what the model sees + what the teacher answered + the teacher's events, per 80 ms frame |
 | `data.py` | the shard format (the wire between featurize, train and gate) |
 | `train.py` | distillation + label training, per-head score gate report, warm start for batch N+1 (`--selfcheck` for a synthetic smoke) |
+| `train_shared.py` | the epic-#132 P2 weighted multi-teacher baseline: one `SharedLatentStudent` over one shard set per tap adapter, per-axis teacher weights from the P0 probe R2 (`--weights auto\|uniform\|FILE`), per-tap gate report (`--selfcheck`) |
+| `checkpoint.py` | `student.pt` I/O for both models + the tap-binding shim (`TapBound`) so gate/harness/calibrate replay shared checkpoints like `Student` |
 | `calibrate.py` | per-model fit of the rules' threshold knobs (ep/barge/bc) → `<student>.traits.json`; reports default AND calibrated agreement |
 | `gate.py` | the decision gate: student's own events vs the teacher's, replayed with live rules feedback (parity7 metric, ≥99% PASS) |
 | `export.py` | the size rung: `student.pt` → ONNX (`StudentStep{,Int8}.onnx`, TygerStep I/O contract) + parity gates (fp32 ≤ 1e-4, int8 probs ≤ 2e-3, decision-flip counts) |
@@ -20,6 +22,7 @@ registry entry plus labels — not another bolted-on model.
 | `harness.py` | the product-metric gate (the P1 brief's judgment): endpoint latency/early/miss, barge catch/false, bc precision/recall — teacher vs student on the same axes (`scripts/tyger-eval.py` definitions; proposed bars in `bench-results/harness-gate.md`) |
 | `oracle.py` | the tyger-s2s seam (reference chain + rules + Mimi decode), one env contract |
 | `probe.py` | the tap probe survey (#132 P0): per-tap ridge probes (R²/cosine) of the teacher's 8-vector per decision axis, held-out sessions; the tap-quality table that drives the per-axis adapter loss weights (`bench-results/tap-probes.md`, findings in `docs/voice-decision-model.md` P2) |
+| `featurize_tap.py` | rebuild a shard set's `hu`/`ha` from the streaming (cache-aware) encoder tap or the windowed re-encode at any layer — keeps the teacher's 8-vectors/events/labels; the tap shard builder (`tap4-shards`, `l4-shards`) |
 | `test_model.py` | the shipped checkpoint-layout pin (student.pt loads by name) + the shared-latent seam smoke |
 
 ## Contract (unchanged above the seam)
@@ -46,7 +49,8 @@ instantiated by `model.py`'s `SharedLatentStudent`:
   exactly one adapter — the tap the streaming ASR already computes.
 - Cross-adapter calls on the same frames are the P3 consistency-loss surface
   (KL between decisions via tap A and tap B). Per-axis teacher weighting (P2)
-  comes from `probe.py`'s tap-quality table, never from averaged teachers.
+  comes from `probe.py`'s tap-quality table, never from averaged teachers —
+  implemented by `train_shared.py` (baseline + formula live there).
 - The existing `Student` is untouched — its checkpoint layout is pinned by
   `test_model.py` (the shipped tiers load by name).
 
