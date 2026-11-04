@@ -903,7 +903,7 @@ mod tests {
     #[ignore = "throughput bench; needs no network"]
     async fn iroh_raw_bulk() {
         use idfon_core::transport::pump;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         const RAW_ALPN: &[u8] = b"idfon/h1bench/1";
 
