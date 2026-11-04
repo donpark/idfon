@@ -44,7 +44,7 @@ from dataclasses import replace
 from checkpoint import TapBound, load as load_checkpoint, save as save_checkpoint
 from data import iter_shards
 from model import SharedLatentStudent, count_params
-from registry import HEADS, adapter_by_id, teacher_cols
+from registry import ADAPTERS, ADAPTER_GATE, HEADS, adapter_by_id, teacher_cols
 from train import batch, evaluate, gate_check, windows
 
 import probe as probe_mod
@@ -180,10 +180,12 @@ def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", wei
             m = metrics[h.id]
             shown = (f"mse {m['mse']:.5f}" if "mse" in m
                      else (f"auc {m['auc']:.3f}" if m.get("auc") is not None else "n/a"))
-            g = gate_check(h, m)
+            # per-adapter gate ceilings where tap information bounds the head (registry.ADAPTER_GATE)
+            gate_spec = ADAPTER_GATE.get(tap, {}).get(h.id, h.gate)
+            g = gate_check(replace(h, gate=gate_spec), m)
             ok = ok and g["status"] != "fail"
             report["heads"][tap][h.id] = {"source": h.source, "val": m, "gate": g}
-            lim = f"{h.gate.get('metric', '')} {h.gate.get('max', h.gate.get('min', ''))}" if h.gate else "-"
+            lim = f"{gate_spec.get('metric', '')} {gate_spec.get('max', gate_spec.get('min', ''))}" if gate_spec else "-"
             print(f"{h.id:<12} {h.source:<18} {shown:>12} {lim:>12}  {g['status']}")
 
     if out_dir:

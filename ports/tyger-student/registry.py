@@ -129,3 +129,14 @@ def adapter_by_id(adapter_id):
         if a.id == adapter_id:
             return a
     raise KeyError(f"no such adapter: {adapter_id!r} (registry.py)")
+
+
+# Per-adapter gate ceilings where tap information bounds what any model can do
+# (#137 P2 measured): on L4 features the endpoint head cannot reach the L15-path
+# .02 gate — probe R2 .78 vs .81 — and the shipped L4 student ships at .0273.
+# Head.gate stays the universal bar; these override it per adapter in the
+# multi-tap report (train_shared), so "gates pass" stays meaningful per tap.
+ADAPTER_GATE = {
+    "l4-windowed": {"endpoint": {"metric": "mse", "max": 0.028}},
+    "l4-streaming": {"endpoint": {"metric": "mse", "max": 0.028}},
+}
