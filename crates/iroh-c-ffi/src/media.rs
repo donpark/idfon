@@ -978,9 +978,11 @@ async fn subscribe_decode_once(
         let mut decode = moq_audio::decode::Options::default();
         decode.output = output;
         // Keep a bounded playout budget so a late group is not discarded
-        // immediately. This is the decoder's jitter tolerance; the sink
-        // below adds its own ~50 ms device buffer.
-        decode.max_age = std::time::Duration::from_millis(50);
+        // immediately. This is the decoder's jitter tolerance; it must sit at
+        // or above the playout target ceiling (`seam::PLAYOUT_TARGET_MAX`),
+        // or a 100–250 ms burst is dropped on arrival and becomes a hole the
+        // jitter buffer can never smooth over.
+        decode.max_age = std::time::Duration::from_millis(250);
         // Live playout fills small holes from the next packet's in-band copy
         // (moq-audio `conceal`); recordings must show holes as-is.
         decode.conceal = std::time::Duration::from_millis(120);
@@ -1028,7 +1030,7 @@ async fn subscribe_decode_once(
         // Do not start the speaker on the first arriving packet. A short
         // startup prebuffer absorbs normal network/decoder scheduling
         // jitter without turning the first late packet into a click.
-        const STARTUP_PREBUFFER_FRAMES: usize = 2_400; // 50 ms @ 48 kHz
+        const STARTUP_PREBUFFER_FRAMES: usize = 3_840; // 80 ms @ 48 kHz
         let mut startup = Vec::new();
         let mut started = false;
         let mut last_arrival = None;
@@ -1120,7 +1122,11 @@ async fn subscribe_decode_once(
                 // NetEq-style shrink: the sink parks ahead-writes and never
                 // drains back on its own, so discard down to the playout
                 // target instead of ratcheting delay after every stall.
-                const SINK_TARGET_LATENCY: f64 = 0.08; // 80 ms
+                // Trim only genuine overflow: above the adaptive target
+                // ceiling plus a burst. A tighter cap (80 ms until
+                // 2026-11-04) pulled the buffer back under the cellular
+                // arrival bursts it had just absorbed, which clicked.
+                const SINK_TARGET_LATENCY: f64 = 0.40;
                 let buffered = playback.buffered().as_secs_f64();
                 let mut data = frame.data.as_ref();
                 let mut trim_samples = 0usize;

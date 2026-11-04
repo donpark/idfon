@@ -67,7 +67,9 @@ pub trait AudioPlayback: Send {
 /// `write` queues interleaved PCM; a pacing thread emits it to `emit` in
 /// `PLAYOUT_CHUNK`-sized pieces at media rate after a prebuffer that adapts
 /// to recent arrival jitter between [`PLAYOUT_TARGET_MIN`] and
-/// [`PLAYOUT_TARGET_MAX`] (starting at [`PLAYOUT_TARGET`]).
+/// [`PLAYOUT_TARGET_MAX`] (starting at [`PLAYOUT_TARGET`]). The target follows
+/// the *worst* recent arrival, not a percentile: a jitter buffer exists to
+/// survive the rare 100–350 ms burst, and a p95 says nothing about it.
 /// `buffered` reports the queue so the caller can trim after a stall. On
 /// overflow the oldest audio drops back to the current target, so latency
 /// cannot ratchet after a burst.
@@ -95,16 +97,18 @@ struct PacedState {
 /// out arrival jitter without adding perceptible latency. The starting
 /// value; [`ArrivalJitter`] adapts it as arrivals show their real jitter
 /// (docs/media-adaptation.md §C8).
-const PLAYOUT_TARGET: Duration = Duration::from_millis(50);
-/// Adaptive target floor: perfect arrivals still deserve a little lead.
-const PLAYOUT_TARGET_MIN: Duration = Duration::from_millis(30);
+const PLAYOUT_TARGET: Duration = Duration::from_millis(80);
+/// Adaptive target floor: a 20 ms frame needs room for a burst, and 30 ms
+/// (the old floor) underran on every 100 ms cellular hiccup.
+const PLAYOUT_TARGET_MIN: Duration = Duration::from_millis(60);
 /// Adaptive target ceiling: past this, latency costs more than the jitter.
-const PLAYOUT_TARGET_MAX: Duration = Duration::from_millis(150);
+const PLAYOUT_TARGET_MAX: Duration = Duration::from_millis(200);
 /// How much audio one emit carries; the pacing granularity.
 const PLAYOUT_CHUNK: Duration = Duration::from_millis(20);
 /// Queue ceiling: after a stall plus a burst, drop the oldest audio back to
-/// `PLAYOUT_TARGET` instead of playing it seconds late.
-const PLAYOUT_MAX: Duration = Duration::from_millis(250);
+/// `PLAYOUT_TARGET` instead of playing it seconds late. Must stay above the
+/// target ceiling or the trim undoes the buffer a burst just earned.
+const PLAYOUT_MAX: Duration = Duration::from_millis(400);
 
 /// Recent arrival jitter of [`PacedPlayback::write`] calls: how far each
 /// write's wall-clock spacing drifted from its media spacing. The p95 is the
@@ -118,7 +122,9 @@ struct ArrivalJitter {
 }
 
 impl ArrivalJitter {
-    const WINDOW: usize = 128;
+    /// ~10 s of 20 ms frames: long enough that one burst is still remembered
+    /// when the next one lands, short enough that the target decays.
+    const WINDOW: usize = 512;
 
     fn new() -> Self {
         Self {
@@ -143,16 +149,15 @@ impl ArrivalJitter {
         self.last = Some((now, pts_us));
     }
 
-    /// The prebuffer a recent p95 of arrivals needs, clamped. The default
-    /// until there is a meaningful sample set.
+    /// The prebuffer the worst recent arrival needs, clamped. The default
+    /// until there is a meaningful sample set. Worst-case, not p95: a
+    /// percentile hides exactly the sparse long gaps that click.
     fn target(&self) -> Duration {
         if self.samples.len() < 16 {
             return PLAYOUT_TARGET;
         }
-        let mut sorted: Vec<u64> = self.samples.iter().copied().collect();
-        sorted.sort_unstable();
-        let p95 = sorted[(sorted.len() * 95) / 100];
-        Duration::from_micros(p95).clamp(PLAYOUT_TARGET_MIN, PLAYOUT_TARGET_MAX)
+        let worst = self.samples.iter().copied().max().unwrap_or(0);
+        Duration::from_micros(worst).clamp(PLAYOUT_TARGET_MIN, PLAYOUT_TARGET_MAX)
     }
 }
 
@@ -486,26 +491,32 @@ mod tests {
         jitter.record(start + Duration::from_millis(100), 0);
         assert_eq!(jitter.target(), PLAYOUT_TARGET);
 
-        // Steady arrivals at exactly media rate: the floor.
+        // Steady arrivals at exactly media rate: the floor. A fresh window,
+        // because the worst-case target deliberately remembers the 100 ms
+        // pts jump above for the whole window.
+        let mut jitter = ArrivalJitter::new();
         for i in 0..64u64 {
             jitter.record(start + Duration::from_millis(1_000 + i * 20), 1_000_000 + i * 20_000);
         }
         assert_eq!(jitter.target(), PLAYOUT_TARGET_MIN);
 
-        // Every other write slips 60 ms against the media clock: the p95
-        // lands on the slip.
+        // One 300 ms burst among steady frames: the target must cover it (a
+        // p95 would have stayed near the floor and clicked).
+        let mut jitter = ArrivalJitter::new();
         for i in 0..64u64 {
+            let gap = if i == 32 { 300 } else { 0 };
             jitter.record(
-                start + Duration::from_millis(2_000 + i * 20 + (i % 2) * 60),
+                start + Duration::from_millis(2_000 + i * 20 + gap),
                 2_000_000 + i * 20_000,
             );
         }
-        assert_eq!(jitter.target(), Duration::from_millis(60));
+        assert_eq!(jitter.target(), PLAYOUT_TARGET_MAX);
 
         // Slips past the ceiling clamp at the ceiling.
+        let mut jitter = ArrivalJitter::new();
         for i in 0..64u64 {
             jitter.record(
-                start + Duration::from_millis(3_000 + i * 20 + (i % 2) * 200),
+                start + Duration::from_millis(3_000 + i * 20 + (i % 2) * 400),
                 3_000_000 + i * 20_000,
             );
         }
