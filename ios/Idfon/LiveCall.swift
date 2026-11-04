@@ -197,7 +197,12 @@ final class LiveCall {
         case .sendStop(let peer, let ticket):
             // Empty ticket = the call never got a generation (ended before its
             // publish landed); an unticketed stop keeps the legacy behavior.
-            Task { try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: false)) }
+            // Background-tasked: a lock-screen hang-up must deliver this even
+            // though the audio stop drops the app's suspension exemption.
+            let client = self.client
+            AppBackgroundTask.run {
+                try? await client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket ?? "", call: false))
+            }
         case .join(let ticket, _):
             // The peer answered our dial (or re-published a fresh ticket):
             // cue and subscribe non-fatally — a failed subscribe must not tear
@@ -216,7 +221,7 @@ final class LiveCall {
             videoEnabled = false
             HybridVoice.shared.stop()
             AudioPusher.shared.stop()
-            Task.detached(priority: .userInitiated) {
+            AppBackgroundTask.run {
                 media_live_stop()
                 Diag.logCallRecord() // the record folds inside the stop: ship once, here
                 media_live_unsubscribe()

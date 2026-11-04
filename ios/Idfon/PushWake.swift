@@ -109,7 +109,10 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
     func callConnected() { cancelRing() }
 
     private func send(peer: String, action: String, callUUID: String, hasVideo: Bool) {
-        Task {
+        // Background-tasked: the ring-cancel runs at connect time, which on a
+        // lock-screen wake happens in the background — the POST must land or
+        // the identity's other devices keep ringing (#46).
+        AppBackgroundTask.run {
             guard let base = EdgeClient.shared.baseURL else { return }
             // `caller_id` derives from the presented ticket (RingTicket): a
             // contact ticket binds it as `subject`, a self-issued statement as
@@ -119,13 +122,13 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
             // different ids (#56); any other derivation breaks the edge's
             // ticket checks.
             guard let ticket = RingTicket.presentation(
-                contact: contactTicket(for: peer),
-                issued: try? await selfIssuedStatement())
+                contact: self.contactTicket(for: peer),
+                issued: try? await self.selfIssuedStatement())
             else { return }
             var body: [String: Any] = ["call_uuid": callUUID, "caller_id": ticket.callerId]
             if action == "ring" { body["has_video"] = hasVideo }
             let url = EdgeClient.resourceURL(baseURL: base, account: peer, path: "/_push/\(action)")
-            await postJSON(url: url, ticket: ticket.raw, body: body)
+            await self.postJSON(url: url, ticket: ticket.raw, body: body)
         }
     }
 

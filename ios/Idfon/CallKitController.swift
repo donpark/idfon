@@ -423,6 +423,12 @@ final class CallKitController: NSObject, CXProviderDelegate {
         Task { @MainActor in AudioIO.shared.callKitDidActivate() }
     }
 
+    /// The system took the session (cellular interruption): pause audio and
+    /// leave the call resumable — `didActivate` rebuilds it (§8).
+    nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        Task { @MainActor in AudioIO.shared.callKitDidDeactivate() }
+    }
+
     nonisolated func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
         action.fail()
     }
