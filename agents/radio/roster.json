@@ -11,6 +11,12 @@
       "name": "Wildlife Hour",
       "topic": "wildlife",
       "instance": "radio-wildlife"
+    },
+    {
+      "name": "World News Radio",
+      "topic": "world news",
+      "instance": "radio-world",
+      "public": true
     }
   ]
 }

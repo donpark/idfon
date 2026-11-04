@@ -249,10 +249,15 @@ if (flag("self-test")) {
           const instance = codes.redeem(code);
           const contact = contacts.find((candidate) => candidate.instance === instance);
           const ticket = contact && subject ? admit(contact, subject) : null;
+          console.error(
+            `test-contacts-page: redeem code=${JSON.stringify(code)} instance=${instance ?? "?"} ` +
+              `subject=${subject ? String(subject).slice(0, 12) : "missing"} -> ${ticket ? "ticket" : "denied"}`
+          );
           [status, reply] = ticket
             ? [200, { ticket }]
             : [403, { error: "unknown code or subject" }];
         } catch {
+          console.error(`test-contacts-page: redeem bad request: ${body.slice(0, 200)}`);
           [status, reply] = [400, { error: "bad request" }];
         }
         response.writeHead(status, { "content-type": "application/json" });
