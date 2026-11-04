@@ -372,6 +372,19 @@ while the single-tap student passes at group-8 (1.63e-3) — so per the repo
 ruling **QAT is needed** (fragility is mostly the shared architecture, 2.33e-3
 for the P2 baseline; consistency adds ~0.7e-3). int8 buys bytes (1.75 MB) not
 CPU latency; rules decisions stayed identical in every quantized run.
+**QAT verdict (2026-11-04): done — fine-tune recipe.** `train_shared.py --qat N`
+projects the export's int8 group-N grid (GRU W/R + adapter projections) onto the
+weights after every step (`qat.py`, bit-identical to `quantize_step.py`); QAT
+fine-tuning (20 ep @ 1e-4 from the converged fp32 λ=0.3 model) makes the int8
+artifact **numerically indistinguishable from the torch model (6e-7…7e-6 vs the
+2e-3 envelope, 0 flips, all adapters)** at zero quality cost (gates unchanged,
+live-L15 exactly at its 64.4% bar) — deployable: 5.28 → 1.75 MB. Negative
+results: training on the grid *from scratch* costs the l15 path 5–7 pts (the
+epic's "from the start" is not free for this architecture — converge first,
+then adapt); a shape-convention bug (`nn.Linear` (out, in) vs the export's
+(in, out)) once shipped GRU-only QAT and was caught by the parity gate; group-8
+artifacts need `--qat 8` (grid mismatch); QAT shifts calibration again —
+per-model fits stay mandatory.
 
 **P3 — fold into classic's contract** (`voice-tyger-option.md` P3): classic
 behavior stays; its endpointing/yield decisions get the model's quality, traits
