@@ -588,6 +588,9 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                     Automation.mark("voice: phonon initializing")
                     let models = try await Self.modelsDirectory()
                     let phonon = try await Phonon.load(models: models, language: .english)
+                    // The load is what compiles the packages; link the compiled
+                    // copies of the duplicated flow weights (PhononBundle).
+                    PhononBundle.relinkCompiled(at: models)
                     if let voice = Self.env("IDFON_TTS_VOICE") {
                         do { try await phonon.setVoice(voice) }
                         catch {

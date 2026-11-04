@@ -98,4 +98,21 @@ repair.wait()
 check(installError == nil, "repair succeeds")
 check((try? Data(contentsOf: e)) == weights, "corrupt file replaced with the served bytes")
 
+// 4. The compiled copies Core ML writes are relinked too, and a bundle with
+// no compiled models yet is a no-op.
+let compiledA = installed.appendingPathComponent("flow-c414-t1.mlmodelc/weights/weight.bin")
+let compiledB = installed.appendingPathComponent("flow-c414-t48.mlmodelc/weights/weight.bin")
+for path in [compiledA, compiledB] {
+    try! fm.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try! weights.write(to: path)
+}
+check(inode(compiledA) != inode(compiledB), "two compiled copies before relink")
+PhononBundle.relinkCompiled(at: installed)
+check(inode(compiledA) == inode(compiledB), "compiled weights relinked")
+check((try? Data(contentsOf: compiledB)) == weights, "relinked compiled weights intact")
+let bare = root.appendingPathComponent("bare")
+try! fm.createDirectory(at: bare, withIntermediateDirectories: true)
+PhononBundle.relinkCompiled(at: bare)
+check(true, "relink without a manifest or compiled models is a no-op")
+
 print("ALL OK")
