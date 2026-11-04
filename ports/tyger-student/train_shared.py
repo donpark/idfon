@@ -54,6 +54,7 @@ from dataclasses import replace
 from checkpoint import TapBound, load as load_checkpoint, save as save_checkpoint
 from data import iter_shards
 from model import SharedLatentStudent, count_params
+from qat import fake_quant, project as qat_project, selfcheck_parity, target_params
 from registry import ADAPTERS, ADAPTER_GATE, HEADS, adapter_by_id, seam_heads, teacher_cols
 from train import batch, evaluate, gate_check, windows
 
@@ -150,7 +151,7 @@ def load_tap_shards(tap_roots, split):
 
 
 def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", weights="auto",
-        init=None, deploy_tap=None, val_split="val", consistency=0.0):
+        init=None, deploy_tap=None, val_split="val", consistency=0.0, qat=0):
     torch.manual_seed(seed)
     np.random.seed(seed)
     heads = HEADS
@@ -176,8 +177,11 @@ def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", wei
         missing = [k for k in target if k not in ckpt["state_dict"]]
         model.load_state_dict({k: v for k, v in ckpt["state_dict"].items() if k in target}, strict=False)
         print(f"warm start: {init} (fresh: {', '.join(sorted({k.split('.')[1] for k in missing})) or 'none'})")
+    if qat:
+        qat_project(model, qat)  # every forward runs on the int8 grid the export ships
     print(f"shared student: {count_params(model):,} params ({count_params(model) * 4 / 1e6:.1f} MB fp32), "
-          f"adapters: {', '.join(tap_roots)}, heads: {', '.join(h.id for h in heads)}")
+          f"adapters: {', '.join(tap_roots)}, heads: {', '.join(h.id for h in heads)}"
+          + (f", QAT group-{qat}" if qat else ""))
 
     train_sh = load_tap_shards(tap_roots, "train")
     if consistency > 0:  # paired windows need the same sessions in every tap set
@@ -213,6 +217,8 @@ def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", wei
             opt.zero_grad()
             loss.backward()
             opt.step()
+            if qat:
+                qat_project(model, qat)  # projected-gradient QAT: params back on the int8 grid
             total += loss.item()
             steps += 1
         first = first if first is not None else total / steps
@@ -222,7 +228,7 @@ def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", wei
     report = {"model": "SharedLatentStudent", "params": count_params(model),
               "taps": dict(tap_roots), "deploy_tap": deploy_tap,
               "weights_mode": weights, "probe_r2": r2_by_tap, "weights": w_by_tap,
-              "consistency_lambda": consistency,
+              "consistency_lambda": consistency, "qat_group": qat,
               "window_frames": window, "epochs": epochs, "distill_loss": distill_loss,
               "seed": seed, "lr": lr, "train_loss_first": round(first, 5),
               "train_loss_last": round(last, 5), "heads": {}}
@@ -322,6 +328,13 @@ def selfcheck():
         assert float(seam_kl(z, o)) > 0.0
         _, c_first, c_last, _ = run(roots, None, epochs=8, window=W, lr=5e-3, consistency=0.1)
         assert c_last < c_first, f"consistency loss did not fall: {c_first} -> {c_last}"
+
+        # 5. QAT: the torch fake-quant matches quantize_step's numpy grid bit-exactly,
+        # and the projected-gradient loop runs and learns (the export gate — int8 vs
+        # torch, export.py — is what pins shipped-grid parity)
+        assert selfcheck_parity() == "ok"
+        _, q_first, q_last, _ = run(roots, None, epochs=6, window=W, lr=5e-3, qat=16)
+        assert q_last < q_first, f"QAT loss did not fall: {q_first} -> {q_last}"
     print("selfcheck ok")
 
 
@@ -336,6 +349,9 @@ if __name__ == "__main__":
     ap.add_argument("--consistency", type=float, default=0.0,
                     help="P3 cross-tap KL weight: loss += LAM * symmetric-KL(seam decisions "
                          "via tap A vs tap B) on the same frames (0 = the P2 baseline recipe)")
+    ap.add_argument("--qat", type=int, default=0,
+                    help="P4 quantization-aware training: project the export's int8 group-N "
+                         "grid after every step (0 = off; 16 = the proven rung)")
     ap.add_argument("--init", default=None, help="warm start from a previous shared student.pt")
     ap.add_argument("--deploy-tap", default=None,
                     help="adapter the checkpoint records for eval replay (default: l4-streaming)")
@@ -365,5 +381,5 @@ if __name__ == "__main__":
     ok, *_ = run(tap_roots, args.out, args.epochs, args.window, args.lr,
                  seed=args.seed, distill_loss=args.distill_loss, weights=args.weights,
                  init=args.init, deploy_tap=args.deploy_tap, val_split=args.val_split,
-                 consistency=args.consistency)
+                 consistency=args.consistency, qat=args.qat)
     sys.exit(0 if ok else 1)
