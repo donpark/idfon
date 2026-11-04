@@ -614,13 +614,26 @@ explicit choice still wins.
   `mac/Package.swift` + `-DPHONON_TTS`; iOS: `SWIFT_ACTIVE_COMPILATION_CONDITIONS`
   in `ios/build.sh`, the `ptts` product is referenced either way and stripped
   when unused). Selected like any backend (`IDFON_TTS=phonon`, per-contact);
-  models via `scripts/fetch-phonon-31m.sh` (or `IDFON_PHONON_PACK_URL`);
+  models via `scripts/fetch-phonon-31m.sh` (or `IDFON_PHONON_PACK_URL`,
+  installed by `PhononPack`: the manifest lists 170 MB of files but the flow
+  LM's weights (`flow-c414-t1` and `-t48`, one 240 KB graph apart) are the same
+  bytes, so the installer downloads 115 MB and hardlinks the second path — the
+  phone's download, disk and page cache hold one copy; Core ML then compiles
+  the packages and repeats the same weights as two `.mlmodelc`, which
+  `PhononPack.relinkCompiled` links after the first load (201 MB installed
+  here, from 306 MB before both steps). Serving the pack over HTTP still sends
+  both paths; only a directory copy keeps the link);
   custom voices are 256KB `.safetensors` embeddings in `voices/NAME.safetensors`
-  (`IDFON_TTS_VOICE=NAME`). iOS 18+/macOS 15+ only. Full streaming: text is
+  (`IDFON_TTS_VOICE=NAME`; a *served* pack must list them in its
+  `bundle.json`, which the fetch script rewrites after it restores a kept
+  `voices/` — otherwise every client install fails the hash check and falls
+  back to the Apple voice). iOS 18+/macOS 15+ only. Full streaming: text is
   one utterance per call (the runtime splits long text at sentence ends) and
-  playback streams 80 ms chunks through the AEC bus as they generate (first
-  audio ≈ 6 ms in the 2026-10-25 mac smoke:
-  `IDFON_TTS=phonon Idfon -ttssay "…"`); iOS text-only mode streams through a
+  playback streams 80 ms chunks through the AEC bus as they generate (2026-11-03,
+  M4 Pro, pack served over HTTP and installed by `PhononPack`: first audio 5 ms,
+  31–33× real time, 2.9 s to load first time / 1.4 s warm — the 2026-10-25 mac
+  smoke measured ≈6 ms: `IDFON_TTS=phonon Idfon -ttssay "…"`); iOS text-only
+  mode streams through a
   local player too since 2026-10-25 (whole-clip before). Speak chunk-per-chunk
   for speak-while-generating (Tyger's mouth pattern; the reply-delta seam).
   Voice *creation* runs
