@@ -23,5 +23,11 @@ private func logToIdfon(_ level: OSLogType, _ message: String, _ file: String) {
     Logger(subsystem: "app.idfon", category: file).log(level: level, "\(message, privacy: .public)")
     // Mirror to stderr like NSLog did: launch captures (mac-e2e.sh) grep
     // these markers there; os.Logger alone never reaches them.
-    FileHandle.standardError.write(Data("\(message)\n".utf8))
+    // POSIX write: FileHandle raises an uncatchable ObjC exception when the
+    // pipe breaks, which SIGABRTed the app on its next log line (2026-11-03).
+    var out = "\(message)\n"
+    out.withUTF8 { buf in
+        fcntl(STDERR_FILENO, F_SETNOSIGPIPE, 1)
+        _ = Darwin.write(STDERR_FILENO, buf.baseAddress, buf.count)
+    }
 }
