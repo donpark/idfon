@@ -1509,7 +1509,15 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     /// The thread row carries the gist; the live tree needs the room.
     private func presentRenderBlock(_ render: RenderEnvelope) {
-        presentAsSheet(RenderBlockViewController(title: render.title, spec: render.spec))
+        let peerID = peer.id
+        presentAsSheet(RenderBlockViewController(
+            title: render.title, spec: render.spec, peer: peerID,
+            dial: { [weak self] target, show in
+                // A menu pick switches like the detail-surface menu: end any
+                // call first — the dial guard would otherwise refuse as busy.
+                self?.live.hangUp()
+                self?.live.dial(target, show: show)
+            }))
     }
 
     @objc private func artifactTapped(_ sender: NSButton) {

@@ -105,7 +105,10 @@ optional status.
   presence, overridden on the person screen — a human can be deaf, an agent
   can refuse voice by policy) gates the row Call verb, the chat's call chrome,
   and the chat-open speech prewarm (engines warm as soon as a callable
-  contact's chat opens, off the call's critical path).
+  contact's chat opens, off the call's critical path). A **playable** contact
+  (the signed voice route is `broadcast` — a station) shows **Play** instead of
+  Call: same tap, same dial, and hanging up stops the audio. Menu items in a
+  json-render station menu are Play the same way (`idfon.call`).
 - **Chrome (2026-10-14)**: Edit left-most, `+` top-right; the filter strip
   leads with **Recents** (the default filter); the Contacts title sits in the
   nav bar like Messages; the Edge/Relay settings and the identity picker are

@@ -76,9 +76,14 @@ final class ListRowCell: UITableViewCell {
     }
 
     /// §5.1 row Call verb: shown left of the chevron; nil restores the plain
-    /// disclosure chevron (other lists reuse this row template).
-    func setCallAction(_ action: (() -> Void)?) {
+    /// disclosure chevron (other lists reuse this row template). `playable`
+    /// swaps the verb to Play — a playable contact (a station) plays audio
+    /// instead of placing a conversation call.
+    func setCallAction(_ action: (() -> Void)?, playable: Bool = false) {
         onCall = action
+        callButton.setImage(UIImage(systemName: playable ? "play.fill" : "phone.fill"), for: .normal)
+        callButton.tintColor = playable ? .systemOrange : .systemGreen
+        callButton.accessibilityLabel = playable ? "Play" : "Call"
         accessoryView = action == nil ? nil : accessoryStack
         accessoryType = action == nil ? .disclosureIndicator : .none
     }

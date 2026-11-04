@@ -23,6 +23,10 @@ final class SidebarViewController: NSViewController {
                 case .room(let room): app?.select(room)
                 }
             },
+            onCall: { [weak app] chat in
+                // §5.1 Row Call/Play: dial without leaving the list.
+                if case .direct(let peer) = chat.kind { app?.call(peer) }
+            },
             recentRoomsProvider: { [weak app] in app?.rooms ?? [] },
             unreadCountProvider: { ChatStore.shared.unreadCount(for: $0) })
         super.init(nibName: nil, bundle: nil)

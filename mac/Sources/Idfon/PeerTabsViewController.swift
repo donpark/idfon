@@ -14,6 +14,7 @@ final class PeerTabsViewController: NSTabViewController {
     init(peersProvider: @escaping () -> [Peer],
          recentPeerIds: @escaping () -> [String],
          onSelect: @escaping (Conversation) -> Void,
+         onCall: ((Conversation) -> Void)? = nil,
          recentRoomsProvider: @escaping () -> [Room] = { [] },
          unreadCountProvider: @escaping (Conversation) -> Int = { _ in 0 }) {
         super.init(nibName: nil, bundle: nil)
@@ -28,6 +29,7 @@ final class PeerTabsViewController: NSTabViewController {
             section.recentRoomsProvider = recentRoomsProvider
             section.unreadCountProvider = unreadCountProvider
             section.onSelect = onSelect
+            section.onCall = onCall
         }
     }
 
@@ -65,6 +67,8 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
     var recentRoomsProvider: (() -> [Room])?
     var unreadCountProvider: ((Conversation) -> Int)?
     var onSelect: ((Conversation) -> Void)?
+    /// The row Call/Play verb (§5.1): dial this conversation directly.
+    var onCall: ((Conversation) -> Void)?
     /// Fired after a rename/remove so the owner can refresh the peer source.
     var onMutate: (() -> Void)?
 
@@ -379,21 +383,36 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         if cell.subviews.isEmpty {
             let name = NSTextField(labelWithString: "")
             let endpoint = NSTextField(labelWithString: "")
+            let call = NSButton(title: "Call", target: self, action: #selector(callClicked(_:)))
+            call.bezelStyle = .rounded
+            call.setButtonType(.momentaryPushIn)
+            call.controlSize = .small
             cell.addSubview(name)
             cell.addSubview(endpoint)
+            cell.addSubview(call)
             cell.textField = name
             for subview in cell.subviews { subview.translatesAutoresizingMaskIntoConstraints = false }
             NSLayoutConstraint.activate([
                 name.topAnchor.constraint(equalTo: cell.topAnchor, constant: 6),
                 name.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
-                name.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+                name.trailingAnchor.constraint(equalTo: call.leadingAnchor, constant: -8),
                 endpoint.topAnchor.constraint(equalTo: name.bottomAnchor, constant: 2),
                 endpoint.leadingAnchor.constraint(equalTo: name.leadingAnchor),
                 endpoint.trailingAnchor.constraint(equalTo: name.trailingAnchor),
+                call.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+                call.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             ])
             labels = [name, endpoint]
         } else {
             labels = cell.subviews.compactMap { $0 as? NSTextField }
+        }
+        // §5.1 Row Call button (left of the chevron): "Play" for a playable
+        // contact (the signed voice route is broadcast), hidden when the
+        // contact takes no calls. Rooms carry no verb.
+        if let call = cell.subviews.compactMap({ $0 as? NSButton }).first {
+            let title = chat.peer.flatMap(Self.callButtonTitle(for:))
+            call.title = title ?? "Call"
+            call.isHidden = title == nil
         }
         let unread = unreadCountProvider?(chat) ?? 0
         labels[0].stringValue = unread > 0 ? "\(chat.title) · \(unread)" : chat.title
@@ -409,5 +428,20 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
         labels[1].lineBreakMode = .byTruncatingMiddle
         labels[1].isSelectable = true
         return cell
+    }
+
+    /// The row Call/Play verb: "Play" when the contact is playable (the
+    /// signed voice route is broadcast — a station that only plays audio),
+    /// "Call" when it takes calls at all, nil when it does not.
+    static func callButtonTitle(for peer: Peer) -> String? {
+        if CapabilityTickets.voiceRoute(for: peer.id)?.mode == .broadcast { return "Play" }
+        let ticketed = CapabilityTickets.hasTicket(for: peer.id)
+        return (!ticketed || CapabilityTickets.voiceRoute(for: peer.id) != nil) ? "Call" : nil
+    }
+
+    @objc private func callClicked(_ sender: NSButton) {
+        let row = table.row(for: sender)
+        guard row >= 0, row < shown.count else { return }
+        onCall?(shown[row])
     }
 }

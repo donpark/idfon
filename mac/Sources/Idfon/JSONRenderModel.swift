@@ -96,6 +96,7 @@ struct JSONRenderSpec: Codable, Equatable {
     /// The only components this app knows how to draw.
     static let catalog: Set<String> = [
         "Text", "Button", "Card", "Metric", "Row", "Divider", "Spacer",
+        "Menu", "Input",
     ]
 
     /// Decodes and validates a spec. Throws when it exceeds a limit or has no
@@ -146,7 +147,7 @@ struct JSONRenderSpec: Codable, Equatable {
         func visit(_ id: String, _ depth: Int) {
             guard depth <= 4, parts.count < limit, let element = elements[id] else { return }
             switch element.type {
-            case "Card":
+            case "Card", "Menu":
                 if let title = element.props?["title"]?.string { parts.append(title) }
             case "Text":
                 if let value = element.props?["value"]?.string { parts.append(value) }

@@ -1300,7 +1300,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 openArtifact(artifact, peerId: message.peerId)
             case .render(let render):
                 navigationController?.pushViewController(
-                    RenderBlockViewController(title: render.title, spec: render.spec), animated: true)
+                    RenderBlockViewController(
+                        title: render.title, spec: render.spec, peer: peer.id,
+                        dial: { target, show in
+                            // A menu pick switches like the detail-surface
+                            // menu: end any call first, then dial it.
+                            LiveCall.shared.hangUp()
+                            LiveCall.shared.dial(target, show: show)
+                        }),
+                    animated: true)
             case .recording(let ticket, _, let localURL):
                 toggleRecording(messageID: message.id, ticket: ticket, localURL: localURL)
             case .file(let ticket, let name, _, let localURL):

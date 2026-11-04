@@ -55,7 +55,8 @@ contact serves one caller: it is configured with an OPML resource — a nested
 outline of shows, parsed by `crates/idfon-radio/src/menu.rs` — and the caller
 plays one show on demand. OPML is data; **the app renders the menu** (decided
 2026-11-03: the screen carries the choices, speech is the complementary
-side-channel), never audio-prompt navigation.
+side-channel), never audio-prompt navigation. `radio-world` is this contact as
+a whole agent unit — see **The radio-world agent** below.
 
 - `live.json` gains `opml: "shows.opml"` — a hand-edited key survives
   `radio-program.mjs config` regeneration (it re-runs on every
@@ -88,6 +89,40 @@ side-channel), never audio-prompt navigation.
 
 Navigation only: no feed fetching, update badges, or cache management — the
 epic's standing exclusion. See #133 for the slice ledger.
+
+## The radio-world agent (one unit)
+
+`agents/radio-world` packages the whole recipe — `pnpm agent` owns its
+lifecycle and nothing is assembled by hand:
+
+```sh
+pnpm agent build radio-world    # eve build
+pnpm agent start radio-world    # menu + config + serve, internally
+pnpm agent restart|stop|kill radio-world
+pnpm agent clean radio-world
+```
+
+- `scripts/radio-world-serve.sh` is the assembly: it curates the station menu
+  into `agents/radio-world/shows.opml` when missing (`radio-stations-opml.mjs`,
+  Radio Browser — the committed menu keeps an offline start working), writes
+  the instance config (`radio-program.mjs config radio-world`), and merges
+  `agents/radio-world/live.json` (the unit's identity: `stream` backend,
+  `broadcast` route, `opml`) over it with the absolute state paths the holder
+  needs.
+- **The menu is the agent's own surface.** The `radio-menu` tool
+  (`agents/radio-world/agent/tools/`) renders the catalogue as a json-render
+  block — a `Menu` of Play choices plus an `Input` for typed requests
+  (`docs/reply-blocks.md`). A pick dispatches `idfon.call`, the app's dial
+  verb, and the call plays it; **hanging up is the off switch**. The same
+  `shows.opml` feeds the contact's detail surface (`menu.opml`), so the two
+  views can never disagree.
+- **Programming is a tool, not a script you run.** The `radio-program` tool
+  wraps `scripts/radio-program.mjs` (`submit`/`fallback`/`brief`/`segment`/
+  `find`/`compile`) for this station's instance — the caller asks in chat, the
+  agent programs.
+- Per-station state stays where the roster put it (`agents/radio/instances/
+  radio-world/`, `~/.idfon/radio-world/`); the agent directory is the unit you
+  build, start and stop.
 
 ## Repeat mode (start here)
 

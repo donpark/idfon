@@ -72,7 +72,8 @@ side knows and the other does not is a block that gets cut in the wrong place.
 
 Built: the model with tests; the `render` tool
 (`integrations/eve-idfon/extension/tools/render.ts`), so a remote agent can
-produce a block; the envelope end to end (parse → thread row → sheet/VC →
+produce a block — and any agent-authored tool can too (`eve-idfon/outbox`; the
+radio-world agent's station menu is one, `agents/radio-world/agent/tools/`); the envelope end to end (parse → thread row → sheet/VC →
 catalog action → audit); and the gist each row shows
 (`JSONRenderSpec.summary`). The thread row shows the gist inline with the live
 tree one tap away. The wire shape is pinned four ways: the TS tool's emitted

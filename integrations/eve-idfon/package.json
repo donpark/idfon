@@ -71,6 +71,10 @@
     "./tools": {
       "types": "./dist/tools/index.d.ts",
       "default": "./dist/tools/index.mjs"
+    },
+    "./outbox": {
+      "types": "./dist/extension/outbox.d.ts",
+      "default": "./dist/extension/outbox.mjs"
     }
   }
 }

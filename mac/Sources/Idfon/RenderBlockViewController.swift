@@ -14,11 +14,13 @@ import AppKit
 final class RenderBlockViewController: NSViewController {
     private let spec: JSONRenderSpec
     private let renderTitle: String?
-    private let tools = RenderTools.make()
+    private let tools: RenderToolRegistry
 
-    init(title: String?, spec: JSONRenderSpec) {
+    init(title: String?, spec: JSONRenderSpec, peer: String? = nil,
+         dial: ((String, String?) -> Void)? = nil) {
         self.renderTitle = title
         self.spec = spec
+        self.tools = RenderTools.make(defaultPeer: peer, dial: dial)
         super.init(nibName: nil, bundle: nil)
     }
 

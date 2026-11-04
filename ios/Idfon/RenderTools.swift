@@ -5,7 +5,14 @@ import Foundation
 /// anything else is `RenderError.unknown`. This is the same shape an MCP tool
 /// registry takes — the idfon operations double as the action set.
 enum RenderTools {
-    static func make(client: IdfonClient = IdfonClient()) -> RenderToolRegistry {
+    /// `defaultPeer` is the conversation the block arrived in, so a spec's
+    /// action can target "this contact" without naming it; `dial` is the
+    /// chat's call path (a playable contact plays; hang up stops).
+    static func make(
+        client: IdfonClient = IdfonClient(),
+        defaultPeer: String? = nil,
+        dial: ((String, String?) -> Void)? = nil
+    ) -> RenderToolRegistry {
         let registry = RenderToolRegistry()
         registry.audit = { ActionAudit.shared.record($0) }
 
@@ -32,7 +39,7 @@ enum RenderTools {
             description: "Send a text message to a peer",
             sensitive: true,
             run: { args in
-                guard let peer = args["peer"]?.string, let text = args["text"]?.string else {
+                guard let peer = args["peer"]?.string ?? defaultPeer, let text = args["text"]?.string else {
                     return "peer and text are required"
                 }
                 do {
@@ -41,6 +48,21 @@ enum RenderTools {
                 } catch {
                     return "send failed: \(error.localizedDescription)"
                 }
+            }))
+
+        registry.register(RenderTool(
+            name: "idfon.call",
+            description: "Start a call to a peer — a playable contact (a radio "
+                + "station) starts playing immediately; hanging up stops it",
+            sensitive: true,
+            run: { args in
+                guard let dial else { return "calling is not available here" }
+                guard let peer = args["peer"]?.string ?? defaultPeer else { return "peer is required" }
+                // A menu item's payload arrives as `value`; `show` names the
+                // selection explicitly (docs/live-radio.md "Menu contact").
+                let show = args["show"]?.string ?? args["value"]?.string
+                dial(peer, show)
+                return "calling \(peer)"
             }))
 
         return registry

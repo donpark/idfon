@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>Talk radio stations</title>
+    <dateCreated>Wed, 04 Nov 2026 04:01:38 GMT</dateCreated>
+  </head>
+  <body>
+  <outline text="France">
+    <outline text="RMC FR" type="audio" url="https://audio.bfmtv.com/rmcradio_128.mp3" />
+    <outline text="Europe 1" type="audio" url="https://stream.europe1.fr/europe1.aac" />
+  </outline>
+  <outline text="The United Kingdom Of Great Britain And Northern Ireland">
+    <outline text="BBC World Service" type="audio" url="http://stream.live.vc.bbcmedia.co.uk/bbc_world_service" />
+    <outline text="BBC Radio 4 (128k)" type="audio" url="http://as-hls-ww-live.akamaized.net/pool_55057080/live/ww/bbc_radio_fourfm/bbc_radio_fourfm.isml/bbc_radio_fourfm-audio%3d128000.norewind.m3u8" />
+    <outline text="LBC UK" type="audio" url="http://media-ice.musicradio.com/LBCUK" />
+  </outline>
+  <outline text="Spain">
+    <outline text="esRadio" type="audio" url="http://livestreaming.esradio.fm/stream64.mp3" />
+    <outline text="Cadena SER España" type="audio" url="http://playerservices.streamtheworld.com/api/livestream-redirect/CADENASER.mp3" />
+  </outline>
+  <outline text="Germany">
+    <outline text="WDR 5" type="audio" url="http://wdr-wdr5-live.icecast.wdr.de/wdr/wdr5/live/mp3/128/stream.mp3" />
+    <outline text="Radio Eins" type="audio" url="http://f141.rndfnk.com/ard/rbb/radioeins/live/mp3/128/stream.mp3?cid=01FC1WH12KJ93TCQPDSE2E5PZ9&amp;sid=3LTyhiyTMWj8bZIGiGr24nEscW7&amp;token=i86Zmonla9klKyKtgtIVeNCjiTA1fN1lm4gJ6XBhnfc&amp;tvf=L3WUDIzX4xhmMTQxLnJuZGZuay5jb20" />
+  </outline>
+  <outline text="Italy">
+    <outline text="Radio 24 il sole 24 ore" type="audio" url="http://shoutcast2.radio24.it:8000/;" />
+    <outline text="Radio Deejay" type="audio" url="https://4c4b867c89244861ac216426883d1ad0.msvdn.net/radiodeejay/radiodeejay/master_ma.m3u8" />
+  </outline>
+  <outline text="The United States Of America">
+    <outline text="WALM 2 HD" type="audio" url="https://icecast.walmradio.com:8443/walm2" />
+  </outline>
+  </body>
+</opml>

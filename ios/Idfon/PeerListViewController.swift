@@ -528,9 +528,11 @@ final class PeerListViewController: UITableViewController, UISearchResultsUpdati
         // Test notes: the row's Call button (left of the chevron) is the same
         // as tapping the row, then pressing the chat's call button.
         // §5.1: the row Call verb is shown only on callable contacts (the call
-        // profile: a deaf human or a voice-refusing agent takes no calls).
+        // profile: a deaf human or a voice-refusing agent takes no calls), and
+        // a playable contact (a station) shows Play instead of Call.
         if ContactCallProfiles.isCallable(peer.id) {
-            cell.setCallAction { [weak self] in self?.openChat(peer, startCall: true) }
+            let playable = CapabilityTickets.voiceRoute(for: peer.id)?.mode == .broadcast
+            cell.setCallAction({ [weak self] in self?.openChat(peer, startCall: true) }, playable: playable)
         } else {
             cell.setCallAction(nil)
         }
