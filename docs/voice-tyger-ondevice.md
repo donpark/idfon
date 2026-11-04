@@ -101,7 +101,7 @@ soak passes on them.
   re-fetches on the next voice use. `TygerModelStore.reclaimIfDiskLow()` at
   launch covers the deterministic edge: condition =
   `volumeAvailableCapacityForImportantUsage` < 2 GB, action = delete the
-  store root. Non-re-downloadable packs (phonon, pocket-voices) stay in
+  store root. Non-re-downloadable packs (phonon) stay in
   Application Support — never purged — exactly the split the SO guidance
   prescribes. Heavier Apple-native option if that is not enough: Background
   Assets (`AssetPackManager` — ODR's designated successor: manifest-driven
