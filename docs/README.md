@@ -45,6 +45,7 @@ kept because it records decisions; **design** = not all implemented.
 | `relay-test-plan.md` | hand-off test plan for relay auth: L0–L3 cases, pass criteria, known gaps, rollback |
 | `chatrooms.md` | rooms, direct fan-out, gossip |
 | `mcp-transport.md` | idfon as an MCP transport binding (implemented) |
+| `idfon-h1.md` | HTTP/1.1 over iroh: serve an existing `axum::Router` with WebSockets, SSE and chunked bodies, `RemoteId` peer identity, client + upgrade handle (slices 1–2 of #142 tested; voxl demo pending) |
 
 ## CLI and distribution
 
