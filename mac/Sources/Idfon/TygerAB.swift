@@ -1,7 +1,7 @@
 import AVFAudio
 import Foundation
 
-/// `-tygerab phonon|pocket`: scripted falsification run for the "turn-model
+/// `-tygerab phonon|apple`: scripted falsification run for the "turn-model
 /// behavior is TTS-shaped" hypothesis. One fixed script — a user utterance, a
 /// reply through the selected engine, a mid-reply interruption — driven
 /// through the REAL turn shadow (both channels: scripted mic feed +

@@ -7,9 +7,8 @@ import UIKit
 /// downloader checks `approved` first, so no call path (UI, incoming, or the
 /// `-dial`/`-voiceagent` automation channel) can cold-pull a model mid-setup.
 ///
-/// `shortcut: kokoro/pocket TTS can still pull their own models on a cold
-/// call (non-default backends, load and download are coupled), gate them if
-/// they ever become the default.`
+/// `shortcut: the phonon TTS pack can still download on a cold call (load
+/// and download are coupled), gate it when it matters.`
 enum VoiceModelGate {
     private static let approvedKey = "voiceModelGate.approved"
 

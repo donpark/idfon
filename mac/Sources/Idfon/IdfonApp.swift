@@ -346,7 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if let i = args.firstIndex(of: "-tygerab"), args.count > i + 1 {
-            // Scripted turn-taker A/B run (see TygerAB): `kokoro|phonon`.
+            // Scripted turn-taker A/B run (see TygerAB): `phonon|apple`.
             TygerAB.run(engine: args[i + 1])
         }
         if let i = args.firstIndex(of: "-tygerdemo"), args.count > i + 2 {

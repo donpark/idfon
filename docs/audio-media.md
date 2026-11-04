@@ -230,7 +230,7 @@ Consumers (no `AVAudioEngine`, tap, or session of their own): `AudioPusher`
 (live-call `push` to the daemon), `AudioMeter` (waveform),
 `NemotronStreamingAsr`, `AppleSpeechTranscriber`, `OnDeviceVoice` (SFSpeech),
 and `VoiceMemo` (writes the captured buffers to an `AVAudioFile`). Producers on the sink:
-`PhononTtsEngine`/`PocketTtsEngine`, `AppleTtsEngine` (rendered to PCM via
+`PhononTtsEngine`, `AppleTtsEngine` (rendered to PCM via
 `write(_:toBufferCallback:)` rather than the synthesizer's private output),
 `CallTonePlayer` (ringback/answered/ended cues), and remote call audio
 (`AudioPlaybackSink`: decoded PCM from `media_audio_set_playback_cb`, paced
@@ -296,7 +296,7 @@ the 1s RMS log shows it immediately). The audio-settings volume slider feeds
 
 On macOS the audio is now single-owner on both sides. **Playback**: every
 speaker renders on the shared `AudioMeter` playback bus — remote call audio
-(`playStream`), whole-clip TTS wavs (Pocket), Phonon TTS stream chunks (`playStream` with a
+(`playStream`), Phonon TTS stream chunks (`playStream` with a
 per-chunk completion, so `speak` returns after the last chunk plays), Apple
 TTS (`AVSpeechSynthesizer.write` buffers), and call tones — so the bus is a
 complete AEC reference and every
