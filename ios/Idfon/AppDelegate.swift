@@ -44,6 +44,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         Diag.send = { peer, text in try await IdfonClient().sendText(to: peer, text) }
         Diag.log("config", ["edge": EdgeClient.shared.baseURL?.absoluteString ?? "none"])
         Diag.flush()
+        // Interface transitions (Wi-Fi↔cellular) as Diag events: the tag that
+        // makes a per-call record readable (media-adaptation §C9, #86).
+        PathMonitor.start()
         // Warm the TTS model so the first call reply is not blocked by
         // a cold model download/compile. Deferred until the app is active: a
         // push wake must stay light — the warmup's memory spike is what killed
