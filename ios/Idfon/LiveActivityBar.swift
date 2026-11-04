@@ -51,7 +51,9 @@ struct LiveActivityBarModel: Equatable {
     struct Row: Equatable {
         enum Kind: Equatable {
             case transfer(fraction: Double, bytesPerSecond: Double)
-            case stream(position: TimeInterval, duration: TimeInterval, paused: Bool)
+            /// `duration` nil when the stream's length is unknown (a live
+            /// call): the row then shows the position alone.
+            case stream(position: TimeInterval, duration: TimeInterval?, paused: Bool)
         }
         let id: String
         var name: String // "Archive.zip"
@@ -138,6 +140,10 @@ final class LiveActivityBar: UIView {
     private let statusLabel = UILabel()
     private let audioGroup = UIView()
     private let audioGroupStack = UIStackView()
+    /// The stream's position. It is its own leading readout on the media row
+    /// (§4): the identity column stays handle + stats only.
+    private let positionLabel = UILabel()
+    private let positionGap = UIView()
     private var audioModeButtons: [CallAudioMode: UIButton] = [:]
     private let stereoButton = UIButton(configuration: .tinted())
     private let camButton = UIButton(configuration: .tinted())
@@ -236,10 +242,23 @@ final class LiveActivityBar: UIView {
         // The media stream buttons are their own row, in the spec's order: the
         // audio mode group then the camera. Six controls cannot share the
         // identity row at phone widths (the handle budget is ~179pt).
+        positionLabel.font = UIFontMetrics(forTextStyle: .subheadline)
+            .scaledFont(for: .monospacedDigitSystemFont(ofSize: 15, weight: .regular))
+        positionLabel.adjustsFontForContentSizeCategory = true
+        positionLabel.textColor = .secondaryLabel
+        positionLabel.setContentHuggingPriority(.required, for: .horizontal)
+        positionLabel.isAccessibilityElement = true
+        positionLabel.accessibilityLabel = "Stream position"
+        // Fixed gap: the readout is gapped from the buttons, never grows into
+        // them.
+        positionGap.widthAnchor.constraint(equalToConstant: 8).isActive = true
+        positionGap.setContentHuggingPriority(.required, for: .horizontal)
         mediaStack.axis = .horizontal
         mediaStack.spacing = 8
         mediaStack.alignment = .center
-        [audioGroup, stereoButton, camButton].forEach(mediaStack.addArrangedSubview)
+        mediaStack.isLayoutMarginsRelativeArrangement = true
+        mediaStack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 8)
+        [positionLabel, positionGap, audioGroup, stereoButton, camButton].forEach(mediaStack.addArrangedSubview)
 
         headerStack.axis = .horizontal
         headerStack.spacing = 12
@@ -334,9 +353,8 @@ final class LiveActivityBar: UIView {
             case .calling: statusLabel.text = "Calling…"
             case .incoming: statusLabel.text = "Incoming call"
             case .inCall:
-                statusLabel.text = [Self.clock(model.elapsed), model.stats]
-                    .compactMap { $0 }
-                    .joined(separator: " · ")
+                // The position lives with the stream (media row / tray row).
+                statusLabel.text = model.stats
             }
             statusLabel.isHidden = statusLabel.text == nil
         }
@@ -356,6 +374,10 @@ final class LiveActivityBar: UIView {
         // (identity-only); only the compact pill drops them.
         controlsStack.isHidden = compact
         mediaStack.isHidden = compact || !togglesActive
+        positionLabel.isHidden = compact || model.phase != .inCall
+        positionGap.isHidden = positionLabel.isHidden
+        positionLabel.text = Self.clock(model.elapsed)
+        positionLabel.accessibilityValue = positionLabel.text
         audioGroup.isHidden = compact || !togglesActive || !model.audioAvailable || model.audioModes.isEmpty
         camButton.isHidden = compact || !togglesActive || !model.videoAvailable
         stereoButton.isHidden = compact || !togglesActive || !model.audioAvailable
@@ -435,6 +457,13 @@ final class LiveActivityBar: UIView {
 
     // MARK: - Formatting
 
+    /// A stream's playhead: `01:45 / 03:20` when its length is known, the
+    /// position alone when it is not (a live call has no end in sight).
+    static func streamClock(_ position: TimeInterval, duration: TimeInterval?) -> String {
+        guard let duration, duration > 0 else { return clock(position) }
+        return "\(clock(position)) / \(clock(duration))"
+    }
+
     /// `m:ss`, or `h:mm:ss` past an hour.
     static func clock(_ seconds: TimeInterval) -> String {
         let s = Int(seconds.rounded(.down))
@@ -449,6 +478,8 @@ private final class TrayRowView: UIView {
     var onIntent: ((LiveActivityBarIntent) -> Void)?
     private var rowId = ""
     private let icon = UIImageView()
+    /// Playhead, leading: the same readout the media row carries for the call.
+    private let clockLabel = UILabel()
     private let label = UILabel()
     private let pauseButton = UIButton(configuration: .plain())
     private let actionButton = UIButton(configuration: .plain())
@@ -458,6 +489,11 @@ private final class TrayRowView: UIView {
         icon.preferredSymbolConfiguration = .init(textStyle: .footnote)
         icon.tintColor = .secondaryLabel
         icon.setContentHuggingPriority(.required, for: .horizontal)
+
+        clockLabel.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(for: .monospacedDigitSystemFont(ofSize: 13, weight: .regular))
+        clockLabel.adjustsFontForContentSizeCategory = true
+        clockLabel.textColor = .secondaryLabel
+        clockLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         label.font = .preferredFont(forTextStyle: .footnote)
         label.adjustsFontForContentSizeCategory = true
@@ -471,7 +507,7 @@ private final class TrayRowView: UIView {
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         }
 
-        let stack = UIStackView(arrangedSubviews: [icon, label, pauseButton, actionButton])
+        let stack = UIStackView(arrangedSubviews: [icon, clockLabel, label, pauseButton, actionButton])
         stack.axis = .horizontal
         stack.spacing = 8
         stack.alignment = .center
@@ -493,6 +529,7 @@ private final class TrayRowView: UIView {
         rowId = row.id
         switch row.kind {
         case .transfer(let fraction, let rate):
+            clockLabel.isHidden = true
             icon.image = UIImage(systemName: "arrow.up.doc")
             let percent = Int((fraction * 100).rounded())
             let speed = ByteCountFormatter.string(fromByteCount: Int64(rate), countStyle: .file)
@@ -501,7 +538,9 @@ private final class TrayRowView: UIView {
             actionButton.configuration?.title = "Cancel"
         case .stream(let position, let duration, let paused):
             icon.image = UIImage(systemName: "waveform")
-            label.text = "Streaming \"\(row.name)\" (\(LiveActivityBar.clock(position)) / \(LiveActivityBar.clock(duration)))"
+            clockLabel.isHidden = false
+            clockLabel.text = LiveActivityBar.streamClock(position, duration: duration)
+            label.text = "Streaming \"\(row.name)\""
             pauseButton.isHidden = false
             pauseButton.configuration?.image = UIImage(systemName: paused ? "play.fill" : "pause.fill")
             pauseButton.accessibilityLabel = paused ? "Play" : "Pause"

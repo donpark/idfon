@@ -16,6 +16,8 @@ MainActor.assumeIsolated {
     // Formatters + compact pill text
     check(LiveActivityBar.clock(222) == "03:42", "clock m:ss")
     check(LiveActivityBar.clock(3723) == "1:02:03", "clock h:mm:ss")
+    check(LiveActivityBar.streamClock(105, duration: 200) == "01:45 / 03:20", "stream clock with a known length")
+    check(LiveActivityBar.streamClock(105, duration: nil) == "01:45", "live stream shows the position alone")
 
     var m = LiveActivityBarModel(peerId: "p1", handle: "@janedoe")
     m.phase = .inCall
@@ -53,7 +55,7 @@ MainActor.assumeIsolated {
     // In a call: the audio radio group + Stereo + cam present and wired.
     m.phase = .inCall; m.density = .expanded; m.audioAvailable = true; m.videoAvailable = true
     m.audioModes = CallAudioMode.displayOrder; m.selectedAudioMode = .mute
-    m.stereoAvailable = true; m.stereo = false; m.camOn = false
+    m.stereo = false; m.camOn = false
     bar.apply(m)
     let inCall = visibleIds()
     print("in-call:", inCall)

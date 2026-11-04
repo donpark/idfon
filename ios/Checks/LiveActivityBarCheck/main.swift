@@ -24,6 +24,8 @@ func check(_ cond: Bool, _ msg: String) { if !cond { print("FAIL:", msg); exit(1
 // clock / compactText
 check(LiveActivityBar.clock(222) == "03:42", "clock m:ss")
 check(LiveActivityBar.clock(3723) == "1:02:03", "clock h:mm:ss")
+check(LiveActivityBar.streamClock(105, duration: 200) == "01:45 / 03:20", "stream clock with a known length")
+check(LiveActivityBar.streamClock(105, duration: nil) == "01:45", "live stream shows the position alone")
 var m = LiveActivityBarModel(peerId: "p1", handle: "@janedoe")
 m.audioModes = CallAudioMode.displayOrder
 m.stereo = true
@@ -48,14 +50,21 @@ check(bar.frame.width == 377, "expanded fills width")
 check(bar.frame.height > 60 && bar.frame.height < 200, "expanded header+2 rows plausible height \(bar.frame.height)")
 // header density: handle and timer on separate lines, neither truncates, header stays one control-row tall
 func labels(_ v: UIView) -> [UILabel] { v.subviews.flatMap { ($0 as? UILabel).map { [$0] } ?? labels($0) } }
-let handle = labels(bar).first { $0.text == "@janedoe" }!, timer = labels(bar).first { $0.text == "03:42" }!
-print("handle frame:", handle.frame, "fits:", handle.intrinsicContentSize.width, "budget:", handle.superview!.superview!.frame.width - 16, "timer frame:", timer.frame)
+let handle = labels(bar).first { $0.text == "@janedoe" }!, position = labels(bar).first { $0.text == "03:42" }!
+print("handle frame:", handle.frame, "fits:", handle.intrinsicContentSize.width, "budget:", handle.superview!.superview!.frame.width - 16)
 check(handle.frame.width >= handle.intrinsicContentSize.width, "handle not truncated")
-check(timer.frame.width >= timer.intrinsicContentSize.width, "timer not truncated")
-check(handle.frame.minY < timer.frame.minY && handle.frame.minX == timer.frame.minX, "timer stacked under handle")
-let headerBottom = handle.superview!.superview!.superview!.frame.maxY // textStack → identityStack → headerStack
-print("header height:", headerBottom)
-check(headerBottom <= 60, "header hugs identity (media row is its own row): \(headerBottom)")
+check(position.frame.width >= position.intrinsicContentSize.width, "position not truncated")
+// §4: the playhead is the media row's leading readout, not an identity
+// subtitle competing with the handle for the column.
+let handleInBar = handle.superview!.convert(handle.frame, to: bar)
+let positionInBar = position.superview!.convert(position.frame, to: bar)
+print("handle in bar:", handleInBar)
+check(positionInBar.minY >= handleInBar.maxY, "position moved out of the identity column: \(positionInBar) vs \(handleInBar)")
+check(positionInBar.minX == 12, "position left-aligned on the media row: \(positionInBar)")
+let builtIn = buttons(bar).first { $0.accessibilityLabel == "Built-in" }!
+let builtInInBar = builtIn.superview!.convert(builtIn.bounds, to: bar)
+print("position:", positionInBar, "first button:", builtInInBar)
+check(builtInInBar.minX - positionInBar.maxX >= 12, "position gapped away from the buttons: \(builtInInBar.minX - positionInBar.maxX)")
 var intents: [LiveActivityBarIntent] = []
 bar.onIntent = { intents.append($0) }
 // tray row buttons exist
