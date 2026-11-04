@@ -41,6 +41,23 @@ let cycleJSON = """
 let cycle = try JSONRenderSpec.decode(Data(cycleJSON.utf8)).normalized()
 check(cycle.elements.count == 2, "cycle terminates with both nodes")
 
+// Menu and Input are catalog components: kept by normalize, items carry a
+// payload the label does not show, and the summary surfaces a Menu title.
+let menuJSON = """
+{"root":"c","elements":{
+  "c":{"type":"Card","props":{"title":"Stations"},"children":["m","i"]},
+  "m":{"type":"Menu","props":{"title":"Stations","action":"idfon.call"},"children":["a","b"]},
+  "a":{"type":"Text","props":{"value":"BBC","payload":"World/BBC"}},
+  "b":{"type":"Text","props":{"value":"NPR"}},
+  "i":{"type":"Input","props":{"placeholder":"play something else…","action":"idfon.message.send","arg":"text"}}
+}}
+"""
+let menu = try JSONRenderSpec.decode(Data(menuJSON.utf8)).normalized()
+check(menu.elements["m"]?.props?["action"]?.string == "idfon.call", "Menu kept with its action")
+check(menu.elements["a"]?.props?["payload"]?.string == "World/BBC", "Menu item payload kept")
+check(menu.elements["i"]?.props?["arg"]?.string == "text", "Input kept with its arg")
+check(menu.summary().contains("Stations"), "Menu title in summary")
+
 // Limits + root validation.
 func throwsError<T>(_ body: () throws -> T, _ expected: JSONRenderError) -> Bool {
     do { _ = try body(); return false } catch let error as JSONRenderError { return error == expected } catch { return false }

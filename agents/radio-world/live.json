@@ -1,0 +1,8 @@
+{
+  "_comment": "radio-world: the OPML menu contact as one agent (docs/live-radio.md 'The radio-world agent'). This file is the unit's identity — backend, voice route, menu; `pnpm agent` reads its mode from here. radio-world-serve.sh merges it over the generated instance config (agents/radio/instances/radio-world/live.json), which supplies the absolute state paths (programme, log) the holder needs, and points `opml` at shows.opml. backend=stream plays a caller's show= pick (or the fallback programme) into a one-way call; hanging up stops it. Programming lives in the agent (the radio-program tool), the menu in the agent's json-render surface (the radio-menu tool).",
+  "backend": "stream",
+  "log": "/tmp/idfon-radio-world-soak.jsonl",
+  "broadcast": "idfon-radio",
+  "voice_route": { "mode": "broadcast", "audio": "pcm24k" },
+  "opml": "shows.opml"
+}

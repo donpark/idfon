@@ -52,7 +52,7 @@ if [ -n "$ios_endpoint" ]; then
   echo "admitting app endpoint: $ios_endpoint" >&2
 fi
 
-export EVE_AGENT=llm
+export EVE_AGENT="${EVE_AGENT:-llm}"
 export EVE_INSTANCE="$instance"
 export EVE_CONTACT_NAME="$name"
 export EVE_LIVE_CONFIG="$live_config"
@@ -61,4 +61,6 @@ export EVE_IDFON_FEATURES=
 # the environment.
 export AI_GATEWAY_API_KEY="${AI_GATEWAY_API_KEY:-unused-by-stream-backend}"
 
-exec "$root/scripts/live-voice-serve.sh"
+# Sourced (not exec'd) so the process keeps this script's name for
+# `pnpm agent` process checks (the llm-serve.sh pattern).
+. "$root/scripts/live-voice-serve.sh"

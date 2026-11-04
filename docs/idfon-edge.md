@@ -195,8 +195,12 @@ verified **caller context**, not just `(account, path)`.
   child ids, and cycles). `RenderToolRegistry` is the trusted action catalog —
   an unregistered action never runs and a `sensitive` tool needs a human
   confirmation. `JSONRenderView` draws the UIKit catalog (Text/Card/Row/Metric/
-  Button/Divider/Spacer); `RenderTools` registers the idfon tools
-  (`status`/`peers`, plus a sensitive `message.send`). A structured artifact is
+  Button/Divider/Spacer/Menu/Input); `RenderTools` registers the idfon tools
+  (`status`/`peers`, a sensitive `message.send`, and a sensitive `idfon.call` —
+  the conversation's own dial path, so a menu pick plays and hanging up stops
+  it). `Menu` is the agent-controlled choices medium (items carry a `payload`
+  the label does not show) and `Input` the inline typed one; both dispatch
+  through the same registry. A structured artifact is
   rendered as json-render when `metadata.renderer == "json-render"` or (legacy)
   when it parses as a spec, else the text view. The mac AppKit port shares the
   model and `RenderTools`; `JSONRenderView` is NSStackView-based. Host check:
@@ -452,7 +456,9 @@ land. Security residuals are filed as issues.
   protocol `metadata` and honor `metadata.renderer`: `"json-render"` forces the
   native renderer, any other value forces the fallback, and an absent hint keeps
   parse-detection for legacy artifacts (`ArtifactDetailViewController.wantsJSONRender`).
-- [x] **JSON-render catalog stays deliberately minimal** (7 components). This is
+- [x] **JSON-render catalog stays deliberately minimal** (9 components: the
+  original 7 plus `Menu`/`Input`, the agent-controlled choices and typed-input
+  mediums the radio-world agent renders its station menu with). This is
   a decision, not a gap: the agent supplies data only, and `state:set` /
   `sequence` / toast plus an MCP host are deferred until a producer needs them
   (YAGNI). Revisit with a state machine + MCP tools only then.

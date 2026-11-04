@@ -18,11 +18,15 @@ export default defineTool({
     "Show the caller a small interactive view (values to compare, options, a " +
     "few metrics) instead of describing them in words. The app draws it " +
     "natively from its own components; you supply data only. Components: " +
-    "Text{value}, Metric{label,value}, Card{title,children}, Row{children}, " +
-    "Button{label,action}, Divider, Spacer. Props are strings and a node's " +
-    "children are ids of other elements. Unknown components are dropped, so a " +
-    "wrong component loses that part of the view. Prefer this over a long " +
-    "spoken answer, and say only briefly what the view shows.",
+    "Text{value,payload?}, Metric{label,value}, Card{title,children}, " +
+    "Row{children}, Button{label,action,args?}, Menu{title?,action,args?,children} " +
+    "(children are item nodes; a tap dispatches action with the item's payload " +
+    "under `value`), Input{label?,placeholder?,action,arg?,args?} (typed text " +
+    "dispatched under `arg`, default `value`), Divider, Spacer. Props are " +
+    "strings and a node's children are ids of other elements. Unknown " +
+    "components are dropped, so a wrong component loses that part of the view. " +
+    "Prefer this over a long spoken answer, and say only briefly what the view " +
+    "shows.",
   inputSchema: z.object({
     id: z
       .string()

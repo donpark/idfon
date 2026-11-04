@@ -4,7 +4,8 @@
 //
 //   swiftc -o /tmp/mac-tabscheck mac/Sources/Idfon/Artifact.swift \
 //     mac/Sources/Idfon/JSONRenderModel.swift mac/Sources/Idfon/CapabilityTickets.swift \
-//     mac/Sources/Idfon/VoiceCallRouting.swift mac/Sources/Idfon/Models.swift \
+//     mac/Sources/Idfon/MenuDocument.swift mac/Sources/Idfon/VoiceCallRouting.swift \
+//     mac/Sources/Idfon/Models.swift \
 //     mac/Sources/Idfon/OnDeviceAgents.swift mac/Sources/Idfon/OnDeviceAgentEditor.swift \
 //     mac/Sources/Idfon/PeerTabsViewController.swift \
 //     mac/Checks/PeerTabsCheck/main.swift
@@ -38,6 +39,16 @@ final class DaemonClient {
     func fetchRemoteResource(account: String, path: String) async throws -> Data {
         throw NSError(domain: "check", code: 1)
     }
+}
+
+// Contact exchange shares through the system pickers; the check exercises list
+// rendering, so stub its surface instead of linking ContactExchange.swift.
+enum ContactExchange {
+    static func export(
+        ref: String?, identity: String? = nil, client: DaemonClient = DaemonClient()
+    ) async throws -> (vcard: String, link: String) { (vcard: "", link: "idfon://add/x") }
+    static func shareCard(ref: String?, identity: String? = nil, relativeTo view: NSView) {}
+    static func saveToSystemContacts(link: String) {}
 }
 
 MainActor.assumeIsolated {

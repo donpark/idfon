@@ -582,6 +582,8 @@ final class AppModel: NSObject {
     /// Fired when the selected peer changed (detail swap).
     var onSelection: ((Peer?) -> Void)?
     var onRoomSelection: ((Room?) -> Void)?
+    /// Fired by the row Call/Play verb: show the peer and dial.
+    var onCallSelection: ((Peer) -> Void)?
 
     private(set) var selectedPeer: Peer?
     private(set) var selectedRoom: Room?
@@ -600,6 +602,14 @@ final class AppModel: NSObject {
         selectedPeer = nil
         onRoomSelection?(room)
         onSelection?(nil)
+    }
+
+    /// The row Call/Play verb: select the peer and let the detail pane dial.
+    func call(_ peer: Peer) {
+        selectedPeer = peer
+        selectedRoom = nil
+        onRoomSelection?(nil)
+        onCallSelection?(peer)
     }
 
     func refresh() async {
@@ -714,6 +724,12 @@ final class DetailContainerViewController: NSViewController {
         super.init(nibName: nil, bundle: nil)
         app.onSelection = { [weak self] peer in self?.show(peer) }
         app.onRoomSelection = { [weak self] room in self?.show(room) }
+        // The row Call/Play verb: the same as tapping the row, then pressing
+        // the chat's call button.
+        app.onCallSelection = { [weak self] peer in
+            self?.show(peer)
+            self?.chat?.startCall()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }

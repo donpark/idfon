@@ -96,6 +96,80 @@ final class JSONRenderView: UIView {
                 self?.onAction?(action, args)
             })
 
+        case "Menu":
+            // A list of choices: each child is an item; tapping one dispatches
+            // the menu's action with the item's payload under `value` (the
+            // label shown is not necessarily the payload sent).
+            let stack = vstack(spacing: 4)
+            if let title = element.props?["title"]?.string {
+                let label = UILabel()
+                label.font = .preferredFont(forTextStyle: .headline)
+                label.numberOfLines = 0
+                label.text = title
+                stack.addArrangedSubview(label)
+            }
+            let action = element.props?["action"]?.string ?? ""
+            let fixed = element.props?["args"]?.object ?? [:]
+            for child in element.children ?? [] {
+                guard let item = spec.elements[child] else { continue }
+                let name = item.props?["label"]?.string ?? item.props?["value"]?.string ?? ""
+                let payload = item.props?["payload"]?.string ?? name
+                if action.isEmpty {
+                    let label = UILabel()
+                    label.numberOfLines = 0
+                    label.text = name
+                    stack.addArrangedSubview(label)
+                    continue
+                }
+                var config = UIButton.Configuration.filled()
+                config.title = name
+                var args = fixed
+                args["value"] = .string(payload)
+                let button = UIButton(configuration: config, primaryAction: UIAction { [weak self] _ in
+                    self?.onAction?(action, args)
+                })
+                button.contentHorizontalAlignment = .leading
+                stack.addArrangedSubview(button)
+            }
+            return stack
+
+        case "Input":
+            // One inline line of typed input: submit (Send or Return) dispatches
+            // the action with the typed text under the `arg` name (default `value`).
+            let stack = vstack(spacing: 4)
+            if let label = element.props?["label"]?.string {
+                let labelView = UILabel()
+                labelView.font = .preferredFont(forTextStyle: .caption1)
+                labelView.numberOfLines = 0
+                labelView.text = label
+                stack.addArrangedSubview(labelView)
+            }
+            let row = UIStackView()
+            row.axis = .horizontal
+            row.spacing = 8
+            let field = UITextField()
+            field.borderStyle = .roundedRect
+            field.placeholder = element.props?["placeholder"]?.string
+            let action = element.props?["action"]?.string ?? ""
+            let arg = element.props?["arg"]?.string ?? "value"
+            let args = element.props?["args"]?.object ?? [:]
+            let submit: () -> Void = { [weak self] in
+                guard let self else { return }
+                let text = (field.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty, !action.isEmpty else { return }
+                var merged = args
+                merged[arg] = .string(text)
+                self.onAction?(action, merged)
+            }
+            field.addAction(UIAction { _ in submit() }, for: .editingDidEndOnExit)
+            var config = UIButton.Configuration.filled()
+            config.title = "Send"
+            let button = UIButton(configuration: config, primaryAction: UIAction { _ in submit() })
+            row.addArrangedSubview(field)
+            row.addArrangedSubview(button)
+            stack.addArrangedSubview(row)
+            return stack
+
         case "Divider":
             let line = UIView()
             line.backgroundColor = .separator

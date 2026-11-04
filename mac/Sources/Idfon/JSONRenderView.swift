@@ -8,6 +8,9 @@ final class JSONRenderView: NSView {
     /// `Button` action: the registered action name and its arguments.
     var onAction: ((String, [String: JSONValue]) -> Void)?
     private var buttonActions: [(String, [String: JSONValue])] = []
+    /// `Input` rows: the field, the action to submit to, the arg the typed
+    /// text fills, and the fixed args merged into every dispatch.
+    private var inputRows: [(NSTextField, String, String, [String: JSONValue])] = []
 
     init(spec: JSONRenderSpec) {
         self.spec = spec
@@ -89,6 +92,70 @@ final class JSONRenderView: NSView {
             button.tag = buttonActions.count - 1
             return button
 
+        case "Menu":
+            // A list of choices: each child is an item; tapping one dispatches
+            // the menu's action with the item's payload under `value` (the
+            // label shown is not necessarily the payload sent).
+            let stack = vstack(spacing: 4)
+            if let title = element.props?["title"]?.string {
+                let label = Self.label(title)
+                label.font = .preferredFont(forTextStyle: .headline)
+                stack.addArrangedSubview(label)
+            }
+            let action = element.props?["action"]?.string ?? ""
+            let fixed = element.props?["args"]?.object ?? [:]
+            for child in element.children ?? [] {
+                guard let item = spec.elements[child] else { continue }
+                let name = item.props?["label"]?.string ?? item.props?["value"]?.string ?? ""
+                let payload = item.props?["payload"]?.string ?? name
+                if action.isEmpty {
+                    stack.addArrangedSubview(Self.label(name))
+                    continue
+                }
+                let button = NSButton(title: name, target: self, action: #selector(buttonTapped(_:)))
+                button.bezelStyle = .rounded
+                button.setButtonType(.momentaryPushIn)
+                button.alignment = .left
+                var args = fixed
+                args["value"] = .string(payload)
+                buttonActions.append((action, args))
+                button.tag = buttonActions.count - 1
+                stack.addArrangedSubview(button)
+            }
+            return stack
+
+        case "Input":
+            // One inline line of typed input: submit (Send or Return) dispatches
+            // the action with the typed text under the `arg` name (default `value`).
+            let stack = vstack(spacing: 4)
+            if let label = element.props?["label"]?.string {
+                let labelView = Self.label(label)
+                labelView.font = .preferredFont(forTextStyle: .caption1)
+                stack.addArrangedSubview(labelView)
+            }
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.spacing = 8
+            let field = NSTextField()
+            field.placeholderString = element.props?["placeholder"]?.string
+            field.target = self
+            field.action = #selector(inputSubmitted(_:))
+            let submit = NSButton(title: "Send", target: self, action: #selector(inputSubmitted(_:)))
+            submit.bezelStyle = .rounded
+            submit.setButtonType(.momentaryPushIn)
+            inputRows.append((
+                field,
+                element.props?["action"]?.string ?? "",
+                element.props?["arg"]?.string ?? "value",
+                element.props?["args"]?.object ?? [:]
+            ))
+            field.tag = inputRows.count - 1
+            submit.tag = field.tag
+            row.addArrangedSubview(field)
+            row.addArrangedSubview(submit)
+            stack.addArrangedSubview(row)
+            return stack
+
         case "Divider":
             let line = NSView()
             line.wantsLayer = true
@@ -111,6 +178,16 @@ final class JSONRenderView: NSView {
         guard buttonActions.indices.contains(sender.tag) else { return }
         let (action, args) = buttonActions[sender.tag]
         onAction?(action, args)
+    }
+
+    @objc private func inputSubmitted(_ sender: NSControl) {
+        guard inputRows.indices.contains(sender.tag) else { return }
+        let (field, action, arg, args) = inputRows[sender.tag]
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !action.isEmpty else { return }
+        var merged = args
+        merged[arg] = .string(text)
+        onAction?(action, merged)
     }
 
     private func vstack(spacing: CGFloat) -> NSStackView {
