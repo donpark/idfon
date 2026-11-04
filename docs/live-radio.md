@@ -83,9 +83,12 @@ a whole agent unit — see **The radio-world agent** below.
   `opml` that is an http(s) URL (a station's public OPML) is fetched directly.
 - The outline is the contact's **detail surface**: the apps show it as soon as
   the contact opens and again before a call would start (iOS: one push per
-  level; mac: an outline sheet). Picking a show dials with `show=` and the call
-  plays it; picking another show while one plays **switches** — the current
-  call ends and the new show dials (transitions are still unpolished).
+  level; mac: an outline sheet). On iOS a playable leaf opens a **station
+  screen** and the call starts playing it there; Back returns to the list,
+  never past it to the chat. The chat keeps a visible **Stations** item, so the
+  list is one tap away after the chat is uncovered. Picking another show while
+  one plays **switches** — the current call ends and the new show dials
+  (transitions are still unpolished).
 
 Navigation only: no feed fetching, update badges, or cache management — the
 epic's standing exclusion. See #133 for the slice ledger.
