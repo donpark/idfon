@@ -35,6 +35,9 @@ const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_IDLE_EXIT_SECS: &str = "600";
 /// `idfon --keep-alive`: spawned daemon never idles out.
 static KEEP_ALIVE: OnceLock<bool> = OnceLock::new();
+/// Relay flags forwarded to an auto-started daemon (per-run parameter,
+/// docs/relay-config.md).
+static RELAY_ARGS: OnceLock<Vec<String>> = OnceLock::new();
 
 /// Locates idfond: next to the idfon binary first (cargo builds them
 /// together), then PATH.
@@ -72,6 +75,15 @@ struct Cli {
     /// Auto-started daemon: disable idle shutdown (stays running until `idfon shutdown`)
     #[arg(long, global = true)]
     keep_alive: bool,
+    /// Auto-started daemon: relay URLs (per-run parameter; docs/relay-config.md)
+    #[arg(long, global = true, value_name = "URLS")]
+    relay_urls: Option<String>,
+    /// Auto-started daemon: relay shared bearer token
+    #[arg(long, global = true, value_name = "TOKEN")]
+    relay_token: Option<String>,
+    /// Auto-started daemon: drop IP transports (relay-only)
+    #[arg(long, global = true)]
+    relay_only: bool,
     /// Replace request params with a JSON document read from stdin
     #[arg(long, global = true, hide = true)]
     stdin_json: bool,
@@ -642,6 +654,17 @@ fn main() {
 fn run() -> io::Result<()> {
     let cli = Cli::parse();
     KEEP_ALIVE.set(cli.keep_alive).expect("run called once");
+    let mut relay_args = Vec::new();
+    if let Some(urls) = &cli.relay_urls {
+        relay_args.extend(["--relay-urls".to_string(), urls.clone()]);
+    }
+    if let Some(token) = &cli.relay_token {
+        relay_args.extend(["--relay-token".to_string(), token.clone()]);
+    }
+    if cli.relay_only {
+        relay_args.push("--relay-only".to_string());
+    }
+    RELAY_ARGS.set(relay_args).expect("run called once");
     let socket: &str = cli.socket.as_deref().unwrap_or(DEFAULT_SOCKET);
     let identity = cli.identity.as_deref();
     let json = cli.json;
@@ -1716,6 +1739,7 @@ fn connect_or_start_daemon(socket: &str) -> io::Result<Client> {
                                 "--data-dir",
                                 &data_dir.to_string_lossy(),
                             ])
+                            .args(RELAY_ARGS.get().map_or(&[][..], Vec::as_slice))
                             .env(
                                 "IDFON_IDLE_EXIT_SECS",
                                 if *KEEP_ALIVE.get().unwrap_or(&false) {

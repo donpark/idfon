@@ -18,28 +18,10 @@ use idfon_protocol::{
 use iroh::{
     endpoint::{presets, Connection, RecvStream, SendStream},
     protocol::ProtocolHandler,
-    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, SecretKey,
+    Endpoint, EndpointAddr, EndpointId, SecretKey,
 };
 use iroh_gossip::{api::GossipTopic, Gossip, TopicId};
 use thiserror::Error;
-
-/// `IDFON_RELAY_URLS` (comma-separated `https://…`) overrides the default N0
-/// relay map; `IDFON_RELAY_TOKEN` (optional) adds a shared bearer token. Unset
-/// keeps the N0 public relays. Enterprises set this on every peer so they meet
-/// on a relay their NAT permits.
-fn relay_mode_from_env() -> Option<RelayMode> {
-    let urls = std::env::var("IDFON_RELAY_URLS").ok()?;
-    let token = std::env::var("IDFON_RELAY_TOKEN").ok();
-    relay_mode_from(&urls, token.as_deref())
-}
-
-fn env_truthy(name: &str) -> bool {
-    is_truthy(&std::env::var(name).unwrap_or_default())
-}
-
-fn is_truthy(value: &str) -> bool {
-    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
-}
 
 /// Bounded dial-and-exchange: a first handshake can be aborted by a competing
 /// multi-path handshake ("authentication failed" compliance error) and the
@@ -75,23 +57,6 @@ where
         }
     }
     Err(error)
-}
-
-fn relay_mode_from(urls: &str, token: Option<&str>) -> Option<RelayMode> {
-    let list: Vec<&str> = urls
-        .split(',')
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-        .collect();
-    if list.is_empty() {
-        return None;
-    }
-    let map = RelayMap::try_from_iter(list).ok()?;
-    let map = match token {
-        Some(token) if !token.is_empty() => map.with_auth_token(token),
-        _ => map,
-    };
-    Some(RelayMode::Custom(map))
 }
 
 pub const MESSAGE_ALPN: &[u8] = b"idfon/message/1";
@@ -290,13 +255,15 @@ impl IrohTransport {
     }
 
     async fn try_bind(key: Option<[u8; 32]>, port: Option<u16>) -> Result<Self, TransportError> {
-        let mut builder = Endpoint::builder(presets::N0).alpns(vec![MESSAGE_ALPN.to_vec()]);
-        // A self-hosted/enterprise relay overrides N0. A relay is the fallback
-        // when direct UDP is impossible (enterprise NAT); its WebSocket
-        // transport uses TCP 443, which such networks allow.
-        if let Some(relay) = relay_mode_from_env() {
-            builder = builder.relay_mode(relay);
-        }
+        // A self-hosted/enterprise relay overrides N0 (relay selection:
+        // parameter > configuration > default, docs/relay-config.md). A relay
+        // is the fallback when direct UDP is impossible (enterprise NAT); its
+        // WebSocket transport uses TCP 443, which such networks allow.
+        let relay = crate::relay::resolve();
+        let mut builder = crate::relay::apply(
+            Endpoint::builder(presets::N0).alpns(vec![MESSAGE_ALPN.to_vec()]),
+            &relay,
+        );
         if let Some(key) = key {
             builder = builder.secret_key(SecretKey::from_bytes(&key));
         }
@@ -311,7 +278,7 @@ impl IrohTransport {
         // Relay-only (enterprise NAT: direct UDP unavailable). Last, so it also
         // drops the pinned-port IP transports above; the endpoint then
         // publishes no IP addrs, forcing peers onto the relay.
-        if env_truthy("IDFON_RELAY_ONLY") {
+        if relay.only {
             builder = builder.clear_ip_transports();
         }
         let endpoint = builder
@@ -656,27 +623,6 @@ impl MessageTransport for IrohTransport {
 mod tests {
     use super::*;
     use idfon_protocol::{MessageContent, PeerAuth};
-
-    #[test]
-    fn is_truthy_accepts_common_flags() {
-        assert!(is_truthy("1") && is_truthy("true") && is_truthy(" YES "));
-        assert!(!is_truthy("0") && !is_truthy("") && !is_truthy("no"));
-    }
-
-    #[test]
-    fn relay_mode_from_parses_urls_and_token() {
-        assert!(relay_mode_from("", None).is_none());
-        assert!(relay_mode_from("  ,  ", None).is_none());
-        let mode = relay_mode_from(
-            "https://relay.example.com, https://relay2.example.com:8443",
-            Some("tok"),
-        )
-        .expect("two relays");
-        match mode {
-            RelayMode::Custom(map) => assert_eq!(map.len(), 2),
-            _ => panic!("expected RelayMode::Custom"),
-        }
-    }
 
     #[test]
     fn connect_attempts_gives_up_fast_when_dials_hang() {

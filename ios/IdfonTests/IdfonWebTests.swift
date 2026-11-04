@@ -163,26 +163,34 @@ final class IdfonWebTests: XCTestCase {
         XCTAssertEqual(ip.absoluteString, "http://192.168.1.2:8791/\(hex)/fs/a.html")
     }
 
-    func testRelaySettingsRoundTripAndEnvironment() {
+    func testRelaySettingsPrecedence() {
         RelaySettings.clear()
+        RelaySettings.configureFromLaunchArgs([])
         XCTAssertFalse(RelaySettings.isConfigured)
-        XCTAssertTrue(RelaySettings.environment().isEmpty)
+        XCTAssertNil(RelaySettings.resolved().urls)
 
+        // Configuration tier (persisted).
         RelaySettings.configure(urls: "https://relay.idfon.net:8443", token: "tok", relayOnly: true)
         XCTAssertTrue(RelaySettings.isConfigured)
         XCTAssertEqual(RelaySettings.urls, "https://relay.idfon.net:8443")
         XCTAssertEqual(RelaySettings.token, "tok")
         XCTAssertTrue(RelaySettings.isRelayOnly)
-        let env = RelaySettings.environment()
-        XCTAssertEqual(env["IDFON_RELAY_URLS"], "https://relay.idfon.net:8443")
-        XCTAssertEqual(env["IDFON_RELAY_TOKEN"], "tok")
-        XCTAssertEqual(env["IDFON_RELAY_ONLY"], "1")
 
-        // No token (allowlist / HTTP-callout relay): the env omits it.
+        // Parameter tier (per run) wins per field, never persists.
+        RelaySettings.configureFromLaunchArgs(["-relayurls", "https://relay.example:8443"])
+        XCTAssertEqual(RelaySettings.resolved().urls, "https://relay.example:8443")
+        XCTAssertEqual(RelaySettings.resolved().token, "tok") // falls through
+        XCTAssertTrue(RelaySettings.resolved().only) // sticky
+        XCTAssertEqual(RelaySettings.urls, "https://relay.idfon.net:8443") // unchanged
+
+        // Clearing the parameter restores the persisted tier.
+        RelaySettings.configureFromLaunchArgs([])
+        XCTAssertEqual(RelaySettings.resolved().urls, "https://relay.idfon.net:8443")
+
+        // No token (allowlist / HTTP-callout relay).
         RelaySettings.configure(urls: "https://relay.example:8443", token: "", relayOnly: false)
-        let plain = RelaySettings.environment()
-        XCTAssertNil(plain["IDFON_RELAY_TOKEN"])
-        XCTAssertNil(plain["IDFON_RELAY_ONLY"])
+        XCTAssertNil(RelaySettings.resolved().token)
+        XCTAssertFalse(RelaySettings.resolved().only)
 
         RelaySettings.clear()
         XCTAssertFalse(RelaySettings.isConfigured)

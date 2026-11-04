@@ -8,6 +8,7 @@ use std::os::raw::c_char;
 
 extern "C" {
     fn idfon_daemon_run(socket_path: *const c_char, data_dir: *const c_char, transport: *const c_char) -> i32;
+    fn idfon_relay_settings_set(urls: *const c_char, token: *const c_char, only: bool);
 }
 
 const DEFAULT_SOCKET: &str = "/tmp/idfon/idfond.sock";
@@ -18,9 +19,25 @@ fn main() {
     let socket = argument(&args, "--socket").unwrap_or_else(|| DEFAULT_SOCKET.into());
     let data_dir = argument(&args, "--data-dir").unwrap_or_else(|| DEFAULT_DATA_DIR.into());
     let transport = argument(&args, "--transport");
+    // Per-run relay selection (docs/relay-config.md); beats the persisted
+    // configuration and IDFON_RELAY_* per field.
+    let relay_urls = argument(&args, "--relay-urls");
+    let relay_token = argument(&args, "--relay-token");
+    let relay_only = args.iter().any(|arg| arg == "--relay-only");
     let socket_z = cstring(&socket, "--socket");
     let data_z = cstring(&data_dir, "--data-dir");
     let transport_z = transport.as_deref().map(|value| cstring(value, "--transport"));
+    let relay_urls_z = relay_urls.as_deref().map(|value| cstring(value, "--relay-urls"));
+    let relay_token_z = relay_token.as_deref().map(|value| cstring(value, "--relay-token"));
+    if relay_urls_z.is_some() || relay_token_z.is_some() || relay_only {
+        let empty = cstring("", "--relay");
+        let as_ptr = |value: &Option<CString>| {
+            value.as_ref().map_or(empty.as_ptr(), |value| value.as_ptr())
+        };
+        unsafe {
+            idfon_relay_settings_set(as_ptr(&relay_urls_z), as_ptr(&relay_token_z), relay_only);
+        }
+    }
     let code = unsafe {
         idfon_daemon_run(
             socket_z.as_ptr(),

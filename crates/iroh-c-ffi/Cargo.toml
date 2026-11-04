@@ -56,6 +56,7 @@ moq-video = { git = "https://github.com/donpark/moq", branch = "loss-recovery-re
 moq-net = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
 moq-mux = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
 idfon-protocol = { path = "../idfon-protocol" }
+idfon-core = { path = "../idfon-core" }
 idfon-client = { path = "../idfon-client" }
 idfon-media = { path = "../idfon-media" }
 idfon-daemon = { path = "../idfon-daemon" }

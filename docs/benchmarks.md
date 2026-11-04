@@ -51,8 +51,11 @@ once per relay config.
 daemon CLI yet — the forced rows are honest by construction, but a natural row
 cannot say which path won. (b) The bare FFI (`irohnet.h`) is not enough to
 build this benchmark in TS on top of iroh directly: its `EndpointConfig` has
-only `RELAY_MODE_DISABLED|DEFAULT` (no custom relay map, no auth token, no
-relay-only) and no path query. Extending it is platform work in
+only `RELAY_MODE_DISABLED|DEFAULT` and no path query. A custom relay map,
+auth token, and relay-only now reach the FFI endpoints through the process-level
+relay selection instead (`idfon_relay_settings_set`, `docs/relay-config.md` —
+`RELAY_MODE_DEFAULT` resolves it at bind time), so a TS bench no longer needs
+them in `EndpointConfig`; a path query remains platform work in
 `crates/iroh-c-ffi`, not vertical work.
 
 ## 2. Voice-turn stages — `voice-report` tool / `scripts/voice-latency-report.sh`
