@@ -196,7 +196,12 @@ final class AudioIO: AudioSource, AudioSink {
                 }
             }
             if running, self.profile == profile { return }
-            if running || self.profile != nil { stopLocked() }
+            // Keep queued playback only when this is a rebuild of the same
+            // profile (an engine that stopped under a live call); a profile
+            // switch starts a new session and must not inherit its cues.
+            if running || self.profile != nil {
+                stopLocked(discardPlayback: self.profile != profile)
+            }
             self.profile = profile
             restartAfterInterruption = false
             startRetries = 0
@@ -292,11 +297,18 @@ final class AudioIO: AudioSource, AudioSink {
         }
     }
 
-    private func stopLocked() {
+    private func stopLocked(discardPlayback: Bool = true) {
         pendingStart = nil
         pendingOneShot = nil
         guard running || profile != nil else { return }
         stopEngine()
+        if discardPlayback {
+            // The old bus is gone: replaying these into the next engine would
+            // carry a cue from the previous call over into the new one (and
+            // `scheduleBuffer` aborts when the sample layout changed).
+            inFlightOneShots.removeAll()
+            activeLoop = nil
+        }
         removeSessionObservers()
         profile = nil
         if sessionOwnerIsCallKit {
@@ -702,18 +714,42 @@ final class AudioIO: AudioSource, AudioSink {
     /// player in a rebuild) discards scheduled buffers. The loop and in-flight
     /// one-shots re-arm; their callers resume when the re-armed audio finishes.
     private func rearmPlayback() {
+        let format = playbackPlayer.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            Automation.mark("audio: re-arm skipped — engine has no output format")
+            return
+        }
+        // A queued buffer carries the *previous* player's format. Scheduling a
+        // mismatch raises an uncatchable ObjC exception (the 2026-11-04 dial
+        // SIGABRT: a cue from the prior call re-armed into a rebuilt bus), so
+        // fit it to the live bus or drop it.
+        func fitted(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+            guard let converted = Self.convert(buffer, to: format) else {
+                Automation.mark(
+                    "audio: re-arm dropped \(buffer.format.sampleRate)Hz/\(buffer.format.channelCount)ch (bus \(format.sampleRate)Hz/\(format.channelCount)ch)")
+                return nil
+            }
+            return converted
+        }
         // A cue stashed while the engine was down (callkit deferral, or a
         // didDeactivate pause) plays now, on any recovery path.
         if let one = pendingOneShot {
             pendingOneShot = nil
-            let id = UUID()
-            inFlightOneShots[id] = one
+            if let one = fitted(one) { inFlightOneShots[UUID()] = one }
         }
         if let loop = activeLoop {
-            playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
-            Automation.mark("audio: loop re-armed after engine restart")
+            if let loop = fitted(loop) {
+                activeLoop = loop
+                playbackPlayer.scheduleBuffer(loop, at: nil, options: [.loops], completionHandler: nil)
+                Automation.mark("audio: loop re-armed after engine restart")
+            } else {
+                activeLoop = nil
+            }
         }
+        var scheduled: [UUID: AVAudioPCMBuffer] = [:]
         for (id, buffer) in inFlightOneShots {
+            guard let buffer = fitted(buffer) else { continue }
+            scheduled[id] = buffer
             playbackPlayer.scheduleBuffer(
                 buffer, at: nil, options: [], completionCallbackType: .dataPlayedBack
             ) { _ in
@@ -721,6 +757,7 @@ final class AudioIO: AudioSource, AudioSink {
             }
             Automation.mark("audio: one-shot re-armed after engine restart")
         }
+        inFlightOneShots = scheduled
         if (activeLoop != nil || !inFlightOneShots.isEmpty), !playbackPlayer.isPlaying {
             playbackPlayer.play()
         }

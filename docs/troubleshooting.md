@@ -371,6 +371,25 @@ uses. Note `setVoiceProcessingEnabled` can raise beyond Swift's reach; if a
 future ordering reintroduces it, use a tiny ObjC `@try/@catch` shim rather than
 relying on `try`.
 
+## iOS dial aborts (SIGABRT) in AudioIO.rearmPlayback (2026-11-04, FIXED)
+
+**Symptom.** Tapping a radio station (or the next station while one plays)
+started the outgoing call and then the app vanished to the home screen. Crash
+reports (`EXC_CRASH (SIGABRT)`) all show the same stack:
+`-[AVAudioPlayerNode scheduleBuffer:atTime:options:completionCallbackType:completionHandler:]`
+← `AudioIO.rearmPlayback()` ← `AudioIO.startEngine()`.
+
+**Cause.** `rearmPlayback` re-scheduled one-shots/loops cached from the previous
+engine into the freshly built player without checking their format. A cue
+queued for the old call's bus (the "ended" tone is scheduled by `hangUp` just
+before the next dial) does not match the rebuilt player, and `scheduleBuffer`
+raises an **Objective-C exception** — uncatchable from Swift — so the process
+aborts.
+
+**Fix.** Convert every re-armed buffer to the live player's output format and
+drop the ones that cannot be fitted; a profile switch also discards playback
+queued for the old bus (`ios/Idfon/AudioIO.swift`).
+
 ## Contacts/Recents empty after a cold or crash start (2026-10-07, FIXED)
 
 **Symptom.** After the app relaunched — including right after a crash — the
