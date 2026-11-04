@@ -16,6 +16,9 @@ import Foundation
 /// Self-contained on purpose (no ptts types): `Checks/PhononBundleCheck`
 /// compiles it alone.
 ///
+/// Files are verified by size and SHA-256 every time, not by the manifest's
+/// `built` stamp: an edited or partial bundle never loads.
+///
 /// shortcut: only the source packages are deduped. Core ML compiles each
 /// `.mlpackage` next to itself, so the `.mlmodelc` copies repeat the same 55 MB
 /// on disk after the first load; touch them only with a device to verify the

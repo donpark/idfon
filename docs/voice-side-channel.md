@@ -616,9 +616,14 @@ as-built default until the streaming pair lands.)
   phone's download, disk and page cache hold one copy. Serving the pack over
   HTTP still sends both paths; only a directory copy keeps the link);
   custom voices are 256KB `.safetensors` embeddings in `voices/NAME.safetensors`
-  (`IDFON_TTS_VOICE=NAME`). iOS 18+/macOS 15+ only. Full streaming: text is
+  (`IDFON_TTS_VOICE=NAME`; a *served* pack must list them in its
+  `bundle.json`, which the fetch script rewrites after it restores a kept
+  `voices/` — otherwise every client install fails the hash check and falls
+  back to the Apple voice). iOS 18+/macOS 15+ only. Full streaming: text is
   one utterance per call (the runtime splits long text at sentence ends) and
-  playback streams 80 ms chunks through the AEC bus as they generate (first
+  playback streams 80 ms chunks through the AEC bus as they generate (as-built
+  2026-11-03, M4 Pro, pack served over HTTP and installed by `PhononBundle`:
+  first audio 5 ms, 31–33× real time, 2.9 s to load; first
   audio ≈ 6 ms in the 2026-10-25 mac smoke:
   `IDFON_TTS=phonon Idfon -ttssay "…"`); iOS text-only mode streams through a
   local player too since 2026-10-25 (whole-clip before). Speak chunk-per-chunk
