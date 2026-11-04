@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/idfon-protocol", "crates/idfon-telemetry", "crates/idfon-core", "crates/idfon-media", "crates/idfon-voice", "crates/idfon-gateway", "crates/idfon-h3", "crates/idfon-h1", "crates/idfon-edge", "crates/idfon-mcp", "crates/idfon-mcp-server", "crates/eve-idfon", "crates/idfon-live-media", "crates/idfon-radio", "crates/idfon-voice-agent", "crates/idfon-director", "crates/idfond", "crates/idfon-cli", "crates/idfon-client", "crates/idfon-daemon", "crates/iroh-c-ffi"]
+members = ["crates/idfon-protocol", "crates/idfon-telemetry", "crates/idfon-core", "crates/idfon-media", "crates/idfon-voice", "crates/idfon-gateway", "crates/idfon-h3", "crates/idfon-h1", "crates/idfon-channel", "crates/idfon-edge", "crates/idfon-mcp", "crates/idfon-mcp-server", "crates/eve-idfon", "crates/idfon-live-media", "crates/idfon-radio", "crates/idfon-voice-agent", "crates/idfon-director", "crates/idfond", "crates/idfon-cli", "crates/idfon-client", "crates/idfon-daemon", "crates/iroh-c-ffi"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
