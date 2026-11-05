@@ -72,17 +72,22 @@ else
 fi
 
 echo "== installing to $device"
+# Install and launch under one device lock: another agent thread sharing this
+# iPhone must not install between the two, or the launch would run *its* build
+# (scripts/device-lock.sh; ~/dev notes on the one-iPhone contention).
 # CoreDevice can transiently invalidate its control channel while the phone
 # remains paired/available. Retry one time after rediscovering the device;
 # do not rebuild or silently select another device.
-if ! xcrun devicectl device install app --device "$device" "$app"; then
-  echo "device install failed; refreshing CoreDevice connection and retrying once" >&2
-  sleep 2
-  xcrun devicectl list devices >/dev/null
-  xcrun devicectl device install app --device "$device" "$app"
-fi
-
-echo "== launching"
 # `--` stops devicectl from parsing the app's own -flags (e.g. -dial) as its
 # own options; without it every launch argument fails with "Unknown option".
-xcrun devicectl device process launch --terminate-existing --device "$device" com.idfon.ios -- "$@"
+DEVICE="$device" APP="$app" "$root/scripts/device-lock.sh" bash -c '
+  set -euo pipefail
+  if ! xcrun devicectl device install app --device "$DEVICE" "$APP"; then
+    echo "device install failed; refreshing CoreDevice connection and retrying once" >&2
+    sleep 2
+    xcrun devicectl list devices >/dev/null
+    xcrun devicectl device install app --device "$DEVICE" "$APP"
+  fi
+  echo "== launching"
+  xcrun devicectl device process launch --terminate-existing --device "$DEVICE" com.idfon.ios -- "$@"
+' -- "$@"
