@@ -343,6 +343,31 @@ this bar recut and no derivation was recorded; 320 ms is exactly one hop
 cite them as a perceptual threshold — the perceptual question has never been
 measured here.
 
+**Two state vocabularies, and they are not interchangeable (2026-11-05).** The
+turn path carries two different states and the docs used both loosely, which
+cost real evidence — replay harnesses passed the *stream* name `"response"` as
+`mode` for weeks, which silently disables the barge branch (`rules.py` falls
+through to listen for any string other than `"speaking"`).
+
+- **`mode` — who holds the floor.** Binary, app-fed, never guessed by the
+  model: `"listen"` or `"speaking"`. `"speaking"` means **the agent's mouth is
+  running**, not the user. The reference implementation is explicit
+  (`app/ears/conversation.py:181-187`): when the agent is speaking, `mode =
+  "speaking"` and the agent's own audio goes on the second ear; otherwise the
+  second ear is zeros and `mode = "listen"` (`app/plugins/base.py:169`).
+  Inside `"speaking"` mode the rules watch the **caller's** energy
+  (`act_db`, the user ear) and run the yield head, so BARGE = the caller taking
+  the floor from the agent.
+- **`prev_state` — the model's four-state machine.** `0 LISTEN, 1 HOLD,
+  2 SPEAK, 3 BACKCHANNEL`, carried across frames and reset at
+  BARGE/ENDPOINT/mode change.
+
+Capture convention: `TurnCapture` writes **stereo 16 kHz, `ch0` = caller mic,
+`ch1` = agent**. So `mode` is derivable per frame from `ch1` activity, and a
+capture whose `ch1` is silent carries no barge evidence at all — the sidecar
+records `agentNonSilent`/`agentPeak` precisely so that is visible rather than
+assumed.
+
 **`left` means the hop's remaining frames, and it is only a timestamp fix
 (2026-11-05).** `rules.py` uses it in one place: `onset_s = min((talk_frames +
 left) * FRAME_S, ONSET_MAX_S)` — a barge's onset is extrapolated to the hop's

@@ -1080,7 +1080,7 @@ decision, recorded in #132, not a detail.
 | `left` | `0` — `left` only extrapolates a barge's reported `onset_s` (`rules.py:121`); all three candidate policies are decision-identical, and `0` is the only one consistent with the audio timeline |
 | latency bars | unchanged: mean-of-medians ≤ +160 ms, worst-session ≤ +320 ms. Measured at NVIDIA's 560 ms tier: **+173.9 / +179.9**, 23% of endpoints past +320 ms — the bar is **missed**, and that is the open product call |
 | acceptance data | the 8 corpus sessions and the 13 live captures have now been used for fitting, calibration and bar recuts, so they are **development data** whatever their split name. Any acceptance claim needs sessions none of this touched |
-| barge | **unmeasured**. Zero BARGE events in corpus validation, all three latency captures listen-mode. No barge claim may be made from any table in this document |
+| barge | **unmeasured**, and the reason is now known: replay harnesses passed mode=`"response"` (a stream name), which disables the barge branch. App behaviour was never affected (`VoiceAgentSession` feeds real `listen`/`speaking`). Re-scoring derives `mode` from `ch1` (agent) activity; captures with silent `ch1` carry no barge evidence. No barge claim may be made from any table in this document until that re-score lands |
 
 What is still required before a swap can be judged: a held-out live set, a barge/overlap
 challenge set with both positive and negative cases, playback-ear parity (in flight), and
