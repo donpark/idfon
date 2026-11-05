@@ -475,10 +475,14 @@ Measure first — everything below needs the same instrumentation to prove out.
 9. **NWPathMonitor on ios/mac** (change). On interface change: announce it
    (quality record tag "transition"), proactively grow the jitter buffer and
    step video down one rung before the breakage hits.
-   **Probe half + watchdog landed 2026-11-04**: `ios/Idfon/PathMonitor.swift`
-   logs every status/interface/expensive/constrained change to `Diag` and the
+   **Probe half + watchdog landed 2026-11-04** (both shells:
+   `ios/Idfon/PathMonitor.swift`, `mac/Sources/Idfon/PathMonitor.swift`):
+   every status/interface/expensive/constrained change goes to `Diag` and the
    pullable app log, and calls `media_live_path_changed()` so the subscribe
-   watchdog drops from 2 s to 500 ms for a 15 s grace window. The listen leg
+   watchdog drops from 2 s to 500 ms for a 15 s grace window. The Mac's
+   `NSApplication.didBecomeActive` plays the foreground kick's role (no
+   background suspension, but sleep/wake freezes the retry), and its call bar
+   carries the same state/path line. The listen leg
    also reports `media_live_state()` (idle/connecting/playing/reconnecting/
    failed) for the call bar, and `media_live_reconnect()` lets a foreground
    return cut the retry backoff. Path-close events drive the rebuild and the
