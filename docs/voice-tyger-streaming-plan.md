@@ -361,6 +361,14 @@ $PY ports/tyger-student/export_asr_tap.py --gate bench-results/asr-tap/encoder_t
 
 #### Pass config: the shipping 42/13 vs the reference 56/0 (measured 2026-11-05)
 
+> **2026-11-05 (later): every 42/13 number in this section is void.** The wrapper
+> implemented a causal sliding window (43 keys/query) instead of the block mask
+> documented below, so the lookahead had no effect; the mask is fixed and the
+> re-measured tables — artifact 593,446,155 B / 8.92 ms ANE, product row 79.18%
+> instead of 82.4% — are in `docs/voice-tyger-42-13-remask.md`. The table below is
+> kept as written. The 56/0 rows are unaffected (reference selfcheck unchanged at
+> 3.53e-05).
+
 **Target decided: NVIDIA's shipping pass — 42 left / 13 lookahead, 42-deep cache, int8
 weights — with `tap_l4` declared by *our* export of those weights.** Their bundle cannot
 serve as the tap (Core ML exposes declared outputs only, and theirs declares `encoded`).
