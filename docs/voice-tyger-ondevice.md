@@ -1291,6 +1291,38 @@ $PY ports/tyger-student/harness.py --shards bench-results/tap-shipping-320 \
     --student $MAIN/shared-shipping-refit-fixed/student.pt --tap l4-streaming --temp 0.9 --ep-thr 0.90
 ```
 
+### Ruling: the split tier is what ships (2026-11-05, #132)
+
+**Decided: turn path on the 320 ms prefix, ASR on NVIDIA's 560 ms full encoder.** The
+320-only single-pass shape is deferred, not rejected — it needs a WER gate on an
+off-spec tier and it re-couples the tap to the running ASR's invocation (the `#1109`
+callback), neither of which the split tier needs.
+
+| | value |
+|---|---|
+| graphs | 2: the 560 full encoder (ASR, unchanged) + a 102,003,481 B prefix (turns) |
+| weights | 1 model; one tap definition (`hidden_states[4]`) |
+| turn cadence | 320 ms, batched two ears in one call (bit-identical to two calls) |
+| turn latency | +100.9 ms mean-of-medians, 0/10 endpoints past +320 |
+| turn quality | product bars at parity with 560-deployed; teacher agreement −3.0 pts (inside noise); 19.1% of decisions move |
+| assets | **701 MB** (594 + 102 + 5.28 step) replacing 983 MB — the 389 MB cut is gone, net **−282 MB** |
+| duty | 2.6% of a 320 ms period, replacing 14.7–17.4 ms of windowed work |
+| ASR | untouched: no WER risk, no partial-cadence change, NVIDIA's tier |
+
+**What this amends on the epic.** The footprint condition becomes: delete the private
+389 MB cut, replace the windowed re-encode with one batched prefix pass per 320 ms, and
+keep the ASR on its own tier. That is **not** "one encoder invocation per period" — it is
+one ASR pass plus one cheap turn pass — and `#1109` stops gating the turn path, because
+the prefix is an artifact we own. Say it that way in the epic; the old wording is now
+wrong rather than unmet.
+
+**Wiring constraints already measured, not to be rediscovered:** feed both ears
+continuously with silence for the inactive one and never reset per utterance (a cold
+cache costs ~4 cos points for ~6 chunks, duplicates a frame, and `tapFrameOrigin`
+survives `reset()`, drifting +1 frame per restart); batch both ears (bit-identical,
+39% cheaper than two calls); `prompt_id` is not in the English manager's contract; and
+`cache_channel` depth must come from the artifact (42), not the shipping metadata.
+
 ### The 320 refit and a turn-purpose prefix (2026-11-05, #132)
 
 **Verdict first: the refit is a wash, not a rescue.** Re-targeting the `l4-streaming`
