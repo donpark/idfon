@@ -962,6 +962,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composerText.text = ""
         textViewDidChange(composerText)
         let peerId = conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id
+        // A local command, never sent: the call's quality record as a card in
+        // this thread (docs/media-adaptation.md §C1/§C2).
+        if text == "/health-check" {
+            postHealthCard(peerId: peerId)
+            return
+        }
         // A pending artifact selection turns this turn into a reference.
         let pending = pendingReference
         pendingReference = nil
@@ -1046,6 +1052,28 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             input["attachments"] = [attachment]
         }
         return input
+    }
+
+    /// `/health-check`: the running call's record, or this thread's last one.
+    /// Posted locally as a summary line plus a picture; the record carries
+    /// addresses and RTT, so it never goes over the wire.
+    private func postHealthCard(peerId: String) {
+        guard let json = HealthCard.currentJSON(for: peerId), let record = HealthCard.decode(json) else {
+            ChatStore.shared.appendOutgoing(ChatMessage(
+                id: UUID().uuidString, peerId: peerId,
+                kind: .text("No call to report for this thread yet."),
+                outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
+            return
+        }
+        ChatStore.shared.appendOutgoing(ChatMessage(
+            id: UUID().uuidString, peerId: peerId, kind: .text(HealthCard.summary(record)),
+            outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
+        guard let image = HealthCard.render(record), let url = HealthCard.write(image: image, peerId: peerId) else { return }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        ChatStore.shared.appendOutgoing(ChatMessage(
+            id: UUID().uuidString, peerId: peerId,
+            kind: .file(ticket: "", name: url.lastPathComponent, sizeBytes: size, localURL: url),
+            outgoing: true, timestamp: Date(), conversation: conversation.room?.id))
     }
 
     private func sendConversationText(_ text: String) async throws {

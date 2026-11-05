@@ -9,7 +9,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// Build stamp for device E2E: bumped on every fix round and confirmed in
     /// the device console before testing. The stale-binary trap (testing an
     /// old install while believing it is new) has cost several rounds.
-    static let buildStamp = "2026-11-04.pathevents"
+    static let buildStamp = "2026-11-04.healthcard"
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         idfonLog("idfon build stamp \(Self.buildStamp)")
@@ -25,6 +25,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Before the daemon starts so an automation launch (-relayurls …) both
         // sets and uses the relay config.
         RelaySettings.configureFromLaunchArgs(ProcessInfo.processInfo.arguments)
+        // Media experiment knob (docs/media-adaptation.md §C2): widen the
+        // decoder's hole-fill window so a publisher sending DRED
+        // (`IDFON_DRED_MS` on the holder) can use it. Launch with
+        // `-concealms 800`; default stays 120 ms.
+        let mediaArgs = ProcessInfo.processInfo.arguments
+        if let index = mediaArgs.firstIndex(of: "-concealms"), mediaArgs.count > index + 1 {
+            setenv("IDFON_CONCEAL_MS", mediaArgs[index + 1], 0)
+            idfonLog("idfon media: conceal window \(mediaArgs[index + 1]) ms")
+        }
         IdfonRuntime.start()
         ChatStore.shared.start()
         // Contact invites from a trusted directory enroll silently; everyone

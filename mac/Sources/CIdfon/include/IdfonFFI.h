@@ -56,6 +56,9 @@ void media_live_stop(void);                  // stop own publish
 uint8_t media_live_set_audio_enabled(uint8_t enabled);
 uint8_t media_live_set_video_enabled(uint8_t enabled);
 uint8_t media_live_subscribe(char const *ticket); // hear/watch a peer (decodes + plays)
+// Same, with the contact's stored endpoint-addr JSON (#157): live tickets carry
+// no addresses, so the dial would otherwise depend on pkarr/DNS.
+uint8_t media_live_subscribe_with_addrs(char const *ticket, char const *addrs);
 void media_live_unsubscribe(void);
 // Listen-leg state for the call UI (docs/media-adaptation.md §C2): 0 idle,
 // 1 connecting, 2 playing, 3 reconnecting, 4 failed. The plane heals itself —

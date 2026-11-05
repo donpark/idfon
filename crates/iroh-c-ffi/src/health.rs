@@ -306,6 +306,21 @@ pub(crate) fn finish_call_sampling() {
     *LAST_REPORT.lock().unwrap_or_else(|poison| poison.into_inner()) = json;
 }
 
+/// The running call's record so far (`idfon_media::health::CallRecord`), read
+/// without stopping the sampler — what `/health-check` shows mid-call. Empty
+/// when no call is being sampled. Same shape as [`media_health_last_report`].
+#[ffi_export]
+pub fn media_health_live_report() -> char_p::Box {
+    let call = CALL.lock().unwrap_or_else(|poison| poison.into_inner());
+    match call.as_ref() {
+        Some(call) => serde_json::to_string(&build_record(call))
+            .unwrap_or_default()
+            .try_into()
+            .unwrap(),
+        None => String::new().try_into().unwrap(),
+    }
+}
+
 /// The last ended call's record JSON (`idfon_media::health::CallRecord`),
 /// taken (and cleared) so one record ships exactly once. Empty when no call
 /// has ended since the last read.

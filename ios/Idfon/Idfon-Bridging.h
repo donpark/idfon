@@ -58,6 +58,10 @@ void media_audio_push_samples(const float *pcm, size_t samples);
 void media_audio_push_frames(const float *pcm, size_t frames, uint32_t channels);
 void media_live_stop(void);                  // stop own publish
 uint8_t media_live_subscribe(char const *ticket); // hear the peer (decodes + plays)
+// Same, with the contact's stored endpoint-addr JSON (#157): live tickets carry
+// no addresses, so the dial would otherwise depend on pkarr/DNS. Merged only
+// when the ids match and the ticket has none.
+uint8_t media_live_subscribe_with_addrs(char const *ticket, char const *addrs);
 void media_live_unsubscribe(void);
 // Listen-leg state for the call UI (docs/media-adaptation.md §C2): 0 idle,
 // 1 connecting, 2 playing, 3 reconnecting, 4 failed (the retry loop gave up;
@@ -107,6 +111,9 @@ uint8_t media_health_check(void const *ctx,
 uint8_t media_health_check_ticket(void const *ctx,
     void (*cb)(void const *ctx, uint8_t const *json, size_t len, uint8_t done), uint64_t duration_ms, char const *peer_ticket);
 char *media_health_last_report(void);
+// The running call's record so far (mid-call read; does not stop sampling).
+// Empty when no call is being sampled. Same shape as the last report.
+char *media_health_live_report(void);
 char *media_live_last_error(void);           // last publish failure ("" if none)
 void media_video_push_frame(const void *data, uintptr_t len, uint32_t width, uint32_t height, uint64_t pts_ms); // BGRA frame -> live encoder
 void media_shutdown(void);

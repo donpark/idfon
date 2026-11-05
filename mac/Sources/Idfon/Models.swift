@@ -7,6 +7,16 @@ struct Room: Decodable, Identifiable, Hashable {
     let members: [String]
 }
 
+struct PeerDevice: Decodable, Hashable {
+    let endpointId: String
+    let endpointAddr: String?
+
+    enum CodingKeys: String, CodingKey {
+        case endpointId = "endpoint_id"
+        case endpointAddr = "endpoint_addr"
+    }
+}
+
 struct Peer: Decodable, Identifiable, Hashable {
     let id: String
     /// The identity (persona) this relationship lives under (A8/D20).
@@ -14,9 +24,12 @@ struct Peer: Decodable, Identifiable, Hashable {
     let name: String?
     let endpointId: String?
     let aliases: [String]?
+    /// Durable endpoints of this contact. The stored `endpoint_addr` is what
+    /// lets a media dial skip pkarr/DNS (#157).
+    var devices: [PeerDevice] = []
 
     enum CodingKeys: String, CodingKey {
-        case id, name, aliases, identity
+        case id, name, aliases, identity, devices
         case endpointId = "endpoint_id"
     }
 
