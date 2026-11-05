@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import CIdfon
+import UniformTypeIdentifiers
 
 /// Chat detail (AppKit port of the GUI's chat window + the iOS
 /// ChatViewController): message history, voice memos, live audio calls,
@@ -84,6 +85,10 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     private var playingMessageId: String?
     private var progressTimer: Timer?
     private var staticWaves: [String: WaveformView] = [:]
+    /// One hover preview at a time; a new row's hover replaces it, and the
+    /// pending show is cancelled when the pointer moves on.
+    private var previewPopover: NSPopover?
+    private var hoverWork: DispatchWorkItem?
 
     // composer
     private var composer: NSStackView!
@@ -725,6 +730,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let message = history[row]
         let height: CGFloat
         switch message.kind {
+        case .file(_, _, _, let localURL) where Self.isImage(localURL):
+            height = 168
         case .recording, .file, .artifact, .reference, .render:
             height = 46
         case .text(let text):
@@ -735,6 +742,51 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
             height = 36 // the New Session divider (D21)
         }
         return height + (conversation.isRoom && !message.outgoing ? 16 : 0)
+    }
+
+    /// Whether a row's local file is a picture (cheap: no decode while the
+    /// table measures rows).
+    private static func isImage(_ url: URL?) -> Bool {
+        guard let url, !url.pathExtension.isEmpty,
+              let type = UTType(filenameExtension: url.pathExtension) else { return false }
+        return type.conforms(to: .image)
+    }
+
+    /// Hover with a dwell: crossing a row on the way somewhere else must not
+    /// throw a picture up, and leaving must take it down at once.
+    private func hoverThumbnail(_ image: NSImage, from anchor: NSView, inside: Bool) {
+        hoverWork?.cancel()
+        guard inside, anchor.window != nil else {
+            previewPopover?.close()
+            previewPopover = nil
+            return
+        }
+        let work = DispatchWorkItem { [weak self, weak anchor] in
+            guard let self, let anchor, anchor.window != nil else { return }
+            self.showPreview(image, from: anchor)
+        }
+        hoverWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    /// Full size on hover: the thumbnail only has to be legible enough to
+    /// decide whether to look closer.
+    private func showPreview(_ image: NSImage, from anchor: NSView) {
+        previewPopover?.close()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        let controller = NSViewController()
+        let view = NSImageView()
+        view.image = image
+        view.imageScaling = .scaleProportionallyUpOrDown
+        controller.view = view
+        let width = min(image.size.width, 900)
+        view.frame = NSRect(x: 0, y: 0, width: width,
+                            height: width * image.size.height / max(image.size.width, 1))
+        popover.contentViewController = controller
+        popover.contentSize = view.frame.size
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+        previewPopover = popover
     }
 
     /// Bubble layout, one arithmetic in one place: a bubble is at most
@@ -871,33 +923,74 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
                 duration.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
                 duration.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
             ])
-        case .file(let ticket, let name, let sizeBytes):
-            let icon = NSImageView()
-            icon.image = NSImage(systemSymbolName: "doc.fill", accessibilityDescription: "File")
-            icon.contentTintColor = .secondaryLabelColor
-            let saved = store.fileURLs[ticket] != nil
-            let label = NSTextField(labelWithString: "\(name)\n\(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file))\(saved ? "  · saved to Downloads" : "")")
-            label.font = NSFont.systemFont(ofSize: 12)
-            label.maximumNumberOfLines = 2
-            label.lineBreakMode = .byTruncatingMiddle
-            let reveal = NSButton(title: "Show", target: self, action: #selector(revealFileTapped(_:)))
-            reveal.bezelStyle = .rounded
-            reveal.identifier = NSUserInterfaceItemIdentifier(message.id)
-            for view in [icon, label, reveal] {
-                view.translatesAutoresizingMaskIntoConstraints = false
-                bubble.addSubview(view)
+        case .file(let ticket, let name, let sizeBytes, let localURL):
+            if let localURL, Self.isImage(localURL), let image = NSImage(contentsOf: localURL) {
+                // A picture is its own content: thumbnail now, full size on
+                // hover — the mac has the mouse and the screen for it.
+                let thumb = HoverThumbnailView()
+                thumb.image = image
+                thumb.imageScaling = .scaleAxesIndependently
+                thumb.wantsLayer = true
+                thumb.layer?.cornerRadius = 8
+                thumb.layer?.masksToBounds = true
+                thumb.setAccessibilityLabel("Picture, \(name)")
+                thumb.onHover = { [weak self, weak thumb] inside in
+                    guard let self, let thumb else { return }
+                    self.hoverThumbnail(image, from: thumb, inside: inside)
+                }
+                let label = NSTextField(labelWithString: "\(name) · \(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file))")
+                label.font = NSFont.systemFont(ofSize: 11)
+                label.textColor = .secondaryLabelColor
+                label.lineBreakMode = .byTruncatingMiddle
+                let show = NSButton(title: "Show", target: self, action: #selector(revealFileTapped(_:)))
+                show.bezelStyle = .rounded
+                show.controlSize = .small
+                show.identifier = NSUserInterfaceItemIdentifier(message.id)
+                for view in [thumb, label, show] {
+                    view.translatesAutoresizingMaskIntoConstraints = false
+                    bubble.addSubview(view)
+                }
+                NSLayoutConstraint.activate([
+                    thumb.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 6),
+                    thumb.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 6),
+                    thumb.widthAnchor.constraint(equalToConstant: 320),
+                    thumb.heightAnchor.constraint(equalToConstant: 121),
+                    label.leadingAnchor.constraint(equalTo: thumb.leadingAnchor),
+                    label.topAnchor.constraint(equalTo: thumb.bottomAnchor, constant: 4),
+                    label.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+                    show.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
+                    show.trailingAnchor.constraint(lessThanOrEqualTo: bubble.trailingAnchor, constant: -8),
+                    show.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+                    label.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -6),
+                ])
+            } else {
+                    let icon = NSImageView()
+                icon.image = NSImage(systemSymbolName: "doc.fill", accessibilityDescription: "File")
+                icon.contentTintColor = .secondaryLabelColor
+                let saved = store.fileURLs[ticket] != nil
+                let label = NSTextField(labelWithString: "\(name)\n\(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file))\(saved ? "  · saved to Downloads" : "")")
+                label.font = NSFont.systemFont(ofSize: 12)
+                label.maximumNumberOfLines = 2
+                label.lineBreakMode = .byTruncatingMiddle
+                let reveal = NSButton(title: "Show", target: self, action: #selector(revealFileTapped(_:)))
+                reveal.bezelStyle = .rounded
+                reveal.identifier = NSUserInterfaceItemIdentifier(message.id)
+                for view in [icon, label, reveal] {
+                    view.translatesAutoresizingMaskIntoConstraints = false
+                    bubble.addSubview(view)
+                }
+                NSLayoutConstraint.activate([
+                    icon.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
+                    icon.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                    icon.widthAnchor.constraint(equalToConstant: 18),
+                    label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+                    label.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                    label.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+                    reveal.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
+                    reveal.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
+                    reveal.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
+                ])
             }
-            NSLayoutConstraint.activate([
-                icon.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 10),
-                icon.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
-                icon.widthAnchor.constraint(equalToConstant: 18),
-                label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
-                label.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
-                label.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
-                reveal.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 8),
-                reveal.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -10),
-                reveal.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
-            ])
         case .artifact(let artifact):
             let icon = NSImageView()
             icon.image = NSImage(systemSymbolName: artifact.kind.glyph, accessibilityDescription: "Artifact")
@@ -1053,6 +1146,12 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         composerTextView.string = ""
         let id = "local-\(UUID().uuidString)"
         let peerId = conversation.isRoom ? store.selfPeerId : peer.id
+        // A local command, never sent: the call's quality record as a card in
+        // this thread (docs/media-adaptation.md §C1/§C2).
+        if text == "/health-check" {
+            postHealthCard(peerId: peerId)
+            return
+        }
         // A pending artifact selection turns this turn into a reference.
         let pending = pendingReference
         pendingReference = nil
@@ -1491,6 +1590,18 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
 
     func automateSendFile(at url: URL) { sendFile(at: url, name: url.lastPathComponent) }
 
+    /// `/health-check`: the running call's record, or this thread's last one.
+    /// Posted locally as a summary line plus a picture; the record carries
+    /// addresses and RTT, so it never goes over the wire.
+    private func postHealthCard(peerId: String) {
+        let posted = HealthCard.post(peerId: peerId, conversation: conversation.room?.id, store: store)
+        Automation.mark("healthcheck \(posted ?? "none") peer=\(peerId)")
+    }
+
+    /// Automation entry (`-healthcheck`): the same post a typed `/health-check`
+    /// reaches.
+    func automateHealthCheck() { postHealthCard(peerId: conversation.isRoom ? store.selfPeerId : peer.id) }
+
     /// Reveals a received file in Finder, fetching it first if the eager ingest
     /// fetch hasn't landed.
     @objc private func renderTapped(_ sender: NSButton) {
@@ -1636,8 +1747,8 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
     @objc private func revealFileTapped(_ sender: NSButton) {
         guard let messageId = sender.identifier?.rawValue,
               let message = history.first(where: { $0.id == messageId }),
-              case .file(let ticket, let name, _) = message.kind else { return }
-        if let url = store.fileURLs[ticket] {
+              case .file(let ticket, let name, _, let localURL) = message.kind else { return }
+        if let url = localURL ?? store.fileURLs[ticket] {
             NSWorkspace.shared.activateFileViewerSelecting([url])
             return
         }
@@ -1986,4 +2097,22 @@ extension ChatViewController: CallStateObserver {
         }
         refreshHeaderSoon()
     }
+}
+
+/// A thumbnail that reports hover, so the row can offer the full picture
+/// without a click (`NSTrackingArea` over `.activeInKeyWindow`).
+private final class HoverThumbnailView: NSImageView {
+    var onHover: ((Bool) -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHover?(true) }
+    override func mouseExited(with event: NSEvent) { onHover?(false) }
 }

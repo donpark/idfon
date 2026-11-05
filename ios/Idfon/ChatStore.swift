@@ -422,6 +422,9 @@ final class ChatStore {
         let name: String?
         let sizeBytes: Int?
         let durationMs: Int?
+        /// Local copy of the payload (a downloaded file, a fetched memo, the
+        /// health picture), so a tap still has the bytes after a relaunch.
+        let path: String?
         let outgoing: Bool
         let timestamp: Date
         let conversation: String?
@@ -432,9 +435,15 @@ final class ChatStore {
             timestamp = message.timestamp; conversation = message.conversation
             mergedIds = message.mergedIds
             switch message.kind {
-            case .text(let value): kind = "text"; text = value; ticket = nil; name = nil; sizeBytes = nil; durationMs = nil
-            case .recording(let value, let duration, _): kind = "recording"; text = nil; ticket = value; name = nil; sizeBytes = nil; durationMs = duration
-            case .file(let value, let fileName, let size, _): kind = "file"; text = nil; ticket = value; name = fileName; sizeBytes = size; durationMs = nil
+            case .text(let value):
+                kind = "text"; text = value; ticket = nil; name = nil; sizeBytes = nil
+                durationMs = nil; path = nil
+            case .recording(let value, let duration, let local):
+                kind = "recording"; text = nil; ticket = value; name = nil; sizeBytes = nil
+                durationMs = duration; path = local?.path
+            case .file(let value, let fileName, let size, let local):
+                kind = "file"; text = nil; ticket = value; name = fileName; sizeBytes = size
+                durationMs = nil; path = local?.path
             case .artifact(let artifact):
                 kind = "artifact"
                 text = ArtifactEnvelope.encodeArtifact(artifact)
@@ -442,6 +451,7 @@ final class ChatStore {
                 name = artifact.title
                 sizeBytes = Int(artifact.sizeBytes)
                 durationMs = nil
+                path = nil
             case .reference(let reference):
                 kind = "reference"
                 text = ArtifactEnvelope.encodeReference(reference)
@@ -449,6 +459,7 @@ final class ChatStore {
                 name = nil
                 sizeBytes = nil
                 durationMs = nil
+                path = nil
             case .render(let render):
                 kind = "render"
                 text = RenderEnvelope.encode(render)
@@ -456,6 +467,7 @@ final class ChatStore {
                 name = render.title
                 sizeBytes = nil
                 durationMs = nil
+                path = nil
             case .callTranscript(let transcript):
                 kind = "call"
                 text = CallEnvelope.encodeCall(transcript)
@@ -463,6 +475,7 @@ final class ChatStore {
                 name = nil
                 sizeBytes = nil
                 durationMs = nil
+                path = nil
             case .sessionStart:
                 kind = "session"
                 text = MessageKind.sessionStartPrefix
@@ -470,14 +483,21 @@ final class ChatStore {
                 name = nil
                 sizeBytes = nil
                 durationMs = nil
+                path = nil
             }
+        }
+
+        /// A cached copy can be swept or deleted out from under the log.
+        private var localURL: URL? {
+            guard let path, FileManager.default.fileExists(atPath: path) else { return nil }
+            return URL(fileURLWithPath: path)
         }
 
         var message: ChatMessage {
             let messageKind: MessageKind
             switch kind {
-            case "recording": messageKind = .recording(ticket: ticket ?? "", durationMs: durationMs ?? 0, localURL: nil)
-            case "file": messageKind = .file(ticket: ticket ?? "", name: name ?? "file", sizeBytes: sizeBytes ?? 0, localURL: nil)
+            case "recording": messageKind = .recording(ticket: ticket ?? "", durationMs: durationMs ?? 0, localURL: localURL)
+            case "file": messageKind = .file(ticket: ticket ?? "", name: name ?? "file", sizeBytes: sizeBytes ?? 0, localURL: localURL)
             case "artifact", "reference", "call", "render", "session": messageKind = MessageKind.parse(text ?? "")
             default: messageKind = .text(text ?? "")
             }

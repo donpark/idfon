@@ -564,8 +564,25 @@ live-streaming project, where nothing is addressed or nothing is modern yet.
    mechanism.
 5. **Quality persistence and summary** (build; C1). `stats.rs` is a live
    overlay (EMA + sparklines); the per-call record folds and logs at hangup
-   now (C1 landed), but nothing persists the summaries, computes an
-   R-factor/MOS-style score, or trends across releases. Ours.
+   (C1 landed) and both shells now file it per thread — one JSON per peer
+   beside the chat, shown in that thread by `/health-check` (iOS and mac,
+   2026-11-04). Nothing computes an R-factor/MOS-style score or trends across
+   releases yet; that is ours.
+
+   **Verification of the card.** `ios/Checks/HealthCardCheck` runs on the host
+   (Mac Catalyst, no simulator): decode, the one-line summary, the rendered
+   picture, and which record a post reads (`live` mid-call, `stored` after
+   hangup). `crates/idfon-media`'s `record_json_shape_is_the_shell_contract`
+   pins the JSON field names the shells decode, and `crates/iroh-c-ffi`'s
+   `live_call_serves_a_health_record_midcall_and_at_hangup` calls between two
+   in-process endpoints (publish → subscribe, the entry the shells use) and
+   asserts the live read, the folded report, and the read-and-clear hand-off.
+   On device, `-healthcheck <peer-ref> [delaySeconds]` posts the card through
+   the same path a typed `/health-check` reaches and logs
+   `idfon-auto: healthcheck <live|stored>: <summary> peer=<id>`;
+   `-hangup <seconds>` ends a running call so the stored-file leg can run
+   without taps. The mac app takes `-healthcheck <peer-ref>` too. A picture
+   row shows a thumbnail (mac: full size on hover); tap/Show shares the file.
 6. **Own-edge relay quality** (investigate; new). They run on n0's public
    relays; we run `idfon-edge`. Verify how iroh selects relay paths, whether
    our edge is preferred/usable mid-call, and how direct→relay fallback reads

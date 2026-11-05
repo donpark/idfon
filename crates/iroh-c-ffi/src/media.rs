@@ -2243,6 +2243,108 @@ mod tests {
         assert_eq!(abs, std::path::PathBuf::from("/var/tmp/x"));
     }
 
+    /// The health card's source of truth (docs/media-adaptation.md §C1): two
+    /// in-process endpoints — publish through `start_live`, subscribe through
+    /// the entry the shells call — yield a readable record *mid-call*, and
+    /// `media_live_stop` folds it into the report `/health-check` files under
+    /// the peer. Also pins the read-and-clear hand-off: one record ships once.
+    #[test]
+    fn live_call_serves_a_health_record_midcall_and_at_hangup() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
+        unsafe extern "C" fn discard(
+            _: *const std::ffi::c_void,
+            _: *const u8,
+            _: usize,
+            _: u32,
+            _: u32,
+            _: u64,
+        ) {
+        }
+        assert_eq!(
+            super::media_audio_set_playback_cb(std::ptr::null(), discard),
+            0
+        );
+
+        let ticket_text =
+            super::start_live(true, false, false, None, AudioCodec::Opus, 48_000, 1)
+                .expect("publish");
+        // An id-only ticket resolves through pkarr/mDNS; talk to the publisher
+        // directly, the way a contact's stored `endpoint-addr` does.
+        let mut ticket = super::LiveTicket::deserialize(&ticket_text).expect("ticket");
+        ticket.endpoint = super::LIVE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .live
+            .endpoint()
+            .addr();
+        let addrs = serde_json::to_string(&ticket.endpoint).expect("addrs json");
+        assert_eq!(super::subscribe_inner(&ticket_text, Some(&addrs)), 0, "subscribe");
+
+        std::thread::spawn(|| {
+            for _ in 0..150u32 {
+                let frame = vec![0.05f32; 960];
+                super::media_audio_push_frames(frame.as_ptr(), 960, 1);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+
+        // Playback starts once the decoder has frames; the record has something
+        // to fold from that point (deadlock guard, not a latency budget).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+        while super::media_live_state() != super::SUB_PLAYING
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(
+            super::media_live_state(),
+            super::SUB_PLAYING,
+            "subscriber never started playing"
+        );
+        // The sampler ticks twice a second: one tick with audio in it.
+        std::thread::sleep(std::time::Duration::from_millis(1_500));
+
+        let live_json = crate::health::media_health_live_report().to_str().to_string();
+        let live: idfon_media::health::CallRecord =
+            serde_json::from_str(&live_json).expect("mid-call record JSON");
+        assert!(live.duration_ms > 0, "mid-call duration: {live_json}");
+        assert!(!live.timeline.is_empty(), "mid-call timeline: {live_json}");
+        assert!(live.audio.frames > 0, "mid-call audio stats: {live_json}");
+        assert!(
+            !live.path_switches.is_empty(),
+            "the path the call started on: {live_json}"
+        );
+
+        super::media_live_stop();
+        let ended_json = crate::health::media_health_last_report().to_str().to_string();
+        let ended: idfon_media::health::CallRecord =
+            serde_json::from_str(&ended_json).expect("hangup record JSON");
+        assert!(ended.duration_ms >= live.duration_ms, "{ended_json}");
+        assert!(
+            !ended.timeline.is_empty() && ended.audio.frames > 0,
+            "{ended_json}"
+        );
+        assert!(
+            crate::health::media_health_live_report().to_str().is_empty(),
+            "no sampling runs after the stop"
+        );
+        assert!(
+            crate::health::media_health_last_report().to_str().is_empty(),
+            "the record ships exactly once"
+        );
+
+        super::media_live_unsubscribe();
+        super::media_audio_clear_playback_cb();
+        if let Some(live) = super::SUBSCRIBER_LIVE.lock().unwrap().take() {
+            super::tokio_executor(live.shutdown());
+        }
+    }
+
     /// The stereo E2E without hardware (docs/stereo-calls.md): a shell-pushed
     /// L=440 / R=880 Hz tone through the real MoQ publish → decode path must
     /// arrive with channel separation intact. Direct addressing keeps it

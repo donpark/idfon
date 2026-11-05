@@ -364,6 +364,8 @@ final class VideoCall: NSObject {
                     id = peerRef
                 }
                 apply(.resolve(peer: id))
+                // The health record is filed per peer: key it by the id.
+                callPeer = id
                 // Registry entry for Idfon's authorization/session lifecycle;
                 // Swift owns capture while the media bridge owns transport.
                 let identity = (try? await client.status())?.1 ?? "default"
