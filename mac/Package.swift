@@ -14,7 +14,11 @@ let package = Package(
     platforms: [.macOS(phonon ? "15.0" : "14.0")],
     dependencies: [
         // On-device speech models: Parakeet (ASR) + Kokoro (TTS).
-        .package(url: "https://github.com/FluidInference/FluidAudio", .upToNextMinor(from: "0.17.5")),
+        // Fork branch carried until FluidInference/FluidAudio#1109 merges: it adds
+        // `setEncoderOutputCallback` (raw encoder outputs), which the tap path needs.
+        // Keep it level with upstream by merging `FluidInference/FluidAudio` main into
+        // `donpark/FluidAudio:encoder-output-callback` periodically; tag the fork at release.
+        .package(url: "https://github.com/donpark/FluidAudio", branch: "encoder-output-callback"),
         // The turn-taker's Swift runtime (shared with iOS; MLX tier on mac).
         .package(path: "../ports/tyger-swift"),
     ]
