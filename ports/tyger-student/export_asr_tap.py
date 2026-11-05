@@ -63,18 +63,20 @@ def load_torch(model_id, device="cpu"):
     return proc, model
 
 
-def example_inputs(pass_cfg: PassConfig = REFERENCE, tier: Tier = TIER_560):
+def example_inputs(pass_cfg: PassConfig = REFERENCE, tier: Tier = TIER_560,
+                   batch: int = 1, depth: int = 24):
     return (
-        torch.zeros(1, 128, tier.total_mel),
-        torch.tensor([tier.total_mel], dtype=torch.int32),
-        torch.zeros(1, 24, pass_cfg.left, 1024),
-        torch.zeros(1, 24, 1024, 8),
-        torch.tensor([1], dtype=torch.int32),
-        torch.tensor([101], dtype=torch.int32),
+        torch.zeros(batch, 128, tier.total_mel),
+        torch.full((batch,), tier.total_mel, dtype=torch.int32),
+        torch.zeros(batch, depth, pass_cfg.left, 1024),
+        torch.zeros(batch, depth, 1024, 8),
+        torch.full((batch,), 1, dtype=torch.int32),
+        torch.full((batch,), 101, dtype=torch.int32),
     )
 
 
-def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL):
+def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL,
+             batch: int = 1, depth: int = 24):
     """The fields `StreamingNemotronAsrManager` reads; the cache depth is the artifact's.
 
     The earlier 70-vs-42 mismatch was `cache_channel_shape[2]` (70, the 56/0 pass's
@@ -91,8 +93,8 @@ def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL):
         "chunk_ms": tier.ms,
         "vocab_size": 1024,
         "blank_idx": 1024,
-        "cache_channel_shape": [1, 24, cache_depth, 1024],
-        "cache_time_shape": [1, 24, 1024, 8],
+        "cache_channel_shape": [batch, depth, cache_depth, 1024],
+        "cache_time_shape": [batch, depth, 1024, 8],
         "decoder_hidden": int(cfg.decoder_hidden_size),
         "decoder_layers": int(cfg.num_decoder_layers),
         "encoder_dim": 1024,
@@ -100,30 +102,36 @@ def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL):
 
 
 def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=False,
-           pass_cfg: PassConfig = REFERENCE, tier: Tier = TIER_560):
+           pass_cfg: PassConfig = REFERENCE, tier: Tier = TIER_560, batch: int = 1,
+           depth: int = 24, prefix_only: bool = False):
     import coremltools as ct
 
     out_dir.mkdir(parents=True, exist_ok=True)
     wrapper = StreamingTapEncoder(model, pass_cfg=pass_cfg, tier=tier,
-                                  tap_index=TAP_INDEX).eval()
+                                  tap_index=TAP_INDEX, batch=batch, depth=depth,
+                                  prefix_only=prefix_only).eval()
     with torch.no_grad():
-        traced = torch.jit.trace(wrapper, example_inputs(pass_cfg, tier), strict=False)
+        traced = torch.jit.trace(wrapper, example_inputs(pass_cfg, tier, batch, depth),
+                                 strict=False)
     inputs = [
-        ct.TensorType(name="mel", shape=(1, 128, tier.total_mel), dtype=np.float32),
-        ct.TensorType(name="mel_length", shape=(1,), dtype=np.int32),
-        ct.TensorType(name="cache_channel", shape=(1, 24, pass_cfg.left, 1024), dtype=np.float32),
-        ct.TensorType(name="cache_time", shape=(1, 24, 1024, 8), dtype=np.float32),
-        ct.TensorType(name="cache_len", shape=(1,), dtype=np.int32),
-        ct.TensorType(name="prompt_id", shape=(1,), dtype=np.int32),
+        ct.TensorType(name="mel", shape=(batch, 128, tier.total_mel), dtype=np.float32),
+        ct.TensorType(name="mel_length", shape=(batch,), dtype=np.int32),
+        ct.TensorType(name="cache_channel", shape=(batch, depth, pass_cfg.left, 1024),
+                      dtype=np.float32),
+        ct.TensorType(name="cache_time", shape=(batch, depth, 1024, 8), dtype=np.float32),
+        ct.TensorType(name="cache_len", shape=(batch,), dtype=np.int32),
+        ct.TensorType(name="prompt_id", shape=(batch,), dtype=np.int32),
     ]
     outputs = [
-        ct.TensorType(name="encoded", dtype=np.float32),
         ct.TensorType(name="tap_l4", dtype=np.float32),
         ct.TensorType(name="cache_channel_out", dtype=np.float32),
         ct.TensorType(name="cache_time_out", dtype=np.float32),
         ct.TensorType(name="cache_len_out", dtype=np.int32),
-        ct.TensorType(name="encoded_length", dtype=np.int32),
     ]
+    if not prefix_only:
+        outputs = [ct.TensorType(name="encoded", dtype=np.float32)] + outputs + [
+            ct.TensorType(name="encoded_length", dtype=np.int32),
+        ]
     ml = ct.convert(
         traced,
         inputs=inputs,
@@ -154,10 +162,13 @@ def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=
         tag = f"{pass_cfg.left}-{pass_cfg.lookahead}_{tag}"
     if tier != TIER_560:
         tag = f"{tag.replace(precision, f'{tier.ms}ms_{precision}', 1)}"
+    if prefix_only:
+        tag = f"{tag}_l{depth}b{batch}"
     path = out_dir / f"encoder_tap_{tag}.mlpackage"
     ml.save(str(path))
     size = sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
-    meta = metadata(model, tier, pass_cfg.left, model_id)
+    meta = metadata(model, tier, pass_cfg.left, model_id, batch, depth)
+    meta["prefix_only"] = prefix_only
     (out_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
     print(f"saved {path}  {size/1e6:.1f} MB ({size} bytes)")
     print(f"metadata: {tier.ms} ms, chunk_mel_frames {tier.mel_frames}, "
@@ -400,6 +411,10 @@ def main():
     ap.add_argument("--int8", action="store_true", help="quantize weights to int8 per-channel (the shipping form)")
     ap.add_argument("--chunk-ms", type=int, default=560, choices=sorted(TIERS),
                     help="chunk tier: 560 (shipping) or 320 (probe)")
+    ap.add_argument("--batch", type=int, default=1, help="independent streams per call")
+    ap.add_argument("--depth", type=int, default=24, help="encoder layers to run (tap requires >= 4)")
+    ap.add_argument("--prefix-only", action="store_true",
+                    help="stop at the tap: no encoded/prompt projector; prefix caches")
     ap.add_argument("--out", default="bench-results/asr-tap")
     ap.add_argument("--fixture", default=None)
     ap.add_argument("--session-id", default=None, help="dualturn val session for the shard gate")
@@ -417,10 +432,18 @@ def main():
     if args.export or args.selfcheck:
         proc, model = load_torch(args.model, args.device)
         precision, int8 = ("fp32", False) if args.selfcheck else (args.precision, args.int8)
+        if args.prefix_only and args.gate:
+            ap.error("a prefix artifact has no `encoded`; gate it with batched_ears.py")
+        if args.depth < 24 and not args.prefix_only:
+            ap.error("a layer-truncated graph has no `encoded`; pass --prefix-only")
         path, size = export(model, Path(args.out), precision, args.model, int8,
-                            PASSES[args.pass_], TIERS[args.chunk_ms])
-        if args.gate is None:
+                            PASSES[args.pass_], TIERS[args.chunk_ms],
+                            batch=args.batch, depth=args.depth,
+                            prefix_only=args.prefix_only)
+        if args.gate is None and not args.prefix_only:
             args.gate = str(path)
+        if args.prefix_only:
+            return
     if args.gate:
         args.precision_gate = Path(args.gate).stem.replace("encoder_tap_", "")
         results = gate(Path(args.gate), args)

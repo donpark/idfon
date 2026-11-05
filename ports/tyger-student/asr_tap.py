@@ -136,19 +136,26 @@ TIER_320 = Tier(mel_frames=32)
 TIERS = {t.ms: t for t in (TIER_560, TIER_320)}
 
 
-def rel_shift(attn_scores: torch.Tensor, heads: int, q: int, p: int) -> torch.Tensor:
+def rel_shift(attn_scores: torch.Tensor, heads: int, q: int, p: int,
+              batch: int = 1) -> torch.Tensor:
     """Transformer-XL relative-position shift (HF `_rel_shift`). Static dims on purpose:
     tensor-derived ints become aten::Int(size) nodes the Core ML frontend cannot fold."""
     attn_scores = F.pad(attn_scores, (1, 0))
-    attn_scores = attn_scores.reshape(1, heads, -1, q)
-    return attn_scores[:, :, 1:].reshape(1, heads, q, p)
+    attn_scores = attn_scores.reshape(batch, heads, -1, q)
+    return attn_scores[:, :, 1:].reshape(batch, heads, q, p)
 
 
 class StreamingTapEncoder(nn.Module):
-    """The ASR encoder as a static-shape graph: caches in, encoded + tap_l4 out."""
+    """The ASR encoder as a static-shape graph: caches in, encoded + tap_l4 out.
+
+    `batch` stacks independent streams (independent caches); `depth` runs only the
+    first layers, with `prefix_only` dropping `encoded` and the prompt projector.
+    The tap is the same tensor either way: layers above the tap cannot affect it.
+    """
 
     def __init__(self, model, pass_cfg: PassConfig = REFERENCE, tap_index: int = 4,
-                 tier: Tier = TIER_560):
+                 tier: Tier = TIER_560, batch: int = 1, depth: int = 24,
+                 prefix_only: bool = False):
         super().__init__()
         self.model = model
         self.enc = model.encoder
@@ -156,7 +163,11 @@ class StreamingTapEncoder(nn.Module):
         self.tier = tier
         self.cache_size = pass_cfg.left
         self.tap_index = tap_index  # hidden_states[tap_index] == output of layer tap_index-1
+        self.batch = batch
+        self.depth = depth
+        self.prefix_only = prefix_only
         assert self.enc.config.num_hidden_layers == 24
+        assert 1 <= tap_index <= depth <= self.enc.config.num_hidden_layers, (tap_index, depth)
         probe = torch.zeros(1, tier.chunk_frames, self.enc.config.hidden_size)
         self.register_buffer("pos_emb", self.enc.encode_positions(probe, cached_frames=self.cache_size))
         eye = torch.eye(self.model.config.num_prompts)
@@ -200,39 +211,44 @@ class StreamingTapEncoder(nn.Module):
         return sub.linear(x.transpose(1, 2).flatten(2))
 
     def key_mask(self, cache_len):
-        """chunked_limited key mask [T, C+T]: which of the `cache | chunk` keys each query sees.
+        """chunked_limited key mask [T, C+T] (batch 1) or [B, T, C+T]: which of the
+        `cache | chunk` keys each query sees.
 
         Split out of `_attention` so the geometry is assertable without a model: the 42/13
         defect was a mask that no test compared against the documented block pattern.
         """
         C, T = self.cache_size, self.tier.chunk_frames
-        kv = torch.arange(C + T, device=self.query_lo.device, dtype=torch.float32)[None, :]
-        return (
-            (kv >= self.query_lo[:, None])  # left edge of the allowed blocks
-            & (kv <= self.query_hi[:, None])  # end of the query's own block (lookahead)
-            & (kv >= C - cache_len.float())  # drop unfilled cache slots (manager seeds 1)
-            & (self.key_group[None, :] <= self.query_group[:, None])  # chunked_limited blocks
+        kv = torch.arange(C + T, device=self.query_lo.device, dtype=torch.float32)[None, None, :]
+        cl = cache_len.reshape(-1, 1, 1).float()  # [B,1,1]; per-stream cache length
+        mask = (
+            (kv >= self.query_lo[None, :, None])  # left edge of the allowed blocks
+            & (kv <= self.query_hi[None, :, None])  # end of the query's own block (lookahead)
+            & (kv >= C - cl)  # drop unfilled cache slots (manager seeds 1)
+            & (self.key_group[None, None, :] <= self.query_group[None, :, None])  # blocks
         )
+        return mask[0] if self.batch == 1 else mask
 
     def _attention(self, attn, h, cache_ch, cache_len):
-        C, T = self.cache_size, self.tier.chunk_frames
+        C, T, B = self.cache_size, self.tier.chunk_frames, self.batch
         heads, kv_heads, hd_ = attn.config.num_attention_heads, attn.config.num_key_value_heads, attn.head_dim
-        keys = torch.cat([cache_ch, h], dim=1)  # [1,C+T,D]
-        q = attn.q_proj(h).view(1, T, heads, hd_).transpose(1, 2)
-        k = attn.k_proj(keys).view(1, C + T, kv_heads, hd_).transpose(1, 2)
-        v = attn.v_proj(keys).view(1, C + T, kv_heads, hd_).transpose(1, 2)
+        keys = torch.cat([cache_ch, h], dim=1)  # [B,C+T,D]
+        q = attn.q_proj(h).view(B, T, heads, hd_).transpose(1, 2)
+        k = attn.k_proj(keys).view(B, C + T, kv_heads, hd_).transpose(1, 2)
+        v = attn.v_proj(keys).view(B, C + T, kv_heads, hd_).transpose(1, 2)
 
         q_u = q + attn.bias_u.view(1, -1, 1, attn.head_dim)
         q_v = q + attn.bias_v.view(1, -1, 1, attn.head_dim)
         rel = attn.relative_k_proj(self.pos_emb).view(1, -1, heads, hd_)
         bd = q_v @ rel.permute(0, 2, 3, 1)
-        bd = rel_shift(bd, heads, T, 2 * (C + T) - 1)[..., : C + T] * attn.scaling
+        bd = rel_shift(bd, heads, T, 2 * (C + T) - 1, B)[..., : C + T] * attn.scaling
 
-        bd = bd.masked_fill(~self.key_mask(cache_len)[None, None], float("-inf"))
+        mask = self.key_mask(cache_len)
+        mask = mask[None, None] if mask.dim() == 2 else mask[:, None]
+        bd = bd.masked_fill(~mask, float("-inf"))
 
         scores = (q_u @ k.transpose(2, 3)) * attn.scaling + bd
         probs = F.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
-        out = (probs @ v).transpose(1, 2).reshape(1, T, heads * hd_)
+        out = (probs @ v).transpose(1, 2).reshape(B, T, heads * hd_)
         return attn.o_proj(out)
 
     def _conv(self, conv, h, cache_t):
@@ -251,7 +267,7 @@ class StreamingTapEncoder(nn.Module):
         h = self._subsample(mel, mel_length) * self.enc.input_scale
         new_ch, new_t = [], []
         tap = None
-        for i, block in enumerate(self.enc.layers):
+        for i, block in enumerate(self.enc.layers[: self.depth]):
             residual = h
             h = residual + 0.5 * block.feed_forward1(block.norm_feed_forward1(h))
             attn_in = block.norm_self_att(h)
@@ -266,21 +282,26 @@ class StreamingTapEncoder(nn.Module):
                 tap = h
         cache_channel_out = torch.stack(new_ch, dim=1)
         cache_time_out = torch.stack(new_t, dim=1)
+        tap_rows = tap[:, 1:].transpose(1, 2)  # drop the context row -> `keep` new frames
+        cache_len_out = torch.clamp(cache_len.float() + self.tier.chunk_frames,
+                                    max=self.cache_size).to(torch.int32)
+        if self.prefix_only:
+            # layers above the tap cannot change it; stopping here is exact, not a
+            # re-encode. Only the prefix's own caches are needed by the next call.
+            return tap_rows, cache_channel_out, cache_time_out, cache_len_out
 
-        kept = h[:, 1:]  # drop the context row -> 7 new frames (featurize_tap.tap())
+        kept = h[:, 1:]
         onehot = self.prompt_eye.index_select(0, prompt_id.to(torch.int32))
         fused = self.model.prompt_projector(
             torch.cat([kept, onehot[:, None, :].expand(-1, self.tier.keep, -1)], dim=-1)
         )
-        cache_len_out = torch.clamp(cache_len.float() + self.tier.chunk_frames,
-                                    max=self.cache_size).to(torch.int32)
         lengths = mel_length
         for _ in range(3):
             lengths = torch.div(lengths.float() + 2, 2, rounding_mode="floor") + 1
         encoded_length = torch.clamp(lengths.to(torch.int32) - 1, min=0)
         return (
             fused.transpose(1, 2),
-            tap[:, 1:].transpose(1, 2),
+            tap_rows,
             cache_channel_out,
             cache_time_out,
             cache_len_out,

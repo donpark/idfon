@@ -1443,6 +1443,161 @@ ports/tyger-student/.venv/bin/python ports/tyger-student/playback_ear.py \
 debug aid; the RSS delta is re-measured in a child process because freed pages never
 return to the parent.
 
+### Batched ears and the silent-ear cache on the 320 ms prefix (2026-11-05, #132/#102)
+
+**Verdict first: batching is exact — per-ear tap rows are bit-identical (cos 1.0,
+max|d| 0.0) between one 2-slot call and two un-batched calls, in fp32 and in the
+shipping fp16/int8w form. The silent-ear cache is *not* valid in a streaming pass as
+stated: digital silence is not a fixed point until the prefix has run ~41 chunks
+(13.1 s) of continuous silence. Reusing chunk 1's cache when speech returns lands at
+cos 0.871 / rel-L2 0.51 against a continuously-fed stream — a shortcut that changes
+features. From that fixed point onward reuse is bit-exact, but reaching it costs more
+than the pauses it would save.**
+
+Why this was worth measuring: tyger-s2s's ears engine stops the encode at L15 with a
+forward hook, batches equal-length windows, and caches an all-zero window once per
+length (`asr.py:15,27-32,65-68`, `constants.py: L15`). Our shape is different in the
+one way that matters for the third trick: a **streaming prefix** carries a cache across
+chunks, so an all-zero window is not a stateless re-encode. Harness:
+`ports/tyger-student/batched_ears.py` (`--selfcheck`); export path is
+`export_asr_tap.py --prefix-only --batch N --depth 4 --chunk-ms 320 --pass shipping`.
+
+**The prefix artifact.** Layers 0–3 with `tap_l4` as the only value output; no
+`encoded`, no prompt projector, and caches only for the layers that exist
+(`[B,4,42,1024]` channel, `[B,4,1024,8]` time) because layers 4–23 cannot change the
+tap. `--batch 2` makes those `[2,4,…]`; each slot threads its own cache — the second
+slot is not a copy of the first. No 0–3 artifact from the sibling refit work existed
+when this started, so this run exported its own pair; the truncation itself is exact,
+not approximate (torch prefix vs the full 24-layer graph, `max|d| 0.0`). The full
+encoder batched is also supported by the same flag, but is not what this study costs.
+
+| artifact (320 ms, 42/13, `bench-results/asr-prefix-320/`) | bytes |
+| --- | ---: |
+| `encoder_tap_42-13_320ms_fp16_int8w_l4b1.mlpackage` | 102,004,689 |
+| `encoder_tap_42-13_320ms_fp16_int8w_l4b2.mlpackage` | 102,003,748 |
+| `encoder_tap_42-13_320ms_fp32_l4b1.mlpackage` | 406,314,835 |
+| `encoder_tap_42-13_320ms_fp32_l4b2.mlpackage` | 406,313,894 |
+| *shipping 24-layer full encoder, for scale* | 593,446,155 |
+
+The b2 file is 941 B smaller than b1: the weights dominate and are shared, so two
+ears in one file costs nothing in footprint. Per-ear cache memory is **0.78 MiB**
+(4 × 42 × 1024 fp32 + 4 × 1024 × 8 fp32), not the 4.7 MiB of a 24-layer cache set.
+
+**Batching equality: per ear, per chunk, one 2-slot call vs two un-batched calls.**
+Both ears are different real audio (the runtime fixture and a live capture's agent
+channel); caches start at the manager's `cache_len = 1` and are threaded for 12 chunks.
+The table is the shipping int8w artifact with ANE; the fp32 pair and the torch wrapper
+pair give the same result, and fp32's worst row is identical.
+
+| chunk | ear A cos | A max\|d\| | ear B cos | B max\|d\| |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 1 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 2 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 3 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 4 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 5 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 6 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 7 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 8 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 9 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 10 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+| 11 | 1.000000000 | 0.0 | 1.000000000 | 0.0 |
+
+Worst over the whole run: **cos 1.0 / max|d| 0.0, bitwise equal** — true for fp32
+(406 MB pair) and for fp16/int8w (102 MB pair), and for the torch batch-2 wrapper vs
+two batch-1 wrappers. A batched graph that differed numerically would not be a win;
+this one does not differ.
+
+**Silent-ear cache: the streaming pass does not have the windowed pass's property.**
+Feed the prefix the same constant digital-silence mel every chunk (a constant input is
+the strongest case for reuse) and compare each chunk's released tap rows and caches
+with the fixed point reached at chunk 79:
+
+| chunk | tap cos vs final | tap max\|d\| | tap rel-L2 | cache-channel cos vs final |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.80943156 | 33.03 | 0.625 | 0.278 |
+| 1 | 0.85692240 | 25.19 | 0.539 | 0.413 |
+| 2 | 0.86139491 | 27.75 | 0.530 | 0.516 |
+| 4 | 0.86945684 | 29.25 | 0.513 | 0.680 |
+| 8 | 0.87098708 | 29.81 | 0.510 | 0.906 |
+| 12 | 0.96191708 | 12.19 | 0.277 | 0.944 |
+| 16 | 0.98236545 | 7.375 | 0.189 | 0.980 |
+| 20 | 0.99637815 | 3.125 | 0.085 | 0.994 |
+| 24 | 0.99920869 | 1.438 | 0.040 | 0.999 |
+| 28 | 0.99991604 | 0.4375 | 0.013 | 0.9999 |
+| 32 | 0.99999599 | 0.125 | 0.0028 | 0.999997 |
+| 36 | 0.99999987 | 0.0625 | 0.0005 | 1.000000 |
+| 40 | 0.99999999 | 0.0156 | 0.00015 | 1.000000 |
+| 41 | 1.00000000 | 0.0 | 0.0 | 1.000000 |
+
+The answers to the three questions:
+
+- **(a) Tap rows are not identical across chunks.** They drift for 41 chunks. The
+  per-chunk change is already small by chunk 7 (cos to previous 0.9999) but the
+  absolute error against the fixed point is still ~30 at chunk 8 — cosine hides it.
+  The `cache_len` saturates at 42 on chunk 8; that is not the settling time.
+- **(b) The caches converge, but slowly and asymptotically.** The time cache settles
+  first (chunk 40 to 2e-3), the channel cache at chunk 34; both are still moving at
+  chunk 24 (channel cos 0.999, max|d| 0.047). The deep-layer attention/conv stack is
+  an IIR, so a cold-start transient has a long tail even after the mask stops widening.
+- **(c) Reusing chunk 1 is invalid.** Holding chunk 1's cache through the silent
+  middle and then feeding speech gives **cos 0.871 / max|d| 21.5 / rel-L2 0.51**
+  against feeding every silent chunk (int8w). The chunk-1 cache is 0.41 cosine to the
+  fixed-point channel cache — half the feature vector's magnitude is wrong. Reusing
+  from the fixed point is valid: at chunk 41 the held cache gives a **bit-identical**
+  speech tap (fp32 control: 9.4e-5 max|d| from chunk 37).
+
+So the honest form of the trick is: *you may reuse the silent-ear result only after
+~37–41 chunks of continuous digital silence, and then only because the cache has reached
+a true fixed point.* You have already paid the encoder for all of those chunks, and any
+real near-silence (mic noise, playback residual, a non-zero mel floor) is not a fixed
+point at all. It is not a per-length shortcut and it does not help ordinary pauses.
+
+The fp32 export on CPU reproduces the same shape (stable at chunk 37, cos 0.9999 at
+chunk 29, bitwise at 41; reactivation from chunk 1 cos 0.872, from chunk 37 cos 1.0 /
+9.4e-5). The effect is semantic, not a quantization artefact.
+
+**Cost per 320 ms period** (Mac M4 Pro, 64 GB; Core ML `CPU_AND_NE`; median of 50
+calls after 5 warm; load average 3.5, 3.0–4.6 across three repeats; another process may
+share the ANE):
+
+| shape | p50 ms / period | duty |
+| --- | ---: | ---: |
+| two separate un-batched predictions | 3.63 | **1.14%** |
+| one batched prediction (2 slots) | 2.22 | **0.69%** |
+| batched shape, other ear silent (one un-batched prediction) | 1.84 | **0.58%** |
+| CPU control, same three shapes | 7.90 / 4.72 / 3.93 | 2.47% / 1.48% / 1.23% |
+
+Batching saves 1.41 ms per period (1.63× over two calls) for 941 B of artifact; it is
+1.21× a single call, i.e. the second slot is nearly free because the 4-layer graph is
+latency-floor-bound. The "silent-ear shortcut" is just the one-call row, because a
+fixed-shape B=2 graph cannot skip a slot; if *both* ears are silent the honest cost is
+0 (no call), which needs no cache trick. An earlier pass at load ~4 measured
+2.4/2.8 ms instead of 1.8/2.2; the ratios held (1.8× vs 1.63×), so treat the absolute
+milliseconds as contention-affected and the duty ordering as the result.
+
+**What an iPhone number requires.** These are host numbers, not device numbers. A
+device claim needs the same two artifacts run on an iPhone through Core ML (ANE) at
+the 320 ms cadence with the 24-layer ASR manager resident, reporting per-call p50/p95,
+ANE contention with the ASR pass, RSS and energy/thermals. A simulator is not a number;
+the 102 MB file is the whole two-ear artifact, so the device question is compute and
+scheduling, not download size. Nothing here changes a threshold, a rule, the app or
+the fork.
+
+Reproduce:
+
+```sh
+ports/tyger-student/.venv/bin/python ports/tyger-student/export_asr_tap.py \
+    --export --prefix-only --batch 1 --depth 4 --chunk-ms 320 --pass shipping \
+    --precision fp16 --int8 --out bench-results/asr-prefix-320
+# repeat with --batch 2 (and --precision fp32 for the control pair)
+ports/tyger-student/.venv/bin/python ports/tyger-student/batched_ears.py --selfcheck
+ports/tyger-student/.venv/bin/python ports/tyger-student/batched_ears.py \
+    --equality --torch --silence --cost --chunks 12 --silent-chunks 80 --units ane \
+    --out bench-results/asr-prefix-320/study.json
+```
+
 ### Barge on the live captures: mode fixed, measured for the first time (2026-11-05, #132/#102)
 
 **Verdict first: the captures do contain real agent-over-caller speech, but only 12 of
