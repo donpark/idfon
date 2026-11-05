@@ -38,6 +38,7 @@ from pathlib import Path
 import numpy as np
 
 from data import save_shard
+from mode_track import frame_modes, mode_at_hop
 from oracle import GRID, HOP, HOP_FRAMES, SR, Oracle, decode_channel, resample16k
 
 DATASET = "anyreach-ai/dualturn-otospeech-turn-taking"
@@ -63,26 +64,16 @@ def count_interrupts(labels, T):
     return int(((labels["bot_ch0"] == 1) & (pre == 2)).sum())
 
 
-def next_speaking_mode(agent_loud, speaking, quiet_hops):
-    """Latch playback as SPEAKING, releasing after seven quiet 320 ms hops."""
-    if agent_loud:
-        return True, 0
-    if not speaking:
-        return False, 0
-    quiet_hops += 1
-    return (True, quiet_hops) if quiet_hops <= 6 else (False, 0)
-
-
 def run_session(oracle, wavs, feature_layers=(15,)):
     """ReferenceEars.feed's paired-stream loop, recording each 80 ms frame.
 
     Open Yap has a partner track rather than actual bot-playback metadata, so infer
-    SPEAKING from agent-channel energy with the trainer's 6-quiet-hop hysteresis.
+    SPEAKING from agent-channel energy (`mode_track.py`: the one derivation the
+    replay harnesses share).
     """
     sess = oracle.EarsSession(0)
     cache = None
-    speaking = False
-    quiet_hops = 0
+    mode_track = frame_modes(oracle.rules.frame_energy(wavs["ch1"]))
     hus, has_, acts, prevs, modes, outs = [], [], [], [], [], []
     extra = {k: ([], []) for k in feature_layers if k != 15}
     events = []
@@ -91,9 +82,8 @@ def run_session(oracle, wavs, feature_layers=(15,)):
     for h in range(n_hops):
         x = (h + 1) * HOP
         hop_u, hop_a = wavs["ch0"][x - HOP:x], wavs["ch1"][x - HOP:x]
-        agent_loud = np.any(oracle.rules.frame_energy(hop_a) > oracle.rules.VAD_DB)
-        speaking, quiet_hops = next_speaking_mode(agent_loud, speaking, quiet_hops)
-        mode = "speaking" if speaking else "listen"
+        mode = mode_at_hop(mode_track, h)
+        speaking = mode == "speaking"
         if oracle.rules.begin_hop(sess, hop_u, hop_a, mode):
             cache = None
         hs_u, hs_a = oracle.encode_hidden(sess.win_u), oracle.encode_hidden(sess.win_a)

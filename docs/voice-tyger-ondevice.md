@@ -1284,6 +1284,139 @@ ports/tyger-student/.venv/bin/python ports/tyger-student/playback_ear.py \
 debug aid; the RSS delta is re-measured in a child process because freed pages never
 return to the parent.
 
+### Barge on the live captures: mode fixed, measured for the first time (2026-11-05, #132/#102)
+
+**Verdict first: the captures do contain real agent-over-caller speech, but only 12 of
+the rules' 57 BARGEs land while the agent is still audible.** With `mode` correct, the
+rules fire BARGE in 12 of the 13 capture files; 6 files (5 distinct conversations) have
+a barge whose agent hop was loud, and 11 of those 12 had the caller voiced at the
+crossing. The other 45 fire in the derived mode's 1.92 s release tail, after the agent
+channel has gone silent — a mode-proxy artifact, not evidence of an interrupt. The claim
+this unblocks is therefore narrow: **barge exists and is detectable on real calls, on
+audio all 13 captures genuinely contain**; it is not yet an acceptance-grade barge set.
+
+**Setup.** The 13 `TurnCapture` stereo wavs behind `bench-results/live-shipping`
+(16 kHz, `ch0` = caller mic, `ch1` = playback). Three pairs share a caller-mic track
+(`ch0` bit-identical: 04:50/05:26, 04:55/05:31, 05:07/05:42) while `ch1` differs
+slightly, so the set is **10 distinct caller-mic tracks**. `TurnCapture`'s sidecar (`agentNonSilent`/
+`agentPeak`) is **absent for all 13** — the field postdates these captures — so agent
+activity was measured directly from `ch1`, which is stronger than the sidecar: all 13
+have non-silent agent audio (92-777 frames above -50 dB), and none is a "silent `ch1` =
+no barge evidence" capture. Thresholds are the frozen live contract
+(ep .88 / barge .5 / bc .3); `barge_thr` is .5 in the teacher's defaults too, so this
+choice does not move the barge count.
+
+**One mode derivation.** `ports/tyger-student/mode_track.py` is now the only place a
+replay decides `mode`: a shard/log `mode` track when present, otherwise the agent
+channel's energy. It groups 80 ms frames into the 320 ms hops the app updates `mode` on
+(`VoiceAgentSession` → `TurnShadow.setMode`), treats a hop as loud when any of its four
+frames is above the rules' own voiced threshold **-50 dB**, latches `speaking`, and
+releases after 6 quiet hops (1.92 s) to bridge pauses inside one agent turn. Nothing is
+fitted on barge outcomes. `featurize.py` now uses the same function, so corpus shards and
+replays cannot drift; any other string than `listen`/`speaking` (notably the old
+`"response"`) is rejected.
+
+**Instrument.** `ports/tyger-student/live_barge.py` (`--selfcheck`) replays each shard's
+recorded live-tier 8-vector through the rules with that mode track, splits BARGEs by
+whether the agent's hop was loud at the crossing, and writes
+`bench-results/live-barge.json`. A per-frame alignment pin asserts the shard's `energy`
+is this wav's `ch0` (max diff 0 in all 13).
+
+| capture | s | agent loud | speaking | inaudible speaking | caller over agent | BARGE | stretches | audible hop | audible frame | onset p50/max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2026-10-25T22:26:49Z | 128 | 496 | 676 | 165 | 49 | 1 | 1 | 1 | 1 | 2.32/2.32s |
+| 2026-10-25T23:13:14Z | 112 | 344 | 632 | 278 | 148 | 11 | 4 | 3 | 2 | 0.32/1.76s |
+| 2026-10-26T03:18:47Z | 77 | 92 | 236 | 139 | 53 | 4 | 2 | 1 | 0 | 1.28/1.28s |
+| 2026-10-26T20:17:43Z | 89 | 344 | 620 | 266 | 84 | 0 | 0 | 0 | 0 | - |
+| 2026-10-26T21:13:38Z | 151 | 453 | 911 | 443 | 105 | 4 | 2 | 0 | 0 | - |
+| 2026-10-26T21:26:00Z | 180 | 697 | 1020 | 295 | 121 | 2 | 1 | 0 | 0 | - |
+| 2026-10-27T04:50:44Z | 173 | 572 | 1112 | 525 | 85 | 9 | 4 | 0 | 0 | - |
+| 2026-10-27T04:55:51Z | 183 | 349 | 860 | 490 | 126 | 5 | 4 | 1 | 1 | 0.96/0.96s |
+| 2026-10-27T05:02:05Z | 180 | 777 | 1160 | 350 | 90 | 1 | 1 | 0 | 0 | - |
+| 2026-10-27T05:07:33Z | 179 | 587 | 864 | 247 | 19 | 4 | 2 | 3 | 1 | 0.56/0.56s |
+| 2026-10-27T05:26:30Z | 173 | 572 | 1116 | 529 | 85 | 10 | 4 | 0 | 0 | - |
+| 2026-10-27T05:31:25Z | 183 | 200 | 544 | 329 | 88 | 2 | 2 | 0 | 0 | - |
+| 2026-10-27T05:42:29Z | 179 | 587 | 872 | 255 | 19 | 4 | 2 | 3 | 1 | 0.56/0.56s |
+
+`agent loud` = frames with `ch1` above -50 dB; `speaking` = derived mode frames;
+`inaudible speaking` = derived speaking frames with `ch1` <= -60 dB (the release tail);
+`caller over agent` = both channels above -50 dB in the same 80 ms frame; `audible hop` =
+BARGEs whose 320 ms hop still had agent audio; `audible frame` = BARGEs with `ch1` above
+-50 dB at the exact crossing frame; `stretches` = speaking runs containing at least one
+BARGE (one interruption per agent stretch — the app switches floor on the first one);
+`onset p50/max` is over `audible hop` events.
+
+**What the numbers say.**
+
+- **Overlap is real and present in every capture**: 1072 frames (85.8 s) of simultaneous
+  caller + agent voicing, 19-174 frames per file. It is not playback leaking into the
+  mic: the best normalized sample correlation between `ch0` and `ch1` over ±100 ms on
+  loud 1 s blocks is **0.209**, and the frame-envelope correlation
+  is ≈0, so the overlap is independent caller speech, not a delayed copy of `ch1`.
+- **BARGE exists once mode is right**: 57 events, 12/13 files, 29 speaking stretches.
+  Before the fix every harness passed `"response"`, so this count was structurally 0.
+- **The audible subset is 12 events in 6 files / 5 distinct conversations**, with the
+  agent hop loud at the crossing; 11/12 had the caller voiced at the event frame, and
+  the sixth file's event (`03:18:47`, caller -56.5 dB) is a yield-head fire during a
+  pause, not a mode error. Six events in 5 files still had `ch1` above -50 dB at the
+  exact 80 ms frame. Onset distribution: **12 audible-hop events, p50 0.56 s, p95 2.01 s,
+  max 2.32 s**; all 57 events p50 0.96 s, p95 2.51 s, max 3.20 s.
+- **The 20:17:43 session has no BARGE despite 344 loud agent frames and 84 overlap
+  frames** — a real overlap the yield head did not cross at .5 (the false-negative side,
+  not "no overlap").
+- **The 45 non-audible firings are the false-positive side of the proxy**: 4311 of the
+  10,623 derived speaking frames (40.6%) have `ch1` <= -60 dB. Those frames sit in the
+  1.92 s release tail, where the app may already be back in `listen`; the yield head
+  fires late on a caller who is still talking. Counting them as interrupts would inflate
+  the barge rate by ~4.75×.
+
+**Sensitivity (derivation only, same rules thresholds).** `release 0` is the strict
+proxy — speaking only on a loud hop — and `release 6` is the app-like latch. `release 2`
+and `6` are identical here. The audible count is the stable number; the total is not.
+
+| mode threshold | BARGE (release 0) | audible hop (release 0) | BARGE (release 6) | audible hop (release 6) |
+|---:|---:|---:|---:|---:|
+| -60 dB | 15 | 12 | 57 | 12 |
+| -55 dB | 12 | 12 | 57 | 12 |
+| **-50 dB (rules' VAD)** | **12** | **12** | **57** | **12** |
+| -45 dB | 12 | 12 | 57 | 12 |
+| -40 dB | 8 | 8 | 57 | 12 |
+
+A barge number that depended on the mode threshold would not be evidence; the audible
+set does not move between -60 and -45 dB, and only the tail count moves with the release.
+The `-40 dB` row loses four audible events because hops whose only loud frame is in
+[-50, -40) are no longer `speaking` at `release 0` — an artifact of conflating the mode
+threshold with the audibility check, not a different barge picture.
+
+**Controls (assert-based, `live_barge.py --selfcheck`).** A synthetic speaking-mode
+replay whose yield head fires emits BARGE (positive); the same frames in `listen` mode
+emit none (negative). `mode_track.py --selfcheck` pins the latch (a single loud frame
+holds speaking for exactly 28 frames, then releases), the recorded-track pass-through,
+and rejects `"response"`.
+
+**Parity harnesses.** Every fixed call site now derives one mode array from the session
+audio and feeds that same per-hop value to both compared sides (`parity5`, `parity6`,
+`parity7`, `l15_tap`), so a parity result cannot become a comparison of two floors. A
+fresh `l15_tap` run on one 2-min dualturn session measured 1499 frames and **25/32
+events aligned (78.1%)**, feature cos 0.867 (mic) / 0.883 (agent) — the same band as the
+published 74.2% on two 3-min sessions. The feature/tap axis is mode-independent (mode
+never enters the tensor math), and the decision axis now runs both sides under one track.
+`parity6`/`parity7` (Core ML) and `parity5` (MLX) were not re-run here because those
+runtimes are not installed on this machine; their code change is the same shared-value
+pass, nothing else. Shards that predate the mode track keep their listen-mode reference
+events: `analyze-openyap-barge.py` now **withholds** event agreement for them rather than
+compare a speaking replay against a listen replay; its yield-catch axis is mode-independent
+and still reported.
+
+**What the derivation cannot know.** The real floor is app-supplied; this is a proxy.
+Playback that was scheduled but did not reach the speaker still reads as `speaking` (the
+capture stores the playback bus, not the room), and agent audio leaking into the mic
+would make caller frames look voiced — measured absent here (max corr 0.209) but not
+guaranteed on other hardware. The 1.92 s release is the trainer's pause bridge, not an
+app turn boundary, which is exactly why the tail count is reported separately and not
+called barges. Finally, the 8-vectors are the recorded live tier's, so these are the
+shipped head's decisions, not a student-vs-teacher comparison.
+
 ### The duplicate-pass precondition
 
 The epic's footprint bar is that turn decisions cost **no second encoder pass**. Nothing
@@ -1321,7 +1454,7 @@ decision, recorded in #132, not a detail.
 | `left` | `0` — `left` only extrapolates a barge's reported `onset_s` (`rules.py:121`); all three candidate policies are decision-identical, and `0` is the only one consistent with the audio timeline |
 | latency bars | unchanged: mean-of-medians ≤ +160 ms, worst-session ≤ +320 ms. Measured at NVIDIA's 560 ms tier: **+173.9 / +179.9**, 23% of endpoints past +320 ms — the bar is **missed**, and that is the open product call |
 | acceptance data | the 8 corpus sessions and the 13 live captures have now been used for fitting, calibration and bar recuts, so they are **development data** whatever their split name. Any acceptance claim needs sessions none of this touched |
-| barge | **unmeasured**, and the reason is now known: replay harnesses passed mode=`"response"` (a stream name), which disables the barge branch. App behaviour was never affected (`VoiceAgentSession` feeds real `listen`/`speaking`). Re-scoring derives `mode` from `ch1` (agent) activity; captures with silent `ch1` carry no barge evidence. No barge claim may be made from any table in this document until that re-score lands |
+| barge | **measured 2026-11-05** with `mode` derived from `ch1` (`mode_track.py`, -50 dB, 6-hop release) and the recorded live-tier 8-vector: 57 BARGEs in 12/13 capture files, of which **12 in 6 files / 5 distinct conversations land while the agent hop is still loud** (11/12 with the caller voiced at the crossing); 45 fire in the mode release tail and are not interrupts. All 13 captures carry 1072 frames of real caller-over-agent voicing (max echo corr 0.209), so the 20:17:43 zero is a miss, not no overlap. Not an acceptance set: no held-out labels, and the app's true floor is the proxy's unknown. See § "Barge on the live captures" |
 
 What is still required before a swap can be judged: a held-out live set, a barge/overlap
 challenge set with both positive and negative cases, playback-ear parity (in flight), and
