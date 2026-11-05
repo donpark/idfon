@@ -27,6 +27,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from data import load_shard, save_shard  # noqa: E402
+from asr_tap import TIERS  # noqa: E402
 from pass_gate import PASSES  # noqa: E402
 
 SR = 16_000
@@ -39,6 +40,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--artifact", required=True)
     ap.add_argument("--pass", dest="pass_", default="shipping", choices=sorted(PASSES))
+    ap.add_argument("--chunk-ms", type=int, default=560, choices=sorted(TIERS),
+                    help="chunk tier; must match the artifact's metadata.json")
     ap.add_argument("--model", default="nvidia/nemotron-3.5-asr-streaming-0.6b")
     args = ap.parse_args()
 
@@ -49,6 +52,11 @@ def main():
     from export_asr_tap import ml_stream
 
     cfg = PASSES[args.pass_]
+    tier = TIERS[args.chunk_ms]
+    side = Path(args.artifact).parent / "metadata.json"
+    if side.exists():
+        have = json.loads(side.read_text()).get("chunk_ms")
+        assert have == tier.ms, f"{side}: chunk_ms {have} != --chunk-ms {tier.ms}"
     proc = AutoProcessor.from_pretrained(args.model)
     from transformers import AutoConfig
     prompt_id = int(getattr(AutoConfig.from_pretrained(args.model), "default_prompt_id", 101))
@@ -69,7 +77,8 @@ def main():
         for ch in (0, 1):
             feats = proc(np.ascontiguousarray(x[:, ch]), sampling_rate=SR,
                          return_tensors="pt")["input_features"].numpy()
-            _, tap, _ = ml_stream(mlmodel, feats, prompt_id=prompt_id, cache_size=cfg.left)
+            _, tap, _ = ml_stream(mlmodel, feats, prompt_id=prompt_id, cache_size=cfg.left,
+                                  tier=tier)
             rows.append(np.concatenate([tap[:1], tap]))
         hu, ha = rows[0][:T], rows[1][:T]
         n = min(T, len(hu), len(ha))

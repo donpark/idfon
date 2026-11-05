@@ -1291,6 +1291,200 @@ $PY ports/tyger-student/harness.py --shards bench-results/tap-shipping-320 \
     --student $MAIN/shared-shipping-refit-fixed/student.pt --tap l4-streaming --temp 0.9 --ep-thr 0.90
 ```
 
+### The 320 refit and a turn-purpose prefix (2026-11-05, #132)
+
+**Verdict first: the refit is a wash, not a rescue.** Re-targeting the `l4-streaming`
+adapter on 320-tap features recovers **1.7 pts** of same-adapter tier stability
+(86.08% → 87.78%) and nothing of the teacher-agreement gap: **57.78% vs the 320 tap's
+57.73% before the refit, against 60.76% for the 560-deployed path** at the frozen corpus
+policy. The product bars are within noise of both (early 10 vs 10, miss 3 vs 3,
+bc recall .27 vs .29, endpoint median .35 vs .30 s). Swapping today's deployed 560 path
+for 320+refit still moves **19.1% of decisions** (80.89% paired, ±2 frames, same kind) at
+the frozen policy. **The 320 prefix is 102,003,481 B (17.2% of the 593 MB full pass) and
+1.82 ms/chunk vs 8.09 on host ANE — bit-identical tap rows (max|d| 0.0) — but it cannot
+produce `encoded`, so it is a turn-path-only artifact.**
+
+Why the refit cannot close the gap is structural, not a training failure: adapter-only
+training changes the decision surface even at *identical* features (the published 16.9 pt
+adapter-transfer gap, `docs/voice-tyger-refit-42-13.md`), so a 320 refit is a *different*
+surface from the deployed one by construction. The 99% A↔B bar was never the right bar
+here; teacher agreement and the product bars are, and on those the tier's cost survives
+the refit.
+
+**Recipe (frozen, unchanged from the 560 refit).** Adapter-only on the frozen trunk:
+`train_shared.py --adapter-only l4-streaming`, warm start `shared-consistent-l03`,
+λ=0.3, `--weights auto`, seed 0, 20 epochs, window 250, lr 1e-3; features through the
+320 artifact as served (fp16 compute + int8 weights), never a torch simulation. 60 train
++ 8 val sessions at 2248 frames (12 min on this host), 13 live captures (2.5 min), 20
+epochs (9 min) — **≈26 min wall**, the bill the previous section estimated.
+
+| check | result |
+|---|---|
+| frozen trunk / decoder / heads | **35 non-adapter tensors byte-identical** to `shared-consistent-l03`; the 4 `adapters.l4-streaming.*` tensors moved (adapter-only did what it says) |
+| weighted loss | 0.16273 → 0.15997 (560 refit: 0.16205 → 0.15981 — same trajectory) |
+| probe weights (auto) | state 1.268 / hazard .906 / barge .683 / bc .853 / endpoint 1.289 — the 560 fit is 1.266 / .911 / .684 / .851 / 1.288, i.e. **the tier does not move the P0 weight basis** |
+| val score gates (320 tap) | state .00765, hazard .00433, barge .00249, bc .00513, **endpoint .02680 ≤ .028**, hold AUC .886 (report-only) — all pass; the 560 refit reads .00774 / .00416 / .00234 / .00511 / .02639 |
+| step export | 5.28 MB fp32, parity max|d| 1.64e-06, 0 flips, 0.047 ms/step; int8 step still 1.27e-2 (FAIL, out of scope as before) |
+
+**Judged on the right bars** (8 val sessions, 2248 frames, both ears; ±2-frame same-kind):
+
+| corpus path | policy | teacher agreement |
+| --- | --- | ---: |
+| 560 deployed (560 tap) | frozen T=.9 / ep .90 | **60.76%** (192/316) |
+| **320 refit (320 tap)** | frozen T=.9 / ep .90 | **57.78%** (182/315) |
+| 320 refit, fresh corpus fit | T=1.0 / ep .9146 | 58.17% (178/306) |
+| 320 un-refit adapter (#180) | frozen T=.9 / ep .90 | 57.73% (183/317) |
+
+| domain | deployed 560 path | 320 refit | fit |
+| --- | ---: | ---: | --- |
+| corpus (8) | 60.76% (192/316) | 57.78% (182/315) | frozen T=.9 / ep .90 (the 320 refit's own corpus fit lands at T=1.0 / ep .9146 / bc .5) |
+| live (13) | 58.82% (260/442) | **59.27%** (259/437) | live T=.8 / ep .90 / barge .5 / bc .3 (deployed live fit: T=.8 / ep .88) |
+
+Per-domain fits are one policy each, as the contract requires. The corpus fit and the
+frozen policy are reported as two rows on purpose: the frozen policy is the like-for-like
+comparator to the deployed path; the fresh fit is what a re-calibration would ship, and
+choosing it *because* it scores better is exactly what the frozen contract forbids.
+
+**Same adapter, both tiers (refit checkpoint, `tap_gate.py --per-kind`).** The refit's own
+tier sensitivity, to be compared with 86.08% for the un-refit adapter:
+
+| kind | 560 (A) | 320 (B) | aligned | only_A | only_B | B earlier/same/later | agree | ±10 recovered |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- |
+| ENDPOINT | 214 | 213 | 191 | 23 | 22 | 28 / 139 / 24 | 89.3% | +18 (36/139/34) |
+| BACKCHANNEL | 95 | 91 | 82 | 13 | 9 | 5 / 75 / 2 | 86.3% | +4 (7/75/4) |
+| **all** | 309 | 304 | **273** | 36 | 31 | — | **87.78%** | — |
+
+Feature drift is unchanged from #180 (cos p50 0.9937 / p05 0.9586): the features did not
+move, only the mapping did.
+
+**The swap as it would ship (`cross_gate.py`, deployed 560 vs 320-refit, frozen policy).**
+This is the number a product decision needs — both features and adapter differ:
+
+| kind | 560 deployed (A) | 320 refit (B) | aligned | only_A | only_B | B earlier/same/later | agree | ±10 recovered |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- |
+| ENDPOINT | 215 | 213 | 179 | 36 | 34 | 25 / 132 / 22 | 83.3% | +24 (34/132/37) → **12 gone at ±10** |
+| BACKCHANNEL | 97 | 91 | 75 | 22 | 16 | 5 / 65 / 5 | 77.3% | +10 (9/65/11) |
+| **all** | 312 | 304 | **254** | 58 | 50 | — | **80.89%** | — |
+
+So a 320 swap is *churnier* than the same-adapter tier effect (19.1% vs 12.2% of the
+refit's decisions move): the tier accounts for ~12 pts and the **refit itself for the
+other ~7** — the adapter-transfer gap showing up again, not a tier artefact.
+
+**Product bars** (`harness.py`, 8 sessions, 44 eot, 1 onset, 375 bc; `ep_lat_s` = mean of
+per-session endpoint medians against the teacher's turn ends):
+
+| feature source | ep_lat_s | early | miss | bc prec | bc rec |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| teacher | 0.48 | 10 | 4 | 0.24 | 0.33 |
+| 560 deployed, frozen | **0.30** | **10** | **3** | **0.26** | **0.29** |
+| **320 refit, frozen** | **0.35** | **10** | **3** | **0.23** | **0.27** |
+| 320 refit, fresh corpus fit | 0.39 | 9 | 3 | 0.22 | 0.25 |
+| 320 un-refit, frozen (#180) | 0.34 | 8 | 3 | 0.25 | 0.28 |
+
+**Not worse than 560-deployed?** On the endpoint bars yes — same early count, same miss
+count, +50 ms median; on backchannels no — recall −2 pts and precision −3 pts. Latency is
+the tier's, not the adapter's: **+100.9 ms mean-of-medians / +100.9 worst / 0-of-10 past
++320** (560: +173.9 / +179.9 / 23%), measured before any refit and unchanged by it — the
+student step is the same 5.28 MB, 0.047 ms/step model. Nothing here is WER: the ASR
+stays at 560 in this shape.
+
+**The prefix: layers 0–3, `tap_l4` only.** `hidden_states[4]` is the output of layers 0–3,
+so a 4-layer export emits the same rows as the full model's `tap_l4` — measured, not
+assumed:
+
+| artifact | bytes | host ANE ms/chunk | outputs |
+| --- | ---: | ---: | --- |
+| `asr-tap-320/encoder_tap_42-13_320ms_fp16_int8w` | 593,311,138 | 8.09–8.11 | encoded, tap_l4, caches, encoded_length |
+| **`asr-prefix-320/encoder_prefix4_42-13_320ms_fp16_int8w`** | **102,003,481** (17.2%) | **1.82** (22.5%) | **tap_l4, caches only** |
+
+Parity over all 565 chunks of one 2248-frame val session, both graphs on host ANE:
+**cos p50 1.00000000, p05 0.99999992, min 0.99999976, max|d| 0.0, mean|d| 0.0** (steady
+and cold-start alike). Bit-identical is the expected result — the prefix *is* layers 0–3 of
+the same int8/fp16 graph — and it is why every decision number above transfers to the
+prefix unchanged. **A prefix cannot produce `encoded`**: the prompt projector, the last 20
+layers and the decoder context are not in it, so it cannot transcribe and must never be
+loaded as the ASR. It is a turn-path artifact, and it exists only because the ASR stays at
+560 — if the ASR itself ran at 320 its own tap would already be these rows.
+
+**The shape, if this ships.** Assets: the 560 ASR full pass (**594 MB**, unchanged) + the
+320 turn prefix (**102 MB**) + the unchanged 5.28 MB student step = **~701 MB**, i.e.
++102 MB over today, and the 320 full-pass artifact is not shipped at all. Per 320 ms
+period the host pays two prefix passes (mic + playback ear, 2 × 1.82 = **3.64 ms**) plus
+the 560 ASR pass amortized (8.1 ms × 320/560 = **4.62 ms**) = **8.3 ms, 2.6% duty**;
+today's shape pays that ASR pass plus a private windowed cut at 14.7–17.4 ms per 320 ms
+hop for both ears, so the prefix *replaces* the cut and is ~12 ms cheaper per hop. Turn
+latency is the tier's **+100.9 ms** mean-of-medians (0/10 past +320). What changes in the
+frozen contract: (1) the encoder artifact row gains a prefix and the *turn* tier becomes
+320 while the ASR stays 560 — the first split-tier row the contract has ever had; (2) the
+tap is no longer the running ASR's own output but a **bit-exact 320 replica** of what a
+320 ASR would emit, so the primary latency bar (+173.9 → +100.9, 23% → 0 of 10) is met
+while the tier's decision churn (19.1% vs the deployed surface) is the price; (3) the
+duplicate-pass precondition is satisfied *differently* — one ASR pass per hop, plus a
+cheap turn pass, not the upstream `#1109` output callback, so that blocker stops gating a
+320 turn path but the epic's "no second encoder pass" wording needs restating as "no
+second *full* pass"; (4) calibration, rules, thresholds, app and fork are unchanged, and
+the 99% interchangeability bar still does not apply (the rows differ by construction).
+
+**What this does not establish.** No held-out set (the 8 corpus sessions and 13 live
+captures are development data), no barge/overlap challenge set, no iPhone number, no
+prefix memory measurement on device, and no WER question — the ASR is untouched. The
+refit's corpus gain is inside the noise of 1–2 events, so "not worse" here means "not
+measurably better either".
+
+Reproduce (all artifacts and shards are gitignored; the 560 and 320 artifact and shard
+sets are read-only inputs and are never overwritten):
+
+```sh
+PY=ports/tyger-student/.venv/bin/python
+MAIN=/Users/don/dev/idfon/bench-results
+A320=$MAIN/asr-tap-320/encoder_tap_42-13_320ms_fp16_int8w.mlpackage
+
+# 1. features through the 320 artifact (60 train + 8 val; val is copied, not re-emitted)
+$PY ports/tyger-student/pass_gate.py --emit-shards $MAIN/tap-shipping-320-refit/train \
+    --pass shipping --chunk-ms 320 --split train --shards $MAIN/tap4-shards/train \
+    --sessions 60 --frames 2248 --wav-cache $MAIN/asr-tap/wav --artifact $A320
+cp $MAIN/tap-shipping-320/*.npz $MAIN/tap-shipping-320-refit/val/
+$PY ports/tyger-student/featurize_live_artifact.py \
+    --wavs "$HOME/Library/Application Support/Idfon/turn-captures" \
+    --shards $MAIN/live-shards-l4-all --out $MAIN/live-shipping-320 \
+    --chunk-ms 320 --artifact $A320
+
+# 2. the refit (adapter-only, frozen trunk) and its fits
+$PY ports/tyger-student/train_shared.py --tap l15-windowed=$MAIN/student-shards \
+    --tap l4-windowed=$MAIN/l4-shards --tap l4-streaming=$MAIN/tap-shipping-320-refit \
+    --init $MAIN/shared-consistent-l03/student.pt --adapter-only l4-streaming --weights auto \
+    --consistency 0.3 --seed 0 --epochs 20 --lr 1e-3 --window 250 \
+    --deploy-tap l4-streaming --out $MAIN/shared-shipping-320-refit
+$PY ports/tyger-student/calibrate.py --shards $MAIN/tap-shipping-320-refit/val \
+    --student $MAIN/shared-shipping-320-refit/student.pt --tap l4-streaming \
+    --temp-grid 0.8,0.9,1.0,1.1,1.25 --out $MAIN/shared-shipping-320-refit/corpus.traits.json
+$PY ports/tyger-student/calibrate.py --shards $MAIN/live-shipping-320 \
+    --student $MAIN/shared-shipping-320-refit/student.pt --tap l4-streaming \
+    --temp-grid 0.8,0.9,1.0,1.1,1.25 --out $MAIN/shared-shipping-320-refit/live.traits.json
+
+# 3. the bars: teacher (gate), product (harness), tier (tap_gate), swap (cross_gate)
+$PY ports/tyger-student/gate.py --shards $MAIN/tap-shipping-320-refit/val \
+    --student $MAIN/shared-shipping-320-refit/student.pt --tap l4-streaming --temp 0.9 --ep-thr 0.90
+$PY ports/tyger-student/harness.py --shards $MAIN/tap-shipping-320-refit/val \
+    --student $MAIN/shared-shipping-320-refit/student.pt --tap l4-streaming --temp 0.9 --ep-thr 0.90
+$PY ports/tyger-student/tap_gate.py --student $MAIN/shared-shipping-320-refit/student.pt \
+    --tap l4-streaming --shards-a $MAIN/tap-shipping-fixed/artifact \
+    --shards-b $MAIN/tap-shipping-320-refit/val --per-kind --temp 0.9 --ep-thr 0.90
+$PY ports/tyger-student/cross_gate.py \
+    --a-student $MAIN/shared-shipping-refit-fixed/student.pt --a-shards $MAIN/tap-shipping-fixed/artifact \
+    --b-student $MAIN/shared-shipping-320-refit/student.pt --b-shards $MAIN/tap-shipping-320-refit/val \
+    --tap l4-streaming --temp 0.9 --ep-thr 0.90 --per-kind
+
+# 4. the turn prefix and its parity
+$PY ports/tyger-student/export_asr_tap.py --export --pass shipping --chunk-ms 320 \
+    --precision fp16 --int8 --prefix-layers 4 --out $MAIN/asr-prefix-320
+$PY ports/tyger-student/export_asr_tap.py \
+    --gate $MAIN/asr-prefix-320/encoder_prefix4_42-13_320ms_fp16_int8w.mlpackage --gate-full $A320 \
+    --pass shipping --chunk-ms 320 --prefix-layers 4 \
+    --session-id d622d1e377001bba8c718a2fbdac0b7b --wav-cache $MAIN/asr-tap/wav \
+    --json $MAIN/asr-prefix-320/parity.json
+```
+
 ### The playback ear: `ha` from the same encoder (2026-11-05, #132/#102)
 
 **Verdict first: yes — the playback ear can move off the cut at the same fidelity as the
