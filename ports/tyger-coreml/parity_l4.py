@@ -78,7 +78,8 @@ def main():
 
     models = {}
     for name, rel in (("fp32", "bench-results/coreml-l4-fp32/TygerEncoderL4.mlpackage"),
-                      ("fp16", "bench-results/coreml-l4/TygerEncoderL4.mlpackage")):
+                      ("fp16", "bench-results/coreml-l4/TygerEncoderL4.mlpackage"),
+                      ("q8", "bench-results/coreml-l4-q8/TygerEncoderL4Q8.mlpackage")):
         p = ROOT / rel
         if p.exists():
             models[name] = ct.models.MLModel(str(p), compute_units=ct.ComputeUnit.CPU_ONLY)
@@ -120,8 +121,9 @@ def main():
         e = events(student_vecs(model, got, got, energy, oracle, args.device), energy, oracle)
         hit = sum(1 for f, kind in e_ref
                   if any(abs(f - g) <= 2 and kind == k2 for g, k2 in e))
-        print(f"  {name}: {len(e)} events, {hit}/{max(len(e_ref), len(e))} aligned "
-              f"({hit / max(len(e_ref), len(e)) * 100:.1f}%)")
+        denom = max(len(e_ref), len(e))
+        pct = hit / denom * 100 if denom else 100.0
+        print(f"  {name}: {len(e)} events, {hit}/{denom} aligned ({pct:.1f}%)")
 
 
 if __name__ == "__main__":
