@@ -116,12 +116,25 @@ def main() -> None:
         if (src / name).exists():
             os.symlink((src / name).resolve(), out / name)
     meta = json.loads((src / "metadata.json").read_text())
-    depth = int(ct.models.MLModel(str(tap)).get_spec().description.input[2]
-                .type.multiArrayType.shape[2])
+    spec = ct.models.MLModel(str(tap)).get_spec()
+    depth = int(spec.description.input[2].type.multiArrayType.shape[2])
     meta["cache_channel_shape"] = [1, 24, depth, 1024]
+    # A non-560 tier ships its own sidecar next to the artifact (chunk length is a
+    # manager input, not a constant). The cache depth always comes from the model.
+    side = tap.parent / "metadata.json"
+    if side.exists():
+        tie = json.loads(side.read_text())
+        for key in ("chunk_mel_frames", "chunk_ms", "total_mel_frames",
+                    "pre_encode_cache", "cache_time_shape", "cache_channel_shape"):
+            if key in tie:
+                meta[key] = tie[key]
+        assert meta["cache_channel_shape"] == [1, 24, depth, 1024], meta
+    total_mel = int(meta["total_mel_frames"])
     (out / "metadata.json").write_text(json.dumps(meta, indent=2))
     print(f"metadata: cache_channel_shape -> {meta['cache_channel_shape']} "
-          f"(artifact depth {depth})")
+          f"(artifact depth {depth}), chunk {meta.get('chunk_mel_frames')} mel / "
+          f"{meta.get('chunk_ms')} ms, total {total_mel} "
+          f"(chunkSamples {int(meta['chunk_mel_frames']) * 160})")
 
     # Copy the package (weights included), patch only the program protobuf, then
     # compile it so the staged dir holds a real .mlmodelc like the shipping one.
@@ -141,10 +154,10 @@ def main() -> None:
 
     if args.verify:
         rng = np.random.default_rng(0)
-        mel = rng.standard_normal((1, 128, 65)).astype(np.float32)
+        mel = rng.standard_normal((1, 128, total_mel)).astype(np.float32)
         ch = rng.standard_normal((1, 24, depth, 1024)).astype(np.float32)
         tm = rng.standard_normal((1, 24, 1024, 8)).astype(np.float32)
-        base = {"mel": mel, "mel_length": np.array([65], np.int32),
+        base = {"mel": mel, "mel_length": np.array([total_mel], np.int32),
                 "cache_channel": ch, "cache_time": tm, "cache_len": np.array([1], np.int32)}
         ref = ct.models.MLModel(str(tap)).predict(dict(base, prompt_id=np.array([args.prompt_id], np.int32)))
         got = patched.predict(base)

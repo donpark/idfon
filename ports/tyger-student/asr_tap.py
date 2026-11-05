@@ -97,6 +97,45 @@ SHIPPING = PassConfig(left=42, lookahead=13)
 PASSES = {"reference": REFERENCE, "shipping": SHIPPING}
 
 
+@dataclasses.dataclass(frozen=True)
+class Tier:
+    """Chunk cadence: how many new mel frames one encoder call consumes.
+
+    The pass (cache depth, lookahead) is independent: 42/13 stays 42/13 at every
+    tier. Only the chunk length, the context row count and the number of released
+    frames change. `chunk_frames` counts the context-only row the graph emits and
+    drops; `keep` is what reaches the decoder/tap (one row per 80 ms)."""
+
+    mel_frames: int = CHUNK_MEL
+    pre_encode: int = PRE_ENCODE
+
+    @property
+    def total_mel(self) -> int:
+        return self.mel_frames + self.pre_encode
+
+    @property
+    def new_frames(self) -> int:
+        assert self.mel_frames % SUBSAMPLE == 0, self.mel_frames
+        return self.mel_frames // SUBSAMPLE
+
+    @property
+    def chunk_frames(self) -> int:
+        return self.new_frames + 1
+
+    @property
+    def keep(self) -> int:
+        return self.new_frames
+
+    @property
+    def ms(self) -> int:
+        return self.mel_frames * 10
+
+
+TIER_560 = Tier()
+TIER_320 = Tier(mel_frames=32)
+TIERS = {t.ms: t for t in (TIER_560, TIER_320)}
+
+
 def rel_shift(attn_scores: torch.Tensor, heads: int, q: int, p: int) -> torch.Tensor:
     """Transformer-XL relative-position shift (HF `_rel_shift`). Static dims on purpose:
     tensor-derived ints become aten::Int(size) nodes the Core ML frontend cannot fold."""
@@ -108,19 +147,21 @@ def rel_shift(attn_scores: torch.Tensor, heads: int, q: int, p: int) -> torch.Te
 class StreamingTapEncoder(nn.Module):
     """The ASR encoder as a static-shape graph: caches in, encoded + tap_l4 out."""
 
-    def __init__(self, model, pass_cfg: PassConfig = REFERENCE, tap_index: int = 4):
+    def __init__(self, model, pass_cfg: PassConfig = REFERENCE, tap_index: int = 4,
+                 tier: Tier = TIER_560):
         super().__init__()
         self.model = model
         self.enc = model.encoder
         self.pass_cfg = pass_cfg
+        self.tier = tier
         self.cache_size = pass_cfg.left
         self.tap_index = tap_index  # hidden_states[tap_index] == output of layer tap_index-1
         assert self.enc.config.num_hidden_layers == 24
-        probe = torch.zeros(1, CHUNK_FRAMES, self.enc.config.hidden_size)
+        probe = torch.zeros(1, tier.chunk_frames, self.enc.config.hidden_size)
         self.register_buffer("pos_emb", self.enc.encode_positions(probe, cached_frames=self.cache_size))
         eye = torch.eye(self.model.config.num_prompts)
         self.register_buffer("prompt_eye", eye)
-        self.register_buffer("mel_pos", torch.arange(TOTAL_MEL, dtype=torch.float32))
+        self.register_buffer("mel_pos", torch.arange(tier.total_mel, dtype=torch.float32))
         # chunked_limited group index per key / per query, anchored at the window start.
         # Per-query key bounds: [block - left_blocks, end of own block]. At lookahead 0
         # (g=1) this is exactly the sliding window [qi, C+qi]; at lookahead>0 it lets a
@@ -129,13 +170,13 @@ class StreamingTapEncoder(nn.Module):
         # fold int64 ranges into int32 constants; revisit if the frontend learns to.
         g = pass_cfg.group
         left_blocks = self.cache_size // g
-        q_idx = torch.arange(CHUNK_FRAMES, dtype=torch.int64)
-        kidx = torch.arange(self.cache_size + CHUNK_FRAMES, dtype=torch.int64)
+        q_idx = torch.arange(tier.chunk_frames, dtype=torch.int64)
+        kidx = torch.arange(self.cache_size + tier.chunk_frames, dtype=torch.int64)
         self.register_buffer("key_group", (kidx // g).to(torch.int32))
         self.register_buffer("query_group", ((self.cache_size + q_idx) // g).to(torch.int32))
         qg = (self.cache_size + q_idx) // g
         q_lo = (qg - left_blocks).clamp(min=0) * g
-        q_hi = (qg * g + g - 1).clamp(max=self.cache_size + CHUNK_FRAMES - 1)
+        q_hi = (qg * g + g - 1).clamp(max=self.cache_size + tier.chunk_frames - 1)
         self.register_buffer("query_lo", q_lo.to(torch.float32))
         self.register_buffer("query_hi", q_hi.to(torch.float32))
 
@@ -164,7 +205,7 @@ class StreamingTapEncoder(nn.Module):
         Split out of `_attention` so the geometry is assertable without a model: the 42/13
         defect was a mask that no test compared against the documented block pattern.
         """
-        C, T = self.cache_size, CHUNK_FRAMES
+        C, T = self.cache_size, self.tier.chunk_frames
         kv = torch.arange(C + T, device=self.query_lo.device, dtype=torch.float32)[None, :]
         return (
             (kv >= self.query_lo[:, None])  # left edge of the allowed blocks
@@ -174,7 +215,7 @@ class StreamingTapEncoder(nn.Module):
         )
 
     def _attention(self, attn, h, cache_ch, cache_len):
-        C, T = self.cache_size, CHUNK_FRAMES
+        C, T = self.cache_size, self.tier.chunk_frames
         heads, kv_heads, hd_ = attn.config.num_attention_heads, attn.config.num_key_value_heads, attn.head_dim
         keys = torch.cat([cache_ch, h], dim=1)  # [1,C+T,D]
         q = attn.q_proj(h).view(1, T, heads, hd_).transpose(1, 2)
@@ -202,7 +243,9 @@ class StreamingTapEncoder(nn.Module):
         z = conv.norm(z.transpose(1, 2))
         z = conv.activation(z.transpose(1, 2))
         z = conv.pointwise_conv2(z).transpose(1, 2)
-        return z, y[:, :, -CONV_CACHE:]
+        # the conv cache is always 8 frames; a chunk shorter than 8 must carry the
+        # tail of the old cache forward, not just its own frames (320 ms tier)
+        return z, torch.cat([cache_t, y], dim=2)[:, :, -CONV_CACHE:]
 
     def forward(self, mel, mel_length, cache_channel, cache_time, cache_len, prompt_id):
         h = self._subsample(mel, mel_length) * self.enc.input_scale
@@ -227,9 +270,10 @@ class StreamingTapEncoder(nn.Module):
         kept = h[:, 1:]  # drop the context row -> 7 new frames (featurize_tap.tap())
         onehot = self.prompt_eye.index_select(0, prompt_id.to(torch.int32))
         fused = self.model.prompt_projector(
-            torch.cat([kept, onehot[:, None, :].expand(-1, KEEP, -1)], dim=-1)
+            torch.cat([kept, onehot[:, None, :].expand(-1, self.tier.keep, -1)], dim=-1)
         )
-        cache_len_out = torch.clamp(cache_len.float() + CHUNK_FRAMES, max=self.cache_size).to(torch.int32)
+        cache_len_out = torch.clamp(cache_len.float() + self.tier.chunk_frames,
+                                    max=self.cache_size).to(torch.int32)
         lengths = mel_length
         for _ in range(3):
             lengths = torch.div(lengths.float() + 2, 2, rounding_mode="floor") + 1
@@ -248,12 +292,13 @@ class StreamingTapEncoder(nn.Module):
 # torch reference pass: exactly featurize_tap.tap(), but per chunk and with the
 # prompt projector for `encoded`. This is the pass tap4-shards records.
 # --------------------------------------------------------------------------- #
-def reference_windows(feats: torch.Tensor):
-    for end in range(PRE_ENCODE + CHUNK_MEL, feats.shape[1] + 1, CHUNK_MEL):
-        yield feats[:, end - TOTAL_MEL : end]
+def reference_windows(feats: torch.Tensor, tier: Tier = TIER_560):
+    for end in range(tier.pre_encode + tier.mel_frames, feats.shape[1] + 1, tier.mel_frames):
+        yield feats[:, end - tier.total_mel : end]
 
 
-def reference_chunks(model, feats, prompt_id=None, lookahead=0, tap_index=4):
+def reference_chunks(model, feats, prompt_id=None, lookahead=0, tap_index=4,
+                     tier: Tier = TIER_560):
     """-> (encoded [N,7,1024], tap [N,7,1024]) from the torch streaming pass."""
     from transformers.cache_utils import DynamicCache
     from transformers.models.nemotron_asr_streaming.modeling_nemotron_asr_streaming import (
@@ -266,7 +311,7 @@ def reference_chunks(model, feats, prompt_id=None, lookahead=0, tap_index=4):
     pids = torch.tensor([model.config.default_prompt_id if prompt_id is None else prompt_id])
     enc_rows, tap_rows = [], []
     with torch.no_grad():
-        for win in reference_windows(feats):
+        for win in reference_windows(feats, tier):
             out = enc(
                 input_features=win,
                 use_cache=True,
@@ -286,14 +331,14 @@ def reference_chunks(model, feats, prompt_id=None, lookahead=0, tap_index=4):
 
 def wrapper_chunks(wrapper, feats, prompt_id=None):
     """Run the exported graph's forward chunk by chunk with threaded caches."""
-    mel_length = torch.tensor([TOTAL_MEL], dtype=torch.int32)
+    mel_length = torch.tensor([wrapper.tier.total_mel], dtype=torch.int32)
     pid = torch.tensor([wrapper.model.config.default_prompt_id if prompt_id is None else prompt_id])
     ch = torch.zeros(1, 24, wrapper.cache_size, 1024)
     ct_ = torch.zeros(1, 24, 1024, 8)
     cl = torch.tensor([1], dtype=torch.int32)
     enc_rows, tap_rows = [], []
     with torch.no_grad():
-        for win in reference_windows(feats):
+        for win in reference_windows(feats, wrapper.tier):
             # the wrapper's `mel` is the manager's layout [1,128,65]; the processor is time-first
             encoded, tap, ch, ct_, cl, _ = wrapper(win.transpose(1, 2).contiguous(), mel_length, ch, ct_, cl, pid)
             enc_rows.append(encoded[0].transpose(0, 1).numpy())
@@ -310,14 +355,14 @@ def stream_rows(wrapper, proc, wav, prompt_id=None, device="cpu"):
     corpus grid.
     """
     feats = proc(np.asarray(wav, np.float32), sampling_rate=SR, return_tensors="pt")["input_features"]
-    mel_length = torch.tensor([TOTAL_MEL], dtype=torch.int32)
+    mel_length = torch.tensor([wrapper.tier.total_mel], dtype=torch.int32)
     pid = torch.tensor([wrapper.model.config.default_prompt_id if prompt_id is None else prompt_id])
     ch = torch.zeros(1, 24, wrapper.cache_size, 1024)
     ct_ = torch.zeros(1, 24, 1024, 8)
     cl = torch.tensor([1], dtype=torch.int32)
     rows = []
     with torch.no_grad():
-        for i, win in enumerate(reference_windows(feats)):
+        for i, win in enumerate(reference_windows(feats, wrapper.tier)):
             _, tap, ch, ct_, cl, _ = wrapper(
                 win.transpose(1, 2).contiguous().to(device), mel_length, ch, ct_, cl, pid
             )
@@ -363,6 +408,8 @@ def main():
     ap.add_argument("--fixture", default="ports/tyger-swift/Tests/TygerVoiceTests/runtime/ch0.wav",
                     help="16 kHz mono wav (the runtime fixture; gitignored, read from the main checkout)")
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--chunk-ms", type=int, default=560, choices=sorted(TIERS),
+                    help="chunk tier: 560 (NVIDIA's shipping pass) or 320 (probe)")
     ap.add_argument("--dump", default=None, help="npz for the fixture's reference tap rows")
     args = ap.parse_args()
     if not args.selfcheck:
@@ -372,6 +419,7 @@ def main():
     from transformers import AutoModel, AutoProcessor
 
     cfg = PASSES[args.pass_]
+    tier = TIERS[args.chunk_ms]
     proc = AutoProcessor.from_pretrained(args.model)
     model = AutoModel.from_pretrained(args.model, dtype=torch.float32).eval().to(args.device)
     x, sr = sf.read(args.fixture, dtype="float32")
@@ -381,8 +429,8 @@ def main():
 
     if cfg == REFERENCE:
         pass  # HF can only express the reference pass; the shipping pass is checked by mask
-    enc_ref, tap_ref = reference_chunks(model, feats)
-    wrapper = StreamingTapEncoder(model, pass_cfg=cfg).eval()
+    enc_ref, tap_ref = reference_chunks(model, feats, tier=tier)
+    wrapper = StreamingTapEncoder(model, pass_cfg=cfg, tier=tier).eval()
     enc_w, tap_w = wrapper_chunks(wrapper, feats)
     print(f"chunks: reference {len(enc_ref)}, wrapper {len(enc_w)}; "
           f"rows/chunk ref {[r.shape[0] for r in enc_ref[:3]]} wrapper {[r.shape[0] for r in enc_w[:3]]}")
