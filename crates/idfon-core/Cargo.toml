@@ -22,7 +22,7 @@ rand_core = "0.10"
 # (wasm32-unknown-unknown); `transport` is native-only (gossip, tokio io are not
 # available on wasm). Tokio's `rt-multi-thread` is rejected by the wasm target.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-iroh-gossip = "0.101"
+iroh-gossip = "0.102"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "io-util", "sync"] }
 getrandom = { version = "0.4", features = ["sys_rng"] }
 
