@@ -84,10 +84,12 @@ def main():
     ap.add_argument("--arch", default=None,
                     help="arch token for the AOT compile (default: read from an existing "
                          "container, like export_turn.py)")
+    ap.add_argument("--tap", default=None,
+                    help="shared checkpoints: adapter to prune to (default: the checkpoint's deploy tap)")
     args = ap.parse_args()
 
-    model = load_student(args.student)
-    step = StepWrap(model).to(torch.float32).eval()
+    model, tap = load_student(args.student, tap=args.tap)
+    step = StepWrap(model, tap).to(torch.float32).eval()
     width, layers = model.width, model.layers
 
     ex = {
