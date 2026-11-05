@@ -51,7 +51,7 @@ if [ -z "$device" ]; then
   for _ in 1 2 3 4 5; do
     device=$(xcrun devicectl list devices 2>/dev/null \
       | grep -E "connected.*physical|physical.*connected" \
-      | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
+      | grep -m1 -oE '([A-F0-9]{8}-[A-F0-9]{16}|[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12})' || true)
     if [ -n "$device" ]; then break; fi
     sleep 2
   done

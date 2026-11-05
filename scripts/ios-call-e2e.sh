@@ -17,7 +17,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ -z "$device" ]; then
-  device=$(xcrun devicectl list devices 2>/dev/null | grep -E "connected.*physical|physical.*connected" | grep -m1 -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' || true)
+  device=$(xcrun devicectl list devices 2>/dev/null | grep -E "connected.*physical|physical.*connected" | grep -m1 -oE '([A-F0-9]{8}-[A-F0-9]{16}|[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12})' || true)
 fi
 [ -n "$device" ] || { echo "no connected physical iPhone; set IPHONE_UDID, IPHONE_NAME, DEVICE, or --device" >&2; exit 2; }
 if [ "$build" = 1 ]; then
