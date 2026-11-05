@@ -19,14 +19,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from checkpoint import load as load_model  # noqa: E402
+from checkpoint import TempScaled, load as load_model  # noqa: E402
 from data import iter_shards  # noqa: E402
 from gate import aligned_count, student_events  # noqa: E402
+from tap_gate import kind_report  # noqa: E402
 from oracle import Oracle  # noqa: E402
 
 
-def events(student, tap, shards, thr, layer):
+def events(student, tap, shards, thr, layer, temp=1.0):
     model, _ckpt = load_model(student, tap=tap)
+    if temp != 1.0:
+        model = TempScaled(model, temp)
     oracle = Oracle(device="cpu")
     out = {}
     for _p, frames, _labels, _ev, meta in iter_shards(shards):
@@ -46,26 +49,48 @@ def main():
     ap.add_argument("--ep-thr", type=float, default=0.9146)
     ap.add_argument("--barge-thr", type=float, default=0.5)
     ap.add_argument("--bc-thr", type=float, default=0.5)
+    ap.add_argument("--temp", type=float, default=1.0,
+                    help="softmax temperature on the student's logits (frozen corpus policy: 0.9)")
+    ap.add_argument("--per-kind", action="store_true",
+                    help="kind breakdown + matched-event direction (tap_gate.kind_report)")
+    ap.add_argument("--wide-tol", type=int, default=10, help="wide match for recovered shifts")
     ap.add_argument("--label", default="A vs B")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
     thr = (args.ep_thr, args.barge_thr, args.bc_thr)
-    a = events(args.a_student, args.tap, args.a_shards, thr, args.feature_layer)
-    b = events(args.b_student, args.tap, args.b_shards, thr, args.feature_layer)
+    a = events(args.a_student, args.tap, args.a_shards, thr, args.feature_layer, args.temp)
+    b = events(args.b_student, args.tap, args.b_shards, thr, args.feature_layer, args.temp)
     common = [s for s in a if s in b]
     if not common:
         sys.exit("no shared session ids between the two shard dirs")
     same = total = 0
+    kinds_tot = {}
     for sid in common:
         al, only_a, only_b = aligned_count(a[sid], b[sid], args.tol)
         total += max(len(a[sid]), len(b[sid]))
         same += al
+        if args.per_kind:
+            kinds = kind_report(a[sid], b[sid], args.tol, args.wide_tol)[0]
+            for k, v in kinds.items():
+                acc = kinds_tot.setdefault(k, dict.fromkeys(tuple(v), 0))
+                for key in acc:
+                    acc[key] += v[key]
         print(f"  {sid[:16]}…  events a/b {len(a[sid]):3d}/{len(b[sid]):3d}  aligned {al:3d}  "
               f"only_a {only_a} only_b {only_b}", flush=True)
     rec = {"label": args.label, "sessions": len(common), "aligned": same,
-           "events": total, "agree": round(same / total, 4), "tol": args.tol}
+           "events": total, "agree": round(same / total, 4), "tol": args.tol,
+           "per_kind": kinds_tot}
     print(f"{args.label}: {same}/{total} = {same/total:.2%} (±{args.tol} frames)")
+    if args.per_kind:
+        print(f"\nper kind       A     B  aligned  only_A  only_B  B earlier  same  later  agree"
+              f"  ±{args.wide_tol} (earlier/same/later)")
+        for k, v in sorted(kinds_tot.items()):
+            denom = max(v["a"], v["b"])
+            print(f"  {k:<11} {v['a']:4d} {v['b']:5d} {v['aligned']:8d} {v['only_a']:7d} "
+                  f"{v['only_b']:7d} {v['b_earlier']:10d} {v['b_same']:5d} {v['b_later']:6d} "
+                  f"{v['aligned']/denom if denom else 1.0:6.1%}  {v['wide_earlier']}/"
+                  f"{v['wide_same']}/{v['wide_later']} (+{v['recovered']})")
     if args.json:
         Path(args.json).write_text(json.dumps(rec, indent=2) + "\n")
 
