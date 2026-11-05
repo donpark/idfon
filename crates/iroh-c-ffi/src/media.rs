@@ -929,17 +929,23 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                         result = Ok(());
                         break;
                     }
-                    Err(e) if e.downcast_ref::<SubscribeEndError>().is_some() => {
-                        // The publisher sends continuous frames for the whole
-                        // call, so an early track end is transient. Keep
-                        // re-subscribing while the call is active: giving up
-                        // after a fixed number of attempts left the rest of
-                        // the call silent (heard as "on and off").
+                    Err(e) => {
+                        // Every failed attempt while the call is up is
+                        // transient. An early track end is the publisher
+                        // restarting; a dial/setup failure is the network
+                        // still settling — the drive run of 2026-11-04 died
+                        // for good on "No addressing information available"
+                        // when the phone's network flipped (Wi-Fi returning)
+                        // mid-redial, and sat at "Audio lost" for 4.5 min.
+                        // Retry both; only a stop ends the loop.
                         let backoff = std::time::Duration::from_millis(
                             (100u64 << attempt.min(4)).min(1_000),
                         );
+                        if e.downcast_ref::<SubscribeEndError>().is_none() {
+                            tracing::warn!(attempt, "subscribe attempt failed: {e:#}; retrying");
+                        }
                         eprintln!(
-                            "[media] subscribe ended early attempt={attempt} decoded={decoded_total} frames; resubscribing in {}ms",
+                            "[media] subscribe attempt={attempt} failed decoded={decoded_total} frames; resubscribing in {}ms: {e:#}",
                             backoff.as_millis()
                         );
                         // The shell can cut the wait short (foreground return):
@@ -951,10 +957,6 @@ pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         }
-                    }
-                    Err(err) => {
-                        result = Err(err);
-                        break;
                     }
                 }
             }
