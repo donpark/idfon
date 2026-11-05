@@ -72,7 +72,10 @@ class PassConfig:
     The mask is NeMo's `chunked_limited`, anchored at the attention window: queries are
     grouped in blocks of `lookahead + 1` keys and a query sees every key up to the end of
     its own block. That is the pattern of the shipping bundle's constant mask (42 cache +
-    7 current -> 4 blocks of 14, the last one 7 long, every query in it sees all 49 keys).
+    8 current -> 4 blocks of 14, the last one 8 long, every query in it sees all 50 keys).
+
+    At lookahead 0 this reduces to the plain sliding window (HF `sliding_window = left + 1`),
+    which is why the reference pass is expressed by the same formula.
     """
 
     left: int  # cached left frames == cache_channel depth
@@ -118,10 +121,23 @@ class StreamingTapEncoder(nn.Module):
         eye = torch.eye(self.model.config.num_prompts)
         self.register_buffer("prompt_eye", eye)
         self.register_buffer("mel_pos", torch.arange(TOTAL_MEL, dtype=torch.float32))
-        # chunked_limited group index per key / per query, anchored at the window start
+        # chunked_limited group index per key / per query, anchored at the window start.
+        # Per-query key bounds: [block - left_blocks, end of own block]. At lookahead 0
+        # (g=1) this is exactly the sliding window [qi, C+qi]; at lookahead>0 it lets a
+        # query see its whole block, which is what the shipping bundle's mask does.
+        # shortcut: block bounds are precomputed as floats because coremltools cannot
+        # fold int64 ranges into int32 constants; revisit if the frontend learns to.
         g = pass_cfg.group
-        self.register_buffer("key_group", torch.arange(self.cache_size + CHUNK_FRAMES, dtype=torch.int32) // g)
-        self.register_buffer("query_group", (self.cache_size + torch.arange(CHUNK_FRAMES, dtype=torch.int32)) // g)
+        left_blocks = self.cache_size // g
+        q_idx = torch.arange(CHUNK_FRAMES, dtype=torch.int64)
+        kidx = torch.arange(self.cache_size + CHUNK_FRAMES, dtype=torch.int64)
+        self.register_buffer("key_group", (kidx // g).to(torch.int32))
+        self.register_buffer("query_group", ((self.cache_size + q_idx) // g).to(torch.int32))
+        qg = (self.cache_size + q_idx) // g
+        q_lo = (qg - left_blocks).clamp(min=0) * g
+        q_hi = (qg * g + g - 1).clamp(max=self.cache_size + CHUNK_FRAMES - 1)
+        self.register_buffer("query_lo", q_lo.to(torch.float32))
+        self.register_buffer("query_hi", q_hi.to(torch.float32))
 
     # ---- subsampling: the streaming conv framing, with derivable conv2d caches ----
     def _subsample(self, mel: torch.Tensor, mel_length: torch.Tensor) -> torch.Tensor:
@@ -160,8 +176,8 @@ class StreamingTapEncoder(nn.Module):
         qi = torch.arange(T, device=h.device, dtype=torch.float32)[:, None]
         kv = torch.arange(C + T, device=h.device, dtype=torch.float32)[None, :]
         mask = (
-            (kv >= qi)  # no attention further back than the cache depth
-            & (kv <= C + qi)  # ... nor forward past the query (causal at lookahead 0)
+            (kv >= self.query_lo[:, None])  # left edge of the allowed blocks
+            & (kv <= self.query_hi[:, None])  # end of the query's own block (lookahead)
             & (kv >= C - cache_len.float())  # drop unfilled cache slots (manager seeds 1)
             & (self.key_group[None, :] <= self.query_group[:, None])  # chunked_limited blocks
         )
