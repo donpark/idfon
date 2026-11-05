@@ -58,11 +58,13 @@ def main():
     ap.add_argument("--shards", default=str(ROOT / "bench-results/student-shards/val"))
     ap.add_argument("--frames", type=int, default=248)
     ap.add_argument("--precision", default="float32", choices=["float32", "float16"])
+    ap.add_argument("--tap", default=None,
+                    help="shared checkpoints: adapter to prune to (default: the checkpoint's deploy tap)")
     ap.add_argument("--out", default=str(ROOT / "bench-results/student-coreml"))
     args = ap.parse_args()
 
-    model = load_student(args.student)
-    step = StepWrap(model).eval()
+    model, tap = load_student(args.student, tap=args.tap)
+    step = StepWrap(model, tap).eval()
     width, layers = model.width, model.layers
 
     hua = torch.zeros(1, 1, 1024)
