@@ -359,6 +359,63 @@ $PY ports/tyger-student/export_asr_tap.py --gate bench-results/asr-tap/encoder_t
     --session-id d622d1e377001bba8c718a2fbdac0b7b          # the shards gate
 ```
 
+#### Pass config: the shipping 42/13 vs the reference 56/0 (measured 2026-11-05)
+
+**Target decided: NVIDIA's shipping pass — 42 left / 13 lookahead, 42-deep cache, int8
+weights — with `tap_l4` declared by *our* export of those weights.** Their bundle cannot
+serve as the tap (Core ML exposes declared outputs only, and theirs declares `encoded`).
+The pass is a `PassConfig` on the same wrapper (`--pass reference|shipping`), so the 56/0
+rows above stay the documented reference every existing gate was built on.
+
+What changes at 42/13, and what does not:
+
+| item | at 42/13 |
+| --- | --- |
+| `cache_channel` in/out | `[1,24,42,1024]` (was 56) |
+| attention keys | 42 cache + 8 current = 50 (was 64); relative-pos table 2·50−1 = 99 rows |
+| mask | 4 blocks of 14; all 8 queries land in the last block → every query sees all 50 keys, which is the shipping bundle's `const_71` pattern |
+| `cache_len` clamp | 42 |
+| unchanged | subsampling (bit-identical across passes, so the **8 / 3 / 1** conv2d-cache derivation still holds — it depends on the mel framing, not the mask), `cache_time [1,24,1024,8]`, 8 rows/chunk → 7 kept, prompt projector |
+
+Re-tracing is required (Core ML bakes shapes) but is one flag — no code path changes. The
+caveat worth keeping: **HF cannot express 42/13** (`_resolve_attn_context` derives left =
+`sliding_window−1` = 56, and its mask groups are absolute-position-anchored), so at 42/13
+the wrapper *is* the oracle. Its credibility rests on the 56/0 equivalence (3e-5 vs HF) and
+on the mask transcribed from the bundle's `const_71`.
+
+Gate — one checkpoint (`shared-consistent-l03`, adapter `l4-streaming`), session
+`d622d1e3…` 1200 frames (96 s, 17 events; ±1 event = 6%), via `tap_gate.py`:
+
+| row | feature drift | decisions |
+| --- | --- | --- |
+| control: wrapper 56/0 vs the stored shards | cos p50 1.0000, relL2 0.000 | 100% (16/16) |
+| **(1) pass** 42/13 fp32 vs 56/0 | cos p50 0.9925 (p05 0.932), relL2 0.122 | **70.6% (12/17)** |
+| **(2) quant** 42/13 int8 sim vs 42/13 fp32 | cos p50 0.9939 (p05 0.982), relL2 0.110 | 88.2% (15/17) |
+| (2b) quant, the artifact itself vs 42/13 fp32 | cos p50 0.9848 (p05 0.961), relL2 0.174 | 94.1% (16/17) |
+| **(3) product** 42/13 int8 artifact vs 56/0 | cos p50 0.9741 (p05 0.917), relL2 0.227 | **82.4% (14/17)** |
+
+Reading: the pass change alone is not free (70.6%, the same regime as windowed→streaming's
+82.3%), and quantization alone also moves decisions (88–94%). **So the refit is required,
+and it must fit on int8-artifact taps** — the sim is not a substitute: the artifact's extra
+fp16-activation + grid drift puts it cos 0.978 away from the sim, i.e. the difference is the
+same size as the effect being measured. Featurize through the mlpackage
+(`pass_gate.py --emit-shards --artifact …`), per domain as P4 established.
+
+Priming at 42/13: the cache fills in 42/7 = **6 chunks** (3.4 s, was 8). The 56/0 "7-chunk
+priming" caveat was a cross-implementation artifact (HF's 9-row first chunk vs the graph's
+8) and **does not recur**: at 42/13 the shard builder and the artifact share the same cold
+convention, so there is nothing to prime for train/serve. A silence-primed start perturbs
+the first chunks and decays 1.9 → 0.055 by ~chunk 28 — so do not prime.
+
+Artifact: `encoder_tap_42-13_fp16_int8w.mlpackage` = **593,446,722 B** (593 MB; the 56/0 int8
+form was 594 MB — same size class), `tap_l4 [1,1024,7]`, **9.0 ms/chunk on ANE**. Its tap
+drift vs fp32 at 42/13 is flat per chunk bucket (11.0 / 13.4 / 15.1 / 9.8 over chunks
+1–8/8–16/16–32/32–64) — quantization noise, no cache accumulation. Graph-arithmetic parity
+was established at fp32 (1.44e-3 vs torch at 56/0); at int8 the weight grid is
+coremltools' own (a two-line torch quantizer lands cos 0.978–0.982 against the artifact, so
+it is not a same-weights reference), which is exactly why the refit featurizes through the
+artifact.
+
 ### Phase 3 — the tyger experience (integration)
 
 - `TurnTakerSetting.tyger` selects the streaming pair (Nemotron streaming ASR +

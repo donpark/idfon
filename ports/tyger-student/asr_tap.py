@@ -42,6 +42,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 from pathlib import Path
 
@@ -64,6 +65,35 @@ DEFAULT_MODEL = "nvidia/nemotron-3.5-asr-streaming-0.6b"
 CONV2D_CACHE_FRAME = (8, 3, 1)
 
 
+@dataclasses.dataclass(frozen=True)
+class PassConfig:
+    """A streaming attention pass: cache depth (`left`), right context (`lookahead`).
+
+    The mask is NeMo's `chunked_limited`, anchored at the attention window: queries are
+    grouped in blocks of `lookahead + 1` keys and a query sees every key up to the end of
+    its own block. That is the pattern of the shipping bundle's constant mask (42 cache +
+    7 current -> 4 blocks of 14, the last one 7 long, every query in it sees all 49 keys).
+    """
+
+    left: int  # cached left frames == cache_channel depth
+    lookahead: int  # right context, in encoder frames
+
+    @property
+    def group(self) -> int:
+        return self.lookahead + 1
+
+    @property
+    def name(self) -> str:
+        return f"{self.left}/{self.lookahead}"
+
+
+# the pass `tap4-shards` records (HF sliding_window=57, num_lookahead_tokens=0)
+REFERENCE = PassConfig(left=56, lookahead=0)
+# the pass the shipping 3.5 multilingual bundle runs (NeMo att_context_size [42, 13])
+SHIPPING = PassConfig(left=42, lookahead=13)
+PASSES = {"reference": REFERENCE, "shipping": SHIPPING}
+
+
 def rel_shift(attn_scores: torch.Tensor, heads: int, q: int, p: int) -> torch.Tensor:
     """Transformer-XL relative-position shift (HF `_rel_shift`). Static dims on purpose:
     tensor-derived ints become aten::Int(size) nodes the Core ML frontend cannot fold."""
@@ -75,18 +105,23 @@ def rel_shift(attn_scores: torch.Tensor, heads: int, q: int, p: int) -> torch.Te
 class StreamingTapEncoder(nn.Module):
     """The ASR encoder as a static-shape graph: caches in, encoded + tap_l4 out."""
 
-    def __init__(self, model, cache_size: int = 56, tap_index: int = 4):
+    def __init__(self, model, pass_cfg: PassConfig = REFERENCE, tap_index: int = 4):
         super().__init__()
         self.model = model
         self.enc = model.encoder
-        self.cache_size = cache_size
+        self.pass_cfg = pass_cfg
+        self.cache_size = pass_cfg.left
         self.tap_index = tap_index  # hidden_states[tap_index] == output of layer tap_index-1
         assert self.enc.config.num_hidden_layers == 24
         probe = torch.zeros(1, CHUNK_FRAMES, self.enc.config.hidden_size)
-        self.register_buffer("pos_emb", self.enc.encode_positions(probe, cached_frames=cache_size))
+        self.register_buffer("pos_emb", self.enc.encode_positions(probe, cached_frames=self.cache_size))
         eye = torch.eye(self.model.config.num_prompts)
         self.register_buffer("prompt_eye", eye)
         self.register_buffer("mel_pos", torch.arange(TOTAL_MEL, dtype=torch.float32))
+        # chunked_limited group index per key / per query, anchored at the window start
+        g = pass_cfg.group
+        self.register_buffer("key_group", torch.arange(self.cache_size + CHUNK_FRAMES, dtype=torch.int32) // g)
+        self.register_buffer("query_group", (self.cache_size + torch.arange(CHUNK_FRAMES, dtype=torch.int32)) // g)
 
     # ---- subsampling: the streaming conv framing, with derivable conv2d caches ----
     def _subsample(self, mel: torch.Tensor, mel_length: torch.Tensor) -> torch.Tensor:
@@ -124,7 +159,12 @@ class StreamingTapEncoder(nn.Module):
         # float comparisons: coremltools cannot fold int64 ranges into int32 constants
         qi = torch.arange(T, device=h.device, dtype=torch.float32)[:, None]
         kv = torch.arange(C + T, device=h.device, dtype=torch.float32)[None, :]
-        mask = (kv >= qi) & (kv <= C + qi) & (kv >= C - cache_len.float())
+        mask = (
+            (kv >= qi)  # no attention further back than the cache depth
+            & (kv <= C + qi)  # ... nor forward past the query (causal at lookahead 0)
+            & (kv >= C - cache_len.float())  # drop unfilled cache slots (manager seeds 1)
+            & (self.key_group[None, :] <= self.query_group[:, None])  # chunked_limited blocks
+        )
         bd = bd.masked_fill(~mask[None, None], float("-inf"))
 
         scores = (q_u @ k.transpose(2, 3)) * attn.scaling + bd
@@ -222,11 +262,11 @@ def reference_chunks(model, feats, prompt_id=None, lookahead=0, tap_index=4):
     return [r.numpy() for r in enc_rows], [r.numpy() for r in tap_rows]
 
 
-def wrapper_chunks(wrapper, feats, prompt_id=None, cache_size=56):
+def wrapper_chunks(wrapper, feats, prompt_id=None):
     """Run the exported graph's forward chunk by chunk with threaded caches."""
     mel_length = torch.tensor([TOTAL_MEL], dtype=torch.int32)
     pid = torch.tensor([wrapper.model.config.default_prompt_id if prompt_id is None else prompt_id])
-    ch = torch.zeros(1, 24, cache_size, 1024)
+    ch = torch.zeros(1, 24, wrapper.cache_size, 1024)
     ct_ = torch.zeros(1, 24, 1024, 8)
     cl = torch.tensor([1], dtype=torch.int32)
     enc_rows, tap_rows = [], []
@@ -239,6 +279,53 @@ def wrapper_chunks(wrapper, feats, prompt_id=None, cache_size=56):
     return enc_rows, tap_rows
 
 
+def stream_rows(wrapper, proc, wav, prompt_id=None, device="cpu"):
+    """(samples,) -> [frames, 1024] tap rows for one channel, caches threaded.
+
+    Row convention: every chunk contributes its 7 new frames. Chunk 0 additionally keeps
+    its context row (8 rows), because the torch reference's first chunk emits 9 rows and
+    `featurize_tap.tap()` keeps 8 - without it every later row would be one frame off the
+    corpus grid.
+    """
+    feats = proc(np.asarray(wav, np.float32), sampling_rate=SR, return_tensors="pt")["input_features"]
+    mel_length = torch.tensor([TOTAL_MEL], dtype=torch.int32)
+    pid = torch.tensor([wrapper.model.config.default_prompt_id if prompt_id is None else prompt_id])
+    ch = torch.zeros(1, 24, wrapper.cache_size, 1024)
+    ct_ = torch.zeros(1, 24, 1024, 8)
+    cl = torch.tensor([1], dtype=torch.int32)
+    rows = []
+    with torch.no_grad():
+        for i, win in enumerate(reference_windows(feats)):
+            _, tap, ch, ct_, cl, _ = wrapper(
+                win.transpose(1, 2).contiguous().to(device), mel_length, ch, ct_, cl, pid
+            )
+            rows.append(tap[0].transpose(0, 1))
+            if i == 0:  # keep the context row too: 8 rows, like the reference's first chunk
+                rows[-1] = torch.cat([rows[-1][:1], rows[-1]], dim=0)
+    return torch.cat(rows).numpy()
+
+
+def quantize_weights_int8_(module, skip_prefixes=()):
+    """Simulate Core ML's per-channel int8 weight quantizer (per output channel, asymmetric).
+
+    Activations stay fp32, so this isolates the *weight grid* from the fp16 activation drift
+    the exported bundle also carries.
+    """
+    for name, child in module.named_modules():
+        if any(name.startswith(p) for p in skip_prefixes):
+            continue
+        if not isinstance(child, (torch.nn.Linear, torch.nn.Conv1d, torch.nn.Conv2d)):
+            continue
+        w = child.weight.data
+        flat = w.reshape(w.shape[0], -1)
+        lo = flat.min(dim=1, keepdim=True).values
+        hi = flat.max(dim=1, keepdim=True).values
+        scale = ((hi - lo) / 255.0).clamp(min=1e-12)
+        q = torch.round((flat - lo) / scale).clamp(0, 255)
+        child.weight.data = (q * scale + lo).reshape(w.shape)
+    return module
+
+
 def divergence(a: np.ndarray, b: np.ndarray):
     a, b = a.astype(np.float64), b.astype(np.float64)
     cos = (a * b).sum(1) / (np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1) + 1e-12)
@@ -249,7 +336,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--selfcheck", action="store_true", help="wrapper vs the torch streaming pass")
     ap.add_argument("--model", default=os.environ.get("TYGER_ASR", DEFAULT_MODEL))
-    ap.add_argument("--cache-size", type=int, default=56)
+    ap.add_argument("--pass", dest="pass_", default="reference", choices=sorted(PASSES),
+                    help="reference = 56/0 (the pass tap4-shards records); shipping = 42/13 (the bundle)")
     ap.add_argument("--fixture", default="ports/tyger-swift/Tests/TygerVoiceTests/runtime/ch0.wav",
                     help="16 kHz mono wav (the runtime fixture; gitignored, read from the main checkout)")
     ap.add_argument("--device", default="cpu")
@@ -261,6 +349,7 @@ def main():
     import soundfile as sf
     from transformers import AutoModel, AutoProcessor
 
+    cfg = PASSES[args.pass_]
     proc = AutoProcessor.from_pretrained(args.model)
     model = AutoModel.from_pretrained(args.model, dtype=torch.float32).eval().to(args.device)
     x, sr = sf.read(args.fixture, dtype="float32")
@@ -268,9 +357,11 @@ def main():
     feats = proc(np.asarray(x, np.float32), sampling_rate=sr, return_tensors="pt")["input_features"]
     print(f"fixture {len(x)/SR:.1f}s -> mel {tuple(feats.shape)}")
 
+    if cfg == REFERENCE:
+        pass  # HF can only express the reference pass; the shipping pass is checked by mask
     enc_ref, tap_ref = reference_chunks(model, feats)
-    wrapper = StreamingTapEncoder(model, cache_size=args.cache_size).eval()
-    enc_w, tap_w = wrapper_chunks(wrapper, feats, cache_size=args.cache_size)
+    wrapper = StreamingTapEncoder(model, pass_cfg=cfg).eval()
+    enc_w, tap_w = wrapper_chunks(wrapper, feats)
     print(f"chunks: reference {len(enc_ref)}, wrapper {len(enc_w)}; "
           f"rows/chunk ref {[r.shape[0] for r in enc_ref[:3]]} wrapper {[r.shape[0] for r in enc_w[:3]]}")
 

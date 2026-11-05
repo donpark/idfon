@@ -29,6 +29,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from asr_tap import wrapper_chunks  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from asr_tap import (  # noqa: E402
@@ -36,15 +38,18 @@ from asr_tap import (  # noqa: E402
     DEFAULT_MODEL,
     KEEP,
     NEW_FRAMES,
+    PASSES,
+    REFERENCE,
     SR,
     TOTAL_MEL,
+    PassConfig,
     StreamingTapEncoder,
     divergence,
     reference_chunks,
     reference_windows,
 )
 
-CACHE_SIZE = 56
+CACHE_SIZE = REFERENCE.left  # default; the gate/export use the run's PassConfig
 TAP_INDEX = 4
 
 
@@ -56,28 +61,29 @@ def load_torch(model_id, device="cpu"):
     return proc, model
 
 
-def example_inputs(cache_size=CACHE_SIZE):
+def example_inputs(pass_cfg: PassConfig = REFERENCE):
     return (
         torch.zeros(1, 128, TOTAL_MEL),
         torch.tensor([TOTAL_MEL], dtype=torch.int32),
-        torch.zeros(1, 24, cache_size, 1024),
+        torch.zeros(1, 24, pass_cfg.left, 1024),
         torch.zeros(1, 24, 1024, 8),
         torch.tensor([1], dtype=torch.int32),
         torch.tensor([101], dtype=torch.int32),
     )
 
 
-def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=False):
+def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=False,
+           pass_cfg: PassConfig = REFERENCE):
     import coremltools as ct
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    wrapper = StreamingTapEncoder(model, cache_size=CACHE_SIZE, tap_index=TAP_INDEX).eval()
+    wrapper = StreamingTapEncoder(model, pass_cfg=pass_cfg, tap_index=TAP_INDEX).eval()
     with torch.no_grad():
-        traced = torch.jit.trace(wrapper, example_inputs(), strict=False)
+        traced = torch.jit.trace(wrapper, example_inputs(pass_cfg), strict=False)
     inputs = [
         ct.TensorType(name="mel", shape=(1, 128, TOTAL_MEL), dtype=np.float32),
         ct.TensorType(name="mel_length", shape=(1,), dtype=np.int32),
-        ct.TensorType(name="cache_channel", shape=(1, 24, CACHE_SIZE, 1024), dtype=np.float32),
+        ct.TensorType(name="cache_channel", shape=(1, 24, pass_cfg.left, 1024), dtype=np.float32),
         ct.TensorType(name="cache_time", shape=(1, 24, 1024, 8), dtype=np.float32),
         ct.TensorType(name="cache_len", shape=(1,), dtype=np.int32),
         ct.TensorType(name="prompt_id", shape=(1,), dtype=np.int32),
@@ -107,13 +113,16 @@ def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=
         )
         ml = ct.optimize.coreml.linear_quantize_weights(ml, cfg)
     ml.short_description = (
-        f"Nemotron 3.5 streaming ASR encoder + declared tap_l4 (cache {CACHE_SIZE}, "
-        f"left 56 / lookahead 0). Episode: donpark/idfon#102"
+        f"Nemotron 3.5 streaming ASR encoder + declared tap_l4 ({pass_cfg.name}: "
+        f"left {pass_cfg.left} / lookahead {pass_cfg.lookahead}). Episode: donpark/idfon#102"
     )
     ml.user_defined_metadata["source_model"] = model_id
     ml.user_defined_metadata["tap"] = f"hidden_states[{TAP_INDEX}] (raw layer-4, pre-prompt)"
     ml.user_defined_metadata["contract"] = "FluidAudio StreamingNemotronMultilingualAsrManager"
+    ml.user_defined_metadata["pass"] = pass_cfg.name
     tag = f"{precision}{'_int8w' if int8 else ''}"
+    if pass_cfg != REFERENCE:
+        tag = f"{pass_cfg.left}-{pass_cfg.lookahead}_{tag}"
     path = out_dir / f"encoder_tap_{tag}.mlpackage"
     ml.save(str(path))
     size = sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
@@ -138,10 +147,10 @@ def ml_forward(mlmodel, mel, caches, prompt_id=101):
     return out, (out["cache_channel_out"], out["cache_time_out"], int(out["cache_len_out"][0]))
 
 
-def ml_stream(mlmodel, feats, prompt_id=101, chunks=None):
+def ml_stream(mlmodel, feats, prompt_id=101, chunks=None, cache_size=CACHE_SIZE):
     """The app's loop: one 65-frame mel window per call, caches threaded by the model."""
     caches = (
-        np.zeros((1, 24, CACHE_SIZE, 1024), np.float32),
+        np.zeros((1, 24, cache_size, 1024), np.float32),
         np.zeros((1, 24, 1024, 8), np.float32),
         1,
     )
@@ -206,6 +215,7 @@ def gate(model_path: Path, args):
     import coremltools as ct
 
     model_id = args.model
+    cfg = PASSES[args.pass_]
     proc, model = load_torch(model_id, args.device)
     prompt_id = int(model.config.default_prompt_id)
     # decode the session wav first (mimi only; the two big models together are memory pressure)
@@ -215,25 +225,45 @@ def gate(model_path: Path, args):
     fixture_wav = read_wav(fixture_path(args.fixture))
     feats_t = mel_of(proc, fixture_wav)
     feats = feats_t.numpy()
-    ref_enc_chunks, ref_tap_chunks = reference_chunks(model, feats_t)
+    ref_kind = getattr(args, "ref", None) or ("int8" if args.int8 else ("hf" if cfg == REFERENCE else "fp32"))
+    if ref_kind == "hf":
+        # the 56/0 reference is the HF streaming pass (what tap4-shards records)
+        ref_enc_chunks, ref_tap_chunks = reference_chunks(model, feats_t)
+        # chunk 0 of the HF pass has one extra (context) row the steady-state graph cannot
+        # emit; align on chunk 1 so the comparison is frame-for-frame after it
+        ref_off, ml_off = len(ref_enc_chunks[0]), KEEP
+    else:
+        # 42/13 has no HF oracle (HF derives left = sliding_window-1 = 56), so the wrapper is
+        # the reference; for the int8 artifact the reference carries the same weight grid.
+        import copy
+
+        ref_model = model
+        if ref_kind == "int8":
+            ref_model = copy.deepcopy(model)
+            from asr_tap import quantize_weights_int8_
+
+            quantize_weights_int8_(ref_model.encoder)
+        ref_wrapper = StreamingTapEncoder(ref_model, pass_cfg=cfg, tap_index=TAP_INDEX).eval()
+        ref_enc_chunks, ref_tap_chunks = wrapper_chunks(ref_wrapper, feats_t)
+        ref_off = ml_off = 0
+        del ref_wrapper, ref_model
     ref_enc, ref_tap = np.concatenate(ref_enc_chunks), np.concatenate(ref_tap_chunks)
-    # chunk 0 of the torch pass has one extra (context) row that the steady-state graph cannot
-    # reproduce; align on chunk 1 so the comparison is frame-for-frame after it.
-    ref_off, ml_off = len(ref_enc_chunks[0]), KEEP
     del model
     import gc
 
     gc.collect()
 
     fixture = str(fixture_path(args.fixture))
-    results = {"model": str(model_path), "tag": args.precision_gate, "fixture": fixture,
+    results = {"model": str(model_path), "tag": args.precision_gate, "pass": cfg.name,
+               "reference": ref_kind,
+               "cache_depth": cfg.left, "fixture": fixture,
                "bytes": sum(p.stat().st_size for p in model_path.rglob("*") if p.is_file())}
     for units_name, units in (("cpu", ct.ComputeUnit.CPU_ONLY), ("ane", ct.ComputeUnit.CPU_AND_NE)):
         if units_name == "ane" and args.cpu_only:
             continue
         ml = ct.models.MLModel(str(model_path), compute_units=units)
         t0 = time.perf_counter()
-        enc, tap, _ = ml_stream(ml, feats, prompt_id=prompt_id)
+        enc, tap, _ = ml_stream(ml, feats, prompt_id=prompt_id, cache_size=cfg.left)
         dt = (time.perf_counter() - t0) / (len(enc) / KEEP)
         # (a) encoded parity vs torch, (b) tap vs the torch reference pass, (c) per chunk
         warm = 40  # the cold-start transient (chunk-0 framing) decays by ~chunk 30
@@ -266,7 +296,7 @@ def gate(model_path: Path, args):
     # and the model's `encoded` is byte-identical with/without reading tap_l4 by name.
     ml = ct.models.MLModel(str(model_path), compute_units=ct.ComputeUnit.CPU_ONLY)
     out, _ = ml_forward(ml, feats[:, :TOTAL_MEL, :].transpose(0, 2, 1),
-                        (np.zeros((1, 24, CACHE_SIZE, 1024), np.float32),
+                        (np.zeros((1, 24, cfg.left, 1024), np.float32),
                          np.zeros((1, 24, 1024, 8), np.float32), 1),
                         prompt_id)
     results["encoded_only_read"] = sorted(out.keys()) == sorted(
@@ -280,7 +310,7 @@ def gate(model_path: Path, args):
     if args.session_id:
         val = Path(args.shards) / f"{args.session_id}.npz"
         if val.exists() and sfeats is not None:
-            _, tap_s, _ = ml_stream(ml, sfeats, prompt_id=prompt_id)
+            _, tap_s, _ = ml_stream(ml, sfeats, prompt_id=prompt_id, cache_size=cfg.left)
             with np.load(val) as z:
                 hu = z["hu"]
             # same one-row offset as the fixture: the shard's chunk 0 carries the torch pass's
@@ -320,6 +350,8 @@ def main():
     ap.add_argument("--export", action="store_true")
     ap.add_argument("--gate", default=None, help="mlpackage to gate")
     ap.add_argument("--precision", default="fp32", choices=("fp32", "fp16"))
+    ap.add_argument("--pass", dest="pass_", default="reference", choices=sorted(PASSES),
+                    help="attention pass: reference 56/0 (the shards) or shipping 42/13 (the bundle)")
     ap.add_argument("--int8", action="store_true", help="quantize weights to int8 per-channel (the shipping form)")
     ap.add_argument("--out", default="bench-results/asr-tap")
     ap.add_argument("--fixture", default=None)
@@ -328,6 +360,9 @@ def main():
     ap.add_argument("--wav-cache", default="bench-results/asr-tap/wav")
     ap.add_argument("--json", default=None)
     ap.add_argument("--cpu-only", action="store_true")
+    ap.add_argument("--ref", default=None, choices=("hf", "fp32", "int8"),
+                    help="torch reference: hf (the 56/0 streaming pass), fp32 wrapper at --pass, "
+                         "or the same weights quantized int8 (default: int8 if --int8 else hf/fp32)")
     ap.add_argument("--selfcheck", action="store_true",
                     help="export fp32 and assert the fixture tap gate (steady max|d| <= 2e-3)")
     args = ap.parse_args()
@@ -335,7 +370,7 @@ def main():
     if args.export or args.selfcheck:
         proc, model = load_torch(args.model, args.device)
         precision, int8 = ("fp32", False) if args.selfcheck else (args.precision, args.int8)
-        path, size = export(model, Path(args.out), precision, args.model, int8)
+        path, size = export(model, Path(args.out), precision, args.model, int8, PASSES[args.pass_])
         if args.gate is None:
             args.gate = str(path)
     if args.gate:
