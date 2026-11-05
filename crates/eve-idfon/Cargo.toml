@@ -3,6 +3,7 @@ name = "eve-idfon"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Generic idfon ingress-channel endpoint holder for Eve agents; live calls are a handler seam."
 
 [[bin]]
 name = "eve-idfon"

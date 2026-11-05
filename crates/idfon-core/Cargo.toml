@@ -3,6 +3,7 @@ name = "idfon-core"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Identity, capabilities, signed paths, relay selection, and transport seams; native and wasm."
 
 [dependencies]
 ed25519-dalek = { version = "3", features = ["rand_core"] }

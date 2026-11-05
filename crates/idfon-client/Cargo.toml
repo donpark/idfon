@@ -3,6 +3,7 @@ name = "idfon-client"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Daemon IPC client: length-prefixed JSON frames over a Unix socket, plus socket path, retry, and response validation."
 
 [dependencies]
 idfon-protocol = { path = "../idfon-protocol" }

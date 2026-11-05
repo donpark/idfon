@@ -3,6 +3,7 @@ name = "idfon-h3"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "HTTP/3 over an iroh endpoint on a side-channel ALPN, beside the message ALPN."
 
 [dependencies]
 axum = "0.8"

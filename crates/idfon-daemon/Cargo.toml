@@ -3,6 +3,7 @@ name = "idfon-daemon"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Daemon feature functions and request dispatch: blobs, live sessions, the MCP bridge, and relay auth."
 
 [features]
 default = []

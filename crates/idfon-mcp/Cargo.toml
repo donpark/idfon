@@ -3,6 +3,7 @@ name = "idfon-mcp"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "idfon/mcp/1 byte-pump bridge binary, plus the read-only folder provider."
 
 [lib]
 name = "idfon_mcp"

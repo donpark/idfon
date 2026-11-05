@@ -3,6 +3,7 @@ name = "idfon-telemetry"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "One process-wide tracing subscriber shared by every idfon entry point."
 
 [features]
 default = []

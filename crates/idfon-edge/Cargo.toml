@@ -3,6 +3,7 @@ name = "idfon-edge"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Public-ingress edge peer: HTTP(S) for a browser, bridged to the resource owner over HTTP/3-over-iroh."
 
 [dependencies]
 anyhow = "1"

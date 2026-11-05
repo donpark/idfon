@@ -3,6 +3,7 @@ name = "idfon-cli"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "The idfon CLI: noun-verb subcommands mapped onto daemon IPC methods."
 
 [[bin]]
 name = "idfon"
