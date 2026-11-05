@@ -18,6 +18,21 @@ audio timestamps):
   cadence  today's windowed features, released at the streaming chunk boundary
            (control: isolates the cadence from the feature/model difference)
 
+Scoring modes for the tap rows (`--scoring`); the rows only exist at the chunk
+boundary in every mode, so none of these can beat that delivery:
+
+  chunk      the existing pass: every row of a chunk is scored at its boundary
+  per-frame  one student step per row as delivered, begin_hop per 80 ms frame
+  tap-hop    rows gated to the shipped 4-frame hop: a row waits for its hop's
+             last row (this is what routing tap rows through TurnRuntime.feed
+             costs; every chunk boundary does not align with a hop boundary)
+
+`--left-policies` selects the rules' `left` argument for per-frame scoring:
+`hop-phase` (3 - f%4, today's value sequence), `zero`, `chunk-countdown`
+(frames after this row in its delivery chunk, the existing tap pass's value).
+`left` reaches only a BARGE's `onset_s` (crates/idfon-voice/src/turns.rs), so
+the policies cannot move a decision; they are measured to show that.
+
 Replay clock: encoder calls are timed with `perf_counter_ns`; the session is
 scheduled on a virtual audio clock — group start = max(group audio end, previous
 group's decision end), group ready = start + measured encode time. No sleeping,
@@ -57,6 +72,8 @@ FRAME_SAMPLES = 1280           # 80 ms
 HOP_FRAMES = 4                 # today: 320 ms
 CHUNK_FRAMES = 7               # tap: 560 ms
 CHUNK_MEL = 56                 # 560 ms of mel at 10 ms
+SCORINGS = ("chunk", "per-frame", "tap-hop")
+LEFT_POLICIES = ("hop-phase", "zero", "chunk-countdown")
 PRE_ENCODE = 9                 # the tap contract's pre-encode context
 TOTAL_MEL = CHUNK_MEL + PRE_ENCODE
 WINDOW_S = 8.0
@@ -367,6 +384,110 @@ def build_streaming(wav_u, wav_a, energy, T, mel_u, mel_a,
     return groups
 
 
+# --------------------------------------------------------------------------- #
+# per-frame / hop-gated scoring of the tap rows
+# --------------------------------------------------------------------------- #
+def group_of_frame(f: int, last_group: int) -> int:
+    """The delivery chunk that contains grid frame f (chunk 0 carries 0..7)."""
+    return min(0 if f <= CHUNK_FRAMES else (f - 1) // CHUNK_FRAMES, last_group)
+
+
+def left_value(policy: str, f: int, group_span: dict) -> int:
+    """The rules' `left` for frame f under one policy.
+
+    `group_span[f]` is the last frame of f's delivery chunk, so
+    `chunk-countdown` is exactly the existing tap pass's range(n-1, -1, -1).
+    """
+    if policy == "hop-phase":
+        return (HOP_FRAMES - 1) - (f % HOP_FRAMES)
+    if policy == "zero":
+        return 0
+    if policy == "chunk-countdown":
+        return group_span[f] - f
+    raise SystemExit(f"unknown left policy {policy!r}")
+
+
+def scoring_units(groups, scoring: str):
+    """Groups of rows scored together, in frame order, with their release chunk.
+
+    per-frame: one row per unit, released by its own chunk.
+    tap-hop:   one 4-row unit, released only when its last row's chunk has been
+               encoded (the TurnRuntime.feed lattice).
+    """
+    frames = [g.first_frame + k for g in groups for k in range(len(g.hu))]
+    last = groups[-1].index
+    units = []
+    if scoring == "per-frame":
+        for f in frames:
+            units.append({"frames": [f], "begin": [f],
+                          "release": group_of_frame(f, last)})
+    elif scoring == "tap-hop":
+        hops: dict[int, list[int]] = {}
+        for f in frames:
+            hops.setdefault(f // HOP_FRAMES, []).append(f)
+        for h in sorted(hops):
+            fs = hops[h]
+            end = HOP_FRAMES * (h + 1) - 1
+            units.append({"frames": fs,
+                          "begin": list(range(HOP_FRAMES * h,
+                                               HOP_FRAMES * h + len(fs))),
+                          "release": group_of_frame(end, last)})
+    else:
+        raise SystemExit(f"unknown scoring mode {scoring!r}")
+    return units
+
+
+def decide_flat(groups, wav_u, wav_a, student, rules, scoring: str,
+                left_policy: str):
+    """Score rows as they are released; one step per row, rules threaded per frame.
+
+    The encode clock is the same one `decide` uses: a chunk's rows exist at
+    `max(chunk audio end, previous decision end) + measured encode`. A unit is
+    scored when the chunk containing its last row has been encoded; rows are
+    stepped in frame order, so `begin_hop` only ever sees audio that has arrived.
+    """
+    units = scoring_units(groups, scoring)
+    row = {g.first_frame + k: (g.hu[k], g.ha[k], float(g.act[k]))
+           for g in groups for k in range(len(g.hu))}
+    group_span = {g.first_frame + k: g.first_frame + len(g.hu) - 1
+                  for g in groups for k in range(len(g.hu))}
+    left = {}
+    for u in units:
+        for j, f in enumerate(u["frames"]):
+            left[f] = (len(u["frames"]) - 1 - j if scoring == "tap-hop"
+                       else left_value(left_policy, f, group_span))
+
+    frames: list[FrameRec] = []
+    student.reset()
+    done = 0.0
+    ui = 0
+    for g in groups:
+        ready = max(g.audio_end, done) + g.enc_s
+        due = []
+        while ui < len(units) and units[ui]["release"] <= g.index:
+            due.append(units[ui])
+            ui += 1
+        for u in due:
+            t = max(ready, done)
+            b0, b1 = u["begin"][0], u["begin"][-1] + 1
+            if rules.begin_hop(wav_u[b0 * FRAME_SAMPLES:b1 * FRAME_SAMPLES],
+                               wav_a[b0 * FRAME_SAMPLES:b1 * FRAME_SAMPLES]):
+                student.reset()
+            for f in u["frames"]:
+                hu, ha, act = row[f]
+                prev = rules.prev_state
+                t0 = now_s()
+                out8 = student.step(hu, ha, act, prev)
+                kinds, reset = rules.on_frame(out8, act, left[f])
+                t += now_s() - t0
+                frames.append(FrameRec(f, g.index, (f + 1) * FRAME_SAMPLES / SR,
+                                       g.audio_end, ready, t, kinds))
+                if reset:
+                    student.reset()
+            done = t
+    return frames
+
+
 def build_cadence(wav_u, wav_a, energy, T, hu, ha):
     """Control: today's features, released at the streaming chunk boundary.
 
@@ -563,35 +684,71 @@ def tap_pass(prep, args, tap_u, tap_a, student, rules_dylib):
             grid[f"ref=tap{-off:+d}"] = [round(float(np.median(cos)), 4),
                                           round(float(np.percentile(cos, 5)), 4)]
         prep["verify"] = dict(prep["verify"], tap_grid_cos_p50_p05=grid)
-    tap = decide(groups, student, Rules(rules_dylib, args.thresholds))
-    return tap, float(np.mean([g.enc_s for g in groups])) * 1e3
+    variants = {}
+    if "chunk" in args.scoring:
+        variants["chunk"] = decide(groups, student, Rules(rules_dylib, args.thresholds))
+    if "per-frame" in args.scoring:
+        for pol in args.left_policies:
+            variants[f"per-frame/{pol}"] = decide_flat(
+                groups, prep["wav_u"], prep["wav_a"], student,
+                Rules(rules_dylib, args.thresholds), "per-frame", pol)
+    if "tap-hop" in args.scoring:
+        variants["tap-hop"] = decide_flat(
+            groups, prep["wav_u"], prep["wav_a"], student,
+            Rules(rules_dylib, args.thresholds), "tap-hop", "hop-phase")
+    return groups, variants, float(np.mean([g.enc_s for g in groups])) * 1e3
 
 
-def assemble(prep, tap, tap_enc_ms):
-    ev_today, ev_tap = prep["ev_today"], events_of(tap)
-    p_tap, only_tap, only_today = pair(ev_tap, ev_today)
+def assemble(prep, groups, variants, tap_enc_ms):
+    ev_today = prep["ev_today"]
     p_ctrl, _, _ = pair(prep["ev_ctrl"], ev_today)
 
     def per_session(pairs):
         return {"endpoint": delta_row(pairs, "ENDPOINT"), "all": delta_row(pairs)}
 
+    paths = {}
+    for name, frames in variants.items():
+        ev = events_of(frames)
+        pairs, only_this, only_today = pair(ev, ev_today)
+        paths[name] = {
+            "summary": summary(frames, ev, name),
+            "paired_vs_today": per_session(pairs),
+            "endpoint_deltas_ms": [round((a[2] - b[2]) * 1e3, 1)
+                                   for a, b in pairs if a[1] == "ENDPOINT"],
+            "matched": len(pairs), "only_this": only_this, "only_today": only_today,
+            "backlog_max_ms": round(max((f.feature_ready - f.group_audio_end
+                                         for f in frames), default=0.0) * 1e3, 1),
+            "backlog_end_ms": round((frames[-1].feature_ready - frames[-1].group_audio_end)
+                                    * 1e3, 1) if frames else None,
+            "events": [[e[0], e[1], round(e[2], 4)] for e in ev],
+        }
+
+    # `left` must be invisible to the decisions. If a policy changes an event
+    # frame or kind, this is the finding - not a number to average.
+    per_frame = [n for n in paths if n.startswith("per-frame/")]
+    if len(per_frame) > 1:
+        base = [(e[0], e[1]) for e in paths[per_frame[0]]["events"]]
+        for n in per_frame[1:]:
+            assert [(e[0], e[1]) for e in paths[n]["events"]] == base, \
+                f"left policy {n} changed the event sequence"
+
     backlog_today = [f.feature_ready - f.group_audio_end for f in prep["today"]]
-    backlog_tap = [f.feature_ready - f.group_audio_end for f in tap]
+    tap_groups = boundaries(list(variants.values())[0]) if variants else []
+    ref = (paths.get("chunk") or paths.get("per-frame/hop-phase")
+           or next(iter(paths.values())))
     return {
         "session": prep["session"],
         "frames": prep["T"],
         "today": summary(prep["today"], ev_today, "today"),
-        "tap": summary(tap, ev_tap, "tap"),
         "cadence": summary(prep["ctrl"], prep["ev_ctrl"], "cadence"),
+        "tap": ref["summary"],
+        "paths": paths,
         "paired": {
-            "tap_vs_today": per_session(p_tap),
             "cadence_vs_today": per_session(p_ctrl),
-            "matched": len(p_tap), "only_tap": only_tap, "only_today": only_today,
+            "matched": len(pair(prep["ev_ctrl"], ev_today)[0]),
         },
         "backlog_ms": {
             "today_max": round(max(backlog_today) * 1e3, 1) if backlog_today else None,
-            "tap_max": round(max(backlog_tap) * 1e3, 1) if backlog_tap else None,
-            "tap_end": round(backlog_tap[-1] * 1e3, 1) if backlog_tap else None,
         },
         "encode_ms": {
             "today_mean_hop": round(prep["today_enc_ms"], 1),
@@ -600,11 +757,30 @@ def assemble(prep, tap, tap_enc_ms):
         "verify": prep["verify"],
         "raw": {
             "today_groups": boundaries(prep["today"]),
-            "tap_groups": boundaries(tap),
+            "tap_groups": tap_groups,
             "today_events": [[e[0], e[1], round(e[2], 4)] for e in ev_today],
-            "tap_events": [[e[0], e[1], round(e[2], 4)] for e in ev_tap],
         },
     }
+
+
+def frac_over(recs, name, ms):
+    """Share of matched endpoints whose tap decision is > ms past today's."""
+    xs = [d for r in recs for d in r["paths"][name]["endpoint_deltas_ms"]]
+    return {"n": len(xs), "above": sum(1 for d in xs if d > ms),
+            "frac": (sum(1 for d in xs if d > ms) / len(xs)) if xs else 0.0}
+
+
+def manager_shifts(path):
+    """Per-session p50 of the paced probe's `measured - offline` (the #174 shift)."""
+    p = Path(path) if path else None
+    if p is None or not p.exists():
+        return {}
+    doc = json.loads(p.read_text())
+    out = {}
+    for s in doc.get("sessions", []):
+        if s.get("mode") == "paced" and s.get("vs_offline_ms", {}).get("p50") is not None:
+            out[s["session"]] = float(s["vs_offline_ms"]["p50"])
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -627,7 +803,38 @@ def selfcheck():
     assert agg == {"sessions": 2, "mean_of_medians_ms": 200.0, "worst_session_ms": 300.0}
     # frame/group maps: 7 frames per chunk, chunk end on the 80 ms grid
     assert CHUNK_FRAMES * FRAME_SAMPLES / SR == 0.56
-    print("selfcheck: scheduling, pairing, aggregation OK")
+    # left values: today's sequence, zero, and the delivery-chunk countdown
+    assert [left_value("hop-phase", f, {}) for f in range(9)] == [3, 2, 1, 0] * 2 + [3]
+    assert [left_value("zero", f, {}) for f in range(9)] == [0] * 9
+    span = {f: (7 if f <= 7 else 7 + 7 * ((f - 8) // 7 + 1)) for f in range(23)}
+    assert [left_value("chunk-countdown", f, span) for f in (0, 7, 8, 14, 15)] == [7, 0, 6, 0, 6]
+    # delivery chunks and hop straddles: chunk 4 is frames 29..35, so the hop
+    # ending at 31 waits for it; hop 8 (32..35) does not straddle.
+    assert [group_of_frame(f, 99) for f in (0, 7, 8, 14, 15, 29, 35, 36)] == \
+        [0, 0, 1, 1, 2, 4, 4, 5]
+    assert group_of_frame(31, 99) == 4 and group_of_frame(35, 99) == 4
+    assert group_of_frame(28, 99) == 3 and group_of_frame(32, 99) == 4
+
+    def fake_groups(n):
+        out = []
+        for gi in range(n):
+            f0, k = (0, CHUNK_FRAMES + 1) if gi == 0 else (CHUNK_FRAMES * gi + 1,
+                                                           CHUNK_FRAMES)
+            out.append(Group(gi, f0, 0.0, np.zeros(0, np.float32), np.zeros(0, np.float32),
+                             np.zeros((k, 1), np.float32), np.zeros((k, 1), np.float32),
+                             np.zeros(k, np.float32), 0.0))
+        return out
+    gs = fake_groups(8)
+    pf = scoring_units(gs, "per-frame")
+    th = {u["frames"][0]: u for u in scoring_units(gs, "tap-hop")}
+    assert len(pf) == sum(len(g.hu) for g in gs)
+    assert pf[12]["release"] == 1 and pf[28]["release"] == 3
+    # hop 3 (12..15) waits for chunk 2; hop 4 (16..19) is already in chunk 2;
+    # hop 7 (28..31) waits for chunk 4 while row 28's own chunk is 3.
+    assert th[12]["release"] == 2 and th[16]["release"] == 2
+    assert th[28]["release"] == 4 and pf[28]["release"] == 3
+    print("selfcheck: scheduling, pairing, aggregation, left policies, chunk grid, "
+          "scoring units OK")
 
 
 def main():
@@ -645,6 +852,13 @@ def main():
     ap.add_argument("--rules-dylib", default="mac/Vendor/libiroh_c_ffi.dylib")
     ap.add_argument("--thresholds", default=None,
                     help="JSON rules thresholds (default: the ABI's bundle defaults)")
+    ap.add_argument("--scoring", default="chunk,per-frame,tap-hop",
+                    help=f"tap scoring modes to run: {', '.join(SCORINGS)}")
+    ap.add_argument("--left-policies", default=",".join(LEFT_POLICIES),
+                    help=f"per-frame `left` policies: {', '.join(LEFT_POLICIES)}")
+    ap.add_argument("--manager-probe", default="bench-results/asr-manager-probe/paced.json",
+                    help="paced probe JSON; its per-frame `measured - offline` p50 is "
+                         "added to the endpoint medians (the uniform shift #174 measured)")
     ap.add_argument("--verify", action="store_true",
                     help="check replayed windowed L4 rows against the shard's hu_l4")
     ap.add_argument("--limit-frames", type=int, default=0, help="debug: first N frames only")
@@ -655,6 +869,16 @@ def main():
     if args.selfcheck:
         selfcheck()
         return
+    args.scoring = [s.strip() for s in args.scoring.split(",") if s.strip()]
+    args.left_policies = [s.strip() for s in args.left_policies.split(",") if s.strip()]
+    for s in args.scoring:
+        if s not in SCORINGS:
+            raise SystemExit(f"unknown scoring mode {s!r}")
+    for p in args.left_policies:
+        if p not in LEFT_POLICIES:
+            raise SystemExit(f"unknown left policy {p!r}")
+    if not args.scoring:
+        raise SystemExit("no scoring modes selected")
 
     from transformers import AutoProcessor
     processor = AutoProcessor.from_pretrained("nvidia/nemotron-3.5-asr-streaming-0.6b")
@@ -682,26 +906,24 @@ def main():
     recs = []
     for prep in preps:
         print(f"\n== {prep['session']}", flush=True)
-        tap_frames, tap_enc_ms = tap_pass(prep, args, tap_u, tap_a, student,
-                                         Path(args.rules_dylib))
-        rec = assemble(prep, tap_frames, tap_enc_ms)
+        groups, variants, tap_enc_ms = tap_pass(prep, args, tap_u, tap_a, student,
+                                               Path(args.rules_dylib))
+        rec = assemble(prep, groups, variants, tap_enc_ms)
         recs.append(rec)
-        for name in ("today", "tap", "cadence"):
-            s = rec[name]
+        for name, s in (("today", rec["today"]), ("cadence", rec["cadence"])):
             d = s["feature_delay_ms"]
-            d1 = s["feature_delay_ms_ge1"]
             print(f"  {name:<8} {s['frames']:5d} frames {s['groups']:4d} groups "
                   f"{s['events']:3d} events ({s['endpoints']:2d} ep)  feature delay "
-                  f"p50 {d['p50']:7.1f}  p95 {d['p95']:7.1f}  max {d['max']:7.1f} ms "
-                  f"| frame>=1 p95 {d1['p95']:7.1f} max {d1['max']:7.1f}")
-        for k in ("tap_vs_today", "cadence_vs_today"):
-            p = rec["paired"][k]
-            e = p["endpoint"]
-            print(f"  delta {k:<18} ep n={e['n']:2d} median {e['median_ms']} ms  "
-                  f"p95 {e['p95_ms']}  max {e['max_ms']} | all n={p['all']['n']:2d} "
-                  f"median {p['all']['median_ms']}")
-        print(f"  backlog today {rec['backlog_ms']['today_max']} ms  "
-              f"tap {rec['backlog_ms']['tap_max']} ms  encode/hop "
+                  f"p50 {d['p50']:7.1f}  p95 {d['p95']:7.1f}  max {d['max']:7.1f} ms")
+        for name, p in rec["paths"].items():
+            s, e = p["summary"], p["paired_vs_today"]["endpoint"]
+            print(f"  {name:<22} {s['frames']:5d} frames {s['groups']:4d} groups "
+                  f"{s['events']:3d} events ({s['endpoints']:2d} ep)  vs today "
+                  f"n={e['n']:2d} median {e['median_ms']} p95 {e['p95_ms']} "
+                  f"max {e['max_ms']} ms  backlog {p['backlog_max_ms']} ms"
+                  f" (end {p['backlog_end_ms']})")
+        print(f"  feature delay tap p50 {rec['tap']['feature_delay_ms']['p50']} "
+              f"p95 {rec['tap']['feature_delay_ms']['p95']} ms  |  encode/hop "
               f"{rec['encode_ms']['today_mean_hop']} ms  encode/chunk "
               f"{rec['encode_ms']['tap_mean_chunk']} ms")
         if rec["verify"]:
@@ -709,15 +931,31 @@ def main():
                   f"p05 {rec['verify']['cos_p05']}  relL2 p50 {rec['verify']['relL2_p50']}")
 
     print("\n== aggregate (harness.py: mean of per-session medians; worst = max)")
-    for k in ("tap_vs_today", "cadence_vs_today"):
-        eps = [r["paired"][k]["endpoint"] for r in recs]
+    names = list(recs[0]["paths"]) if recs else []
+    shifts = manager_shifts(args.manager_probe)
+    for name in names:
+        eps = [r["paths"][name]["paired_vs_today"]["endpoint"] for r in recs]
         agg = aggregate([{"median_ms": e["median_ms"]} for e in eps])
-        print(f"  {k:<18} endpoint mean-of-medians {agg['mean_of_medians_ms']} ms  "
-              f"worst session {agg['worst_session_ms']} ms  (bar +320 ms worst)")
+        over = frac_over(recs, name, 320.0)
+        print(f"  {name:<22} endpoints n={sum(e['n'] for e in eps):2d}  "
+              f"mean-of-medians {agg['mean_of_medians_ms']} ms  "
+              f"worst session {agg['worst_session_ms']} ms  "
+              f"past +320 {over['above']}/{over['n']} ({over['frac']:.0%})")
+        if shifts:
+            shifted = aggregate([{"median_ms": (
+                r["paths"][name]["paired_vs_today"]["endpoint"]["median_ms"] or 0.0)
+                + shifts.get(r["session"], 0.0)} for r in recs])
+            print(f"  {'  + manager shift':<22} mean-of-medians "
+                  f"{shifted['mean_of_medians_ms']} ms  worst session "
+                  f"{shifted['worst_session_ms']} ms  "
+                  f"(per-session p50 {', '.join(f'{s:+.1f}' for s in shifts.values())})")
+    print("  (bar +160 mean-of-medians, +320 worst session)")
 
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(json.dumps({"sessions": recs}, indent=1))
+        Path(args.out).write_text(json.dumps(
+            {"sessions": recs, "manager_p50_ms": shifts,
+             "scoring": args.scoring, "left_policies": args.left_policies}, indent=1))
         print(f"\nwrote {args.out}")
 
 
