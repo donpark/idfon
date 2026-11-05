@@ -854,9 +854,18 @@ pub fn media_live_path_changed() {
         Some(std::time::Instant::now());
 }
 
-/// How long a silent subscription is tolerated before it is rebuilt: 2 s
-/// normally, 500 ms right after a path change or a foreground kick.
-fn stall_window() -> std::time::Duration {
+/// How long a silent subscription is tolerated before it is rebuilt.
+///
+/// 500 ms right after a path change or a foreground kick (someone already
+/// knows the network moved); otherwise the wait depends on the path: a
+/// **direct** path going quiet is usually a cell handover that comes back in
+/// ~2 s, and rebuilding costs another second on top (2026-11-04 drive: two
+/// ~3 s holes, ~2 s of each the blackhole itself), so wait 4 s for it. A
+/// relay path has no such resume behavior — 2 s.
+///
+/// A selected path that *closes* does not wait at all: the path-event watcher
+/// ends the attempt immediately.
+fn stall_window(relay: bool) -> std::time::Duration {
     let recent_path = PATH_CHANGED_AT
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
@@ -864,8 +873,10 @@ fn stall_window() -> std::time::Duration {
         .unwrap_or(false);
     if recent_path || SUB_KICK.load(Ordering::Relaxed) {
         std::time::Duration::from_millis(500)
-    } else {
+    } else if relay {
         std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::from_secs(4)
     }
 }
 
@@ -1074,6 +1085,44 @@ async fn subscribe_decode_once(
         let subscription = live
             .subscribe(ticket.endpoint, &ticket.broadcast_name)
             .await?;
+        // Event-driven detection: when the *selected* path closes, rebuild
+        // now instead of waiting out the silence window. A non-selected path
+        // closing (the relay after a direct path wins, an old candidate) is
+        // normal and must be ignored — hence tracking Selected.
+        let path_down = std::sync::Arc::new(AtomicBool::new(false));
+        {
+            let conn = subscription.session().conn().clone();
+            let flag = path_down.clone();
+            let watch_stop = stop.clone();
+            let mut selected = conn
+                .paths()
+                .iter()
+                .find(|path| path.is_selected())
+                .map(|path| path.id());
+            tokio::spawn(async move {
+                use n0_future::StreamExt;
+                let mut events = conn.path_events();
+                while let Some(event) = events.next().await {
+                    if watch_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match event {
+                        iroh::endpoint::PathEvent::Selected { id, .. } => selected = Some(id),
+                        iroh::endpoint::PathEvent::Closed { id, .. } if selected == Some(id) => {
+                            flag.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                        // Events were dropped: assume the worst and let the
+                        // retry rebuild rather than sit on a stale stream.
+                        iroh::endpoint::PathEvent::Lagged { .. } => {
+                            flag.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
         let broadcast = subscription.broadcast();
         // Health checks sample this session's downlink (docs/media-adaptation.md §B2.2).
         crate::health::attach(&live, subscription.session().conn(), subscription.signals().clone());
@@ -1173,7 +1222,18 @@ async fn subscribe_decode_once(
                 }
                 return Ok(true);
             }
-            if last_frame.elapsed() >= stall_window() {
+            if path_down.load(Ordering::Relaxed) {
+                tracing::warn!(
+                    attempt,
+                    decoded = *decoded_total,
+                    media_secs = samples.len() as f64 / (48_000.0 * input.channels as f64),
+                    "selected path closed; treating as early track end"
+                );
+                set_sub_state(SUB_RECONNECTING);
+                return Err(anyhow::anyhow!(SubscribeEndError::Transient));
+            }
+            let relay = conn_paths_relay(&subscription);
+            if last_frame.elapsed() >= stall_window(relay) {
                 tracing::warn!(
                     attempt,
                     decoded = *decoded_total,
@@ -1283,6 +1343,18 @@ async fn subscribe_decode_once(
         }
     };
     res.await
+}
+
+/// Whether the subscription's currently selected path goes through a relay.
+fn conn_paths_relay(subscription: &iroh_live::Subscription) -> bool {
+    subscription
+        .session()
+        .conn()
+        .paths()
+        .iter()
+        .find(|path| path.is_selected())
+        .map(|path| path.is_relay())
+        .unwrap_or(false)
 }
 
 /// Expected pts gap in µs for one frame: f32 samples at 48 kHz over `channels`.
@@ -2003,14 +2075,19 @@ mod tests {
             .unwrap_or_else(|poison| poison.into_inner());
         *super::PATH_CHANGED_AT.lock().unwrap() = None;
         super::SUB_KICK.store(false, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(super::stall_window(), std::time::Duration::from_secs(2));
+        // A direct path going quiet is usually a cell handover that resumes
+        // on its own; a relay path has no such behavior.
+        assert_eq!(super::stall_window(false), std::time::Duration::from_secs(4));
+        assert_eq!(super::stall_window(true), std::time::Duration::from_secs(2));
 
         super::media_live_reconnect();
-        assert_eq!(super::stall_window(), std::time::Duration::from_millis(500));
+        assert_eq!(super::stall_window(false), std::time::Duration::from_millis(500));
+        assert_eq!(super::stall_window(true), std::time::Duration::from_millis(500));
         super::SUB_KICK.store(false, std::sync::atomic::Ordering::Relaxed);
 
         super::media_live_path_changed();
-        assert_eq!(super::stall_window(), std::time::Duration::from_millis(500));
+        assert_eq!(super::stall_window(false), std::time::Duration::from_millis(500));
+        assert_eq!(super::stall_window(true), std::time::Duration::from_millis(500));
 
         // The state the shell polls maps to the documented wire values.
         super::set_sub_state(super::SUB_RECONNECTING);
