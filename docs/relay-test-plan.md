@@ -166,6 +166,39 @@ seven real endpoints admitted on ~10-year leases (edge, mac, iPhone, four
 agent peers) and `IDFON_RELAY_ISSUERS` = the mac identity key. Rollback is
 one redeploy without `IDFON_RELAY_AUTH` (verified).
 
+## Network-path simulation (patchbay) — not adopted yet
+
+[n0-computer/patchbay](https://github.com/n0-computer/patchbay) builds a lab
+out of Linux network namespaces: routers with real nftables NAT
+(`Nat::Open` = EIM+EIF, `Moderate` = EIM+APDF, `Strict` = symmetric), firewall
+presets, `tc netem` loss/latency, regions with cross-link delay. A TOML sim
+runs **arbitrary binaries** per device (`spawn`/`run`/`wait-for`/`captures`/
+`assert`, `gen-certs`, `gen-file`, `--binary name:path:… `). iroh itself runs
+its NAT/relay/network-switch integration tests this way (`iroh/tests/patchbay/`
+— `nat.rs`, `relay.rs`, `degrade.rs`, `switch-uplink.rs`).
+
+Why it fits us: RA-L2 currently needs docker plus a relay on the host; a lab
+puts two `idfond` nodes behind home CGNAT and a symmetric-NAT carrier, with
+`srv` running our own `iroh-relay` — exactly the `--relay-only` path and the
+relay-auth callout, hermetically. The same harness covers `idfon put`/`get`
+under loss/latency (our 30 s download timeout, the 6×1 s fetch retry), and the
+`idfon-channel`/`idfon-h3` paths.
+
+Known costs before adding it: Linux-only namespaces (on macOS the
+`patchbay-vm` container backend works — needs `container system start`;
+QEMU otherwise), a new opt-in Linux CI job with `nft`/`tc`/unprivileged
+user namespaces, no Apple processes inside a lab (it can never cover app ↔
+daemon transfers), and no clock virtualization. Labs are a closed world with
+an in-process DNS server and no host egress, so n0 discovery is unreachable:
+a sim must run its own relay and rely on ticket-carried addresses (ours
+already are).
+
+Smallest useful shape, when we do adopt it: one sim file (provider behind
+`Home`, fetcher behind `IspCgnatSymmetric`, our relay in `dc`, `idfon put` →
+`idfon get` → assert size), run by hand with
+`patchbay-vm --backend container run <sim>.toml`, kept out of CI until it
+reproduces a NAT/relay bug we care about.
+
 ## Pass criteria
 
 - L0 all green (required for every commit touching `deploy/relay-auth/` or
