@@ -9,7 +9,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// Build stamp for device E2E: bumped on every fix round and confirmed in
     /// the device console before testing. The stale-binary trap (testing an
     /// old install while believing it is new) has cost several rounds.
-    static let buildStamp = "2026-11-04.retry"
+    static let buildStamp = "2026-11-04.pathevents"
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         idfonLog("idfon build stamp \(Self.buildStamp)")
