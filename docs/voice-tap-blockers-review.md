@@ -104,9 +104,14 @@ shipping pass 43 keys/query where the documented geometry is 50.
 Fixed by replacing both bounds with per-query block bounds
 (`[(block − left_blocks)·g, end of own block]`), which reduces to the sliding
 window at lookahead 0 — the reference gate is unchanged at 3.53e-05, so the
-56/0 numbers stand. **All 42/13 numbers in §2 and §3 predate the fix and are
-being re-measured**: the re-exported artifact, the pass gate, and the refit all
-have to be redone on features from the corrected mask.
+56/0 numbers stand. **All 42/13 numbers in §2 and §3 predate the fix.** The
+re-measurement is done (`docs/voice-tyger-42-13-remask.md`): the corrected
+artifact is 593,446,155 B / 8.92 ms ANE, and the pass gate is *worse* than the
+defective build suggested — the product row is 79.18% of the 99% bar (was
+83.22%), because a 43-key causal window sits nearer the reference's 57-key
+sliding window than the correct 50-key block mask does. The redone refit lands
+at 78.07% (swap) / 80.61% (product recovery), so the ~15 pt floor in §2 is now a
+~19–21 pt measured gap for this recipe.
 
 The methodological point survives the bug, and is why it was worth finding: the
 42/13 pass had no independent oracle. A wrong mask still produced
