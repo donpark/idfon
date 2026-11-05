@@ -35,7 +35,7 @@ Consequences:
 | Piece | What it is | Lifetime |
 | --- | --- | --- |
 | **Claim** | An identity homed on relay `R`; its public key is a trusted issuer of `R` | until unclaimed |
-| **Grant** | Signed, caller-bound `CapabilityTicket` (`relay.use`): issuer = owner identity key, subject = caller endpoint id, signed relay URL, expiry, ticket_id | bootstrap / recovery only |
+| **Grant** | Signed, caller-bound [`rcan`](https://github.com/n0-computer/rcan) delegation (`relay.use`): issuer = owner identity key, audience = caller endpoint id, signed relay URL, expiry, ticket_id. A base32 token; `Delegation::delegate` lets an admitted caller re-delegate a narrower grant | bootstrap / recovery only |
 | **Owner token** | Random, stateful, endpoint-bound; minted after the owner signs a single-use challenge | hours (default 12) |
 | **Non-owner token** | Same shape; minted when a caller presents a grant | days (default 7), refreshed at half-life |
 | **Entry** | The admission record `/check` consults: endpoint id → {role, identity, account, label, ticket_id, lease} | lease (days), extended by refresh/upsert |
@@ -100,11 +100,14 @@ access = { http = { url = "http://relay-auth:9090/check", bearer_token = "…" }
 The callout sends `X-Iroh-Endpoint-Id` (iroh-relay ≥ 1.4; older relays send
 the deprecated `X-Iroh-NodeId`); the only accepted answer is `200 true`.
 Everything else (grant verification, tokens, revocation) lives in the auth
-service beside the relay. Wire format detail that matters: the signed bytes
-of a grant are serde's canonical JSON of
-`{capabilities, conversation, expires_at, issuer, subject, ticket_id[, path_scope][, voice][, relay]}`
-with keys sorted **alphabetically** — pinned by the golden vector in
-`crates/idfon-core` (`relay_grant_golden_vector`) and `deploy/relay-auth/test.mjs`.
+service beside the relay. Wire format detail that matters: a grant is an
+`rcan` delegation token (wire v2, base32): `0x02 | body | ed25519-sig(64)` over
+`"rcan-2-delegation" | body`, where `body` is issuer/audience keys, capability
+origin, expiry, and the postcard-encoded `RelayGrant { relay, ticket_id }`.
+Pinned by the golden vector in `crates/idfon-core` (`relay_grant_golden_vector`)
+and `deploy/relay-auth/test.mjs`; the JS port lives in `deploy/relay-auth/rcan.mjs`.
+`idfon-core` pins the `rcan` crate to a rev because the published 0.4.1 is the
+older wire v1 — bump it deliberately, never by a lockfile refresh.
 
 ## 5. Keeping N0 / managed relays compatible
 
@@ -139,7 +142,7 @@ bytes pinned by `idfon_core::relay_owner_proof_bytes`).
 ## 7. Testing
 
 `node --test deploy/relay-auth/` covers the contract and the service: the
-Rust↔Node golden-vector signature match (and remint), grant rejection paths
+Rust↔Node golden-token decode/verify (and byte-identical remint), grant rejection paths
 (untrusted issuer / tamper / expiry), owner-challenge replay, token rotation,
 revoke cascade (ticket → entry → tokens), owner scoping, and fail-closed
 `/check`. `cargo test -p idfon-core` covers the Rust half of the vector.

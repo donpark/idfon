@@ -100,7 +100,7 @@ enum CallRing {
 
     /// The stored contact ticket (the callee's statement about us), if any.
     private static func contactTicket(for peer: String) -> RingTicket? {
-        CapabilityTickets.rawTicketJSON(for: peer).flatMap(RingTicket.init(json:))
+        CapabilityTickets.rawTicket(for: peer).flatMap(RingTicket.init(json:))
     }
 
     private static func postJSON(url: URL, ticket: String, body: [String: Any]) async {

@@ -49,7 +49,7 @@ Key facts:
   named-pipe transport first (noted in `idfon.js`).
 - **Contact vCards**: `idfon contact export [--peer REF] [--out F]` wraps a
   contact ticket (this identity's `contact.ticket`, or a saved peer's primary
-  pair) in a vCard 3.0 card twice: `X-IDFON-TICKET` (ticket JSON) and
+  pair) in a vCard 3.0 card twice: `X-IDFON-TICKET` (ticket token) and
   `URL:idfon://add/<base64url>` (the deep link that survives an AirDrop
   round-trip through the Contacts app, which strips unknown X- properties but
   keeps standard `URL` fields). `idfon contact import [FILE|-]` adds every

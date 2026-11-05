@@ -134,7 +134,7 @@ final class PushWake: NSObject, PKPushRegistryDelegate {
 
     /// The stored contact ticket (the callee's statement about us), if any.
     private func contactTicket(for peer: String) -> RingTicket? {
-        CapabilityTickets.rawTicketJSON(for: peer).flatMap { RingTicket(json: $0) }
+        CapabilityTickets.rawTicket(for: peer).flatMap { RingTicket(json: $0) }
     }
 
     // MARK: - Registration

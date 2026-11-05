@@ -528,8 +528,35 @@ function extractObject(data: Uint8Array, field: string): Uint8Array {
   return EMPTY;
 }
 
+/** A JSON string value for `field` (unescaped), or EMPTY when absent. */
+function extractString(data: Uint8Array, field: string): Uint8Array {
+  const marker = utf8Bytes(`"${field}":`);
+  for (let i = 0; i + marker.length < data.length; i += 1) {
+    if (!sameBytes(data.slice(i, i + marker.length), marker)) continue;
+    let start = i + marker.length;
+    while (start < data.length && data[start] === 32) start += 1;
+    if (start >= data.length || data[start] !== 34) return EMPTY;
+    const out: number[] = [];
+    for (let j = start + 1; j < data.length; j += 1) {
+      if (data[j] === 92) {
+        const next = data[j + 1];
+        if (next === 34 || next === 92) { out.push(next); j += 1; continue; }
+        if (next === 110) { out.push(10); j += 1; continue; }
+        if (next === 114) { out.push(13); j += 1; continue; }
+        if (next === 116) { out.push(9); j += 1; continue; }
+      }
+      if (data[j] === 34) return new Uint8Array(out);
+      out.push(data[j]);
+    }
+    return EMPTY;
+  }
+  return EMPTY;
+}
+
+/** A capability ticket arrives as its rcan token string (legacy: a JSON object). */
 function extractTicket(data: Uint8Array): Uint8Array {
-  return extractObject(data, "ticket");
+  const token = extractString(data, "ticket");
+  return token.length > 0 ? token : extractObject(data, "ticket");
 }
 
 function extractContactTicket(data: Uint8Array): Uint8Array {
@@ -632,7 +659,7 @@ function daemonMessagePayload(identity: Uint8Array, to: Uint8Array, text: Uint8A
   payload = concat(payload, utf8Bytes(',"idempotency_key_bytes":'));
   payload = concat(payload, byteArrayJson(key));
   payload = concat(payload, utf8Bytes(',"capability_ticket":'));
-  payload = concat(payload, capabilityTicket.length === 0 ? utf8Bytes('null') : capabilityTicket);
+  payload = concat(payload, capabilityTicket.length === 0 ? utf8Bytes('null') : jsonString(capabilityTicket));
   return concat(payload, utf8Bytes('}}'));
 }
 

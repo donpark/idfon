@@ -11,16 +11,15 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::SigningKey;
 use idfon_core::transport::{IrohTransport, MessageTransport, TransportError};
 use idfon_core::{
     peer_id, sign_message, sign_message_with_ticket, issue_capability_ticket_with_voice,
-    verify_capability_ticket, verify_message, AuthError,
+    verify_message, AuthError, CapabilityTicket,
 };
 use idfon_protocol::{
-    AckStatus, Capability, CapabilityTicket, MessageAck, MessageContent, MessageEnvelope,
+    AckStatus, Capability, MessageAck, MessageContent, MessageEnvelope,
     VoiceMode, VoiceRoute, MAX_FRAME_BYTES,
 };
 use iroh::{protocol::Router, Endpoint, EndpointAddr, EndpointId};
@@ -489,7 +488,7 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
             grants.extend(capabilities.into_iter().map(Capability::new));
             println!(
                 "{}",
-                serde_json::to_string(&issue_capability_ticket_with_voice(
+                issue_capability_ticket_with_voice(
                     &key,
                     subject,
                     None,
@@ -498,7 +497,8 @@ pub async fn run(live_registry: live::LiveCallRegistry) -> Result<()> {
                     ticket_id,
                     Some(voice),
                     None,
-                ))?
+                )?
+                .token()
             );
             Ok(())
         }
@@ -771,10 +771,9 @@ fn voice_route_from_live_params(params: &serde_json::Value) -> VoiceRoute {
 }
 
 fn load_ticket(path: &Path) -> Result<CapabilityTicket> {
-    serde_json::from_slice(
-        &std::fs::read(path).with_context(|| format!("read ticket {}", path.display()))?,
-    )
-    .with_context(|| format!("parse ticket {}", path.display()))
+    let token = std::fs::read_to_string(path)
+        .with_context(|| format!("read ticket {}", path.display()))?;
+    CapabilityTicket::decode(token.trim()).with_context(|| format!("parse ticket {}", path.display()))
 }
 
 fn load_key(path: Option<&Path>, ephemeral: bool) -> Result<SigningKey> {
@@ -1358,6 +1357,10 @@ async fn handle_message(
     live_registry: Arc<live::LiveCallRegistry>,
     live_params: serde_json::Value,
 ) -> std::result::Result<MessageAck, TransportError> {
+    let decoded = message
+        .capability_ticket
+        .as_deref()
+        .and_then(|token| CapabilityTicket::decode(token).ok());
     let ticket = {
         let allow = allow.read().await;
         let public = live_params
@@ -1379,8 +1382,8 @@ async fn handle_message(
                     sender = %message.sender.peer_id,
                     signed_endpoint = %message.sender.endpoint_id,
                     remote_endpoint = %remote_endpoint_id,
-                    ticket_issuer = ?message.capability_ticket.as_ref().map(|ticket| ticket.issuer.as_str()),
-                    ticket_subject = ?message.capability_ticket.as_ref().and_then(|ticket| ticket.subject.as_deref()),
+                    ticket_issuer = ?decoded.as_ref().map(|ticket| ticket.issuer()),
+                    ticket_subject = ?decoded.as_ref().and_then(|ticket| ticket.subject()),
                     error = %error,
                     "rejected message"
                 );
@@ -1402,7 +1405,7 @@ async fn handle_message(
         .unwrap_or((wire_text.clone(), None));
     if a2a_depth.is_some()
         && !ticket
-            .capabilities
+            .capabilities()
             .contains(&Capability::new("agent.receive"))
     {
         let error = HolderError::AgentCapabilityDenied;
@@ -1578,7 +1581,7 @@ async fn handle_message(
                 responses,
                 capabilities: Some(
                     ticket
-                        .capabilities
+                        .capabilities()
                         .iter()
                         .map(|capability| capability.0.to_string())
                         .collect(),
@@ -1646,7 +1649,7 @@ async fn handle_message(
             a2a_depth,
             capabilities: Some(
                 ticket
-                    .capabilities
+                    .capabilities()
                     .iter()
                     .map(|capability| capability.0.to_string())
                     .collect(),
@@ -1916,7 +1919,7 @@ async fn handle_status(
         .map_err(|error| anyhow!("invalid target endpoint ID: {error}"))?;
     let message_id = next_message_id("eve_status_");
     let reply_ticket = reply_ticket
-        .filter(|ticket| ticket.issuer == target.peer_id)
+        .filter(|ticket| ticket.issuer() == target.peer_id)
         .cloned();
     let mut envelope = sign_message_with_ticket(
         key,
@@ -2103,7 +2106,7 @@ fn ticket_for_target(
     target_peer_id: &str,
     ticket: Option<CapabilityTicket>,
 ) -> Option<CapabilityTicket> {
-    ticket.filter(|ticket| ticket.issuer == target_peer_id)
+    ticket.filter(|ticket| ticket.issuer() == target_peer_id)
 }
 
 async fn handle_peer_send(
@@ -2412,7 +2415,7 @@ async fn handle_ticket_issue(
         format!("eve-ticket-{}", now_seconds()),
         Some(voice.clone()),
         None,
-    );
+    )?;
     out_tx
         .send(IpcFrame::TicketIssueResult {
             request_id,
@@ -2498,35 +2501,36 @@ impl std::fmt::Display for HolderError {
 
 impl std::error::Error for HolderError {}
 
-fn validate_message<'a>(
-    message: &'a MessageEnvelope,
+fn validate_message(
+    message: &MessageEnvelope,
     remote_endpoint_id: &str,
     allow: &[String],
     holder_peer_id: &str,
     public: bool,
-) -> std::result::Result<&'a CapabilityTicket, HolderError> {
+) -> std::result::Result<CapabilityTicket, HolderError> {
     verify_message(message).map_err(HolderError::Auth)?;
     if message.sender.endpoint_id != remote_endpoint_id {
         return Err(HolderError::Unauthorized);
     }
-    let Some(ticket) = &message.capability_ticket else {
+    let Some(token) = message.capability_ticket.as_deref() else {
         return Err(HolderError::CapabilityDenied);
     };
-    verify_capability_ticket(ticket).map_err(HolderError::Auth)?;
+    // Decoding verifies the issuer's signature; a forged token never gets here.
+    let ticket = CapabilityTicket::decode(token).map_err(HolderError::Auth)?;
     // A public ticket carries no subject: any sender may present it, but only
     // for receive, and only when the holder opted in (`"public": true` in the
     // live config). That is a shared bearer credential — revoking it means
     // rotating the holder's identity.
-    let subject_matches = ticket.subject.as_deref() == Some(message.sender.peer_id.as_str());
+    let subject_matches = ticket.subject().as_deref() == Some(message.sender.peer_id.as_str());
     let public_admits = public
-        && ticket.subject.is_none()
+        && ticket.subject().is_none()
         && ticket
-            .capabilities
+            .capabilities()
             .iter()
             .all(|capability| *capability == Capability::MessageReceive);
-    if ticket.issuer != holder_peer_id
+    if ticket.issuer() != holder_peer_id
         || !(subject_matches || public_admits)
-        || !ticket.capabilities.contains(&Capability::MessageReceive)
+        || !ticket.capabilities().contains(&Capability::MessageReceive)
     {
         return Err(HolderError::CapabilityDenied);
     }
@@ -2539,20 +2543,13 @@ fn validate_message<'a>(
     {
         return Err(HolderError::Unauthorized);
     }
-    if ticket.expires_at.as_deref().is_some_and(expiry_is_past) {
+    if ticket.is_expired(now_seconds()) {
         return Err(HolderError::ExpiredTicket);
     }
     Ok(ticket)
 }
 
-fn expiry_is_past(value: &str) -> bool {
-    if let Ok(seconds) = value.parse::<u64>() {
-        return seconds <= now_seconds();
-    }
-    DateTime::parse_from_rfc3339(value)
-        .map(|timestamp| timestamp <= Utc::now())
-        .unwrap_or(true)
-}
+
 
 fn now_seconds() -> u64 {
     SystemTime::now()
@@ -2773,7 +2770,7 @@ mod tests {
             vec![Capability::MessageReceive],
             None,
             "eve-for-phone",
-        );
+        ).unwrap();
         assert!(ticket_for_target(&phone_id, Some(eve_issued)).is_none());
         // The phone's grant for eve does ride to the phone.
         let phone_issued = issue_capability_ticket(
@@ -2782,7 +2779,7 @@ mod tests {
             vec![Capability::MessageReceive],
             None,
             "phone-for-eve",
-        );
+        ).unwrap();
         assert!(ticket_for_target(&phone_id, Some(phone_issued)).is_some());
         assert!(ticket_for_target(&phone_id, None).is_none());
     }
@@ -2911,7 +2908,7 @@ mod tests {
             vec![Capability::MessageReceive],
             None,
             "ticket-1",
-        );
+        ).unwrap();
         let message = sign_message_with_ticket(
             &sender,
             sender_id.clone(),
@@ -2952,7 +2949,7 @@ mod tests {
             vec![Capability::MessageReceive],
             Some("2000-01-01T00:00:00Z".into()),
             "ticket-2",
-        );
+        ).unwrap();
         let expired_message = sign_message_with_ticket(
             &sender,
             sender_id.clone(),
@@ -2978,7 +2975,7 @@ mod tests {
             vec![Capability::MessageReceive],
             None,
             "ticket-public",
-        );
+        ).unwrap();
         let public_message = sign_message_with_ticket(
             &sender,
             sender_id.clone(),
@@ -3005,7 +3002,7 @@ mod tests {
             vec![Capability::MessageReceive, Capability::MessageSend],
             None,
             "ticket-public-wide",
-        );
+        ).unwrap();
         let wide_message = sign_message_with_ticket(
             &sender,
             sender_id.clone(),
