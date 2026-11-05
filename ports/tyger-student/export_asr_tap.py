@@ -16,6 +16,9 @@ Artifacts are written under the worktree's gitignored `bench-results/` (or --out
       --export --precision fp32 --out bench-results/asr-tap
   ports/tyger-student/.venv/bin/python ports/tyger-student/export_asr_tap.py \
       --gate bench-results/asr-tap/encoder_tap_fp32.mlpackage
+
+A non-560 tier is `--chunk-ms 320` (32 mel + 9 context -> 4 rows, cache 42 unchanged);
+it writes a sidecar `metadata.json` beside the artifact for the manager.
 """
 from __future__ import annotations
 
@@ -34,16 +37,15 @@ from asr_tap import wrapper_chunks  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from asr_tap import (  # noqa: E402
-    CHUNK_FRAMES,
     DEFAULT_MODEL,
-    KEEP,
-    NEW_FRAMES,
     PASSES,
     REFERENCE,
     SR,
-    TOTAL_MEL,
+    TIER_560,
+    TIERS,
     PassConfig,
     StreamingTapEncoder,
+    Tier,
     divergence,
     reference_chunks,
     reference_windows,
@@ -61,10 +63,10 @@ def load_torch(model_id, device="cpu"):
     return proc, model
 
 
-def example_inputs(pass_cfg: PassConfig = REFERENCE):
+def example_inputs(pass_cfg: PassConfig = REFERENCE, tier: Tier = TIER_560):
     return (
-        torch.zeros(1, 128, TOTAL_MEL),
-        torch.tensor([TOTAL_MEL], dtype=torch.int32),
+        torch.zeros(1, 128, tier.total_mel),
+        torch.tensor([tier.total_mel], dtype=torch.int32),
         torch.zeros(1, 24, pass_cfg.left, 1024),
         torch.zeros(1, 24, 1024, 8),
         torch.tensor([1], dtype=torch.int32),
@@ -72,16 +74,42 @@ def example_inputs(pass_cfg: PassConfig = REFERENCE):
     )
 
 
+def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL):
+    """The fields `StreamingNemotronAsrManager` reads; the cache depth is the artifact's.
+
+    The earlier 70-vs-42 mismatch was `cache_channel_shape[2]` (70, the 56/0 pass's
+    value, shipped beside a 42-deep 42/13 artifact). It must equal the encoder's
+    declared input depth, so it is derived here, not copied from the base tier."""
+    cfg = model.config
+    return {
+        "model": model_id,
+        "sample_rate": SR,
+        "mel_features": 128,
+        "chunk_mel_frames": tier.mel_frames,
+        "pre_encode_cache": tier.pre_encode,
+        "total_mel_frames": tier.total_mel,
+        "chunk_ms": tier.ms,
+        "vocab_size": 1024,
+        "blank_idx": 1024,
+        "cache_channel_shape": [1, 24, cache_depth, 1024],
+        "cache_time_shape": [1, 24, 1024, 8],
+        "decoder_hidden": int(cfg.decoder_hidden_size),
+        "decoder_layers": int(cfg.num_decoder_layers),
+        "encoder_dim": 1024,
+    }
+
+
 def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=False,
-           pass_cfg: PassConfig = REFERENCE):
+           pass_cfg: PassConfig = REFERENCE, tier: Tier = TIER_560):
     import coremltools as ct
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    wrapper = StreamingTapEncoder(model, pass_cfg=pass_cfg, tap_index=TAP_INDEX).eval()
+    wrapper = StreamingTapEncoder(model, pass_cfg=pass_cfg, tier=tier,
+                                  tap_index=TAP_INDEX).eval()
     with torch.no_grad():
-        traced = torch.jit.trace(wrapper, example_inputs(pass_cfg), strict=False)
+        traced = torch.jit.trace(wrapper, example_inputs(pass_cfg, tier), strict=False)
     inputs = [
-        ct.TensorType(name="mel", shape=(1, 128, TOTAL_MEL), dtype=np.float32),
+        ct.TensorType(name="mel", shape=(1, 128, tier.total_mel), dtype=np.float32),
         ct.TensorType(name="mel_length", shape=(1,), dtype=np.int32),
         ct.TensorType(name="cache_channel", shape=(1, 24, pass_cfg.left, 1024), dtype=np.float32),
         ct.TensorType(name="cache_time", shape=(1, 24, 1024, 8), dtype=np.float32),
@@ -120,24 +148,34 @@ def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=
     ml.user_defined_metadata["tap"] = f"hidden_states[{TAP_INDEX}] (raw layer-4, pre-prompt)"
     ml.user_defined_metadata["contract"] = "FluidAudio StreamingNemotronMultilingualAsrManager"
     ml.user_defined_metadata["pass"] = pass_cfg.name
+    ml.user_defined_metadata["chunk_ms"] = str(tier.ms)
     tag = f"{precision}{'_int8w' if int8 else ''}"
     if pass_cfg != REFERENCE:
         tag = f"{pass_cfg.left}-{pass_cfg.lookahead}_{tag}"
+    if tier != TIER_560:
+        tag = f"{tag.replace(precision, f'{tier.ms}ms_{precision}', 1)}"
     path = out_dir / f"encoder_tap_{tag}.mlpackage"
     ml.save(str(path))
     size = sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+    meta = metadata(model, tier, pass_cfg.left, model_id)
+    (out_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
     print(f"saved {path}  {size/1e6:.1f} MB ({size} bytes)")
+    print(f"metadata: {tier.ms} ms, chunk_mel_frames {tier.mel_frames}, "
+          f"total_mel_frames {tier.total_mel}, cache_channel_shape "
+          f"{meta['cache_channel_shape']} (chunkSamples {tier.mel_frames * 160})")
     return path, size
 
 
 # --------------------------------------------------------------------------- #
 # gates
 # --------------------------------------------------------------------------- #
-def ml_forward(mlmodel, mel, caches, prompt_id=101):
+def ml_forward(mlmodel, mel, caches, prompt_id=101, total_mel=None):
     ch, ct, cl = caches
+    if total_mel is None:
+        total_mel = int(mlmodel.get_spec().description.input[0].type.multiArrayType.shape[2])
     feats = {
         "mel": mel.astype(np.float32),
-        "mel_length": np.array([TOTAL_MEL], np.int32),
+        "mel_length": np.array([total_mel], np.int32),
         "cache_channel": ch.astype(np.float32),
         "cache_time": ct.astype(np.float32),
         "cache_len": np.array([cl], np.int32),
@@ -147,19 +185,21 @@ def ml_forward(mlmodel, mel, caches, prompt_id=101):
     return out, (out["cache_channel_out"], out["cache_time_out"], int(out["cache_len_out"][0]))
 
 
-def ml_stream(mlmodel, feats, prompt_id=101, chunks=None, cache_size=CACHE_SIZE):
-    """The app's loop: one 65-frame mel window per call, caches threaded by the model."""
+def ml_stream(mlmodel, feats, prompt_id=101, chunks=None, cache_size=CACHE_SIZE,
+              tier: Tier = TIER_560):
+    """The app's loop: one tier-sized mel window per call, caches threaded by the model."""
     caches = (
         np.zeros((1, 24, cache_size, 1024), np.float32),
         np.zeros((1, 24, 1024, 8), np.float32),
         1,
     )
     enc, tap, outs = [], [], []
-    for i, win in enumerate(reference_windows(torch.from_numpy(feats))):
+    for i, win in enumerate(reference_windows(torch.from_numpy(feats), tier)):
         if chunks is not None and i >= chunks:
             break
-        # the contract mel is channels-first [1,128,65]; the processor is time-first
-        out, caches = ml_forward(mlmodel, win.numpy().transpose(0, 2, 1), caches, prompt_id)
+        # the contract mel is channels-first [1,128,total]; the processor is time-first
+        out, caches = ml_forward(mlmodel, win.numpy().transpose(0, 2, 1), caches,
+                                 prompt_id, tier.total_mel)
         enc.append(out["encoded"][0].T)
         tap.append(out["tap_l4"][0].T)
         outs.append(out)
@@ -216,6 +256,7 @@ def gate(model_path: Path, args):
 
     model_id = args.model
     cfg = PASSES[args.pass_]
+    tier = TIERS[args.chunk_ms]
     proc, model = load_torch(model_id, args.device)
     prompt_id = int(model.config.default_prompt_id)
     # decode the session wav first (mimi only; the two big models together are memory pressure)
@@ -228,10 +269,10 @@ def gate(model_path: Path, args):
     ref_kind = getattr(args, "ref", None) or ("int8" if args.int8 else ("hf" if cfg == REFERENCE else "fp32"))
     if ref_kind == "hf":
         # the 56/0 reference is the HF streaming pass (what tap4-shards records)
-        ref_enc_chunks, ref_tap_chunks = reference_chunks(model, feats_t)
+        ref_enc_chunks, ref_tap_chunks = reference_chunks(model, feats_t, tier=tier)
         # chunk 0 of the HF pass has one extra (context) row the steady-state graph cannot
         # emit; align on chunk 1 so the comparison is frame-for-frame after it
-        ref_off, ml_off = len(ref_enc_chunks[0]), KEEP
+        ref_off, ml_off = len(ref_enc_chunks[0]), tier.keep
     else:
         # 42/13 has no HF oracle (HF derives left = sliding_window-1 = 56), so the wrapper is
         # the reference; for the int8 artifact the reference carries the same weight grid.
@@ -243,7 +284,8 @@ def gate(model_path: Path, args):
             from asr_tap import quantize_weights_int8_
 
             quantize_weights_int8_(ref_model.encoder)
-        ref_wrapper = StreamingTapEncoder(ref_model, pass_cfg=cfg, tap_index=TAP_INDEX).eval()
+        ref_wrapper = StreamingTapEncoder(ref_model, pass_cfg=cfg, tier=tier,
+                                          tap_index=TAP_INDEX).eval()
         ref_enc_chunks, ref_tap_chunks = wrapper_chunks(ref_wrapper, feats_t)
         ref_off = ml_off = 0
         del ref_wrapper, ref_model
@@ -256,15 +298,16 @@ def gate(model_path: Path, args):
     fixture = str(fixture_path(args.fixture))
     results = {"model": str(model_path), "tag": args.precision_gate, "pass": cfg.name,
                "reference": ref_kind,
-               "cache_depth": cfg.left, "fixture": fixture,
+               "cache_depth": cfg.left, "chunk_ms": tier.ms, "fixture": fixture,
                "bytes": sum(p.stat().st_size for p in model_path.rglob("*") if p.is_file())}
     for units_name, units in (("cpu", ct.ComputeUnit.CPU_ONLY), ("ane", ct.ComputeUnit.CPU_AND_NE)):
         if units_name == "ane" and args.cpu_only:
             continue
         ml = ct.models.MLModel(str(model_path), compute_units=units)
         t0 = time.perf_counter()
-        enc, tap, _ = ml_stream(ml, feats, prompt_id=prompt_id, cache_size=cfg.left)
-        dt = (time.perf_counter() - t0) / (len(enc) / KEEP)
+        enc, tap, _ = ml_stream(ml, feats, prompt_id=prompt_id, cache_size=cfg.left,
+                                tier=tier)
+        dt = (time.perf_counter() - t0) / (len(enc) / tier.keep)
         # (a) encoded parity vs torch, (b) tap vs the torch reference pass, (c) per chunk
         warm = 40  # the cold-start transient (chunk-0 framing) decays by ~chunk 30
         res = {}
@@ -272,11 +315,11 @@ def gate(model_path: Path, args):
             r, g = ref[ref_off:], got[ml_off:]
             n = min(len(r), len(g))
             d = divergence(r[:n], g[:n])
-            ds = (divergence(r[warm * KEEP : n], g[warm * KEEP : n])
-                  if n > warm * KEEP else (float('nan'),) * 3)
+            ds = (divergence(r[warm * tier.keep : n], g[warm * tier.keep : n])
+                  if n > warm * tier.keep else (float('nan'),) * 3)
             decay = {}
             for lo, hi in ((1, 8), (8, 16), (16, 32), (32, 64), (64, 4096)):
-                a, b = lo * KEEP, min(hi * KEEP, n)
+                a, b = lo * tier.keep, min(hi * tier.keep, n)
                 if b > a:
                     dd = divergence(r[a:b], g[a:b])
                     decay[f"chunk_{lo}_{hi}"] = {"cos_min": dd[1], "max_abs": dd[2]}
@@ -295,10 +338,10 @@ def gate(model_path: Path, args):
     # (d) the extra output is inert: a provider that knows only `encoded` still transcribes,
     # and the model's `encoded` is byte-identical with/without reading tap_l4 by name.
     ml = ct.models.MLModel(str(model_path), compute_units=ct.ComputeUnit.CPU_ONLY)
-    out, _ = ml_forward(ml, feats[:, :TOTAL_MEL, :].transpose(0, 2, 1),
+    out, _ = ml_forward(ml, feats[:, :tier.total_mel, :].transpose(0, 2, 1),
                         (np.zeros((1, 24, cfg.left, 1024), np.float32),
                          np.zeros((1, 24, 1024, 8), np.float32), 1),
-                        prompt_id)
+                        prompt_id, tier.total_mel)
     results["encoded_only_read"] = sorted(out.keys()) == sorted(
         ["encoded", "encoded_length", "cache_channel_out", "cache_time_out", "cache_len_out", "tap_l4"])
     results["output_shapes"] = {k: list(np.asarray(v).shape) for k, v in out.items()}
@@ -310,7 +353,8 @@ def gate(model_path: Path, args):
     if args.session_id:
         val = Path(args.shards) / f"{args.session_id}.npz"
         if val.exists() and sfeats is not None:
-            _, tap_s, _ = ml_stream(ml, sfeats, prompt_id=prompt_id, cache_size=cfg.left)
+            _, tap_s, _ = ml_stream(ml, sfeats, prompt_id=prompt_id, cache_size=cfg.left,
+                                    tier=tier)
             with np.load(val) as z:
                 hu = z["hu"]
             # same one-row offset as the fixture: the shard's chunk 0 carries the torch pass's
@@ -320,16 +364,17 @@ def gate(model_path: Path, args):
             cos = divergence(r[:n], g[:n])
             decay = {}
             for lo, hi in ((1, 8), (8, 16), (16, 32), (32, 64), (64, 4096)):
-                a, b = lo * KEEP, min(hi * KEEP, n)
+                a, b = lo * tier.keep, min(hi * tier.keep, n)
                 if b <= a:
                     continue
                 dd = divergence(r[a:b], g[a:b])
                 decay[f"chunk_{lo}_{hi}"] = {"cos_min": dd[1], "max_abs": dd[2]}
             results["shard_decay"] = decay
+            ss = 64 * tier.keep
             results["shard"] = {"session": args.session_id, "rows": int(n),
                                 "cos_p50": cos[0], "cos_min": cos[1], "max_abs": cos[2],
-                                "cos_min_steady": divergence(r[64 * KEEP : n], g[64 * KEEP : n])[1],
-                                "max_abs_steady": divergence(r[64 * KEEP : n], g[64 * KEEP : n])[2],
+                                "cos_min_steady": divergence(r[ss : n], g[ss : n])[1],
+                                "max_abs_steady": divergence(r[ss : n], g[ss : n])[2],
                                 "steady_from_chunk": 64}
             print("  decay:", ", ".join(f"{k} max|d| {v['max_abs']:.2e}" for k, v in decay.items()))
             print(f"shard {args.session_id[:12]}: tap vs stored rows {n} cos p50 "
@@ -353,6 +398,8 @@ def main():
     ap.add_argument("--pass", dest="pass_", default="reference", choices=sorted(PASSES),
                     help="attention pass: reference 56/0 (the shards) or shipping 42/13 (the bundle)")
     ap.add_argument("--int8", action="store_true", help="quantize weights to int8 per-channel (the shipping form)")
+    ap.add_argument("--chunk-ms", type=int, default=560, choices=sorted(TIERS),
+                    help="chunk tier: 560 (shipping) or 320 (probe)")
     ap.add_argument("--out", default="bench-results/asr-tap")
     ap.add_argument("--fixture", default=None)
     ap.add_argument("--session-id", default=None, help="dualturn val session for the shard gate")
@@ -370,7 +417,8 @@ def main():
     if args.export or args.selfcheck:
         proc, model = load_torch(args.model, args.device)
         precision, int8 = ("fp32", False) if args.selfcheck else (args.precision, args.int8)
-        path, size = export(model, Path(args.out), precision, args.model, int8, PASSES[args.pass_])
+        path, size = export(model, Path(args.out), precision, args.model, int8,
+                            PASSES[args.pass_], TIERS[args.chunk_ms])
         if args.gate is None:
             args.gate = str(path)
     if args.gate:

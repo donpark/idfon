@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import torch
 
-from asr_tap import CHUNK_FRAMES, REFERENCE, SHIPPING, StreamingTapEncoder
+from asr_tap import CHUNK_FRAMES, REFERENCE, SHIPPING, TIER_320, TIER_560, StreamingTapEncoder
 
 
 class _Encoder:
@@ -25,16 +25,16 @@ class _Encoder:
 MODEL = SimpleNamespace(config=SimpleNamespace(num_prompts=4), encoder=_Encoder())
 
 
-def keys(pass_cfg, cache_len):
+def keys(pass_cfg, cache_len, tier=TIER_560):
     """-> [T] key counts per query and the [T, C+T] mask."""
-    wrapper = StreamingTapEncoder(MODEL, pass_cfg=pass_cfg)
+    wrapper = StreamingTapEncoder(MODEL, pass_cfg=pass_cfg, tier=tier)
     mask = wrapper.key_mask(torch.tensor([cache_len], dtype=torch.int32))
     return mask.sum(1).tolist(), mask
 
 
-def sliding_window(pass_cfg, cache_len):
+def sliding_window(pass_cfg, cache_len, tier=TIER_560):
     """The pre-fix causal window, kept as the lookahead-0 reference formula."""
-    C, T = pass_cfg.left, CHUNK_FRAMES
+    C, T = pass_cfg.left, tier.chunk_frames
     qi = torch.arange(T, dtype=torch.float32)[:, None]
     kv = torch.arange(C + T, dtype=torch.float32)[None, :]
     return (kv >= qi) & (kv <= C + qi) & (kv >= C - cache_len)
@@ -67,6 +67,24 @@ class MaskGeometryTests(unittest.TestCase):
             for cache_len in (1, 7, 14, pass_cfg.left - 1, pass_cfg.left):
                 _, got = keys(pass_cfg, cache_len)
                 self.assertTrue(torch.equal(got, sliding_window(pass_cfg, cache_len)))
+
+    def test_320ms_tier_keeps_the_42_13_block_mask(self):
+        # 320 ms: 32 new mel -> 4 released rows, 5 rows with the context row. The
+        # block mask is unchanged; at this T every query still lands in the last
+        # 14-key block, so each sees the whole 42-cache + 5-row window (47 keys).
+        tier = TIER_320
+        counts, mask = keys(SHIPPING, SHIPPING.left, tier)
+        self.assertEqual(counts, [SHIPPING.left + tier.chunk_frames] * tier.chunk_frames)
+        for qi in range(tier.chunk_frames):
+            self.assertEqual(mask[qi].nonzero().flatten().tolist(),
+                             list(range(0, SHIPPING.left + tier.chunk_frames)))
+        # reference pass at the same tier is still the 57-key sliding window
+        counts, _ = keys(REFERENCE, REFERENCE.left, tier)
+        self.assertEqual(counts, [REFERENCE.left + 1] * tier.chunk_frames)
+        # and the lookahead-0 identity still holds at the new T
+        for cache_len in (1, 7, 14, REFERENCE.left):
+            _, got = keys(REFERENCE, cache_len, tier)
+            self.assertTrue(torch.equal(got, sliding_window(REFERENCE, cache_len, tier)))
 
     def test_partial_cache_drops_unfilled_slots_only(self):
         # the manager seeds cache_len=1; a partial cache must intersect the window,

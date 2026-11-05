@@ -142,6 +142,9 @@ class StreamingTap:
         self.model = ct.models.MLModel(str(path), compute_units=ct.ComputeUnit.CPU_AND_NE)
         spec = self.model.get_spec().description
         self.cache_depth = int(spec.input[2].type.multiArrayType.shape[2])
+        self.total_mel = int(spec.input[0].type.multiArrayType.shape[2])
+        tap = next(o for o in spec.output if o.name == "tap_l4")
+        self.rows = int(tap.type.multiArrayType.shape[2])
         self.reset()
 
     def reset(self):
@@ -154,7 +157,7 @@ class StreamingTap:
         ch, cht, cl = self.caches
         feats = {
             "mel": np.ascontiguousarray(mel65.transpose(0, 2, 1), np.float32),
-            "mel_length": np.array([TOTAL_MEL], np.int32),
+            "mel_length": np.array([self.total_mel], np.int32),
             "cache_channel": ch,
             "cache_time": cht,
             "cache_len": np.array([cl], np.int32),
@@ -344,7 +347,9 @@ def build_windowed(wav_u, wav_a, energy, T, mel_of, enc: WindowedEncoder):
 
 
 def build_streaming(wav_u, wav_a, energy, T, mel_u, mel_a,
-                    tap_u: StreamingTap, tap_a: StreamingTap):
+                    tap_u: StreamingTap, tap_a: StreamingTap,
+                    chunk_frames: int = CHUNK_FRAMES, chunk_mel: int = CHUNK_MEL,
+                    total_mel: int = TOTAL_MEL):
     """The tap path: one cache-aware call per 560 ms chunk, both ears.
 
     Grid (measured against the stored shards: cos p05 0.87 at this offset vs
@@ -355,25 +360,34 @@ def build_streaming(wav_u, wav_a, energy, T, mel_u, mel_a,
     90 ms past the chunk's last new mel frame; that is its timestamp.
     """
     groups: list[Group] = []
-    n_groups = T // CHUNK_FRAMES
+    # chunk 0 releases one extra context row, so 1 + n*chunk_frames must fit in T
+    n_groups = (T - 1) // chunk_frames
     tap_u.reset()
     tap_a.reset()
     for gi in range(n_groups):
-        w0 = gi * CHUNK_MEL
-        rows_u, dt_u = tap_u.encode(mel_u[:, w0:w0 + TOTAL_MEL])
-        rows_a, dt_a = tap_a.encode(mel_a[:, w0:w0 + TOTAL_MEL])
+        w0 = gi * chunk_mel
+        win_u = mel_u[:, w0:w0 + total_mel]
+        win_a = mel_a[:, w0:w0 + total_mel]
+        # the manager zero-pads the final chunk; the capture/mel is short by the
+        # pre-context at the tail
+        if win_u.shape[1] < total_mel:
+            pad = [(0, 0)] * win_u.ndim
+            pad[1] = (0, total_mel - win_u.shape[1])
+            win_u, win_a = np.pad(win_u, pad), np.pad(win_a, pad)
+        rows_u, dt_u = tap_u.encode(win_u)
+        rows_a, dt_a = tap_a.encode(win_a)
         if gi == 0:
-            f0, n = 0, CHUNK_FRAMES + 1
+            f0, n = 0, chunk_frames + 1
             hu = np.concatenate([rows_u[:1], rows_u])
             ha = np.concatenate([rows_a[:1], rows_a])
         else:
-            f0, n = gi * CHUNK_FRAMES + 1, CHUNK_FRAMES
+            f0, n = gi * chunk_frames + 1, chunk_frames
             hu, ha = rows_u, rows_a
         end_sample = (f0 + n) * FRAME_SAMPLES
         groups.append(Group(
             index=gi,
             first_frame=f0,
-            audio_end=(CHUNK_MEL * (gi + 1) + PRE_ENCODE) / 100.0,  # 65/56 mel at 10 ms
+            audio_end=(chunk_mel * (gi + 1) + PRE_ENCODE) / 100.0,  # tier mel at 10 ms
             audio_u=wav_u[f0 * FRAME_SAMPLES:end_sample],
             audio_a=wav_a[f0 * FRAME_SAMPLES:end_sample],
             hu=hu, ha=ha,
@@ -387,9 +401,9 @@ def build_streaming(wav_u, wav_a, energy, T, mel_u, mel_a,
 # --------------------------------------------------------------------------- #
 # per-frame / hop-gated scoring of the tap rows
 # --------------------------------------------------------------------------- #
-def group_of_frame(f: int, last_group: int) -> int:
-    """The delivery chunk that contains grid frame f (chunk 0 carries 0..7)."""
-    return min(0 if f <= CHUNK_FRAMES else (f - 1) // CHUNK_FRAMES, last_group)
+def group_of_frame(f: int, last_group: int, chunk_frames: int = CHUNK_FRAMES) -> int:
+    """The delivery chunk that contains grid frame f (chunk 0 carries 0..chunk_frames)."""
+    return min(0 if f <= chunk_frames else (f - 1) // chunk_frames, last_group)
 
 
 def left_value(policy: str, f: int, group_span: dict) -> int:
@@ -407,7 +421,7 @@ def left_value(policy: str, f: int, group_span: dict) -> int:
     raise SystemExit(f"unknown left policy {policy!r}")
 
 
-def scoring_units(groups, scoring: str):
+def scoring_units(groups, scoring: str, chunk_frames: int = CHUNK_FRAMES):
     """Groups of rows scored together, in frame order, with their release chunk.
 
     per-frame: one row per unit, released by its own chunk.
@@ -420,7 +434,7 @@ def scoring_units(groups, scoring: str):
     if scoring == "per-frame":
         for f in frames:
             units.append({"frames": [f], "begin": [f],
-                          "release": group_of_frame(f, last)})
+                          "release": group_of_frame(f, last, chunk_frames)})
     elif scoring == "tap-hop":
         hops: dict[int, list[int]] = {}
         for f in frames:
@@ -431,14 +445,14 @@ def scoring_units(groups, scoring: str):
             units.append({"frames": fs,
                           "begin": list(range(HOP_FRAMES * h,
                                                HOP_FRAMES * h + len(fs))),
-                          "release": group_of_frame(end, last)})
+                          "release": group_of_frame(end, last, chunk_frames)})
     else:
         raise SystemExit(f"unknown scoring mode {scoring!r}")
     return units
 
 
 def decide_flat(groups, wav_u, wav_a, student, rules, scoring: str,
-                left_policy: str):
+                left_policy: str, chunk_frames: int = CHUNK_FRAMES):
     """Score rows as they are released; one step per row, rules threaded per frame.
 
     The encode clock is the same one `decide` uses: a chunk's rows exist at
@@ -446,7 +460,7 @@ def decide_flat(groups, wav_u, wav_a, student, rules, scoring: str,
     scored when the chunk containing its last row has been encoded; rows are
     stepped in frame order, so `begin_hop` only ever sees audio that has arrived.
     """
-    units = scoring_units(groups, scoring)
+    units = scoring_units(groups, scoring, chunk_frames)
     row = {g.first_frame + k: (g.hu[k], g.ha[k], float(g.act[k]))
            for g in groups for k in range(len(g.hu))}
     group_span = {g.first_frame + k: g.first_frame + len(g.hu) - 1
@@ -488,7 +502,8 @@ def decide_flat(groups, wav_u, wav_a, student, rules, scoring: str,
     return frames
 
 
-def build_cadence(wav_u, wav_a, energy, T, hu, ha):
+def build_cadence(wav_u, wav_a, energy, T, hu, ha,
+                  chunk_frames: int = CHUNK_FRAMES, chunk_mel: int = CHUNK_MEL):
     """Control: today's features, released at the streaming chunk boundary.
 
     Coverage follows the tap grid exactly (8 rows for chunk 0, 7 after), so the
@@ -498,15 +513,15 @@ def build_cadence(wav_u, wav_a, energy, T, hu, ha):
     cadence-only delta.
     """
     groups: list[Group] = []
-    n_groups = min(T // CHUNK_FRAMES, (len(hu) - 1) // CHUNK_FRAMES)
+    n_groups = min((T - 1) // chunk_frames, (len(hu) - 1) // chunk_frames)
     for gi in range(n_groups):
-        f0 = 0 if gi == 0 else gi * CHUNK_FRAMES + 1
-        n = CHUNK_FRAMES + 1 if gi == 0 else CHUNK_FRAMES
+        f0 = 0 if gi == 0 else gi * chunk_frames + 1
+        n = chunk_frames + 1 if gi == 0 else chunk_frames
         end_sample = (f0 + n) * FRAME_SAMPLES
         groups.append(Group(
             index=gi,
             first_frame=f0,
-            audio_end=(CHUNK_MEL * (gi + 1) + PRE_ENCODE) / 100.0,
+            audio_end=(chunk_mel * (gi + 1) + PRE_ENCODE) / 100.0,
             audio_u=wav_u[f0 * FRAME_SAMPLES:end_sample],
             audio_a=wav_a[f0 * FRAME_SAMPLES:end_sample],
             hu=hu[f0:f0 + n], ha=ha[f0:f0 + n],
@@ -604,7 +619,8 @@ def _mel_of(processor):
     return f
 
 
-def prepare(sid, args, enc, processor, student, rules_dylib):
+def prepare(sid, args, enc, processor, student, rules_dylib,
+            chunk_frames=CHUNK_FRAMES, chunk_mel=CHUNK_MEL):
     """Everything that touches the feature processor, before any tap prediction.
 
     Measured on this host: a tap prediction corrupts later processor calls
@@ -629,7 +645,8 @@ def prepare(sid, args, enc, processor, student, rules_dylib):
     today_enc_ms = float(np.mean([g.enc_s for g in groups_today])) * 1e3
     hu_today = np.concatenate([g.hu for g in groups_today])
     ha_today = np.concatenate([g.ha for g in groups_today])
-    groups_ctrl = build_cadence(wav_u, wav_a, energy, T, hu_today, ha_today)
+    groups_ctrl = build_cadence(wav_u, wav_a, energy, T, hu_today, ha_today,
+                                chunk_frames, chunk_mel)
     ctrl = decide(groups_ctrl, student, Rules(rules_dylib, args.thresholds))
 
     ev_today, ev_ctrl = events_of(today), events_of(ctrl)
@@ -662,10 +679,12 @@ def prepare(sid, args, enc, processor, student, rules_dylib):
             "today_enc_ms": today_enc_ms, "verify": verify, "ref_l4": ref_l4}
 
 
-def tap_pass(prep, args, tap_u, tap_a, student, rules_dylib):
+def tap_pass(prep, args, tap_u, tap_a, student, rules_dylib,
+             chunk_frames=CHUNK_FRAMES, chunk_mel=CHUNK_MEL, total_mel=TOTAL_MEL):
     """The streaming tap path (no processor calls in this phase)."""
     groups = build_streaming(prep["wav_u"], prep["wav_a"], prep["energy"], prep["T"],
-                             prep["mel_u"], prep["mel_a"], tap_u, tap_a)
+                             prep["mel_u"], prep["mel_a"], tap_u, tap_a,
+                             chunk_frames, chunk_mel, total_mel)
     if prep["verify"] is not None:
         # The timestamps rest on the row grid: chunk i's rows are shard frames
         # 7i+1..7i+7. Check it against the stored windowed L4 rows.
@@ -691,11 +710,11 @@ def tap_pass(prep, args, tap_u, tap_a, student, rules_dylib):
         for pol in args.left_policies:
             variants[f"per-frame/{pol}"] = decide_flat(
                 groups, prep["wav_u"], prep["wav_a"], student,
-                Rules(rules_dylib, args.thresholds), "per-frame", pol)
+                Rules(rules_dylib, args.thresholds), "per-frame", pol, chunk_frames)
     if "tap-hop" in args.scoring:
         variants["tap-hop"] = decide_flat(
             groups, prep["wav_u"], prep["wav_a"], student,
-            Rules(rules_dylib, args.thresholds), "tap-hop", "hop-phase")
+            Rules(rules_dylib, args.thresholds), "tap-hop", "hop-phase", chunk_frames)
     return groups, variants, float(np.mean([g.enc_s for g in groups])) * 1e3
 
 
@@ -881,6 +900,7 @@ def main():
         raise SystemExit("no scoring modes selected")
 
     from transformers import AutoProcessor
+    import coremltools as ct
     processor = AutoProcessor.from_pretrained("nvidia/nemotron-3.5-asr-streaming-0.6b")
     enc = WindowedEncoder(Path(args.windowed_dir))
     # Load the step before any prediction: coremltools' get_spec() deepcopy segfaults
@@ -889,16 +909,28 @@ def main():
     enc.fixed.predict({"feats": np.zeros((1, 801, 128), np.float16)})
     enc.dyn.predict({"feats": np.zeros((1, 801, 128), np.float32)})
 
+    # Chunk geometry comes from the artifact, not a constant: the 320 ms tier has
+    # 41 mel in and 4 tap rows out, the 560 ms tier 65 / 7.
+    _spec = ct.models.MLModel(str(args.tap_artifact)).get_spec().description
+    total_mel = int(_spec.input[0].type.multiArrayType.shape[2])
+    chunk_frames = int(next(o for o in _spec.output if o.name == "tap_l4")
+                       .type.multiArrayType.shape[2])
+    chunk_mel = total_mel - PRE_ENCODE
+    assert chunk_mel > 0 and chunk_mel // 8 == chunk_frames, (total_mel, chunk_frames)
+    print(f"chunk tier from artifact: {chunk_mel} mel / {chunk_frames} rows "
+          f"({chunk_mel * 10} ms), total {total_mel}")
+
     # Phase 1: every processor call and both windowed passes, before the tap
     # artifact predicts (a tap prediction makes later mel calls segfault here).
     preps = []
     for sid in [s.strip() for s in args.sessions.split(",") if s.strip()]:
-        preps.append(prepare(sid, args, enc, processor, student, Path(args.rules_dylib)))
+        preps.append(prepare(sid, args, enc, processor, student, Path(args.rules_dylib),
+                             chunk_frames, chunk_mel))
 
     # Phase 2: the streaming tap path.
     tap_u = StreamingTap(Path(args.tap_artifact))
     tap_a = StreamingTap(Path(args.tap_artifact))
-    one = np.zeros((1, TOTAL_MEL, 128), np.float32)
+    one = np.zeros((1, total_mel, 128), np.float32)
     for tap in (tap_u, tap_a):
         tap.encode(one)
         tap.reset()
@@ -907,7 +939,8 @@ def main():
     for prep in preps:
         print(f"\n== {prep['session']}", flush=True)
         groups, variants, tap_enc_ms = tap_pass(prep, args, tap_u, tap_a, student,
-                                               Path(args.rules_dylib))
+                                               Path(args.rules_dylib), chunk_frames,
+                                               chunk_mel, total_mel)
         rec = assemble(prep, groups, variants, tap_enc_ms)
         recs.append(rec)
         for name, s in (("today", rec["today"]), ("cadence", rec["cadence"])):

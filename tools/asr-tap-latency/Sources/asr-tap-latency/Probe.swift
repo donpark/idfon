@@ -46,6 +46,7 @@ struct Args {
     var sessions = "2026-10-25T23:13:14Z,2026-10-26T20:17:43Z,2026-10-26T21:13:38Z"
     var modes = ["paced", "unpaced"]
     var bufferFrames = 682  // the mic tap's 2048 @48 kHz, in 16 kHz samples
+    var chunkFrames = 7     // tapped rows released per chunk (560 ms tier)
     var out = "bench-results/asr-manager-probe/probe.json"
     var onset = false
     var noCallback = false
@@ -64,6 +65,7 @@ struct Args {
             case "--sessions": a.sessions = value()
             case "--modes": a.modes = value().split(separator: ",").map(String.init)
             case "--buffer-frames": a.bufferFrames = Int(value()) ?? a.bufferFrames
+            case "--chunk-frames": a.chunkFrames = Int(value()) ?? a.chunkFrames
             case "--out": a.out = value()
             case "--limit-frames": a.limitFrames = Int(value()) ?? 0
             case "--onset": a.onset = true
@@ -226,13 +228,17 @@ func stats(_ xs: [Double]) -> [String: Double] {
 /// `(i + 1) * 80 ms` with i = shard frame = global + 1, so
 /// `delay(k) = 490 - 80 k + enc` for the k-th of a chunk's 7 rows.
 /// `encMS` is its measured per-chunk encode (both ears: 23.6-27.8 ms).
-func offlineDelayMS(k: Int, encMS: Double) -> Double { 490.0 - 80.0 * Double(k) + encMS }
+func offlineDelayMS(k: Int, encMS: Double, chunkFrames: Int = 7) -> Double {
+    Double(80 * chunkFrames - 70) - 80.0 * Double(k) + encMS
+}
 
 func selfcheck() {
     assert(abs(Double(7) * FRAME_S - 0.56) < 1e-12)
     let off = (0..<700).map { offlineDelayMS(k: $0 % 7, encMS: 24.0) }
     assert(abs(pct(off, 50)! - 274) < 20, "p50 \(pct(off, 50)!)")
     assert(abs(pct(off, 95)! - 514) < 20, "p95 \(pct(off, 95)!)")
+    let off320 = (0..<700).map { offlineDelayMS(k: $0 % 4, encMS: 24.0, chunkFrames: 4) }
+    assert(abs(pct(off320, 50)! - 114) < 20, "320 p50 \(pct(off320, 50)!)")
     assert(pct([1, 2, 3, 4], 50) == 2.5)
     print("selfcheck: frame mapping, offline formula, percentiles OK")
 }
@@ -267,6 +273,7 @@ struct SessionResult {
     var loadS = 0.0
     var totalCallMS = 0.0
     var argFrames = 0
+    var argFramesChunk = 7
     var originBase = 0
     var originStepOK = true
     var tapPresent = false
@@ -280,6 +287,7 @@ func run(session: String, frames: Int, audio: [Float], mode: String,
     r.mode = mode
     r.loadS = loadS
     r.argFrames = frames
+    r.argFramesChunk = args.chunkFrames
     r.seconds = Double(frames) * FRAME_S
 
     let paced = mode == "paced"
@@ -337,9 +345,11 @@ func run(session: String, frames: Int, audio: [Float], mode: String,
     r.frames = deliveries.reduce(0) { $0 + $1.n }
     // A timing number must not come from a manager path that lost the tap output.
     if let first = deliveries.first {
-        r.tapPresent = first.tapShape == [1, 1024, 7] && first.names.contains("tap_l4")
+        r.tapPresent = first.tapShape == [1, 1024, args.chunkFrames]
+            && first.names.contains("tap_l4")
         if !r.tapPresent {
-            log("WARNING: first delivery had no tap_l4 [1,1024,7] (names \(first.names), "
+            log("WARNING: first delivery had no tap_l4 [1,1024,\(args.chunkFrames)] "
+                + "(names \(first.names), "
                 + "shape \(first.tapShape ?? [])) — these timings are not the tap path")
         }
     }
@@ -363,7 +373,7 @@ func run(session: String, frames: Int, audio: [Float], mode: String,
             let v = ms(d.tEntry, audioEnd(d.g0 + k))
             rows[k, default: []].append(v)
             all.append(v)
-            off.append(v - offlineDelayMS(k: k, encMS: 24.0))
+            off.append(v - offlineDelayMS(k: k, encMS: 24.0, chunkFrames: args.chunkFrames))
         }
         r.deliveries.append([Double(d.g0), Double(d.n), ms(d.tEntry, audioEnd(d.g0 + d.n - 1))])
         if let e = d.rowEnergy { r.rowEnergy.append(e) }
@@ -383,7 +393,7 @@ func run(session: String, frames: Int, audio: [Float], mode: String,
     r.decodeChunks = dec.count
     r.vsOfflineAll = stats(off)
     for (k, xs) in rows {
-        r.vsOfflineByRow["k\(k)"] = stats(xs.map { $0 - offlineDelayMS(k: k, encMS: 24.0) })
+        r.vsOfflineByRow["k\(k)"] = stats(xs.map { $0 - offlineDelayMS(k: k, encMS: 24.0, chunkFrames: args.chunkFrames) })
     }
     return r
 }
@@ -531,7 +541,7 @@ struct Probe {
               + "\(r.chunks) chunks  produced \(r.produced) consumed \(r.consumed) "
               + "dropped \(r.dropped)  origin base \(r.originBase) "
               + "step \(r.originStepOK ? "exact" : "BROKEN")"
-              + "  tap_l4 \(r.tapPresent ? "[1,1024,7]" : "MISSING")")
+              + "  tap_l4 \(r.tapPresent ? "[1,1024,\(r.argFramesChunk)]" : "MISSING")")
         func line(_ name: String, _ s: [String: Double]) {
             guard let n = s["n"], n > 0 else { return }
             print(String(format: "  %-30@ n %6.0f  p50 %8.2f  p95 %8.2f  max %8.2f  ms",
@@ -545,7 +555,7 @@ struct Probe {
         line("decode (partial - t_cb)", r.decode)
         line("measured - offline", r.vsOfflineAll)
         var byRow: [String] = []
-        for k in 0..<7 {
+        for k in 0..<r.argFramesChunk {
             if let p = r.byRow["k\(k)"]?["p50"] { byRow.append(String(format: "k%d %.0f", k, p)) }
         }
         print("  by row p50: \(byRow.joined(separator: "  "))")
@@ -576,7 +586,8 @@ struct Probe {
         }
         let root: [String: Any] = [
             "probe": "asr-tap-latency", "models": args.models,
-            "buffer_frames": args.bufferFrames, "hook": !args.noCallback,
+            "buffer_frames": args.bufferFrames, "chunk_frames": args.chunkFrames,
+            "hook": !args.noCallback,
             "fork": "donpark/FluidAudio@2ad9b422 (encoder-output-callback)",
             "offline_enc_ms": 24.0, "sessions": sessions,
         ]
