@@ -1043,6 +1043,95 @@ ports/tyger-student/.venv/bin/python ports/tyger-student/tap_latency.py --verify
 `--scoring chunk,per-frame,tap-hop` and `--left-policies hop-phase,zero,chunk-countdown`
 select the modes; `--selfcheck` covers the left sequences and the chunk/hop grid.
 
+### 320 ms chunk probe: latency first (2026-11-05, #132)
+
+**Verdict first: a 320 ms chunk brings the endpoint delta under the +160 ms bar — +100.9 ms
+mean-of-medians, +100.9 ms worst session, p95 +101.3 ms, 0/10 matched endpoints past +320
+(the 560 ms tier: +173.9 / +179.9 / +499.4 / 23%). The tail is gone, but the tier is less
+informative: the encoder sees 5 rows per chunk (1 context + 4 new) instead of 8 (1+7), so
+the earliest kept row has 3 future rows (240 ms) instead of 6 (480 ms). The quality effect
+is unquantified — no WER, pass gate, refit or decision-agreement table was run — so the
+next decision is a quality gate, not a refit.**
+
+Why the tier looked promising: at 560 ms the tap releases 7 rows at the chunk boundary and
+a 320 ms decision hop is 4 rows, so the lattice cannot align (six rows per 28 wait one extra
+chunk). At 320 ms a chunk is exactly 4 rows and the phase error disappears. This probe asks
+only whether the latency is there.
+
+**Artifact and geometry.** `bench-results/asr-tap-320ms/encoder_tap_42-13_320ms_fp16_int8w.mlpackage`,
+**593,311,138 B**, **9.29 ms/chunk** on host ANE (one ear; the 560 ms form is 8.92). Two ears
+are ~18.6 ms, 5.8% of the 320 ms period. Chunk mel 32 + 9 pre-context = 41 total, **4 rows
+out**, cache depth **42** unchanged, pass **42/13** unchanged. The mask is still NeMo's block
+mask: at T = 5 the 42/13 geometry gives every query all **47 keys** (42 cache + 5 current
+rows), and the reference pass is still the 57-key sliding window; both are asserted in
+`test_asr_tap_mask.py::test_320ms_tier_keeps_the_42_13_block_mask`, not derived from prose.
+One implementation fact this tier forces: the conformer conv cache is 8 frames, so a chunk
+shorter than 8 must carry the old cache's tail forward (`_conv`), not just its own rows.
+The 56/0 torch selfcheck at 320 converges to cos p50 1.0 / min 0.99995 but max|d| 2.6e-1,
+above the 2e-3 bar the 560 tier meets; the artifact's own int8 gate matches the 560 gate
+(tap cos p50 0.981, encoded 0.957). The tier's feature fidelity is therefore near-exact but
+not bit-exact, and it is not a substitute for a quality gate.
+
+**Metadata.** The sidecar the manager reads now says `chunk_mel_frames` **32**, `chunk_ms`
+**320**, `pre_encode_cache` 9, `total_mel_frames` **41**, `cache_channel_shape`
+**[1,24,42,1024]**, `cache_time_shape` [1,24,1024,8], so `chunkSamples = 32 * 160 = 5120`.
+The earlier 70-vs-42 mismatch was **`cache_channel_shape[2]`** (the base 56/0 bundle's 70
+shipped beside a 42-deep artifact); here it is derived from the artifact's declared input
+and confirmed to be 42 by the staging script.
+
+**Latency replay, one session** (`2026-10-26T20:17:43Z`, the same captures/student/rules and
+per-frame lattice as the published 560 ms run; `tap_latency.py`):
+
+| tap tier | matched ep | endpoint median | p95 | max | past +320 | backlog max / end | tap events / ep |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 560 ms (re-run here) | 12 | 141.8 | 501.6 | 501.6 | 3/12 (25%) | 19.1 / 18.3 ms | 31 / 15 |
+| **320 ms** | **10** | **100.9** | **101.3** | **101.4** | **0/10** | **18.1 / 17.9 ms** | **30 / 14** |
+
+The 560 ms re-run reproduces the published row (140.0 / 499.4 / 3/12), so the harness change
+is not the effect. Feature delay on the 320 ms tap is p50 186.3 / p95 267.6 ms (real rows:
+147.2 / 267.6 / 268.1 max) versus 560's 268.1 / 508.2; today's windowed path is unchanged.
+The deltas cluster at ~101 ms because the 320 ms chunk and the 4-frame hop now share a phase;
+the residual is the fixed 90 ms mel pre-context plus encode. One matched endpoint lands
+−218.7 ms (the tap earlier than today); the other nine are +100.5…+101.4 ms. Unmatched
+endpoints are counted, not averaged away (tap-only 4, today-only 2 for endpoints).
+
+**Real manager at this tier.** It loads without a code change once the tier's metadata and
+the baked `prompt_id` are staged (`stage_models.py`): the manager sizes caches and chunk
+buffers from `metadata.json`, and `tapFrameOrigin` advanced exactly 4 frames per chunk over
+278 chunks. Paced on the device clock, the callback's per-frame delay is **p50 154.4 / p95
+286.9 / max 295.8 ms** versus the 560 ms staged model's **281.0 / 528.2 / 546.2 ms** (chunk
+lag 34.1 / 53.2 / 55.8 vs 41.0 / 62.3 / 66.2), and `measured − offline` is +0.1 ms p50 /
++19.3 ms p95. Sanity transcript through the shipping English decoder on the same capture:
+320 ms "Call that a, a''', a''s a ''s a ''s a" (26 tokens) vs 560 ms "Course, the snow.
+S'' a. S. A''s, I'll have a ''ha" (32 tokens) — comparable on this capture (both poor; it is
+not the reference decoder for this audio), which is the check that the tier is not broken,
+not a quality result.
+
+**What this does not measure, and the stop.** The information loss is real and unquantified:
+the 320 ms chunk sees at most 4 new rows of future context (3 after the earliest kept row)
+instead of 7 (6), and no decision-agreement, WER or adapter refit was run. If a quality gate
+later shows the tier is acceptable, the refit target moves from 42/13-at-560 taps to
+42/13-at-320 taps; until then the 560 ms artifact and its published numbers stay
+authoritative, and nothing in the shipping path or the frozen migration contract changes.
+
+Reproduce (artifacts are gitignored):
+
+```sh
+ports/tyger-student/.venv/bin/python ports/tyger-student/export_asr_tap.py \
+    --export --pass shipping --chunk-ms 320 --precision fp16 --int8 \
+    --out bench-results/asr-tap-320ms
+ports/tyger-student/.venv/bin/python ports/tyger-student/tap_latency.py \
+    --sessions 2026-10-26T20:17:43Z --scoring per-frame --left-policies zero \
+    --tap-artifact bench-results/asr-tap-320ms/encoder_tap_42-13_320ms_fp16_int8w.mlpackage \
+    --out bench-results/tap-latency-320ms.json
+ports/tyger-student/.venv/bin/python tools/asr-tap-latency/stage_models.py \
+    --tap bench-results/asr-tap-320ms/encoder_tap_42-13_320ms_fp16_int8w.mlpackage \
+    --out bench-results/asr-manager-probe/models/320ms --verify
+tools/asr-tap-latency/.build/release/asr-tap-latency \
+    --models bench-results/asr-manager-probe/models/320ms --chunk-frames 4 \
+    --sessions 2026-10-26T20:17:43Z:1114 --modes paced
+```
+
 ### The playback ear: `ha` from the same encoder (2026-11-05, #132/#102)
 
 **Verdict first: yes — the playback ear can move off the cut at the same fidelity as the
