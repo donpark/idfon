@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ports/tyger-student"))
 
 from oracle import HOP, HOP_FRAMES, SR, WIN_S, Oracle  # noqa: E402
+from mode_track import frame_modes  # noqa: E402
 from model import Student  # noqa: E402
 from registry import by_id  # noqa: E402
 
@@ -80,7 +81,7 @@ def onsets(user_db, agent_db, thr=-50.0, quiet=-55.0, hold=5, max_gap=800):
     return kept
 
 
-def student_vecs(model, hu, ha, energy, oracle, device):
+def student_vecs(model, hu, ha, energy, modes, oracle, device):
     sess = oracle.EarsSession(0)
     hidden = None
     rows = []
@@ -92,26 +93,26 @@ def student_vecs(model, hu, ha, energy, oracle, device):
                               torch.tensor([[int(sess.prev_state)]], device=device), hidden)
             v = model.eight_vector(o)[0, 0].cpu().numpy().astype(np.float64)
             rows.append(v)
-            oracle.rules.on_frame(sess, "response", v, float(energy[f]), left=3 - (f % HOP_FRAMES))
+            oracle.rules.on_frame(sess, modes[f], v, float(energy[f]), left=3 - (f % HOP_FRAMES))
     return np.stack(rows)
 
 
-def teacher_vecs(oracle, hu, ha, energy):
+def teacher_vecs(oracle, hu, ha, energy, modes):
     sess = oracle.EarsSession(0)
     cache = None
     rows = []
     for f in range(len(energy)):
         o, cache = oracle.head_step(hu[f], ha[f], float(energy[f]), int(sess.prev_state), cache)
         rows.append(o)
-        oracle.rules.on_frame(sess, "response", o, float(energy[f]), left=3 - (f % HOP_FRAMES))
+        oracle.rules.on_frame(sess, modes[f], o, float(energy[f]), left=3 - (f % HOP_FRAMES))
     return np.stack(rows)
 
 
-def events(vecs, energy, oracle, thr):
+def events(vecs, energy, modes, oracle, thr):
     sess = oracle.EarsSession(0, ep_thr=thr[0], barge_thr=thr[1], bc_thr=thr[2])
     out = []
     for f in range(len(vecs)):
-        e, _final, _reset = oracle.rules.on_frame(sess, "response", vecs[f], float(energy[f]),
+        e, _final, _reset = oracle.rules.on_frame(sess, modes[f], vecs[f], float(energy[f]),
                                                   left=3 - (f % HOP_FRAMES))
         out += [(f + 1, x["kind"]) for x in e if x["kind"] != "FRAME"]
     return out
@@ -183,20 +184,21 @@ def main():
     ha = windowed(oracle, agent, args.layer)
     n = min(len(hu), len(ha))
     hu, ha = hu[:n], ha[:n]
-    energy = frame_db(user)[:n]
+    user_db, agent_db = frame_db(user)[:n], frame_db(agent)[:n]
+    energy = user_db
+    modes = frame_modes(agent_db)  # agent channel's energy -> the rules' floor
 
     ck = torch.load(args.student, map_location=args.device)
     model = Student([by_id(i) for i in ck["heads"]], width=ck["width"], layers=ck["layers"]).to(args.device)
     model.load_state_dict(ck["state_dict"])
     model.eval()
-    sv = student_vecs(model, hu, ha, energy, oracle, args.device)
+    sv = student_vecs(model, hu, ha, energy, modes, oracle, args.device)
 
     # the teacher reads L15 from the same windows
     hu15 = windowed(oracle, user, 15)[:n]
     ha15 = windowed(oracle, agent, 15)[:n]
-    tv = teacher_vecs(oracle, hu15, ha15, energy)
+    tv = teacher_vecs(oracle, hu15, ha15, energy, modes)
 
-    user_db, agent_db = frame_db(user)[:n], frame_db(agent)[:n]
     ons = onsets(user_db, agent_db)
     for name, vecs in (("student", sv), ("teacher", tv)):
         y = vecs[:, 5]
@@ -218,8 +220,8 @@ def main():
               f"teacher {catch(tv, ons, t):.2f}  | false student {s_false} ({s_playing} playing)  "
               f"teacher {t_false} ({t_playing} playing)")
 
-    se = events(sv, energy, oracle, thr)
-    te = events(tv, energy, oracle, default_thr)
+    se = events(sv, energy, modes, oracle, thr)
+    te = events(tv, energy, modes, oracle, default_thr)
     for name, ev in (("student", se), ("teacher", te)):
         kinds = {}
         for _, k in ev:

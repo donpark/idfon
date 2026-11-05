@@ -24,6 +24,7 @@ BUNDLE = os.environ.get("TYGER_BUNDLE", os.path.expanduser(
 MODELS = Path(HERE).resolve().parents[1] / "bench-results" / "coreml"
 sys.path.insert(0, S2S)
 sys.path.insert(0, os.path.join(S2S, "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tyger-student"))
 
 import coremltools as ct  # noqa: E402
 import torch  # noqa: E402
@@ -33,6 +34,8 @@ from transformers import AutoModel  # noqa: E402
 from app.plugins.ears.tyger import rules  # noqa: E402
 from app.plugins.ears.tyger.constants import SR  # noqa: E402
 from app.plugins.ears.tyger.session import EarsSession  # noqa: E402
+
+from mode_track import frame_modes, mode_at_hop  # noqa: E402
 
 HOP_FRAMES = 4
 WIN_S = 8
@@ -221,13 +224,15 @@ def main():
         codes = {ch: np.array(row[f"codes_{ch}"], dtype=np.int16).reshape(T, 8)[:limit] for ch in ("ch0", "ch1")}
         wavs = {ch: te.resample16k(te.decode_channel(mimi, codes[ch])) for ch in ("ch0", "ch1")}
         n_hops = min(len(wavs["ch0"]), len(wavs["ch1"])) // HOP
+        modes = frame_modes(rules.frame_energy(wavs["ch1"]))
         ref.reset()
         cand.reset()
         for h in range(n_hops):
             x = (h + 1) * HOP
             win = {ch: wavs[ch][max(0, x - WIN_S * SR):x] for ch in ("ch0", "ch1")}
-            ref.feed(win["ch0"], win["ch1"], "response")
-            cand.feed(win["ch0"], win["ch1"], "response")
+            mode = mode_at_hop(modes, h)  # identical on both sides
+            ref.feed(win["ch0"], win["ch1"], mode)
+            cand.feed(win["ch0"], win["ch1"], mode)
         n = min(len(ref.outs), len(cand.outs))
         A, B = np.array(ref.outs[:n]), np.array(cand.outs[:n])
         d = np.abs(A - B)

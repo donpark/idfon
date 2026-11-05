@@ -38,6 +38,8 @@ from app.plugins.ears.tyger.session import EarsSession  # noqa: E402
 from encoder import WINDOW, EncoderL15  # noqa: E402
 from encoder_incr import EncoderL15Incr  # noqa: E402
 from turn_taker import TurnTaker  # noqa: E402
+sys.path.insert(0, os.path.join(HERE, '..', 'tyger-student'))
+from mode_track import frame_modes, mode_at_hop  # noqa: E402
 
 HOP_FRAMES = 4
 HEADS8 = ("state0", "state1", "state2", "state3", "hazard", "yield", "bc", "ep")
@@ -150,13 +152,15 @@ def main():
     wavs = {ch: te.resample16k(te.decode_channel(mimi, codes[ch])) for ch in ("ch0", "ch1")}
     hop = HOP_FRAMES * SR * 80 // 1000
     n_hops = min(len(wavs["ch0"]), len(wavs["ch1"])) // hop
+    modes = frame_modes(rules.frame_energy(wavs["ch1"]))
 
     a, b = Scheme(False), Scheme(True)
     for h in range(n_hops):
         u = wavs["ch0"][h * hop:(h + 1) * hop]
         g = wavs["ch1"][h * hop:(h + 1) * hop]
-        a.feed(u, g, "response")
-        b.feed(u, g, "response")
+        mode = mode_at_hop(modes, h)  # identical on both sides
+        a.feed(u, g, mode)
+        b.feed(u, g, mode)
 
     A, B = np.array(a.outs), np.array(b.outs)
     n = min(len(A), len(B))
