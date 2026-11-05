@@ -154,7 +154,7 @@ idfon --socket /tmp/idfon-b/idfond.sock access allow --subject "$A_PID" \
 
 Alternatively, a sender can present a capability ticket issued by the
 receiver instead of a local grant: `idfon access ticket --subject SENDER_PEER_ID`
-prints the ticket JSON, which `send --capability-ticket` accepts; a verified
+prints the ticket token, which `send --capability-ticket` accepts; a verified
 ticket satisfies the receive gate and materializes grants on first delivery.
 
 `scripts/test-e2e.sh` exercises the whole signaled flow (pairing,

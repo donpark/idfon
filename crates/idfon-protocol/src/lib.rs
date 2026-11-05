@@ -54,8 +54,11 @@ pub struct MessageEnvelope {
     pub sender: PeerAuth,
     pub content: MessageContent,
     pub idempotency_key: String,
+    /// The sender's `rcan` capability ticket token (base32, see
+    /// `idfon_core::CapabilityTicket`). Opaque here: the receiving side decodes
+    /// and verifies it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability_ticket: Option<CapabilityTicket>,
+    pub capability_ticket: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
     /// Optional W3C-traceparent-shaped correlation id for the logical flow this
@@ -505,39 +508,12 @@ pub struct VoiceDelegate {
     /// can add/dial it without a prior pairing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<serde_json::Value>,
-    /// Optional delegate capability ticket (subject-bound to the caller).
+    /// Optional delegate capability ticket token (subject-bound to the caller).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ticket: Option<serde_json::Value>,
+    pub ticket: Option<String>,
     /// Preferred audio profile for the delegate leg.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CapabilityTicket {
-    pub issuer: String,
-    pub subject: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conversation: Option<String>,
-    /// Optional path prefix this ticket is limited to (e.g. `/fs/public`).
-    /// Absent on legacy tickets; included in the signed bytes only when set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path_scope: Option<String>,
-    pub capabilities: Vec<Capability>,
-    pub expires_at: Option<String>,
-    pub ticket_id: String,
-    /// Voice routing the issuer advertises for this connection (see
-    /// [`VoiceRoute`]). Signed when present; absent on legacy tickets.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voice: Option<VoiceRoute>,
-    /// Relay URL the issuer claims for reachability (the identity's home
-    /// relay). Signed when present; absent on legacy tickets. Carried by
-    /// relay reachability grants ("claiming" tickets): the issuer's key
-    /// binds endpoint + relay, and the relay's auth service admits the
-    /// subject on the strength of that signature.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relay: Option<String>,
-    pub signature: String,
 }
 
 /// Canonical Idfon device/contact ticket. `endpoint_addr` is serialized

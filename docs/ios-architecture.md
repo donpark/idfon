@@ -140,8 +140,8 @@ message with no holder-signed, subject-bound `message.receive` ticket, so a
 ticket is provisioned out of band and attached to outbound turns:
 
 1. `eve-idfon ticket --subject <this-app's-peer-id> [--key-file ...]`
-   prints the holder-signed JSON.
-2. Launch with `-pair-ticket <agent-peer-id> <ticket-json|file>`, where the id
+   prints the holder-signed ticket token (an `rcan` delegation, base32).
+2. Launch with `-pair-ticket <agent-peer-id> <ticket-token|file>`, where the id
    is the one the app paired the agent under (the `id` field of the `-pair`
    EndpointAddr JSON, which `sendText` passes as `to`); `CapabilityTickets`
    persists it per peer (UserDefaults).
@@ -154,13 +154,13 @@ which satisfies the daemon's inbound gate for the agent's peer id. The text
 path is validated end to end on a physical iPhone, including restart persistence.
 Voice/STT/TTS remains separate from this text path.
 
-`ios/Checks/CapabilityTicketCheck` covers the ticket round-trip (including the
-`expires_at: null` that must survive encoding) on the host:
+`ios/Checks/CapabilityTicketCheck` covers token decoding, storage, the send
+param and voice routing on the host (it pins a real Rust-minted token):
 
 ```sh
 swiftc -o /tmp/ctcheck ios/Idfon/AnyEncodable.swift \
-  ios/Idfon/CapabilityTickets.swift ios/Checks/CapabilityTicketCheck/main.swift \
-&& /tmp/ctcheck
+  ios/Idfon/CapabilityTickets.swift ios/Idfon/CapabilityTicketToken.swift \
+  ios/Checks/CapabilityTicketCheck/main.swift && /tmp/ctcheck
 ```
 
 The per-call health card's host check (`HealthCard.swift`: record decode, the

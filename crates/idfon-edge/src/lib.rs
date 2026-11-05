@@ -31,7 +31,8 @@ use idfon_gateway::{
     serve, AccountResolver, Authenticator, Authorizer, Caller, Config as GatewayConfig,
     GatewayHandle, IrohBackend, LocalRoute, RequestEvent, RequestObserver, StaticToken, TlsConfig,
 };
-use idfon_protocol::{Capability, CapabilityTicket};
+use idfon_core::CapabilityTicket;
+use idfon_protocol::Capability;
 use iroh::{EndpointAddr, EndpointId};
 
 pub mod files;
@@ -149,17 +150,17 @@ impl CapabilityTicketAuth {
 impl Authenticator for CapabilityTicketAuth {
     fn authenticate(&self, headers: &HeaderMap, _uri: &Uri) -> Option<Caller> {
         let raw = ticket_from(headers)?;
-        let ticket: CapabilityTicket = serde_json::from_str(&raw).ok()?;
-        idfon_core::verify_capability_ticket(&ticket).ok()?;
-        if !ticket.capabilities.contains(&self.capability) {
+        let ticket = CapabilityTicket::decode(raw.trim()).ok()?;
+        if !ticket.capabilities().contains(&self.capability) {
             return None;
         }
-        match ticket.expires_at.as_deref() {
-            Some(value) if !idfon_core::expiry_passed(value, now_seconds()) => {}
-            _ => return None,
+        // The edge requires an expiry: a credential that never lapses should
+        // not gate ingress. (The push routes take the opposite call.)
+        if ticket.expires_at()? <= now_seconds() {
+            return None;
         }
         Some(Caller {
-            subject: ticket.issuer,
+            subject: ticket.issuer(),
             ticket: Some(raw),
             scope: None,
         })

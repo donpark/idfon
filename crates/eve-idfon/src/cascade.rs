@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use idfon_core::transport::{IrohTransport, MessageTransport};
-use idfon_core::{peer_id, sign_message_with_ticket};
-use idfon_protocol::{encode_call_transcript, CallTranscript, CapabilityTicket, MessageContent};
+use idfon_core::{peer_id, sign_message_with_ticket, CapabilityTicket};
+use idfon_protocol::{encode_call_transcript, CallTranscript, MessageContent};
 use idfon_voice::stream::EnvelopeStripper;
 use iroh::EndpointAddr;
 

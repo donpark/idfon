@@ -87,7 +87,7 @@ function envelope(contact, { capability, auth }) {
   const payload = {
     contact: { ...JSON.parse(contact.contact), label: contact.name },
   };
-  if (capability) payload.capability = JSON.parse(capability);
+  if (capability) payload.capability = capability.trim().startsWith("{") ? JSON.parse(capability) : capability;
   if (auth) payload.auth = auth;
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }

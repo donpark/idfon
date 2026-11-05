@@ -384,8 +384,8 @@ conversation channel:
 
 `idfon-core` already exposes everything the holder needs without a daemon:
 `IrohTransport::bind_with_key`, `serve(handler)`, `send`, `verify_message`,
-`verify_capability_ticket`, and `open_bi_stream(target, alpn)` for side
-channels (live media).
+`CapabilityTicket::decode` (signature-checked by construction), and
+`open_bi_stream(target, alpn)` for side channels (live media).
 
 ## Relationship to the MCP tool axis
 
@@ -502,7 +502,7 @@ scripts assert on. Turns thread to one Eve session per peer id automatically.
   operations.
 - `docs/audio-media.md`, `docs/video-media.md` — live/blob media pipelines.
 - `crates/idfon-core` (`transport.rs`, `lib.rs`) — agent-side endpoint,
-  `serve`/`send`, `verify_message`, `verify_capability_ticket`.
+  `serve`/`send`, `verify_message`, `CapabilityTicket`.
 - Eve channels: `https://eve.dev/docs/channels/overview`,
   `.../channels/custom`, `.../channels/slack`; extensions:
   `https://eve.dev/docs/extensions`.

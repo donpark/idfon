@@ -7,7 +7,7 @@
 //   node deploy/relay-auth/ctl.mjs enroll-owner --key-file ~/.idfon/identity-default.key \
 //        --base https://relay.example.com:9443 [--endpoint <hex>]
 //   node deploy/relay-auth/ctl.mjs mint-grant --key-file KEY --endpoint <hex> \
-//        [--ticket <id>] [--expires <rfc3339|epoch>] [--relay <url>]   -> grant JSON
+//        [--ticket <id>] [--expires <rfc3339|epoch>] [--relay <url>]   -> grant token
 //   node deploy/relay-auth/ctl.mjs enroll-grant --grant <file> [--label L] -> non-owner token
 //   node deploy/relay-auth/ctl.mjs refresh  --token NON_OWNER_TOKEN
 //   node deploy/relay-auth/ctl.mjs admit    --token OWNER --endpoint <hex> [--label edge] [--lease-days 3650]
@@ -22,7 +22,7 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { canonicalGrantBytes } from "./server.mjs";
+import { expiryEpoch, signRelayGrant } from "./rcan.mjs";
 
 const args = process.argv.slice(2);
 let command = null;
@@ -106,21 +106,19 @@ switch (command) {
   }
   case "mint-grant": {
     const key = keypairFromSeedFile(opt("key-file") ?? fail("--key-file required"));
-    const grant = {
-      issuer: key.pubHex,
-      subject: opt("endpoint") ?? fail("--endpoint required (the subject endpoint id)"),
-      capabilities: ["relay.use"],
-      expires_at: opt("expires", "2030-01-01T00:00:00Z"),
-      ticket_id: opt("ticket", `ticket-${Date.now()}`),
-    };
-    const relay = opt("relay");
-    if (relay) grant.relay = relay;
-    grant.signature = sign(key.privateKey, canonicalGrantBytes(grant));
-    console.log(JSON.stringify(grant, null, 2));
+    const token = signRelayGrant(key.privateKey, {
+      issuerHex: key.pubHex,
+      audienceHex: opt("endpoint") ?? fail("--endpoint required (the subject endpoint id)"),
+      relay: opt("relay"),
+      ticketId: opt("ticket", `ticket-${Date.now()}`),
+      expiresAt: expiryEpoch(opt("expires", "2030-01-01T00:00:00Z")),
+    });
+    console.log(token);
     break;
   }
   case "enroll-grant": {
-    const grant = JSON.parse(fs.readFileSync(opt("grant") ?? fail("--grant <file> required"), "utf8"));
+    const file = opt("grant") ?? fail("--grant <file> required");
+    const grant = fs.readFileSync(file, "utf8").trim();
     console.log(
       JSON.stringify(await call(base, "/enroll", { body: { grant, label: opt("label") } }), null, 2),
     );
