@@ -86,6 +86,17 @@ class MaskGeometryTests(unittest.TestCase):
             _, got = keys(REFERENCE, cache_len, tier)
             self.assertTrue(torch.equal(got, sliding_window(REFERENCE, cache_len, tier)))
 
+    def test_batched_mask_is_per_stream(self):
+        # a B=2 graph must not share one stream's cache length across the batch
+        tier = TIER_320
+        w1 = StreamingTapEncoder(MODEL, SHIPPING, tier=tier, batch=1)
+        w2 = StreamingTapEncoder(MODEL, SHIPPING, tier=tier, batch=2)
+        m2 = w2.key_mask(torch.tensor([1, SHIPPING.left], dtype=torch.int32))
+        kt = SHIPPING.left + tier.chunk_frames
+        self.assertEqual(tuple(m2.shape), (2, tier.chunk_frames, kt))
+        self.assertTrue(torch.equal(m2[0], w1.key_mask(torch.tensor([1]))))
+        self.assertTrue(torch.equal(m2[1], w1.key_mask(torch.tensor([SHIPPING.left]))))
+
     def test_partial_cache_drops_unfilled_slots_only(self):
         # the manager seeds cache_len=1; a partial cache must intersect the window,
         # never widen it past the block bounds
