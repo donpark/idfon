@@ -27,7 +27,41 @@ ROOT = Path(__file__).resolve().parents[2]
 
 from export import StepWrap, load_student  # noqa: E402
 
-GATE = 0.01
+GATE = 0.01          # fp32: the pathc student gate (fp32 lands ~1e-5)
+INT8_GATE = 2e-3     # int8: P4's envelope (per-head probs) — a different grid, gated as such
+
+
+def convert(step, width, layers, precision="float32"):
+    """-> MLModel for the step: fp16 changes compute precision; `int8` quantizes the
+    converted model's *weights* (coremltools' linear scheme: symmetric, per-block-16 —
+    NOT the ONNX/QAT asymmetric per-output-unit grid, so it is its own rung; the P7
+    matrix gates it as such). `state` is a reserved Core ML name, so I/O is matched by
+    shape downstream (io_by_shape)."""
+    import coremltools as ct
+    import torch
+
+    hua = torch.zeros(1, 1, 1024)
+    act = torch.zeros(1, 1)
+    prev = torch.zeros(1, 1, dtype=torch.long)
+    state = torch.zeros(layers, 1, width)
+    prec = ct.precision.FLOAT16 if precision == "float16" else ct.precision.FLOAT32
+    ml = ct.convert(torch.jit.trace(step, (hua, hua, act, prev, state), strict=False),
+                    inputs=[ct.TensorType(name="hu", shape=hua.shape),
+                            ct.TensorType(name="ha", shape=hua.shape),
+                            ct.TensorType(name="act_db", shape=act.shape),
+                            ct.TensorType(name="prev_state", shape=prev.shape, dtype=np.int32),
+                            ct.TensorType(name="state", shape=state.shape)],
+                    compute_precision=prec, compute_units=ct.ComputeUnit.ALL,
+                    minimum_deployment_target=ct.target.iOS18)
+    if precision == "int8":
+        from coremltools.optimize.coreml import (OpLinearQuantizerConfig,
+                                                 OptimizationConfig,
+                                                 linear_quantize_weights)
+        cfg = OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8",
+                                      granularity="per_block", block_size=16,
+                                      weight_threshold=1024)
+        ml = linear_quantize_weights(ml, config=OptimizationConfig(global_config=cfg))
+    return ml
 
 
 def io_by_shape(spec_io, width, layers, expect):
@@ -57,7 +91,7 @@ def main():
     ap.add_argument("--student", default=str(ROOT / "bench-results/student/student.pt"))
     ap.add_argument("--shards", default=str(ROOT / "bench-results/student-shards/val"))
     ap.add_argument("--frames", type=int, default=248)
-    ap.add_argument("--precision", default="float32", choices=["float32", "float16"])
+    ap.add_argument("--precision", default="float32", choices=["float32", "float16", "int8"])
     ap.add_argument("--tap", default=None,
                     help="shared checkpoints: adapter to prune to (default: the checkpoint's deploy tap)")
     ap.add_argument("--out", default=str(ROOT / "bench-results/student-coreml"))
@@ -67,19 +101,7 @@ def main():
     step = StepWrap(model, tap).eval()
     width, layers = model.width, model.layers
 
-    hua = torch.zeros(1, 1, 1024)
-    act = torch.zeros(1, 1)
-    prev = torch.zeros(1, 1, dtype=torch.long)
-    state = torch.zeros(layers, 1, width)
-    prec = ct.precision.FLOAT32 if args.precision == "float32" else ct.precision.FLOAT16
-    ml = ct.convert(torch.jit.trace(step, (hua, hua, act, prev, state), strict=False),
-                    inputs=[ct.TensorType(name="hu", shape=hua.shape),
-                            ct.TensorType(name="ha", shape=hua.shape),
-                            ct.TensorType(name="act_db", shape=act.shape),
-                            ct.TensorType(name="prev_state", shape=prev.shape, dtype=np.int32),
-                            ct.TensorType(name="state", shape=state.shape)],
-                    compute_precision=prec, compute_units=ct.ComputeUnit.ALL,
-                    minimum_deployment_target=ct.target.iOS18)
+    ml = convert(step, width, layers, args.precision)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     pkg = out / "StudentStep.mlpackage"
@@ -116,13 +138,15 @@ def main():
             st_c = np.asarray(res[outs["state"]]).astype(np.float32)
             worst = max(worst, float(np.abs(o_c - o_t[0, 0].numpy().astype(np.float64)).max()))
             state_worst = max(state_worst, float(np.abs(st_c - st_t.numpy()).max()))
-    ok = worst <= GATE
+    gate = INT8_GATE if args.precision == "int8" else GATE
+    ok = worst <= gate
     print(f"parity on {n} real frames (carried state, {meta['session_id'][:16]}…): "
-          f"out max|d| {worst:.2e}, state max|d| {state_worst:.2e}  {'PASS' if ok else 'FAIL'}")
+          f"out max|d| {worst:.2e} (gate {gate:.0e}), state max|d| {state_worst:.2e}  "
+          f"{'PASS' if ok else 'FAIL'}")
     (out / "parity.md").write_text(
         f"# StudentStep Core ML parity ({args.precision})\n\n"
         f"- checkpoint: {args.student}\n- frames: {n} from {meta['session_id']} (carried state)\n"
-        f"- out max|d|: {worst:.2e} (gate {GATE})\n- state max|d|: {state_worst:.2e}\n"
+        f"- out max|d|: {worst:.2e} (gate {gate:.0e})\n- state max|d|: {state_worst:.2e}\n"
         f"- size: {size:.1f} MB\n")
     raise SystemExit(0 if ok else 1)
 

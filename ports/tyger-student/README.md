@@ -18,7 +18,11 @@ registry entry plus labels — not another bolted-on model.
 | `gate.py` | the decision gate: student's own events vs the teacher's, replayed with live rules feedback (parity7 metric, ≥99% PASS) |
 | `export.py` | the size rung: `student.pt` → ONNX (`StudentStep{,Int8}.onnx`, TygerStep I/O contract) + parity gates (fp32 ≤ 1e-4, int8 probs ≤ 2e-3, decision-flip counts) |
 | `export_coreml.py` | the apps' pre-27 tier: `StudentStep.mlpackage` (fp32, ANE-fp16-exempt by ruling) + carried-state parity |
-| `export_coreai.py` | the apps' OS-27 tier: `student_step_float32.aimodel` + AOT `.aimodelc` container (loader-enforced; source loads leak ANE compiles) + coreai.runtime gate |
+| `export_coreai.py` | the apps' OS-27 tier: `student_step_float32.aimodel` + AOT `.aimodelc` container (loader-enforced; source loads leak ANE compiles) + coreai.runtime gate; `convert()` is the reusable half the matrix calls |
+| `export_mlx.py` | the mac tier: `StudentStep{,Int8}.safetensors` — int8 per-output-unit group-16 storage, dequantised at load (the grid QAT projects onto, `quantize_step.py`'s `quantize()`) + carried-state parity |
+| `runners.py` | one step-runner per tier (`onnx`/`coreml`/`coreai`/`mlx` + the torch reference): `step(hu, ha, act_db, prev_state, state) -> (out8, state)` — the surface the matrix gate and TurnShadow both replay through, plus artifact bytes, per-frame ms with a contention stamp, and AOT loadability (MPSGraph version, #110) |
+| `export_matrix.py` | **P7**: the full matrix (every adapter × 4 tiers × {int8, fp32}) — exports, the P4 gate per cell, bytes, per-frame ms, exports-vs-loads → `bench-results/matrix/matrix.json` + `matrix.md` (`--selfcheck`, `--remeasure`) |
+| `turnshadow.py` | **P7**: the swap-over gate — a candidate tier vs the authoritative fp32 student on recorded sessions, per-axis drift + decision flips + latency delta, fail-open (a tier that cannot load is reported, never fatal) |
 | `harness.py` | the product-metric gate (the P1 brief's judgment): endpoint latency/early/miss, barge catch/false, bc precision/recall — teacher vs student on the same axes (`scripts/tyger-eval.py` definitions; proposed bars in `bench-results/harness-gate.md`) |
 | `oracle.py` | the tyger-s2s seam (reference chain + rules + Mimi decode), one env contract |
 | `probe.py` | the tap probe survey (#132 P0): per-tap ridge probes (R²/cosine) of the teacher's 8-vector per decision axis, held-out sessions; the tap-quality table that drives the per-axis adapter loss weights (`bench-results/tap-probes.md`, findings in `docs/voice-decision-model.md` P2) |
@@ -113,7 +117,7 @@ threshold knobs; `agreement.py` measures the decisions).
    the student with its own `<student>.traits.json` — optima don't transfer between
    models (see bench-results/gate-calibration.md). Always report **both** default and
    calibrated agreement: default = self-contained behavior, calibrated = product config.
-6. **Export** (done — all three delivery tiers, all gated):
+6. **Export** (done — all four delivery tiers, all gated):
    - ONNX (`export.py`): `StudentStep.onnx` (5.28 MB fp32; probs Δ 2.4e-7) and
      `StudentStepInt8.onnx` (2.16 MB int8 group-8; probs Δ 1.63e-3 ≤ 2e-3, 0 argmax
      flips, 1/248 p_end threshold flip) — the eve TS agent's tier. **fp32 is the
@@ -126,9 +130,46 @@ threshold knobs; `agreement.py` measures the decisions).
      carried-state frames) — the apps' pre-27 tier.
    - CoreAI (`export_coreai.py`): `student_step_float32.aimodel` + AOT
      `.h16s.aimodelc` (5.3 MB; Δ 1e-6 on the coreai.runtime gate) — the apps' OS-27 tier.
-   **QAT not needed** — every gate passes post-training. Env note: coreai-models
+   - MLX (`export_mlx.py`): `StudentStep.safetensors` fp32 and
+     `StudentStepInt8.safetensors` (group-16 storage) — the macOS 14–26 step tier;
+     parity vs torch on carried-state frames (`--shards`).
+   **QAT is not needed for the single-tap student** (every gate passes post-training);
+   the shared-latent tier does need it (#145: off-grid int8 drifts 3–6e-3), which is why
+   the matrix's int8 source is the QAT fine-tune. Env note: coreai-models
    installs from `~/dev/coreai-models/python` (the `~/dev/github/coreai-models`
    checkout is stale and its converter crashes on fused LayerNorm locs).
+
+## The P7 matrix and the swap-over gate (#161)
+
+Four tiers, one gate. `export_matrix.py` covers every adapter the converged int8
+checkpoint carries × ONNX / Core ML / Core AI / MLX × {`int8`, `fp32`}, gates each cell
+with P4's envelope against the cell's own torch source, and records **exports** and
+**loads** as separate facts (a Core AI AOT container above MPSGraph 7.0.80 does not
+load on the 27.0.x runtimes — #110). `turnshadow.py` then diffs every loadable cell
+against the authoritative fp32 student on recorded sessions: per-axis drift, decision
+flips, per-frame ms. Shadow only — classic stays the fail-open path.
+
+```sh
+PY=ports/tyger-student/.venv/bin/python; M=/Users/don/dev/idfon/bench-results
+# the int8 source: the #145 QAT fine-tune (converge in fp32, then adapt to the grid)
+$PY ports/tyger-student/train_shared.py --tap l15-windowed=$M/student-shards \
+    --tap l4-windowed=$M/l4-shards --tap l4-streaming=$M/tap4-shards \
+    --out bench-results/shared-qat-ft --epochs 20 --lr 1e-4 --seed 0 \
+    --consistency 0.3 --qat 16 --init $M/shared-consistent-l03/student.pt
+# the matrix (+ the per-adapter calibration artifacts, traits.json per adapter)
+$PY ports/tyger-student/export_matrix.py --student bench-results/shared-qat-ft/student.pt \
+    --fp32 $M/shared-consistent-l03/student.pt --shard-root $M
+# the swap-over gate
+$PY ports/tyger-student/turnshadow.py --matrix bench-results/matrix \
+    --fp32 $M/shared-consistent-l03/student.pt --sessions 2 --frames 500
+# re-time the same artifacts on a quiet machine (latency, no re-export)
+$PY ports/tyger-student/export_matrix.py --out bench-results/matrix --remeasure
+```
+
+Adding a tap (a new ASR) adds an adapter row, not a new pipeline: train the adapter
+(`train_shared.py --adapter-only TAP`), fit it (`calibrate.py --tap`), then re-run the
+matrix with `--shards TAP=<tap-shards>`. The swappable-checkpoint boundary is stated in
+`docs/voice-tyger-ondevice.md` ("Export matrix and the swap-over gate").
 
 ## In the product (step swap, issue #104)
 
