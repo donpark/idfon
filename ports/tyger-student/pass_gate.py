@@ -16,15 +16,23 @@ matching `featurize_tap.tap()`. Shard emission pads one row at the front and tri
 shard's T, because the torch reference's first chunk carries one extra context row that a
 steady-framing pass cannot emit (`docs/voice-tyger-streaming-plan.md` § Leg 1).
 
+`--chunk-ms` selects the emitter tier and must match the artifact's own `chunk_ms`
+(the sidecar is checked). The frame grid is the same 80 ms row grid at every tier
+(tier only changes how many rows one encoder call releases), so a 320 shard is
+frame-comparable to a 560 one — verified by a lag scan, not assumed.
+
 Usage:
   $PY ports/tyger-student/pass_gate.py --drift                       # fixture + session rows
   $PY ports/tyger-student/pass_gate.py --drift --int8                # + the weight grid
   $PY ports/tyger-student/pass_gate.py --emit-shards bench-results/tap-shipping/val \
       --pass shipping --sessions 2                                   # then tap_gate.py
+  $PY ports/tyger-student/pass_gate.py --emit-shards bench-results/tap-shipping-320 \
+      --pass shipping --chunk-ms 320 --artifact .../asr-tap-320/...mlpackage
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -40,6 +48,7 @@ from asr_tap import (  # noqa: E402
     REFERENCE,
     SHIPPING,
     SR,
+    TIERS,
     TOTAL_MEL,
     StreamingTapEncoder,
     divergence,
@@ -158,6 +167,9 @@ def main():
     ap.add_argument("--artifact", default=None,
                     help="featurize through this .mlpackage (the refit's training source: int8 + fp16 "
                          "exactly as served) instead of the torch simulation")
+    ap.add_argument("--chunk-ms", type=int, default=560, choices=sorted(TIERS),
+                    help="chunk tier the emitter runs; must match --artifact's tier "
+                         "(the shard grid is the same 80 ms rows either way)")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
     if not (args.drift or args.emit_shards or args.priming):
@@ -169,8 +181,9 @@ def main():
     proc = AutoProcessor.from_pretrained(args.model)
     model = AutoModel.from_pretrained(args.model, dtype=torch.float32).eval().to(args.device)
     cfg = PASSES[args.pass_]
-    ref = StreamingTapEncoder(model, pass_cfg=REFERENCE).eval()
-    cand = StreamingTapEncoder(model, pass_cfg=cfg).eval()
+    tier = TIERS[args.chunk_ms]
+    ref = StreamingTapEncoder(model, pass_cfg=REFERENCE, tier=tier).eval()
+    cand = StreamingTapEncoder(model, pass_cfg=cfg, tier=tier).eval()
     print(f"passes: reference {REFERENCE.name} cache {REFERENCE.left}, candidate {cfg.name} "
           f"cache {cfg.left}, group {cfg.group}")
 
@@ -253,14 +266,18 @@ def main():
             from export_asr_tap import ml_stream
 
             mlmodel = ct.models.MLModel(args.artifact, compute_units=ct.ComputeUnit.CPU_AND_NE)
+            side = Path(args.artifact).parent / "metadata.json"
+            if side.exists():
+                have = json.loads(side.read_text()).get("chunk_ms")
+                assert have == tier.ms, f"{side}: chunk_ms {have} != --chunk-ms {tier.ms}"
 
             def rows(wrapper, wav):  # noqa: F811 - the artifact replaces the torch emitter
                 feats = proc(np.asarray(wav, np.float32), sampling_rate=SR, return_tensors="pt")
                 _, tap, _ = ml_stream(mlmodel, feats["input_features"].numpy(),
                                       prompt_id=int(model.config.default_prompt_id),
-                                      cache_size=cfg.left)
-                # ml_stream emits the 7 valid rows per chunk; the shard grid carries one extra
-                # leading row (the reference's first-chunk context), so shift by one
+                                      cache_size=cfg.left, tier=tier)
+                # ml_stream emits only the tier's new rows per chunk; the shard grid carries
+                # one extra leading row (the reference's first-chunk context), so shift by one
                 return np.concatenate([tap[:1], tap])
 
         elif args.int8:
@@ -284,7 +301,8 @@ def main():
                        {k: v[:n] for k, v in labels.items()},
                        events=(np.asarray(events[0], np.int32), events[1]) if events is not None else None)
             done += 1
-            print(f"  {sid[:16]}… {cfg.name}{' int8' if args.int8 else ''} {n}/{T} frames -> {out}")
+            print(f"  {sid[:16]}… {cfg.name} {tier.ms} ms{' int8' if args.int8 else ''} "
+                  f"{n}/{T} frames -> {out}")
         print(f"{done} shard(s) in {out}")
 
 
