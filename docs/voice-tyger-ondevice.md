@@ -1043,6 +1043,158 @@ ports/tyger-student/.venv/bin/python ports/tyger-student/tap_latency.py --verify
 `--scoring chunk,per-frame,tap-hop` and `--left-policies hop-phase,zero,chunk-countdown`
 select the modes; `--selfcheck` covers the left sequences and the chunk/hop grid.
 
+### The playback ear: `ha` from the same encoder (2026-11-05, #132/#102)
+
+**Verdict first: yes — the playback ear can move off the cut at the same fidelity as the
+mic ear, for one more 8 ms chunk and ~6 MiB, provided the stream is fed continuously and
+not reset per utterance.** Paired against the stored windowed cut rows the playback tap
+lands at **cos p50 0.943–0.951 / p05 0.860–0.866, rel-L2 p50 0.31–0.34** — the same band
+as the mic ear re-run in the same pass (0.950–0.956 / 0.868–0.876, 0.30–0.32). One loaded
+artifact with two independent cache sets costs **8.2 ms per ear per 560 ms chunk** (two
+streams 16.2–16.6 ms; +7 turn steps = **17.0 ms, 3% of the period**) and **+6.1 MiB**
+RSS for the second set (56/0; +4.7 MiB at 42/13). The residual risk is not fidelity or
+compute, it is the **restart**: a cold stream is ~4 cosine points off for ~6 chunks, emits
+one duplicated frame per restart, and (fork bug) keeps climbing frame origins.
+
+Why this was the last unmeasured piece: today `TurnRuntime.feed` encodes **both** ears
+through the private L4 cut every 320 ms hop, so deleting the cut needs `hu` *and* `ha`
+moved. The mic ear had been measured; the playback channel (the agent's own TTS voice) had
+not, and it needs its own encoder cache because the two streams start, run and stop
+independently. Harness: `ports/tyger-student/playback_ear.py` (`--selfcheck`).
+
+**Setup.** The same three `live-shipping` captures and frame counts as the sections
+above, playback channel (channel 1 of the `TurnCapture` stereo WAV); the reference is the
+**stored** `ha_l4`/`hu_l4` from `bench-results/live-shipping`, so the tap rows are compared
+against the exact cut rows the other work used, not a re-run. A replay of the windowed cut
+reproduces those rows at cos 0.99993–0.99995 (label: re-run). Two artifacts:
+
+| key | artifact | pass | cache depth |
+| --- | --- | --- | ---: |
+| reference | `bench-results/asr-tap-ref56/encoder_tap_fp16_int8w.mlpackage` | 56/0, the published per-frame numbers' artifact | 56 |
+| shipping | `bench-results/asr-tap-fixed/encoder_tap_42-13_fp16_int8w.mlpackage` | corrected 42/13, the shipping-intended export | 42 |
+
+Grid: tap stream row *i* is chunk `i//7`, row `i%7`, and reproduces stored cut row `i+1`
+(the mic channel's measured offset). The offset-0 control at p50 is weak on *both*
+channels (playback 0.908–0.931 vs 0.943–0.951 at +1; mic 0.857–0.894 vs 0.950–0.956)
+because neighbouring 80 ms steps of the same speech are similar — the sharp evidence is
+the earlier p05 test (0.87 at +1 vs 0.17 at 0) and the onset probe, and the playback ear
+uses the same grid. Per chunk position the parity is flat (`k0…k6` 0.93–0.95 at 56/0), so
+no row of a chunk is the weak one.
+
+**Feature parity per frame, tap vs the stored cut rows** (frames 1…T−1):
+
+| session | frames | playback cos p50 / p05 | rel-L2 p50 | mic re-run cos p50 / p05 | rel-L2 p50 |
+| --- | ---: | --- | ---: | --- | ---: |
+| 23:13:14Z | 1394 | 0.9427 / 0.8661 | 0.340 | 0.9556 / 0.8755 | 0.298 |
+| 20:17:43Z | 1114 | 0.9512 / 0.8602 | 0.313 | 0.9549 / 0.8684 | 0.300 |
+| 21:13:38Z | 1891 | 0.9509 / 0.8649 | 0.315 | 0.9497 / 0.8726 | 0.317 |
+| *42/13:* 23:13:14Z | 1394 | 0.9320 / 0.8532 | 0.370 | 0.9420 / 0.8620 | 0.342 |
+| *42/13:* 20:17:43Z | 1114 | 0.9383 / 0.8386 | 0.353 | 0.9419 / 0.8561 | 0.340 |
+| *42/13:* 21:13:38Z | 1891 | 0.9363 / 0.8433 | 0.358 | 0.9372 / 0.8578 | 0.355 |
+
+The playback ear sits within **1.3 cosine points** of the mic ear and within **0.04
+rel-L2** (in either direction) in the same run — it is not a special case. The 42/13 pass
+costs ~1.1–1.5 points on both ears, as the 42/13-vs-56/0 feature difference already
+implied; the refit target stays the 42/13 taps.
+
+**Cost: one stream vs two, one loaded artifact** (per 560 ms chunk, 199/159/270 chunks):
+
+| session | one stream p50 / p95 | two streams p50 / p95 | step p50 | encode + 7 steps | share of 560 ms |
+| --- | --- | --- | ---: | ---: | ---: |
+| 23:13:14Z | 8.23 / 8.50 | 16.49 / 17.35 | 0.07 | 17.01 | 3.0% |
+| 20:17:43Z | 8.20 / 8.44 | 16.46 / 16.86 | 0.07 | 16.98 | 3.0% |
+| 21:13:38Z | 8.27 / 9.11 | 16.57 / 16.91 | 0.08 | 17.09 | 3.1% |
+
+(42/13 is the same shape, 0.3 ms faster: one 8.07–8.12, two 16.22–16.28, budget 16.8 ms.)
+The second stream is additive, as expected: one ANE job at a time, the two calls are
+serial in the same artifact. **There is no per-cache-set compute cost** — the cost is the
+second encode — and the turn steps are 0.5 ms per chunk, i.e. noise next to it.
+
+**Resident memory, one vs two cache sets.** The tap caches are I/O tensors, so a second
+ear is a second tuple, not a second model: `cache_channel` 24×56×1024 fp32 = 5.25 MiB
+plus `cache_time` 0.75 MiB = **6.00 MiB per ear** at 56/0 (**4.69 MiB** at 42/13). Measured in
+a **fresh child process** (load the artifact, one ear live for two calls, `ps -o rss`, then
+the second ear live): **+6.1 MiB** at 56/0, **+4.7 MiB** at 42/13 — the analytic size. This
+is macOS RSS on an M4 Pro and **not an iPhone number**; the phone is unmeasured. For
+comparison, a second in-process `MLModel` on the same package adds only 13–18 MiB here
+(the weights are the same mapped file) — the reason to prefer one artifact with two cache
+sets is the ~8 ms/chunk of RNNT decode a second *manager* would run for an ear that needs
+no text, not the weights.
+
+**`ha` availability, reported apart from the mic ear** (ms after that frame's audio end):
+
+| session | today (hop end + hu encode + ha encode) p50 / p95 / max | streaming (chunk end + hu + ha) p50 / p95 / max |
+| --- | --- | --- |
+| 23:13:14Z | 160.1 / 246.7 / 314.4 | 266.5 / 506.6 / 511.7 |
+| 20:17:43Z | 159.8 / 246.6 / 313.7 | 266.5 / 506.5 / 506.9 |
+| 21:13:38Z | 159.6 / 246.4 / 313.4 | 266.3 / 506.4 / 507.9 |
+
+The playback ear does not have its own latency story: today it is encoded *after* the mic
+ear in the same hop (3.1–3.2 ms p50, up to 37 ms while the 8 s window is still growing),
+and in the streaming shape it is encoded after the mic ear in the same chunk. So `ha` is
+never earlier than `hu` on either path, and the streaming `ha` inherits the same chunk
+cadence the mic ear already measured (the +266/506 numbers are that cadence plus the
+second encode). No separate bottleneck, and no separate fix.
+
+**Failure mode: restarting the playback stream at utterance starts.** The capture's
+agent channel is active 24–31% of the session with 13/14/17 utterance starts after ≥1 s
+of silence, so restarts are the normal case. Restarting a cold stream (fresh caches, no
+pre-context) and comparing its rows with the continuous stream at the same audio frames:
+
+| session | restarts | cos vs continuous, chunk 0 / 1 / 3 / 6 / 7 | duplicate rows | origin drift, continuous feed |
+| --- | ---: | --- | ---: | ---: |
+| 23:13:14Z | 13 | 0.905 / 0.951 / 0.952 / 0.968 / 0.989 | 13 | +12 frames (0.96 s) |
+| 20:17:43Z | 14 | 0.911 / 0.953 / 0.956 / 0.982 / 0.992 | 14 | +13 frames (1.04 s) |
+| 21:13:38Z | 17 | 0.910 / 0.943 / 0.953 / 0.977 / 0.992 | 17 | +16 frames (1.28 s) |
+
+Three distinct failures, all real:
+
+1. **Stale (cold) cache — bounded.** The first chunk of a restart is ~4 cosine points
+   below the continuous stream (0.905–0.911 vs ~0.95) and is back to steady by chunk 6–7
+   (~3.4 s). The restarted stream's chunk 0 has no 9-frame pre-context, and the 56-deep
+   cache needs ~6 chunks to fill; silence alone does **not** do this (parity right after a
+   ≥1 s gap in the continuous stream is 0.943 / 0.953 / 0.954 vs 0.942 / 0.950 / 0.949
+   steady).
+2. **Duplicated frames — structural.** A restarted chunk 0 releases 8 rows: the context
+   row is emitted once as frame `g0` and again as frame `g0+1`. One per restart, always,
+   and it is the *cold* row — its cosine to its own neighbour is 0.37 when the restart
+   lands in silence (zero pre-context) and 0.95 mid-speech.
+3. **Frame-origin drift — the wiring bug.** `tapFrameOrigin` survives `reset()` in the
+   fork (0 → 1400 → 2520, #174), so a consumer must rebase per stream start. Even with
+   silence fed continuously, the extra context row per restart advances the origin by 8
+   rows per 7 frames of audio: **+1 frame per restart, cumulative** (+16 frames = 1.28 s
+   by the end of the longest session). If playback audio is only fed while the agent is
+   playing, the skipped silence is lost from the origin on top of that (−837 / −803 /
+   −1483 frames at the last restart), i.e. rows land tens of seconds early.
+
+**Design decision.** Shipping-intended shape measured here: **one loaded artifact, one
+cache set per ear, both streams fed continuously (silence included), no reset**, with the
+playback ear read by a direct encoder call (its own caches, no RNNT decode). Why: it is
+the shape today's windowed path already has (`TurnRuntime` appends both hops every 320 ms
+regardless of who is talking), it sidesteps all three restart failures, and it costs
+8.2 ms + 6 MiB. Resetting per utterance is the *power-saving* shape and is not free: it
+needs its own origin baseline and accepts ~6 chunks of cold cache, so it is a separate
+decision, not a drop-in.
+
+**What this does not measure.** iPhone ANE scheduling, thermals and RSS (M4 Pro numbers
+above) · the fork's API for a second stream (the hook is per-manager; a direct encoder
+call is the shape that was costed, a second manager is not) · the 42/13-vs-56/0 effect on
+*decisions* (that is the refit's number) · barge/overlap (unchanged: these captures are
+`listen` throughout) · whether the app should feed silence when playback is idle (product
+wiring). No threshold, model, app or fork change.
+
+Reproduce:
+
+```sh
+ports/tyger-student/.venv/bin/python ports/tyger-student/playback_ear.py --selfcheck
+ports/tyger-student/.venv/bin/python ports/tyger-student/playback_ear.py \
+    --out bench-results/playback-ear.json
+```
+
+`--artifacts reference-56-0,shipping-42-13` selects the exports; `--limit-frames` is a
+debug aid; the RSS delta is re-measured in a child process because freed pages never
+return to the parent.
+
 ### The duplicate-pass precondition
 
 The epic's footprint bar is that turn decisions cost **no second encoder pass**. Nothing
