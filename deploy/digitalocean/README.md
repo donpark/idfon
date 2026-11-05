@@ -56,7 +56,8 @@ Toggle (for benchmarking against the public/N0 relays):
 Switch between the two and compare; no config edits needed.
 
 That starts `n0computer/iroh-relay:v1.4.0` beside the edge from
-`relay/config.toml` + `compose.relay.yaml`, reusing the wildcard cert, serving
+`relay/config.toml` + `compose.relay.yaml`, reusing the wildcard cert (re-read
+on renewal, like the edge — no restart), serving
 `8443/tcp` (WSS) and `7842/udp` (QUIC address discovery), and writes
 `IDFON_RELAY_URLS=https://relay.<domain>:8443` into the edge's env. The firewall
 already allows those two ports.

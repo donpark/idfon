@@ -424,6 +424,45 @@ export function createApp(config) {
   };
 }
 
+// --- tls files ---------------------------------------------------------------
+function readTls(config) {
+  return { cert: fs.readFileSync(config.tlsCert), key: fs.readFileSync(config.tlsKey) };
+}
+
+// HTTPS server that re-reads the cert/key when either file changes, so a
+// renewal by acme.sh is picked up without a restart. A failed re-read keeps
+// the last good cert (acme.sh rewrites the files in place).
+export function startTlsServer(config, app, reloadMs = 60 * 60 * 1000) {
+  const server = https.createServer(readTls(config), (req, res) => app(req, res));
+  let seen = tlsMtime(config);
+  const timer = setInterval(() => {
+    const now = tlsMtime(config);
+    if (now === seen) return;
+    try {
+      server.setSecureContext(readTls(config));
+      seen = now;
+      console.log("relay-auth https: certificate reloaded");
+    } catch (err) {
+      console.error(`relay-auth https: cert reload failed, keeping the last good one: ${err.message}`);
+    }
+  }, reloadMs);
+  timer.unref();
+  server.on("close", () => clearInterval(timer));
+  return server;
+}
+
+function tlsMtime(config) {
+  return Math.max(
+    ...[config.tlsCert, config.tlsKey].map((p) => {
+      try {
+        return fs.statSync(p).mtimeMs;
+      } catch {
+        return 0;
+      }
+    }),
+  );
+}
+
 // --- main ------------------------------------------------------------------
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const config = loadConfig();
@@ -440,11 +479,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log(`relay-auth http :${config.httpPort}`);
   });
   if (config.tlsCert && config.tlsKey) {
-    const tls = {
-      cert: fs.readFileSync(config.tlsCert),
-      key: fs.readFileSync(config.tlsKey),
-    };
-    https.createServer(tls, (req, res) => app(req, res)).listen(config.httpsPort, () => {
+    startTlsServer(config, app).listen(config.httpsPort, () => {
       console.log(`relay-auth https :${config.httpsPort}`);
     });
   } else {
