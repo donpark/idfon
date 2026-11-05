@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ports/tyger-student"))
 
 from data import load_shard, pick_features  # noqa: E402
+from mode_track import frame_modes  # noqa: E402
 from oracle import GRID, HOP, HOP_FRAMES, SR, WIN_S, Oracle, decode_channel, resample16k  # noqa: E402
 from transformers.cache_utils import DynamicCache  # noqa: E402
 from transformers.models.nemotron_asr_streaming.modeling_nemotron_asr_streaming import (  # noqa: E402
@@ -75,7 +76,7 @@ def align(ref, cand, span=8):
     return best
 
 
-def head_vecs(oracle, hu, ha, energy, vec_fn=None):
+def head_vecs(oracle, hu, ha, energy, modes, vec_fn=None):
     """Per-frame 8-vectors. vec_fn (student) bypasses the teacher step."""
     outs, cache = [], None
     sess = oracle.EarsSession(0)
@@ -86,16 +87,16 @@ def head_vecs(oracle, hu, ha, energy, vec_fn=None):
         else:
             o = vec_fn(hu[f], ha[f], float(energy[f]), prev)
         outs.append(o)
-        oracle.rules.on_frame(sess, "response", o, float(energy[f]), left=3 - (f % HOP_FRAMES))
+        oracle.rules.on_frame(sess, modes[f], o, float(energy[f]), left=3 - (f % HOP_FRAMES))
     return np.stack(outs)
 
 
-def events_of(oracle, vecs, energy):
+def events_of(oracle, vecs, energy, modes):
     sess = oracle.EarsSession(0)
     evs = []
     for f in range(len(vecs)):
         e, _final, _reset = oracle.rules.on_frame(
-            sess, "response", vecs[f], float(energy[f]), left=3 - (f % HOP_FRAMES))
+            sess, modes[f], vecs[f], float(energy[f]), left=3 - (f % HOP_FRAMES))
         for x in e:
             if x["kind"] != "FRAME":
                 evs.append((f + 1, x["kind"]))
@@ -177,10 +178,13 @@ def main():
         ref = {ch: ref[ch][:n] for ch in ("ch0", "ch1")}
         energy = ref_frames["energy"][:n]
         d = np.abs(np.concatenate([cand[c] for c in cand]) - np.concatenate([ref[c] for c in ref]))
-        vref = head_vecs(oracle, ref["ch0"], ref["ch1"], energy, vec_fn)
-        vcand = head_vecs(oracle, cand["ch0"], cand["ch1"], energy, vec_fn)
-        eref = events_of(oracle, vref, energy)
-        ecand = events_of(oracle, vcand, energy)
+        given = ref_frames.get("mode")  # older shards: derive from ch1's energy
+        modes = frame_modes(None if given is not None else
+                            oracle.rules.frame_energy(wav["ch1"]), given=given)[:n]
+        vref = head_vecs(oracle, ref["ch0"], ref["ch1"], energy, modes, vec_fn)
+        vcand = head_vecs(oracle, cand["ch0"], cand["ch1"], energy, modes, vec_fn)
+        eref = events_of(oracle, vref, energy, modes)
+        ecand = events_of(oracle, vcand, energy, modes)
         hit, only_ref, only_cand = aligned_count(eref, ecand)
         agree = hit / max(len(eref), len(ecand))
         total += [hit, only_ref, only_cand, max(len(eref), len(ecand))]

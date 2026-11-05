@@ -26,6 +26,7 @@ BUNDLE = os.environ.get("TYGER_BUNDLE", os.path.expanduser(
 MODELS = Path(HERE).resolve().parents[1] / "bench-results" / "coreml"
 sys.path.insert(0, S2S)
 sys.path.insert(0, os.path.join(S2S, "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tyger-student"))
 
 import torch  # noqa: E402
 from datasets import load_dataset  # noqa: E402
@@ -35,6 +36,8 @@ from app.plugins.ears.tyger import rules  # noqa: E402
 from app.plugins.ears.tyger.constants import SR  # noqa: E402
 from app.plugins.ears.tyger.session import EarsSession  # noqa: E402
 from validate.reference import ReferenceEars  # noqa: E402
+
+from mode_track import frame_modes, mode_at_hop  # noqa: E402
 
 HOP_FRAMES = 4
 WIN_S = 8
@@ -147,6 +150,7 @@ def main():
     wavs = {ch: te.resample16k(te.decode_channel(AutoModel.from_pretrained(
         "kyutai/mimi", dtype=torch.float32).eval(), codes[ch])) for ch in ("ch0", "ch1")}
     n_hops = min(len(wavs["ch0"]), len(wavs["ch1"])) // HOP
+    modes = frame_modes(rules.frame_energy(wavs["ch1"]))
     warm = 0 if args.startup else WIN_S * SR // HOP  # steady-state: window full
     print(f"session {row['session_id'][:12]}…: {limit / 12.5:.0f}s, {n_hops} hops, comparing from hop {warm}")
 
@@ -160,8 +164,9 @@ def main():
             win = {ch: wavs[ch][max(0, s - WIN_S * SR):s] for ch in ("ch0", "ch1")}
         else:
             win = {ch: wavs[ch][s - WIN_S * SR:s] for ch in ("ch0", "ch1")}
-        a.feed(win["ch0"], win["ch1"], "response")
-        b.feed(win["ch0"], win["ch1"], "response")
+        mode = mode_at_hop(modes, h)  # identical on both sides
+        a.feed(win["ch0"], win["ch1"], mode)
+        b.feed(win["ch0"], win["ch1"], mode)
         compared += 1
 
     A, B = np.array(a.outs), np.array(b.outs)

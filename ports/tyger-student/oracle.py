@@ -9,7 +9,8 @@ helpers. One import point, one env contract:
 
 The feed contract (both consumers): per 320 ms hop, the window is the last 8 s of
 each channel; the chain encodes both windows and steps the last min(4, rows) frames
-through the turn-taker with the rules' carried prev_state (mode="response") —
+through the turn-taker with the rules' carried prev_state and the per-frame `mode`
+track (`mode_track.py`: the shard's track, else the agent channel's energy) —
 parity7's contract (ports/tyger-coreml/parity7.py, the shipping guard).
 """
 import os
