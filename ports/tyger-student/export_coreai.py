@@ -71,10 +71,40 @@ async def gate(path, frames, wrap, width, layers, n):
     return ok_all
 
 
-def main():
+def convert(step, out, width, layers):
+    """Write the step as <out>/student_step_float32.aimodel -> (path, MB). fp32 is the
+    tier's precision ruling (the ANE fp16 defect family, p_end drift: docs/
+    voice-tyger-ondevice.md)."""
+    import shutil
+
     import coreai.runtime as rt
     import torch
     from coreai_models.export.macos import export_to_coreai
+
+    ex = {
+        "hu": torch.zeros(1, 1, 1024),
+        "ha": torch.zeros(1, 1, 1024),
+        "act_db": torch.zeros(1, 1),
+        "prev_state": torch.zeros(1, 1, dtype=torch.int32),
+        "state": torch.zeros(layers, 1, width),
+    }
+    print("[export] student step -> Core AI ...", flush=True)
+    prog = export_to_coreai(
+        step, ex, dynamic_shapes=None,
+        input_names=("hidden_user", "hidden_agent", "energy_db", "state_id", "gru_state"),
+        output_names=("decision_vector", "gru_state_next"))
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "student_step_float32.aimodel"
+    shutil.rmtree(path, ignore_errors=True)
+    prog.save_asset(path, rt.AIModelAssetMetadata())
+    size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) / 1e6
+    return path, size
+
+
+def main():
+    import coreai.runtime as rt
+    import torch
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--student", default=str(ROOT / "bench-results/student/student.pt"))
@@ -92,25 +122,8 @@ def main():
     step = StepWrap(model, tap).to(torch.float32).eval()
     width, layers = model.width, model.layers
 
-    ex = {
-        "hu": torch.zeros(1, 1, 1024),
-        "ha": torch.zeros(1, 1, 1024),
-        "act_db": torch.zeros(1, 1),
-        "prev_state": torch.zeros(1, 1, dtype=torch.int32),
-        "state": torch.zeros(layers, 1, width),
-    }
-    print("[export] student step -> Core AI ...", flush=True)
-    prog = export_to_coreai(
-        step, ex, dynamic_shapes=None,
-        input_names=("hidden_user", "hidden_agent", "energy_db", "state_id", "gru_state"),
-        output_names=("decision_vector", "gru_state_next"))
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    path = out / "student_step_float32.aimodel"
-    import shutil
-    shutil.rmtree(path, ignore_errors=True)
-    prog.save_asset(path, rt.AIModelAssetMetadata())
-    size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) / 1e6
+    path, size = convert(step, out, width, layers)
     print(f"saved {path.name} ({size:.1f} MB, float32)")
 
     from data import iter_shards
