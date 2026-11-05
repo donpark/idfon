@@ -56,6 +56,9 @@ def main():
                     help="shard key convention: 15 = canonical hu/ha; else hu_l{K}/ha_l{K}")
     ap.add_argument("--tol", type=int, default=2, help="same-kind match tolerance, frames")
     ap.add_argument("--sessions", type=int, default=0, help="limit paired sessions (0 = all)")
+    ap.add_argument("--frames", type=int, default=0,
+                    help="trim each session to the first N frames (0 = all); matches a shorter "
+                         "earlier sample so rows stay comparable")
     ap.add_argument("--ep-thr", type=float, default=0.9146)
     ap.add_argument("--barge-thr", type=float, default=0.5)
     ap.add_argument("--bc-thr", type=float, default=0.5)
@@ -76,6 +79,8 @@ def main():
             continue
         fb, eb = b_by_sid[sid]
         n = min(len(fa["energy"]), len(fb["energy"]))
+        if args.frames:
+            n = min(n, args.frames)
         fa = {k: (v[:n] if isinstance(v, np.ndarray) else v) for k, v in fa.items()}
         fb = {k: (v[:n] if isinstance(v, np.ndarray) else v) for k, v in fb.items()}
         for ear in ("hu", "ha"):
