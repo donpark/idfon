@@ -394,6 +394,44 @@ Measure first — everything below needs the same instrumentation to prove out.
    record + iroh path events. Decide between (a) transport switchover,
    (b) MoQ/receive-buffer stall, (c) adaptation confusion. Fix the root cause
    once in the shared media plane. This is the top robustness item.
+   **Diagnosed 2026-11-04, on real transitions** (two drives, WALM 2 HD over
+   the radio-world station): verdict (a), and only partly. The transport does
+   its job — the connection survives, relay→direct migration happens without a
+   new session — but two failure modes remained on the *listen leg*:
+   - **A dying path costs a teardown.** Wi-Fi off killed the subscription, not
+     the interface: 6 s hole across watchdog + re-dial on a cold endpoint, later
+     4.2 s, later 3.3 s as each layer improved. Recovery is a rebuild; the
+     hole's floor is therefore "time to dial again", not "time to migrate".
+   - **A live-but-blackholed path costs 2 s.** Cell handovers raise no
+     NWPathMonitor event; frames just stop. iroh keeps the path and audio
+     resumes on its own, but the app must decide how long to wait.
+   **What the listen leg now does** (`crates/iroh-c-ffi/src/media.rs`):
+   - the endpoint is kept for the whole subscription, not per attempt — a
+     retry dials from a warm endpoint instead of bootstrapping one;
+   - **every** failed attempt is transient and retried with backoff ≤ 1 s
+     while the call is up (an earlier version gave up on dial/setup errors and
+     left the leg silent, once for 4.5 min);
+   - a watcher on `Connection::path_events()` ends the attempt immediately when
+     the **selected** path closes (open candidates and the losing relay are
+     ignored), so a real switch no longer waits for silence;
+   - the silence window is path-aware: 500 ms right after an interface change
+     or foreground kick, 2 s on a relay path, **4 s on a direct path** — a
+     direct path going quiet is usually a cell handover that resumes by itself,
+     and rebuilding on top of it costs another second. Trade: a genuinely dead
+     direct path takes ~5 s instead of ~3 s unless its close event lands first.
+   - the shell sees it: `media_live_state()` (idle/connecting/playing/
+     reconnecting/failed) drives the call bar's status line, `media_live_path()`
+     shows the carrying path (`direct 192.168.1.42` / `relay`), and
+     `PathSwitch` records the selected path's local + remote address so a
+     record tells Wi-Fi from cellular after the fact.
+   Still open: live tickets carry no addresses (`iroh-live` serializes the
+   endpoint id only), so every subscribe resolves the publisher through
+   pkarr/DNS — that is what failed with "No addressing information available"
+   while interfaces flapped (see the tracking issue), and it is why first dials
+   can take 10–20 s. Fix: merge the contact's stored `endpoint-addr` into the
+   subscribe by id. Also unbuilt here: DRED as blackhole fill (the encoder does
+   not publish its DRED cover in the catalog, so the subscriber cannot tell a
+   DRED stream from a PLC-only one).
 3. **Turn on Opus FEC + DTX for calls** (change, cheap). Two flags in
    `AudioOptions` at the call sites (idfon-live-media/src/lib.rs:554,
    iroh-c-ffi/src/media.rs:374). Verify loss resilience on an induced-loss
@@ -443,7 +481,9 @@ Measure first — everything below needs the same instrumentation to prove out.
    watchdog drops from 2 s to 500 ms for a 15 s grace window. The listen leg
    also reports `media_live_state()` (idle/connecting/playing/reconnecting/
    failed) for the call bar, and `media_live_reconnect()` lets a foreground
-   return cut the retry backoff. Pre-grow/pre-step stay open (profile layer).
+   return cut the retry backoff. Path-close events drive the rebuild and the
+   watchdog is path-aware (see item 2's 2026-11-04 block). Pre-grow/pre-step
+   stay open (profile layer).
 10. **Media profile + policy layer** (change, per B2 — mostly wiring). Thin
     per-call profile state over the *existing* knobs (FFI setters,
     `Producer::set_bitrate`, `enable_adaptation`/`requested`);
