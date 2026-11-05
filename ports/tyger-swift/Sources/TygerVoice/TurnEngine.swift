@@ -59,13 +59,21 @@ public struct TurnEvent {
 public final class TurnEngine {
     private let runtime: TurnRuntime
     private let rules: TurnRules
+    /// The live-call decision log (#102); nil unless `IDFON_TURN_LOG` is set.
+    private let trace: TurnTrace?
     /// The engine's 80 ms frame counter, zeroed by `reset()`.
     public private(set) var frame = 0
     private var lastMode = ""
 
-    public init(model: TurnModel, rules: TurnRules) {
+    public init(model: TurnModel, rules: TurnRules, trace: TurnTrace? = nil) {
         self.runtime = TurnRuntime(model: model)
         self.rules = rules
+        self.trace = trace
+    }
+
+    /// Flush and close the decision log (the call ended). No-op without a trace.
+    public func closeTrace() {
+        trace?.close()
     }
 
     /// The heads' context starts over (mode switches and rules reset points).
@@ -92,14 +100,20 @@ public final class TurnEngine {
             lastMode = mode
         }
         var pendingFinal: [Float]?
+        // the state the next step consumes: the same read that starts the hop,
+        // then each frame's return (no extra rules reads — the call order is
+        // part of the oracle's contract, see TurnEngineTests)
+        var prevConsumed = rules.prevState
         _ = runtime.feed(
-            userHop: userHop, agentHop: agentHop, firstState: rules.prevState,
+            userHop: userHop, agentHop: agentHop, firstState: prevConsumed,
             onFrame: { _, out, actDb, left in
                 let outcome = self.rules.onFrame(outputs: out, actDb: actDb, left: left, mode: mode)
                 self.frame += 1
+                var emitted: [(kind: String, frame: Int)] = []
                 for e in outcome.events {
-                    pending.append(TurnEvent(
-                        kind: (e["kind"] as? String) ?? "?", frame: self.frame, dict: e, finalAudio: nil))
+                    let kind = (e["kind"] as? String) ?? "?"
+                    pending.append(TurnEvent(kind: kind, frame: self.frame, dict: e, finalAudio: nil))
+                    if kind != "FRAME" { emitted.append((kind: kind, frame: self.frame)) }
                 }
                 if let audio = outcome.finalAudio {
                     pendingFinal = audio
@@ -107,8 +121,12 @@ public final class TurnEngine {
                 if outcome.reset {
                     self.runtime.reset()
                 }
-                return self.rules.prevState
+                self.trace?.frame(index: self.frame, out: out, actDb: actDb, prevState: prevConsumed,
+                                  left: left, mode: mode, events: emitted)
+                prevConsumed = self.rules.prevState
+                return prevConsumed
             })
+        self.trace?.endHop()
         if let audio = pendingFinal, let idx = pending.lastIndex(where: { $0.kind == "ENDPOINT" }) {
             let e = pending[idx]
             pending[idx] = TurnEvent(kind: e.kind, frame: e.frame, dict: e.dict, finalAudio: audio)

@@ -656,6 +656,37 @@ faithful-to-behavior projection fails the envelope. That is the gate working as
 intended — the matrix says the packaging is done, TurnShadow says the model swap is a
 product decision plus one more training change.
 
+### The live-call record (`IDFON_TURN_LOG`, #102)
+
+Every gate above replays *recorded* frames, so none of them can say what the product
+actually decided during a real call — and a model swap measured only on recordings
+cannot claim "no behavior change" against a baseline nobody captured. The instrument
+for that baseline is the record, and it must exist **before** any app-side swap:
+
+- **Flag:** `IDFON_TURN_LOG=<path>`, read by `TurnTrace.fromEnvironment`
+  (`ports/tyger-swift`, shared by both apps). Unset is the default and is inert: no file,
+  no branch in the frame path. A bare name (no `/`) resolves into the app's Documents
+  directory; a full path is used as given. Both apps wire it in `TurnShadow`'s init and
+  close it in `stop()`; the tier identity (`tier`/`rung`/`step`/`traits`) travels in the
+  session header.
+- **Record:** one JSON object per line. The header (`rec: "session"`) carries the session
+  id, `started_at`, `origin_ns` (the monotonic origin every `t_ms` is measured from),
+  `rate`/`hop`, app id/build/os, and the tier meta. Each frame (`rec: "frame"`) carries
+  `i` (the engine's 1-based counter), `t_ms`, `out` (the 8-vector), `act_db`, `prev`
+  (the state the step consumed), `left`, `mode`, and `events` (the non-FRAME events that
+  fired on it: kind + frame). No audio and no encoder features — the paired
+  `TurnCapture` stereo wav is the audio. Frames are buffered and appended on a utility
+  queue, flushed per hop; nothing on the capture path waits for the disk.
+- **Recorded call -> shard set:** `ports/tyger-student/live_shard.py --log call.jsonl
+  --out bench-results/live-call-shards` writes `data.py`'s shard format (via
+  `data.save_shard`), so `gate.py`/`agreement.py` read the live events as their reference
+  side. Add `--features <npz>` from `featurize.py --wavs <capture dir>` to fill `hu`/`ha`
+  from the same call's audio and make the shard fully replayable (one call per log file
+  for that join). `--selfcheck` pins the format.
+- **What it is not:** the log's `teacher` array is the *live tier's* 8-vector, not the
+  fp32 teacher's, and it records the deployed tier only — a shadowed call (two models
+  over one mic) is still a separate instrument.
+
 ### The duplicate-pass precondition
 
 The epic's footprint bar is that turn decisions cost **no second encoder pass**. Nothing
