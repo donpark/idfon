@@ -56,6 +56,9 @@ void media_live_stop(void);                  // stop own publish
 uint8_t media_live_set_audio_enabled(uint8_t enabled);
 uint8_t media_live_set_video_enabled(uint8_t enabled);
 uint8_t media_live_subscribe(char const *ticket); // hear/watch a peer (decodes + plays)
+// Same, with the contact's stored endpoint-addr JSON (#157): live tickets carry
+// no addresses, so the dial would otherwise depend on pkarr/DNS.
+uint8_t media_live_subscribe_with_addrs(char const *ticket, char const *addrs);
 void media_live_unsubscribe(void);
 // Listen-leg state for the call UI (docs/media-adaptation.md §C2): 0 idle,
 // 1 connecting, 2 playing, 3 reconnecting, 4 failed. The plane heals itself —
@@ -137,6 +140,9 @@ uint8_t media_health_check_ticket(void const *ctx,
     void (*cb)(void const *ctx, uint8_t const *json, size_t len, uint8_t done), uint64_t duration_ms, char const *peer_ticket);
 // The last per-call report JSON (a health Report), empty before a call ends.
 char *media_health_last_report(void);
+// The running call's record so far (mid-call read; does not stop sampling).
+// Empty when no call is being sampled. Same shape as the last report.
+char *media_health_live_report(void);
 size_t media_audio_output_count(void);
 size_t media_audio_input_count(void);
 uint64_t media_audio_probe(uint64_t duration_ms);          // input samples captured

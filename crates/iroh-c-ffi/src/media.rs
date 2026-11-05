@@ -880,14 +880,48 @@ fn stall_window(relay: bool) -> std::time::Duration {
     }
 }
 
+/// Merge a contact's stored `EndpointAddr` into a ticket that carries none.
+/// Best-effort: a bad or mismatched address blob leaves the ticket untouched
+/// (the dial then falls back to discovery, as before).
+fn merge_known_addrs(ticket: &mut LiveTicket, addrs_json: &str) {
+    let Ok(addr) = serde_json::from_str::<iroh::EndpointAddr>(addrs_json) else {
+        return;
+    };
+    if addr.id != ticket.endpoint.id || !ticket.endpoint.addrs.is_empty() {
+        return;
+    }
+    ticket.endpoint.addrs = addr.addrs;
+}
+
 #[ffi_export]
 pub fn media_live_subscribe(ticket: char_p::Ref<'_>) -> u8 {
+    subscribe_inner(ticket.to_str(), None)
+}
+
+/// Subscribe with the peer's known addresses merged in (#157).
+///
+/// A serialized live ticket carries the endpoint id only — `LiveTicket`'s
+/// wire form is `iroh-live:<base64 id>/<name>` — so every dial resolves the
+/// publisher through pkarr/DNS. That is what failed with "No addressing
+/// information available" while interfaces flipped (2026-11-04 drive), and it
+/// is why first dials can take 10-20 s. The shell already holds the contact's
+/// `endpoint_addr` from pairing, so it passes it here; when the ids match and
+/// the ticket has no addresses of its own, they are used directly.
+#[ffi_export]
+pub fn media_live_subscribe_with_addrs(ticket: char_p::Ref<'_>, addrs: char_p::Ref<'_>) -> u8 {
+    subscribe_inner(ticket.to_str(), Some(addrs.to_str()))
+}
+
+fn subscribe_inner(ticket: &str, addrs: Option<&str>) -> u8 {
     media_live_unsubscribe();
     SUB_KICK.store(false, Ordering::Relaxed);
     set_sub_state(SUB_CONNECTING);
-    let Ok(ticket) = ticket.to_str().parse::<LiveTicket>() else {
+    let Ok(mut ticket) = ticket.parse::<LiveTicket>() else {
         return 1;
     };
+    if let Some(addrs) = addrs.filter(|addrs| !addrs.is_empty()) {
+        merge_known_addrs(&mut ticket, addrs);
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
     let handle = std::thread::spawn(move || {
@@ -1159,7 +1193,17 @@ async fn subscribe_decode_once(
         decode.max_age = std::time::Duration::from_millis(250);
         // Live playout fills small holes from the next packet's in-band copy
         // (moq-audio `conceal`); recordings must show holes as-is.
-        decode.conceal = std::time::Duration::from_millis(120);
+        // How much of a hole the decoder tries to fill. Bounded by libopus'
+        // 1 s MAX_CONCEAL; DRED lands inside this window when the publisher
+        // carries it (IDFON_CONCEAL_MS, default unchanged at 120 ms — see the
+        // handover note in docs/media-adaptation.md §C2).
+        decode.conceal = std::time::Duration::from_millis(
+            std::env::var("IDFON_CONCEAL_MS")
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .unwrap_or(120)
+                .clamp(120, 1_000),
+        );
         let mut consumer =
             moq_audio::decode::Consumer::new(broadcast.consumer(), config, name, decode).await?;
         let input = AudioInput {
@@ -2197,6 +2241,108 @@ mod tests {
         // An absolute scope is used verbatim (the mac app passes one).
         let abs = super::scoped_media_dir(std::path::Path::new("/var/tmp/x"));
         assert_eq!(abs, std::path::PathBuf::from("/var/tmp/x"));
+    }
+
+    /// The health card's source of truth (docs/media-adaptation.md §C1): two
+    /// in-process endpoints — publish through `start_live`, subscribe through
+    /// the entry the shells call — yield a readable record *mid-call*, and
+    /// `media_live_stop` folds it into the report `/health-check` files under
+    /// the peer. Also pins the read-and-clear hand-off: one record ships once.
+    #[test]
+    fn live_call_serves_a_health_record_midcall_and_at_hangup() {
+        let _guard = crate::util::MEDIA_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
+        unsafe extern "C" fn discard(
+            _: *const std::ffi::c_void,
+            _: *const u8,
+            _: usize,
+            _: u32,
+            _: u32,
+            _: u64,
+        ) {
+        }
+        assert_eq!(
+            super::media_audio_set_playback_cb(std::ptr::null(), discard),
+            0
+        );
+
+        let ticket_text =
+            super::start_live(true, false, false, None, AudioCodec::Opus, 48_000, 1)
+                .expect("publish");
+        // An id-only ticket resolves through pkarr/mDNS; talk to the publisher
+        // directly, the way a contact's stored `endpoint-addr` does.
+        let mut ticket = super::LiveTicket::deserialize(&ticket_text).expect("ticket");
+        ticket.endpoint = super::LIVE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .live
+            .endpoint()
+            .addr();
+        let addrs = serde_json::to_string(&ticket.endpoint).expect("addrs json");
+        assert_eq!(super::subscribe_inner(&ticket_text, Some(&addrs)), 0, "subscribe");
+
+        std::thread::spawn(|| {
+            for _ in 0..150u32 {
+                let frame = vec![0.05f32; 960];
+                super::media_audio_push_frames(frame.as_ptr(), 960, 1);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+
+        // Playback starts once the decoder has frames; the record has something
+        // to fold from that point (deadlock guard, not a latency budget).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+        while super::media_live_state() != super::SUB_PLAYING
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(
+            super::media_live_state(),
+            super::SUB_PLAYING,
+            "subscriber never started playing"
+        );
+        // The sampler ticks twice a second: one tick with audio in it.
+        std::thread::sleep(std::time::Duration::from_millis(1_500));
+
+        let live_json = crate::health::media_health_live_report().to_str().to_string();
+        let live: idfon_media::health::CallRecord =
+            serde_json::from_str(&live_json).expect("mid-call record JSON");
+        assert!(live.duration_ms > 0, "mid-call duration: {live_json}");
+        assert!(!live.timeline.is_empty(), "mid-call timeline: {live_json}");
+        assert!(live.audio.frames > 0, "mid-call audio stats: {live_json}");
+        assert!(
+            !live.path_switches.is_empty(),
+            "the path the call started on: {live_json}"
+        );
+
+        super::media_live_stop();
+        let ended_json = crate::health::media_health_last_report().to_str().to_string();
+        let ended: idfon_media::health::CallRecord =
+            serde_json::from_str(&ended_json).expect("hangup record JSON");
+        assert!(ended.duration_ms >= live.duration_ms, "{ended_json}");
+        assert!(
+            !ended.timeline.is_empty() && ended.audio.frames > 0,
+            "{ended_json}"
+        );
+        assert!(
+            crate::health::media_health_live_report().to_str().is_empty(),
+            "no sampling runs after the stop"
+        );
+        assert!(
+            crate::health::media_health_last_report().to_str().is_empty(),
+            "the record ships exactly once"
+        );
+
+        super::media_live_unsubscribe();
+        super::media_audio_clear_playback_cb();
+        if let Some(live) = super::SUBSCRIBER_LIVE.lock().unwrap().take() {
+            super::tokio_executor(live.shutdown());
+        }
     }
 
     /// The stereo E2E without hardware (docs/stereo-calls.md): a shell-pushed

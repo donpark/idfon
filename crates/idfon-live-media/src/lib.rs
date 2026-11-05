@@ -578,6 +578,19 @@ pub async fn publish_audio(
     options.settings.dtx = profile.codec == AudioCodec::Opus;
     // In-band FEC: the frame after a hole carries a copy of this one.
     options.settings.fec = profile.codec == AudioCodec::Opus;
+    // Deep redundancy, off unless an operator asks for it: the DRED cover is
+    // not published in the catalog, so a subscriber cannot tell a DRED stream
+    // from a PLC-only one and must be told to widen its conceal window
+    // (IDFON_CONCEAL_MS on the listening side). Below ~48 kbps libopus drops
+    // DRED outright, so pair a long cover with a bitrate that affords it.
+    options.settings.dred = (profile.codec == AudioCodec::Opus)
+        .then(|| {
+            std::env::var("IDFON_DRED_MS")
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+        })
+        .flatten()
+        .map(|ms| std::time::Duration::from_millis(ms.clamp(80, 1_000)));
     broadcast.audio().set_with(
         AudioSource::Frames {
             input: {

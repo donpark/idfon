@@ -255,6 +255,88 @@ private final class TimelineCardCell: UITableViewCell {
     }
 }
 
+/// A received picture in the thread (the health card's timeline is the first
+/// one): the image is the content, so the row shows a thumbnail instead of a
+/// filename. Tap still shares/saves the file, as any other file row does.
+private final class ImageCell: UITableViewCell {
+    /// The health card renders 900×340; a received picture of another shape
+    /// fills the same box (a thumbnail, not a document preview).
+    private static let aspect: CGFloat = 900.0 / 340.0
+
+    private let thumbnail = UIImageView()
+    private let captionLabel = UILabel()
+    private var sideConstraints: [NSLayoutConstraint] = []
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        selectionStyle = .none
+        backgroundColor = .clear
+        thumbnail.contentMode = .scaleAspectFill
+        thumbnail.clipsToBounds = true
+        thumbnail.layer.cornerRadius = 14
+        thumbnail.layer.cornerCurve = .continuous
+        thumbnail.layer.borderWidth = 1
+        thumbnail.layer.borderColor = UIColor.separator.cgColor
+        thumbnail.isAccessibilityElement = true
+        thumbnail.accessibilityTraits = .image
+        captionLabel.font = .preferredFont(forTextStyle: .caption2)
+        captionLabel.textColor = .secondaryLabel
+        [thumbnail, captionLabel].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            contentView.addSubview($0)
+        }
+        NSLayoutConstraint.activate([
+            thumbnail.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            thumbnail.widthAnchor.constraint(equalTo: contentView.widthAnchor, multiplier: 0.72),
+            thumbnail.heightAnchor.constraint(equalTo: thumbnail.widthAnchor, multiplier: 1 / Self.aspect),
+            captionLabel.topAnchor.constraint(equalTo: thumbnail.bottomAnchor, constant: 3),
+            captionLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+            captionLabel.leadingAnchor.constraint(equalTo: thumbnail.leadingAnchor, constant: 2),
+        ])
+        setAlignment(outgoing: false)
+    }
+
+    required init?(coder: NSCoder) { fatalError("storyboards are not used") }
+
+    /// Downsampled through ImageIO — it also answers "is this an image?"
+    /// (nil for anything else), and a row-sized thumbnail is all this needs.
+    static func thumbnail(of url: URL, maxPixels: CGFloat = 1_000) -> UIImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return UIImage(cgImage: image)
+    }
+
+    func configure(image: UIImage, caption: String, label: String, outgoing: Bool) {
+        thumbnail.image = image
+        thumbnail.accessibilityLabel = label
+        captionLabel.text = caption
+        setAlignment(outgoing: outgoing)
+    }
+
+    private func setAlignment(outgoing: Bool) {
+        NSLayoutConstraint.deactivate(sideConstraints)
+        if outgoing {
+            sideConstraints = [
+                thumbnail.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+                captionLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
+            ]
+        } else {
+            sideConstraints = [
+                thumbnail.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+                captionLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
+            ]
+        }
+        NSLayoutConstraint.activate(sideConstraints)
+    }
+}
+
 /// §7.2a ambient dateline: slim, low-contrast day separator.
 private final class DatelineCell: UITableViewCell {
     let label = UILabel()
@@ -693,6 +775,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.delegate = self
         tableView.register(MessageCell.self, forCellReuseIdentifier: "message")
         tableView.register(TimelineCardCell.self, forCellReuseIdentifier: "card")
+        tableView.register(ImageCell.self, forCellReuseIdentifier: "image")
         tableView.register(DatelineCell.self, forCellReuseIdentifier: "dateline")
         tableView.separatorStyle = .none
         tableView.keyboardDismissMode = .interactive
@@ -961,7 +1044,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let text = composerText.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
         composerText.text = ""
         textViewDidChange(composerText)
-        let peerId = conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id
+        let peerId = healthPeerId
+        // A local command, never sent: the call's quality record as a card in
+        // this thread (docs/media-adaptation.md §C1/§C2).
+        if text == "/health-check" {
+            postHealthCard(peerId: peerId)
+            return
+        }
         // A pending artifact selection turns this turn into a reference.
         let pending = pendingReference
         pendingReference = nil
@@ -1047,6 +1136,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         return input
     }
+
+    /// `/health-check`: the running call's record, or this thread's last one.
+    /// Posted locally as a summary line plus a picture; the record carries
+    /// addresses and RTT, so it never goes over the wire.
+    private func postHealthCard(peerId: String) {
+        let posted = HealthCard.post(peerId: peerId, conversation: conversation.room?.id)
+        Automation.mark("healthcheck \(posted ?? "none") peer=\(peerId)")
+    }
+
+    /// Automation entry (SceneDelegate, `-healthcheck`): the same post a typed
+    /// `/health-check` reaches.
+    func automateHealthCheck() { postHealthCard(peerId: healthPeerId) }
+
+    private var healthPeerId: String { conversation.isRoom ? ChatStore.shared.selfPeerId : peer.id }
 
     private func sendConversationText(_ text: String) async throws {
         if let room = conversation.room {
@@ -1427,6 +1530,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func fetchFile(messageID: String, ticket: String, name: String, localURL: URL?) {
         if let localURL {
             share(url: localURL, source: tableView)
+            return
+        }
+        // A local-only card (the health picture) has no ticket to fetch.
+        guard !ticket.isEmpty else {
+            showCallStatus("This picture is on this device only.")
             return
         }
         Task {
@@ -1840,7 +1948,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                            subtitle: Self.format(Double(durationMs) / 1000),
                            placement: .side(outgoing: side(for: message)), expanded: false, showsDisclosure: false)
             return cell
-        case .file(_, let name, let sizeBytes, _):
+        case .file(_, let name, let sizeBytes, let localURL):
+            // A picture is its own content: show it, not its filename.
+            if let localURL, let thumbnail = ImageCell.thumbnail(of: localURL) {
+                let cell = tableView.dequeueReusableCell(withIdentifier: "image", for: indexPath) as! ImageCell
+                cell.configure(image: thumbnail, caption: caption("picture · tap to share", for: message),
+                               label: "Picture, \(name)", outgoing: side(for: message))
+                return cell
+            }
             let cell = tableView.dequeueReusableCell(withIdentifier: "card", for: indexPath) as! TimelineCardCell
             cell.configure(edge: .colored(.systemGreen), glyph: "doc", title: name,
                            subtitle: ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file),

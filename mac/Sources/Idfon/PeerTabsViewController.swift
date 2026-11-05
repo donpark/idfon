@@ -346,6 +346,11 @@ final class PeerSectionViewController: NSViewController, NSTableViewDataSource, 
                     self?.onMutate?()
                     self?.reload()
                 } catch {
+                    // The contact may already be gone (removed by another shell
+                    // or the CLI): re-read the daemon's list so a row that can
+                    // never be deleted does not survive the failure.
+                    self?.onMutate?()
+                    self?.reload()
                     self?.presentError(error.localizedDescription)
                 }
             }

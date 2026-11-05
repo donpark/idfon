@@ -16,6 +16,14 @@ enum Automation {
         return (args[index + 1], args[index + 2])
     }()
 
+    /// `-healthcheck <peer-ref>`: select the peer's thread and post the card a
+    /// typed `/health-check` reaches — the real path, no clicks.
+    static let pendingHealthCheck: String? = {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "-healthcheck"), args.count > index + 1 else { return nil }
+        return args[index + 1]
+    }()
+
     /// Writes a harness-visible marker. `idfonLog` mirrors to stderr (unbuffered,
     /// so it lands immediately) and to the unified log trail.
     static func mark(_ message: String) {

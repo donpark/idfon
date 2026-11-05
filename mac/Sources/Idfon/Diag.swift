@@ -46,11 +46,13 @@ enum Diag {
     /// `media_live_stop()`. Read-and-clear on the Rust side, so call this
     /// exactly once per call — right after the stop. Parse-and-log: a record
     /// that will not parse still ships as a raw string, never loses a call.
-    static func logCallRecord() {
-        guard let ptr = media_health_last_report() else { return }
+    /// Returns the JSON so the caller can file it with its thread.
+    @discardableResult
+    static func logCallRecord() -> String? {
+        guard let ptr = media_health_last_report() else { return nil }
         let json = String(cString: ptr)
         rust_free_string(ptr)
-        guard !json.isEmpty else { return }
+        guard !json.isEmpty else { return nil }
         let detail: [String: Any]
         if let data = json.data(using: .utf8),
            let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
@@ -60,6 +62,7 @@ enum Diag {
         }
         log("call", detail)
         flush()
+        return json
     }
 
     /// Send the buffered events to the monitor peer as one report.
