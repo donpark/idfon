@@ -274,6 +274,148 @@ This does **not** say the streaming-trained student reproduces today's decisions
 is a separate swap question measured in P7's TurnShadow (`docs/voice-tyger-ondevice.md`:
 80–85% on the deploy adapter).
 
+### Leg 1 — the encoder export with a declared `tap_l4` (measured 2026-11-05, #102)
+
+Core ML exposes declared outputs only, so the tap has to be a real output of the ASR's
+own streaming pass. `ports/tyger-student/asr_tap.py` reimplements that pass
+(`nvidia/nemotron-3.5-asr-streaming-0.6b`, fp32 weights) as a graph with **explicit
+tensor caches**; `export_asr_tap.py --export/--gate` converts and scores it.
+
+**The I/O contract is FluidAudio's, not ours** (`StreamingNemotronMultilingualAsrManager`
++ `EncoderCacheManager` + the multilingual `metadata.json`):
+
+| tensor | shape | dtype | meaning |
+| --- | --- | --- | --- |
+| `mel` | `[1,128,65]` | fp32 | 56 mel frames + the 9 pre-encode context frames |
+| `mel_length` | `[1]` | int32 | 65 (the manager's `totalMelFrames`) |
+| `cache_channel` | `[1,24,56,1024]` | fp32 | per-layer attention inputs (post-`norm_self_att`), right-aligned |
+| `cache_time` | `[1,24,1024,8]` | fp32 | per-layer conv1d cache, post-GLU (kernel 9 → 8) |
+| `cache_len` | `[1]` | int32 | valid cached frames; the manager seeds **1** (a zero frame) |
+| `prompt_id` | `[1]` | int32 | LangID one-hot index (128 prompts, default 101) |
+| `encoded` | `[1,1024,7]` | fp32 | prompt-conditioned frames — the tensor the decoder reads |
+| `tap_l4` | `[1,1024,7]` | fp32 | raw `hidden_states[4]`, same 7 frames, pre-prompt |
+| `cache_channel_out` / `cache_time_out` / `cache_len_out` / `encoded_length` | as input / `[1]` | | threaded back per hop |
+
+The pass parameters are the **reference pass's**, not the shipping bundle's: left context
+**56**, lookahead **0** (HF `sliding_window=57`, `num_lookahead_tokens=0`). That is the
+pass `tap4-shards` records (re-verified this run: cosine 1.0, max|d| 3e-3 vs the stored
+rows). The shipping multilingual bundle instead uses NeMo `att_context_size [42,13]`, i.e.
+a 42-frame left window; its taps are a *different* feature source and a tap shipped on that
+bundle needs its own shard set (see the drift table above: a pass change is not free).
+
+Two non-obvious pieces of that pass, both baked into the graph:
+
+- **The conv2d caches are derivable and must be.** The torch pass threads
+  `NemotronAsrStreamingEncoderCausalConvPaddingCache` (subsampling Conv2d + conformer Conv1d).
+  The Conv2d part is not in FluidAudio's contract, but each stage's cache frame is a fixed
+  slice of that stage's input on the *current* call (frames **8 / 3 / 1** for the stem and
+  the two depthwise stages; measured identical to 0.0 in fp32). Baking that is what
+  "`is_first_chunk=False`" means — every chunk runs the steady-state conv framing.
+  Dropping those caches (the offline-conv framing) is *not* equivalent: it yields 9 rows
+  instead of 8 and drifts to cos 0.97 within a few chunks.
+- **The attention cache holds layer inputs, not K/V.** Keys/values are recomputed from
+  `[cache | chunk]` each call, so the 56-frame window is exact without storing per-layer K/V.
+
+**Gates** (fixture = the 20 s runtime channels; session = `dualturn` val
+`d622d1e3…`, 985 s, 2240 rows; `--gate` output in `bench-results/asr-tap/gate_*.json`):
+
+| gate | fp32 (2.37 GB) | fp16 (1.18 GB) | int8 weights (594 MB; the shipped form is 564 MB) |
+| --- | --- | --- | --- |
+| (a) `encoded` vs torch, steady (≥ chunk 64) | max|d| **9.6e-4**, cos 1.000000 | — | — |
+| (b) `tap_l4` vs `tap4-shards`, steady | max|d| **1.44e-3**, cos p50 **1.0**, min 0.999999 | max|d| 1.64, cos min 0.99959 | max|d| 14.8, cos min 0.949 |
+| (c) chunked loop | exact from a warm start (22 chunks, max|d| 3e-5); cold start converges to fp32 noise by chunk ~30 | n/a | n/a |
+| (d) extra output inert | `encoded` is read by name; the graph gains one declared output, no extra invocation | | |
+| host latency / 560 ms chunk | 33–35 ms CPU | 12 ms (ANE) / 22 ms CPU | **9 ms (ANE)** / 22 ms CPU |
+
+Reading: **(b) passes for fp32 at 1.44e-3 ≤ the 2e-3 bar** — the tap survives the trace, so
+the re-export route is alive. The bar is a *precision* bar: fp16 activations already miss it
+by 3 orders of magnitude (max|d| 1.6, cos 0.9996 — the tier behaves as characterized, so the
+question is the adapter's tolerance, i.e. a TurnShadow run, not more export work), and naive
+per-channel int8 **weights** miss it structurally (cos 0.965 — the same magnitude as the
+windowed↔streaming drift that failed the tap-swap bar; per #132's rule a lossy config gets
+its own calibration fit, and the project's passing int8 recipe is exemptions + QAT, not a
+naive grid).
+
+**The cold-start caveat (measured, bounded).** The torch reference's first chunk is special:
+with an empty padding cache it emits 9 rows and routes a zero-padded context row into the
+attention cache. A static-shape graph cannot express two shapes, so the export always runs
+the steady framing: 8 rows, drop the first → 7. From a cold start (the manager seeds
+`cache_len=1`) the graph's tap therefore differs from the reference for the first ~30 chunks
+and converges to fp32 noise by chunk ~30 (~17 s of audio): max|d| 8.7 → 3.3 → 0.58 →
+7.8e-5 across chunk buckets 1–8 / 8–16 / 16–32 / 32–64. Cold-starting both sides identically
+is exact — a warm-seeded run tracks the reference to 3e-5 over 22 consecutive chunks. If the
+first seconds matter, prime the encoder with ~7 silent chunks before the call, or featurize
+training data from this graph (`asr_tap.py` exposes the same forward) instead of
+`featurize_tap.py`'s torch loop.
+
+Reproduce (all artifacts land in the gitignored `bench-results/asr-tap/`):
+
+```sh
+PY=ports/tyger-student/.venv/bin/python
+$PY ports/tyger-student/asr_tap.py --selfcheck            # wrapper vs the torch streaming pass
+$PY ports/tyger-student/export_asr_tap.py --export --precision fp32   # + fixture gate
+$PY ports/tyger-student/export_asr_tap.py --export --precision fp16 --int8
+$PY ports/tyger-student/export_asr_tap.py --gate bench-results/asr-tap/encoder_tap_fp32.mlpackage \
+    --session-id d622d1e377001bba8c718a2fbdac0b7b          # the shards gate
+```
+
+#### Pass config: the shipping 42/13 vs the reference 56/0 (measured 2026-11-05)
+
+**Target decided: NVIDIA's shipping pass — 42 left / 13 lookahead, 42-deep cache, int8
+weights — with `tap_l4` declared by *our* export of those weights.** Their bundle cannot
+serve as the tap (Core ML exposes declared outputs only, and theirs declares `encoded`).
+The pass is a `PassConfig` on the same wrapper (`--pass reference|shipping`), so the 56/0
+rows above stay the documented reference every existing gate was built on.
+
+What changes at 42/13, and what does not:
+
+| item | at 42/13 |
+| --- | --- |
+| `cache_channel` in/out | `[1,24,42,1024]` (was 56) |
+| attention keys | 42 cache + 8 current = 50 (was 64); relative-pos table 2·50−1 = 99 rows |
+| mask | 4 blocks of 14; all 8 queries land in the last block → every query sees all 50 keys, which is the shipping bundle's `const_71` pattern |
+| `cache_len` clamp | 42 |
+| unchanged | subsampling (bit-identical across passes, so the **8 / 3 / 1** conv2d-cache derivation still holds — it depends on the mel framing, not the mask), `cache_time [1,24,1024,8]`, 8 rows/chunk → 7 kept, prompt projector |
+
+Re-tracing is required (Core ML bakes shapes) but is one flag — no code path changes. The
+caveat worth keeping: **HF cannot express 42/13** (`_resolve_attn_context` derives left =
+`sliding_window−1` = 56, and its mask groups are absolute-position-anchored), so at 42/13
+the wrapper *is* the oracle. Its credibility rests on the 56/0 equivalence (3e-5 vs HF) and
+on the mask transcribed from the bundle's `const_71`.
+
+Gate — one checkpoint (`shared-consistent-l03`, adapter `l4-streaming`), session
+`d622d1e3…` 1200 frames (96 s, 17 events; ±1 event = 6%), via `tap_gate.py`:
+
+| row | feature drift | decisions |
+| --- | --- | --- |
+| control: wrapper 56/0 vs the stored shards | cos p50 1.0000, relL2 0.000 | 100% (16/16) |
+| **(1) pass** 42/13 fp32 vs 56/0 | cos p50 0.9925 (p05 0.932), relL2 0.122 | **70.6% (12/17)** |
+| **(2) quant** 42/13 int8 sim vs 42/13 fp32 | cos p50 0.9939 (p05 0.982), relL2 0.110 | 88.2% (15/17) |
+| (2b) quant, the artifact itself vs 42/13 fp32 | cos p50 0.9848 (p05 0.961), relL2 0.174 | 94.1% (16/17) |
+| **(3) product** 42/13 int8 artifact vs 56/0 | cos p50 0.9741 (p05 0.917), relL2 0.227 | **82.4% (14/17)** |
+
+Reading: the pass change alone is not free (70.6%, the same regime as windowed→streaming's
+82.3%), and quantization alone also moves decisions (88–94%). **So the refit is required,
+and it must fit on int8-artifact taps** — the sim is not a substitute: the artifact's extra
+fp16-activation + grid drift puts it cos 0.978 away from the sim, i.e. the difference is the
+same size as the effect being measured. Featurize through the mlpackage
+(`pass_gate.py --emit-shards --artifact …`), per domain as P4 established.
+
+Priming at 42/13: the cache fills in 42/7 = **6 chunks** (3.4 s, was 8). The 56/0 "7-chunk
+priming" caveat was a cross-implementation artifact (HF's 9-row first chunk vs the graph's
+8) and **does not recur**: at 42/13 the shard builder and the artifact share the same cold
+convention, so there is nothing to prime for train/serve. A silence-primed start perturbs
+the first chunks and decays 1.9 → 0.055 by ~chunk 28 — so do not prime.
+
+Artifact: `encoder_tap_42-13_fp16_int8w.mlpackage` = **593,446,722 B** (593 MB; the 56/0 int8
+form was 594 MB — same size class), `tap_l4 [1,1024,7]`, **9.0 ms/chunk on ANE**. Its tap
+drift vs fp32 at 42/13 is flat per chunk bucket (11.0 / 13.4 / 15.1 / 9.8 over chunks
+1–8/8–16/16–32/32–64) — quantization noise, no cache accumulation. Graph-arithmetic parity
+was established at fp32 (1.44e-3 vs torch at 56/0); at int8 the weight grid is
+coremltools' own (a two-line torch quantizer lands cos 0.978–0.982 against the artifact, so
+it is not a same-weights reference), which is exactly why the refit featurizes through the
+artifact.
+
 ### Phase 3 — the tyger experience (integration)
 
 - `TurnTakerSetting.tyger` selects the streaming pair (Nemotron streaming ASR +
