@@ -65,6 +65,7 @@ weight.bin
 # Benchmark result history (scripts/relay-bench.sh)
 /bench-results/
 /ports/tyger-swift/.build/
+/tools/*/.build/
 /scripts/__pycache__/
 /ports/*/__pycache__/
 /ports/tyger-coreai/.venv/

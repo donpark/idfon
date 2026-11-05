@@ -807,6 +807,134 @@ ports/tyger-student/.venv/bin/python ports/tyger-student/tap_latency.py \
     --out bench-results/tap-latency.json
 ```
 
+That harness stops at the encoder call's return. The section below closes it by
+replaying the same captures through the real manager and timing the callback.
+
+### Tap delivery through the real manager (2026-11-05, #132/#102)
+
+**Verdict first: the callback path adds nothing measurable beyond the encoder return — the
+whole manager, measured through `StreamingNemotronAsrManager` itself, lands +7.3 ms
+mean-of-medians and +28.5 ms worst-session p95 against the offline stamp, and the RNNT
+decode never delays the frame it is decoding.** The ~0.5 s per-frame wait is the 560 ms
+chunk boundary, exactly as the offline harness said; what the earlier numbers did not
+include was the manager around the encoder call, and that turns out to be ~7 ms of buffer
+fill plus a 2-9 ms decode that runs *after* the tap is delivered.
+
+Why this measurement exists: `tap_latency.py` stamps a frame's tap at the **encoder
+call's return** on a virtual clock. The product does not read it there. It reads it from
+the fork's `setEncoderOutputCallback` — which the manager fires inside `processChunk`
+after `encoder.prediction` returns, before the decode loop — and the manager also owns
+everything before that call: chunk accumulation from live capture buffers, the native
+Swift mel front-end (`NemotronMelExtractor`), and, after the hook, the RNNT decode that is
+serial on the same actor and could therefore delay the *next* chunk. Probe:
+`tools/asr-tap-latency/` (standalone SwiftPM package, `swift run -c release`; app targets
+untouched).
+
+**Setup.** The shipping 560 ms model dir (`~/.idfon/models/nemotron-streaming/560ms`:
+real `decoder`, `joint`, `decoder_joint`, `tokenizer.json`, `metadata.json`), with only
+`encoder/encoder_int8.mlmodelc` replaced by the **corrected 42/13 int8 tap export**
+(`bench-results/asr-tap-fixed/encoder_tap_42-13_fp16_int8w.mlpackage`, the post-mask-fix
+one — not the 56/0 reference pass the offline harness needed). Fork pin
+`donpark/FluidAudio@2ad9b422` (`encoder-output-callback`), `cpuAndNeuralEngine`, macOS
+27.2 / M4 Pro / load average ~5. Same three captures and the same frame counts as the
+offline run; the tap path is **mic channel only** (the manager is mono; the offline
+harness encoded both ears, so it charged ~2x the encode time this path pays).
+
+Replay is one `AsyncStream` producer → one serial `await manager.process(audioBuffer:)`
+consumer — the app's shape. Two clocks: **paced** feeds each buffer when its own audio
+would have arrived (682-frame buffers = the mic tap's 2048 @48 kHz; monotonic deadline,
+spinning the last 1.5 ms), **unpaced** supplies everything at once so the same code
+measures arithmetic only. Audio end of global frame *g* is `t0 + (g+1)·80 ms`; the probe
+also records every callback's reported origin and frame range: the step is exactly 7
+frames per chunk on all three sessions (`origin_step_ok`).
+
+**Frame alignment was measured, not assumed.** A synthetic 3 s silence + 1 s noise burst
+(`--onset`) put the onset at sample 48000 = frame 37: the first tap row whose direction
+departs from the silence baseline is **row 37** (cos 0.47 vs 0.90 for row 36), i.e. row
+*g* covers audio `[80g, 80(g+1))` — the same grid the offline harness used, whose `+90 ms`
+pre-context stamp and `+1` frame index cancel. It also confirms the real path never waits
+for audio past the chunk boundary: the 9 pre-context mel frames come from
+`extractMelCache` of the *previous* chunk.
+
+**Callback entry − that frame's audio end (ms), 682-frame buffers, paced.**
+
+| session | frames | chunks | p50 / p95 / max | callback − chunk audio end p50 / p95 / max |
+| --- | ---: | ---: | --- | --- |
+| 23:13:14Z | 1393 | 199 | 281.5 / 528.2 / 545.1 | 41.5 / 61.5 / 65.1 |
+| 20:17:43Z | 1113 | 159 | 281.0 / 528.2 / 546.2 | 41.0 / 62.3 / 66.2 |
+| 21:13:38Z | 1890 | 270 | 281.5 / 527.6 / 545.7 | 41.5 / 61.2 / 65.7 |
+
+Per row of a chunk (p50, identical across sessions): `k0 522 · k1 442 · k2 362 · k3 282 ·
+k4 202 · k5 122 · k6 41` — i.e. `480 − 80k` of cadence plus ~41 ms of manager, so the
+worst row waits **480 ms**, not the offline model's 490 (the manager releases at the chunk
+boundary, not 90 ms past it).
+
+**Where those 41 ms go** (all p50 unless noted): buffer fill ≤ one tap buffer (paced only;
+with 320-frame buffers the same session measures 259.7 / 501.2 / 506.4 and a chunk lag of
+19.7 — 21 ms less, i.e. half the slack) · `process` entry → hook = **19 ms** (resample +
+native mel + encoder + the fork's cache/mel plumbing) · hook → `process` return = **8 ms**
+(decode + state saves; the `decode` a token-emitting chunk actually spends after the hook
+is 6.4 / 10.3 / 5.8 ms at p50, 10.6 / 15.0 / 15.8 at p95). Per chunk wall time unpaced is
+**10-11 ms**, 2% of the 560 ms period: nothing accumulates (no dropped buffers in any run,
+pending ≤ 0 at the end, chunk lag flat across all 270 chunks of the longest session).
+
+**Is the callback itself costing anything?** Interleaved A/B in one process, same audio,
+hook on/off ×3: 12.11 / 12.91 / 20.03 ms per chunk with the hook vs 11.91 / 15.81 / 13.66
+without — **within run-to-run noise** (mean +1.2 ms, individual deltas −2.9…+6.4, host
+load ~5). Structurally the fork gives it no room either: between `encoder.prediction`
+returning and the hook there is no model call and no `await` — three cache lookups, a
+9×128 mel-cache copy, a 7-entry dictionary. So the answer to "does the callback path add
+latency beyond the encoder return" is **no: ≲ a few ms per chunk, ≤ 1% of the period, at
+the edge of what this host can resolve** — and the decode, which the offline harness never
+charged, lands *after* the tap has been handed over.
+
+**Paired against the offline numbers** (same sessions, same frame grid, per frame
+`measured − offline`): **+7.5 / +7.0 / +7.5 ms at p50, +27.7 / +28.5 / +27.2 at p95,
++31.1 / +32.2 / +31.7 at max**. Mean-of-medians **+7.3 ms**, worst session **+7.5 ms**.
+That is the whole correction to the earlier table, and it is *net of* the cheaper encode
+(one ear ≈ 9 ms vs both ears ≈ 24 ms), so the manager's own overhead — fill slack, mel,
+plumbing, actor contention — is ~22 ms and largely cancels the encode it saves.
+
+**Against the bars.** Delivery-level: mean-of-medians **+7.3 ms ≤ +160 ✓**; worst-session
+median **+7.5 ms**, i.e. 187.4 + 7.5 = **+194.9 ms ≤ +320 ✓**. Endpoint-level (the bars are
+written on endpoint decisions; this probe runs no rules or student, so the measured shift
+is applied to the offline endpoint deltas — legitimate because the shift is near-uniform,
+all 7 rows of a chunk move together): mean-of-medians **+175.5 ms** vs the +160 bar — still
+over by 15.5 ms, exactly as the offline +168 was already over; worst session **+194.9 ms**
+vs +320 ✓. The literal per-session p95 reading is unchanged too: offline p95 429.7 / 506.0
+/ 418.9 → ~+28 = 457.7 / 534.0 / 446.9, so the 23%-past-320 tail is a property of the
+560 ms cadence, not of the manager.
+
+**Packaging findings** (each blocks a real app swap; the probe's `stage_models.py` works
+around them *without* touching the fork, the app or a weight):
+
+1. **`prompt_id` is not in the English manager's contract.** The export declares six inputs
+   (the multilingual contract); `StreamingNemotronAsrManager.processChunk` feeds five, and
+   Core ML refuses: *"Feature prompt_id is required but not specified"*. The staged copy
+   bakes `prompt_id = 101` into the MIL program as a const (`--verify`: bit-identical to
+   the six-input artifact's own default). A shipping export needs five inputs.
+2. **Cache depth must match the pass.** The 42/13 export declares
+   `cache_channel [1,24,42,1024]`; the manager sizes caches from `metadata.json`, whose
+   shipping value (70) is the 56/0 pass. The staged metadata says 42. Any swap has to ship
+   the metadata with the artifact.
+3. **`tapFrameOrigin` survives `reset()`** (only `cleanup()` clears it): origins 0 → 1400 →
+   2520 across three `reset()`-separated sessions, step exactly 7. The app calls
+   `manager.reset()` on every utterance commit, so a consumer must carry its own baseline
+   origin or the fork should reset it with the rest of the session state.
+
+**What this does not measure.** iPhone ANE scheduling and thermals (this is an M4 Pro with
+the shipping decoder; the encode is ~9 ms/chunk here and the phone is unmeasured) · the
+rules/student/endpoint path (moved by a uniform shift, not re-run) · the 42/13-vs-56/0
+feature-level decision difference (that is the refit's number, not this one).
+
+Reproduce (artifacts gitignored):
+
+```sh
+tools/asr-tap-latency/run.sh          # stage + onset + unpaced + paced + 2 controls
+ports/tyger-student/.venv/bin/python tools/asr-tap-latency/summarize.py \
+    bench-results/asr-manager-probe/paced.json
+```
+
 ### The duplicate-pass precondition
 
 The epic's footprint bar is that turn decisions cost **no second encoder pass**. Nothing
