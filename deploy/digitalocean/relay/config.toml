@@ -1,5 +1,6 @@
 # iroh-relay config for the co-located enterprise relay (issue #26).
-# Mounted at /config/config.toml. The wildcard cert covers relay.<domain>.
+# Mounted at /config/config.toml. The wildcard cert covers relay.<domain>;
+# cert_mode = "Reloading" polls it (24h) so renewals are picked up.
 #
 # Why: enterprise NAT is usually symmetric/CGNAT, so direct UDP hole-punching
 # fails, and many networks allow only outbound TCP 443. The relay's WebSocket
@@ -28,6 +29,9 @@ access = { allowlist = [] }
 #   https://relay.<domain>:8443
 https_bind_addr = "[::]:8443"
 quic_bind_addr = "[::]:7842"
-cert_mode = "Manual"
+# Reloading, not Manual: after acme.sh renews the wildcard in place, the relay
+# must re-read it (Manual loads once at boot and would serve the old cert past
+# its 90-day expiry until the container is restarted).
+cert_mode = "Reloading"
 manual_cert_path = "/etc/idfon-edge/cert.pem"
 manual_key_path = "/etc/idfon-edge/key.pem"
