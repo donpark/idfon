@@ -28,6 +28,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Diag.send = { peer, text in try await DaemonClient().sendText(to: peer, text) }
         Diag.log("config", ["edge": EdgeClient.shared.baseURL?.absoluteString ?? "none"])
         Diag.flush()
+        // Interface transitions (Wi-Fi/Ethernet/VPN, sleep/wake) as Diag events
+        // and a shorter stall watchdog (media-adaptation §C9).
+        PathMonitor.start()
+        // A wake or app activation can find the listen leg stalled with its
+        // retry frozen; ask for it now instead of waiting out the backoff.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { _ in
+            LiveCall.shared.foregrounded()
+        }
         // Config schema migrations before launch-arg config below: automation
         // must win over a migration, never the other way round.
         ConfigMigrations.run()

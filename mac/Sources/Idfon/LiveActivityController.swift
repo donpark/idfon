@@ -129,7 +129,9 @@ final class LiveActivityController {
         /// Live readout for the Bar (on-device voice calls only).
         var stats: String? {
             switch self {
-            case .audio, .video: return nil
+            // The listen leg's state and carrying path (media-adaptation §C2).
+            case .audio(let call): return call.mediaHint
+            case .video: return nil
             case .voice(let session): return session.stats
             }
         }

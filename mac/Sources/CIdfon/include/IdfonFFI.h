@@ -57,6 +57,21 @@ uint8_t media_live_set_audio_enabled(uint8_t enabled);
 uint8_t media_live_set_video_enabled(uint8_t enabled);
 uint8_t media_live_subscribe(char const *ticket); // hear/watch a peer (decodes + plays)
 void media_live_unsubscribe(void);
+// Listen-leg state for the call UI (docs/media-adaptation.md §C2): 0 idle,
+// 1 connecting, 2 playing, 3 reconnecting, 4 failed. The plane heals itself —
+// polling this is how the shell says so instead of showing "playing" over
+// silence.
+uint8_t media_live_state(void);
+// Foreground/sleep-wake return: retry a stalled subscription now instead of
+// after its backoff (no-op when idle).
+void media_live_reconnect(void);
+// NWPathMonitor reported an interface change: shorten the stall watchdog for a
+// grace window, so a path switch is caught as it happens.
+void media_live_path_changed(void);
+// The selected media path as one short line: "direct 192.168.1.42" or "relay".
+// The local IP names the network carrying the call; empty when no connection
+// is attached. Free with rust_free_string.
+char *media_live_path(void);
 // Optional shell-owned audio playback. Register before media_live_subscribe;
 // when set, decoded interleaved f32 PCM goes to the callback instead of the
 // bundled output device. Frames are paced through the seam's jitter buffer.

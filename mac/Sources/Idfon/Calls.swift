@@ -361,9 +361,10 @@ final class LiveCall {
     func setAudioMode(_ mode: CallAudioMode) {
         setAudioEnabled(true)
         guard published, let peer = activePeer else { return }
-        let want = ContactAudioProfiles.profile(for: peer) == .pcm24k
-            ? 1
-            : AudioMeter.captureChannelsForCall()
+        // The agent plane is mono at 24 kHz whichever codec carries it.
+        let want = ContactAudioProfiles.profile(for: peer).sampleRate == 48_000
+            ? AudioMeter.captureChannelsForCall()
+            : 1
         guard want != publishedChannels else { return }
         Task { [weak self] in await self?.republishAudio(channels: want, peer: peer) }
     }
@@ -372,9 +373,10 @@ final class LiveCall {
     /// stream layout (silence at the new layout keeps a muted leg simple).
     func setStereo(_ on: Bool) {
         guard published, let peer = activePeer else { return }
-        let want = ContactAudioProfiles.profile(for: peer) == .pcm24k
-            ? 1
-            : AudioMeter.captureChannelsForCall()
+        // The agent plane is mono at 24 kHz whichever codec carries it.
+        let want = ContactAudioProfiles.profile(for: peer).sampleRate == 48_000
+            ? AudioMeter.captureChannelsForCall()
+            : 1
         guard want != publishedChannels else { return }
         Task { [weak self] in await self?.republishAudio(channels: want, peer: peer) }
     }
@@ -528,6 +530,42 @@ final class LiveCall {
             media_live_unsubscribe()
             try? await Task.sleep(nanoseconds: 250_000_000)
             try? await self.client.sendText(to: peer, LiveInvite.build(action: "stop", ticket: ticket, call: false))
+        }
+    }
+
+    /// What the listening leg is doing (media-adaptation §C2), for the call
+    /// bar: the plane retries on its own, and this is the only way the panel
+    /// can stop claiming "playing" while the audio is gone. When audible, the
+    /// selected path names the network carrying the call (`direct 192.168.1.42`
+    /// / `relay`) — the one visible sign of a silent migration.
+    var mediaHint: String? {
+        switch media_live_state() {
+        case 1: return "Connecting…"
+        case 3: return "Reconnecting…"
+        case 4: return "Audio lost"
+        case 2:
+            guard let ptr = media_live_path() else { return nil }
+            let path = String(cString: ptr)
+            rust_free_string(ptr)
+            return path.isEmpty ? nil : path
+        default: return nil
+        }
+    }
+
+    /// App activated (or the machine woke): a stall's retry may have been
+    /// frozen with the process. Ask for the leg now; rebuild one the plane
+    /// gave up on.
+    func foregrounded() {
+        guard life.phase != .idle else { return }
+        switch media_live_state() {
+        case 1, 3:
+            media_live_reconnect()
+        case 4:
+            guard let ticket = joinedTicket else { return }
+            idfonLog("idfon live call: listen leg gave up; rebuilding on activate")
+            Task { _ = await self.subscribe(ticket: ticket) }
+        default:
+            break
         }
     }
 

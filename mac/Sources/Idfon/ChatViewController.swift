@@ -1199,7 +1199,7 @@ final class ChatViewController: NSViewController, NSTableViewDataSource, NSTable
         let peerID = peer.id
         let client = self.client
         let legacyRemote = peer.name == "live-voice"
-            || ContactAudioProfiles.profile(for: peerID) == .pcm24k
+            || ContactAudioProfiles.profile(for: peerID).isAgentPlane
         let signed = CapabilityTickets.voiceRoute(for: peerID)
         let holderTicket = CapabilityTickets.hasTicket(for: peerID)
         let selection = ContactVoiceSelection.selection(for: peerID)

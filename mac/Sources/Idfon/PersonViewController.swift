@@ -52,8 +52,10 @@ final class PersonViewController: NSViewController {
     private let generationPopup = NSPopUpButton()
     private let turnModePopup = NSPopUpButton()
     private let turnModelPopup = NSPopUpButton()
+    private let codecPopup = NSPopUpButton()
     private let turnModeCaption = NSTextField(wrappingLabelWithString: "")
     private let turnModelCaption = NSTextField(wrappingLabelWithString: "")
+    private let codecCaption = NSTextField(wrappingLabelWithString: "")
     private let bodyStack = NSStackView()
 
     // MARK: Identity
@@ -98,7 +100,7 @@ final class PersonViewController: NSViewController {
 
         nameField.font = NSFont.systemFont(ofSize: 13)
         nameField.placeholderString = "Name"
-        for popup in [recognitionPopup, generationPopup, turnModePopup, turnModelPopup] {
+        for popup in [recognitionPopup, generationPopup, turnModePopup, turnModelPopup, codecPopup] {
             popup.target = self
             popup.font = NSFont.systemFont(ofSize: 13)
         }
@@ -106,9 +108,10 @@ final class PersonViewController: NSViewController {
         recognitionPopup.identifier = NSUserInterfaceItemIdentifier("recognition")
         generationPopup.action = #selector(speechChanged(_:))
         generationPopup.identifier = NSUserInterfaceItemIdentifier("generation")
+        codecPopup.action = #selector(codecChanged(_:))
         turnModePopup.action = #selector(turnModeChanged(_:))
         turnModelPopup.action = #selector(turnModelChanged(_:))
-        for caption in [turnModeCaption, turnModelCaption] {
+        for caption in [turnModeCaption, turnModelCaption, codecCaption] {
             caption.font = NSFont.systemFont(ofSize: 11)
             caption.textColor = .secondaryLabelColor
         }
@@ -236,6 +239,21 @@ final class PersonViewController: NSViewController {
                 : valueRow("Generation", speechTitle(.generation)),
         ]
 
+        // Codec choice on the 24 kHz agent plane (docs/voice-agent-modes.md):
+        // a holder advertises `pcm24k`; Opus there is the same plane at ~1/10
+        // the bandwidth, so the option is per contact, not global.
+        if let route = CapabilityTickets.voiceRoute(for: peer.id),
+           route.mode != .clientCascade,
+           ContactAudioProfiles.profile(for: peer.id).isAgentPlane
+        {
+            rebuildCodec()
+            rows += [sectionLabel("Call audio")]
+            rows += [settingsEditing
+                ? controlRow("Codec", codecPopup)
+                : valueRow("Codec", ContactAudioProfiles.profile(for: peer.id).title)]
+            if settingsEditing { rows += [codecCaption] }
+        }
+
         rebuildTurns()
         rows += [sectionLabel("Voice turns")]
         if agent == nil {
@@ -345,6 +363,31 @@ final class PersonViewController: NSViewController {
             }
             popup.selectItem(at: selectedIndex)
         }
+    }
+
+    // MARK: - Call audio codec
+
+    /// Applies to the next call: the media session, the invite and the holder's
+    /// return leg all read the same profile.
+    private func rebuildCodec() {
+        let current = ContactAudioProfiles.profile(for: peer.id)
+        codecPopup.removeAllItems()
+        for option in ContactAudioProfiles.agentChoices {
+            codecPopup.addItem(withTitle: option.title)
+            codecPopup.lastItem?.representedObject = option
+        }
+        if let index = ContactAudioProfiles.agentChoices.firstIndex(of: current) {
+            codecPopup.selectItem(at: index)
+        }
+        codecCaption.stringValue = "Applies to the next call. Opus uses about a tenth of raw PCM's "
+            + "bandwidth and carries FEC/DRED."
+    }
+
+    @objc private func codecChanged(_ sender: NSPopUpButton) {
+        guard let option = sender.selectedItem?.representedObject as? ContactAudioProfile else { return }
+        ContactAudioProfiles.set(option, for: peer.id)
+        rebuildCodec()
+        rebuild()
     }
 
     @objc private func speechChanged(_ sender: NSPopUpButton) {
