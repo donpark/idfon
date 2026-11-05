@@ -135,8 +135,25 @@ the on-device tier can keep an existing STT and use this purely as the turn-take
 heads never see transcripts). Audio front-end: 128 mel bins, 80 ms frames, 12.5 Hz —
 straightforward in Accelerate/Metal.
 
-Per hop today their runtime re-encodes an **8 s window per stream** (two streams) every
-320 ms. That is the number the port must beat.
+Per hop today their runtime re-encodes an **8 s window per stream** every 320 ms — but
+with three optimisations this doc previously missed (`~/dev/github/tyger-s2s`,
+`app/plugins/ears/tyger/`), which is why their real cost is lower than "two encodes per
+hop":
+
+1. **Both ears go through one batched call** — the user and agent windows are
+   equal-length, so they are stacked (`asr.py:65-67`), not encoded twice.
+2. **The encode stops at layer 15 of 24** (`constants.py: L15 = 15`, "encodes stop
+   there"), via a forward hook that raises (`asr.py:15,29-32`): ~1/3 less encoder work
+   per tick than a full-depth pass. Their turn-taker is a *prefix* design already, done
+   in-process rather than by exporting a smaller graph.
+3. **All-zero agent windows are cached per length** (`asr.py:27-28,67-68`): while the
+   agent is silent, its window is encoded once and reused, halving the work in the
+   listen case.
+
+So the thing to beat is smaller than it looked, and two of their tricks transfer to ours
+directly: cache the silent playback ear instead of re-encoding silence, and batch the two
+ears into one prediction (batch dimension 2 with concatenated caches) rather than calling
+twice.
 
 ## The lever: incremental encoding
 
