@@ -84,7 +84,9 @@ final class TurnShadow: AudioPlaybackObserver {
         }
         Automation.mark("turn-shadow: tier \(String(describing: type(of: model)))\(rung.map { "(\($0))" } ?? "")\(step.map { ", \($0)" } ?? ""), traits \(traits == nil ? "default" : "student")")
         Diag.log("turnmodel", ["tier": String(describing: type(of: model)), "rung": rung ?? "-", "step": step ?? "-", "traits": traits == nil ? "default" : "student", "ok": true])
-        return TurnShadow(model: model, traits: traits)
+        return TurnShadow(model: model, traits: traits,
+                          meta: ["tier": String(describing: type(of: model)), "rung": rung ?? "-",
+                                 "step": step ?? "-", "traits": traits == nil ? "default" : "student"])
     }
 
     /// The rules knobs that travel with the student step (`student.traits.json`:
@@ -99,8 +101,9 @@ final class TurnShadow: AudioPlaybackObserver {
         return String(data: json, encoding: .utf8)
     }
 
-    private init(model: TurnModel, traits: String? = nil) {
-        engine = TurnEngine(model: model, rules: TurnRulesCABI(thresholdsJSON: traits))
+    private init(model: TurnModel, traits: String? = nil, meta: [String: String] = [:]) {
+        engine = TurnEngine(model: model, rules: TurnRulesCABI(thresholdsJSON: traits),
+                            trace: TurnTrace.fromEnvironment(meta: meta))
         tap = TurnTap(hopSize: TurnRuntime.hopSamples)
         agentTap = TurnTap(hopSize: TurnRuntime.hopSamples)
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -157,6 +160,7 @@ final class TurnShadow: AudioPlaybackObserver {
         stateLock.unlock()
         PlaybackBus.remove(self)
         queue.sync {
+            engine.closeTrace()
             engine.reset()
             agentHops.removeAll()
         }

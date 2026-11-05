@@ -295,7 +295,10 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
                 let traits = traitsJSON(in: coreai.directory, step: coreai.stepModelName)
                 Automation.mark("turn-shadow: tier CoreAI (\(coreai.usesFloat16 ? "fp16" : "fp32") GPU, \(coreai.stepModelName), traits \(traits == nil ? "default" : "student"))")
                 Diag.log("turnmodel", ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32", "step": coreai.stepModelName, "traits": traits == nil ? "default" : "student", "ok": true])
-                return TurnShadow(model: coreai, traits: traits)
+                return TurnShadow(model: coreai, traits: traits,
+                                  meta: ["tier": "coreai", "rung": coreai.usesFloat16 ? "fp16" : "fp32",
+                                         "step": coreai.stepModelName,
+                                         "traits": traits == nil ? "default" : "student"])
             } catch {
                 // The 2026-10-27 class: an install can end up with no usable
                 // turn pair — record why the tier failed (console + diag).
@@ -325,7 +328,9 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         let traits = traitsJSON(in: dir, step: model.stepModelName)
         Automation.mark("turn-shadow: tier CoreML (fp16/ANE, \(model.stepModelName), traits \(traits == nil ? "default" : "student"))")
         Diag.log("turnmodel", ["tier": "coreml", "rung": "fp16-ane", "step": model.stepModelName, "traits": traits == nil ? "default" : "student", "ok": true])
-        return TurnShadow(model: model, traits: traits)
+        return TurnShadow(model: model, traits: traits,
+                          meta: ["tier": "coreml", "rung": "fp16-ane", "step": model.stepModelName,
+                                 "traits": traits == nil ? "default" : "student"])
     }
 
     /// The rules knobs that travel with the student step (`student.traits.json`:
@@ -341,8 +346,9 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         return String(data: json, encoding: .utf8)
     }
 
-    private init(model: TurnModel, traits: String? = nil) {
-        engine = TurnEngine(model: model, rules: TurnRulesCABI(thresholdsJSON: traits))
+    private init(model: TurnModel, traits: String? = nil, meta: [String: String] = [:]) {
+        engine = TurnEngine(model: model, rules: TurnRulesCABI(thresholdsJSON: traits),
+                            trace: TurnTrace.fromEnvironment(meta: meta))
         tap = TurnTap(hopSize: TurnRuntime.hopSamples)
         agentTap = TurnTap(hopSize: TurnRuntime.hopSamples)
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -416,6 +422,7 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         AudioIO.shared.removeCaptureObserver(self)
         AudioIO.shared.removePlaybackObserver(self)
         queue.sync {
+            engine.closeTrace()
             engine.reset()
             agentHops.removeAll()
         }
