@@ -51,7 +51,7 @@ echo "device.sh: build stamp = ${stamp:-MISSING} (expect AppDelegate.buildStamp)
 # Never guess: require an explicit pick when more than one is connected.
 candidates=$(xcrun devicectl list devices 2>/dev/null \
   | grep -E "connected.*physical|physical.*connected" \
-  | grep -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' | sort -u || true)
+  | grep -oE '([A-F0-9]{8}-[A-F0-9]{16}|[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12})' | sort -u || true)
 if [ -n "${IPHONE_UDID:-}" ]; then
   device="$IPHONE_UDID"
 elif [ -n "${IPHONE_NAME:-}" ]; then
