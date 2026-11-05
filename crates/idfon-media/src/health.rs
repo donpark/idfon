@@ -485,6 +485,63 @@ mod tests {
         }
     }
 
+    /// The shell decodes the record by field name (`ios/Idfon/HealthCard.swift`,
+    /// fixture in `ios/Checks/HealthCardCheck`). A renamed field makes the card
+    /// silently say "no call to report", so the names are pinned here.
+    #[test]
+    fn record_json_shape_is_the_shell_contract() {
+        fn keys(value: &serde_json::Value) -> Vec<&str> {
+            let mut keys: Vec<&str> = value.as_object().expect("object").keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            keys
+        }
+        let record = CallRecord {
+            started_ms: 1,
+            duration_ms: 2,
+            context: Context { video_on: true, stereo: false },
+            audio: AudioStats::default(),
+            report: Report::one_sided(Leg::default(), Context::default()),
+            timeline: vec![point(0)],
+            path_switches: vec![PathSwitch {
+                t_ms: 0,
+                path: "PathId(0)".into(),
+                relay: false,
+                local_addr: "192.168.1.42".into(),
+                remote_addr: "192.168.1.7:50000".into(),
+            }],
+        };
+        let json = serde_json::to_value(&record).unwrap();
+        assert_eq!(
+            keys(&json),
+            ["audio", "context", "duration_ms", "path_switches", "report", "started_ms", "timeline"]
+        );
+        assert_eq!(
+            keys(&json["audio"]),
+            [
+                "arrival_jitter_ms", "duration_ms", "frames", "max_gap_ms",
+                "missing_frames", "stalls_over_100ms", "startup_ms", "underrun_samples",
+            ]
+        );
+        assert_eq!(
+            keys(&json["report"]),
+            ["local", "remote", "tips", "verdict"]
+        );
+        assert_eq!(
+            keys(&json["report"]["local"]),
+            ["audio_underrun_samples", "goodput_kbps_mean", "loss_pct_mean", "rtt_ms_max", "rtt_ms_min"]
+        );
+        assert_eq!(json["report"]["verdict"], "good", "verdict is a snake_case string");
+        assert_eq!(
+            keys(&json["timeline"][0]),
+            ["goodput_kbps", "loss_pct", "min_rtt_ms", "relay", "rtt_ms", "t_ms"]
+        );
+        assert_eq!(
+            keys(&json["path_switches"][0]),
+            ["local_addr", "path", "relay", "remote_addr", "t_ms"]
+        );
+        assert_eq!(keys(&json["context"]), ["stereo", "video_on"]);
+    }
+
     #[test]
     fn decimate_keeps_the_last_point_and_a_bounded_count() {
         let points: Vec<NetPoint> = (0..10).map(point).collect();

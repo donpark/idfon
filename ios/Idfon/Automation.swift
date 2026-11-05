@@ -16,6 +16,15 @@ enum Automation {
         return (args[index + 1], args[index + 2])
     }()
 
+    /// `-healthcheck <peer-ref> [delaySeconds]`: open the thread and post the
+    /// card a typed `/health-check` reaches — the real path, no taps.
+    static let pendingHealthCheck: (peer: String, delay: Double)? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-healthcheck"), args.count > index + 1 else { return nil }
+        let delay = args.count > index + 2 ? (Double(args[index + 2]) ?? 0) : 0
+        return (args[index + 1], delay)
+    }()
+
     /// Writes a harness-visible marker. `idfonLog` mirrors to stderr (unbuffered,
     /// so it lands in `devicectl … --console` immediately) and to os_log.
     static func mark(_ message: String) {

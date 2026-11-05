@@ -429,9 +429,17 @@ Measure first — everything below needs the same instrumentation to prove out.
    pkarr/DNS — that is what failed with "No addressing information available"
    while interfaces flapped (see the tracking issue), and it is why first dials
    can take 10–20 s. Fix: merge the contact's stored `endpoint-addr` into the
-   subscribe by id. Also unbuilt here: DRED as blackhole fill (the encoder does
-   not publish its DRED cover in the catalog, so the subscriber cannot tell a
-   DRED stream from a PLC-only one).
+   subscribe by id.
+   **DRED as blackhole fill — experiment knobs, off by default.** The encoder
+   does not publish its DRED cover in the catalog, so a subscriber cannot tell
+   a DRED stream from a PLC-only one; widening the window blind would turn
+   every hole into that much PLC buzz. Both ends therefore take an explicit
+   operator setting: `IDFON_DRED_MS` on the holder's Opus publish (80–1000 ms,
+   affordable only above ~48 kbps — libopus drops DRED below that) and
+   `-concealms <ms>` on the listening app (sets `IDFON_CONCEAL_MS`, the
+   decoder's fill window, 120–1000 ms, default 120). Pair them to measure
+   whether a 1 s DRED cover actually halves a 2 s cell-handover hole; neither
+   changes behaviour unless set.
 3. **Turn on Opus FEC + DTX for calls** (change, cheap). Two flags in
    `AudioOptions` at the call sites (idfon-live-media/src/lib.rs:554,
    iroh-c-ffi/src/media.rs:374). Verify loss resilience on an induced-loss
@@ -556,8 +564,25 @@ live-streaming project, where nothing is addressed or nothing is modern yet.
    mechanism.
 5. **Quality persistence and summary** (build; C1). `stats.rs` is a live
    overlay (EMA + sparklines); the per-call record folds and logs at hangup
-   now (C1 landed), but nothing persists the summaries, computes an
-   R-factor/MOS-style score, or trends across releases. Ours.
+   (C1 landed) and both shells now file it per thread — one JSON per peer
+   beside the chat, shown in that thread by `/health-check` (iOS and mac,
+   2026-11-04). Nothing computes an R-factor/MOS-style score or trends across
+   releases yet; that is ours.
+
+   **Verification of the card.** `ios/Checks/HealthCardCheck` runs on the host
+   (Mac Catalyst, no simulator): decode, the one-line summary, the rendered
+   picture, and which record a post reads (`live` mid-call, `stored` after
+   hangup). `crates/idfon-media`'s `record_json_shape_is_the_shell_contract`
+   pins the JSON field names the shells decode, and `crates/iroh-c-ffi`'s
+   `live_call_serves_a_health_record_midcall_and_at_hangup` calls between two
+   in-process endpoints (publish → subscribe, the entry the shells use) and
+   asserts the live read, the folded report, and the read-and-clear hand-off.
+   On device, `-healthcheck <peer-ref> [delaySeconds]` posts the card through
+   the same path a typed `/health-check` reaches and logs
+   `idfon-auto: healthcheck <live|stored>: <summary> peer=<id>`;
+   `-hangup <seconds>` ends a running call so the stored-file leg can run
+   without taps. The mac app takes `-healthcheck <peer-ref>` too. A picture
+   row shows a thumbnail (mac: full size on hover); tap/Show shares the file.
 6. **Own-edge relay quality** (investigate; new). They run on n0's public
    relays; we run `idfon-edge`. Verify how iroh selects relay paths, whether
    our edge is preferred/usable mid-call, and how direct→relay fallback reads

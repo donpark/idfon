@@ -163,6 +163,12 @@ swiftc -o /tmp/ctcheck ios/Idfon/AnyEncodable.swift \
 && /tmp/ctcheck
 ```
 
+The per-call health card's host check (`HealthCard.swift`: record decode, the
+one-line summary, the rendered picture, live-vs-stored reads) builds for Mac
+Catalyst with its own exact command in
+`ios/Checks/HealthCardCheck/main.swift` — the app-side symbols it touches
+(`ChatStore.appendOutgoing`) are stubbed there, so it needs no daemon.
+
 `ios/IdfonTests` is the app-hosted XCTest target (`@testable import Idfon`) for
 the hybrid web layer; run it on a connected iPhone with `pnpm ios test`.
 

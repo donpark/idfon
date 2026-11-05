@@ -30,7 +30,7 @@ size=12345
 sender_id=me
 ticket=tkt-1
 """
-if case .file(let ticket, let name, let sizeBytes) = MessageKind.parse(fileEnvelope) {
+if case .file(let ticket, let name, let sizeBytes, _) = MessageKind.parse(fileEnvelope) {
     check(ticket == "tkt-1", "file ticket")
     check(name == "Archive.zip", "file name")
     check(sizeBytes == 12345, "file size")
@@ -39,7 +39,7 @@ if case .file(let ticket, let name, let sizeBytes) = MessageKind.parse(fileEnvel
 }
 
 // Values split on the first `=`, so a name may contain one.
-if case .file(_, let name, _) = MessageKind.parse("IDFON-FILE/1\nname=a=b.txt\nticket=t\n") {
+if case .file(_, let name, _, _) = MessageKind.parse("IDFON-FILE/1\nname=a=b.txt\nticket=t\n") {
     check(name == "a=b.txt", "value keeps later '=': \(name)")
 } else {
     check(false, "name containing '=' parses")

@@ -63,6 +63,18 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate, UITabBarControllerDeleg
                 chat.automateSendFile(at: url)
             }
         }
+        if let check = Automation.pendingHealthCheck {
+            Task { @MainActor in
+                if check.delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(check.delay * 1_000_000_000))
+                }
+                guard let chat = await activity.automateOpenThread(peerRef: check.peer) else {
+                    Automation.mark("healthcheck FAIL no visible thread")
+                    return
+                }
+                chat.automateHealthCheck()
+            }
+        }
     }
 
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {

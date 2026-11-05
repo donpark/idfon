@@ -131,6 +131,34 @@ final class VideoCall: NSObject {
     /// invite" cannot exist (the #51 wedge that made Decline a no-op).
     var activePeer: String? { life.peer }
 
+    /// What the listening leg is doing (media-adaptation §C2): same line the
+    /// audio bar shows — state while it is not audible, the carrying path
+    /// while it is.
+    var mediaHint: String? {
+        switch media_live_state() {
+        case 1: return "Connecting…"
+        case 3: return "Reconnecting…"
+        case 4: return "Audio lost"
+        case 2:
+            guard let ptr = media_live_path() else { return nil }
+            let path = String(cString: ptr)
+            rust_free_string(ptr)
+            return path.isEmpty ? nil : path
+        default: return nil
+        }
+    }
+
+    /// The contact's stored endpoint address, for a dial that must not depend
+    /// on discovery (#157). Cached for the call.
+    private func videoPeerAddrs(_ peerId: String?) async -> String {
+        if let videoPeerAddr { return videoPeerAddr }
+        guard let peerId, let peers = try? await client.peers() else { return "" }
+        let addrs = peers.first { $0.id == peerId || $0.endpointId == peerId }?
+            .devices.compactMap(\.endpointAddr).first ?? ""
+        videoPeerAddr = addrs
+        return addrs
+    }
+
     /// The current call's generation ticket (the dialer's publish ticket),
     /// nil when no call exists — lets a ring push recognize a call the
     /// machines already own (the envelope is queued before the push is sent,
@@ -258,6 +286,11 @@ final class VideoCall: NSObject {
     var onFrame: ((UIImage?) -> Void)?
 
     private let client = IdfonClient()
+    /// The peer's stored `EndpointAddr` JSON, fetched once per call (#157).
+    private var videoPeerAddr: String?
+    /// The peer this call belongs to, kept past the state machine's reset so
+    /// the quality record can be filed with the thread it describes.
+    private var callPeer: String?
     private var frameTimer: Timer?
     /// True while a decoded peer frame is on screen (for clearing it).
     private var peerFrameVisible = false
@@ -308,6 +341,7 @@ final class VideoCall: NSObject {
         videoAvailable = true
         audioEnabled = audio
         videoEnabled = video && cameraOn
+        callPeer = peerRef
         apply(.dial(peer: peerRef))
         // The cue rides the shared playback bus (AudioIO): start the session
         // first or the tone is dropped before the call arms it.
@@ -330,6 +364,8 @@ final class VideoCall: NSObject {
                     id = peerRef
                 }
                 apply(.resolve(peer: id))
+                // The health record is filed per peer: key it by the id.
+                callPeer = id
                 // Registry entry for Idfon's authorization/session lifecycle;
                 // Swift owns capture while the media bridge owns transport.
                 let identity = (try? await client.status())?.1 ?? "default"
@@ -398,6 +434,7 @@ final class VideoCall: NSObject {
         videoAvailable = true
         audioEnabled = true
         videoEnabled = cameraOn
+        if case .incoming(let pending) = life.phase { callPeer = pending.peer }
         apply(.answer)
         Task {
             do {
@@ -514,7 +551,10 @@ final class VideoCall: NSObject {
             fail("video watch failed\(error.isEmpty ? "" : ": \(error)")")
             return
         }
-        let subscribeResult = await Task.detached(priority: .userInitiated) { media_live_subscribe(ticket) }.value
+        let addrs = await videoPeerAddrs(activePeer)
+        let subscribeResult = await Task.detached(priority: .userInitiated) {
+            media_live_subscribe_with_addrs(ticket, addrs)
+        }.value
         guard subscribeResult == 0 else {
             fail("video audio subscribe failed")
             return
@@ -565,13 +605,15 @@ final class VideoCall: NSObject {
             // AudioPusher tear-down must stay on the main queue (engine state is
             // main-serialized); only the blocking FFI calls go to the background.
             AudioPusher.shared.stop()
+            let peer = callPeer
             AppBackgroundTask.run {
                 CameraPusher.shared.stop()
                 media_live_stop()
-                Diag.logCallRecord() // the record folds inside the stop: ship once, here
+                if let json = Diag.logCallRecord() { HealthCard.store(json, for: peer) }
                 media_video_stop()
                 media_live_unsubscribe()
             }
+            callPeer = nil
             published = false
             audioAvailable = false
             videoAvailable = false

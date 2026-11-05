@@ -420,6 +420,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Automation.mark("pair-ticket FAIL not a JSON object")
             }
         }
+        if let check = Automation.pendingHealthCheck {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let match = app.peers.first(where: { $0.id == check || $0.name == check })
+                    ?? Peer(id: check, name: nil, endpointId: nil, aliases: nil)
+                app.select(match)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let chat = detail?.currentChat else {
+                    Automation.mark("healthcheck FAIL no chat")
+                    return
+                }
+                chat.automateHealthCheck()
+            }
+        }
         guard let pending = Automation.pendingSendFile else { return }
         Task { @MainActor in
             // Let the window and daemon settle before touching media/threads.

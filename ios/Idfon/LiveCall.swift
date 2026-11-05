@@ -225,6 +225,23 @@ final class LiveCall {
     /// The ticket of the listen leg, kept so a leg the media plane gave up on
     /// (state 4) can be rebuilt without another round-trip with the peer.
     private var liveTicket: String?
+    /// The peer this call belongs to, kept past the state machine's reset so
+    /// the quality record can be filed with the thread it describes.
+    private var callPeer: String?
+    /// The peer's stored `EndpointAddr` JSON, fetched once per call (#157).
+    private var livePeerAddrs: String?
+
+    /// The contact's stored endpoint address (the one pairing saved). Cached
+    /// for the call: the media plane re-subscribes on every transition and a
+    /// daemon round-trip per attempt is waste.
+    private func peerAddrs(_ peerId: String?) async -> String {
+        if let livePeerAddrs { return livePeerAddrs }
+        guard let peerId, let peers = try? await client.peers() else { return "" }
+        let addrs = peers.first { $0.id == peerId || $0.endpointId == peerId }?
+            .devices.compactMap(\.endpointAddr).first ?? ""
+        livePeerAddrs = addrs
+        return addrs
+    }
     private var operation: Task<Void, Never>?
 
     /// Runs one transition and its effects, then syncs the crash-recovery
@@ -267,11 +284,17 @@ final class LiveCall {
             HybridVoice.shared.stop()
             AudioPusher.shared.stop()
             liveTicket = nil
+            livePeerAddrs = nil
+            let peer = callPeer
             AppBackgroundTask.run {
                 media_live_stop()
-                Diag.logCallRecord() // the record folds inside the stop: ship once, here
+                // The record folds inside the stop: ship once to Diag, and
+                // file it with the thread it describes so `/health-check` can
+                // show it later (docs/media-adaptation.md §C1).
+                if let json = Diag.logCallRecord() { HealthCard.store(json, for: peer) }
                 media_live_unsubscribe()
             }
+            callPeer = nil
         case .endCue:
             CallTonePlayer.shared.start(.ended)
         case .quiet:
@@ -345,6 +368,7 @@ final class LiveCall {
     private func dialNow(_ peerRef: String, show: String? = nil) {
         operation?.cancel()
         audioEnabled = audioAvailable // this session carries audio from the start
+        callPeer = peerRef
         apply(.dial(peer: peerRef))
         // The cue rides the shared playback bus (AudioIO): start the session
         // first or the tone is dropped before the dial task arms it.
@@ -359,6 +383,9 @@ final class LiveCall {
                 let peerId = await client.resolvePeerId(peerRef)
                 guard case .dialing(let current) = life.phase, current == peerRef || current == peerId else { return }
                 apply(.resolve(peer: peerId))
+                // Hangup files the health record under the peer: use the
+                // canonical id, not the ref the user dialed by name.
+                callPeer = peerId
                 // Registry entry (parity with core.ts live_start).
                 let identity = (try? await client.status())?.1 ?? "default"
                 let returnAddr = try await client.localEndpointAddr()
@@ -468,6 +495,7 @@ final class LiveCall {
             return
         }
         operation?.cancel()
+        if case .incoming(let pending) = life.phase { callPeer = pending.peer }
         apply(.answer)
         let epoch = life.epoch
         audioEnabled = audioAvailable
@@ -601,8 +629,11 @@ final class LiveCall {
 
     /// Subscribes to a peer ticket without tearing the call down on failure.
     private func subscribe(ticket: String) async -> Bool {
+        // #157: pass the contact's stored endpoint address, so a re-dial does
+        // not depend on pkarr/DNS exactly when the interfaces are flapping.
+        let addrs = await peerAddrs(activePeer)
         let result = await Task.detached(priority: .userInitiated) {
-            media_live_subscribe(ticket)
+            media_live_subscribe_with_addrs(ticket, addrs)
         }.value
         idfonLog("idfon live call: subscription start result=\(result)")
         return result == 0
