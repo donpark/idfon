@@ -11,13 +11,16 @@ recorded sessions, once per tap source, with the same rules and carried state:
 and the report is (a) feature drift per ear per frame, (b) the event agreement
 A↔B (parity7's same-kind ±tol matching — the interchangeability number, bar ≥99%),
 (c) each side's agreement against the teacher events the shards recorded
-(context, not the gate).
+(context, not the gate). `--per-kind` adds the kind breakdown and, among matched
+events, whether B fired earlier or later — a tier that fires earlier *and* loses
+events is a different answer from one that only shifts.
 
 Usage:
   .venv/bin/python ports/tyger-student/tap_gate.py \
       --student bench-results/shared-consistent-l03/student.pt --tap l15-windowed \
       --shards-a /Users/don/dev/idfon/bench-results/student-shards/val \
       --shards-b bench-results/l15-stream/val [--tol 2] [--sessions N]
+    [--per-kind] [--temp T] [--ep-thr P]
 Output: a table on stdout; `--json` writes the same record.
 """
 import argparse
@@ -30,10 +33,52 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from checkpoint import load as load_model  # noqa: E402
+from checkpoint import TempScaled, load as load_model  # noqa: E402
 from data import iter_shards  # noqa: E402
 from gate import aligned_count, student_events  # noqa: E402
 from oracle import Oracle  # noqa: E402
+
+
+def match_pairs(a, b, tol):
+    """`aligned_count`'s greedy same-kind match, keeping the pairs so direction and kind can
+    be reported. Returns (pairs, only_a, only_b); pairs are (frame_a, kind, frame_b)."""
+    used, pairs = set(), []
+    for fa, ka in a:
+        for j, (fb, kb) in enumerate(b):
+            if j not in used and ka == kb and abs(fa - fb) <= tol:
+                used.add(j)
+                pairs.append((fa, ka, fb))
+                break
+    return pairs, len(a) - len(pairs), len(b) - len(pairs)
+
+
+def kind_report(ev_a, ev_b, tol, wide_tol=None):
+    """Per-kind agreement and, for matched pairs, whether B fired before or after A.
+    `only_a` = the event A fires and B does not (loss); `only_b` = B adds one.
+    `wide_tol` adds how many of those losses are the same event shifted past `tol`."""
+    pairs, only_a, only_b = match_pairs(ev_a, ev_b, tol)
+    wide = match_pairs(ev_a, ev_b, wide_tol)[0] if wide_tol else None
+    kinds = sorted({k for _f, k in ev_a} | {k for _f, k in ev_b})
+    out = {}
+    for k in kinds:
+        pa = [fa for fa, ka, _fb in pairs if ka == k]
+        pb = [fb for _fa, ka2, fb in pairs if ka2 == k]
+        delta = [b - a for a, b in zip(pa, pb)]
+        wdelta = [fb_ - fa_ for fa_, kk, fb_ in (wide or []) if kk == k]
+        out[k] = {"a": sum(1 for _f, kk in ev_a if kk == k),
+                  "b": sum(1 for _f, kk in ev_b if kk == k),
+                  "aligned": len(pa),
+                  "only_a": sum(1 for _f, kk in ev_a if kk == k) - len(pa),
+                  "only_b": sum(1 for _f, kk in ev_b if kk == k) - len(pa),
+                  "b_earlier": sum(1 for d in delta if d < 0),
+                  "b_same": sum(1 for d in delta if d == 0),
+                  "b_later": sum(1 for d in delta if d > 0),
+                  "delta_p50": float(np.median(delta)) if delta else None,
+                  "recovered": len(wdelta) - len(pa) if wide is not None else None,
+                  "wide_earlier": sum(1 for d in wdelta if d < 0) if wide is not None else None,
+                  "wide_same": sum(1 for d in wdelta if d == 0) if wide is not None else None,
+                  "wide_later": sum(1 for d in wdelta if d > 0) if wide is not None else None}
+    return out, len(pairs), only_a, only_b
 
 
 def cosine_rel(a, b):
@@ -62,10 +107,19 @@ def main():
     ap.add_argument("--ep-thr", type=float, default=0.9146)
     ap.add_argument("--barge-thr", type=float, default=0.5)
     ap.add_argument("--bc-thr", type=float, default=0.5)
+    ap.add_argument("--temp", type=float, default=1.0,
+                    help="pre-seam temperature (calibrate.py --temp-grid fit; 1.0 = off)")
+    ap.add_argument("--per-kind", action="store_true",
+                    help="per-kind agreement + whether B fired earlier/later than A")
+    ap.add_argument("--wide-tol", type=int, default=10,
+                    help="--per-kind: also match at this tolerance, to separate a shifted "
+                         "event from one that vanishes")
     ap.add_argument("--json", default=None, help="write the record here")
     args = ap.parse_args()
 
     model, ckpt = load_model(args.student, tap=args.tap)
+    if args.temp != 1.0:
+        model = TempScaled(model, args.temp)
     oracle = Oracle(device="cpu")  # rules only
     thr = (args.ep_thr, args.barge_thr, args.bc_thr)
 
@@ -89,7 +143,9 @@ def main():
             drift["rel"].append(rel)
         ev_a = student_events(model, oracle, fa, args.feature_layer, thr=thr)
         ev_b = student_events(model, oracle, fb, args.feature_layer, thr=thr)
-        al, only_a, only_b = aligned_count(ev_a, ev_b, args.tol)
+        kinds, al, only_a, only_b = kind_report(ev_a, ev_b, args.tol,
+                                                args.wide_tol if args.per_kind else None)
+        assert al == aligned_count(ev_a, ev_b, args.tol)[0], "match_pairs disagrees with aligned_count"
         denom = max(len(ev_a), len(ev_b))
         same += al
         total += denom
@@ -105,7 +161,8 @@ def main():
                      "agree": round(al / denom if denom else 1.0, 4),
                      "only_a": only_a, "only_b": only_b,
                      "a_vs_teacher": ta, "b_vs_teacher": tb,
-                     "teacher_events": len(ea[0]) if ea is not None else None})
+                     "teacher_events": len(ea[0]) if ea is not None else None,
+                     "kinds": kinds})
         print(f"  {sid[:16]}… {n:5d} frames  events a/b {len(ev_a):3d}/{len(ev_b):3d}  "
               f"aligned {al:3d}  agree {rows[-1]['agree']:.1%}  "
               f"only_a {only_a} only_b {only_b}  vs teacher {ta}/{tb}", flush=True)
@@ -131,6 +188,23 @@ def main():
           f"(p95 {rec['feature_drift']['rel_p95']:.3f}) over {rec['frames']} frames")
     print(f"decision agreement A↔B: {agree:.2%} ({same}/{total} events, ±{args.tol} frames) "
           f"— {rec['verdict']} (bar 99%)")
+    if args.per_kind:
+        tot = {}
+        for r in rows:
+            for k, v in r["kinds"].items():
+                keys = tuple(v)
+                acc = tot.setdefault(k, dict.fromkeys(keys, 0))
+                for key in keys:
+                    acc[key] += v[key]
+        rec["per_kind"] = tot
+        print(f"\nper kind       A     B  aligned  only_A  only_B  B earlier  same  later  agree"
+              f"  ±{args.wide_tol} (earlier/same/later)")
+        for k, v in sorted(tot.items()):
+            denom = max(v["a"], v["b"])
+            print(f"  {k:<11} {v['a']:4d} {v['b']:5d} {v['aligned']:8d} {v['only_a']:7d} "
+                  f"{v['only_b']:7d} {v['b_earlier']:10d} {v['b_same']:5d} {v['b_later']:6d} "
+                  f"{v['aligned']/denom if denom else 1.0:6.1%}  {v['wide_earlier']}/"
+                  f"{v['wide_same']}/{v['wide_later']} (+{v['recovered']})")
     if args.json:
         Path(args.json).write_text(json.dumps(rec, indent=2, default=float) + "\n")
     raise SystemExit(0 if rec["verdict"] == "PASS" else 1)
