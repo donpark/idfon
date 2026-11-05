@@ -90,7 +90,7 @@ def _cached(cache: Path, frames):
     return wav
 
 
-def session_wav_ch1(session_id, cache_dir: Path, _ch0=None, frames=None):
+def session_wav_ch1(session_id, cache_dir: Path, _ch0=None, frames=None, split="val"):
     cache = Path(cache_dir) / f"{session_id}-ch1.npy"
     hit = _cached(cache, frames)
     if hit is not None:
@@ -101,7 +101,7 @@ def session_wav_ch1(session_id, cache_dir: Path, _ch0=None, frames=None):
     from oracle import decode_channel, resample16k
 
     mimi = HFAutoModel.from_pretrained("kyutai/mimi", dtype=torch.float32).eval()
-    for row in load_dataset("anyreach-ai/dualturn-otospeech-turn-taking", split="val", streaming=True):
+    for row in load_dataset("anyreach-ai/dualturn-otospeech-turn-taking", split=split, streaming=True):
         if row["session_id"] != session_id:
             continue
         codes = np.array(row["codes_ch1"], dtype=np.int16).reshape(int(row["num_frames"]), 8)
@@ -111,10 +111,10 @@ def session_wav_ch1(session_id, cache_dir: Path, _ch0=None, frames=None):
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
         np.save(cache, wav)
         return wav
-    raise SystemExit(f"session {session_id} not found in the val split")
+    raise SystemExit(f"session {session_id} not found in the {split} split")
 
 
-def session_wav(session_id, cache_dir: Path, frames=None):
+def session_wav(session_id, cache_dir: Path, frames=None, split="val"):
     cache = Path(cache_dir) / f"{session_id}.npy"
     hit = _cached(cache, frames)
     if hit is not None:
@@ -125,7 +125,7 @@ def session_wav(session_id, cache_dir: Path, frames=None):
     from oracle import decode_channel, resample16k
 
     mimi = HFAutoModel.from_pretrained("kyutai/mimi", dtype=torch.float32).eval()
-    for row in load_dataset("anyreach-ai/dualturn-otospeech-turn-taking", split="val", streaming=True):
+    for row in load_dataset("anyreach-ai/dualturn-otospeech-turn-taking", split=split, streaming=True):
         if row["session_id"] != session_id:
             continue
         codes = np.array(row["codes_ch0"], dtype=np.int16).reshape(int(row["num_frames"]), 8)
@@ -135,7 +135,7 @@ def session_wav(session_id, cache_dir: Path, frames=None):
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
         np.save(cache, wav)
         return wav
-    raise SystemExit(f"session {session_id} not found in the val split")
+    raise SystemExit(f"session {session_id} not found in the {split} split")
 
 
 def main():
@@ -151,6 +151,7 @@ def main():
     ap.add_argument("--session-id", default=SESSION)
     ap.add_argument("--wav-cache", default="bench-results/asr-tap/wav")
     ap.add_argument("--shards", default=SHARDS)
+    ap.add_argument("--split", default="val", help="dualturn split the shard dir came from (train|val)")
     ap.add_argument("--sessions", type=int, default=1)
     ap.add_argument("--frames", type=int, default=1200,
                     help="emit only the first N shard frames (the shard stays T-long; tap_gate trims to N)")
@@ -272,9 +273,9 @@ def main():
             frames, labels, events, _meta = load_shard(str(refs[sid]))
             T = min(len(frames["energy"]), args.frames)
             need = T + 8  # inputs are 80 ms code frames; the pass is causal, so the tail is free
-            wav = session_wav(sid, Path(args.wav_cache), frames=need)
+            wav = session_wav(sid, Path(args.wav_cache), frames=need, split=args.split)
             rows_u = rows(emitter, wav)
-            rows_a = rows(emitter, session_wav_ch1(sid, Path(args.wav_cache), wav, frames=need))
+            rows_a = rows(emitter, session_wav_ch1(sid, Path(args.wav_cache), wav, frames=need, split=args.split))
             hu, ha = rows_u[:T], rows_a[:T]
             n = min(T, len(hu), len(ha))
             frames = {k: (v[:n] if isinstance(v, np.ndarray) else v) for k, v in frames.items()}
