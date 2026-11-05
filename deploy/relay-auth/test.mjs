@@ -6,9 +6,11 @@
 // inputs must reproduce it byte for byte (ed25519 is deterministic).
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -17,6 +19,7 @@ import { decodeRelayGrant, expiryEpoch, signRelayGrant } from "./rcan.mjs";
 import {
   createApp,
   loadConfig,
+  startTlsServer,
   verifyEd25519,
   verifyGrant,
 } from "./server.mjs";
@@ -346,6 +349,77 @@ test("owner tokens are scoped: one owner cannot revoke another's entry", async (
       ).status,
       200,
     );
+  } finally {
+    server.close();
+  }
+});
+
+// --- TLS renewal -------------------------------------------------------------
+// acme.sh rewrites cert.pem/key.pem in place; the HTTPS listener must pick the
+// new pair up without a restart (and keep serving the old one if a write is
+// caught half-done).
+function selfSigned(dir, name) {
+  const cert = path.join(dir, `${name}.pem`);
+  const key = path.join(dir, `${name}.key`);
+  const r = spawnSync(
+    "openssl",
+    ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-subj", `/CN=${name}`, "-keyout", key, "-out", cert],
+    { encoding: "utf8" },
+  );
+  return r.status === 0 ? { cert: fs.readFileSync(cert), key: fs.readFileSync(key) } : null;
+}
+
+function servedCert(port) {
+  return new Promise((resolve, reject) => {
+    // New connection per call: no TLS session resumption, so this is the cert
+    // the listener would actually present right now.
+    const req = https.request(
+      { host: "127.0.0.1", port, path: "/", rejectUnauthorized: false, agent: false },
+      (res) => {
+        res.resume();
+        resolve(res.socket.getPeerCertificate().fingerprint256);
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+test("tls: serves a renewed cert without restart, keeps the last good one on a bad write", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-auth-tls-"));
+  const a = selfSigned(dir, "a");
+  const b = selfSigned(dir, "b");
+  if (!a || !b) {
+    t.skip("openssl not available");
+    return;
+  }
+  const certPath = path.join(dir, "cert.pem");
+  const keyPath = path.join(dir, "key.pem");
+  fs.writeFileSync(certPath, a.cert);
+  fs.writeFileSync(keyPath, a.key);
+
+  const config = testConfig({ IDFON_RELAY_AUTH_TLS_CERT: certPath, IDFON_RELAY_AUTH_TLS_KEY: keyPath });
+  const server = startTlsServer(config, createApp(config), 50);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  try {
+    const look = (buf) => new crypto.X509Certificate(buf).fingerprint256;
+    assert.equal(await servedCert(port), look(a.cert));
+
+    // Rotation: mtime must move even on a coarse filesystem clock.
+    fs.writeFileSync(certPath, b.cert);
+    fs.writeFileSync(keyPath, b.key);
+    const future = new Date(Date.now() + 5000);
+    fs.utimesSync(certPath, future, future);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(await servedCert(port), look(b.cert));
+
+    // A broken write must not take the listener down or drop TLS.
+    fs.writeFileSync(certPath, "not a cert");
+    const future2 = new Date(Date.now() + 10000);
+    fs.utimesSync(certPath, future2, future2);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(await servedCert(port), look(b.cert));
   } finally {
     server.close();
   }

@@ -4,8 +4,10 @@
 #
 #   DO_API_KEY=dop_v1_... sh acme-issue.sh [domain] [email]
 #
-# acme.sh registers a cron/systemd timer, so renewal is automatic. The edge
-# re-reads the certificate when its mtime changes; no restart is needed.
+# acme.sh registers a cron/systemd timer, so renewal is automatic. Every
+# consumer re-reads the certificate in place — the edge on mtime change, the
+# relay (cert_mode = "Reloading") and relay-auth on a poll — so a renewal needs
+# no restart.
 set -eu
 
 DOMAIN="${1:-idfon.net}"
