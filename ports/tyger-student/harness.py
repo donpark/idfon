@@ -10,11 +10,11 @@ same corpus labels, on the same session.
 Events come from two sources: the shard's recorded teacher events (data.py:
 ev_frames/ev_kinds, frames 1-based) and gate.py's student_events replay (same rules
 feedback semantics — carried GRU state, EarsSession prev_state — honoring the
-threshold/debounce knobs). Barge cannot come from events: rules.py only fires BARGE in
-mode "speaking", which neither replay enters — so both sides' barge metrics threshold
+threshold/debounce knobs). The barge axis here does not read events: rules.py only
+fires BARGE in mode "speaking", so both sides' barge metrics threshold
 the yield-head stream at --barge-thr (teacher: the shard's recorded 8-vector col 5,
 student: the replay's), exactly tyger-eval's barge_sweep. --barge-deb rides through to
-the rules but only debounces the speaking path, which the replay never enters.
+the rules but only debounces the speaking path.
 
 One deliberate deviation from tyger-eval's literal text: its interrupting-onset test
 `(bot_ch0 == 1) & (floor == 2)` is dead code (floor_series consumes the onset frame's

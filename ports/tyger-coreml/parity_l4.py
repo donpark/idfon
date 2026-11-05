@@ -19,6 +19,7 @@ import soundfile as sf
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ports/tyger-student"))
 
+from mode_track import frame_modes  # noqa: E402
 from oracle import HOP, HOP_FRAMES, SR, WIN_S, Oracle  # noqa: E402
 
 FIXTURE = ROOT / "ports/tyger-swift/Tests/TygerVoiceTests/runtime"
@@ -29,17 +30,17 @@ def mel_window(oracle, wav):
                        return_tensors="pt")["input_features"]
 
 
-def events(vecs, energy, oracle):
+def events(vecs, energy, modes, oracle):
     sess = oracle.EarsSession(0)
     out = []
     for f in range(len(vecs)):
-        e, _final, _reset = oracle.rules.on_frame(sess, "response", vecs[f],
+        e, _final, _reset = oracle.rules.on_frame(sess, modes[f], vecs[f],
                                                   float(energy[f]), left=3 - (f % HOP_FRAMES))
         out += [(f + 1, x["kind"]) for x in e if x["kind"] != "FRAME"]
     return out
 
 
-def student_vecs(model, hu, ha, energy, oracle, device="cpu"):
+def student_vecs(model, hu, ha, energy, modes, oracle, device="cpu"):
     """Live rules feedback, the gate.py semantics."""
     import torch
     sess = oracle.EarsSession(0)
@@ -53,7 +54,7 @@ def student_vecs(model, hu, ha, energy, oracle, device="cpu"):
                               torch.tensor([[int(sess.prev_state)]], device=device), hidden)
             v = model.eight_vector(o)[0, 0].cpu().numpy().astype(np.float64)
             rows.append(v)
-            oracle.rules.on_frame(sess, "response", v, float(energy[f]), left=3 - (f % HOP_FRAMES))
+            oracle.rules.on_frame(sess, modes[f], v, float(energy[f]), left=3 - (f % HOP_FRAMES))
     return np.stack(rows)
 
 
@@ -114,11 +115,16 @@ def main():
         print(f"  {k}: mean|d| {d.mean():.5f}  max|d| {d.max():.4f}  cos {cos:.6f}")
 
     energy = np.array(energies[:len(ref)], np.float64)
-    e_ref = events(student_vecs(model, ref, ref, energy, oracle, args.device), energy, oracle)
+    # this harness feeds one channel to both ears (no agent capture); derive from the
+    # channel it feeds as the agent ear so both compared sides see one mode track
+    modes = frame_modes(oracle.rules.frame_energy(wav))[start * HOP_FRAMES:][:len(energy)]
+    e_ref = events(student_vecs(model, ref, ref, energy, modes, oracle, args.device),
+                   energy, modes, oracle)
     print(f"\ndecisions: reference {len(e_ref)} events")
     for name in models:
         got = np.concatenate(feats_cm[name])[:len(ref)]
-        e = events(student_vecs(model, got, got, energy, oracle, args.device), energy, oracle)
+        e = events(student_vecs(model, got, got, energy, modes, oracle, args.device),
+                   energy, modes, oracle)
         hit = sum(1 for f, kind in e_ref
                   if any(abs(f - g) <= 2 and kind == k2 for g, k2 in e))
         denom = max(len(e_ref), len(e))

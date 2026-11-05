@@ -366,7 +366,10 @@ Capture convention: `TurnCapture` writes **stereo 16 kHz, `ch0` = caller mic,
 `ch1` = agent**. So `mode` is derivable per frame from `ch1` activity, and a
 capture whose `ch1` is silent carries no barge evidence at all — the sidecar
 records `agentNonSilent`/`agentPeak` precisely so that is visible rather than
-assumed.
+assumed. Every replay now takes its track from `ports/tyger-student/mode_track.py`
+(a recorded track when present, else `ch1` energy at -50 dB with a 6-hop release);
+the resulting live barge measurement is in `voice-tyger-ondevice.md` § "Barge on
+the live captures".
 
 **`left` means the hop's remaining frames, and it is only a timestamp fix
 (2026-11-05).** `rules.py` uses it in one place: `onset_s = min((talk_frames +

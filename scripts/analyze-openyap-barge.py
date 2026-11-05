@@ -11,6 +11,13 @@ L4 features + teacher 8-vectors) and measures, for the L4 student:
                    raw yield score >= barge_thr within 640 ms (the tyger-eval definition)
   teacher yield@VAD  same for the teacher's saved 8-vectors (reference)
 
+The mode track is the shard's when it has one, else derived from the agent
+channel (`mode_track.py`). Shards written before `featurize.py` recorded `mode`
+have no track, and their stored events came from a listen-mode replay — comparing
+them with a speaking-mode replay would measure the state mismatch, so event
+agreement is withheld for those (the yield@VAD axes are mode-independent).
+Re-featurize the shards to get a mode-era event reference.
+
 Usage:
   .venv/bin/python scripts/analyze-openyap-barge.py --shards bench-results/openyap-shards \
       --wavs /tmp/openyap/wavs --student bench-results/student-l4-60/student.pt \
@@ -27,6 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'ports/tyger-student'))
 
 from gate import aligned_count, student_events  # noqa: E402
+from mode_track import frame_modes  # noqa: E402
 from model import Student  # noqa: E402
 from oracle import Oracle  # noqa: E402
 from registry import by_id  # noqa: E402
@@ -76,15 +84,20 @@ def catch(scores, onset_frames, barge_thr, window=8, deb=2):
     return hit / len(onset_frames) if onset_frames else float('nan')
 
 
-def student_scores(model, oracle, frames, layer):
+def student_scores(model, oracle, frames, layer, modes):
     """Per-frame 8-vector from the student (same loop as gate.student_events)."""
     from data import pick_features
     hu_all, ha_all = pick_features(frames, layer)
     sess = oracle.EarsSession(0)
     hidden = None
+    last_mode = None
     rows = []
     with torch.no_grad():
         for f in range(len(frames['energy'])):
+            if modes[f] != last_mode:
+                if oracle.rules.switch_mode(sess, modes[f]):
+                    hidden = None
+                last_mode = modes[f]
             hu = torch.from_numpy(hu_all[f:f + 1])[None]
             ha = torch.from_numpy(ha_all[f:f + 1])[None]
             act = torch.tensor([[float(frames['energy'][f])]])
@@ -92,7 +105,7 @@ def student_scores(model, oracle, frames, layer):
             outs, hidden = model(hu, ha, act, prev, hidden)
             out = model.eight_vector(outs)[0, 0].to(torch.float64).numpy()
             rows.append(out)
-            oracle.rules.on_frame(sess, 'response', out, float(frames['energy'][f]),
+            oracle.rules.on_frame(sess, modes[f], out, float(frames['energy'][f]),
                                   left=3 - (f % 4))
     return np.stack(rows)
 
@@ -129,8 +142,9 @@ def main():
     per_shard = []
     for p in shards:
         z = np.load(p, allow_pickle=True)
-        frames = {k: z[k] for k in z.keys() if k in ('hu', 'ha', 'hu_l4', 'ha_l4', 'energy', 'prev_state', 'teacher')}
-        teacher_events = list(zip(z['ev_frames'].tolist(), z['ev_kinds'].tolist()))
+        frames = {k: z[k] for k in z.keys() if k in ('hu', 'ha', 'hu_l4', 'ha_l4', 'energy',
+                                                    'prev_state', 'teacher', 'mode')}
+        recorded_events = list(zip(z['ev_frames'].tolist(), z['ev_kinds'].tolist()))
         sid = str(z['meta']) if 'meta' in z else p.stem
         try:
             import json
@@ -138,71 +152,111 @@ def main():
         except Exception:
             sid = p.stem
 
+        # One mode track for both replays: the shard's own track when it has one,
+        # else the agent channel's energy (parity/harness rule, mode_track.py).
+        wpath = wav_for_sid(args.wavs, sid) if args.wavs else None
+        wav = None
+        given_mode_track = frames.get('mode')
+        if given_mode_track is None:
+            if wpath is None or not wpath.exists():
+                sys.exit(f'{sid}: no mode track and no agent audio under --wavs; '
+                         f'a replay would have to guess the floor')
+            import soundfile as sf
+            wav, sr = sf.read(str(wpath), dtype='float32', always_2d=True)
+            if sr != 16000:
+                import soxr
+                wav = soxr.resample(wav, sr, 16000, quality='HQ')
+            n = len(frames['energy'])
+            modes = frame_modes(frame_db(wav[:, 1])[:n])
+            frames['mode'] = np.where(modes == 'speaking', 1, 0).astype(np.int8)
+        else:
+            modes = frame_modes(given=given_mode_track)
+
         thr = (args.ep_thr, 0.5, args.bc_thr)
         student_ev = student_events(model, oracle, frames, args.layer, thr)
 
-        # agreement
-        al, only_t, only_s = aligned_count(teacher_events, student_ev, args.tol)
-        total = max(len(teacher_events), len(student_ev))
-        agree = al / total if total else 1.0
-
-        # per-kind counts
         def counts(evs):
             d = {}
             for _, k in evs:
                 d[k] = d.get(k, 0) + 1
             return d
-        tk, sk = counts(teacher_events), counts(student_ev)
 
-        # barge on teacher BARGE events (aligned) — student yield head crossing
-        sv = student_scores(model, oracle, frames, args.layer)
+        # A shard with no mode track predates mode; its stored reference events
+        # came from a listen-mode replay. Comparing them with a derived speaking
+        # replay would measure the state mismatch, not the model, so agreement is
+        # withheld (the yield-catch axis below is mode-independent).
+        if given_mode_track is not None:
+            teacher_events = recorded_events
+            al, only_t, only_s = aligned_count(teacher_events, student_ev, args.tol)
+            total = max(len(teacher_events), len(student_ev))
+            agree = al / total if total else 1.0
+            tk, sk = counts(teacher_events), counts(student_ev)
+            t_barge = [f for f, k in teacher_events if k == 'BARGE']
+            s_barge = [f for f, k in student_ev if k == 'BARGE']
+        else:
+            teacher_events, agree, al, only_t, only_s, total = [], None, 0, 0, 0, 0
+            tk, sk = {}, counts(student_ev)
+            t_barge, s_barge = [], [f for f, k in student_ev if k == 'BARGE']
+
+        # student yield stream (same mode track as the events replay)
+        sv = student_scores(model, oracle, frames, args.layer, modes)
         tv = frames['teacher']
-        t_barge = [f for f, k in teacher_events if k == 'BARGE']
-        s_barge = [f for f, k in student_ev if k == 'BARGE']
 
         row = dict(sid=sid, frames=len(frames['energy']), agree=agree,
+                   speaking=float(np.mean(modes == 'speaking')),
                    t_ev=len(teacher_events), s_ev=len(student_ev),
                    t_barge=len(t_barge), s_barge=len(s_barge),
+                   stored_ev=len(recorded_events) if given_mode_track is None else None,
                    tk=tk, sk=sk)
         # VAD onsets from the raw wav
-        if args.wavs:
-            wpath = wav_for_sid(args.wavs, sid)
-            if wpath.exists():
-                import soundfile as sf
-                wav, sr = sf.read(str(wpath), dtype='float32', always_2d=True)
-                if sr != 16000:
-                    import soxr
-                    wav = soxr.resample(wav, sr, 16000, quality='HQ')
-                n = len(frames['energy'])
-                user_db = frame_db(wav[:, 0])[:n]
-                agent_db = frame_db(wav[:, 1])[:n]
-                ons = onsets(user_db, agent_db)
-                row['onsets'] = len(ons)
-                row['sv_catch'] = {t: catch(sv[:, 5], ons, t) for t in barge_thrs}
-                row['tv_catch'] = {t: catch(tv[:, 5], ons, t) for t in barge_thrs}
-            else:
-                row['onsets'] = None
+        if wav is not None:
+            n = len(frames['energy'])
+            user_db = frame_db(wav[:, 0])[:n]
+            agent_db = frame_db(wav[:, 1])[:n]
+            ons = onsets(user_db, agent_db)
+            row['onsets'] = len(ons)
+            row['sv_catch'] = {t: catch(sv[:, 5], ons, t) for t in barge_thrs}
+            row['tv_catch'] = {t: catch(tv[:, 5], ons, t) for t in barge_thrs}
+        else:
+            row['onsets'] = None
         per_shard.append(row)
 
         print(f"\n=== {sid} ({row['frames']} frames) ===")
-        print(f"  agreement {agree:.2%} ({al}/{total})  teacher events {len(teacher_events)} {tk}")
+        if agree is None:
+            print(f"  agreement n/a — no mode track (derived speaking "
+                  f"{row['speaking']:.0%} of frames); the stored "
+                  f"{row['stored_ev']} reference events are listen-mode")
+        else:
+            print(f"  agreement {agree:.2%} ({al}/{total})  teacher events "
+                  f"{len(teacher_events)} {tk}")
         print(f"  student events {len(student_ev)} {sk}")
-        print(f"  teacher BARGE {len(t_barge)}  student BARGE {len(s_barge)}")
+        if agree is not None:
+            print(f"  teacher BARGE {len(t_barge)}  student BARGE {len(s_barge)}")
         if row.get('onsets') is not None:
             print(f"  VAD interrupting onsets {row['onsets']}")
             print('  yield catch @thr  student / teacher')
             for t in barge_thrs:
                 print(f"    {t:<4}  {row['sv_catch'][t]:.2f} / {row['tv_catch'][t]:.2f}")
 
-    # pooled
+    # pooled (agreement only over shards that carry a mode track)
     print('\n=== POOLED ===')
+    scored = [r for r in per_shard if r['agree'] is not None]
     tot_frames = sum(r['frames'] for r in per_shard)
-    tot_agree = sum(r['agree'] * max(r['t_ev'], r['s_ev']) for r in per_shard) / max(tot_frames, 1)
-    print(f'shards {len(per_shard)}, frames {tot_frames}, pooled agreement {tot_agree:.2%}')
+    if scored:
+        tot_agree = sum(r['agree'] * max(r['t_ev'], r['s_ev']) for r in scored) / max(
+            sum(r['frames'] for r in scored), 1)
+        print(f'shards {len(per_shard)} ({len(scored)} with a mode track), frames {tot_frames}, '
+              f'pooled agreement {tot_agree:.2%}')
+    else:
+        print(f'shards {len(per_shard)}, frames {tot_frames}, pooled agreement n/a '
+              f'(no shard has a mode track)')
     for kind in ('BARGE', 'ENDPOINT', 'BACKCHANNEL'):
-        t = sum(r['tk'].get(kind, 0) for r in per_shard)
         s = sum(r['sk'].get(kind, 0) for r in per_shard)
-        print(f'  {kind}: teacher {t}, student {s}')
+        if scored:
+            t = sum(r['tk'].get(kind, 0) for r in scored)
+            print(f'  {kind}: teacher {t}, student {s}')
+        else:
+            print(f'  {kind}: student {s} (teacher n/a — pre-mode reference)')
     ons = [r['onsets'] for r in per_shard if r.get('onsets') is not None]
     if ons:
         total_ons = sum(ons)
