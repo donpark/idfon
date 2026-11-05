@@ -446,10 +446,10 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		54D511937386577BC39C5690 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/FluidInference/FluidAudio";
+			repositoryURL = "https://github.com/donpark/FluidAudio";
 			requirement = {
-				kind = upToNextMinorVersion;
-				minimumVersion = 0.17.5;
+				kind = branch;
+				branch = encoder-output-callback;
 			};
 		};
 		54D511937386577BC39C56B1 /* XCRemoteSwiftPackageReference "xn-ptts" */ = {

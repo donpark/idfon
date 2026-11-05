@@ -1,41 +1,41 @@
 {
-  "pins" : [
+  "pins": [
     {
-      "identity" : "fluidaudio",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/FluidInference/FluidAudio",
-      "state" : {
-        "revision" : "0b1f46289fe27d95b5e66ad8be46e64f5ee02ae7",
-        "version" : "0.17.5"
+      "identity": "fluidaudio",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/donpark/FluidAudio",
+      "state": {
+        "branch": "encoder-output-callback",
+        "revision": "2ad9b4225769a9f644cee1995809918fb0fe2d27"
       }
     },
     {
-      "identity" : "mlx-swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ml-explore/mlx-swift.git",
-      "state" : {
-        "revision" : "19601207e9a0de51e03ee6ec0c3c5f3784275075",
-        "version" : "0.32.3"
+      "identity": "mlx-swift",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/ml-explore/mlx-swift.git",
+      "state": {
+        "revision": "19601207e9a0de51e03ee6ec0c3c5f3784275075",
+        "version": "0.32.3"
       }
     },
     {
-      "identity" : "swift-numerics",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-numerics",
-      "state" : {
-        "revision" : "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
-        "version" : "1.1.1"
+      "identity": "swift-numerics",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/apple/swift-numerics",
+      "state": {
+        "revision": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+        "version": "1.1.1"
       }
     },
     {
-      "identity" : "xn-ptts",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/gradium-ai/xn-ptts.git",
-      "state" : {
-        "revision" : "f07d7952db0c6127d5e4bc3f41c82b3304b6b5aa",
-        "version" : "0.4.0"
+      "identity": "xn-ptts",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/gradium-ai/xn-ptts.git",
+      "state": {
+        "revision": "f07d7952db0c6127d5e4bc3f41c82b3304b6b5aa",
+        "version": "0.4.0"
       }
     }
   ],
-  "version" : 2
+  "version": 2
 }
