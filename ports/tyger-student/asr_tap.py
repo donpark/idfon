@@ -158,6 +158,21 @@ class StreamingTapEncoder(nn.Module):
             x = F.relu(x)
         return sub.linear(x.transpose(1, 2).flatten(2))
 
+    def key_mask(self, cache_len):
+        """chunked_limited key mask [T, C+T]: which of the `cache | chunk` keys each query sees.
+
+        Split out of `_attention` so the geometry is assertable without a model: the 42/13
+        defect was a mask that no test compared against the documented block pattern.
+        """
+        C, T = self.cache_size, CHUNK_FRAMES
+        kv = torch.arange(C + T, device=self.query_lo.device, dtype=torch.float32)[None, :]
+        return (
+            (kv >= self.query_lo[:, None])  # left edge of the allowed blocks
+            & (kv <= self.query_hi[:, None])  # end of the query's own block (lookahead)
+            & (kv >= C - cache_len.float())  # drop unfilled cache slots (manager seeds 1)
+            & (self.key_group[None, :] <= self.query_group[:, None])  # chunked_limited blocks
+        )
+
     def _attention(self, attn, h, cache_ch, cache_len):
         C, T = self.cache_size, CHUNK_FRAMES
         heads, kv_heads, hd_ = attn.config.num_attention_heads, attn.config.num_key_value_heads, attn.head_dim
@@ -172,16 +187,7 @@ class StreamingTapEncoder(nn.Module):
         bd = q_v @ rel.permute(0, 2, 3, 1)
         bd = rel_shift(bd, heads, T, 2 * (C + T) - 1)[..., : C + T] * attn.scaling
 
-        # float comparisons: coremltools cannot fold int64 ranges into int32 constants
-        qi = torch.arange(T, device=h.device, dtype=torch.float32)[:, None]
-        kv = torch.arange(C + T, device=h.device, dtype=torch.float32)[None, :]
-        mask = (
-            (kv >= self.query_lo[:, None])  # left edge of the allowed blocks
-            & (kv <= self.query_hi[:, None])  # end of the query's own block (lookahead)
-            & (kv >= C - cache_len.float())  # drop unfilled cache slots (manager seeds 1)
-            & (self.key_group[None, :] <= self.query_group[:, None])  # chunked_limited blocks
-        )
-        bd = bd.masked_fill(~mask[None, None], float("-inf"))
+        bd = bd.masked_fill(~self.key_mask(cache_len)[None, None], float("-inf"))
 
         scores = (q_u @ k.transpose(2, 3)) * attn.scaling + bd
         probs = F.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)

@@ -1,5 +1,14 @@
 # Refit the `l4-streaming` adapter for the shipping 42/13 pass (#102 / #132)
 
+> **2026-11-05 (later) correction: the 42/13 side of every table here is void.** The
+> wrapper's mask was a causal sliding window, not the documented 50-key block mask,
+> so the taps these tables were computed from are not the shipping pass. The refit was
+> redone on the corrected artifact and the gap did **not** close — it widened: product
+> row 79.18% (was 83.22%), refit swap 78.07% (was 82.65%), product recovery 80.61%
+> (was 82.09%), teacher agreement 59.22% (was 56.91%). The 56/0 rows and the
+> qualitative verdict stand. Re-measured tables: `docs/voice-tyger-42-13-remask.md`;
+> this file is kept as written.
+
 Status: **measured** (2026-11-05). The adapter recovers the 56/0 baseline's
 **aggregate** teacher agreement and product bars, but adapter-only training does
 **not** restore decision-level transfer: the refit still changes ~17% of the
