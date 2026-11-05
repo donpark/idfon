@@ -84,6 +84,10 @@ def main():
     ap.add_argument("--device", default="mps")
     ap.add_argument("--coreml", default=None,
                     help="Core ML L4 encoder package for the windowed steady state (10 ms/window)")
+    ap.add_argument("--asr-model", default=None,
+                    help="HF model id to tap INSTEAD of the TYGER bundle (same encoder family, "
+                         "nemotron_asr_streaming_encoder — stream pass only), e.g. "
+                         "nvidia/nemotron-3.5-asr-streaming-0.6b")
     ap.add_argument("--pass", dest="pass_", default="stream", choices=("stream", "windowed"),
                     help="stream = the ASR's cache-aware tap; windowed = the 8 s re-encode")
     args = ap.parse_args()
@@ -91,7 +95,8 @@ def main():
     refs = {p.stem: p for p in sorted(Path(args.shards).glob("*.npz"))}
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    oracle = Oracle(device=args.device).load_bundle()
+    if args.asr_model and args.pass_ != "stream":
+        sys.exit("--asr-model supports --pass stream only (windowed needs the bundle's encode_hidden)")
     from datasets import load_dataset
     from transformers import AutoModel
 
@@ -102,6 +107,17 @@ def main():
         coreml = ct.models.MLModel(args.coreml, compute_units=ct.ComputeUnit.ALL)
     done = 0
     rows = iter(load_dataset(DATASET, split=args.split, streaming=True))
+    if args.asr_model:
+        from transformers import AutoModel as _AutoModel, AutoProcessor
+
+        class _Shim:  # tap() only touches asr.encoder and proc — the Oracle surface
+            pass
+        oracle = _Shim()
+        oracle.device = args.device
+        oracle.proc = AutoProcessor.from_pretrained(args.asr_model)
+        oracle.asr = _AutoModel.from_pretrained(args.asr_model, torch_dtype=torch.float32).eval().to(args.device)
+    else:
+        oracle = Oracle(device=args.device).load_bundle()
     for row in rows:
         if done >= args.sessions:
             break
