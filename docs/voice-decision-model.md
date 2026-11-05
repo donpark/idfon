@@ -390,6 +390,94 @@ per-model fits stay mandatory.
 behavior stays; its endpointing/yield decisions get the model's quality, traits
 stay as the knobs, fail-open stays.
 
+## P6 — the slow tier's structured decision record (2026-11-05, issue #160)
+
+Scope call: **a phase of #132**, not its own epic. It shares the latent, the tap
+adapters, the registry and the teacher hand-off with the fast tier; nothing in
+the measured phase needed a separate corpus or export track. Split it out only
+if a dense event corpus or a separate serving tier appears.
+
+The slow tier answers `docs/voice-decisions.md`'s record shape — `turn_state`
+(choice), `end_of_turn` / `barge_in` / `assistant_backchannel` (`noul`),
+`decision_confidence` (`score`) — **once per clause/turn event**, off the 80 ms
+frame path. Built as three repo scripts, reproducible from a clean checkout:
+`slow_state.py` (serializer), `slow_model.py` (decoders), `slow_train.py`
+(train/report). Each has `--selfcheck`.
+
+**The serialized state.** The fast tier's shared latent `z` (256-d, post
+`out_norm`) plus its own 8-vector, raw frame energy, the rules' `prev_state`, and
+playback/listen mode over a trailing **2 s (25-frame) window**. One `.npz` per
+session holds the stacked windows; `events.jsonl` is the provenance index. A
+record is a pure function of that state — the decoder carries no hidden state and
+never touches the frame loop. Events are deterministic and runtime-detectable:
+energy VAD transitions (`pause`/`onset`) plus **candidate** crossings of the fast
+seam (p_end 0.5, yield/bc 0.2, 2-frame hold), deduped by frame. The candidate
+thresholds are below the rules' decision thresholds; the teacher's frame answer
+is the reference, never the trigger.
+
+**Two decoder shapes, measured.** 
+
+| shape | what it reads | params | fp32 / int8 | CPU p50/p95 per event |
+| --- | --- | ---: | ---: | ---: |
+| fast-floor | the fast seam's own answer at the event | — | — | — |
+| **A: `z-gru`** | trailing `z` + event kind, 1-layer GRU(128) → heads | 150,668 | 0.60 / 0.15 MB | 0.235 / 0.247 ms |
+| B: `state-transformer` | per-frame tokens of `z`+fast8+energy+floor+mode+activity, 2×128 transformer | 310,540 | 1.24 / 0.31 MB | 0.209 / 0.221 ms |
+| B-large | same, 4×256 | 2,199,564 | 8.80 / 2.20 MB | 0.475 / 0.499 ms |
+
+Corpus val (dualturn, 8 sessions / 1644 events; thresholds fitted on the 60-session
+train split, judged on val):
+
+| model | ep AUC | ep agr | barge AUC | bc AUC | **commit AUC** | **pause commit AUC** | state agr |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fast-floor | .940 | .904 | .950 | .938 | .743 | .600 | .950 |
+| z-gru | .934 | .890 | .953 | .938 | **.825** | **.714** | .947 |
+| state-transformer | .934 | .895 | .944 | .936 | .792 | .682 | .943 |
+| state-transformer-large | .939 | .901 | .943 | .938 | .826 | .712 | .951 |
+
+**`commit`** is the slow tier's judgment question: did the teacher emit ENDPOINT
+within 400 ms of this event? It is the pause-vs-completion call, and it is where
+the slow tier earns its place — **+8.2 pts AUC over the fast seam overall,
++11.4 pts at pause events**. Seed stability (seeds 0/1/2, `z-gru`): commit AUC
+.825/.808/.819 (pause .714/.713/.735); small transformer .792/.802/.772 (pause
+.682/.685/.658). The cheap recurrence wins consistently.
+
+Live domain (8 captures / 1131 events, fast adapter `l4-windowed`; per-domain
+leave-one-session-out threshold fit, #145):
+
+| model | ep | barge | bc | commit |
+| --- | ---: | ---: | ---: | ---: |
+| fast-floor | .930 | .984 | .852 | .839 |
+| z-gru | .928 | .987 | .875 | **.856** |
+| state-transformer | .936 | .981 | .867 | .854 |
+| state-transformer-large | .937 | .981 | .862 | .843 |
+
+**Verdict: build shape A (decode from `z`).** It is the smallest artifact, costs
+the same per event as the small transformer (~0.21–0.24 ms), and matches or beats
+the largest shape on the judgment axis. The serialized-state model is *not* worth
+its extra bytes: the small transformer is worse than `z-gru` on commit AUC at
+every seed, and the 2.2M rung only ties it at 0.60 → 8.80 MB and ~2× CPU. Nothing
+in this measurement argues for the Kev-0.8B/4B or d1-omni-600M class; those
+checkpoints were not runnable in this environment and would enter as a much
+larger version of the losing shape.
+
+**Negative results / limits (per #131).**
+
+- The slow tier is **not a replacement for the fast seam**: frame agreement on
+  endpoint/barge/bc is 0.890–0.901 vs the fast floor's 0.904/0.987/0.897 at
+  corpus val (barge/bc effectively tied, endpoint −1.4 pts). It adds a judgment
+  field; the fast seam keeps the frame decisions.
+- The corpus `eot_ch0`/`hold_ch0` labels are **sparse point events** (~0.5% of
+  VAD offsets), not a dense pause-vs-completion target; at pause onsets the
+  teacher's `p_end` even anti-correlates with `eot` within 1.2 s (AUC .34). The
+  measured `commit` label therefore comes from the teacher's own ENDPOINT events
+  within 400 ms, not from those corpus keys.
+- Event triggers are energy-VAD + fast candidates; the corpus VAD is not a
+  runtime signal, so trigger alignment is approximate by construction.
+- Latency was measured on CPU (torch, 1 thread) while the machine was under a
+  load average of ~8 from another agent's MPS job; CPU-time p50/p95 track wall
+  time within 0.01 ms and repeated runs agree, but this is not a quiet-machine
+  figure. No ANE/CoreML/CoreAI export was attempted — that is P7.
+
 ## References
 
 - `docs/voice-tyger-ondevice.md` — per-tier guard numbers, precision rulings, the
@@ -400,3 +488,5 @@ stay as the knobs, fail-open stays.
 - `docs/voice-tyger-streaming-plan.md` — the shared-encoder ruling and the L15 tap.
 - `ports/tyger-mlx/turn_taker.py` — the decision model's exact anatomy (fuse →
   3-layer GRU → five heads).
+- `ports/tyger-student/slow_state.py`, `slow_model.py`, `slow_train.py` — the P6
+  serializer, decoder shapes and their reproducible eval (`--selfcheck` each).
