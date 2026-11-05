@@ -1477,10 +1477,10 @@ $PY ports/tyger-student/cross_gate.py \
 
 # 4. the turn prefix and its parity
 $PY ports/tyger-student/export_asr_tap.py --export --pass shipping --chunk-ms 320 \
-    --precision fp16 --int8 --prefix-layers 4 --out $MAIN/asr-prefix-320
+    --precision fp16 --int8 --prefix-only --depth 4 --out $MAIN/asr-prefix-320
 $PY ports/tyger-student/export_asr_tap.py \
     --gate $MAIN/asr-prefix-320/encoder_prefix4_42-13_320ms_fp16_int8w.mlpackage --gate-full $A320 \
-    --pass shipping --chunk-ms 320 --prefix-layers 4 \
+    --pass shipping --chunk-ms 320 --prefix-only --depth 4 \
     --session-id d622d1e377001bba8c718a2fbdac0b7b --wav-cache $MAIN/asr-tap/wav \
     --json $MAIN/asr-prefix-320/parity.json
 ```
