@@ -30,6 +30,31 @@ registry entry plus labels — not another bolted-on model.
 | `featurize_parakeet.py` | the P5 second-ASR tap builder: `nvidia/parakeet-unified-en-0.6b` per-layer taps on the teacher's frames (same contract as `featurize_tap.py`; one full-context pass per channel extracts all 24 layers — fp32 `--layer` master for training + fp16 per-depth `--sweep` sets for probe.py). Grid measured exact (burst train, row k = k·80 ms); runs in `.venv-nemo` |
 | `agreement.py` | cross-geometry decision agreement (epic #132 P5): two students replayed on the same sessions through the same live rules feedback — A vs teacher, B vs teacher, A vs B (interchangeability behind the seam); per-side traits/temperature knobs |
 | `test_model.py` | the shipped checkpoint-layout pin (student.pt loads by name) + the shared-latent seam smoke |
+| `slow_state.py` | P6 (#160) serializer: fast-tier latent `z` + seam scores + energy/floor/mode over a trailing 2 s window, at deterministic clause/turn events (VAD transitions + fast candidates) → stackable `.npz` state + `events.jsonl`; the record shape lives here too |
+| `slow_model.py` | P6 decoder shapes: `z-gru` (cheap heads over `z` history) and `state-transformer` / `-large` (decision model over the serialized per-frame state) |
+| `slow_train.py` | P6 train/eval: teacher frame agreement, `commit` judgment AUC, per-domain (corpus + live LOSO) calibration, CPU latency and bytes; `--latency-only` |
+
+## The slow tier (P6, #160)
+
+Off the 80 ms frame path: at a clause/turn event, serialize a trailing 2 s window
+of the fast tier's shared latent `z` plus the signals the fast tier already has,
+then decode `docs/voice-decisions.md`'s record (`turn_state` choice, four `noul`
+answers, `decision_confidence` score). The record is a pure function of the
+serialized state — replayable, no hidden live session state.
+
+Measured verdict (`docs/voice-decision-model.md` P6): the cheap `z-gru` decoder
+(0.60 MB fp32 / 0.15 MB int8, ~0.24 ms CPU/event) carries the slow tier's
+judgment (`commit` AUC .825 vs the fast seam's .743; .714 vs .600 at pauses) and
+beats the serialized-state transformer at every measured seed; the large rung
+only ties it at 8.8 MB. The slow tier does **not** replace the fast seam's frame
+answers (endpoint agreement is ~1.4 pts below it) — it adds a judgment field.
+
+```sh
+.venv/bin/python ports/tyger-student/slow_state.py --shards bench-results/tap4-shards/train \
+    --out bench-results/slow/train --student bench-results/shared-consistent-l03/student.pt --tap l4-streaming
+.venv/bin/python ports/tyger-student/slow_train.py --train bench-results/slow/train \
+    --val bench-results/slow/val --live bench-results/slow/live --out bench-results/slow --seed 0
+```
 
 ## Contract (unchanged above the seam)
 
