@@ -383,6 +383,9 @@ final class LiveCall {
                 let peerId = await client.resolvePeerId(peerRef)
                 guard case .dialing(let current) = life.phase, current == peerRef || current == peerId else { return }
                 apply(.resolve(peer: peerId))
+                // Hangup files the health record under the peer: use the
+                // canonical id, not the ref the user dialed by name.
+                callPeer = peerId
                 // Registry entry (parity with core.ts live_start).
                 let identity = (try? await client.status())?.1 ?? "default"
                 let returnAddr = try await client.localEndpointAddr()

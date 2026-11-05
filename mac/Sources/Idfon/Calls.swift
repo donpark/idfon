@@ -141,6 +141,9 @@ final class LiveCall {
     }
 
     private let client = DaemonClient()
+    /// The call's peer as the app knows it, kept past the phase going idle so
+    /// the per-call record files under the id the chat looks up.
+    private var recordPeer: String?
 
     // MARK: - Caller
 
@@ -430,7 +433,11 @@ final class LiveCall {
     /// Runs one transition and its effects, then syncs the crash-recovery
     /// keys (`recoverStaleCall`) to the machine.
     private func apply(_ event: CallLifecycle.Event) {
-        for effect in life.on(event) { run(effect) }
+        let effects = life.on(event)
+        // The record is filed per peer, and the phase is already idle by the
+        // time `stopMedia` runs: keep the call's peer while it exists.
+        if let peer = life.peer { recordPeer = peer }
+        for effect in effects { run(effect) }
         persist()
     }
 
@@ -464,9 +471,14 @@ final class LiveCall {
             videoEnabled = false
             HybridVoice.shared.stop()
             AudioMeter.shared.stop()
+            let peer = recordPeer
+            recordPeer = nil
             Task.detached(priority: .userInitiated) {
                 media_live_stop()
-                Diag.logCallRecord() // the record folds inside the stop: ship once, here
+                // The record folds inside the stop: ship it once to Diag, and
+                // file it with the thread it describes so `/health-check` can
+                // show it later (docs/media-adaptation.md §C1).
+                if let json = Diag.logCallRecord() { HealthCard.store(json, for: peer) }
                 media_live_unsubscribe()
             }
         case .endCue:
@@ -670,6 +682,9 @@ final class VideoCall {
     }
 
     private let client = DaemonClient()
+    /// The call's peer as the app knows it, kept past the phase going idle so
+    /// the per-call record files under the id the chat looks up.
+    private var recordPeer: String?
     /// The peer's stored `EndpointAddr` JSON, fetched once per call (#157).
     private var videoPeerAddr: String?
     private var frameTimer: Timer?
@@ -1097,7 +1112,11 @@ final class VideoCall {
     /// Runs one transition and its effects, then syncs the crash-recovery
     /// keys (`recoverStaleCall`) to the machine.
     private func apply(_ event: CallLifecycle.Event) {
-        for effect in life.on(event) { run(effect) }
+        let effects = life.on(event)
+        // The record is filed per peer, and the phase is already idle by the
+        // time `stopMedia` runs: keep the call's peer while it exists.
+        if let peer = life.peer { recordPeer = peer }
+        for effect in effects { run(effect) }
         persist()
     }
 
@@ -1130,9 +1149,11 @@ final class VideoCall {
             videoEnabled = false
             AudioMeter.shared.stop()
             CameraPusher.shared.stop()
+            let peer = recordPeer
+            recordPeer = nil
             Task.detached(priority: .userInitiated) {
                 media_live_stop()
-                Diag.logCallRecord() // the record folds inside the stop: ship once, here
+                if let json = Diag.logCallRecord() { HealthCard.store(json, for: peer) }
                 media_video_stop()
                 media_live_unsubscribe()
             }

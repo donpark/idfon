@@ -282,7 +282,7 @@ final class ChatStore {
             case .recording(let ticket, _):
                 onBanner?("Received voice message")
                 fetchRecording(ticket: ticket)
-            case .file(let ticket, let name, let sizeBytes):
+            case .file(let ticket, let name, let sizeBytes, _):
                 onBanner?("Received file")
                 fetchFile(ticket: ticket, name: name, sizeBytes: sizeBytes)
             case .artifact:

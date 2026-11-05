@@ -84,14 +84,45 @@ enum HealthCard {
         return try? JSONDecoder().decode(Record.self, from: data)
     }
 
+    /// The running call's record, mid-call. Empty when nothing is sampled
+    /// (the Rust side already knows; a `media_live_state()` gate here once hid
+    /// a live record whose listen leg happened to read 0).
+    static func liveJSON() -> String? {
+        guard let ptr = media_health_live_report() else { return nil }
+        defer { rust_free_string(ptr) }
+        let json = String(cString: ptr)
+        return json.isEmpty ? nil : json
+    }
+
     /// The running call's record when there is one, else this thread's last.
     static func currentJSON(for peerId: String) -> String? {
-        if media_live_state() != 0, let ptr = media_health_live_report() {
-            let json = String(cString: ptr)
-            rust_free_string(ptr)
-            if !json.isEmpty { return json }
+        liveJSON() ?? storedJSON(for: peerId)
+    }
+
+    /// Post the card into a thread: one summary line, then the picture.
+    /// Returns `<live|stored>: <summary>` so a device run can assert both
+    /// which record was read and what the user sees; nil when there is none.
+    @discardableResult
+    static func post(peerId: String, conversation: String?) -> String? {
+        let live = liveJSON()
+        guard let json = live ?? storedJSON(for: peerId), let record = decode(json) else {
+            ChatStore.shared.appendOutgoing(ChatMessage(
+                id: UUID().uuidString, peerId: peerId,
+                kind: .text("No call to report for this thread yet."),
+                outgoing: true, timestamp: Date(), conversation: conversation))
+            return nil
         }
-        return storedJSON(for: peerId)
+        ChatStore.shared.appendOutgoing(ChatMessage(
+            id: UUID().uuidString, peerId: peerId, kind: .text(summary(record)),
+            outgoing: true, timestamp: Date(), conversation: conversation))
+        let posted = "\(live != nil ? "live" : "stored"): \(summary(record))"
+        guard let image = render(record), let url = write(image: image, peerId: peerId) else { return posted }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        ChatStore.shared.appendOutgoing(ChatMessage(
+            id: UUID().uuidString, peerId: peerId,
+            kind: .file(ticket: "", name: url.lastPathComponent, sizeBytes: size, localURL: url),
+            outgoing: true, timestamp: Date(), conversation: conversation))
+        return posted
     }
 
     // MARK: - Text
@@ -99,14 +130,20 @@ enum HealthCard {
     /// One line, complete on its own: the image is the detail, not the only
     /// way to read the numbers (VoiceOver gets this line).
     static func summary(_ r: Record) -> String {
-        let minutes = Double(r.durationMs) / 60_000
         let lost = Double(r.audio.missingFrames) * 20 / 1000
         let path = r.pathSwitches.last.map { $0.relay ? "relay" : "direct \($0.localAddr)" } ?? "no path"
         return String(
-            format: "Call health · %@ — %.1f min, max gap %.1f s, %.0f s lost, %d stalls, RTT %d–%d ms, %.2f %% loss · %@",
-            r.report.verdict, minutes, Double(r.audio.maxGapMs) / 1000, lost,
+            format: "Call health · %@ — %@, max gap %.1f s, %.0f s lost, %d stalls, RTT %d–%d ms, %.2f %% loss · %@",
+            r.report.verdict, span(r.durationMs), Double(r.audio.maxGapMs) / 1000, lost,
             r.audio.stallsOver100ms, r.report.local.rttMsMin, r.report.local.rttMsMax,
             r.report.local.lossPctMean, path)
+    }
+
+    /// A call shorter than a minute reads in seconds: "0.0 min" is not a
+    /// length (a quick tap-and-hangup call showed exactly that).
+    private static func span(_ ms: Int) -> String {
+        let seconds = Double(ms) / 1_000
+        return seconds < 60 ? String(format: "%.0f s", seconds) : String(format: "%.1f min", seconds / 60)
     }
 
     // MARK: - Image
@@ -129,12 +166,11 @@ enum HealthCard {
                 .foregroundColor: UIColor.label,
             ])
 
-            let minutes = Double(r.durationMs) / 60_000
             let lost = Double(r.audio.missingFrames) * 20 / 1000
             let subtitle = String(
-                format: "%@ · %.1f min · max gap %.1f s · %.0f s lost · RTT %d–%d ms · %.2f %% loss",
-                r.context.videoOn ? "video" : "audio",
-                minutes, Double(r.audio.maxGapMs) / 1000, lost,
+                format: "%@ · %@ · max gap %.1f s · %.0f s lost · RTT %d–%d ms · %.2f %% loss",
+                r.context.videoOn ? "video" : "audio", span(r.durationMs),
+                Double(r.audio.maxGapMs) / 1000, lost,
                 r.report.local.rttMsMin, r.report.local.rttMsMax, r.report.local.lossPctMean) as NSString
             subtitle.draw(at: CGPoint(x: 32, y: 66), withAttributes: [
                 .font: UIFont.systemFont(ofSize: 16),
@@ -154,12 +190,16 @@ enum HealthCard {
                 return
             }
 
-            let maxRtt = max(1, r.timeline.map(\.rttMs).max() ?? 1)
+            let rtts = r.timeline.map(\.rttMs)
+            let lo = rtts.min() ?? 0, hi = rtts.max() ?? 0
             func x(_ tMs: Int) -> CGFloat {
                 plot.minX + CGFloat(tMs) / CGFloat(r.durationMs) * plot.width
             }
             func y(_ rtt: Int) -> CGFloat {
-                plot.maxY - 10 - CGFloat(rtt) / CGFloat(maxRtt) * (plot.height - 20)
+                // Scale to the call's own range; a steady RTT is a line through
+                // the middle, not a line lying on the floor.
+                let level = hi > lo ? CGFloat(rtt - lo) / CGFloat(hi - lo) : 0.5
+                return plot.maxY - 10 - level * (plot.height - 20)
             }
 
             // Loss as bars from the bottom edge.

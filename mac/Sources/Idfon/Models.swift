@@ -159,8 +159,9 @@ enum MessageKind {
     /// Voice message: blob ticket + duration (ms) for playback UI.
     case recording(ticket: String, durationMs: Int)
     /// File transfer (§5): blob ticket + display name/size. The downloaded file
-    /// lives in `ChatStore.fileURLs[ticket]`.
-    case file(ticket: String, name: String, sizeBytes: Int)
+    /// lives in `ChatStore.fileURLs[ticket]`; `localURL` is a file that was
+    /// never transferred (the health card's picture, posted in-process).
+    case file(ticket: String, name: String, sizeBytes: Int, localURL: URL? = nil)
     /// A durable agent output the user can open in a detail screen.
     case artifact(Artifact)
     /// A turn that asks about a selection inside an artifact.
@@ -477,7 +478,7 @@ struct ChatMessage: Identifiable {
         switch kind {
         case .text(let text): return text
         case .recording: return "Voice message"
-        case .file(_, let name, _): return name
+        case .file(_, let name, _, _): return name
         case .artifact(let artifact): return artifact.title
         case .reference(let reference):
             return reference.text.isEmpty ? "Asked about an artifact" : reference.text
