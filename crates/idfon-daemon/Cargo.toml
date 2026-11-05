@@ -14,7 +14,7 @@ anyhow = "1"
 axum = "0.8"
 blake3 = "1"
 futures-util = "0.3"
-iroh-gossip = "0.101"
+iroh-gossip = "0.102"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 iroh = "1"
 iroh-blobs = "0.104"
