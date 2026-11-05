@@ -1,8 +1,12 @@
 # Tap-path blockers — review request
 
-Written 2026-11-05 for external review. Scope: replacing the private L4 encoder
-cut in idfon's turn path with a tap (`tap_l4`) read from the ASR's own streaming
-encoder (epic #132, tracked in #102). Every number below is measured in this
+Written 2026-11-05 for external review. **Status: held, not sent.** A first
+oracle review found a defect in our own 42/13 mask implementation (§3) and two
+overstatements (§4, §9); the 42/13 numbers in §2 and §3 are from the defective
+build and are being re-measured. Everything else is current.
+
+Scope: replacing the private L4 encoder cut in idfon's turn path with a tap
+(`tap_l4`) read from the ASR's own streaming encoder (epic #132, tracked in #102). Every number below is measured in this
 repo and reproducible from the scripts named with it. Where something is an
 assumption rather than a measurement, it says so.
 
@@ -39,9 +43,13 @@ Settled before review (measured, not assumed):
 
 ## 2. Blocker A — decision-level interchangeability is not attainable
 
-**Claim we are asking you to check:** with this architecture and training
-procedure, ~15% of decisions move whenever the adapter is retrained, so a
-"identical decisions after the port" acceptance bar can never be met.
+**Claim we are asking you to check:** one adapter-only refit moved ~15% of
+decisions at identical features, so an "identical decisions after the port" bar
+looks unattainable for this recipe. **Review pass 1 correctly objected that this
+is one seed, one recipe, and supports "this refit did not preserve behaviour",
+not "preservation is impossible"** — the training objective (§2.1) does not
+actually enforce agreement with the frozen deployed model, so the experiment
+that would test the strong claim has not been run.
 
 Evidence (`tap_gate.py`, same rules, carried state, same-kind events within
 ±2 frames):
@@ -84,6 +92,26 @@ The shipping pass changes the attention geometry (42 left context, 13 lookahead,
 Re-derived at 42/13: `cache_channel` 42 rows, attention window 50 keys (42 + 8),
 relative-position table 99 rows, mask transcribed as 4 blocks of 14 with all 8
 queries in the last block (all queries see all 50 keys), `cache_len` clamp 42.
+
+**Defect found in our own implementation (2026-11-05, review pass 1).** The
+wrapper asserted that mask in its docstring but implemented a causal sliding
+window instead: `mask &= (kv >= qi) & (kv <= C + qi)`, which at `C=42` lets each
+query see **43** keys and gives the 13-frame lookahead no effect at all. The
+group condition was permissive (all 4 blocks), so the causal clamp was what
+decided. Verified by evaluating the mask directly: reference pass 57 keys/query,
+shipping pass 43 keys/query where the documented geometry is 50.
+
+Fixed by replacing both bounds with per-query block bounds
+(`[(block − left_blocks)·g, end of own block]`), which reduces to the sliding
+window at lookahead 0 — the reference gate is unchanged at 3.53e-05, so the
+56/0 numbers stand. **All 42/13 numbers in §2 and §3 predate the fix and are
+being re-measured**: the re-exported artifact, the pass gate, and the refit all
+have to be redone on features from the corrected mask.
+
+The methodological point survives the bug, and is why it was worth finding: the
+42/13 pass had no independent oracle. A wrong mask still produced
+self-consistent numbers for weeks because nothing compared the graph to a second
+implementation of that pass.
 The subsampling conv2d caches are **bit-identical** across passes (`torch.equal`,
 shape `[1,8,1024]`) because the stage never sees the attention mask; the 8/3/1
 cache-frame derivation is therefore structural, not fitted.
@@ -105,11 +133,22 @@ graph.
    Is that plausible for a 42-vs-56 left-context change, or does it suggest we
    are not matching their mask after all?
 
-## 4. Blocker C — Core ML cannot express our quantization grid
+## 4. Blocker C — our exporter cannot yet express the quantization grid
 
-Three independent int8 failures, all from the same cause: the QAT grid is
-**asymmetric, per-output-unit, group-16**, and `coremltools` offers symmetric
-per-channel / per-block.
+**Corrected after review pass 1.** The earlier claim ("Core ML cannot express
+it") was wrong. `coremltools` 9.0 supports asymmetric weight quantization:
+`OpLinearQuantizerConfig(mode="linear", granularity="per_channel" | "per_block",
+block_size=(1, 16))`. Our own encoder exporter already asks for `mode="linear"`
+(`export_asr_tap.py:112`); the *student* exporter chose `linear_symmetric`
+(`export_coreml.py:60`). So this is a gap in our export configuration, not a
+tool limit — still open is whether an asymmetric per-block grid survives ANE
+placement numerically, and how to reproduce the QAT grid's exact scale/offset
+convention rather than re-quantizing.
+
+The three failures below are real measurements, but they are not one cause: one
+is the student's ONNX group-16 projection before QAT, one is the Core ML
+packaging rung (worst of three: 1.4e-2 / 6.7e-3 / 5.5e-3), and one is encoder
+activation drift.
 
 | artifact | expected | measured | envelope |
 |---|---|---:|---:|
@@ -183,6 +222,19 @@ and what human-rating sample would you consider sufficient before a swap?
   maintainer's checkout): `bench-results/asr-tap/` (artifact + wavs),
   `tap-shipping/`, `shared-shipping-refit/`, `refit-eval/`.
 
+## 8b. Questions added after review pass 1
+
+1. **Can an independent shipping NeMo encoder reproduce our per-chunk outputs
+   and cache transitions — cold start, reset, partial final chunk?** The wrapper
+   cannot validate its own mask, which is exactly how the defect in §3 survived.
+2. **Where do the two feature streams (`hu` microphone, `ha` playback) come
+   from, and what are their real availability timestamps when ASR pauses,
+   resets or drops buffered audio?** One encoder call per hop answers the
+   compute question for `hu` only.
+3. **Which human-visible regressions must stay below which bounds, on an
+   untouched call population?** Teacher agreement near 57% cannot stand in for
+   that product decision.
+
 ## 9. Known limits of this report
 
 - The 42/13 int8 artifact was **regenerated** for the refit run because the
@@ -193,5 +245,20 @@ and what human-rating sample would you consider sufficient before a swap?
   our sample, so it cannot discriminate between candidates.
 - Corpus `eot`/`hold` labels are sparse point events, so "commit" agreement is
   measured against teacher events, not against human annotation.
+- **"Decision agreement" is `Σ matched / Σ max(|events_A|, |events_B|)`**
+  (`tap_gate.py:88–114`), matched same-kind within ±2 frames. It is not frame
+  accuracy and not Jaccard; a timing shift beyond the tolerance counts once as
+  missing and once as spurious. Per-session counts, unmatched events and signed
+  timing deltas are reported alongside it.
+- **No BARGE evidence.** The eight validation shards contain ENDPOINT and
+  BACKCHANNEL reference events only (no BARGE events, no `mode` track), so no
+  barge-in safety claim is supported by any table in this report.
+- **The pass-only effect is 70.6%**, measured on one 96 s session with the
+  reference wrapper. The 83.22% figure is the eight-session artifact comparison
+  and therefore also contains quantization drift; it is not a pass-only number.
+- **Reproduction needs more than this document.** Every artifact named here is
+  gitignored and lives in one maintainer's checkout; an outside reader needs
+  the JSONL/per-session outputs and pinned library revisions to check a number,
+  not a path.
 - The reference pass (56/0) remains the default everywhere; no shipped artifact
   was modified by any of this work.
