@@ -15,6 +15,12 @@ add or materially change a doc, update the index.
 
 ## Checks
 
+- **One iPhone, several threads.** Install and launch through `ios/device.sh`,
+  or wrap any `devicectl` command with `scripts/device-lock.sh <cmd>`. Both take
+  one machine-wide lock (`/tmp/idfon-iphone.lock`), so two threads cannot
+  interleave installs — which otherwise either fails with an SBMainWorkspace
+  denial or silently puts the other thread's build under test.
+
 - Rebuild scope: `docs/build.md` maps a change to the subprojects that must be
   rebuilt. When you change something shared, say which subprojects to rebuild.
 - Rust: `cargo test -p <crate>` and `cargo check --workspace --all-targets`.
