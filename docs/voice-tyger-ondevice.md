@@ -1064,6 +1064,28 @@ ships:
    beside the artifact. The fits here are corpus fits; the live triple is fitted on call
    captures, and a training change requires a re-fit (`calibrate.py --temp-grid`).
 
+### Migration contract, frozen 2026-11-05 (#132 last mile)
+
+Everything below is frozen before any further fit, so a result cannot be improved by
+later choosing a different comparator, policy or data split. Changing any line is a
+decision, recorded in #132, not a detail.
+
+| item | frozen value |
+|---|---|
+| encoder artifact | `bench-results/asr-tap-fixed/encoder_tap_42-13_fp16_int8w.mlpackage`, **593,446,155 B**, 8.92 ms/chunk on host ANE (re-exported 2026-11-05; the pre-fix artifact is kept as `asr-tap-defect-mask/` for comparison and must not be quoted) |
+| pass | NVIDIA 42 left / 13 lookahead / 42-deep cache, int8 weights. The reference pass (56/0) stays the **incumbent comparator**, not the target |
+| student step | **fp32, 5.28 MB**, export parity 2.59e-06 against the 2e-3 envelope. Student int8 is out of scope here (1.07e-2, needs QAT) |
+| calibration | **one** policy per domain, fitted once and then frozen: corpus T=0.9, live T=1.0 / ep .88 / barge .5 / bc .3 (from the corrected-feature refit). No retrospective "corpus vs live" choice per score |
+| decision lattice | **per-frame**, one student step per 80 ms tap row. Routing rows through `TurnRuntime.feed`'s 4-frame hop measured +300 ms mean-of-medians, so it is excluded by evidence, not taste |
+| `left` | `0` — `left` only extrapolates a barge's reported `onset_s` (`rules.py:121`); all three candidate policies are decision-identical, and `0` is the only one consistent with the audio timeline |
+| latency bars | unchanged: mean-of-medians ≤ +160 ms, worst-session ≤ +320 ms. Measured at NVIDIA's 560 ms tier: **+173.9 / +179.9**, 23% of endpoints past +320 ms — the bar is **missed**, and that is the open product call |
+| acceptance data | the 8 corpus sessions and the 13 live captures have now been used for fitting, calibration and bar recuts, so they are **development data** whatever their split name. Any acceptance claim needs sessions none of this touched |
+| barge | **unmeasured**. Zero BARGE events in corpus validation, all three latency captures listen-mode. No barge claim may be made from any table in this document |
+
+What is still required before a swap can be judged: a held-out live set, a barge/overlap
+challenge set with both positive and negative cases, playback-ear parity (in flight), and
+the iPhone two-stream/backlog check. Nothing in the contract above substitutes for those.
+
 ### Negative results and stated skips (this phase)
 
 - **Core ML int8 is not deployable** at 5.5e-3…1.4e-2 (see above). The layout cannot
