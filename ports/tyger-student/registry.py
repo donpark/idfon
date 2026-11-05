@@ -146,4 +146,7 @@ def adapter_by_id(adapter_id):
 ADAPTER_GATE = {
     "l4-windowed": {"endpoint": {"metric": "mse", "max": 0.028}},
     "l4-streaming": {"endpoint": {"metric": "mse", "max": 0.028}},
+    # same tap-information class as the L4s (probe R2 .742 vs .749/.751): the frozen-trunk
+    # adapter-only fit lands at .02435, between l4-windowed .02299 and l4-streaming .02564
+    "parakeet-l12-full": {"endpoint": {"metric": "mse", "max": 0.028}},
 }
