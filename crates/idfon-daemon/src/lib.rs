@@ -2158,49 +2158,38 @@ fn authorize_resource_read(
 /// prefix covers `path`, issued either by this peer (bearer) or by a peer this
 /// peer granted `resource.read` (a delegate, e.g. the edge).
 fn ticket_authorizes(state: &ProviderState, raw: &str, path: &str) -> bool {
-    let Ok(ticket) = serde_json::from_str::<idfon_protocol::CapabilityTicket>(raw) else {
+    // Decoding verifies the issuer's signature.
+    let Ok(ticket) = idfon_core::CapabilityTicket::decode(raw.trim()) else {
         return false;
     };
-    if idfon_core::verify_capability_ticket(&ticket).is_err() {
-        return false;
-    }
-    if Some(ticket.issuer.as_str()) != state.peer_id.as_deref() {
+    if Some(ticket.issuer().as_str()) != state.peer_id.as_deref() {
         // Not a self-issued bearer ticket: the issuer must hold the matching
         // grant. The peer, not the forwarding transport, stays the authority.
         let store = state.store.lock().expect("store mutex poisoned");
         if !has_grant(
             &store,
             &state.identity,
-            &ticket.issuer,
+            &ticket.issuer(),
             &idfon_protocol::Capability::new(CAPABILITY_RESOURCE_READ),
         ) {
             return false;
         }
     }
     if !ticket
-        .capabilities
+        .capabilities()
         .contains(&idfon_protocol::Capability::new(CAPABILITY_RESOURCE_READ))
     {
         return false;
     }
-    if ticket_expired(ticket.expires_at.as_deref()) {
+    if ticket.is_expired(now().parse::<u64>().unwrap_or(0)) {
         return false;
     }
-    if let Some(scope) = &ticket.path_scope {
-        if !path.starts_with(scope.as_str()) {
+    if let Some(scope) = ticket.path_scope() {
+        if !path.starts_with(scope) {
             return false;
         }
     }
     true
-}
-
-/// A missing expiry never expires; epoch seconds or RFC 3339 in the past
-/// expire; any unparseable format is rejected.
-fn ticket_expired(expires_at: Option<&str>) -> bool {
-    let Some(value) = expires_at else {
-        return false;
-    };
-    idfon_core::expiry_passed(value, now().parse::<u64>().unwrap_or(0))
 }
 
 /// `<data_dir>/staging/<identity>/<id>` for a validated relative `id`. This is
@@ -3840,31 +3829,38 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     let receiving_identity =
         request_text(&request.params, "identity").unwrap_or_else(|| "default".into());
     tracing::info!(target: "idfon.daemon", identity = %receiving_identity, message_id = %envelope.message_id, sender = %envelope.sender.peer_id, sender_endpoint = %envelope.sender.endpoint_id, trace = ?envelope.trace, telemetry = ?envelope.telemetry, "message receive authenticated");
-    if let Some(ticket) = &envelope.capability_ticket {
-        if idfon_core::verify_capability_ticket(ticket).is_err()
-            || ticket.issuer
-                != state
-                    .identities
-                    .iter()
-                    .find(|identity| identity.id == receiving_identity)
-                    .and_then(|identity| identity.public_key.clone())
-                    .unwrap_or_default()
+    if let Some(token) = &envelope.capability_ticket {
+        let Ok(ticket) = idfon_core::CapabilityTicket::decode(token) else {
+            return error_response(
+                request.id.clone(),
+                &request.method,
+                ErrorCode::CapabilityDenied,
+                "invalid or expired capability ticket".into(),
+                false,
+            );
+        };
+        if ticket.issuer()
+            != state
+                .identities
+                .iter()
+                .find(|identity| identity.id == receiving_identity)
+                .and_then(|identity| identity.public_key.clone())
+                .unwrap_or_default()
             || ticket
-                .subject
+                .subject()
                 .as_deref()
                 .is_some_and(|subject| subject != envelope.sender.peer_id)
             || ticket
-                .conversation
-                .as_deref()
+                .conversation()
                 .is_some_and(|scope| Some(scope) != envelope.conversation.as_deref())
             || !ticket
-                .capabilities
+                .capabilities()
                 .contains(&idfon_protocol::Capability::MessageReceive)
             || state
                 .revoked_tickets
                 .iter()
-                .any(|id| id == &ticket.ticket_id)
-            || ticket.expires_at.as_deref().is_some_and(expiry_is_past)
+                .any(|id| id == ticket.ticket_id())
+            || ticket.is_expired(now().parse::<u64>().unwrap_or(0))
         {
             return error_response(
                 request.id.clone(),
@@ -3961,8 +3957,12 @@ fn receive_message(request: &Request, store: &Arc<Mutex<Store>>) -> Response {
     // capabilities as grants (message.receive, live.audio.subscribe, …) so
     // replies and live sessions work across daemons, where pairing creates
     // no grants (no shared store). Same dedup rule as above.
-    if let Some(ticket) = &envelope.capability_ticket {
-        for capability in &ticket.capabilities {
+    if let Some(ticket) = envelope
+        .capability_ticket
+        .as_deref()
+        .and_then(|token| idfon_core::CapabilityTicket::decode(token).ok())
+    {
+        for capability in ticket.capabilities() {
             if !state.grants.iter().any(|grant| {
                 grant.identity == receiving_identity
                     && grant.subject == envelope.sender.peer_id
@@ -4202,7 +4202,7 @@ fn capability_ticket_issue(request: &Request, store: &Arc<Mutex<Store>>) -> Resp
     };
     let conversation = request_text(&request.params, "conversation");
     let path_scope = request_text(&request.params, "path_scope");
-    let ticket = idfon_core::issue_capability_ticket_with_voice(
+    let Ok(ticket) = idfon_core::issue_capability_ticket_with_voice(
         &key,
         subject,
         conversation,
@@ -4211,7 +4211,15 @@ fn capability_ticket_issue(request: &Request, store: &Arc<Mutex<Store>>) -> Resp
         ticket_id,
         None,
         path_scope,
-    );
+    ) else {
+        return error_response(
+            request.id.clone(),
+            &request.method,
+            ErrorCode::InvalidRequest,
+            "invalid subject or expiry".into(),
+            false,
+        );
+    };
     success(request, serde_json::json!({"ticket": ticket}))
 }
 
@@ -6894,15 +6902,6 @@ fn record_state_event(
     }
 }
 
-fn expiry_is_past(value: &str) -> bool {
-    if let Ok(seconds) = value.parse::<u64>() {
-        return seconds <= now().parse::<u64>().unwrap_or(u64::MAX);
-    }
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|timestamp| timestamp <= chrono::Utc::now())
-        .unwrap_or(true)
-}
-
 fn success(request: &Request, result: serde_json::Value) -> Response {
     Response {
         version: PROTOCOL_VERSION,
@@ -7457,8 +7456,8 @@ mod tests {
             Some(expiry.clone()),
             "t-scoped",
             Some("/fs/public".into()),
-        );
-        let raw = serde_json::to_string(&scoped).unwrap();
+        ).unwrap();
+        let raw = scoped.token();
         assert!(ticket_authorizes(&state, &raw, "/fs/public/x"));
         assert!(!ticket_authorizes(&state, &raw, "/fs/private/x"));
 
@@ -7471,8 +7470,8 @@ mod tests {
             vec![read.clone()],
             Some(expiry.clone()),
             "t-delegate",
-        );
-        let delegated_raw = serde_json::to_string(&delegated).unwrap();
+        ).unwrap();
+        let delegated_raw = delegated.token();
         assert!(!ticket_authorizes(&state, &delegated_raw, "/fs/x"));
 
         // ...but granting the issuer `resource.read` authorizes it, and revoking
@@ -7508,10 +7507,10 @@ mod tests {
             vec![idfon_protocol::Capability::new("message.receive")],
             Some(expiry),
             "t-wrong",
-        );
+        ).unwrap();
         assert!(!ticket_authorizes(
             &state,
-            &serde_json::to_string(&wrong).unwrap(),
+            &wrong.token(),
             "/fs/x"
         ));
 
@@ -7521,10 +7520,10 @@ mod tests {
             vec![read],
             Some("1".to_owned()),
             "t-expired",
-        );
+        ).unwrap();
         assert!(!ticket_authorizes(
             &state,
-            &serde_json::to_string(&expired).unwrap(),
+            &expired.token(),
             "/fs/x"
         ));
     }
@@ -8119,12 +8118,13 @@ mod tests {
     fn capability_ticket_issue_and_revoke_persist() {
         let dir = temp_dir("capability-ticket");
         let store = Arc::new(Mutex::new(Store::load(&dir).unwrap()));
+        let subject = idfon_core::peer_id(&idfon_core::generate_identity());
         let issue = dispatch(
             Request {
                 version: PROTOCOL_VERSION,
                 id: "issue".into(),
                 method: "capability.ticket".into(),
-                params: serde_json::json!({"identity":"default", "subject":"peer-1", "capabilities":["message.receive"], "ticket_id":"ticket-1", "expires_at":"2099-01-01T00:00:00Z"}),
+                params: serde_json::json!({"identity":"default", "subject": subject, "capabilities":["message.receive"], "ticket_id":"ticket-1", "expires_at":"2099-01-01T00:00:00Z"}),
             },
             &store,
         );
@@ -8133,8 +8133,9 @@ mod tests {
             ResponseBody::Success { result, .. } => result["ticket"].clone(),
             ResponseBody::Failure { .. } => panic!("ticket issuance failed"),
         };
-        let ticket: idfon_protocol::CapabilityTicket = serde_json::from_value(ticket).unwrap();
-        assert_eq!(idfon_core::verify_capability_ticket(&ticket), Ok(()));
+        let ticket: idfon_core::CapabilityTicket = serde_json::from_value(ticket).unwrap();
+        assert_eq!(ticket.subject(), Some(subject.clone()));
+        assert_eq!(ticket.ticket_id(), "ticket-1");
         let revoke = dispatch(
             Request {
                 version: PROTOCOL_VERSION,
@@ -8260,7 +8261,7 @@ mod tests {
             ],
             None,
             "tk-bootstrap",
-        );
+        ).unwrap();
         let message = idfon_core::sign_message_with_ticket(
             &sender_key,
             "endpoint-a",
@@ -8336,7 +8337,7 @@ mod tests {
             vec![idfon_protocol::Capability::MessageReceive],
             None,
             "tk-split",
-        );
+        ).unwrap();
         let message = idfon_core::sign_message_with_ticket(
             &sender_key,
             "endpoint-a",
@@ -8429,7 +8430,7 @@ mod tests {
             vec![idfon_protocol::Capability::MessageReceive],
             None,
             "tk-drift",
-        );
+        ).unwrap();
         let message = idfon_core::sign_message_with_ticket(
             &sender_key,
             "endpoint-b", // drifted claim: not the record's endpoint
@@ -8489,7 +8490,7 @@ mod tests {
             revoked_at: None,
         });
         drop(state);
-        let rejected = |ticket: idfon_protocol::CapabilityTicket, message_id: &str| {
+        let rejected = |ticket: idfon_core::CapabilityTicket, message_id: &str| {
             let message = idfon_core::sign_message_with_ticket(
                 &sender_key,
                 "endpoint-a",
@@ -8522,14 +8523,15 @@ mod tests {
                 }
             ));
         };
+        let other_id = idfon_core::peer_id(&idfon_core::generate_identity());
         rejected(
             idfon_core::issue_capability_ticket(
                 &receiver_key,
-                Some("different-peer".into()),
+                Some(other_id),
                 vec![idfon_protocol::Capability::MessageReceive],
                 None,
                 "ticket-subject",
-            ),
+            ).unwrap(),
             "message-subject",
         );
         rejected(
@@ -8539,7 +8541,7 @@ mod tests {
                 vec![idfon_protocol::Capability::MessageReceive],
                 Some("2000-01-01T00:00:00Z".into()),
                 "ticket-expired",
-            ),
+            ).unwrap(),
             "message-expired",
         );
         rejected(
@@ -8549,7 +8551,7 @@ mod tests {
                 vec![idfon_protocol::Capability::MessageReceive],
                 None,
                 "ticket-issuer",
-            ),
+            ).unwrap(),
             "message-issuer",
         );
         std::fs::remove_dir_all(dir).unwrap();

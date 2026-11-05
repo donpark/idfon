@@ -1,29 +1,27 @@
 import Foundation
 
-/// Peer-scoped capability tickets minted out-of-band by the receiving side.
 /// Mac port of iOS `CapabilityTickets`: a holder that gates ingress (the Eve
 /// agent's `eve-idfon`) rejects a message with no holder-signed,
 /// subject-bound `message.receive` ticket. Provisioning is operator-driven —
-/// `-pair-ticket <agent-peer-id> <json|file>` (IdfonApp automation) stores it
+/// `-pair-ticket <agent-peer-id> <token|file>` (IdfonApp automation) stores it
 /// here, keyed by the peer id `sendText` passes as `to`.
 enum CapabilityTickets {
     private static let defaultsKey = "idfon.capabilityTickets"
 
-    /// The ticket for `peer` as a JSON object ready for the `capability_ticket`
-    /// param of `message.send`, or nil when none has been provisioned.
+    /// The ticket for `peer`, ready for the `capability_ticket` param of
+    /// `message.send`, or nil when none has been provisioned.
     static func ticket(for peer: String) -> AnyEncodable? {
-        guard let json = table()[peer], let data = json.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(AnyEncodable.self, from: data)
+        table()[peer].map { AnyEncodable($0) }
     }
 
-    /// Persist a holder-issued ticket (raw JSON text) for `peer`. Rejects
-    /// anything that is not a JSON object; returns false on rejection.
+    /// Persist a holder-issued ticket token for `peer`. Rejects anything that
+    /// is not a readable `rcan` token; returns false on rejection.
     @discardableResult
-    static func store(_ json: String, for peer: String) -> Bool {
-        guard let data = json.data(using: .utf8),
-              (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else { return false }
+    static func store(_ token: String, for peer: String) -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard CapabilityTicketToken.parse(trimmed) != nil else { return false }
         var next = table()
-        next[peer] = json
+        next[peer] = trimmed
         UserDefaults.standard.set(next, forKey: defaultsKey)
         return true
     }
@@ -35,26 +33,25 @@ enum CapabilityTickets {
     }
 
     /// Whether a holder-issued ticket is stored for `peer`. Distinguishes an
-    /// agent/holder contact (even one whose ticket has no `voice` block) from
-    /// an ordinary peer, so the call resolver picks the client cascade instead
-    /// of the silent video-call fallback.
+    /// agent/holder contact (even one whose ticket carries no `voice` block)
+    /// from an ordinary peer, so the call resolver picks the client cascade
+    /// instead of the silent video-call fallback.
     static func hasTicket(for peer: String) -> Bool { table()[peer] != nil }
 
-    /// The stored ticket as raw JSON text (e.g. as ring auth for the edge's
-    /// `/_push/*` routes), or nil when none has been provisioned.
-    static func rawTicketJSON(for peer: String) -> String? { table()[peer] }
+    /// The stored token (e.g. as ring auth for the edge's `/_push/*` routes),
+    /// or nil when none has been provisioned.
+    static func rawTicket(for peer: String) -> String? { table()[peer] }
 
     private static func table() -> [String: String] {
         UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
     }
 
     /// Voice routing the target's holder signed into its capability ticket, or
-    /// nil for a legacy ticket with no `voice` block (callers fall back to the
-    /// old name/profile heuristic).
+    /// nil for a ticket with no `voice` block (callers fall back to the old
+    /// name/profile heuristic).
     static func voiceRoute(for peer: String) -> VoiceRoute? {
-        guard let json = table()[peer], let data = json.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let voice = object["voice"] as? [String: Any],
+        guard let token = table()[peer],
+              let voice = CapabilityTicketToken.parse(token)?.document["voice"] as? [String: Any],
               let rawMode = voice["mode"] as? String,
               let mode = VoiceRoute.Mode(rawValue: rawMode) else { return nil }
         let delegate = voice["delegate"] as? [String: Any]
@@ -68,19 +65,20 @@ enum CapabilityTickets {
             model: voice["model"] as? String,
             delegatePeerId: delegate?["peer_id"] as? String,
             delegateContact: jsonString(delegate?["contact"]),
-            delegateTicket: jsonString(delegate?["ticket"]),
+            // The delegate's own ticket rides as a token string.
+            delegateTicket: delegate?["ticket"] as? String,
             stt: (voice["stt"] as? String).flatMap(VoiceHalf.init(rawValue:)),
             tts: (voice["tts"] as? String).flatMap(VoiceHalf.init(rawValue:)))
     }
 }
 
-/// Holder-signed voice routing (`capability_ticket.voice`).
 /// Which side owns one half of the speech pipeline.
 enum VoiceHalf: String {
     case server
     case client
 }
 
+/// Holder-signed voice routing (`capability_ticket.voice`).
 struct VoiceRoute: Equatable {
     enum Mode: String {
         /// The target's holder terminates audio with a full-duplex model session.
@@ -102,7 +100,7 @@ struct VoiceRoute: Equatable {
     let delegatePeerId: String?
     /// Delegate endpoint address JSON when `mode == .delegated`.
     let delegateContact: String?
-    /// Delegate capability ticket JSON when `mode == .delegated`.
+    /// Delegate capability ticket token when `mode == .delegated`.
     let delegateTicket: String?
     /// Which side runs STT/TTS; nil = the mode's default.
     let stt: VoiceHalf?

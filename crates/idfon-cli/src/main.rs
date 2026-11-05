@@ -381,8 +381,9 @@ struct SendArgs {
     conversation: Option<String>,
     #[arg(long = "idempotency-key")]
     idempotency_key: Option<String>,
-    #[arg(long = "capability-ticket", value_parser = parse_json_value)]
-    capability_ticket: Option<Value>,
+    /// Holder-issued capability ticket token (see `idfon access ticket`).
+    #[arg(long = "capability-ticket")]
+    capability_ticket: Option<String>,
     #[arg(long)]
     retries: Option<u64>,
     /// Delivery policy: failover (default), one, or all
@@ -461,8 +462,9 @@ enum RoomCmd {
         text: String,
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
-        #[arg(long = "capability-ticket", value_parser = parse_json_value)]
-        capability_ticket: Option<Value>,
+        /// Holder-issued capability ticket token (see `idfon access ticket`).
+        #[arg(long = "capability-ticket")]
+        capability_ticket: Option<String>,
         #[arg(long)]
         retries: Option<u64>,
         /// Delivery policy applied independently to each room member
@@ -1055,7 +1057,7 @@ fn run() -> io::Result<()> {
                     send_rpc(
                         socket,
                         "room.send",
-                        json!({"room": room, "text": text, "idempotency_key": key, "capability_ticket": capability_ticket, "retries": retries, "delivery": {"mode": delivery, "endpoint_ids": endpoint_ids, "device_class": device_class}}),
+                        json!({"room": room, "text": text, "idempotency_key": key, "capability_ticket": capability_ticket.map(Value::String), "retries": retries, "delivery": {"mode": delivery, "endpoint_ids": endpoint_ids, "device_class": device_class}}),
                         identity,
                         cli.stdin_json,
                     )?,
@@ -1915,10 +1917,6 @@ fn result_usize(response: &Response, key: &str) -> usize {
     }
 }
 
-fn parse_json_value(value: &str) -> Result<Value, String> {
-    serde_json::from_str(value).map_err(|error| format!("invalid JSON: {error}"))
-}
-
 fn request_error(response: &Response) -> String {
     match &response.body {
         ResponseBody::Failure { error, .. } => format!("{:?}: {}", error.code, error.message),
@@ -2035,7 +2033,7 @@ fn send_payload(
             send_rpc(
                 socket,
                 "message.send",
-                json!({"to": peer, "text": args.text, "idempotency_key": key, "conversation": args.conversation, "context": args.context, "capability_ticket": args.capability_ticket, "retries": args.retries, "delivery": {"mode": args.delivery, "endpoint_ids": args.endpoint_ids, "device_class": args.device_class}}),
+                json!({"to": peer, "text": args.text, "idempotency_key": key, "conversation": args.conversation, "context": args.context, "capability_ticket": args.capability_ticket.clone().map(Value::String), "retries": args.retries, "delivery": {"mode": args.delivery, "endpoint_ids": args.endpoint_ids, "device_class": args.device_class}}),
                 identity,
                 stdin_json,
             )?,

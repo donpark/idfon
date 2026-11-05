@@ -345,11 +345,11 @@ capability ticket subject-bound to *its* id, not the Mac's.
    scripts/radio-serve.sh "tech talk" <ios-id>
    ```
 
-4. Install the ticket (the serve output has the exact JSON):
+4. Install the ticket (the serve output has the exact token):
 
    ```sh
    xcrun devicectl device process launch --console <udid> com.idfon.ios -- \
-     -pair-ticket <holder endpoint id> '<ticket JSON>' -pair-exit
+     -pair-ticket <holder endpoint id> '<ticket token>' -pair-exit
    ```
 
 5. Launch normally and call it: a `broadcast` contact renders as a one-way

@@ -33,7 +33,7 @@ if [ -n "$eve_ticket" ]; then
   printf '%s' "$eve_ticket" | jq -e . >/dev/null || { echo "invalid Eve ticket JSON" >&2; exit 2; }
   # A contact/endpoint ticket carries an id; a capability ticket does not and
   # would add a peer with a null endpoint. Capability tickets install through
-  # the app's `-pair-ticket <peer> <json>` instead.
+  # the app's `-pair-ticket <peer> <token>` instead.
   printf '%s' "$eve_ticket" | jq -e '.account_id // .endpoint_id // .id' >/dev/null \
     || { echo "--eve-ticket needs a contact ticket (holder.ticket line 1), not a capability ticket" >&2; exit 2; }
 fi

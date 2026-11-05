@@ -72,8 +72,10 @@ The CLI splits transfers into 200 KB chunks:
 
 ## Retry behavior
 
-A `fetch` may arrive before the sender's first pkarr publish has propagated
-to the n0 discovery infrastructure. `blob::fetch` therefore retries with a
+`put` waits (up to 5 s) for its endpoint to come online before minting the
+ticket, so the ticket carries a usable relay/direct address. A `fetch` may
+still arrive before the sender's first pkarr publish has propagated to the
+n0 discovery infrastructure. `blob::fetch` therefore retries with a
 fresh endpoint (fresh DNS resolver) up to six times, one second apart, with
 a 30 s timeout per download attempt.
 
@@ -152,7 +154,7 @@ idfon --socket /tmp/idfon-b/idfond.sock access allow --subject "$A_PID" \
 
 Alternatively, a sender can present a capability ticket issued by the
 receiver instead of a local grant: `idfon access ticket --subject SENDER_PEER_ID`
-prints the ticket JSON, which `send --capability-ticket` accepts; a verified
+prints the ticket token, which `send --capability-ticket` accepts; a verified
 ticket satisfies the receive gate and materializes grants on first delivery.
 
 `scripts/test-e2e.sh` exercises the whole signaled flow (pairing,

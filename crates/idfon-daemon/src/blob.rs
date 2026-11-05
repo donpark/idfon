@@ -5,7 +5,9 @@ use std::{
 
 use iroh::protocol::Router;
 use iroh::{address_lookup::memory::MemoryLookup, Endpoint};
-use iroh_blobs::{store::fs::FsStore, ticket::BlobTicket, BlobsProtocol, ALPN as BLOBS_ALPN};
+use iroh_blobs::{
+    store::fs::FsStore, ticket::BlobTicket, BlobFormat, BlobsProtocol, ALPN as BLOBS_ALPN,
+};
 
 struct BlobProvider {
     endpoint: Endpoint,
@@ -58,12 +60,25 @@ pub async fn put(root: PathBuf, data: Vec<u8>) -> anyhow::Result<(BlobTicket, us
         .add_slice(&data)
         .with_named_tag(format!("resource-{}", blake3::hash(&data)))
         .await?;
+    // The ticket carries the address, so it must be minted after the endpoint
+    // knows one (same wait as the other bind sites). A ticket built mid-connect
+    // has no route and forces the receiver into the retry loop in `fetch`.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), endpoint.online()).await;
     let ticket = BlobTicket::new(endpoint.addr(), content.hash, content.format);
     Ok((ticket, data.len()))
 }
 
 pub async fn fetch(ticket: String, root: PathBuf) -> anyhow::Result<PathBuf> {
     let ticket: BlobTicket = ticket.parse()?;
+    // A collection ticket (what `sendme send` prints) names a HashSeq, not a
+    // file: `export` would write the 32-byte entries. Refuse instead of
+    // handing the caller that as the payload.
+    if ticket.format() != BlobFormat::Raw {
+        anyhow::bail!(
+            "ticket names a {:?} blob; only single-file (Raw) tickets are supported",
+            ticket.format()
+        );
+    }
     // The sender's first pkarr publish may still be propagating when the fetch
     // arrives; the lookup then fails and DNS negative caching would poison
     // retries on the same endpoint. Rebind a fresh endpoint per attempt so
@@ -125,4 +140,27 @@ pub fn run_put(root: PathBuf, data: Vec<u8>) -> anyhow::Result<(BlobTicket, usiz
     std::thread::spawn(move || runtime().block_on(put(root, data)))
         .join()
         .map_err(|_| anyhow::anyhow!("blob worker panicked"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fails before any network work: a collection ticket is never kept.
+    #[test]
+    fn rejects_collection_ticket() {
+        let id = iroh::SecretKey::generate().public();
+        let hashseq = BlobTicket::new(
+            iroh::EndpointAddr::new(id),
+            iroh_blobs::Hash::new(b"entries"),
+            BlobFormat::HashSeq,
+        );
+        let error = runtime()
+            .block_on(fetch(
+                hashseq.to_string(),
+                std::env::temp_dir().join("idfon-blob-guard-test"),
+            ))
+            .unwrap_err();
+        assert!(error.to_string().contains("Raw"), "{error}");
+    }
 }

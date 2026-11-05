@@ -191,8 +191,9 @@ async fn edge_accepts_a_capability_ticket() {
         vec![Capability::new("web.fetch")],
         Some(expiry.to_string()),
         "edge-test",
-    );
-    let ticket_json = serde_json::to_string(&ticket).unwrap();
+    )
+    .expect("mints");
+    let ticket_json = ticket.token();
     let (status, body) = http_get(
         handle.addr,
         &path,
@@ -223,8 +224,9 @@ async fn edge_accepts_a_capability_ticket() {
         vec![Capability::new("message.receive")],
         Some(expiry.to_string()),
         "edge-test",
-    );
-    let wrong_json = serde_json::to_string(&wrong_cap).unwrap();
+    )
+    .expect("mints");
+    let wrong_json = wrong_cap.token();
     let (status, _) = http_get(handle.addr, &path, &[("x-idfon-ticket", wrong_json)]).await;
     assert_eq!(status, 401, "missing capability is rejected");
 
@@ -235,8 +237,9 @@ async fn edge_accepts_a_capability_ticket() {
         vec![Capability::new("web.fetch")],
         Some("1".to_owned()),
         "edge-test",
-    );
-    let expired_json = serde_json::to_string(&expired).unwrap();
+    )
+    .expect("mints");
+    let expired_json = expired.token();
     let (status, _) = http_get(handle.addr, &path, &[("x-idfon-ticket", expired_json)]).await;
     assert_eq!(status, 401, "expired ticket is rejected");
 

@@ -4,7 +4,7 @@ members = ["crates/idfon-protocol", "crates/idfon-telemetry", "crates/idfon-core
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
-version = "0.9.0"
+version = "0.9.1"
 
 [profile.release]
 # thin, not fat: fat LTO doubles every rlib (bitcode) and makes each relink of
