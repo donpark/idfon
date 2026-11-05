@@ -136,7 +136,7 @@ final class LiveActivityController: NSObject {
         var stats: String? {
             switch self {
             case .audio(let call): return call.mediaHint
-            case .video: return nil
+            case .video(let call): return call.mediaHint
             case .voice(let session): return session.stats
             }
         }

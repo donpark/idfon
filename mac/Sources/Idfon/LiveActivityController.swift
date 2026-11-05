@@ -131,7 +131,7 @@ final class LiveActivityController {
             switch self {
             // The listen leg's state and carrying path (media-adaptation §C2).
             case .audio(let call): return call.mediaHint
-            case .video: return nil
+            case .video(let call): return call.mediaHint
             case .voice(let session): return session.stats
             }
         }

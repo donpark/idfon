@@ -429,9 +429,17 @@ Measure first — everything below needs the same instrumentation to prove out.
    pkarr/DNS — that is what failed with "No addressing information available"
    while interfaces flapped (see the tracking issue), and it is why first dials
    can take 10–20 s. Fix: merge the contact's stored `endpoint-addr` into the
-   subscribe by id. Also unbuilt here: DRED as blackhole fill (the encoder does
-   not publish its DRED cover in the catalog, so the subscriber cannot tell a
-   DRED stream from a PLC-only one).
+   subscribe by id.
+   **DRED as blackhole fill — experiment knobs, off by default.** The encoder
+   does not publish its DRED cover in the catalog, so a subscriber cannot tell
+   a DRED stream from a PLC-only one; widening the window blind would turn
+   every hole into that much PLC buzz. Both ends therefore take an explicit
+   operator setting: `IDFON_DRED_MS` on the holder's Opus publish (80–1000 ms,
+   affordable only above ~48 kbps — libopus drops DRED below that) and
+   `-concealms <ms>` on the listening app (sets `IDFON_CONCEAL_MS`, the
+   decoder's fill window, 120–1000 ms, default 120). Pair them to measure
+   whether a 1 s DRED cover actually halves a 2 s cell-handover hole; neither
+   changes behaviour unless set.
 3. **Turn on Opus FEC + DTX for calls** (change, cheap). Two flags in
    `AudioOptions` at the call sites (idfon-live-media/src/lib.rs:554,
    iroh-c-ffi/src/media.rs:374). Verify loss resilience on an induced-loss
