@@ -7,6 +7,11 @@ description = "Identity, capabilities, signed paths, relay selection, and transp
 
 [dependencies]
 ed25519-dalek = { version = "3", features = ["rand_core"] }
+# Signed capability delegations. Pinned to a rev because the released 0.4.1 is
+# wire v1 and upstream's `main` is the v2 rewrite (base32 tokens, chained
+# delegations) that has not been published yet. Bump deliberately, not by a
+# lockfile refresh: the token format is an auth wire contract.
+rcan = { git = "https://github.com/n0-computer/rcan", rev = "302152f3d3bb2d22a2975951c24fb52c81f4f414" }
 blake3 = "1"
 iroh = "1.0"
 idfon-protocol = { path = "../idfon-protocol" }

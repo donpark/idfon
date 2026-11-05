@@ -15,13 +15,21 @@ struct RingTicket {
     /// The `caller_id` the ring carries.
     var callerId: String { subject ?? issuer }
 
+    /// Accepts the stored ticket: an `rcan` token, or a legacy JSON ticket
+    /// object (kept so older provisioning still rings).
     init?(json: String) {
-        guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
-              let issuer = object["issuer"] as? String, !issuer.isEmpty
-        else { return nil }
-        self.raw = json
-        self.issuer = issuer
-        self.subject = (object["subject"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let object = try? JSONSerialization.jsonObject(with: Data(trimmed.utf8)) as? [String: Any],
+           let issuer = object["issuer"] as? String, !issuer.isEmpty {
+            self.raw = json
+            self.issuer = issuer
+            self.subject = (object["subject"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return
+        }
+        guard let fields = CapabilityTicketToken.parse(trimmed) else { return nil }
+        self.raw = trimmed
+        self.issuer = fields.issuer
+        self.subject = fields.subject
     }
 
     /// The ticket to present: the stored contact ticket (the callee's

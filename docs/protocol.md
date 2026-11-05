@@ -90,7 +90,7 @@ reciprocal peer always takes the default.
 
 `contact.export` wraps a contact ticket in a vCard 3.0 card and
 `contact.import` unwraps one (codec: `crates/idfon-protocol/src/vcf.rs`). The
-card carries the ticket twice: `X-IDFON-TICKET` (ticket JSON) and
+card carries the ticket twice: `X-IDFON-TICKET` (ticket token) and
 `URL:idfon://add/<base64url>` — a deep link that survives an AirDrop
 round-trip through the Contacts app, which strips unknown X- properties but
 keeps standard `URL` fields. `peer.add` also accepts a `contact_ticket`
@@ -106,7 +106,7 @@ keeps standard `URL` fields. `peer.add` also accepts a `contact_ticket`
 
 | method | params | result |
 |---|---|---|
-| `message.send` | `{ to, text, idempotency_key, capability_ticket?, retries? }` | `{ authenticated, message_id, operation_id, status: "queued" }` — returns immediately; delivery proceeds in the daemon (retries per `retries`), confirm via `operation.wait`. Sender needs a `message.send` grant for the peer (own daemon); the receiver needs `message.receive` for the sender. A successful send auto-establishes the local receive side of the reply path. |
+| `message.send` | `{ to, text, idempotency_key, capability_ticket?, retries? }` (`capability_ticket` is the holder's rcan token string) | `{ authenticated, message_id, operation_id, status: "queued" }` — returns immediately; delivery proceeds in the daemon (retries per `retries`), confirm via `operation.wait`. Sender needs a `message.send` grant for the peer (own daemon); the receiver needs `message.receive` for the sender. A successful send auto-establishes the local receive side of the reply path. |
 | `message.receive` | — | receive-side helper used by the transport; not called by shells. |
 
 The `wait`/`events` methods below are how received messages surface: a
@@ -151,7 +151,7 @@ this daemon may receive from the subject. Subjects are peer endpoint ids
 | `access.check` | `{ subject, capability }` | `{ allowed, identity, subject, capability }` |
 | `access.grant` | `{ subject, capability }` | `{ grant }` |
 | `access.revoke` | `{ subject, capability }` | `{}` |
-| `capability.ticket` | `{ subject, capabilities: [..], expires_at? }` | `{ ticket }` (signed, subject-bound; a verified ticket satisfies the receive gate) |
+| `capability.ticket` | `{ subject, capabilities: [..], expires_at?, path_scope?, conversation? }` | `{ ticket }` — an `rcan` delegation token (base32), subject-bound; a signature-valid ticket satisfies the receive gate |
 | `capability.ticket.revoke` | `{ ticket_id }` | `{ ticket_id, issuer, revoked }` |
 
 Capabilities are **open namespaced strings**, not a closed enum: the built-ins

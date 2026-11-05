@@ -32,7 +32,7 @@ use bytes::Bytes;
 use http::{HeaderMap, Method, Response, StatusCode, Uri};
 use hyper::body::Incoming;
 use idfon_gateway::{LocalRoute, ResponseBody};
-use idfon_protocol::CapabilityTicket;
+use idfon_core::CapabilityTicket;
 
 /// Ring fan-out boundary: Apple's APNs in production, a recorder in tests.
 pub trait ApnsSender: Send + Sync + 'static {
@@ -401,25 +401,17 @@ impl PushRoutes {
         ticket_raw: Option<String>,
         body: Bytes,
     ) -> Response<ResponseBody> {
-            let Some(ticket) = ticket_raw.and_then(|raw| {
-                serde_json::from_str::<CapabilityTicket>(&raw).ok()
-            }) else {
+            let Some(ticket) = ticket_raw.and_then(|raw| CapabilityTicket::decode(raw.trim()).ok())
+            else {
                 return json(StatusCode::UNAUTHORIZED, "missing or invalid ticket");
             };
-            if idfon_core::verify_capability_ticket(&ticket).is_err() {
-                return json(StatusCode::UNAUTHORIZED, "ticket signature invalid");
-            }
             // Expired tickets are refused; a missing expiry is accepted — the
             // ring right follows the contact itself, which is long-lived.
-            if ticket
-                .expires_at
-                .as_deref()
-                .is_some_and(|at| idfon_core::expiry_passed(at, now_seconds()))
-            {
+            if ticket.expires_at().is_some_and(|at| at <= now_seconds()) {
                 return json(StatusCode::UNAUTHORIZED, "ticket expired");
             }
-            let issued_by_ref = same_ref(&ticket.issuer, account);
-            if !self.allow(&ticket.issuer) {
+            let issued_by_ref = same_ref(&ticket.issuer(), account);
+            if !self.allow(&ticket.issuer()) {
                 return json(StatusCode::TOO_MANY_REQUESTS, "rate limited");
             }
             let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
@@ -473,14 +465,14 @@ impl PushRoutes {
                     // the ref's contact ticket); a caller self-issued statement
                     // is accepted too — identified and rate-limited, so a plain
                     // paired peer can ring before a contact ticket exists.
-                    if !issued_by_ref && !same_ref(&ticket.issuer, caller_id) {
+                    if !issued_by_ref && !same_ref(&ticket.issuer(), caller_id) {
                         return json(
                             StatusCode::FORBIDDEN,
                             "ticket issued by neither this ref nor the caller",
                         );
                     }
                     // A subject-bound ticket rings only its subject's calls.
-                    if let Some(subject) = &ticket.subject {
+                    if let Some(subject) = &ticket.subject() {
                         if subject != caller_id {
                             return json(StatusCode::FORBIDDEN, "ticket subject mismatch");
                         }
@@ -616,7 +608,7 @@ mod tests {
         ticket: Option<&CapabilityTicket>,
         body: serde_json::Value,
     ) -> (StatusCode, serde_json::Value) {
-        let ticket_raw = ticket.map(|ticket| serde_json::to_string(ticket).unwrap());
+        let ticket_raw = ticket.map(|ticket| ticket.token());
         let response = block_on(route.handle_body(
             account,
             path.trim_start_matches("/_push/"),
@@ -647,6 +639,7 @@ mod tests {
             expires_at,
             "test-ticket",
         )
+        .expect("mints")
     }
 
     #[test]
@@ -717,7 +710,7 @@ mod tests {
             &routes,
             &account,
             "/_push/ring",
-            Some(&self_ticket(&callee, Some("other-caller".to_owned()), None)),
+            Some(&self_ticket(&callee, Some(idfon_core::peer_id(&stranger)), None)),
             body,
         );
         assert_eq!(status, StatusCode::FORBIDDEN);

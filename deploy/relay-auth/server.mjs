@@ -9,8 +9,8 @@
 //   owner      an identity homed on this relay ("claiming" it). Bootstraps by
 //              signing a challenge with its identity key (one of
 //              IDFON_RELAY_ISSUERS); may admit/revoke callers of that identity.
-//   non-owner  a caller admitted by a signed, caller-bound grant (the idfon
-//              CapabilityTicket `relay.use`, minted by an owner). Keeps its own
+//   non-owner  a caller admitted by a signed, caller-bound grant (an `rcan`
+//              delegation carrying `relay.use`, minted by an owner). Keeps its own
 //              lease alive by refreshing; the grant is bootstrap/recovery only.
 //
 // Trust boundaries (all fail closed):
@@ -34,6 +34,8 @@ import http from "node:http";
 import https from "node:https";
 import pathModule from "node:path";
 import { pathToFileURL } from "node:url";
+
+import { decodeRelayGrant } from "./rcan.mjs";
 
 const OWNER_PROOF_PREFIX = "idfon-relay-owner/1";
 const NONCE_TTL_MS = 5 * 60 * 1000;
@@ -67,27 +69,6 @@ export function loadConfig(env = process.env) {
 const days = (v) => Math.round(Number(v) * 24 * 60 * 60 * 1000);
 const hours = (v) => Math.round(Number(v) * 60 * 60 * 1000);
 
-// --- canonical grant bytes (mirrors idfon-core `ticket_unsigned`) -----------
-// serde_json::Value maps are BTreeMaps: keys serialize ALPHABETICALLY, and
-// absent optionals (path_scope / voice / relay) are omitted. Pinned by the
-// golden vector in crates/idfon-core and test.mjs here.
-export function canonicalGrantBytes(g) {
-  const o = {
-    capabilities: g.capabilities ?? [],
-    conversation: g.conversation ?? null,
-    expires_at: g.expires_at ?? null,
-    issuer: String(g.issuer ?? "").toLowerCase(),
-    subject: g.subject ?? null,
-    ticket_id: g.ticket_id,
-  };
-  if (g.path_scope != null) o.path_scope = g.path_scope;
-  if (g.relay != null) o.relay = g.relay;
-  if (g.voice != null) o.voice = g.voice;
-  const sorted = {};
-  for (const k of Object.keys(o).sort()) sorted[k] = o[k];
-  return Buffer.from(JSON.stringify(sorted), "utf8");
-}
-
 export function verifyEd25519(pubHex, message, sigHex) {
   if (!/^[0-9a-f]{64}$/i.test(pubHex) || !/^[0-9a-f]{128}$/i.test(sigHex)) {
     return false;
@@ -102,19 +83,6 @@ export function verifyEd25519(pubHex, message, sigHex) {
   } catch {
     return false;
   }
-}
-
-// --- expiry ----------------------------------------------------------------
-// Mirrors idfon_core::expiry_passed: epoch seconds or RFC 3339; unparseable
-// counts as expired (fail closed).
-export function expiryPassed(expiresAt, nowMs = Date.now()) {
-  if (expiresAt == null) return true;
-  const seconds = Number(expiresAt);
-  if (Number.isFinite(seconds) && String(expiresAt).trim() !== "") {
-    return seconds * 1000 <= nowMs;
-  }
-  const parsed = Date.parse(String(expiresAt));
-  return Number.isNaN(parsed) || parsed <= nowMs;
 }
 
 const normalizeEndpoint = (v) => String(v ?? "").trim().toLowerCase();
@@ -175,21 +143,24 @@ function dropTokens(state, pred) {
 }
 
 // --- grant (bootstrap credential) -----------------------------------------
-export function verifyGrant(state, grant) {
-  if (!grant || typeof grant !== "object") return "malformed grant";
-  const subject = normalizeEndpoint(grant.subject);
-  if (!validEndpoint(subject)) return "grant subject is not an endpoint id";
-  if (!state.config.issuers.has(String(grant.issuer ?? "").toLowerCase())) {
+// A grant is an `rcan` delegation token (see rcan.mjs): the audience is the
+// caller's endpoint id, the capability is relay.use, expiry travels in the
+// signed envelope. Returns null when admitted, else the rejection reason.
+export function verifyGrant(state, token) {
+  if (typeof token !== "string" || token.trim() === "") return "malformed grant";
+  let grant;
+  try {
+    grant = decodeRelayGrant(token);
+  } catch {
+    return "malformed grant";
+  }
+  if (!validEndpoint(grant.audienceHex)) return "grant subject is not an endpoint id";
+  if (!state.config.issuers.has(grant.issuerHex)) {
     return "grant issuer is not a trusted owner of this relay";
   }
-  if (!Array.isArray(grant.capabilities) || !grant.capabilities.includes("relay.use")) {
-    return "grant lacks the relay.use capability";
-  }
-  if (expiryPassed(grant.expires_at)) return "grant expired";
-  if (state.revoked_tickets.includes(grant.ticket_id)) return "grant revoked";
-  if (!verifyEd25519(grant.issuer, canonicalGrantBytes(grant), grant.signature)) {
-    return "grant signature invalid";
-  }
+  if (grant.expiresAt != null && grant.expiresAt * 1000 <= Date.now()) return "grant expired";
+  if (grant.ticketId && state.revoked_tickets.includes(grant.ticketId)) return "grant revoked";
+  if (!grant.signatureValid) return "grant signature invalid";
   return null;
 }
 
@@ -322,14 +293,15 @@ export function createApp(config) {
         const body = await readBody(req);
         const problem = verifyGrant(state, body.grant);
         if (problem) return deny(problem);
-        const endpoint = normalizeEndpoint(body.grant.subject);
+        const grant = decodeRelayGrant(body.grant);
+        const endpoint = normalizeEndpoint(grant.audienceHex);
         state.entries[endpoint] = {
           ...(state.entries[endpoint] ?? {}),
           role: "caller",
-          identity: String(body.grant.issuer).toLowerCase(),
+          identity: grant.issuerHex,
           account: body.account ?? null,
           label: body.label ?? null,
-          ticket_id: body.grant.ticket_id ?? null,
+          ticket_id: grant.ticketId ?? null,
           lease_expires: Date.now() + config.callerLeaseMs,
           updated: Date.now(),
         };
@@ -373,10 +345,11 @@ export function createApp(config) {
         if (body.grant) {
           const problem = verifyGrant(state, body.grant);
           if (problem) return deny(problem);
-          if (normalizeEndpoint(body.grant.subject) !== endpoint) {
+          const grant = decodeRelayGrant(body.grant);
+          if (normalizeEndpoint(grant.audienceHex) !== endpoint) {
             return deny("grant subject does not match endpoint id");
           }
-          ticketId = body.grant.ticket_id ?? ticketId;
+          ticketId = grant.ticketId ?? ticketId;
         }
         const leaseMs = body.lease_days ? days(Number(body.lease_days)) : config.callerLeaseMs;
         // Never SHORTEN a live lease: a re-admit with the default lease once

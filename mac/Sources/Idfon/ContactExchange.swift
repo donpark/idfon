@@ -43,10 +43,12 @@ enum ContactExchange {
         }
         guard let contactData = try? JSONSerialization.data(withJSONObject: contact),
               let contactJSON = String(data: contactData, encoding: .utf8) else { return nil }
-        let capabilityJSON = (object["capability"] as? [String: Any]).flatMap { capability in
-            (try? JSONSerialization.data(withJSONObject: capability))
-                .flatMap { String(data: $0, encoding: .utf8) }
-        }
+        // A ticket is an rcan token string; legacy links embedded a JSON object.
+        let capabilityJSON = (object["capability"] as? String)
+            ?? (object["capability"] as? [String: Any]).flatMap { capability in
+                (try? JSONSerialization.data(withJSONObject: capability))
+                    .flatMap { String(data: $0, encoding: .utf8) }
+            }
         let auth = (object["auth"] as? [String: Any]).flatMap { auth -> AddAuth? in
             guard let kind = auth["kind"] as? String, let url = auth["url"] as? String else { return nil }
             return AddAuth(

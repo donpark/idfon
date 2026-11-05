@@ -191,7 +191,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
         }
         if let i = args.firstIndex(of: "-pair-ticket"), args.count > i + 2 {
-            storeCapabilityTicket(peer: args[i + 1], jsonOrPath: args[i + 2])
+            storeCapabilityTicket(peer: args[i + 1], tokenOrPath: args[i + 2])
         }
         // Public edge endpoint + requester credential (docs/idfon-edge.md P4).
         // `-edgeurl <url> <ticket>` (ticket positionally) or
@@ -409,23 +409,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         ])
     }
 
-    /// `-pair-ticket <agent-peer-id> <ticket-json|ticket-file>`: persist a
-    /// ticket minted by the peer's holder (`eve-idfon ticket --subject
+    /// `-pair-ticket <agent-peer-id> <token|token-file>`: persist a ticket
+    /// token minted by the peer's holder (`eve-idfon ticket --subject
     /// <this-app's-peer-id>`) so outbound turns pass its ingress gate. The id
     /// must be the one the app paired the agent under — the `id` field of the
     /// `-pair` EndpointAddr JSON, which is what `sendText` passes as `to`.
-    private func storeCapabilityTicket(peer: String, jsonOrPath: String) {
-        let json: String
-        if jsonOrPath.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") {
-            json = jsonOrPath
-        } else if let contents = try? String(contentsOfFile: jsonOrPath, encoding: .utf8) {
-            json = contents
+    private func storeCapabilityTicket(peer: String, tokenOrPath: String) {
+        let trimmed = tokenOrPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token: String
+        if CapabilityTicketToken.parse(trimmed) != nil {
+            token = trimmed
+        } else if let contents = try? String(contentsOfFile: trimmed, encoding: .utf8) {
+            token = contents
         } else {
-            idfonError("idfon ticket failed: not JSON or a readable file")
+            idfonError("idfon ticket failed: not an rcan token or a readable file")
             return
         }
-        guard CapabilityTickets.store(json, for: peer) else {
-            idfonError("idfon ticket failed: not a JSON object")
+        guard CapabilityTickets.store(token, for: peer) else {
+            idfonError("idfon ticket failed: not an rcan ticket token")
             return
         }
         idfonLog("idfon ticket stored for peer \(peer.prefix(16))")

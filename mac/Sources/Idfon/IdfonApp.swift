@@ -394,9 +394,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `-sendfile <peer> <path>` drives the real attachment path with no clicks
     /// (see `Automation.swift` / `scripts/mac-e2e.sh`).
     private func runAutomationIfRequested() {
-        // `-pair-ticket <peer-ref> <json|file>`: persist a capability ticket
-        // minted by the peer's holder so outbound sends pass its ingress gate
-        // (mac port of the iOS AppDelegate `-pair-ticket` flow).
+        // `-pair-ticket <peer-ref> <token|file>`: persist a capability ticket
+        // token minted by the peer's holder so outbound sends pass its ingress
+        // gate (mac port of the iOS AppDelegate `-pair-ticket` flow).
         let args = CommandLine.arguments
         if let index = args.firstIndex(of: "-trust-enroll"), args.count > index + 1 {
             AutoEnroll.trust(args[index + 1])
@@ -404,20 +404,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let index = args.firstIndex(of: "-pair-ticket"), args.count > index + 2 {
             let peer = args[index + 1]
-            let jsonOrPath = args[index + 2]
-            let json: String
-            if jsonOrPath.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") {
-                json = jsonOrPath
-            } else if let contents = try? String(contentsOfFile: jsonOrPath, encoding: .utf8) {
-                json = contents
+            let tokenOrPath = args[index + 2].trimmingCharacters(in: .whitespacesAndNewlines)
+            let token: String
+            if CapabilityTicketToken.parse(tokenOrPath) != nil {
+                token = tokenOrPath
+            } else if let contents = try? String(contentsOfFile: tokenOrPath, encoding: .utf8) {
+                token = contents
             } else {
-                Automation.mark("pair-ticket FAIL not JSON or a readable file")
+                Automation.mark("pair-ticket FAIL not an rcan token or a readable file")
                 return
             }
-            if CapabilityTickets.store(json, for: peer) {
+            if CapabilityTickets.store(token, for: peer) {
                 Automation.mark("pair-ticket stored for peer \(peer)")
             } else {
-                Automation.mark("pair-ticket FAIL not a JSON object")
+                Automation.mark("pair-ticket FAIL not an rcan ticket token")
             }
         }
         if let check = Automation.pendingHealthCheck {
