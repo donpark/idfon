@@ -1132,6 +1132,148 @@ tools/asr-tap-latency/.build/release/asr-tap-latency \
     --sessions 2026-10-26T20:17:43Z:1114 --modes paced
 ```
 
+### The 320 ms tier's decision cost (2026-11-05, #132)
+
+**Verdict first: the 320 ms tier is not decision-neutral, and it does not fire earlier —
+it churns and skews late. With the deployed `l4-streaming` adapter and the frozen corpus
+calibration, 86.1% of events survive a ±2-frame same-kind match between 560-artifact and
+320-artifact taps (272/316; 81.6% at T=1, the uncalibrated table convention). That is a
+12.9 pt miss of the 99% interchangeability bar for a 0.6% median cosine drift per frame
+(0.9937) — the tier's perturbation is small but lands where the endpoint decision lives. Teacher event agreement falls 3.0 pts (60.76% → 57.73%), the product bars barely
+move, and the swap is therefore a product call, not a free latency win. No refit was run;
+the cost of one is at the end.**
+
+Direction is the part a single agreement number would hide. At the frozen calibration,
+of 202 endpoints matched within ±10 frames: **34 fire earlier, 129 on the same frame, 39
+later**; 28 of the 215 560-endpoints have no 320 counterpart inside ±2 frames and 22 320
+endpoints are new at that tolerance. Fifteen of the 28 losses come back as 3–10-frame
+(240–800 ms) shifts in the wider match, so they are moved, not vanished; **13 are gone at
+±10**. That is churn plus a late skew, not a systematic early cut — which matters because
+an early-firing tier that loses correct endpoints would be a different (and worse) answer.
+
+**What was featurized, and the frame grid (measured, not assumed).** The 320 artifact was
+re-exported with the same command as the latency probe (the earlier `asr-tap-320ms/` path
+was gitignored and did not survive): **593,311,138 B**, chunk mel 32 + 9 context → 4 kept
+rows per call, cache 42, pass 42/13. Eight val sessions through the artifact, both ears,
+`--frames 2248` — the same 8 sessions and frame counts as `tap-shipping-fixed/artifact`
+(24.0 min audio, 17,984 frame-pairs per ear). Featurization is through the artifact as
+served (int8 weights + fp16 compute), not a torch simulation.
+
+The tier changes how many rows one encoder call releases, so the grid was established
+before any comparison:
+
+| lag (rows) | −2 | −1 | **0** | +1 | +2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `hu` cos p50 / p05 | 0.945 / 0.180 | 0.964 / 0.321 | **0.994 / 0.958** | 0.971 / 0.322 | 0.957 / 0.180 |
+| `ha` cos p50 / p05 | 0.890 / 0.158 | 0.936 / 0.304 | **0.994 / 0.959** | 0.940 / 0.304 | 0.893 / 0.158 |
+
+Lag 0 wins by 4.5 cos points at p05 and loses 0.6 at p50, so an 80 ms slip would show.
+Two further checks: the 560 side re-emitted through the same path is **bit-identical** to
+the stored `tap-shipping-fixed/artifact` shards (`max|d| = 0.0`), and every label,
+`teacher`, `energy`, `prev_state` and event array is `np.array_equal` between the 320 and
+560 shard sets. Per-session drift (320 vs 560): `hu` cos p50 0.9889–0.9983, `ha`
+0.9898–0.9972 — no session is a sick outlier.
+
+**Same-adapter decision comparison (`tap_gate.py`, ±2 frames, same-kind, carried state).**
+
+| configuration | events | aligned | A↔B | teacher A (560) → B (320) |
+| --- | ---: | ---: | ---: | --- |
+| refit adapter, T=1 (uncalibrated) | 293 | 239 | **81.57%** | 59.22% (183/309) → 57.10% (177/310) |
+| **refit adapter, frozen corpus (T=.9, ep .90)** | 316 | 272 | **86.08%** | **60.76% (192/316) → 57.73% (183/317)** |
+| pre-refit adapter, T=1 (fitted on 56/0) | 285 | 226 | **79.30%** | 59.87% (182/304) → 54.13% (164/303) |
+
+Controls on the same 8 sessions, same checkpoint, to place those numbers:
+
+| comparison | what differs | aligned | A↔B |
+| --- | --- | ---: | ---: |
+| 560 artifact ↔ itself | nothing | 290/290 | **100.00%** |
+| fp32 ↔ int8 artifact | weight grid only | 262/295 | **88.81%** |
+| 56/0 shards ↔ 560 artifact | the pass (published row) | 235/301 | **78.07%** |
+
+The tier (86.08%) sits between weight quantization (88.81%) and the pass swap (78.07%),
+and it does so with *less* feature drift than quantization (cos p50 0.9937 vs 0.9826) —
+decision agreement is not monotone in cosine, which is why the direction table below, not
+the aggregate, carries the finding. The calibration choice moves the pair by
+4.5 pts, so one policy per domain (the frozen contract) stays mandatory.
+
+**Per kind and direction** (refit adapter; `only_A` = the 560 side fires it and the 320
+side does not, `only_B` = the 320 side adds one; "agree" is per-kind aligned ÷ max(A,B)):
+
+| kind | calibration | A | B | aligned | only_A | only_B | B earlier / same / later | agree | ±10 recovered (earlier/same/later) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- |
+| ENDPOINT | frozen | 215 | 209 | 187 | 28 | 22 | 25 / 129 / 33 | 87.0% | +15 (34/129/39) |
+| BACKCHANNEL | frozen | 97 | 96 | 85 | 12 | 11 | 4 / 73 / 8 | 87.6% | +7 (7/73/12) |
+| ENDPOINT | T=1 | 193 | 194 | 154 | 39 | 40 | 19 / 103 / 32 | 79.4% | +31 (31/103/51) |
+| BACKCHANNEL | T=1 | 97 | 97 | 85 | 12 | 12 | 4 / 73 / 8 | 87.6% | +5 (8/73/9) |
+
+**Teacher-relative product bars** (`harness.py`, 8 sessions, 44 eot, 1 onset, 375 bc;
+`ep_lat_s` is the mean of per-session endpoint medians against the teacher's turn ends):
+
+| feature source | ep_lat_s | early | miss | bc prec | bc rec |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| teacher | 0.48 | 10 | 4 | 0.24 | 0.33 |
+| 560, T=1 | 0.47 | 8 | 6 | 0.27 | 0.33 |
+| 320, T=1 | 0.40 | 8 | **3** | 0.23 | **0.23** |
+| 560, frozen corpus | 0.30 | 10 | 3 | 0.26 | 0.29 |
+| 320, frozen corpus | 0.34 | **8** | 3 | 0.25 | 0.28 |
+
+So the quality cost is not a cliff: at the frozen calibration the 320 tier fires two fewer
+premature endpoints, misses the same number, loses one backchannel point, and its endpoint
+median is +40 ms. The 10-pt backchannel-recall drop at T=1 is the one row where an
+uncalibrated threshold punishes the tier, and the corpus fit absorbs it — another reason
+the frozen policy is the one to quote.
+
+Per session (refit adapter, frozen calibration; `tA/tB` are the teacher-event agreements):
+
+| session | frames | A | B | aligned | only_A | only_B | agree | tA / tB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 14b6b0b1… | 2248 | 68 | 60 | 52 | 16 | 8 | 76.5% | 40 / 31 |
+| 7e412007… | 2248 | 32 | 32 | 31 | 1 | 1 | 96.9% | 27 / 29 |
+| 9d18c769… | 2248 | 57 | 58 | 54 | 3 | 4 | 93.1% | 45 / 44 |
+| ab39a952… | 2248 | 25 | 25 | 24 | 1 | 1 | 96.0% | 10 / 10 |
+| ba20e232… | 2248 | 30 | 30 | 23 | 7 | 7 | 76.7% | 19 / 18 |
+| d0cabd7d… | 2248 | 50 | 49 | 42 | 8 | 7 | 84.0% | 25 / 26 |
+| d622d1e3… | 2248 | 28 | 31 | 27 | 1 | 4 | 87.1% | 12 / 12 |
+| f3ca6a93… | 2248 | 22 | 20 | 19 | 3 | 1 | 86.4% | 14 / 13 |
+
+**What this does and does not decide.** It decides the question the latency probe left
+open: the tier's information loss (3 future rows instead of 6, 240 ms instead of 480) moves
+~14% of decisions and costs ~3 pts of teacher event agreement. It does not measure the
+manager's delivery at this tier (already measured — +100.9 ms mean-of-medians, 0/10 past
++320) or WER, and it runs no training. No number here is a latency measurement; the
+featurization ran on an M4 Pro at load average ~2–5, and every comparison is a content
+comparison on the same 80 ms grid.
+
+**If the latency win is worth paying for, this is the bill.** A refit would re-target the
+adapter on 320-artifact taps with the committed recipe: 60 train + 8 val sessions
+featurized through the 320 artifact (~10 min on this host), adapter-only on the frozen
+trunk, 20 epochs (~16 min; the last refit's mtimes, 11:02 → 11:28, are the same shape),
+then recalibrate and re-gate. No new data, no trunk fit, no QAT. It cannot close the 99%
+A↔B gap — the features differ by construction, so a 320-trained adapter is a new decision
+surface — and it must therefore be judged by teacher agreement and the product bars
+against the 560 tier, not by interchangeability with it.
+
+Reproduce (artifacts and shards are gitignored; the 560 artifact and shard sets are
+untouched):
+
+```sh
+PY=ports/tyger-student/.venv/bin/python
+MAIN=/Users/don/dev/idfon/bench-results
+$PY ports/tyger-student/export_asr_tap.py --export --pass shipping --chunk-ms 320 \
+    --precision fp16 --int8 --out bench-results/asr-tap-320
+$PY ports/tyger-student/pass_gate.py --emit-shards bench-results/tap-shipping-320 \
+    --pass shipping --chunk-ms 320 --split val --shards $MAIN/tap4-shards/val \
+    --sessions 8 --frames 2248 \
+    --artifact bench-results/asr-tap-320/encoder_tap_42-13_320ms_fp16_int8w.mlpackage
+$PY ports/tyger-student/tap_gate.py --student $MAIN/shared-shipping-refit-fixed/student.pt \
+    --tap l4-streaming --shards-a $MAIN/tap-shipping-fixed/artifact \
+    --shards-b bench-results/tap-shipping-320 --per-kind --temp 0.9 --ep-thr 0.90
+$PY ports/tyger-student/gate.py --shards bench-results/tap-shipping-320 \
+    --student $MAIN/shared-shipping-refit-fixed/student.pt --tap l4-streaming --temp 0.9 --ep-thr 0.90
+$PY ports/tyger-student/harness.py --shards bench-results/tap-shipping-320 \
+    --student $MAIN/shared-shipping-refit-fixed/student.pt --tap l4-streaming --temp 0.9 --ep-thr 0.90
+```
+
 ### The playback ear: `ha` from the same encoder (2026-11-05, #132/#102)
 
 **Verdict first: yes — the playback ear can move off the cut at the same fidelity as the
