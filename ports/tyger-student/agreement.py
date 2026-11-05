@@ -37,6 +37,9 @@ def main():
     ap.add_argument("--ep-thr", type=float, default=0.9146)
     ap.add_argument("--barge-thr", type=float, default=0.5)
     ap.add_argument("--bc-thr", type=float, default=0.5)
+    ap.add_argument("--thr-a", default=None, metavar="EP,BARGE,BC",
+                    help="model A's own traits knobs (per-model traits; default: the shared knobs)")
+    ap.add_argument("--thr-b", default=None, metavar="EP,BARGE,BC", help="model B's own traits knobs")
     ap.add_argument("--ep-deb", type=int, default=2)
     ap.add_argument("--barge-deb", type=int, default=2)
     ap.add_argument("--bc-deb", type=int, default=2)
@@ -52,6 +55,8 @@ def main():
         mb = TempScaled(mb, args.temp_b)
     oracle = Oracle(device="cpu")  # rules only; each student is its own chain
     thr = (args.ep_thr, args.barge_thr, args.bc_thr)
+    thr_a = tuple(float(x) for x in args.thr_a.split(",")) if args.thr_a else thr
+    thr_b = tuple(float(x) for x in args.thr_b.split(",")) if args.thr_b else thr
     deb = (args.ep_deb, args.barge_deb, args.bc_deb)
 
     shard_b = {os.path.splitext(os.path.basename(p))[0]: f
@@ -68,8 +73,8 @@ def main():
             print(f"  {sid[:16]}… no recorded teacher events, skipped", flush=True)
             continue
         ref = list(zip(events[0].tolist(), events[1].tolist()))
-        ev_a = student_events(ma, oracle, frames, 15, thr, deb)
-        ev_b = student_events(mb, oracle, shard_b[sid], 15, thr, deb)
+        ev_a = student_events(ma, oracle, frames, 15, thr_a, deb)
+        ev_b = student_events(mb, oracle, shard_b[sid], 15, thr_b, deb)
         n += 1
         line = []
         for key, x, y in (("a_teacher", ev_a, ref), ("b_teacher", ev_b, ref), ("a_b", ev_a, ev_b)):

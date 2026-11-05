@@ -23,6 +23,8 @@ registry entry plus labels — not another bolted-on model.
 | `oracle.py` | the tyger-s2s seam (reference chain + rules + Mimi decode), one env contract |
 | `probe.py` | the tap probe survey (#132 P0): per-tap ridge probes (R²/cosine) of the teacher's 8-vector per decision axis, held-out sessions; the tap-quality table that drives the per-axis adapter loss weights (`bench-results/tap-probes.md`, findings in `docs/voice-decision-model.md` P2) |
 | `featurize_tap.py` | rebuild a shard set's `hu`/`ha` from the streaming (cache-aware) encoder tap or the windowed re-encode at any layer — keeps the teacher's 8-vectors/events/labels; the tap shard builder (`tap4-shards`, `l4-shards`) |
+| `featurize_parakeet.py` | the P5 second-ASR tap builder: `nvidia/parakeet-unified-en-0.6b` per-layer taps on the teacher's frames (same contract as `featurize_tap.py`; one full-context pass per channel extracts all 24 layers — fp32 `--layer` master for training + fp16 per-depth `--sweep` sets for probe.py). Grid measured exact (burst train, row k = k·80 ms); runs in `.venv-nemo` |
+| `agreement.py` | cross-geometry decision agreement (epic #132 P5): two students replayed on the same sessions through the same live rules feedback — A vs teacher, B vs teacher, A vs B (interchangeability behind the seam); per-side traits/temperature knobs |
 | `test_model.py` | the shipped checkpoint-layout pin (student.pt loads by name) + the shared-latent seam smoke |
 
 ## Contract (unchanged above the seam)
@@ -42,7 +44,8 @@ instantiated by `model.py`'s `SharedLatentStudent`:
 - **Adapters** (`registry.ADAPTERS`) map one tap's two streams into the fuse
   width — one per (layer, pass): `l15-windowed`, `l4-windowed`, `l4-streaming`
   (the deploy target), `l24-streaming`, `l15-streaming` (declared, extraction
-  unwired). `kind: "aux"` is reserved for auxiliary-signal adapters (#131).
+  unwired), `parakeet-l12-full` (the second ASR, #132 P5). `kind: "aux"` is
+  reserved for auxiliary-signal adapters (#131).
 - **One shared causal latent `z`** (width-256 2-layer GRU over the summed fuse
   inputs) and **one decoder** (out_norm + registry heads) behind the unchanged
   8-vector seam. Every adapter trains toward the same decision endpoint; deploy
@@ -53,6 +56,42 @@ instantiated by `model.py`'s `SharedLatentStudent`:
   implemented by `train_shared.py` (baseline + formula live there).
 - The existing `Student` is untouched — its checkpoint layout is pinned by
   `test_model.py` (the shipped tiers load by name).
+
+### Second-ASR portability (epic #132 P5)
+
+A new ASR joins the shared geometry with **an adapter + a calibration fit only** —
+nothing behind the seam is re-tuned (`train_shared.py --adapter-only TAP` freezes
+the latent + decoder + heads; `calibrate.py` fits that adapter's temperature and
+threshold knobs; `agreement.py` measures the decisions).
+
+- **The pick:** `nvidia/parakeet-unified-en-0.6b` (Unified-FastConformer-RNNT,
+  24×1024-d, x8 subsampling = the 80 ms decision grid; NVIDIA Open Model License).
+  Genuinely different family from the Nemotron streaming ASR; unified streaming+offline
+  in one checkpoint. NeMo runs on macOS/MPS for encoder taps (RNNT decode does not —
+  taps are all we need): `uv venv .venv-nemo` + `pip install nemo_toolkit[asr]`.
+- **Tap equivalents are measured, not numbered:** the per-depth probe sweep
+  (`bench-results/parakeet-tap-probes.md`, 68 sessions, same split convention as
+  `tap-probes.md`) peaks **mid-encoder (L9–L13)** — depth fraction does not port.
+  L12 wins the probe mean (.554 vs the Nemotron `l4-streaming` .564, `l15-windowed`
+  .632); bc is the weak axis everywhere (.390 max @L6 vs .457 @L15 Nemotron).
+- **Result (adapter-only through the frozen λ=0.3 geometry):** seam head MSEs
+  .0086/.0050/.0027/.0071 pass the universal gates; endpoint .02435 sits between
+  the Nemotron L4 taps (.02299/.02564) under the same tap-bounded .028 ceiling
+  (`ADAPTER_GATE`). Agreement vs teacher 52.10% → **56.84% calibrated** (T=0.7,
+  0.93/0.5/0.4). Cross-geometry vs the Nemotron path: **61.0% raw / 67.7%
+  calibrated** — at product config the paths agree with each other at parity with
+  the Nemotron path's own teacher agreement (67.85%). Harness vs teacher:
+  endpoint latency −0.05 s, early +2 / miss +1 of 44, false barges 7 vs 31 (−24),
+  bc recall −.06 (the known weak axis).
+- **Budget:** a new ASR costs one adapter (525 K params, 2.0 MB fp32 inside the
+  5.3 MB single-adapter artifact) + a ~200 B traits fit + tap extraction
+  (~15 s per 3-min session; encoder pass 0.3 s on MPS). Per-frame step cost is
+  unchanged (the adapter is two 1024→256 projections).
+- **Shortcuts:** full-context taps (`featurize_parakeet.py` — the cache-aware
+  streaming pass drift is unmeasured, measure before any P7 swap-over);
+  corpus-domain calibration only (a live-domain fit needs a `--wavs` path in
+  `featurize_parakeet.py`); calibrated A↔B replayed per-side traits but one shared
+  debounce triplet (both sides fit 2/2/2 anyway).
 
 ## The loop: add a decision point
 
