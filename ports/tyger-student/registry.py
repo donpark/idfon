@@ -121,6 +121,13 @@ ADAPTERS = (
     Adapter("l24-streaming", "tap", 1024,
             "the ASR's final layer — the portability baseline (probe-poor, #134)"),
     Adapter("l15-streaming", "tap", 1024, "declared: streaming L15 tap, extraction not wired yet"),
+    # second-ASR portability (#132 P5): parakeet-unified-en-0.6b (Unified-FastConformer-RNNT,
+    # 24 layers x 1024-d, x8 subsampling = the 80 ms grid). L12 is the probe-sweep winner
+    # (per-depth table: bench-results/parakeet-tap-probes.md; mean R2 .554 vs the Nemotron
+    # l4-streaming .564 — the tap equivalents land mid-encoder here too). "-full" names the
+    # full-context pass; a streaming-pass adapter would be its own entry + calibration fit.
+    Adapter("parakeet-l12-full", "tap", 1024,
+            "parakeet-unified-en-0.6b L12 full-context tap — the second ASR (#132 P5)"),
 )
 
 
@@ -139,4 +146,7 @@ def adapter_by_id(adapter_id):
 ADAPTER_GATE = {
     "l4-windowed": {"endpoint": {"metric": "mse", "max": 0.028}},
     "l4-streaming": {"endpoint": {"metric": "mse", "max": 0.028}},
+    # same tap-information class as the L4s (probe R2 .742 vs .749/.751): the frozen-trunk
+    # adapter-only fit lands at .02435, between l4-windowed .02299 and l4-streaming .02564
+    "parakeet-l12-full": {"endpoint": {"metric": "mse", "max": 0.028}},
 }

@@ -40,6 +40,13 @@ Each tap root holds train/ and val/ subdirs (the three dualturn sets are
 frame-aligned per session id — paired multi-tap batches for P3 need no matching).
 The report (report.json + stdout) prints the probe R2, the exact weights, and every
 head's gate per tap. Exit code is 1 when any tap path misses a score gate.
+
+Second-ASR portability (epic #132 P5): `--adapter-only TAP` freezes every parameter
+except the named tap's adapter — the "a new ASR joins the geometry" recipe: warm
+start `--init` from the converged shared student (absent adapters are dropped),
+train ONLY the new adapter toward the same decision endpoint through the frozen
+latent, then fit that adapter's calibration. The portability claim is measured as
+decision agreement vs the Nemotron-tap geometry, not re-tuned away.
 """
 import argparse
 import glob
@@ -151,7 +158,7 @@ def load_tap_shards(tap_roots, split):
 
 
 def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", weights="auto",
-        init=None, deploy_tap=None, val_split="val", consistency=0.0, qat=0):
+        init=None, deploy_tap=None, val_split="val", consistency=0.0, qat=0, adapter_only=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
     heads = HEADS
@@ -172,11 +179,25 @@ def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", wei
     if init:
         ckpt = torch.load(init, map_location="cpu")
         target = model.state_dict()
-        unexpected = [k for k in ckpt["state_dict"] if k not in target]
+        # adapters are per-tap by design: a warm start may carry taps this run does
+        # not build (--adapter-only); every other key must match
+        unexpected = [k for k in ckpt["state_dict"]
+                      if k not in target and not k.startswith("adapters.")]
         assert not unexpected, f"checkpoint has unknown keys: {unexpected}"
         missing = [k for k in target if k not in ckpt["state_dict"]]
+        dropped = sorted({k.split(".")[1] for k in ckpt["state_dict"]
+                          if k.startswith("adapters.") and k not in target})
         model.load_state_dict({k: v for k, v in ckpt["state_dict"].items() if k in target}, strict=False)
-        print(f"warm start: {init} (fresh: {', '.join(sorted({k.split('.')[1] for k in missing})) or 'none'})")
+        print(f"warm start: {init} (fresh: {', '.join(sorted({k.split('.')[1] for k in missing})) or 'none'})"
+              + (f"; dropped adapters: {', '.join(dropped)}" if dropped else ""))
+    if adapter_only:
+        if qat:
+            sys.exit("--qat with --adapter-only would quantize the frozen trunk; "
+                     "QAT is its own fine-tune pass (#145 recipe)")
+        for n, p in model.named_parameters():
+            p.requires_grad = n.startswith(f"adapters.{adapter_only}.")
+        assert any(p.requires_grad for p in model.parameters()), \
+            f"--adapter-only {adapter_only!r}: no such adapter in this run"
     if qat:
         qat_project(model, qat)  # every forward runs on the int8 grid the export ships
     print(f"shared student: {count_params(model):,} params ({count_params(model) * 4 / 1e6:.1f} MB fp32), "
@@ -192,7 +213,7 @@ def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", wei
             lens = {len(train_sh[t][sid][0]["energy"]) for t in tap_roots}
             if len(lens) != 1:
                 sys.exit(f"consistency needs frame-aligned sessions; {sid}: {sorted(lens)}")
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=lr)
     partner_rng = np.random.default_rng(seed)  # only touched when consistency > 0
     first = last = None
     for ep in range(epochs):
@@ -228,7 +249,7 @@ def run(tap_roots, out_dir, epochs, window, lr, seed=0, distill_loss="soft", wei
     report = {"model": "SharedLatentStudent", "params": count_params(model),
               "taps": dict(tap_roots), "deploy_tap": deploy_tap,
               "weights_mode": weights, "probe_r2": r2_by_tap, "weights": w_by_tap,
-              "consistency_lambda": consistency, "qat_group": qat,
+              "consistency_lambda": consistency, "qat_group": qat, "adapter_only": adapter_only,
               "window_frames": window, "epochs": epochs, "distill_loss": distill_loss,
               "seed": seed, "lr": lr, "train_loss_first": round(first, 5),
               "train_loss_last": round(last, 5), "heads": {}}
@@ -342,6 +363,18 @@ def selfcheck():
                             or (n.startswith("adapters.") and n.endswith((".user.weight", ".agent.weight")))}
         _, q_first, q_last, _ = run(roots, None, epochs=6, window=W, lr=5e-3, qat=16)
         assert q_last < q_first, f"QAT loss did not fall: {q_first} -> {q_last}"
+
+        # 6. P5 adapter-only: a warm start drops taps this run does not build, and
+        # training moves the named adapter and NOTHING else (frozen trunk + heads)
+        frozen_ref = {n: p.clone() for n, p in model.named_parameters()}
+        assert "adapters.l15-windowed.user.weight" in frozen_ref
+        one = {"l4-streaming": roots["l4-streaming"]}
+        _, _, _, a_model = run(one, None, epochs=3, window=W, lr=5e-3, deploy_tap="l4-streaming",
+                               init=os.path.join(out, "student.pt"), adapter_only="l4-streaming")
+        assert "adapters.l15-windowed.user.weight" not in dict(a_model.named_parameters())
+        changed = {n for n, p in a_model.named_parameters() if not torch.equal(p, frozen_ref[n])}
+        assert changed and all(n.startswith("adapters.l4-streaming.") for n in changed), \
+            f"adapter-only moved frozen params: {sorted(changed)}"
     print("selfcheck ok")
 
 
@@ -360,6 +393,9 @@ if __name__ == "__main__":
                     help="P4 quantization-aware training: project the export's int8 group-N "
                          "grid after every step (0 = off; 16 = the proven rung)")
     ap.add_argument("--init", default=None, help="warm start from a previous shared student.pt")
+    ap.add_argument("--adapter-only", default=None, metavar="TAP",
+                    help="freeze every parameter except the named tap's adapter (P5 portability: "
+                         "a new ASR joins the geometry with an adapter + a calibration fit)")
     ap.add_argument("--deploy-tap", default=None,
                     help="adapter the checkpoint records for eval replay (default: l4-streaming)")
     ap.add_argument("--seed", type=int, default=0, help="training seed (comparisons need it fixed)")
@@ -388,5 +424,5 @@ if __name__ == "__main__":
     ok, *_ = run(tap_roots, args.out, args.epochs, args.window, args.lr,
                  seed=args.seed, distill_loss=args.distill_loss, weights=args.weights,
                  init=args.init, deploy_tap=args.deploy_tap, val_split=args.val_split,
-                 consistency=args.consistency, qat=args.qat)
+                 consistency=args.consistency, qat=args.qat, adapter_only=args.adapter_only)
     sys.exit(0 if ok else 1)
