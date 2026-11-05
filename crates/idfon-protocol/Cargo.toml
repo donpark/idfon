@@ -3,6 +3,7 @@ name = "idfon-protocol"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Versioned wire types shared by the daemon and clients: messages, peers, capabilities, tickets, calls, UI blocks, diagnostics, vCards."
 
 [dependencies]
 base64 = "0.23"

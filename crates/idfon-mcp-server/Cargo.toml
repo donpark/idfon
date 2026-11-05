@@ -3,6 +3,7 @@ name = "idfon-mcp-server"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "MCP server adapter over stdio: idfon capabilities as tools, with consent kept in the daemon."
 
 [[bin]]
 name = "idfon-mcp-server"

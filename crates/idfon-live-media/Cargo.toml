@@ -3,6 +3,7 @@ name = "idfon-live-media"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "MoQ plumbing shared by live-call handlers: invite parsing, PCM subscribe, return-leg publish and signing."
 
 [dependencies]
 anyhow = "1"

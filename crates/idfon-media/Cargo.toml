@@ -3,6 +3,7 @@ name = "idfon-media"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Media plane: live-call sessions, MoQ video, the capture/render adapter seam, and connection health."
 
 [features]
 default = []

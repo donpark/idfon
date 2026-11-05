@@ -3,6 +3,7 @@ name = "idfon-voice"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Voice provider seam (STT, TTS, endpointing) plus the voice service pieces around it: barge-in, echo, turns."
 
 [lib]
 crate-type = ["rlib"]

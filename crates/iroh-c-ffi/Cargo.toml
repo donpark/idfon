@@ -3,6 +3,7 @@ name = "iroh-c-ffi"
 version = "0.101.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+description = "C ABI over the idfon core for the Apple apps: daemon, client, media, and voice surfaces."
 
 [lib]
 crate-type = [

@@ -3,6 +3,7 @@ name = "idfon-voice-agent"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Voice-agent kit and the eve-idfon-voice runner: one config, pluggable voice backends."
 
 [[bin]]
 name = "eve-idfon-voice"

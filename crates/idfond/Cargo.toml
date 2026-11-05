@@ -3,6 +3,7 @@ name = "idfond"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Launcher binary for the idfon daemon; all logic lives in libiroh_c_ffi (idfon_daemon_run)."
 build = "build.rs"
 
 # No runtime [dependencies]: the daemon core is reached through

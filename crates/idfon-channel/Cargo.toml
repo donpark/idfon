@@ -3,6 +3,7 @@ name = "idfon-channel"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "WebSocket-shaped message channels over one ordered iroh bi-stream, with no HTTP in the path."
 
 [dependencies]
 bytes = "1"

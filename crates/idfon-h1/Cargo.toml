@@ -3,6 +3,7 @@ name = "idfon-h1"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "HTTP/1.1 over an iroh endpoint: serve an axum Router (WebSockets, SSE, chunked bodies) and dial peers."
 
 [dependencies]
 axum = "0.8"

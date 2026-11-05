@@ -3,6 +3,7 @@ name = "idfon-gateway"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+description = "Loopback HTTP gateway for idfon:// resources; policy and providers arrive as a Backend and an Authorizer."
 
 [dependencies]
 bytes = "1"
