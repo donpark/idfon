@@ -935,6 +935,114 @@ ports/tyger-student/.venv/bin/python tools/asr-tap-latency/summarize.py \
     bench-results/asr-manager-probe/paced.json
 ```
 
+### Per-frame tap scoring (2026-11-05, #132)
+
+**Verdict first: per-frame scoring does not bring the endpoint delta under the +160 ms
+bar — it already was the published +168. Scored per frame at delivery, the delta is
++166.6 ms mean-of-medians (+173.9 through the manager's measured shift), worst session
++179.9, 8/35 endpoints (23%) past +320. The number a 4-frame hop would give is +300.4 /
++459.5 / 46%; per-frame recovers that 134 ms and halves the tail, but the residual is the
+560 ms chunk *delivery*, not hop buffering.**
+
+The question assumed the existing tap replay was scored on the shipped 4-frame hop. It was
+not: `tap_latency.py` already released every row of a chunk at its boundary and stepped it
+immediately (`decide()`), so `--scoring per-frame` reproduces that pass row for row. The
+new `tap-hop` mode is what routing tap rows through `TurnRuntime.feed` — the shipped
+4-frame API — would cost, and that is the mode per-frame replaces.
+
+**Why a 4-frame hop is not simply "320 ms more".** A hop is released when its last row is
+delivered, and 4-frame hops do not align with 7-frame chunks: in every 28-frame period,
+three hops straddle a chunk boundary and delay 3, 2 and 1 rows respectively. Six rows per
+28 (21%) wait exactly one extra chunk; the rest are unaffected. Measured gap between
+`tap-hop` and `per-frame` decision times: **559.0-559.8 ms on 17 of 105 events**, 0
+elsewhere. That is 21% of frames delayed 560 ms, not every frame delayed up to 320 ms.
+
+**Setup.** Same three `live-shipping` captures, same fp32 L4 student, same rules (mode
+`listen`), both ears as before, reference-pass (56/0) tap artifact re-exported for this run
+(`bench-results/asr-tap-ref56`, 594.1 MB; the windowed rows verify against the shards at
+cos p50 0.99995 / relL2 0.0103). Rules events are identical in frame and kind across
+`chunk`, all three `per-frame` policies and `tap-hop` — the comparison is pure decision
+timing. The manager adds the #174 shift (+7.5 / +7.0 / +7.5 ms per-session p50), applied as
+a uniform per-session shift, not re-measured here.
+
+| session | frames | today ep | tap ev/ep | matched ep (same frame) | fp median | hop median | fp p95 | hop p95 | fp past +320 | hop past +320 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 23:13:14Z | 1394 | 14 | 34/15 | 10 (5) | 179.9 | 180.1 | 427.6 | 427.8 | 3/10 | 3/10 |
+| 20:17:43Z | 1114 | 12 | 31/15 | 12 (5) | 140.0 | **459.5** | 499.4 | **739.4** | 3/12 | **7/12** |
+| 21:13:38Z | 1891 | 18 | 40/19 | 13 (10) | 179.8 | 261.5 | 419.8 | 499.9 | 2/13 | **6/13** |
+| **pooled / mean-of-medians** | | | | **35 (20)** | **166.6** | **300.4** | | | **8/35 (23%)** | **16/35 (46%)** |
+| through the manager (+7.35) | | | | | 173.9 | 307.7 | | | | |
+| worst-session median / p95 | | | | | 179.9 / 499.4 | **459.5 / 739.4** | | | | |
+
+Endpoint counts match the earlier table exactly (35 matched, 20 on the same frame, 14
+tap-only, 9 today-only; the event totals are 105 tap vs 95 today), and the pooled tail is
+unchanged at 8/35; the 1.6 ms difference in mean-of-medians vs the published +168.2 is
+this host's encode time. Frame-level feature delay is unchanged at p50 266.1 / p95 506.2
+ms (tap rows exist only at the chunk boundary).
+Backlog does not accumulate in any mode: max 18.0 / 23.3 / 17.9 ms, end 16.2 / 16.1 / 17.3.
+
+**The three `left` policies are decision-identical, and that is the finding.** `left`
+reaches only a BARGE's reported `onset_s` in the speaking branch
+(`crates/idfon-voice/src/turns.rs`: `(talk_frames + left) * FRAME_S`, capped at
+`ONSET_MAX_S`); the debounce itself (`yield_run >= barge_deb`) and every other decision
+never read it. So on these listen-mode captures all three policies produce the same
+events at the same frames and the same times (asserted in `assemble`). Measured, each
+policy separately:
+
+| policy | `left` at frame f | mean-of-medians | worst session | worst p95 | past +320 | events / endpoints |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `hop-phase` (today's value sequence) | `3 - f%4` | 166.6 | 179.9 | 499.4 | 8/35 | 105 / 49 |
+| `zero` | 0 | 166.6 | 179.9 | 499.4 | 8/35 | 105 / 49 |
+| `chunk-countdown` (the existing tap pass's value) | 7..0 in chunk 0, else 6..0 | 166.6 | 179.9 | 499.4 | 8/35 | 105 / 49 |
+
+Onset semantics differ even though the numbers do not:
+
+| policy | extra onset it claims | verdict |
+| --- | --- | --- |
+| `hop-phase` | 0-240 ms of hop audio already appended by `begin_hop` today | reproduces today's *onset numbers*; under per-frame `begin_hop` appends only this frame's audio, so those later frames have not been scored and the value is stale |
+| `zero` | none | the only value consistent with a runtime that appends audio per frame; changes the reported onset by 0 to −240 ms vs today |
+| `chunk-countdown` | 0-560 ms | worst of both: neither today's lattice nor the scored audio |
+
+Which policy reproduces today's **decisions**: all three, exactly — so no policy can be
+chosen on that basis. Which reproduces today's **onset duration**: `hop-phase` keeps the
+arithmetic, `zero` keeps the audio timeline; per-frame scoring cannot have both, because
+today's onset counts audio that the 4-frame hop had already fed to `begin_hop` and a
+per-frame runtime has not. That is a rules-level decision (does the ENDPOINT/BARGE audio
+buffer keep the hop's padding, or end at the scored frame?), not an instrumentation
+choice, and this run does not make it. Consequence to settle before any swap: per-frame
+scoring either keeps today's onset numbers but overstates speech by up to 240 ms, or
+shortens the reported onset by the same amount.
+
+**Barge evidence — none under per-frame scoring, and no claim.** The barge work that
+exists is windowed-feature evidence: `bench-results/barge-live.md` replays these same
+`TurnCapture` WAVs through the offline L4 student and measures yield-head crossings within
+640 ms of an energy-VAD onset (`scripts/analyze-call-capture.py`); `barge-openyap.md` does
+the same on Open Yap shards (`scripts/analyze-openyap-barge.py`). Neither runs the rules'
+`onset_s`, neither has tap rows, and neither has a mode-`speaking` track, so neither can
+test the `left` question. The live captures are `listen`-mode throughout. Per-frame
+scoring's barge path is therefore **unmeasured**; the only claim made here is the code
+fact that `left` cannot move a decision.
+
+**Scope.** Mic and playback ears both stay as the harness has them (two tap artifacts,
+two encoder calls per chunk); this tests the mic ear's scoring lattice, not the
+playback-ear/cross-talk question. No threshold, model, app or fork change. The manager
+contribution is its measured shift, not a scored replay inside the probe: that probe has
+no student or rules and is mic-only, so scoring there would drop the agent ear.
+
+Reproduce:
+
+```sh
+# reference-pass (56/0) tap artifact (the doc's cadence control; 594 MB, gitignored)
+ports/tyger-student/.venv/bin/python ports/tyger-student/export_asr_tap.py \
+    --export --pass reference --precision fp16 --int8 --out bench-results/asr-tap-ref56
+ports/tyger-student/.venv/bin/python ports/tyger-student/tap_latency.py --verify \
+    --tap-artifact bench-results/asr-tap-ref56/encoder_tap_fp16_int8w.mlpackage \
+    --out bench-results/tap-latency-perframe.json
+```
+
+`--scoring chunk,per-frame,tap-hop` and `--left-policies hop-phase,zero,chunk-countdown`
+select the modes; `--selfcheck` covers the left sequences and the chunk/hop grid.
+
 ### The duplicate-pass precondition
 
 The epic's footprint bar is that turn decisions cost **no second encoder pass**. Nothing
