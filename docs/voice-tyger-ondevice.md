@@ -687,6 +687,126 @@ for that baseline is the record, and it must exist **before** any app-side swap:
   fp32 teacher's, and it records the deployed tier only — a shadowed call (two models
   over one mic) is still a separate instrument.
 
+### Tap latency vs the windowed path (2026-11-05, #102)
+
+**Verdict first: the 560 ms tap does not bust the +320 ms worst-session bar.** Paired
+against today's windowed path on the same audio, its endpoint decisions arrive **+168 ms
+mean-of-medians, +187 ms worst session** — but per *frame* the tap really is late (p95
+518 ms, max 519 ms after that frame's audio), and 8 of 35 matched endpoints (23%) land
+more than +320 ms later. The bar is a per-session median, so it passes; the tail is the
+product risk, and a 320 ms chunk removes the phase error (below).
+
+Why measure at all: today's path encodes an 8 s window per 320 ms hop and takes the last
+4 rows, so a frame's feature exists at its hop's boundary. The ASR tap emits **7 frames
+per 560 ms chunk at the chunk boundary**, so the first frame of a chunk waits up to
+~0.5 s after its own audio. The endpoint bars are stated from audio availability, so this
+was a kill risk until measured. Harness: `ports/tyger-student/tap_latency.py`
+(`--selfcheck`; no threshold, rule or model change).
+
+**Setup.** Three real call captures (the `live-shipping` sessions' audio, i.e. the
+`TurnCapture` stereo wavs in `~/Library/Application Support/Idfon/turn-captures`):
+`2026-10-25T23:13:14Z` (1394 frames / 199 chunks / 348 hops), `2026-10-26T20:17:43Z`
+(1114 / 159 / 278), `2026-10-26T21:13:38Z` (1891 / 270 / 472). The `live-shipping`
+shards have no wav beside them — the wav is the capture, and its frame count is cut to
+the shard's `T` (the recording is a few frames longer). Three replays on one session
+clock, same L4 student (`bench-results/student-l4-coreml/StudentStep.mlpackage`), same
+rules (`idfon_voice_turn_*` from the app's dylib, per-frame `prev_state`, resets at
+BARGE/ENDPOINT), mode `listen` on both sides (these shards have no mode track):
+
+| replay | feature production | release |
+| --- | --- | --- |
+| `today` | Core ML L4 cut, 8 s (growing) window per 320 ms hop, both ears | hop boundary |
+| `tap` | streaming tap artifact, one call per 560 ms chunk, both ears | chunk boundary |
+| `cadence` | **the windowed features above**, no encode cost | chunk boundary |
+
+`cadence` is the control that separates the batching from the feature change; it keeps
+today's rows and rules, so its event sequence is asserted identical to `today`'s (the
+assertion is in the harness). Encoder calls are timed with `perf_counter_ns` and composed
+on a virtual audio clock (group start = max(group audio end, previous group's decision
+end); no sleeping, no dropping). Rules events are paired same-kind within ±2 frames by
+audio timestamp — the existing `gate.aligned_count` convention — never by arrival order.
+
+**Frame grid.** The tap's 7 rows per chunk are shard **frames 7i+1 … 7i+7** (chunk 0 also
+releases the reference grid's context row as frame 0; the ASR has no row 0). Measured
+against the stored windowed rows, `tap[r]` matches `ref[r]` after that padding at cos p50
+0.95 / p05 0.87, versus p05 0.17 and 0.28 at ±1 frame. The call is stamped 90 ms past the
+chunk's last new mel frame — the mel window is 65 frames (56 new + 9 pre-encode context).
+That gives the per-frame wait `490 − 80k` ms before inference, for `k = 0…6`.
+
+**Feature ready − that frame's audio end (ms).** `today` is the shipped path's own
+boundary wait; `tap` includes its inference.
+
+| session | today p50 / p95 / max | tap p50 / p95 / max | tap max on real rows (frame ≥ 1) |
+| --- | --- | --- | --- |
+| 23:13:14Z | 165.9 / 257.1 / 328.7 | 278.3 / 518.4 / 588.3 | 519.2 |
+| 20:17:43Z | 165.9 / 256.9 / 332.5 | 278.3 / 518.4 / 599.5 | 520.3 |
+| 21:13:38Z | 165.9 / 256.9 / 329.1 | 278.2 / 518.3 / 587.4 | 518.6 |
+
+The 588–600 ms maxima are frame 0, the chunk-0 context row (not a streaming row); the
+tap's own worst row is 519 ms = 490 ms of cadence + 29 ms of inference. Inference is
+23.6–27.8 ms per 560 ms chunk for both ears in this pass (the 42/13 artifact measures 9.6
+ms/chunk/ear), and 14.7–17.4 ms per 320 ms hop today (the growing-window `dyn` model
+costs up to 93 ms in the first 8 s, hence today's 329–333 ms max). This pass ran at host
+load average ~10; an earlier pass measured 17.1 ms/chunk and the tap's own worst row at
+508 ms, i.e. the extra is encode time, and the paired deltas moved by ≤ 7 ms.
+
+**Paired endpoint decision delta vs `today` (ms).** Per event: `decision(tap) −
+decision(today)`; per session: the median; aggregate: the gate's mean-of-per-session-
+medians and worst session (no new percentile).
+
+| session | matched ep | tap − today median | p95 | max | cadence − today median |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 23:13:14Z | 10 | 187.4 | 429.7 | 502.0 | 159.0 |
+| 20:17:43Z | 12 | 147.0 | 506.0 | 511.7 | 118.5 |
+| 21:13:38Z | 13 | 170.2 | 418.9 | 431.8 | 193.0 |
+| **mean of medians** | 35 | **168.2** | — | — | **156.8** |
+| **worst session** | | **187.4** | | | **193.0** |
+
+Pooled over the 35 matched endpoints: median 182 ms, p95 501 ms, max 512 ms, and **8/35
+(23%) above +320 ms**; 20/35 fire on the same frame on both paths (the other 15 shift
+−2…+2 frames with the feature change, worth ±160 ms and included in the delta). The
+control's agreement with the real tap delta (157 vs 168 mean) says the effect is the
+cadence, not the 56/0-vs-windowed feature change. Unmatched endpoints (14 tap-only, 9
+today-only over the three sessions) are the known feature/pass mismatch and are counted,
+not averaged away.
+
+**Backlog.** None accumulates: the tap's end-of-session lag is 17–28 ms (its per-chunk
+cost is 4–5% of the 560 ms period), and at most one encode is ever outstanding. Today's
+worst per-encode lag is 89–93 ms (the growing-window model in the first 8 s), also
+with no growth.
+
+**Against the bars.** Worst-session **+187 ms ≤ +320 ms — pass**. The mean-of-medians
++168 ms sits just over the gate's other latency bar (+160 ms mean-of-medians); that bar
+is written against the teacher's latency, not against today's path, so treat +168 ms as
+"at the bar" rather than a formal failure. The absolute per-frame number (p95 518 ms) is
+real but is not what the endpoint gate scores — today's 320 ms hop already makes a frame
+wait 0–240 ms.
+
+**Would a smaller chunk recover it? Plausibly yes.** The wait scales with the chunk's
+frame count: `560 ms chunk → 490 ms worst`, `320 ms (4 frames, today's lattice) → 250 ms`
+and the 4-vs-7 phase error disappears (the residual is then the 90 ms pre-context plus
+inference, ~+95 ms per event), `160 ms (2 frames) → 170 ms`. The 90 ms mel pre-context is
+fixed geometry. That, plus the tail above, is the next decision — not
+something this harness changes. The ASR's own decode and the #1109 callback are **not**
+in these timestamps (the tap is read at the encoder call's return), and there is no
+iPhone measurement yet.
+
+**Artifact caveat.** The 42/13 artifact on disk predates the mask fix (2026-11-05), so
+the tap replay uses a **reference-pass (56/0)** artifact exported for this measurement:
+`export_asr_tap.py --export --pass reference --precision fp16 --int8` (594 MB). The
+chunk cadence is the property under test, not the mask; the feature-level decision
+agreement in the table is therefore not the product's 42/13 number.
+
+Reproduce (artifacts are gitignored; paths are the maintainer layout):
+
+```sh
+ports/tyger-student/.venv/bin/python ports/tyger-student/export_asr_tap.py \
+    --export --pass reference --precision fp16 --int8 --out bench-results/asr-tap
+ports/tyger-student/.venv/bin/python ports/tyger-student/tap_latency.py \
+    --verify --rules-dylib mac/Vendor/libiroh_c_ffi.dylib \
+    --out bench-results/tap-latency.json
+```
+
 ### The duplicate-pass precondition
 
 The epic's footprint bar is that turn decisions cost **no second encoder pass**. Nothing
