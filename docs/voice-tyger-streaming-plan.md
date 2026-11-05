@@ -246,6 +246,34 @@ the download budget far better than 0.6B. A wins by construction on parity
   lever 3 (2-bit) ≈ **~340 MB — under**. So the size question is not which
   model (that is decided: A) but the quantization tier.
 
+### Tap interchangeability — measured (2026-11-05, #102 Leg 2)
+
+`ports/tyger-student/tap_gate.py` replays **one** checkpoint on two feature sources
+over the same recorded sessions (same rules, same carried state) and reports feature
+drift plus decision agreement A↔B (±2 frames, same kind). The bar is the tap-swap bar:
+**≥99%**.
+
+| comparison | sessions | feature cos p50 | rel-L2 p50 | decisions agree |
+| --- | ---: | ---: | ---: | ---: |
+| L4 streaming re-extract vs the stored tap shards (control) | 2 | 1.0000 | 5e-6 | 100% (61/61) |
+| **L15 windowed → L15 streaming** (`nemotron-3.5-asr-streaming-0.6b`) | 2 | 0.875 | 0.51 | **61.3%** (38/62) |
+| **L4 windowed → L4 streaming** | 8 | 0.966 | 0.26 | **82.3%** (246/299) |
+
+Reading: the cache-aware streaming pass is **not** interchangeable with the windowed
+re-encode at either layer. The calibrated teacher heads cannot be fed the ASR's
+streaming L15 (61%, far under the bar) — so the share runs through a model trained on
+the streaming tap (the student's `l4-streaming` adapter), not by re-using the teacher's
+heads on a borrowed feature source. L15 is the more pass-sensitive layer (cos .875 vs
+.966 at L4): what the cache truncates is exactly that layer's context frontier, which is
+also why the shipped cut sits at L4. The control row — the same features re-extracted
+from `nvidia/nemotron-3.5-asr-streaming-0.6b` — is numerically identical to the stored
+tap shards, so the drift is pass-driven, not model-driven (and the P5 "identical taps"
+claim holds at feature level).
+
+This does **not** say the streaming-trained student reproduces today's decisions; that
+is a separate swap question measured in P7's TurnShadow (`docs/voice-tyger-ondevice.md`:
+80–85% on the deploy adapter).
+
 ### Phase 3 — the tyger experience (integration)
 
 - `TurnTakerSetting.tyger` selects the streaming pair (Nemotron streaming ASR +
