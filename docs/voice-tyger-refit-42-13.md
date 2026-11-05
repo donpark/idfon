@@ -116,7 +116,7 @@ cross-checkpoint replay); the aggregate gate/harness tables do not show it.
 | domain | sessions/events | default | best fit | fitted config |
 | --- | --- | ---: | ---: | --- |
 | corpus (`tap-shipping/val`) | 8 / 299 | 56.91% | **59.56%** | **T=0.8**, ep .9146, barge .5, bc .5 (NLL T=0.8) |
-| live (`live-shipping`, 13 captures) | 13 / — | 52.38% | **59.14%** | **T=1.0**, ep .85, barge .5, **bc .3** (NLL T=0.8) |
+| live (`live-shipping`, 13 captures) | 13 / 420 | 52.38% | **59.14%** | **T=1.0**, ep .85, barge .5, **bc .3** (NLL T=0.8) |
 
 Cross-domain penalty (one global fit is a net negative):
 
