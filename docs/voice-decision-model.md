@@ -337,6 +337,21 @@ session** — the combined error is knob-independent (every measured model is
 within +2 events of the teacher's combined count), the early/miss *split* is
 report-only as a traits-knob trade.
 
+**Where the +160 / +320 ms figures come from (2026-11-05).** They were set with
+this bar recut and no derivation was recorded; 320 ms is exactly one hop
+(4 x 80 ms), so read them as "at most one decision cycle of added delay". Do not
+cite them as a perceptual threshold — the perceptual question has never been
+measured here.
+
+**`left` means the hop's remaining frames, and it is only a timestamp fix
+(2026-11-05).** `rules.py` uses it in one place: `onset_s = min((talk_frames +
+left) * FRAME_S, ONSET_MAX_S)` — a barge's onset is extrapolated to the hop's
+end because the hop's newest audio is what the rules hold when they read the
+event. It is not a debounce input (that is `barge_deb`/`yield_run`). So a
+per-frame decision lattice — one student step per 80 ms frame, no hop
+buffering — is expressed correctly by `left = 0`, and any non-zero value there
+would overstate barge onset by up to the hop length.
+
 **Cross-tap consistency ablation (2026-11-03, epic #132 P3, issue #143).**
 `train_shared.py --consistency LAM` adds `LAM · symmetric-KL(seam decisions via
 tap A ‖ tap B)` on the same frames (paired windows, seeded partner tap per
