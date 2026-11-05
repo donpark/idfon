@@ -510,6 +510,191 @@ the transcript discipline). The fp16 rung (size play: 1.53 GB → ~0.77 GB) is
 exported and gated (2026-10-26: both rungs in `bench-results/coreai`, the
 loader's path; `ports/tyger-coreai/GATES.md`).
 
+## Export matrix and the swap-over gate (2026-11-05, #161)
+
+The step is one model behind the 8-vector seam; each platform runs it through its own
+runtime. `ports/tyger-student/export_matrix.py` produces and gates the whole matrix in
+one run; `ports/tyger-student/turnshadow.py` is the diff harness every swap-over goes
+through. Both are ordinary repo scripts and both write only to the gitignored
+`bench-results/`.
+
+**A cell = adapter × tier × variant.** Adapters are the converged int8 checkpoint's
+(`l15-windowed`, `l4-windowed`, `l4-streaming` — the deploy tap last); tiers are ONNX /
+Core ML / Core AI / MLX; variants are `int8` (the deployable rung: #145's QAT fine-tune
+on the per-output-unit group-16 grid, dequantised in-graph so compute stays fp32) and
+`fp32` (the converged fp32 student at the tier's native precision). The gate is P4's
+envelope, applied per cell against the cell's *own* torch source:
+
+| check | bar |
+| --- | --- |
+| per-head probs (hazard/yield/bc/p_end) vs fp32 torch, carried state | ≤ 2e-3 |
+| state-logit argmax flips | 0 |
+| crossings of the adapter's fitted traits thresholds | 0 |
+
+`matrix.json` also carries one tier-independent row per adapter: the int8 source
+checkpoint vs the fp32 student it was fine-tuned from. That is the QAT cost, not a
+packaging cost — the cell gates measure packaging.
+
+**Exports ≠ loads.** Two separate facts per cell: the artifact exists and has N bytes;
+the tier's runtime opens it. Core AI is the case that forces the distinction — the AOT
+container embeds an MPSGraph package version, and anything above **7.0.80** is refused
+(or segfaults) by the 27.0.x loaders (#110). The matrix reads that version out of the
+container instead of loading it.
+
+**Tap input layout** (identical for every tier — the seam is the contract):
+
+| input | dtype | shape | meaning |
+| --- | --- | --- | --- |
+| `hu` | f32 | (1024,) | caller stream, one 80 ms frame |
+| `ha` | f32 | (1024,) | agent stream (the second ear) |
+| `act_db` | f32 | scalar | raw frame energy, dB |
+| `prev_state` | i64 | scalar | floor state the rules fed back (0–3, 4 = begin) |
+| `state` | f32 | (2,1,256) | carried GRU state |
+| → decision | f32 | (8,) | 4 state logits, hazard, yield, bc, p_end |
+
+One tap frame in, one 8-vector out, 12.5 Hz. The adapter is **524,800 params (2.1 MB
+fp32)** and the shared trunk + decoder **794,633 (3.2 MB fp32)** — the marginal anatomy a
+new ASR pays for. The tap identity per adapter (layer, pass) is in `matrix.json`.
+
+### The matrix (quiet-machine pass, 2026-11-04)
+
+int8 source: the QAT fine-tune of the λ=0.3 shared student (`shared-qat-ft/`, 20 ep @
+1e-4, seed 0, `--consistency 0.3 --qat 16`, warm-started from `shared-consistent-l03`;
+weighted loss 0.15951 → 0.15936 — converged from the first epoch, the "zero quality cost"
+shape #145 measured). Gate frames: 248 carried-state frames per cell, from one recorded
+session of that adapter's val split. Machine quiet (load average 2.3 on 14 cores).
+
+| tier–variant | bytes | probs max\|Δ\| (l15 / l4w / l4s) | argmax · threshold flips | ms/frame (l15 / l4w / l4s) | loads |
+| --- | ---: | --- | --- | --- | --- |
+| ONNX int8 | 1.77 MB | 8.3e-7 / 6.6e-7 / 6.0e-7 | 0 · 0 (all) | 0.194 / 0.195 / 0.194 | yes (ORT CPU) |
+| ONNX fp32 | 5.28 MB | 7.8e-7 / 6.3e-7 / 8.3e-7 | 0 · 0 | 0.041 / 0.041 / 0.042 | yes |
+| Core ML fp32 | 5.31 MB | 8.3e-7 / 4.2e-7 / 6.0e-7 | 0 · 0 | 0.074 / 0.073 / 0.071 | yes (macOS, ANE) |
+| Core ML int8 | 1.71 MB | **1.4e-2 / 6.7e-3 / 5.5e-3** | 0 · 0 | 0.424 / 0.427 / 0.426 | yes — **fails the envelope** |
+| Core AI fp32 | 5.29 MB | 2.4e-7 / 1.8e-7 / 3.0e-7 | 0 · 0 | 0.986 / 0.983 / 0.979 | source: yes; **AOT: no** |
+| MLX int8 | 1.76 MB | 3.6e-7 / 2.1e-7 / 2.4e-7 | 0 · 0 | 0.366 / 0.361 / 0.360 | yes |
+| MLX fp32 | 5.28 MB | 3.3e-7 / 2.1e-7 / 1.8e-7 | 0 · 0 | 0.360 / 0.359 / 0.359 | yes |
+
+Readings:
+
+- **The int8 rung is tier-faithful.** ONNX and MLX store the QAT grid and reproduce the
+  QAT model to 2e-7…8e-7 with zero flips — three orders inside the envelope. int8 costs
+  nothing but bytes here, because QAT already put the weights on the grid.
+- **Core ML cannot express that grid.** `coremltools`' only linear weight scheme is
+  symmetric (per-channel/per-block) and the artifacts land at 5.5e-3…1.4e-2 — they
+  *export* (1.71 MB) and *load*, and they fail the envelope. This is the one cell where
+  "exports" and "deployable" diverge; Core ML stays on its fp32 form (what the apps load
+  today).
+- **Core AI's AOT containers do not load on the shipping OSes.** All three adapters'
+  `.h16s.aimodelc` carry **MPSGraph 7.1.5**; the 27.0.x loaders accept at most 7.0.80
+  (#110). The macOS runtime (`coreai.runtime`, JIT) loads the source asset and passes
+  every cell — so the tier is export-covered and macOS-load-covered, and *not*
+  device-load-covered. That is a toolchain fact, not a student fact.
+- **ms is a macOS-host number** for every tier. iOS device numbers are not measured here
+  (device-only builds); the Core AI device path cannot be measured until the AOT
+  toolchain emits ≤ 7.0.80.
+- **QAT distance (tier-independent)**: the int8 source vs the fp32 student it was
+  fine-tuned from differs by up to 6.4e-2/8.5e-2/6.9e-2 (l15/l4w/l4s) per-head with 1–2
+  state argmax flips and 4–6 trait-threshold crossings per 248 frames. The packaging
+  gates are clean; the checkpoint swap is where the decisions move (next section).
+
+### TurnShadow: the tier is free, the checkpoint is not
+
+Two shadow passes over the same recorded sessions (2 sessions × 500 frames each, ±2
+frames, the adapter's fitted traits, each side replaying with its own carried state and
+rules feedback):
+
+**(a) tier-only** — candidate artifact vs its *own* torch source:
+
+| cell | agreement | flips | p_end max\|Δ\| |
+| --- | ---: | --- | ---: |
+| ONNX int8 | 100% (14/14, 13/13, 15/15) | none | ≤ 1.4e-6 |
+| MLX int8 | 100% | none | ≤ 3.9e-7 |
+| Core ML int8 | 100% | none | 9.4e-3 … 1.6e-1 (envelope fail) |
+
+So the int8 tier changes **no decisions at all** relative to the model it packages. Any
+decision change a swap introduces is the checkpoint, not the runtime.
+
+**(b) swap** — the deployable int8 artifacts vs the currently deployed fp32 student:
+
+| adapter | agreement | flips (1000 frames) | p_end mean / p95 / max | state logits mean / p95 |
+| --- | ---: | --- | --- | --- |
+| l15-windowed | 100% | none | 1.0e-2 / 4.4e-2 / 1.3e-1 | 0.10 / 0.46 |
+| l4-windowed | 84.6% | 2 ENDPOINT missing, 2 spurious | 1.0e-2 / 4.9e-2 / 1.3e-1 | 0.12 / 0.54 |
+| l4-streaming | 80.0% | 1 ENDPOINT missing, 2 spurious, 1 BACKCHANNEL | 1.1e-2 / 6.3e-2 / 2.8e-1 | 0.14 / 0.71 |
+
+**The fine-tune is what moves the decisions.** The same grid applied without the extra
+20 epochs (plain projection of the fp32 checkpoint, no QAT) reproduces the deployed
+student's events exactly on the same 1000 frames — 100% agreement, 0 flips, p_end max
+1.4e-2 — while failing the packaging envelope at 6.05e-3, because its weights are
+off-grid by construction. The two candidates bracket the problem: projection keeps
+behavior and drifts probabilities; the fine-tune keeps the grid and moves behavior. A
+swap that changes nothing above the seam therefore needs a QAT run **constrained to
+reproduce the deployed student's decisions** (a consistency term against the fp32
+checkpoint, or a much shorter/lower-lr fine-tune), not a longer one.
+
+### The swap-over gate
+
+`turnshadow.py` replays a candidate artifact and the authoritative student (the fp32
+shared student the tier ships today) over recorded sessions through the same rules, and
+reports per-axis drift, per-event flips and per-frame cost. It is shadow-only: nothing
+it does can change a call, and classic turn-taking stays the fail-open path untouched.
+
+A swap is **blocked** when any of these holds:
+
+- an ENDPOINT event is missing or extra beyond ±2 frames (turn structure changes),
+- a BARGE event is missing or extra (the playback stop is the safety path),
+- per-head drift exceeds 2e-3 (the P4 envelope),
+- p95 per-frame step cost exceeds 8 ms (the 80 ms frame with 10× headroom).
+
+BACKCHANNEL flips are reported and counted, never averaged away: every lossy tier shows
+sub-0.01 boundary jitter on the bc head (parity7's finding), so a bc flip is a product
+decision about the backchannel threshold, not a packaging failure.
+
+As of this pass **no int8 candidate clears the gate** on the recorded sessions: the
+faithful-to-source QAT artifacts change endpoint decisions, and the
+faithful-to-behavior projection fails the envelope. That is the gate working as
+intended — the matrix says the packaging is done, TurnShadow says the model swap is a
+product decision plus one more training change.
+
+### The duplicate-pass precondition
+
+The epic's footprint bar is that turn decisions cost **no second encoder pass**. Nothing
+in this phase can establish that, and the matrix does not claim it. Before any swap-over
+ships:
+
+1. The deployed adapter must read the **streaming (cache-aware) tap** of the ASR that is
+   actually running — `l4-streaming`, trained on `featurize_tap.py`'s stream pass, whose
+   frame grid was verified equal to the windowed reference (offset 0/0, tail trimmed).
+   A windowed re-encode (`l4-windowed`) is a different adapter with its own fit.
+2. The ASR's own encoder must **expose** the tap (encoder re-export with a declared tap
+   output + FluidAudio #1109's output callback). Until then the shipped tier carries the
+   private L4 cut and pays the duplicate pass; the numbers above are the step only
+   (1.75 MB, ≈0.2–1.0 ms/frame on a Mac), and the epic's bar stays **unmet**.
+3. A per-hop runtime timeline must show **one** encoder invocation per ASR hop. TurnShadow
+   is shadow-side evidence about the step, not proof about the encoder.
+4. Traits travel with the step: the fitted temperature + threshold triple per adapter
+   (`<adapter>/traits.json` here, `student-l4.traits.json` in the live bundle) ships
+   beside the artifact. The fits here are corpus fits; the live triple is fitted on call
+   captures, and a training change requires a re-fit (`calibrate.py --temp-grid`).
+
+### Negative results and stated skips (this phase)
+
+- **Core ML int8 is not deployable** at 5.5e-3…1.4e-2 (see above). The layout cannot
+  express the asymmetric per-output-unit grid; shipping int8 there needs a QAT run on
+  Core ML's symmetric per-block grid — a training change, not a repack.
+- **Core AI int8 is not covered**: `coreai_opt.quantization` (torchao PT2E) exists in the
+  installed toolchain, but wiring it through `export_to_coreai` + the AOT compiler + the
+  runtime gate is its own task; the Core AI rows are fp32, its shipping form.
+- **The parakeet adapter row is not covered**: `parakeet-l12-full` lives in a different
+  checkpoint (`shared-parakeet*`) and has no QAT fit. It joins the matrix the same way
+  any new ASR does — `train_shared.py --adapter-only TAP`, `calibrate.py --tap`, then
+  `--shards TAP=<tap-shards>`.
+- **Every latency number is a macOS-host step measurement.** Cost is 0.04–1.0 ms/frame
+  depending on tier; the 80 ms frame leaves two orders of headroom everywhere. No iOS
+  device number exists yet, and the Core AI device path is blocked by #110.
+- **AOT recompile cost**: each adapter's `coreai-fp32` export produced its own AOT
+  container (the 3 exports are per-adapter artifacts, not one bundle).
+
 ## Risks
 
 1. **Incremental-cache parity drift** — the whole speed lever; contained by the parity
