@@ -30,16 +30,29 @@ public final class TurnTrace {
     private var closed = false
     private static let flushBytes = 32 * 1024
 
-    /// nil unless `IDFON_TURN_LOG` is set and the file can be opened.
-    /// A bare name (no `/`) lands in the app's Documents directory, which is
-    /// what `devicectl copy from` needs on a physical iPhone.
+    /// The default record path when `IDFON_TURN_LOG` is unset. A bare name (no `/`)
+    /// lands in the app's Documents directory, which is what `devicectl copy from`
+    /// needs on a physical iPhone.
+    public static let defaultFileName = "turn-log.jsonl"
+
+    /// **On by default since 2026-11-05**: the split tier is judged in real use, so a
+    /// normal launch records decisions to `Documents/turn-log.jsonl`. The file holds
+    /// per-frame decisions only — no audio; `TurnCapture` stays a separate, deliberate
+    /// act. `IDFON_TURN_LOG=0` (or `off`) disables it, any other value is the path.
     public static func fromEnvironment(
         sampleRate: Int = TurnRuntime.sampleRate,
         hopSamples: Int = TurnRuntime.hopSamples,
         meta: [String: String] = [:]
     ) -> TurnTrace? {
-        guard let raw = ProcessInfo.processInfo.environment[envKey], !raw.isEmpty else { return nil }
-        return TurnTrace(path: raw, sampleRate: sampleRate, hopSamples: hopSamples, meta: meta)
+        let raw = ProcessInfo.processInfo.environment[envKey]
+        let name: String
+        if let raw, !raw.isEmpty {
+            guard !["0", "false", "no", "off"].contains(raw.lowercased()) else { return nil }
+            name = raw
+        } else {
+            name = defaultFileName
+        }
+        return TurnTrace(path: name, sampleRate: sampleRate, hopSamples: hopSamples, meta: meta)
     }
 
     private init?(path raw: String, sampleRate: Int, hopSamples: Int, meta: [String: String]) {
