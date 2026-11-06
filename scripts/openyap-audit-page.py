@@ -239,7 +239,9 @@ function refresh() {{
 }}
 
 document.getElementById("export").onclick = () => {{
-  const cols = ["sample_id", "conversation_id", "ts_s", "kind", "threshold", "clip", "human_verdict", "human_notes"];
+  // each bundle's own columns: the handoff manifest carries the strata the
+  // fires manifest does not (mark_s, gap_ms, caller_run_ms)
+  const cols = ROWS.length ? Object.keys(ROWS[0]) : ["sample_id", "human_verdict", "human_notes"];
   const rows = ROWS.map((r) => cols.map((c) => {{
     if (c === "human_verdict") return votes[r.sample_id]?.verdict || "";
     if (c === "human_notes") return (votes[r.sample_id]?.notes || "").replace(/"/g, '""');

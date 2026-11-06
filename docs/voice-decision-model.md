@@ -568,6 +568,32 @@ the agent and take or contest the floor near the mark*) confirms 63%. The gap is
   `mode` stays bridged for the floor state, ENDPOINT and BACKCHANNEL — the
   audibility condition belongs to the barge branch only.
 
+**Human audit of the bar (step 1, 2026-11-06).** 32 handoff clips and 30 fire
+clips from the same 80 min were judged blind on one question — *is the caller
+claiming the floor at the mark?* — with "already talking" not counting as No;
+clips where the caller was already speaking and kept going were scored Yes.
+The 32 handoffs are ≈random over the 637 handoffs: the 11:03 build sampled
+positions systematically, which spreads evenly over the run-length quartiles.
+
+- **Handoffs: 17/32 yes = 53%** base rate (95% CI ≈37–69%). By population
+  run-length quartile: ≤320 ms 1/9 (11%), 320–640 ms 3/6 (50%), 640–1440 ms
+  6/10 (60%), >1440 ms 7/7 (100%). The short-run misses are partly *correct*
+  behaviour: only 11% of ≤320 ms handoffs are floor claims. A detector firing
+  on every handoff scores 53%; the head's 45% precision on live captures is at
+  or below that base rate and needs the same denominator to mean anything.
+- **Fires: 28/30 yes = 93%** precision (95% CI ≈79–98%). Both "no" are at
+  threshold 0.40 (2/10 false there, 0/10 at 0.30 and 0.50). The manifest's
+  `mark_s` is the clip lead, computed from the fire's distance to the agent's
+  last voiced frame, so the set splits by silence without regenerating it.
+  Under the decision's strict-overlap definition (agent voiced on the frame
+  before the mark) there are **10 strict-overlap fires, 10/10 real, 0 false**:
+  the landed firing-frame check keeps every one and meets the BARGE acceptance
+  (≥50% strict-overlap, ≤1 false stop/min). The spec's 320 ms window is worse —
+  it also admits the two false fires at 240 ms silence (12/14, 86%). The 16
+  silent-tail fires are real floor claims but not barges: they belong to
+  TURN_GRAB (yield), so the gate only loses them if the tail has no TURN_GRAB
+  path. That split, not the gate, is the open item.
+
 **Rollout.** Harness A/B (`openyap-barge-sweep.py`) → rules ports → traits bump.
 The gate changes events, not labels: the head is distilled from the teacher's
 `yield` score, so no retraining is implied.
@@ -578,7 +604,7 @@ fixtures keep asserting tyger-s2s's behaviour, and enabled per deployment:
 | --- | --- | --- | --- |
 | `barge_edge` | fire per threshold crossing, re-arm when yield drops | 1,257 → **441** fires, recall **23% → 23%** | **enabled** in `tuned()` and the TS engine |
 | `barge_refractory` | one per speaking episode | 1,257 → 179 fires, recall 23% → **9%** | off; the audit decides |
-| `barge_gate_db` | agent channel audible on the firing frame | tail blocked; strict-overlap catch unmeasured live | off; the audit decides |
+| `barge_gate_db` | agent channel audible on the firing frame | 10/10 strict-overlap fires kept, 0 false; the spec's 320 ms window also keeps both false fires | off; the split decides |
 
 Edge-triggering is the free win: a third of the events at identical recall.
 The refractory buys another 2.4× fewer false fires but halves recall, so it is a

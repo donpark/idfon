@@ -183,7 +183,7 @@ def main() -> None:
     # sample evenly across the run-length quartiles so short (backchannel-length)
     # and long (turn-length) handoffs are both represented
     order = np.argsort(runs_ms)
-    quart = [order[i::4] for i in range(4)]
+    quart = np.array_split(order, 4)
     picked = []
     for q in quart:
         k = max(1, a.sample // 4)
