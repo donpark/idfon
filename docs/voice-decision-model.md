@@ -588,10 +588,37 @@ overlap allowed, sub-threshold blocked, one-per-episode, one-per-crossing with
 re-arm after a dip, and both defaults off); `turns_fixtures.rs` and the TS
 fixture replay still pass byte-for-byte.
 
-**Open.** The 30 blinded clips (`--clips`) adjudicate the TURN_GRAB bar; until
-then its precision estimate is the audit's 63% on a stratified sample, not a
-population figure. Whether TURN_GRAB needs its own head or reuses `yield` is
-undecided.
+**It needs its own head.** Measured on 637 floor handoffs from Open Yap 1K
+(80 min, 16 calls; `scripts/openyap-handoffs.py`, an audio-side reference that does
+not use the model's own fires), the teacher's 8-vector shows why `yield` cannot do
+this job: for the 212 handoffs we miss at ≤600 ms, `yield` peaks at **p50 0.05**
+(183 of 212 below 0.30), because it is trained to fire *while the agent talks* and
+at a handoff the agent has stopped. The state head does see the caller — SPEAK at
+174/212 of those misses — but as a rule it fires 20×/min at 18% precision.
+
+So `turn_grab` is a registry head on the corpus's Beginning-of-Turn label
+(`corpus:bot_ch0`, 3.4 positives per 3-minute session, `pos_weight=25`), outside
+the 8-vector seam. In-domain val AUC **0.993**.
+
+**Thresholds must be per-domain percentiles, not absolute values.** The head's
+ranking transfers and its scale does not:
+
+| domain | threshold | events/min | handoffs caught (±400 ms) | precision |
+| --- | --- | ---: | ---: | ---: |
+| Open Yap, 80 min | p99 = 0.082 | 4.4 | 38% | 74% |
+| live captures, 33 min | **0.082, fitted on Open Yap** | 3.4 | 49% | 45% |
+| live captures, 33 min | its own p99 = 0.072 | 3.9 | 51% | 43% |
+
+The Open Yap percentile lands within 0.01 of the live set's own — the first
+quantity in this work that transferred between domains unaided. For comparison,
+`yield` at its shipped 0.5 gives 19% at 60% precision on Open Yap and 43% at 61%
+on live, at 4.0 and 5.3 events/min respectively: the new head wins clearly on the
+first and trades precision for reach on the second.
+
+**Open.** The 30 blinded clips still adjudicate whether a "Yes" here is a floor
+claim; the head's numbers are agreement with an *audio* handoff definition, not
+with human judgement. Nothing above ships: the seam is unchanged, the head is
+extra, and the percentile fit is 80 + 33 minutes of two datasets.
 
 ## References
 
