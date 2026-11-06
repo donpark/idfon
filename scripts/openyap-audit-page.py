@@ -153,7 +153,15 @@ const KEY = "barge-audit:" + document.title;
 let votes = JSON.parse(localStorage.getItem(KEY) || "{{}}");
 const save = () => localStorage.setItem(KEY, JSON.stringify(votes));
 
-const fmt = (t) => (t >= 0 ? "+" : "") + t.toFixed(2) + " s from the mark";
+const detail = (r) => {{
+  const bits = [];
+  if (r.threshold !== undefined && r.threshold !== "") bits.push("yield threshold " + r.threshold);
+  if (r.gap_ms !== undefined) bits.push("gap " + r.gap_ms + " ms");
+  if (r.caller_run_ms !== undefined) bits.push("caller spoke " + r.caller_run_ms + " ms");
+  bits.push("at the mark: caller " + r.caller_db + " dB, agent " +
+            (r.agent_db <= -60 ? "silent" : r.agent_db + " dB"));
+  return bits.join(" · ");
+}};
 
 function item(r, i) {{
   const v = votes[r.sample_id] || {{}};
@@ -169,8 +177,7 @@ function item(r, i) {{
                src="${{encodeURIComponent(r.clip)}}"></audio>
       </div>
       <div class="meta">mark ${{r.mark_s}} s · ${{r.kind.toLowerCase()}} · ${{Math.round(r.ts_s)}} s into the call
-        <span class="reveal" data-reveal>· threshold ${{r.threshold}} ·
-        at the mark: caller ${{r.caller_db}} dB, agent ${{r.agent_db <= -60 ? "silent" : r.agent_db + " dB"}}</span></div>
+        <span class="reveal" data-reveal>· ${{detail(r)}}</span></div>
     </div>
     <div class="votes">
       <button data-v="yes" class="${{v.verdict === 'yes' ? 'on-yes' : ''}}" title="caller took the floor">Yes</button>
