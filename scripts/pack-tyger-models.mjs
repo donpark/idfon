@@ -11,6 +11,7 @@
 // store decodes it non-optional and fails the whole delivery on null).
 //
 //   node scripts/pack-tyger-models.mjs [--url-base URL] [--out DIR] [--all] [--only TIER]
+//                                  [--prefix-dir DIR]
 //
 // Default set: the coreai fp32 encoder + the distilled StudentStep (the
 // 5.3 MB step the loaders prefer) + their AOT containers (the gated default
@@ -18,6 +19,17 @@
 // and is opt-in, side-loaded), the teacher's TygerStep as the fallback step,
 // the pre-27 coreml packages (TygerEncoder, TygerEncoderDyn, StudentStep,
 // TygerStep), and the quantized MLX int8 chain (the pre-27 mac tier).
+//
+// The 320 ms turn prefix (#132's split tier) is packed as the `prefix` tier: its
+// export dir (`--prefix-dir`, default `bench-results/turn-prefix-320`, written by
+// `export_asr_tap.py --export --prefix-only`) becomes `prefix/<name>` in the
+// manifest, which installs at `<store>/prefix` where `TurnPrefix.artifact`
+// looks. The tier name is load-bearing: `TygerModelStore.fetch` downloads only
+// entries whose name starts with the requested tier, so adding it changes
+// nothing a current install downloads until something calls
+// `ensure(tier: "prefix")`. Its `metadata.json` must be packed with it (the
+// loader reads `prompt_id` from the sidecar), and exactly one package may be in
+// that dir (more is ambiguous and the loader refuses).
 //
 // AOT containers are packed as their whole `*.compiled.aimodel` directory: the
 // per-arch `<name>.<arch>.aimodelc` child depends on the build host.
@@ -33,7 +45,7 @@
 // rules seam, so a bundle without it silently falls back to the teacher-tuned
 // thresholds.
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 const args = process.argv.slice(2);
@@ -67,6 +79,7 @@ const platformOf = (name) => {
 const out = resolve(arg("--out") ?? "dist/tyger-models");
 const all = args.includes("--all");
 const root = resolve(arg("--root") ?? "bench-results");
+const prefixDir = resolve(arg("--prefix-dir") ?? join(root, "turn-prefix-320"));
 
 const tiers = ["coreai", "coreml", "mlx", "onnx"];
 let bundles = all
@@ -94,8 +107,21 @@ let bundles = all
       "coreml/TygerStep.mlpackage",
       "mlx/TygerChainInt8.safetensors",
     ];
+// A bundle is a `root/<name>` string, or `{ from, as }` when the export dir and
+// the install tier differ (the prefix: `turn-prefix-320/` -> `prefix/`).
+const prefixBundle = { from: prefixDir, as: "prefix" };
+bundles = [...bundles, prefixBundle];
+const bundleName = (b) => (typeof b === "string" ? b : b.as);
 const only = arg("--only");
-if (only) bundles = bundles.filter((b) => b.startsWith(`${only}/`));
+if (only) {
+  bundles = bundles.filter((b) => {
+    const name = bundleName(b);
+    return name === only || name.startsWith(`${only}/`);
+  });
+  // A partial pack's manifest holds only that tier; uploading it over the
+  // release manifest would make every other tier look absent.
+  console.warn(`--only ${only}: partial manifest — do not publish it over the full pack`);
+}
 
 const walk = (dir, prefix, into) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -110,14 +136,23 @@ const walk = (dir, prefix, into) => {
 mkdirSync(out, { recursive: true });
 const files = [];
 for (const bundle of bundles) {
-  const dir = join(root, bundle);
+  const spec = typeof bundle === "string" ? { from: join(root, bundle), as: bundle } : bundle;
+  const dir = spec.from;
+  if (spec.as === "prefix") {
+    const items = existsSync(dir) ? readdirSync(dir) : [];
+    const packages = items.filter((n) => n.endsWith(".mlpackage") || n.endsWith(".mlmodelc"));
+    if (packages.length !== 1 || !items.includes("metadata.json")) {
+      console.error(`prefix needs exactly one package + metadata.json: ${dir}`);
+      process.exit(1);
+    }
+  }
   if (!statSync(dir).isDirectory() && !statSync(dir).isFile()) {
     console.error(`missing bundle: ${dir}`);
     process.exit(1);
   }
   const picked = [];
-  if (statSync(dir).isFile()) picked.push({ name: bundle, path: dir });
-  else walk(dir, bundle, picked);
+  if (statSync(dir).isFile()) picked.push({ name: spec.as, path: dir });
+  else walk(dir, spec.as, picked);
   for (const f of picked) {
     const buf = readFileSync(f.path);
     const sha = createHash("sha256").update(buf).digest("hex");
