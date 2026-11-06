@@ -35,6 +35,12 @@ export interface Thresholds {
   bc_deb: number;
   theta: number;
   bc_refractory: number;
+  /** Barge needs the agent's own channel audible (dB) on the firing frame; omit for the
+   *  pre-2026-11-06 behaviour (mode alone), which is what the parity fixtures assert. */
+  barge_gate_db?: number;
+  /** 0/omit = off, 1 = one BARGE per speaking episode (the rule otherwise re-fires on
+   *  every debounce run, ~19x per episode on Open Yap 1K). */
+  barge_refractory?: number;
 }
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
@@ -159,6 +165,9 @@ export class TurnSession {
   private talk_frames = 0;
   private quiet_frames = 0;
   private yield_run = 0;
+  private agent_db: number[] = [];
+  private hop_cursor = 0;
+  private barge_fired = false;
   private warm = 0;
   private mode = "listen";
   private bc_run = 0;
@@ -223,6 +232,8 @@ export class TurnSession {
       }
     }
     this.seed_u = null;
+    this.agent_db = frameEnergy(agentHop);
+    this.hop_cursor = 0;
     slide(this.win_u, userHop, WINDOW_S * SR);
     slide(this.win_a, agentHop, WINDOW_S * SR);
     if (mode === "listen") {
@@ -244,6 +255,7 @@ export class TurnSession {
     this.talk_frames = 0;
     this.quiet_frames = 0;
     this.prev_state = mode === "speaking" ? SPEAK : LISTEN;
+    this.barge_fired = false; // a new speaking episode may fire once again
     this.mode = mode;
     return true;
   }
@@ -282,6 +294,9 @@ export class TurnSession {
     const [haz, yp, bcp, pep] = [outputs[4], outputs[5], outputs[6], outputs[7]];
     const st = stateDecision(slog, haz, this.prev_state, this.th.theta);
     const voiced = actDb > VAD_DB;
+    // this frame's agent-channel energy, then advance the hop cursor
+    const agentDb = this.agent_db[this.hop_cursor];
+    this.hop_cursor += 1;
 
     if (mode === "speaking") {
       // BARGE path (yield head)
@@ -289,7 +304,10 @@ export class TurnSession {
       this.track_talk(voiced);
       if (this.warm > WARMUP_FRAMES) {
         this.yield_run = yp >= this.th.barge_thr ? this.yield_run + 1 : 0;
-        if (this.yield_run >= this.th.barge_deb) {
+        const gate = this.th.barge_gate_db;
+        const audible = gate === undefined ? true : agentDb !== undefined && agentDb > gate;
+        const onePerEpisode = !this.th.barge_refractory || !this.barge_fired;
+        if (this.yield_run >= this.th.barge_deb && audible && onePerEpisode) {
           const onset_s = this.talk_frames !== 0
             ? Math.min((this.talk_frames + left) * FRAME_S, ONSET_MAX_S)
             : 0;
@@ -298,7 +316,11 @@ export class TurnSession {
           e.onset_s = r(onset_s, 2);
           events.push(e);
           this.yield_run = 0;
+          this.barge_fired = true;
           this.seed_u = this.pre_u.slice();
+        } else if (this.yield_run >= this.th.barge_deb && !audible) {
+          // the proposal expired while the agent was silent: nothing to stop
+          this.yield_run = 0;
         }
       }
       const fr = ev("FRAME");
