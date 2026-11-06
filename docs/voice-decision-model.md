@@ -568,10 +568,18 @@ the agent and take or contest the floor near the mark*) confirms 63%. The gap is
   `mode` stays bridged for the floor state, ENDPOINT and BACKCHANNEL — the
   audibility condition belongs to the barge branch only.
 
-**Rollout.** Harness A/B (`openyap-barge-sweep.py`), then the three rules ports
-with fixtures (positive: audible overlap; negative: 1.9 s release tail), then a
-traits revision bump. The gate changes events, not labels: the head is distilled
-from the teacher's `yield` score, so no retraining is implied.
+**Rollout.** Harness A/B (`openyap-barge-sweep.py`) → rules ports → traits bump.
+The gate changes events, not labels: the head is distilled from the teacher's
+`yield` score, so no retraining is implied.
+
+*Rust landed 2026-11-06* as two thresholds that default to **off** —
+`barge_gate_db: Option<f64>` (the agent channel's energy on the firing frame,
+`begin_hop` already receives it) and `barge_refractory: i32` (0 off, 1 = one per
+speaking episode, reset by `switch_mode`). Off by default so
+`tests/turns_fixtures.rs` still asserts tyger-s2s's behaviour byte-for-byte;
+`tests/turns_barge_gate.rs` covers the gate (silent tail blocked, audible overlap
+allowed, sub-threshold yield blocked) and the refractory (one per episode, a new
+episode allowed). Remaining: the TS port, then enabling both in the traits set.
 
 **Open.** The 30 blinded clips (`--clips`) adjudicate the TURN_GRAB bar; until
 then its precision estimate is the audit's 63% on a stratified sample, not a

@@ -92,6 +92,16 @@ pub struct Thresholds {
     pub bc_deb: i32,
     pub theta: f64,
     pub bc_refractory: i32,
+    /// Barge needs the agent's own channel audible, in dB, on the firing frame.
+    /// `None` keeps the pre-2026-11-06 behaviour (mode alone gates barge), which is
+    /// what the parity fixtures assert; traits enable it after all three ports carry
+    /// it. Measured: with mode alone, 98% of live barge events fire in the 1.92 s
+    /// mode release tail with the agent silent (`docs/voice-decision-model.md`).
+    pub barge_gate_db: Option<f64>,
+    /// 0 = off. 1 = one BARGE per speaking episode: the rule otherwise re-fires on
+    /// every `barge_deb` run, ~19x per episode on Open Yap 1K (13.7 -> 1.9 false
+    /// fires/min with nothing else changed).
+    pub barge_refractory: i32,
 }
 
 impl Default for Thresholds {
@@ -105,6 +115,8 @@ impl Default for Thresholds {
             bc_deb: 2,
             theta: 0.2,
             bc_refractory: 15,
+            barge_gate_db: None,
+            barge_refractory: 0,
         }
     }
 }
@@ -209,6 +221,10 @@ pub struct TurnSession {
     words_sent: String,
     pub turn_gen: u64,
     pending_reset: bool,
+    /// Per-frame energy (dB) of the agent's own channel for the current hop.
+    agent_db: Vec<f32>,
+    hop_cursor: usize,
+    barge_fired: bool,
 }
 
 impl TurnSession {
@@ -238,6 +254,9 @@ impl TurnSession {
             words_sent: String::new(),
             turn_gen: 0,
             pending_reset: true,
+            agent_db: Vec::new(),
+            hop_cursor: 0,
+            barge_fired: false,
         };
         s.clear();
         s
@@ -295,6 +314,8 @@ impl TurnSession {
             }
         }
         self.seed_u = None;
+        self.agent_db = frame_energy(agent_hop);
+        self.hop_cursor = 0;
         slide(&mut self.win_u, user_hop, (WINDOW_S * SR as f64) as usize);
         slide(&mut self.win_a, agent_hop, (WINDOW_S * SR as f64) as usize);
         if mode == "listen" {
@@ -318,6 +339,7 @@ impl TurnSession {
         self.talk_frames = 0;
         self.quiet_frames = 0;
         self.prev_state = if mode == "speaking" { SPEAK } else { LISTEN };
+        self.barge_fired = false; // a new speaking episode may fire once again
         self.mode = mode.to_string();
         true
     }
@@ -362,6 +384,9 @@ impl TurnSession {
         let (haz, yp, bcp, pep) = (outputs[4] as f64, outputs[5] as f64, outputs[6] as f64, outputs[7] as f64);
         let st = state_decision(slog, haz, self.prev_state, self.th.theta);
         let voiced = act_db > VAD_DB;
+        // this frame's agent-channel energy, then advance the hop cursor
+        let agent_db = self.agent_db.get(self.hop_cursor).copied().map(f64::from);
+        self.hop_cursor += 1;
 
         if mode == "speaking" {
             // BARGE path (yield head)
@@ -369,7 +394,12 @@ impl TurnSession {
             self.track_talk(voiced);
             if self.warm > WARMUP_FRAMES {
                 self.yield_run = if yp >= self.th.barge_thr { self.yield_run + 1 } else { 0 };
-                if self.yield_run >= self.th.barge_deb {
+                let audible = match self.th.barge_gate_db {
+                    None => true,
+                    Some(g) => agent_db.map(|d| d > g).unwrap_or(false),
+                };
+                let one_per_episode = self.th.barge_refractory <= 0 || !self.barge_fired;
+                if self.yield_run >= self.th.barge_deb && audible && one_per_episode {
                     let onset_s = if self.talk_frames != 0 {
                         ((self.talk_frames as f64 + left as f64) * FRAME_S).min(ONSET_MAX_S)
                     } else {
@@ -380,7 +410,11 @@ impl TurnSession {
                     ev.onset_s = Some(r(onset_s, 2));
                     events.push(ev);
                     self.yield_run = 0;
+                    self.barge_fired = true;
                     self.seed_u = Some(self.pre_u.clone());
+                } else if self.yield_run >= self.th.barge_deb && !audible {
+                    // the proposal expired while the agent was silent: nothing to stop
+                    self.yield_run = 0;
                 }
             }
             let mut ev = Event::kind("FRAME");
