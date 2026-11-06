@@ -25,9 +25,10 @@ class _Encoder:
 MODEL = SimpleNamespace(config=SimpleNamespace(num_prompts=4), encoder=_Encoder())
 
 
-def keys(pass_cfg, cache_len, tier=TIER_560):
+def keys(pass_cfg, cache_len, tier=TIER_560, drop_context=False):
     """-> [T] key counts per query and the [T, C+T] mask."""
-    wrapper = StreamingTapEncoder(MODEL, pass_cfg=pass_cfg, tier=tier)
+    wrapper = StreamingTapEncoder(MODEL, pass_cfg=pass_cfg, tier=tier,
+                                  drop_context=drop_context)
     mask = wrapper.key_mask(torch.tensor([cache_len], dtype=torch.int32))
     return mask.sum(1).tolist(), mask
 
@@ -85,6 +86,20 @@ class MaskGeometryTests(unittest.TestCase):
         for cache_len in (1, 7, 14, REFERENCE.left):
             _, got = keys(REFERENCE, cache_len, tier)
             self.assertTrue(torch.equal(got, sliding_window(REFERENCE, cache_len, tier)))
+
+    def test_drop_context_row_is_the_published_seven_row_contract(self):
+        # FluidAudio's conversion drops the overlap row before the stack: 7 queries,
+        # 49 keys (42 cache + 7 current), cache +7/call. The default keeps it.
+        w = StreamingTapEncoder(MODEL, SHIPPING, drop_context=True)
+        self.assertEqual(w.rows, 7)
+        self.assertEqual(StreamingTapEncoder(MODEL, SHIPPING).rows, 8)
+        counts, mask = keys(SHIPPING, SHIPPING.left, drop_context=True)
+        self.assertEqual(counts, [49] * 7)
+        for qi in range(7):
+            self.assertEqual(mask[qi].nonzero().flatten().tolist(), list(range(49)))
+        # 320 ms tier: 32 mel -> 5 conv rows, drop one -> 4 released (not 5)
+        self.assertEqual(StreamingTapEncoder(MODEL, SHIPPING, tier=TIER_320,
+                                             drop_context=True).rows, 4)
 
     def test_batched_mask_is_per_stream(self):
         # a B=2 graph must not share one stream's cache length across the batch

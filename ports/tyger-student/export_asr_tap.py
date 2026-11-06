@@ -76,7 +76,8 @@ def example_inputs(pass_cfg: PassConfig = REFERENCE, tier: Tier = TIER_560,
 
 
 def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL,
-             batch: int = 1, depth: int = 24, prefix_only: bool = False):
+             batch: int = 1, depth: int = 24, prefix_only: bool = False,
+             drop_context: bool = False):
     """The fields `StreamingNemotronAsrManager` reads; the cache depth is the artifact's.
 
     The earlier 70-vs-42 mismatch was `cache_channel_shape[2]` (70, the 56/0 pass's
@@ -102,6 +103,7 @@ def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL,
         "decoder_hidden": int(cfg.decoder_hidden_size),
         "decoder_layers": int(cfg.num_decoder_layers),
         "encoder_dim": 1024,
+        "row_convention": "drop-context" if drop_context else "keep-context",
     }
     if prefix_only:
         meta["prompt_id"] = int(cfg.default_prompt_id)
@@ -110,13 +112,13 @@ def metadata(model, tier: Tier, cache_depth: int, model_id=DEFAULT_MODEL,
 
 def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=False,
            pass_cfg: PassConfig = REFERENCE, tier: Tier = TIER_560, batch: int = 1,
-           depth: int = 24, prefix_only: bool = False):
+           depth: int = 24, prefix_only: bool = False, drop_context: bool = False):
     import coremltools as ct
 
     out_dir.mkdir(parents=True, exist_ok=True)
     wrapper = StreamingTapEncoder(model, pass_cfg=pass_cfg, tier=tier,
                                   tap_index=TAP_INDEX, batch=batch, depth=depth,
-                                  prefix_only=prefix_only).eval()
+                                  prefix_only=prefix_only, drop_context=drop_context).eval()
     with torch.no_grad():
         traced = torch.jit.trace(wrapper, example_inputs(pass_cfg, tier, batch, depth),
                                  strict=False)
@@ -169,12 +171,15 @@ def export(model, out_dir: Path, precision="fp32", model_id=DEFAULT_MODEL, int8=
         tag = f"{pass_cfg.left}-{pass_cfg.lookahead}_{tag}"
     if tier != TIER_560:
         tag = f"{tag.replace(precision, f'{tier.ms}ms_{precision}', 1)}"
+    if drop_context:
+        tag = f"{tag}_r7"
     if prefix_only:
         tag = f"{tag}_l{depth}b{batch}"
     path = out_dir / f"encoder_tap_{tag}.mlpackage"
     ml.save(str(path))
     size = sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
-    meta = metadata(model, tier, pass_cfg.left, model_id, batch, depth, prefix_only)
+    meta = metadata(model, tier, pass_cfg.left, model_id, batch, depth, prefix_only,
+                    drop_context)
     meta["prefix_only"] = prefix_only
     (out_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
     print(f"saved {path}  {size/1e6:.1f} MB ({size} bytes)")
@@ -303,7 +308,8 @@ def gate(model_path: Path, args):
 
             quantize_weights_int8_(ref_model.encoder)
         ref_wrapper = StreamingTapEncoder(ref_model, pass_cfg=cfg, tier=tier,
-                                          tap_index=TAP_INDEX).eval()
+                                          tap_index=TAP_INDEX,
+                                          drop_context=args.drop_context_row).eval()
         ref_enc_chunks, ref_tap_chunks = wrapper_chunks(ref_wrapper, feats_t)
         ref_off = ml_off = 0
         del ref_wrapper, ref_model
@@ -422,6 +428,10 @@ def main():
     ap.add_argument("--depth", type=int, default=24, help="encoder layers to run (tap requires >= 4)")
     ap.add_argument("--prefix-only", action="store_true",
                     help="stop at the tap: no encoded/prompt projector; prefix caches")
+    ap.add_argument("--drop-context-row", action="store_true",
+                    help="FluidAudio's published framing: drop the overlap row before the "
+                         "stack (7 rows/call, cache +7), not after it (8 rows, cache +8). "
+                         "The tap then differs from the shard/tap pass: re-gate before use.")
     ap.add_argument("--out", default="bench-results/asr-tap")
     ap.add_argument("--fixture", default=None)
     ap.add_argument("--session-id", default=None, help="dualturn val session for the shard gate")
@@ -446,7 +456,8 @@ def main():
         path, size = export(model, Path(args.out), precision, args.model, int8,
                             PASSES[args.pass_], TIERS[args.chunk_ms],
                             batch=args.batch, depth=args.depth,
-                            prefix_only=args.prefix_only)
+                            prefix_only=args.prefix_only,
+                            drop_context=args.drop_context_row)
         if args.gate is None and not args.prefix_only:
             args.gate = str(path)
         if args.prefix_only:
