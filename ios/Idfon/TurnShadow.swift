@@ -334,6 +334,16 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
                                  "traits": traits == nil ? "default" : "student"])
     }
 
+    /// The one prefix load path, shared by the call-time tier and the
+    /// `-turnprefixprobe` launch probe (same artifact lookup, step choice,
+    /// initializer and sidecar rules).
+    static func prefixModel(artifact: URL, in dir: URL) throws -> TurnPrefixModel {
+        let student = dir.appendingPathComponent("StudentStep.mlpackage")
+        let teacher = dir.appendingPathComponent("TygerStep.mlpackage")
+        let step = FileManager.default.fileExists(atPath: student.path) ? student : teacher
+        return try TurnPrefixModel(artifactURL: artifact, stepURL: step)
+    }
+
     /// The 320 ms turn prefix tier (#132's split tier): a 102 MB layers-0-3 encoder
     /// under `<root>/prefix/`, batched two ears in one cache-aware call, beside the
     /// cut tier's files. Default off (`IDFON_TURN_PREFIX=1`); absent, ambiguous or
@@ -345,11 +355,8 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
             Diag.log("turnmodel", ["tier": "prefix-320", "ok": false, "error": "no prefix artifact"])
             return nil
         }
-        let student = dir.appendingPathComponent("StudentStep.mlpackage")
-        let teacher = dir.appendingPathComponent("TygerStep.mlpackage")
-        let step = FileManager.default.fileExists(atPath: student.path) ? student : teacher
         do {
-            let model = try TurnPrefixModel(artifactURL: artifact, stepURL: step)
+            let model = try prefixModel(artifact: artifact, in: dir)
             let traits = traitsJSON(in: dir, step: model.stepModelName)
             let s = model.shape
             Automation.mark("turn-shadow: tier prefix-320 (\(artifact.lastPathComponent), cache \(s.cacheDepth)x\(s.layers), \(s.tapRowsPerChunk) rows/hop, \(model.stepModelName), traits \(traits == nil ? "default" : "student"))")
