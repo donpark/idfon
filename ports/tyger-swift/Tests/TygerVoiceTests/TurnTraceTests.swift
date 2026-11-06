@@ -44,10 +44,13 @@ final class TurnTraceTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("turn-trace-\(UUID().uuidString)")
         let path = dir.appendingPathComponent("call.jsonl").path
-        unsetenv(TurnTrace.envKey)
+        // Logging is on by default since 2026-11-05, so the inert arm is the
+        // explicit kill switch rather than an unset variable.
+        setenv(TurnTrace.envKey, "0", 1)
+        defer { unsetenv(TurnTrace.envKey) }
         let off = driveFixture()
         XCTAssertFalse(FileManager.default.fileExists(atPath: path),
-                       "the flag is unset: the run must not create a file")
+                       "the flag is off: the run must not create a file")
         XCTAssertFalse(off.events.isEmpty, "the fixture must emit events")
 
         setenv(TurnTrace.envKey, path, 1)

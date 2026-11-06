@@ -170,10 +170,13 @@ final class TurnPrefixTests: XCTestCase {
         XCTAssertEqual(try TurnPrefixModel(artifactURL: link, stepURL: step, promptID: 7).promptID, 7)
     }
 
-    func testFlagIsOffUnlessAsked() {
-        XCTAssertFalse(TurnPrefix.isEnabled(environment: [:]))
+    /// Default-on since the 2026-11-05 ruling (#132): real use is the test, and the
+    /// env var is the kill switch that returns to the cut without a rebuild.
+    func testFlagIsOnUnlessKilled() {
+        XCTAssertTrue(TurnPrefix.isEnabled(environment: [:]))
         XCTAssertFalse(TurnPrefix.isEnabled(environment: ["IDFON_TURN_PREFIX": "0"]))
         XCTAssertFalse(TurnPrefix.isEnabled(environment: ["IDFON_TURN_PREFIX": "no"]))
+        XCTAssertFalse(TurnPrefix.isEnabled(environment: ["IDFON_TURN_PREFIX": "off"]))
         XCTAssertTrue(TurnPrefix.isEnabled(environment: ["IDFON_TURN_PREFIX": "1"]))
         XCTAssertTrue(TurnPrefix.isEnabled(environment: ["IDFON_TURN_PREFIX": "true"]))
     }
