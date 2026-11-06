@@ -77,3 +77,26 @@ fn gate_does_not_fire_below_the_yield_threshold() {
     sess.switch_mode("speaking");
     assert!(drive(&mut sess, "speaking", 3, HOP_FRAMES, 0.1, 0.1, 0.1).is_empty());
 }
+
+#[test]
+fn edge_trigger_fires_once_per_crossing_not_per_run() {
+    let th = Thresholds { barge_edge: true, ..Thresholds::default() };
+    let mut sess = TurnSession::new(th.clone());
+    sess.switch_mode("speaking");
+    // yield stays high for four hops: one fire, not one per debounce run
+    assert_eq!(drive(&mut sess, "speaking", 4, HOP_FRAMES, 0.1, 0.1, 0.9).len(), 1);
+    // a dip below the threshold re-arms it inside the same episode
+    let mut sess2 = TurnSession::new(th);
+    sess2.switch_mode("speaking");
+    drive(&mut sess2, "speaking", 2, HOP_FRAMES, 0.1, 0.1, 0.9);   // fires once
+    drive(&mut sess2, "speaking", 1, HOP_FRAMES, 0.1, 0.1, 0.1);   // below: re-arm
+    assert_eq!(drive(&mut sess2, "speaking", 2, HOP_FRAMES, 0.1, 0.1, 0.9).len(), 1);
+}
+
+#[test]
+fn edge_trigger_is_off_by_default() {
+    let mut sess = TurnSession::new(Thresholds::default());
+    sess.switch_mode("speaking");
+    assert!(drive(&mut sess, "speaking", 4, HOP_FRAMES, 0.1, 0.1, 0.9).len() > 1,
+            "the parity default still fires per debounce run");
+}

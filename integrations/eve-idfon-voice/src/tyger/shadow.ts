@@ -37,7 +37,9 @@ export async function runShadow(opts: ShadowOptions): Promise<void> {
   const enc = await ort.InferenceSession.create(bundle.encoderPath);
   const step = await ort.InferenceSession.create(bundle.stepPath);
   const engine = new TygerEngine(enc, step, bundle.stateShape);
-  const sess = new TurnSession(bundle.traits ?? {});
+  // `barge_refractory: 1` = one barge decision per speaking episode, as the Rust
+  // `Thresholds::tuned()` ships it (docs/voice-decision-model.md, 2026-11-06).
+  const sess = new TurnSession({ barge_edge: true, ...(bundle.traits ?? {}) });
   const resample = makeResampler();
   let pending: number[] = [];
   let frame = 0;

@@ -38,9 +38,12 @@ export interface Thresholds {
   /** Barge needs the agent's own channel audible (dB) on the firing frame; omit for the
    *  pre-2026-11-06 behaviour (mode alone), which is what the parity fixtures assert. */
   barge_gate_db?: number;
-  /** 0/omit = off, 1 = one BARGE per speaking episode (the rule otherwise re-fires on
-   *  every debounce run, ~19x per episode on Open Yap 1K). */
+  /** 0/omit = off, 1 = one BARGE per speaking episode (costs 23% -> 9% recall on Open Yap 1K). */
   barge_refractory?: number;
+  /** Fire on a threshold crossing, not on a level: re-arms when yield drops back below
+   *  `barge_thr`. Omit for the parity behaviour; the engine enables it (strict win:
+   *  1,257 -> 441 fires over 80 min at identical recall). */
+  barge_edge?: boolean;
 }
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
@@ -52,6 +55,9 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   bc_deb: 2,
   theta: 0.2,
   bc_refractory: 15,
+  // `barge_refractory` is not set here: this is the bundle/parity base (the fixture
+  // replay asserts tyger-s2s's behaviour). The engine passes it at construction --
+  // see `LIVE` in shadow.ts/endpointer.ts, mirroring Rust's `Thresholds::tuned()`.
 };
 
 export interface Event {
@@ -168,6 +174,7 @@ export class TurnSession {
   private agent_db: number[] = [];
   private hop_cursor = 0;
   private barge_fired = false;
+  private barge_armed = true;
   private warm = 0;
   private mode = "listen";
   private bc_run = 0;
@@ -256,6 +263,7 @@ export class TurnSession {
     this.quiet_frames = 0;
     this.prev_state = mode === "speaking" ? SPEAK : LISTEN;
     this.barge_fired = false; // a new speaking episode may fire once again
+    this.barge_armed = true;
     this.mode = mode;
     return true;
   }
@@ -303,7 +311,9 @@ export class TurnSession {
       this.warm += 1;
       this.track_talk(voiced);
       if (this.warm > WARMUP_FRAMES) {
-        this.yield_run = yp >= this.th.barge_thr ? this.yield_run + 1 : 0;
+        if (yp < this.th.barge_thr) this.barge_armed = true;   // the head fell back
+        const rising = this.barge_armed || !this.th.barge_edge;
+        this.yield_run = yp >= this.th.barge_thr && rising ? this.yield_run + 1 : 0;
         const gate = this.th.barge_gate_db;
         const audible = gate === undefined ? true : agentDb !== undefined && agentDb > gate;
         const onePerEpisode = !this.th.barge_refractory || !this.barge_fired;
@@ -317,6 +327,7 @@ export class TurnSession {
           events.push(e);
           this.yield_run = 0;
           this.barge_fired = true;
+          this.barge_armed = false;
           this.seed_u = this.pre_u.slice();
         } else if (this.yield_run >= this.th.barge_deb && !audible) {
           // the proposal expired while the agent was silent: nothing to stop

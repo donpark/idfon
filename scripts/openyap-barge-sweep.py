@@ -88,24 +88,39 @@ def interrupting_onsets(caller: np.ndarray, agent: np.ndarray, quiet: int = 3, h
     return out
 
 
-def fires_at(y: np.ndarray, mode: np.ndarray, thr: float, deb: int = 2) -> list[int]:
-    """Frame indices where the barge branch fires: `deb` consecutive speaking frames at or above thr."""
+def fires_at(y: np.ndarray, mode: np.ndarray, thr: float, deb: int = 2,
+             refractory: bool = False, edge: bool = False) -> list[int]:
+    """Frame indices where the barge branch fires: `deb` consecutive speaking frames at or
+    above thr. With `refractory`, one event per speaking episode (the shipped rule)."""
     out, run = [], 0
+    fired_this_episode = False
+    armed = True   # needs a drop below the threshold before the next fire
     for i, v in enumerate(y >= thr):
-        run = run + 1 if (v and mode[i]) else 0
-        if run >= deb:
-            out.append(i)
+        if i and not mode[i - 1]:
+            fired_this_episode = False   # a new speaking episode
+        if v and mode[i]:
+            run = run + 1 if armed else 0
+        else:
             run = 0
+            if edge:
+                armed = True
+        if run >= deb:
+            if not (refractory and fired_this_episode):
+                out.append(i)
+                fired_this_episode = True
+            run = 0
+            if edge:
+                armed = False
     return out
 
 
 def sweep(y: np.ndarray, mode: np.ndarray, caller: np.ndarray, agent: np.ndarray,
-          thrs: list[float]) -> dict[float, dict]:
+          thrs: list[float], refractory: bool = False, edge: bool = False) -> dict[float, dict]:
     onsets = interrupting_onsets(caller, agent)
     win = int(round(CATCH_S / FRAME_S))
     res = {}
     for thr in thrs:
-        fired = fires_at(y, mode, thr)
+        fired = fires_at(y, mode, thr, refractory=refractory, edge=edge)
         hit = [o for o in onsets if any(o - 1 <= f <= o + win for f in fired)]
         false = [f for f in fired if not any(o - 1 <= f <= o + win for o in onsets)]
         # one decision per speaking episode: first fire inside each episode (the audit's unit)
@@ -145,6 +160,15 @@ def selfcheck() -> None:
     assert interrupting_onsets(np.zeros(40), agent) == []
     y = np.zeros(40); y[10:12] = .6        # one debounce-completing run at the onset
     assert fires_at(y, mode, 0.5) == [11], fires_at(y, mode, 0.5)
+    # refractory: a second run in the same episode is suppressed, a new episode fires
+    y2 = np.zeros(40); y2[10:12] = .6; y2[20:22] = .6
+    assert fires_at(y2, mode, 0.5) == [11, 21]
+    assert fires_at(y2, mode, 0.5, refractory=True) == [11]
+    y3 = np.zeros(40); y3[10:13] = .6; y3[20:23] = .6
+    assert fires_at(y3, mode, 0.5, edge=True) == [11, 21], fires_at(y3, mode, 0.5, edge=True)
+    # a dip below the threshold re-arms inside one episode
+    y4 = np.zeros(40); y4[10:12] = .6; y4[13] = .1; y4[14:16] = .6
+    assert fires_at(y4, mode, 0.5, edge=True) == [11, 15], fires_at(y4, mode, 0.5, edge=True)
     assert fires_at(y, np.zeros(40, np.int8), 0.5) == []   # never fires while listening
     r = sweep(y, mode, caller, agent, [0.5])[0.5]
     assert (r["fires"], r["catch"], r["false"], r["onsets"]) == (1, 1, 0, 1), r
@@ -162,6 +186,10 @@ def main() -> None:
     ap.add_argument("--thrs", default="0.30,0.35,0.40,0.45,0.50")
     ap.add_argument("--per-thr", type=int, default=10, help="clips to sample per threshold, across all sessions")
     ap.add_argument("--seed", type=int, default=125)
+    ap.add_argument("--refractory", action="store_true",
+                    help="one barge per speaking episode, as the shipped rules now do")
+    ap.add_argument("--edge", action="store_true",
+                    help="one barge per threshold crossing (re-arms after yield drops)")
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
     if a.selfcheck:
@@ -196,12 +224,12 @@ def main() -> None:
         mode, caller, agent = mode[:T], caller[:T], agent[:T]
         y = frames["teacher"][:T, 5]
         mins += T * FRAME_S / 60
-        r = sweep(y, mode, caller, agent, thrs)
+        r = sweep(y, mode, caller, agent, thrs, refractory=a.refractory, edge=a.edge)
         for t in thrs:
             for k in agg[t]:
                 agg[t][k] += r[t][k]
             if a.clips and r[t]["fires"]:
-                for f in fires_at(y, mode, t):
+                for f in fires_at(y, mode, t, refractory=a.refractory):
                     pending[t].append((wav, cid, f))
 
     print(f"{len(shards)} shards, {mins:.1f} min")

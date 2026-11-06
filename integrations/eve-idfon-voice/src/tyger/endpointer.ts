@@ -79,7 +79,9 @@ export async function createTygerEndpointer(): Promise<TygerEndpointer> {
   const ort = createRequire(import.meta.url)("onnxruntime-node");
   const enc = await ort.InferenceSession.create(bundle.encoderPath);
   const step = await ort.InferenceSession.create(bundle.stepPath);
-  const sess = new TurnSession(bundle.traits ?? {});
+  // `barge_refractory: 1` = one barge decision per speaking episode, as the Rust
+  // `Thresholds::tuned()` ships it (docs/voice-decision-model.md, 2026-11-06).
+  const sess = new TurnSession({ barge_edge: true, ...(bundle.traits ?? {}) });
   return new TygerEndpointer(new TygerEngine(enc, step, bundle.stateShape), sess);
 }
 

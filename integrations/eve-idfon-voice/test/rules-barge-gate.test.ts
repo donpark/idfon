@@ -56,3 +56,21 @@ test("gate does not fire below the yield threshold", () => {
   s.switch_mode("speaking");
   assert.deepEqual(drive(s, "speaking", 3, 0.1, 0.1, 0.1), []);
 });
+
+test("edge trigger fires once per crossing, and re-arms after a dip", () => {
+  const s = new TurnSession({ barge_edge: true });
+  s.switch_mode("speaking");
+  assert.equal(drive(s, "speaking", 4, 0.1, 0.1, 0.9).length, 1);
+
+  const t = new TurnSession({ barge_edge: true });
+  t.switch_mode("speaking");
+  drive(t, "speaking", 2, 0.1, 0.1, 0.9);
+  drive(t, "speaking", 1, 0.1, 0.1, 0.1);
+  assert.equal(drive(t, "speaking", 2, 0.1, 0.1, 0.9).length, 1);
+});
+
+test("edge trigger is off in the parity defaults", () => {
+  const s = new TurnSession({});
+  s.switch_mode("speaking");
+  assert.ok(drive(s, "speaking", 4, 0.1, 0.1, 0.9).length > 1);
+});

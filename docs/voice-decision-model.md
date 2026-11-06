@@ -572,14 +572,21 @@ the agent and take or contest the floor near the mark*) confirms 63%. The gap is
 The gate changes events, not labels: the head is distilled from the teacher's
 `yield` score, so no retraining is implied.
 
-*Rust landed 2026-11-06* as two thresholds that default to **off** —
-`barge_gate_db: Option<f64>` (the agent channel's energy on the firing frame,
-`begin_hop` already receives it) and `barge_refractory: i32` (0 off, 1 = one per
-speaking episode, reset by `switch_mode`). Off by default so
-`tests/turns_fixtures.rs` still asserts tyger-s2s's behaviour byte-for-byte;
-`tests/turns_barge_gate.rs` covers the gate (silent tail blocked, audible overlap
-allowed, sub-threshold yield blocked) and the refractory (one per episode, a new
-episode allowed). Remaining: the TS port, then enabling both in the traits set.
+*Landed 2026-11-06.* Three thresholds, all defaulting to **off** so the parity
+fixtures keep asserting tyger-s2s's behaviour, and enabled per deployment:
+| threshold | effect | measured on the same 80 min | status |
+| --- | --- | --- | --- |
+| `barge_edge` | fire per threshold crossing, re-arm when yield drops | 1,257 → **441** fires, recall **23% → 23%** | **enabled** in `tuned()` and the TS engine |
+| `barge_refractory` | one per speaking episode | 1,257 → 179 fires, recall 23% → **9%** | off; the audit decides |
+| `barge_gate_db` | agent channel audible on the firing frame | tail blocked; strict-overlap catch unmeasured live | off; the audit decides |
+
+Edge-triggering is the free win: a third of the events at identical recall.
+The refractory buys another 2.4× fewer false fires but halves recall, so it is a
+product trade, not a bug fix. `tests/turns_barge_gate.rs` and
+`test/rules-barge-gate.test.ts` cover all three (silent tail blocked, audible
+overlap allowed, sub-threshold blocked, one-per-episode, one-per-crossing with
+re-arm after a dip, and both defaults off); `turns_fixtures.rs` and the TS
+fixture replay still pass byte-for-byte.
 
 **Open.** The 30 blinded clips (`--clips`) adjudicate the TURN_GRAB bar; until
 then its precision estimate is the audit's 63% on a stratified sample, not a

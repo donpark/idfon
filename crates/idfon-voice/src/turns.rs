@@ -102,6 +102,11 @@ pub struct Thresholds {
     /// every `barge_deb` run, ~19x per episode on Open Yap 1K (13.7 -> 1.9 false
     /// fires/min with nothing else changed).
     pub barge_refractory: i32,
+    /// Fire on a threshold crossing, not on a level: the rule re-arms only after the
+    /// yield head drops back below `barge_thr`. Off by default so the parity fixtures
+    /// assert tyger-s2s's level semantics; measured on Open Yap 1K it is a strict
+    /// improvement there -- 1,257 -> 441 fires over 80 min at identical recall.
+    pub barge_edge: bool,
 }
 
 impl Default for Thresholds {
@@ -117,6 +122,7 @@ impl Default for Thresholds {
             bc_refractory: 15,
             barge_gate_db: None,
             barge_refractory: 0,
+            barge_edge: false,
         }
     }
 }
@@ -132,6 +138,12 @@ impl Thresholds {
             ep_thr: 0.915,
             barge_thr: 0.4,
             bc_thr: 0.4,
+            // fire per crossing, not per debounce run: one a level-held yield would emit
+            // ~3x more (1,257 -> 441 over 80 min on Open Yap 1K) at identical recall.
+            // `barge_refractory` stays 0 (one per episode costs 23% -> 9% recall) and
+            // `barge_gate_db` stays None until the semantic audit sets its bar --
+            // docs/voice-decision-model.md, 2026-11-06.
+            barge_edge: true,
             ..Self::default()
         }
     }
@@ -225,6 +237,7 @@ pub struct TurnSession {
     agent_db: Vec<f32>,
     hop_cursor: usize,
     barge_fired: bool,
+    barge_armed: bool,
 }
 
 impl TurnSession {
@@ -257,6 +270,7 @@ impl TurnSession {
             agent_db: Vec::new(),
             hop_cursor: 0,
             barge_fired: false,
+            barge_armed: true,
         };
         s.clear();
         s
@@ -340,6 +354,7 @@ impl TurnSession {
         self.quiet_frames = 0;
         self.prev_state = if mode == "speaking" { SPEAK } else { LISTEN };
         self.barge_fired = false; // a new speaking episode may fire once again
+        self.barge_armed = true;
         self.mode = mode.to_string();
         true
     }
@@ -393,7 +408,11 @@ impl TurnSession {
             self.warm += 1;
             self.track_talk(voiced);
             if self.warm > WARMUP_FRAMES {
-                self.yield_run = if yp >= self.th.barge_thr { self.yield_run + 1 } else { 0 };
+                if yp < self.th.barge_thr {
+                    self.barge_armed = true; // the head fell back: the next rise may fire
+                }
+                let rising = self.barge_armed || !self.th.barge_edge;
+                self.yield_run = if yp >= self.th.barge_thr && rising { self.yield_run + 1 } else { 0 };
                 let audible = match self.th.barge_gate_db {
                     None => true,
                     Some(g) => agent_db.map(|d| d > g).unwrap_or(false),
@@ -411,6 +430,7 @@ impl TurnSession {
                     events.push(ev);
                     self.yield_run = 0;
                     self.barge_fired = true;
+                    self.barge_armed = false;
                     self.seed_u = Some(self.pre_u.clone());
                 } else if self.yield_run >= self.th.barge_deb && !audible {
                     // the proposal expired while the agent was silent: nothing to stop
