@@ -52,6 +52,7 @@ final class TurnShadow: AudioPlaybackObserver {
 
     /// nil when no turn model is available for this OS.
     static func start() -> TurnShadow? {
+        if let prefix = loadPrefixTier() { return prefix }
         var model: TurnModel?
         // Calibration override: IDFON_TURN_TIER=coreai|mlx picks the tier.
         let tier = ProcessInfo.processInfo.environment["IDFON_TURN_TIER"]
@@ -87,6 +88,44 @@ final class TurnShadow: AudioPlaybackObserver {
         return TurnShadow(model: model, traits: traits,
                           meta: ["tier": String(describing: type(of: model)), "rung": rung ?? "-",
                                  "step": step ?? "-", "traits": traits == nil ? "default" : "student"])
+    }
+
+    /// The 320 ms turn prefix tier (#132's split tier): a 102 MB layers-0-3 encoder
+    /// in `bench-results/prefix/` (where this app's cut tiers already load from),
+    /// batched two ears in one cache-aware call. Default off (`IDFON_TURN_PREFIX=1`);
+    /// absent, ambiguous or malformed returns nil and today's cut stays in charge.
+    private static func loadPrefixTier() -> TurnShadow? {
+        guard TurnPrefix.isEnabled(environment: ProcessInfo.processInfo.environment) else { return nil }
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let bench = root.appendingPathComponent("bench-results")
+        guard let artifact = TurnPrefix.artifact(in: bench) else {
+            Automation.mark("turn-shadow: prefix on, no artifact at \(bench.path)/prefix")
+            Diag.log("turnmodel", ["tier": "prefix-320", "ok": false, "error": "no prefix artifact"])
+            return nil
+        }
+        let coreml = bench.appendingPathComponent("coreml")
+        let student = coreml.appendingPathComponent("StudentStep.mlpackage")
+        let teacher = coreml.appendingPathComponent("TygerStep.mlpackage")
+        let step = FileManager.default.fileExists(atPath: student.path) ? student : teacher
+        do {
+            let model = try TurnPrefixModel(artifactURL: artifact, stepURL: step)
+            let traits = traitsJSON(in: coreml, step: model.stepModelName)
+            let s = model.shape
+            Automation.mark("turn-shadow: tier prefix-320 (\(artifact.lastPathComponent), cache \(s.cacheDepth)x\(s.layers), \(s.tapRowsPerChunk) rows/hop, \(model.stepModelName), traits \(traits == nil ? "default" : "student"))")
+            Diag.log("turnmodel", ["tier": "prefix-320", "rung": "fp16-ane", "step": model.stepModelName,
+                                   "traits": traits == nil ? "default" : "student",
+                                   "cache_depth": "\(s.cacheDepth)", "layers": "\(s.layers)", "ok": true])
+            return TurnShadow(model: model, traits: traits,
+                              meta: ["tier": "prefix-320", "rung": "fp16-ane",
+                                     "step": model.stepModelName,
+                                     "traits": traits == nil ? "default" : "student"])
+        } catch {
+            Automation.mark("turn-shadow: prefix tier failed: \(error)")
+            Diag.log("turnmodel", ["tier": "prefix-320", "ok": false, "error": String(describing: error)])
+            return nil
+        }
     }
 
     /// The rules knobs that travel with the student step (`student.traits.json`:

@@ -14,11 +14,14 @@ public final class TurnRuntime {
     public static let windowSamples = 8 * TurnRuntime.sampleRate
 
     private let model: TurnModel
+    /// Non-nil for the streaming prefix tier (the 320 ms split tier).
+    private let batchedEars: BatchedEarModel?
     private var winUser: [Float] = []
     private var winAgent: [Float] = []
 
     public init(model: TurnModel) {
         self.model = model
+        self.batchedEars = model as? BatchedEarModel
     }
 
     /// The iOS tier's Core ML models (TygerEncoder fp16 + TygerStep fp32).
@@ -38,11 +41,23 @@ public final class TurnRuntime {
         userHop: [Float], agentHop: [Float], firstState: Int,
         onFrame: (_ frame: Int, _ outs: [Float], _ actDb: Double, _ left: Int) -> Int
     ) -> [[Float]] {
-        append(&winUser, userHop)
-        append(&winAgent, agentHop)
-        let hu = model.encode(winUser)
-        let ha = model.encode(winAgent)
-        let act = Self.frameEnergy(winUser)
+        let hu: [[Float]], ha: [[Float]], act: [Float]
+        if let batchedEars {
+            // The streaming tier: both ears in today's hop, one batched prediction,
+            // no window. Both streams are fed every hop (silence included) so their
+            // caches stay warm; the hops are 320 ms, so the hop's own energy is the
+            // window tail's energy the cut path computed.
+            let pair = batchedEars.encodePair(mic: userHop, playback: agentHop)
+            hu = pair.mic
+            ha = pair.playback
+            act = Self.frameEnergy(userHop)
+        } else {
+            append(&winUser, userHop)
+            append(&winAgent, agentHop)
+            hu = model.encode(winUser)
+            ha = model.encode(winAgent)
+            act = Self.frameEnergy(winUser)
+        }
         let n = min(4, hu.count, ha.count, act.count)
         var outs: [[Float]] = []
         var prev = firstState
