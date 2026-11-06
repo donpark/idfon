@@ -594,6 +594,35 @@ positions systematically, which spreads evenly over the run-length quartiles.
   TURN_GRAB (yield), so the gate only loses them if the tail has no TURN_GRAB
   path. That split, not the gate, is the open item.
 
+### Event catalog for training clips (step 3, 2026-11-06)
+
+The four events are one detector's output split by `gap_ms` (caller onset minus
+the agent run's end), so no second detector is needed:
+
+| event | `gap_ms` | anchor | condition for a clean clip |
+| --- | --- | --- | --- |
+| `handoff` | 0–320 | caller onset | agent voiced ≥50% and caller ≤10% of the lead |
+| `overlap` | 0 (caller starts inside an agent run) | caller onset | the event itself; report caller/agent lead fractions |
+| `silent_tail` | 321–1200 | caller onset | caller silent in the lead (≤10%); the agent's last words sit at its start |
+| `long_pause` | >1200 | — | not an event (a new turn, not a floor claim) |
+
+On the 16 local Open Yap conversations (80 min, 637 handoff records):
+
+| kind | n | clean lead | caller silent | ≤320 ms | 321–640 | 641–1440 | >1440 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `handoff` | 126 | 48% | 48% | 27 | 30 | 34 | 35 |
+| `overlap` | 270 | 48% | 51% | 105 | 61 | 67 | 37 |
+| `silent_tail` | 213 | 21% | 35% | 43 | 43 | 57 | 70 |
+| `long_pause` | 28 | 4% | 21% | 1 | 9 | 5 | 13 |
+
+Under each event's own condition: **60 `handoff`** candidates (9% of all
+records), **245 `overlap`**, **75 `silent_tail`**. The `handoff` yield is the
+binding constraint — ~3.75 clean clips per conversation — so a 1,000-clip set
+needs ~270 conversations, not 16. Two things this table makes explicit: the
+clean-lead gate conflates "caller silent" with "short gap" (a 50% agent-lead
+fraction caps the gap at ≈0.6 s), and 42% of the detector's "handoff" records
+are overlaps, so an audit that pools them is measuring two populations.
+
 **Rollout.** Harness A/B (`openyap-barge-sweep.py`) → rules ports → traits bump.
 The gate changes events, not labels: the head is distilled from the teacher's
 `yield` score, so no retraining is implied.

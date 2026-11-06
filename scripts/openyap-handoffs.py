@@ -100,6 +100,19 @@ def cut(wav: str, mark_frame: int, out_dir: str, name: str,
     return path, round(t_on - t0, 2)
 
 
+def lead_quality(caller: np.ndarray, agent: np.ndarray, h: dict) -> tuple[float, float]:
+    """Voiced fraction of each channel in the clip's lead, before the caller onset.
+
+    The lead is the same span `cut` opens with: min(2.0, max(LEAD_S, gap + 0.6)).
+    """
+    lead_frames = int(round(min(2.0, max(LEAD_S, h["gap_ms"] / 1000.0 + 0.6)) / FRAME_S))
+    lo = max(0, h["caller_on"] - lead_frames)
+    c, a = caller[lo:h["caller_on"]], agent[lo:h["caller_on"]]
+    if not len(c):
+        return 0.0, 0.0
+    return float((a > VAD).mean()), float((c > VAD).mean())
+
+
 def selfcheck() -> None:
     """Handoff detection on synthetic VAD tracks (no files)."""
     n = 60
@@ -117,6 +130,13 @@ def selfcheck() -> None:
     # overlap (caller starts before the agent stops) has gap 0 and still counts
     caller4 = np.zeros(n, bool); caller4[15:30] = True
     assert handoffs(caller4.astype(float) * 0.5, agent.astype(float) * 0.5)[0]["gap_ms"] == 0
+    # the lead gate: agent voiced before the onset, caller silent
+    a_frac, c_frac = lead_quality(caller.astype(float) * 0.5,
+                                  agent.astype(float) * 0.5, h[0])
+    assert a_frac > 0.5 and c_frac == 0.0, (a_frac, c_frac)
+    dirty = caller.astype(float) * 0.5; dirty[15:23] = 0.5   # caller talks in the lead
+    _, c_dirty = lead_quality(dirty, agent.astype(float) * 0.5, h[0])
+    assert c_dirty > 0.1, c_dirty
     print("selfcheck ok")
 
 
@@ -129,6 +149,10 @@ def main() -> None:
     ap.add_argument("--min-agent-ms", type=float, default=300)
     ap.add_argument("--min-caller-ms", type=float, default=120)
     ap.add_argument("--max-gap-ms", type=float, default=1500)
+    ap.add_argument("--min-agent-lead", type=float, default=0.5,
+                    help="voiced fraction of the agent channel the clip lead needs")
+    ap.add_argument("--max-caller-lead", type=float, default=0.1,
+                    help="voiced fraction of the caller channel the clip lead allows")
     ap.add_argument("--seed", type=int, default=125)
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
@@ -153,14 +177,27 @@ def main() -> None:
         per_call.append((cid, len(hs)))
         allh += [(cid, wav, h, caller, agent) for h in hs]
 
-    runs_ms = np.array([h["caller_run_ms"] for _, _, h, _, _ in allh])
+    runs_all = np.array([h["caller_run_ms"] for _, _, h, _, _ in allh])
     print(f"{len(wavs)} conversations, {mins:.1f} min, {len(allh)} handoffs "
           f"({len(allh) / mins:.2f}/min)")
     print("  caller run length: p10 %d, p50 %d, p90 %d ms; gaps p50 %d ms"
-          % (np.percentile(runs_ms, 10), np.percentile(runs_ms, 50), np.percentile(runs_ms, 90),
+          % (np.percentile(runs_all, 10), np.percentile(runs_all, 50), np.percentile(runs_all, 90),
              int(np.median([h["gap_ms"] for _, _, h, _, _ in allh]))))
     quiet = [c for c, n in per_call if n == 0]
     print(f"  calls with no handoff: {len(quiet)} {quiet[:6]}")
+
+    # quality gate: the lead has to show the agent speaking and the caller silent,
+    # or the clip does not show the handoff it claims to show.
+    kept = []
+    for item in allh:
+        _cid, _wav, h, caller, agent = item
+        a_frac, c_frac = lead_quality(caller, agent, h)
+        if a_frac >= a.min_agent_lead and c_frac <= a.max_caller_lead:
+            kept.append(item)
+    print(f"  clean lead (agent >= {a.min_agent_lead:.0%}, caller <= {a.max_caller_lead:.0%}): "
+          f"{len(kept)}/{len(allh)}")
+    if not kept:
+        sys.exit("no handoff passed the lead gate; loosen --min-agent-lead/--max-caller-lead")
 
     if a.shards:
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ports", "tyger-student"))
@@ -182,6 +219,7 @@ def main() -> None:
 
     # sample evenly across the run-length quartiles so short (backchannel-length)
     # and long (turn-length) handoffs are both represented
+    runs_ms = np.array([h["caller_run_ms"] for _, _, h, _, _ in kept])
     order = np.argsort(runs_ms)
     quart = np.array_split(order, 4)
     picked = []
@@ -190,7 +228,7 @@ def main() -> None:
         picked += list(rng.permutation(q)[:k])
     rows = []
     for i, idx in enumerate(picked, 1):
-        cid, wav, h, _c, _a = allh[int(idx)]
+        cid, wav, h, _c, _a = kept[int(idx)]
         name = f"{cid}-handoff-{h['caller_on'] * FRAME_S:.2f}s.wav"
         got = cut(wav, h["caller_on"], a.clips, name, gap_ms=h["gap_ms"])
         if not got:
@@ -210,7 +248,8 @@ def main() -> None:
             w.writerow(r)
     print(f"\n{len(rows)} clips + {os.path.join(a.clips, 'manifest.csv')}")
     with open(os.path.join(a.clips, "handoffs.json"), "w") as fh:
-        json.dump({"minutes": round(mins, 1), "n": len(allh),
+        json.dump({"minutes": round(mins, 1), "n": len(allh), "n_clean": len(kept),
+                   "min_agent_lead": a.min_agent_lead, "max_caller_lead": a.max_caller_lead,
                    "caller_run_ms": runs_ms.tolist()}, fh)
 
 
