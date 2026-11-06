@@ -1847,6 +1847,201 @@ ports/tyger-student/.venv/bin/python ports/tyger-student/batched_ears.py \
     --out bench-results/asr-prefix-320/study.json
 ```
 
+### The silent playback ear: skip it, or just zero it? (2026-11-05, #132/#102)
+
+**Verdict first: with the current fp32 student, zeroing `ha` on inaudible playback frames
+does not preserve turn behaviour — it fires backchannels and endpoints through the
+silence — and the true skip arm is decision-equivalent to the mask arm (99.2 % / 99.4 %
+of live event matches under the two gap policies). So the zero fill, not the missing
+encode and not the cache policy, is what moves decisions.** Where the agent's channel is
+audible (including overlap) both arms are neutral; the damage is in silent interiors and
+in the 640 ms windows around playback start/stop. Consequence: adopting upstream's
+"pass zeros, don't encode" contract needs the student refitted on zeros (out of scope
+here); the cache-economics alone do not pay for it.
+
+This is the follow-up the previous section's dead end implies. Reusing a silent-ear
+cache is invalid until ~41 chunks of *digital* silence (`batched_ears.py`), so the only
+remaining saving is not to ask for the encode at all. Three arms on the same audio, same
+student, same calibration, same rules, per-frame scoring, each carrying **its own** GRU
+hidden state, its own rules session and its own resets (`prev_state` is never pinned to
+a recorded value):
+
+| arm | playback-ear features |
+| --- | --- |
+| **A** baseline | continuous cache-aware pass over both channels — exactly the `l4-streaming` adapter's rows |
+| **B** mask-only | A with `ha = 0` on frames whose playback channel is ≤ -60 dB; nothing else touched. The encoder still runs and its caches still advance. A **representation** test, not deployment evidence |
+| **C** skip | the playback encode is genuinely not called on chunks whose 7 frames are all ≤ -60 dB; those frames get zeros. Two state policies for the gap: `freeze` (keep the pre-gap caches) and `reset` (drop them) |
+| *D-hold* | *diagnostic, not an arm: C's cache trajectory with the last kept feature repeated through the gap. Separates "the fill is wrong" from "the cache is stale"* |
+
+"Advance the cache" is not a policy — advancing a cache **is** an encode. Deterministic
+and closed-loop: one student step per 80 ms row, rules state carried, resets at floor
+changes and rules resets, live floor derived from `ch1` (`mode_track.py`, -50 dB, 6-hop
+release), corpus floor `listen` (its shards carry no mode track and its recorded events
+are listen-mode; a derived speaking floor would put the rules in the barge branch and
+suppress endpoint/backchannel, silently replacing the 316-event reference). "Confidently
+inaudible" is ≤ -60 dB: below the rules' VAD (-50) and below the -80 dB dither floor these
+captures show in pauses. A chunk is skipped only when **all** of its frames are ≤ -60 dB.
+
+Harness: `ports/tyger-student/ha_ablation.py` (`--selfcheck`). Student: the fp32
+`shared-shipping-refit-fixed` checkpoint, `l4-streaming` adapter, per-domain fitted traits
+(live T=0.8, ep .88 / barge .5 / bc .3; corpus T=0.9, ep .9 / barge .5 / bc .5), debounce
+2/2/2 — frozen and identical across arms. Features are the shipping 42/13 artifact at the
+560 ms tier (the tier the deployed adapter was fitted on; a 320 decision pass would need
+the 320 refit). 13 live captures (24 821 frames) + 8 corpus val sessions (17 984 frames).
+
+**Pins (assertions, not beliefs).** Corpus: the regenerated arm-A stream is **bit-identical**
+to the stored streaming rows the adapter trained on (cos 1.0, max|d| 0.0, all 8 sessions).
+Live: the regenerated playback rows sit on the recorded windowed cut's grid at cos p50
+0.907 (the published 0.932-0.938 band on the three captures that were measured). The
+teacher replay reproduces `live_barge.py` exactly — **57 BARGEs, 12 audible-hop, 6
+audible-frame** — so the 12-event fixture is real. And arm A's corpus decisions match
+`gate.py` on the same shard set and checkpoint: **192/316 = 60.76 %**, event for event.
+
+**Arms, same sessions** (events are rules events; "A↔arm" is parity7's ±2-frame same-kind
+match; "vs teacher" uses the repo's max(ref, cand) denominator):
+
+| live, 13 captures | BARGE | backchannel | endpoint | A↔arm | vs teacher | audible-hop BARGE matched |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A continuous | 8 | 49 | 153 | — | 126/409 (30.8 %) | 2/12 |
+| B mask | 3 | 328 | 198 | 128/529 (24.2 %) | 234/529 (44.2 %) | 1/12 |
+| C freeze | 4 | 328 | 198 | 129/530 (24.3 %) | 235/530 (44.3 %) | 2/12 |
+| C reset | 3 | 328 | 198 | 129/529 (24.4 %) | 235/529 (44.4 %) | 2/12 |
+| *D-hold* | *7* | *108* | *158* | *163/275 (59.3 %)* | *178/411 (43.3 %)* | *2/12* |
+
+| corpus, 8 sessions | BARGE | backchannel | endpoint | A↔arm | vs teacher |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A continuous | 0 | 97 | 215 | — | 192/316 (60.8 %) |
+| B mask | 0 | 296 | 306 | 188/602 (31.2 %) | 147/602 (24.4 %) |
+| C freeze | 0 | 287 | 289 | 215/576 (37.3 %) | 158/576 (27.4 %) |
+| C reset | 0 | 281 | 294 | 213/575 (37.0 %) | 161/575 (28.0 %) |
+| *D-hold* | *0* | *105* | *220* | *260/327 (79.5 %)* | *184/326 (56.4 %)* |
+
+Mask↔skip agreement: **99.2 % / 99.4 %** (live), **84.4 % / 84.4 %** (corpus). Freeze
+and reset differ by at most 2 events per domain. The corpus has zero BARGE events, so its
+barge columns are empty by construction — the corpus numbers are backchannel and endpoint
+only, and its "vs teacher" counts that file's listen-mode reference events.
+
+**Per interval class, never pooled** (live; memberships, not a partition — a playback
+start that is also overlap is the barge case). Δ is the class's mean head probability,
+"+/−" are raw threshold crossings, "events" are rules events landing in the class:
+
+| class | n | arm | barge | backchannel | endpoint | events A→arm (−/+) |
+| --- | ---: | --- | ---: | ---: | ---: | --- |
+| silent interior | 17 953 | B | .021→.020 | .054→**.305** +5306/−5 | .413→**.660** +6726/−0 | 206→526 (−79/+399) |
+| silent interior | 17 953 | C freeze | .021→.023 | .054→**.300** +5273/−10 | .413→**.617** +5901/−46 | 206→528 (−78/+401) |
+| silent interior | 17 953 | *D-hold* | *.021→.023* | *.054→.082 +715/−62* | *.413→.408 +574/−1028* | *206→270 (−45/+109)* |
+| playback start ±3 | 2 079 | B | .009→.006 | .154→.147 +15/−28 | .699→**.812** +285/−8 | 3→3 (−2/+2) |
+| playback start ±3 | 2 079 | C freeze | .009→.008 | .154→.152 +21/−19 | .699→.707 +68/−48 | 3→3 (−2/+2) |
+| playback start ±3 | 2 079 | *D-hold* | *.009→.010* | *.154→.155 +13/−10* | *.699→.686 +17/−74* | *3→1 (−2/+0)* |
+| playback stop ±3 | 2 157 | B | .037→.022 | .146→.178 +80/−29 | .422→**.591** +350/−14 | 9→3 (−8/+2, 7 BARGE lost) |
+| playback stop ±3 | 2 157 | C freeze | .037→.034 | .146→.156 +51/−14 | .422→.402 +63/−86 | 9→4 (−7/+2, 6 BARGE lost) |
+| playback stop ±3 | 2 157 | *D-hold* | *.037→.036* | *.146→.148 +16/−5* | *.422→.425 +24/−11* | *9→7 (−3/+1)* |
+| audible overlap | 1 072 | B | .040→.040 | .897→.883 | .086→.081 | 0→1 |
+| audible overlap | 1 072 | C freeze | .040→.036 | .897→.886 | .086→.084 | 0→0 |
+| audible agent | 6 321 | B | .008→.008 | .182→.175 | .727→.760 +460/−50 | 0→2 |
+| audible agent | 6 321 | C freeze | .008→.008 | .182→.178 | .727→.719 +104/−182 | 0→0 |
+| quiet negative (both silent, floor listening) | 9 623 | B | .004→.003 | .012→.041 +488/−1 | .668→**.981** +5447/−0 | 151→213 (−69/+132) |
+| quiet negative | 9 623 | C freeze | .004→.003 | .012→.041 +483/−1 | .668→**.980** +5444/−3 | 151→213 (−69/+132) |
+| quiet negative | 9 623 | *D-hold* | *.004→.006* | *.012→.019 +21/−4* | *.668→.660 +538/−966* | *151→156 (−37/+42)* |
+
+Corpus repeats the shape: silent interiors (10 628 frames), B moves backchannel
+.056→.261 and endpoint .523→.743 (C: +2807 / +4387 crossings); quiet negatives (8 530),
+B moves endpoint .631→.967 (C: +4195). **Where the agent is audible, nothing moves**:
+audible overlap is Δbarge ≤ .004 with 0-1 events, and audible-agent frames change by at
+most .007 on the backchannel head and .04 on the endpoint head. The boundary windows move
+because of the frames on their silent side.
+
+Per capture, every one of the 13 gains events and the skip arm tracks the mask arm almost
+exactly — including `20:17:43`, the capture where the yield head misses the real overlap
+(A fires no BARGE there in any arm; its event count still doubles):
+
+| capture | skipped / chunks | A events | B events | C-freeze events | C-reset events |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 10-25T22:26:49Z | 143/229 (62%) | 9 | 59 | 58 | 58 |
+| 10-25T23:13:14Z | 137/199 (69%) | 14 | 39 | 40 | 40 |
+| 10-26T03:18:47Z | 117/137 (85%) | 9 | 13 | 13 | 13 |
+| 10-26T20:17:43Z | 95/159 (60%) | 13 | 24 | 24 | 24 |
+| 10-26T21:13:38Z | 189/270 (70%) | 23 | 51 | 51 | 51 |
+| 10-26T21:26:00Z | 200/321 (62%) | 13 | 35 | 35 | 35 |
+| 10-27T04:50:44Z | 203/309 (66%) | 23 | 56 | 56 | 56 |
+| 10-27T04:55:51Z | 253/326 (78%) | 24 | 54 | 54 | 54 |
+| 10-27T05:02:05Z | 186/321 (58%) | 17 | 38 | 39 | 38 |
+| 10-27T05:07:33Z | 218/319 (68%) | 8 | 19 | 19 | 19 |
+| 10-27T05:26:30Z | 202/309 (65%) | 22 | 56 | 56 | 56 |
+| 10-27T05:31:25Z | 282/326 (87%) | 27 | 66 | 66 | 66 |
+| 10-27T05:42:29Z | 217/319 (68%) | 8 | 19 | 19 | 19 |
+
+**Product axes on the corpus labels** (mean of per-session medians, counts summed):
+
+| arm | endpoint med (s) | early | miss | bc precision | bc recall | barge false fires |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A continuous | 0.303 | 10 | 3 | .259 | .285 | 16 |
+| B mask | **0.180** | **17** | 0 | .133 | **.596** | 4 |
+| C freeze | 0.210 | 15 | 0 | .131 | .576 | 16 |
+| C reset | 0.215 | 16 | 0 | .129 | .545 | 14 |
+| *D-hold* | *0.355* | *9* | *2* | *.240* | *.366* | *14* |
+
+Zeroing buys backchannel recall at half the precision and fires endpoints 90-120 ms earlier,
+with more early cuts and no misses left — the signature of a head that now fires on
+silence, not one that got better. On the live fixture, the student catches 2 of the
+teacher's 12 audible-hop barges with A and **1** with B; C keeps 2 (the extra barges B/C
+lose overall are the release-tail firings counted in the stop window — proxy false
+positives, but they are still changed behaviour).
+
+**Economics, honestly.** At the 560 ms tier the live set has 3 544 chunks, **2 442 skipped
+(69 %)**; at 320 ms, 4 447 of 6 201 hops (72 %) — 188 skipped chunks per capture, mean.
+The corpus (agent speaking about half the time) skips 50 % / 56 %. Per 320 ms call on this
+host (CPU_AND_NE, loadavg 1.3-2.8 across four repeats; another process may share the ANE):
+**7.8-8.1 ms** for the 24-layer full encoder (one ear), **1.84-2.24 ms** for the 4-layer
+prefix at B=1, **2.16-2.44 ms** at B=2. So:
+
+- **Two separate ear calls** (one artifact, two cache sets — the playback-ear shape): each
+  skipped hop removes one full call, 4 447 × ~7.9 ms ≈ **35 s** over the 13 captures
+  (~2.7 s per 2-minute call).
+- **One fixed-shape B=2 prefix graph** (the 0.69 % shape): a skipped slot **cannot** be
+  removed from a fixed shape — **0 ms**. The saving exists only if the runtime issues a
+  B=1 call while the ear is silent: 4 447 × (2.16 - 1.84) ≈ **1.4 s** over 13 captures
+  (~0.11 s per call).
+- **Residency does not move.** The 593 MB full encoder / 102 MB two-ear prefix / ~406 MB
+  fp32 prefix stay mapped; skipping removes invocations, not weights — **0 MB of the
+  ~696 MB bundle**. The 0.69 % duty becomes 0.58 % *during skipped stretches* and only
+  with a B=1 graph; with the fixed B=2 graph it stays 0.69 %.
+
+**Why the fill decides it, not the cache.** A was distilled on real silence rows. `ha = 0`
+is not the silence feature it saw: `proj_agent(0)` is the linear bias, a constant the model
+never trained as "silence", and the GRU carries that shift. The endpoint head is already
+near its bar in silence (A's own mean p_end is .668 on quiet frames against a .88
+threshold), so a .25-.31 shift saturates it — 5 447 extra crossings in 9 623 quiet frames.
+That is also why B ≈ C: they zero the same frames. B and C differ only on the inaudible
+frames inside *kept* chunks (live 1 406, corpus 2 871 of them), where C still has real
+features; that is why C is closer to A at playback starts (endpoint +68/−48 vs B's
++285/−8) and why the B↔C equality is **cadence-dependent**: at 320 ms a chunk is 4 frames,
+partial chunks are more common, and a 320 skip would look less like the mask than this
+560 ms result. Freeze vs reset is a non-factor (≤2 events apart), and the diagnostic
+D-hold — repeat the last feature through the gap — preserves barges (6/8 aligned live,
+5/5 corpus) but still churns endpoints (corpus .355 s vs A .303 s, live .037→.036 in the
+stop window). **No cheap fill is neutral.**
+
+**What this does not measure.** Arm A on the live captures is the streaming tap
+(cos 0.907 to the recorded windowed rows), not today's shipped L4 cut, so these deltas are
+about the streaming deploy target. Host timing only, no iPhone, and the ANE may be shared.
+One inaudibility threshold (-60 dB); -50 dB would zero a superset and was not run (stated
+skip). Near-silence dither is counted audible, so the skip set is conservative. Corpus
+val and the 13 captures are development data; the floor proxy is not the app's real floor.
+No refit, no threshold change, no app or fork change.
+
+Reproduce:
+
+```sh
+ports/tyger-student/.venv/bin/python ports/tyger-student/ha_ablation.py --selfcheck
+ports/tyger-student/.venv/bin/python ports/tyger-student/ha_ablation.py --run \
+    --out bench-results/ha-ablation.json
+```
+
+`--policies freeze,reset` selects the gap policies; `--sessions N` and `--skip-cost` are
+debug aids. `bench-results/ha-ablation.json` carries the per-capture rows, the per-class
+cells and the timing record.
+
 ### Barge on the live captures: mode fixed, measured for the first time (2026-11-05, #132/#102)
 
 **Verdict first: the captures do contain real agent-over-caller speech, but only 12 of
