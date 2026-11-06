@@ -166,7 +166,7 @@ seven real endpoints admitted on ~10-year leases (edge, mac, iPhone, four
 agent peers) and `IDFON_RELAY_ISSUERS` = the mac identity key. Rollback is
 one redeploy without `IDFON_RELAY_AUTH` (verified).
 
-## Network-path simulation (patchbay) — not adopted yet
+## Network-path simulation (patchbay) — adopted 2026-11-05
 
 [n0-computer/patchbay](https://github.com/n0-computer/patchbay) builds a lab
 out of Linux network namespaces: routers with real nftables NAT
@@ -174,8 +174,7 @@ out of Linux network namespaces: routers with real nftables NAT
 presets, `tc netem` loss/latency, regions with cross-link delay. A TOML sim
 runs **arbitrary binaries** per device (`spawn`/`run`/`wait-for`/`captures`/
 `assert`, `gen-certs`, `gen-file`, `--binary name:path:… `). iroh itself runs
-its NAT/relay/network-switch integration tests this way (`iroh/tests/patchbay/`
-— `nat.rs`, `relay.rs`, `degrade.rs`, `switch-uplink.rs`).
+its NAT/relay/network-switch integration tests this way.
 
 Why it fits us: RA-L2 currently needs docker plus a relay on the host; a lab
 puts two `idfond` nodes behind home CGNAT and a symmetric-NAT carrier, with
@@ -184,20 +183,116 @@ relay-auth callout, hermetically. The same harness covers `idfon put`/`get`
 under loss/latency (our 30 s download timeout, the 6×1 s fetch retry), and the
 `idfon-channel`/`idfon-h3` paths.
 
-Known costs before adding it: Linux-only namespaces (on macOS the
-`patchbay-vm` container backend works — needs `container system start`;
-QEMU otherwise), a new opt-in Linux CI job with `nft`/`tc`/unprivileged
-user namespaces, no Apple processes inside a lab (it can never cover app ↔
-daemon transfers), and no clock virtualization. Labs are a closed world with
-an in-process DNS server and no host egress, so n0 discovery is unreachable:
-a sim must run its own relay and rely on ticket-carried addresses (ours
-already are).
+### Running it on macOS
 
-Smallest useful shape, when we do adopt it: one sim file (provider behind
-`Home`, fetcher behind `IspCgnatSymmetric`, our relay in `dc`, `idfon put` →
-`idfon get` → assert size), run by hand with
-`patchbay-vm --backend container run <sim>.toml`, kept out of CI until it
-reproduces a NAT/relay bug we care about.
+Use Apple's `container` backend (sub-second boot, needs `container system
+start`). Two upstream bugs to route around:
+
+- `cargo install … patchbay-vm` fails — that crate has no binaries. Install
+  `patchbay-cli` (the binary is `patchbay`).
+- The `rolling` release ships only an **x86_64** musl runner, which 404s on
+  Apple Silicon. Cross-compile the runner and stage it:
+
+```bash
+brew install messense/macos-cross-toolchains/aarch64-unknown-linux-musl
+cargo build -p patchbay-cli --bin patchbay --no-default-features \
+  --release --target aarch64-unknown-linux-musl
+patchbay vm run <sim>.toml \
+  --patchbay-version path:$PWD/target/aarch64-unknown-linux-musl/release/patchbay \
+  --binary tool:path:<host build of tool>
+```
+
+The sim templates live in `scripts/patchbay/` (`gen.sh` expands a cell).
+`--binary` stages a host binary into every namespace, so lab tools must be
+built for `aarch64-unknown-linux-musl`. The container mount is fixed at
+creation (`--recreate` when the sim directory changes). A capture from a
+`spawn` step resolves only at `wait-for`, so a value a later step needs must
+come from the spawned step's fixed input (e.g. a fixed `--secret-key`), not
+its output; a `run` step's captures are available immediately.
+
+### Measured (2026-11-05)
+
+UDP punch through each NAT pair, using a std-only peer/rv probe (29 probes;
+RTT is in-kernel, so it says nothing about latency):
+
+| NAT pair | mapped ports | pongs |
+|---|---|---|
+| open ↔ open | 40000 / 40000 | 29 / 29 |
+| moderate ↔ moderate | 40000 / 40000 | 29 / 28 |
+| moderate ↔ strict | 40000 / **33869** | 0 / 0 |
+| strict ↔ strict | **41501 / 40942** | 0 / 0 |
+
+iroh over the same NATs (`iroh-doctor` accept/connect, 8 MiB, relay device rx
+counted before/after):
+
+| pair | relay traffic | path |
+|---|---|---|
+| moderate ↔ moderate | 12 136 → 46 877 B (**+34.7 kB**) | **direct** |
+| moderate ↔ strict | 12 270 → 34 882 820 B (**+34.9 MB**) | **relay** |
+
+Both transfers succeeded. The moderate cell published a server-reflexive
+candidate (`198.18.0.10:36472`) beside its private one and moved 8 MiB over a
+link that saw 34 kB. The strict cell mapped a random port (`2635` vs local
+`42882`), so nothing could arrive and everything went through the relay —
+which is the fallback working, not a failure.
+
+### The `idfond` cell (2026-11-05)
+
+Two `idfond` nodes (alice behind `moderate`, bob behind `strict`, then both
+`moderate`), our relay in `dc`, 4 MiB through `idfon put` → `idfon get`:
+`sha256` matched on every run, so the daemon path works through a private
+TLS relay with a private CA. Two things it exposed:
+
+- **The blob path never went direct.** Relay-device rx grew by ~92 MB during
+the `get` in *both* cells (~6.5x for 1 MiB, ~22x for 4 MiB — the overhead is
+unexplained and deserves its own look), while `put` cost ~11 kB. Taking the
+relay's link down between `put` and `get` fails the fetch with
+`PeerOffline: Unable to download`, so every byte went through the relay even
+on `moderate` ↔ `moderate`, where `iroh-doctor` on the same NAT pair punched.
+That is the gap the lab exists to find.
+- The lab needs two build knobs, both env-gated and generally useful:
+  `IDFON_RELAY_CA_FILE=<pem>` makes the daemon trust a relay with a private
+  CA (the relay client otherwise verifies against Mozilla's roots), and
+  `IDFON_FFI_STATIC=1` links the daemon core as a staticlib so `idfond` is
+  one self-contained binary (a lab tool cannot ship a `.so` beside itself).
+  Cross-compiling the workspace for `aarch64-unknown-linux-musl` from macOS
+  also needs ALSA headers for `cpal` (extract `libasound2-dev` into a fake
+  sysroot via `PKG_CONFIG_SYSROOT_DIR`/`PKG_CONFIG_PATH`) and
+  `BINDGEN_EXTRA_CLANG_ARGS="--target=… --sysroot=<musl sysroot>"` for
+  `moq-vaapi`'s bindgen. Linking the staticlib into a Rust bin needs
+  `-Wl,--allow-multiple-definition` (it bundles its own `std`), row
+  `-l:libstdc++.a -lc` after the archive (OpenH264 is C++), and a stub
+  `libasound.a`: the Debian `.so` is glibc and pulls glibc symbols into an
+  otherwise static musl binary.
+
+### The QAD/TLS trap (this cost a full false negative)
+
+`iroh-relay --dev` serves plain HTTP and **refuses QUIC address discovery**
+(hard error: QAD requires TLS). Without QAD neither endpoint learns its own
+external mapping, publishes no candidate, and the lab silently degrades to
+relay-only: both NAT cells then show 34.9 MB relayed, which reads as
+"punching is broken" when it is really "address discovery is off".
+
+A working relay is TLS + QAD: `gen-certs` on the relay device; relay config
+`cert_mode = "Manual"` with the generated cert/key, `https_bind_addr` and
+`quic_bind_addr` set, `enable_quic_addr_discovery = true`; client config
+`[[relay_nodes]] url = "https://<relay-ip>:4433"` with `quic = { port =
+7842 }`. The client must trust the self-signed cert; iroh 1.0 gates
+`CaTlsConfig::insecure_skip_verify()` behind `test-utils`, so a lab binary
+enables that feature and accepts the cert behind an env guard
+(`IROH_DOCTOR_INSECURE_TLS=1` in our probe).
+
+### Known gaps
+
+- Apple's container kernel has no `sch_netem` (`tc qdisc add … netem` →
+  "Specified qdisc kind is unknown"), so `impair` / `set-link-condition`
+  silently do nothing. Use the QEMU backend if the loss/latency rows matter.
+- No Apple processes inside a lab, so it can never cover app ↔ daemon
+  transfers; no clock virtualization; the lab is a closed world with an
+  in-process DNS server and no host egress, so n0 discovery is unreachable —
+  a sim must run its own relay and rely on ticket-carried addresses (ours
+  already are).
+- Not in CI until it reproduces a NAT/relay bug we care about.
 
 ## Pass criteria
 
