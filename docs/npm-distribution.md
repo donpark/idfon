@@ -86,7 +86,7 @@ and the launcher then errors at first command).
 
 Launch gate: the repo goes public first; `npm view idfon` confirmed the name
 free (2026-09-06). Platform packages use the same version as the Cargo
-workspace — bump in lockstep (currently 0.9.1).
+workspace — bump in lockstep (currently 0.9.2).
 
 ## The Eve channel package
 
