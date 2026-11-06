@@ -623,6 +623,28 @@ clean-lead gate conflates "caller silent" with "short gap" (a 50% agent-lead
 fraction caps the gap at ≈0.6 s), and 42% of the detector's "handoff" records
 are overlaps, so an audit that pools them is measuring two populations.
 
+**Oracle review of this design (one-shot, 2026-11-06).** The four gap bins are
+*sampling strata*, not four ground-truth events: gap is a noisy timing measure,
+not intent or production state. A caller can backchannel inside an overlap,
+claim the floor after a long pause, or just make a noise in a 0–320 ms gap — the
+blind audit's 17/32 already shows the label drift. Labels should be defined by
+caller action and agent state **at the decision instant**, not by the gap that
+produced the clip. Two measurements back that up: **22% of the 637 records are
+acknowledgement-length caller runs (<300 ms)** — 31% of overlaps, 16% of
+handoffs and silent tails — and **48% of handoffs sit within one 80 ms frame of
+the agent's last voiced frame** (65% within two), where frame quantization plus
+the 0.2 s bridge can flip a handoff into an overlap or a silent tail. Keep the
+dirty and boundary cases as *evaluation strata* rather than discarding them,
+and build contrasts (floor claim vs acknowledgement at the same gap,
+interruption vs start just after playback stops) instead of only clean audio.
+
+One target-alignment trap the table carries: `caller_run_ms` is the caller's
+*eventual* run length, so a label keyed to the onset and stratified by that run
+length uses information the live GRU did not have at onset. Either label at the
+later decision time or accept early uncertainty; label negatives at the same
+decision opportunities as positives, or the training set learns precision among
+candidates and nothing about misses.
+
 **Rollout.** Harness A/B (`openyap-barge-sweep.py`) → rules ports → traits bump.
 The gate changes events, not labels: the head is distilled from the teacher's
 `yield` score, so no retraining is implied.
