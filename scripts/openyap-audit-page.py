@@ -52,7 +52,64 @@ def main() -> None:
         r["caller_db"] = round(caller)
         r["agent_db"] = round(agent)
     clips = json.dumps(rows)
-    title = "Barge audit — " + os.path.basename(os.path.abspath(d))
+    # An endpoint bundle carries `class_` (on/off the corpus eot label); a barge
+    # bundle does not. The rubric question changes with the event, so pick by column.
+    endpoint = bool(rows) and "class_" in rows[0]
+    title = ("Endpoint audit — " if endpoint else "Barge audit — ") + os.path.basename(os.path.abspath(d))
+    if endpoint:
+        rubric_html = """
+  <section class="rubric">
+    <div class="col yes">
+      <h2>Say <b>Yes</b> — the caller has finished; the agent may take the floor</h2>
+      <ul>
+        <li>the caller's utterance is complete: a question answered, a statement closed</li>
+        <li>a natural pause where a reply would land correctly</li>
+        <li>trailing off or a filled pause that still reads as "done" ("...so, yeah")</li>
+      </ul>
+    </div>
+    <div class="col no">
+      <h2>Say <b>No</b> — the caller is not finished</h2>
+      <ul>
+        <li>the caller is mid-utterance: a word cut off, a breath before continuing</li>
+        <li>a list or story still in progress; the next clause is clearly coming</li>
+        <li>the mark lands in a pause *inside* the turn, not at its end</li>
+      </ul>
+    </div>
+    <div class="tie">
+      <b>Tiebreak:</b> if the agent speaking right now would be <b>correct</b>, say Yes.
+      If it would talk over a caller who is about to continue, say No.
+      Judge around the mark (\u00b10.5 s), not what comes later.
+      Left channel = the speaker whose turn it is; right = the other party.
+    </div>
+  </section>"""
+    else:
+        rubric_html = """
+  <section class="rubric">
+    <div class="col yes">
+      <h2>Say <b>Yes</b> — the caller is claiming the floor at the mark</h2>
+      <ul>
+        <li><b>the caller is mid-utterance with content</b>, whether they started at the mark or before it</li>
+        <li>starting a new turn: a question, an answer, a statement, a \u201cwait\u2014\u201d</li>
+        <li>cutting in while the agent is still talking</li>
+        <li>a short but turn-shaped utterance: \u201cwhat?\u201d, \u201chang on\u201d, \u201cno no no\u201d</li>
+      </ul>
+    </div>
+    <div class="col no">
+      <h2>Say <b>No</b> — not a claim on the floor</h2>
+      <ul>
+        <li>filler or acknowledgement: \u201cmm-hm\u201d, \u201cyeah\u201d, \u201cright\u201d, laughter</li>
+        <li>noise: cough, breath, chair, click, mic bump, the agent\u2019s own audio</li>
+        <li>a word cut off and restarted, a stutter, or the caller clearly stopped (silence)</li>
+      </ul>
+    </div>
+    <div class="tie">
+      <b>Tiebreak:</b> if answering the caller right now would be <b>correct</b>, say Yes.
+      If staying silent would be <b>correct</b>, say No.
+      \u201cAlready talking\u201d is <b>not</b> a reason for No: if the mark lands inside the caller\u2019s turn and
+      they are saying something, say Yes. Judge around the mark (\u00b10.5 s), not what comes later.
+      Left channel = caller, right = agent; after you vote, the levels at the mark are shown.
+    </div>
+  </section>"""
 
     page = f"""<!doctype html>
 <meta charset="utf-8">
@@ -119,32 +176,7 @@ def main() -> None:
   </div>
 </header>
 <main>
-  <section class="rubric">
-    <div class="col yes">
-      <h2>Say <b>Yes</b> — the caller is claiming the floor at the mark</h2>
-      <ul>
-        <li><b>the caller is mid-utterance with content</b>, whether they started at the mark or before it</li>
-        <li>starting a new turn: a question, an answer, a statement, a “wait—”</li>
-        <li>cutting in while the agent is still talking</li>
-        <li>a short but turn-shaped utterance: “what?”, “hang on”, “no no no”</li>
-      </ul>
-    </div>
-    <div class="col no">
-      <h2>Say <b>No</b> — not a claim on the floor</h2>
-      <ul>
-        <li>filler or acknowledgement: “mm-hm”, “yeah”, “right”, laughter</li>
-        <li>noise: cough, breath, chair, click, mic bump, the agent’s own audio</li>
-        <li>a word cut off and restarted, a stutter, or the caller clearly stopped (silence)</li>
-      </ul>
-    </div>
-    <div class="tie">
-      <b>Tiebreak:</b> if answering the caller right now would be <b>correct</b>, say Yes.
-      If staying silent would be <b>correct</b>, say No.
-      “Already talking” is <b>not</b> a reason for No: if the mark lands inside the caller’s turn and
-      they are saying something, say Yes. Judge around the mark (±0.5 s), not what comes later.
-      Left channel = caller, right = agent; after you vote, the levels at the mark are shown.
-    </div>
-  </section>
+  {rubric_html}
   <div id="items" style="display:grid; gap:10px"></div>
 </main>
 <footer><span class="sub" id="hint">Verdicts save automatically in this browser.</span></footer>
