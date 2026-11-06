@@ -30,7 +30,13 @@ fn main() {
         std::path::PathBuf::from("/nonexistent")
     });
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=dylib=iroh_c_ffi");
+    // Static link (IDFON_FFI_STATIC=1): one self-contained binary, for a lab
+    // image or any deployment that cannot ship a .so beside the binary.
+    if std::env::var_os("IDFON_FFI_STATIC").is_some() {
+        println!("cargo:rustc-link-lib=static=iroh_c_ffi");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=iroh_c_ffi");
+    }
 
     // Keep a copy of the dylib next to the built binary so
     // @executable_path/libiroh_c_ffi.dylib (macOS) / $ORIGIN (Linux) resolves

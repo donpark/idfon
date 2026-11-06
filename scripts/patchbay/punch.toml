@@ -1,0 +1,84 @@
+# Template — expand with scripts/patchbay/gen.sh.
+# Rationale, measured results and the run command are in
+# docs/relay-test-plan.md § "Network-path simulation (patchbay)".
+[sim]
+name = "punch-__PAIR__"
+
+[[binary]]
+name = "punch"
+path = "punch-aarch64"
+
+[[router]]
+name = "dc"
+
+[[router]]
+name = "a"
+nat = "__A__"
+
+[[router]]
+name = "b"
+nat = "__B__"
+
+[device.srv.eth0]
+gateway = "dc"
+
+[device.alice.eth0]
+gateway = "a"
+
+[device.bob.eth0]
+gateway = "b"
+
+[[step]]
+action = "spawn"
+id = "rv"
+device = "srv"
+cmd = ["${binary.punch}", "--mode", "rv", "--port", "7000", "--seconds", "25"]
+ready_after = "500ms"
+
+[[step]]
+action = "spawn"
+id = "alice"
+device = "alice"
+cmd = ["${binary.punch}", "--mode", "peer", "--port", "40000", "--rv", "$NETSIM_IP_srv:7000", "--name", "alice", "--seconds", "6"]
+parser = "text"
+
+[step.captures.alice_pongs]
+pipe = "stdout"
+regex = "RESULT .* pongs=(\\d+)"
+
+[step.captures.alice_mapped]
+pipe = "stdout"
+regex = "MAPPED ([0-9.:]+)"
+
+[[step]]
+action = "run"
+id = "bob"
+device = "bob"
+cmd = ["${binary.punch}", "--mode", "peer", "--port", "40000", "--rv", "$NETSIM_IP_srv:7000", "--name", "bob", "--seconds", "6"]
+parser = "text"
+
+[step.captures.bob_pongs]
+pipe = "stdout"
+regex = "RESULT .* pongs=(\\d+)"
+
+[step.captures.bob_mapped]
+pipe = "stdout"
+regex = "MAPPED ([0-9.:]+)"
+
+[step.results]
+bob_pongs = "bob.bob_pongs"
+bob_mapped = "bob.bob_mapped"
+
+[[step]]
+action = "wait-for"
+id = "alice"
+timeout = "40s"
+
+[step.results]
+alice_pongs = "alice.alice_pongs"
+alice_mapped = "alice.alice_mapped"
+
+[[step]]
+action = "wait-for"
+id = "rv"
+timeout = "40s"
