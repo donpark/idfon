@@ -289,6 +289,7 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         // never pull a 0.8 GB tier. A late shadow costs nothing — classic
         // drives until it appears — and a failed load just means classic for
         // this call.
+        if let prefix = loadPrefixTier(in: dir) { return prefix }
         if #available(iOS 27.0, *) {
             do {
                 let coreai = try CoreAITurnModel(directory: dir.appendingPathComponent("coreai"))
@@ -331,6 +332,39 @@ final class TurnShadow: AudioCaptureObserver, AudioPlaybackObserver {
         return TurnShadow(model: model, traits: traits,
                           meta: ["tier": "coreml", "rung": "fp16-ane", "step": model.stepModelName,
                                  "traits": traits == nil ? "default" : "student"])
+    }
+
+    /// The 320 ms turn prefix tier (#132's split tier): a 102 MB layers-0-3 encoder
+    /// under `<root>/prefix/`, batched two ears in one cache-aware call, beside the
+    /// cut tier's files. Default off (`IDFON_TURN_PREFIX=1`); absent, ambiguous or
+    /// malformed simply returns nil and the caller keeps today's cut.
+    private static func loadPrefixTier(in dir: URL) -> TurnShadow? {
+        guard TurnPrefix.isEnabled(environment: ProcessInfo.processInfo.environment) else { return nil }
+        guard let artifact = TurnPrefix.artifact(in: dir) else {
+            Automation.mark("turn-shadow: prefix on, no artifact at \(dir.path)/prefix")
+            Diag.log("turnmodel", ["tier": "prefix-320", "ok": false, "error": "no prefix artifact"])
+            return nil
+        }
+        let student = dir.appendingPathComponent("StudentStep.mlpackage")
+        let teacher = dir.appendingPathComponent("TygerStep.mlpackage")
+        let step = FileManager.default.fileExists(atPath: student.path) ? student : teacher
+        do {
+            let model = try TurnPrefixModel(artifactURL: artifact, stepURL: step)
+            let traits = traitsJSON(in: dir, step: model.stepModelName)
+            let s = model.shape
+            Automation.mark("turn-shadow: tier prefix-320 (\(artifact.lastPathComponent), cache \(s.cacheDepth)x\(s.layers), \(s.tapRowsPerChunk) rows/hop, \(model.stepModelName), traits \(traits == nil ? "default" : "student"))")
+            Diag.log("turnmodel", ["tier": "prefix-320", "rung": "fp16-ane", "step": model.stepModelName,
+                                   "traits": traits == nil ? "default" : "student",
+                                   "cache_depth": "\(s.cacheDepth)", "layers": "\(s.layers)", "ok": true])
+            return TurnShadow(model: model, traits: traits,
+                              meta: ["tier": "prefix-320", "rung": "fp16-ane",
+                                     "step": model.stepModelName,
+                                     "traits": traits == nil ? "default" : "student"])
+        } catch {
+            Automation.mark("turn-shadow: prefix tier failed: \(error)")
+            Diag.log("turnmodel", ["tier": "prefix-320", "ok": false, "error": String(describing: error)])
+            return nil
+        }
     }
 
     /// The rules knobs that travel with the student step (`student.traits.json`:

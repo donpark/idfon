@@ -43,22 +43,54 @@ public enum MelFeatures {
         var padded = [Float](repeating: 0, count: half + n + half)
         padded.replaceSubrange(half..<(half + n), with: y)
         let nFrames = n / hopLength + 1
-        let window = hannSymmetric(winLength: winLength, total: nFFT)
-
+        let kernel = MelKernel()
         var out = [[Float]](repeating: [Float](repeating: 0, count: nMels), count: nFrames)
-        var frame = [Float](repeating: 0, count: nFFT)
-        var re = [Float](repeating: 0, count: nFFT)
-        var im = [Float](repeating: 0, count: nFFT)
-        var outRe = [Float](repeating: 0, count: nFFT)
-        var outIm = [Float](repeating: 0, count: nFFT)
-        let log2n = vDSP_Length(log2(Float(nFFT)))
-        let fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
-        var power = [Float](repeating: 0, count: nFFT / 2 + 1)
 
         for f in 0..<nFrames {
             let start = f * hopLength
+            out[f] = kernel.row(Array(padded[start..<start + nFFT]))
+            // 6. the extractor's mask: frames beyond validFrames are zeros
+            if f >= validFrames {
+                for m in 0..<nMels {
+                    out[f][m] = 0
+                }
+            }
+        }
+        return (out, validFrames)
+    }
+
+    /// One mel row from one 512-sample (already padded, not pre-emphasized) window:
+    /// steps 2-5 above. Shared by the whole-window extractor and ``StreamingMel`` so
+    /// the streaming tier produces the same rows, not a re-derivation of them.
+    final class MelKernel {
+        private let setup: FFTSetup
+        private let window: [Float]
+        private let log2n: vDSP_Length
+        private var frame: [Float]
+        private var re: [Float]
+        private var im: [Float]
+        private var outRe: [Float]
+        private var outIm: [Float]
+        private var power: [Float]
+
+        init() {
+            log2n = vDSP_Length(log2(Float(nFFT)))
+            setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
+            window = hannSymmetric(winLength: winLength, total: nFFT)
+            frame = [Float](repeating: 0, count: nFFT)
+            re = frame
+            im = frame
+            outRe = frame
+            outIm = frame
+            power = [Float](repeating: 0, count: nFFT / 2 + 1)
+        }
+
+        deinit { vDSP_destroy_fftsetup(setup) }
+
+        func row(_ samples: [Float]) -> [Float] {
+            precondition(samples.count == nFFT)
             for i in 0..<nFFT {
-                frame[i] = padded[start + i] * window[i]
+                frame[i] = samples[i] * window[i]
             }
             for i in 0..<nFFT {
                 re[i] = frame[i]
@@ -71,7 +103,7 @@ public enum MelFeatures {
                             var input = DSPSplitComplex(realp: UnsafeMutablePointer(mutating: rp.baseAddress!),
                                                         imagp: UnsafeMutablePointer(mutating: ip.baseAddress!))
                             var output = DSPSplitComplex(realp: orp.baseAddress!, imagp: oip.baseAddress!)
-                            vDSP_fft_zop(fftSetup, &input, 1, &output, 1, log2n, FFTDirection(FFT_FORWARD))
+                            vDSP_fft_zop(setup, &input, 1, &output, 1, log2n, FFTDirection(FFT_FORWARD))
                         }
                     }
                 }
@@ -80,24 +112,18 @@ public enum MelFeatures {
                 power[k] = outRe[k] * outRe[k] + outIm[k] * outIm[k]
             }
             // 3-4. slaney mel × power
+            var row = [Float](repeating: 0, count: nMels)
             for m in 0..<nMels {
                 var acc: Float = 0
-                let row = m * (nFFT / 2 + 1)
+                let base = m * (nFFT / 2 + 1)
                 for k in 0..<(nFFT / 2 + 1) {
-                    acc += kMelFilters[row + k] * power[k]
+                    acc += kMelFilters[base + k] * power[k]
                 }
                 // 5. log with the guard
-                out[f][m] = logf(acc + logGuard) // logf: .log() collides with Accelerate's BNNSGraph overload
+                row[m] = logf(acc + logGuard) // logf: .log() collides with Accelerate's BNNSGraph overload
             }
-            // 6. the extractor's mask: frames beyond validFrames are zeros
-            if f >= validFrames {
-                for m in 0..<nMels {
-                    out[f][m] = 0
-                }
-            }
+            return row
         }
-        vDSP_destroy_fftsetup(fftSetup)
-        return (out, validFrames)
     }
 
     /// torch.hann_window(length, periodic: false), centered in `total` (zeros on both sides).
