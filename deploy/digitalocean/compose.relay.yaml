@@ -33,6 +33,7 @@ services:
       IDFON_RELAY_AUTH_TLS_KEY: /etc/idfon-edge/key.pem
     volumes:
       - ./relay-auth/server.mjs:/app/server.mjs:ro
+      - ./relay-auth/rcan.mjs:/app/rcan.mjs:ro
       - ./relay-auth/data:/data
       - /etc/idfon-edge:/etc/idfon-edge:ro
     ports:
