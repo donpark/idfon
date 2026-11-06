@@ -137,12 +137,11 @@ function cast(id, verdict, el) {{
   el.classList.add("done");
   el.querySelector("[data-reveal]").style.visibility = "visible";
   refresh();
-  // advance to the next unvoted clip
+  // move to the next unvoted row, never play it: playback stays a deliberate act
   const next = ROWS.find((r, i) => !votes[r.sample_id]?.verdict && i > ROWS.indexOf(row));
   if (next) {{
-    const n = document.querySelector(`[data-sample="${{next.sample_id}}"]`);
-    n.scrollIntoView({{ block: "center", behavior: "smooth" }});
-    n.querySelector("audio").play().catch(() => {{}});
+    document.querySelector(`[data-sample="${{next.sample_id}}"]`)
+      .scrollIntoView({{ block: "center", behavior: "smooth" }});
   }}
 }}
 
