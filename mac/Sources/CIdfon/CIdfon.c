@@ -3,7 +3,7 @@
 // The on-device director (crates/idfon-director + its Apple Foundation Models
 // shim) ships as libidfon_director.dylib with a macOS 26 floor (AFM3 paths
 // gate themselves at macOS 27). It is dlopen'd on first use so the app links
-// at macOS 14 without the dylib's newer objects. When the dylib is absent or
+// at macOS 15 without the dylib's newer objects. When the dylib is absent or
 // refuses to load, the forwarders below report AFM-unavailable exactly like a
 // null director, which every caller already handles.
 #include <dlfcn.h>
