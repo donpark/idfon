@@ -6,6 +6,7 @@ license.workspace = true
 description = "Identity, capabilities, signed paths, relay selection, and transport seams; native and wasm."
 
 [dependencies]
+rustls-pki-types = { version = "1", features = ["std"] }
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 # Signed capability delegations. Pinned to a rev because the released 0.4.1 is
 # wire v1 and upstream's `main` is the v2 rewrite (base32 tokens, chained

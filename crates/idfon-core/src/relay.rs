@@ -55,7 +55,9 @@ impl RelayConfig {
     }
 
     fn from_file() -> Option<RelayConfig> {
-        std::fs::read_to_string(config_path()).ok().and_then(|text| parse_config(&text))
+        std::fs::read_to_string(config_path())
+            .ok()
+            .and_then(|text| parse_config(&text))
     }
 
     /// The effective relay map: `Some(Custom)` when URLs are configured,
@@ -112,12 +114,32 @@ pub fn apply(builder: Builder, config: &RelayConfig) -> Builder {
     if config.only {
         builder = builder.clear_ip_transports();
     }
+    if let Some(ca) = ca_override() {
+        builder = builder.ca_tls_config(ca);
+    }
     builder
+}
+
+/// Trust anchors for a relay with a private CA (`IDFON_RELAY_CA_FILE`, a PEM
+/// bundle). The relay client verifies against Mozilla's roots by default, so a
+/// self-signed relay (a lab, or a self-hosted relay with its own CA) is
+/// unreachable without this. Peer connections are unaffected: they use raw
+/// public keys, not PKI.
+fn ca_override() -> Option<iroh::tls::CaTlsConfig> {
+    use rustls_pki_types::{pem::PemObject, CertificateDer};
+    let path = std::env::var_os("IDFON_RELAY_CA_FILE")?;
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
+        .ok()?
+        .filter_map(Result::ok)
+        .collect();
+    (!certs.is_empty()).then(|| iroh::tls::CaTlsConfig::custom_roots(certs))
 }
 
 /// The persisted configuration file: `~/.idfon/relay.conf`.
 pub fn config_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
     home.join(".idfon").join("relay.conf")
 }
 
@@ -163,7 +185,10 @@ fn env_truthy(name: &str) -> bool {
 }
 
 fn is_truthy(value: &str) -> bool {
-    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes"
+    )
 }
 
 fn relay_mode_from(urls: &str, token: Option<&str>) -> Option<RelayMode> {
@@ -244,7 +269,10 @@ mod tests {
             "# comment\n\nurls=https://relay.example:8443, https://b.example\ntoken=a=b c\nonly=1\n",
         )
         .expect("configured");
-        assert_eq!(config.urls.as_deref(), Some("https://relay.example:8443, https://b.example"));
+        assert_eq!(
+            config.urls.as_deref(),
+            Some("https://relay.example:8443, https://b.example")
+        );
         assert_eq!(config.token.as_deref(), Some("a=b c"));
         assert!(config.only);
         assert!(parse_config("# nothing\n").is_none());

@@ -1,0 +1,157 @@
+# Template — expand with scripts/patchbay/gen.sh.
+# Rationale, measured results and the run command are in
+# docs/relay-test-plan.md § "Network-path simulation (patchbay)".
+[sim]
+name = "idfon-__CELL__"
+
+[[binary]]
+name = "relay"
+path = "iroh-relay"
+
+[[router]]
+name = "dc"
+
+[[router]]
+name = "home"
+nat = "moderate"
+
+[[router]]
+name = "carrier"
+nat = "__BOB_NAT__"
+
+[device.relay.eth0]
+gateway = "dc"
+
+[device.alice.eth0]
+gateway = "home"
+
+[device.bob.eth0]
+gateway = "carrier"
+
+[[step]]
+action = "gen-certs"
+id = "tls"
+device = "relay"
+
+[[step]]
+action = "gen-file"
+id = "relay-cfg"
+content = """
+enable_relay = true
+enable_quic_addr_discovery = true
+http_bind_addr = "[::]:3340"
+quic_bind_addr = "[::]:7842"
+
+[tls]
+https_bind_addr = "[::]:4433"
+cert_mode = "Manual"
+manual_cert_path = "${tls.cert_pem_path}"
+manual_key_path = "${tls.key_pem_path}"
+"""
+
+[[step]]
+action = "spawn"
+id = "relay"
+device = "relay"
+cmd = ["${binary.relay}", "--config-path", "${relay-cfg.path}"]
+ready_after = "2s"
+
+[[step]]
+action = "spawn"
+id = "daemon-a"
+device = "alice"
+cmd = ["sh", "-c", "IDFON_RELAY_CA_FILE=${tls.cert_pem_path} IDFON_ENDPOINT_PORT=59100 exec /work/bin/idfond --socket /tmp/idfon-__CELL__-a.sock --data-dir /tmp/idfon-__CELL__-a --relay-urls https://$NETSIM_IP_relay:4433"]
+
+[[step]]
+action = "spawn"
+id = "daemon-b"
+device = "bob"
+cmd = ["sh", "-c", "IDFON_RELAY_CA_FILE=${tls.cert_pem_path} IDFON_ENDPOINT_PORT=59200 exec /work/bin/idfond --socket /tmp/idfon-__CELL__-b.sock --data-dir /tmp/idfon-__CELL__-b --relay-urls https://$NETSIM_IP_relay:4433"]
+
+[[step]]
+action = "run"
+id = "ready-a"
+device = "alice"
+cmd = ["sh", "-c", "for i in $(seq 150); do [ -S /tmp/idfon-__CELL__-a.sock ] && exit 0; sleep 0.2; done; exit 1"]
+
+[[step]]
+action = "run"
+id = "ready-b"
+device = "bob"
+cmd = ["sh", "-c", "for i in $(seq 150); do [ -S /tmp/idfon-__CELL__-b.sock ] && exit 0; sleep 0.2; done; exit 1"]
+
+[[step]]
+action = "wait"
+duration = "3s"
+
+[[step]]
+action = "run"
+id = "rx1"
+device = "relay"
+cmd = ["sh", "-c", "awk '/eth0:/{print $2}' /proc/net/dev"]
+parser = "text"
+
+[[step]]
+action = "run"
+id = "mkfile"
+device = "alice"
+cmd = ["sh", "-c", "dd if=/dev/urandom of=/tmp/data-__CELL__.bin bs=1M count=4 2>/dev/null && sha256sum /tmp/data-__CELL__.bin | cut -d' ' -f1"]
+parser = "text"
+
+[step.captures.src_hash]
+pipe = "stdout"
+regex = "^([0-9a-f]{64})$"
+
+[[step]]
+action = "run"
+id = "rxbefore"
+device = "relay"
+cmd = ["sh", "-c", "awk '/eth0:/{print $2}' /proc/net/dev"]
+parser = "text"
+
+[[step]]
+action = "run"
+id = "put"
+device = "alice"
+cmd = ["/work/bin/idfon", "--socket", "/tmp/idfon-__CELL__-a.sock", "put", "--file", "/tmp/data-__CELL__.bin"]
+parser = "text"
+
+[step.captures.ticket]
+pipe = "stdout"
+regex = "^([A-Za-z0-9+/=_-]{20,})$"
+
+[[step]]
+action = "run"
+id = "rx2"
+device = "relay"
+cmd = ["sh", "-c", "awk '/eth0:/{print $2}' /proc/net/dev"]
+parser = "text"
+
+[[step]]
+action = "run"
+id = "get"
+device = "bob"
+cmd = ["/work/bin/idfon", "--socket", "/tmp/idfon-__CELL__-b.sock", "get", "${put.ticket}", "--out", "/tmp/got-__CELL__.bin"]
+parser = "text"
+
+[[step]]
+action = "run"
+id = "hash"
+device = "bob"
+cmd = ["sh", "-c", "sha256sum /tmp/got-__CELL__.bin | cut -d' ' -f1"]
+parser = "text"
+
+[step.captures.dst_hash]
+pipe = "stdout"
+regex = "^([0-9a-f]{64})$"
+
+[[step]]
+action = "run"
+id = "rxafter"
+device = "relay"
+cmd = ["sh", "-c", "awk '/eth0:/{print $2}' /proc/net/dev"]
+parser = "text"
+
+[step.results]
+src_hash = "mkfile.src_hash"
+dst_hash = "hash.dst_hash"

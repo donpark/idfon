@@ -41,6 +41,14 @@ binary is extractable and cannot be revoked per device, so provision it at
 runtime). `only` (relay-only) is sticky across sources and orthogonal to the
 map: it drops IP transports so the endpoint publishes no direct addresses.
 
+**Trust anchors.** The relay client verifies the relay's TLS certificate
+against Mozilla's roots. A relay with a **private CA** (self-hosted, or the
+patchbay lab) needs `IDFON_RELAY_CA_FILE=<pem>` — a PEM bundle trusted
+*instead of* the public roots (`idfon_core::relay::ca_override`). It is
+environment-only, not a `relay.conf` field: it is a deployment fact, not a
+user choice. Peer connections are unaffected — they authenticate with raw
+public keys, not PKI.
+
 Worked examples (per field):
 
 - config file sets `urls` + `token`, run with `idfond --relay-only` → the
