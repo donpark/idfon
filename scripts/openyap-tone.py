@@ -73,9 +73,11 @@ class Tone:
         b = float((self.cal.get("sarcasm") or {}).get("b", 0.0))
         sar = sigmoid(a * np.log(max(sar_raw, 1e-6) / max(1 - sar_raw, 1e-6)) + b)
         mv = softmax(z["move"][0] / self.cal.get("move_temperature", 1.0))
+        bc = softmax(z["backchannel"][0])   # 2 classes: not-a-backchannel, backchannel
         return {"emotion": self.cfg["emotions"][int(emo.argmax())], "p_emotion": float(emo.max()),
                 "sarcasm": float(sar), "sarcastic": bool(sar >= self.cfg.get("sarcasm_tau_raw", 0.59)),
-                "move": self.cfg["moves"][int(mv.argmax())], "text": text}
+                "move": self.cfg["moves"][int(mv.argmax())],
+                "p_backchannel": float(bc[1]), "text": text}
 
 
 def softmax(x: np.ndarray) -> np.ndarray:

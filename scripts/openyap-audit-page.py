@@ -99,6 +99,7 @@ def main() -> None:
   .notes input {{ width:100%; background:#0f141b; border:1px solid var(--line); color:var(--ink);
                   border-radius:8px; padding:6px 9px; font:13px inherit; }}
   .reveal {{ color:var(--dim); font-size:12px; }}
+  .said {{ color:var(--ink); font-size:13px; margin-top:4px; opacity:.85; }}
   mark {{ background:#243041; color:var(--ink); border-radius:4px; padding:0 4px; }}
   footer {{ position:fixed; bottom:0; left:0; right:0; background:rgba(14,17,22,.96);
             border-top:1px solid var(--line); padding:10px 22px; display:flex; gap:14px; align-items:center; }}
@@ -157,6 +158,9 @@ const detail = (r) => {{
   const bits = [];
   if (r.threshold !== undefined && r.threshold !== "") bits.push("yield threshold " + r.threshold);
   if (r.gap_ms !== undefined) bits.push("gap " + r.gap_ms + " ms");
+  if (r.p_backchannel !== undefined) bits.push("p(backchannel) " + r.p_backchannel);
+  if (r.move !== undefined) bits.push(r.move);
+  if (r.yield_peak !== undefined) bits.push("yield peak " + r.yield_peak);
   if (r.caller_run_ms !== undefined) bits.push("caller spoke " + r.caller_run_ms + " ms");
   bits.push("at the mark: caller " + r.caller_db + " dB, agent " +
             (r.agent_db <= -60 ? "silent" : r.agent_db + " dB"));
@@ -178,6 +182,7 @@ function item(r, i) {{
       </div>
       <div class="meta">mark ${{r.mark_s}} s · ${{r.kind.toLowerCase()}} · ${{Math.round(r.ts_s)}} s into the call
         <span class="reveal" data-reveal>· ${{detail(r)}}</span></div>
+      ${{r.text ? `<div class="said">“${{r.text.replace(/</g, "&lt;")}}”</div>` : ""}}
     </div>
     <div class="votes">
       <button data-v="yes" class="${{v.verdict === 'yes' ? 'on-yes' : ''}}" title="caller took the floor">Yes</button>
