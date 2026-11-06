@@ -280,6 +280,7 @@ if [ "$DEPLOY_RELAY" = "1" ]; then
   [ "$RELAY_CONFIG" != "$DEPLOY/relay/config.toml" ] && rm -f "$RELAY_CONFIG"
   scp $SSH_OPTS "$DEPLOY/compose.relay.yaml" "root@$PUBLIC_IP:/srv/idfon-edge/compose.relay.yaml" >/dev/null
   scp $SSH_OPTS "$ROOT/deploy/relay-auth/server.mjs" "root@$PUBLIC_IP:/srv/idfon-edge/relay-auth/server.mjs" >/dev/null
+  scp $SSH_OPTS "$ROOT/deploy/relay-auth/rcan.mjs" "root@$PUBLIC_IP:/srv/idfon-edge/relay-auth/rcan.mjs" >/dev/null
   COMPOSE_FILES="-f compose.yaml -f compose.relay.yaml"
   RELAY_ENV="IDFON_RELAY_URLS=https://relay.$DOMAIN:8443\n"
   if [ -n "$RELAY_TOKEN" ]; then
