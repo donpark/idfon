@@ -92,8 +92,9 @@ final class TurnShadow: AudioPlaybackObserver {
 
     /// The 320 ms turn prefix tier (#132's split tier): a 102 MB layers-0-3 encoder
     /// in `bench-results/prefix/` (where this app's cut tiers already load from),
-    /// batched two ears in one cache-aware call. Default off (`IDFON_TURN_PREFIX=1`);
-    /// absent, ambiguous or malformed returns nil and today's cut stays in charge.
+    /// batched two ears in one cache-aware call. Default on since the 2026-11-05 ruling
+    /// (`IDFON_TURN_PREFIX=0` is the kill switch); a set but ambiguous or malformed value,
+    /// a missing artifact or a malformed one returns nil and today's cut stays in charge.
     private static func loadPrefixTier() -> TurnShadow? {
         guard TurnPrefix.isEnabled(environment: ProcessInfo.processInfo.environment) else { return nil }
         let root = URL(fileURLWithPath: #filePath)
