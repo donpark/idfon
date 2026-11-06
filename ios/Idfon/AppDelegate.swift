@@ -9,7 +9,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     /// Build stamp for device E2E: bumped on every fix round and confirmed in
     /// the device console before testing. The stale-binary trap (testing an
     /// old install while believing it is new) has cost several rounds.
-    static let buildStamp = "2026-11-04.healthcard5"
+    static let buildStamp = "2026-11-05.turnprefixprobe"
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         idfonLog("idfon build stamp \(Self.buildStamp)")
@@ -235,6 +235,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         if args.contains("-voices") {
             SpeechVoice.dump()
+        }
+        // On-device prefix numbers without a call (#185): load the 320 ms tier
+        // through the shipping path, run fixed synthetic hops, write JSON.
+        if let i = args.firstIndex(of: "-turnprefixprobe") {
+            let path = args.count > i + 1 && !args[i + 1].hasPrefix("-") ? args[i + 1] : nil
+            TurnPrefixProbe.run(arg: path)
         }
         // On-device turn-model smoke (`-turnshadow [seconds]`): load the tier the
         // store installed and push a second of silence through it — proves the
