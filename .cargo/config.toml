@@ -3,3 +3,10 @@
 # nokhwa camera stack use the old #[cfg(feature = "cargo-clippy")] idiom
 # ~300x per pass. One value for every build keeps cargo fingerprints stable.
 rustflags = ["-A", "unexpected_cfgs"]
+
+[env]
+# macOS floor for every cargo invocation (incl. plain `cargo build`/`test`).
+# cc-rs-compiled C objects (e.g. blake3_neon.o) don't rebuild on env change, so
+# a build without this env leaves stale objects that make ld warn
+# "built for newer macOS version than being linked".
+MACOSX_DEPLOYMENT_TARGET = "15.0"
