@@ -109,8 +109,21 @@ let bundles = all
     ];
 // A bundle is a `root/<name>` string, or `{ from, as }` when the export dir and
 // the install tier differ (the prefix: `turn-prefix-320/` -> `prefix/`).
+// The prefix rides along only when its export exists: a machine that has no
+// prefix export should still be able to pack the tiers it does have. A publish
+// run that must carry it passes --require-prefix, which turns absence into an
+// error instead of a warning (a release manifest silently missing the tier
+// would leave flag-on users with nothing to download).
 const prefixBundle = { from: prefixDir, as: "prefix" };
-bundles = [...bundles, prefixBundle];
+const requirePrefix = args.includes("--require-prefix");
+if (existsSync(prefixDir)) {
+  bundles = [...bundles, prefixBundle];
+} else if (requirePrefix) {
+  console.error(`--require-prefix: no prefix export at ${prefixDir}`);
+  process.exit(1);
+} else {
+  console.warn(`no prefix export at ${prefixDir} — packing without the prefix tier (--prefix-dir, --require-prefix)`);
+}
 const bundleName = (b) => (typeof b === "string" ? b : b.as);
 const only = arg("--only");
 if (only) {
@@ -118,6 +131,12 @@ if (only) {
     const name = bundleName(b);
     return name === only || name.startsWith(`${only}/`);
   });
+  if (bundles.length === 0) {
+    // A selector that matched nothing would otherwise publish an empty
+    // manifest, which the store decodes as "every tier absent".
+    console.error(`--only ${only}: no bundles matched (is the export present?)`);
+    process.exit(1);
+  }
   // A partial pack's manifest holds only that tier; uploading it over the
   // release manifest would make every other tier look absent.
   console.warn(`--only ${only}: partial manifest — do not publish it over the full pack`);
