@@ -1,3 +1,4 @@
+import TygerVoice
 import TygerVoiceCoreAI
 import UIKit
 
@@ -119,6 +120,14 @@ enum VoiceModelGate {
         }
         let ready = await TygerModelStore.ensure(tier: tier)
         Automation.mark("voice: turn tier \(ready ? "ready" : "download failed") (\(tier))")
+        // The 320 ms turn prefix (#132) is fetched only when the split tier is
+        // switched on: a flag-off user must not pay its ~102 MB. A failed or
+        // absent prefix is not fatal — the runtime falls back to the cut tier,
+        // which is why this does not change the returned tier.
+        if TurnPrefix.isEnabled(environment: ProcessInfo.processInfo.environment) {
+            let prefixReady = await TygerModelStore.ensure(tier: "prefix")
+            Automation.mark("voice: turn prefix \(prefixReady ? "ready" : "download failed")")
+        }
         return ready ? tier : nil
     }
 }
