@@ -31,8 +31,15 @@ def aligned_count(a, b, tol):
     return len(used), len(a) - len(used), len(b) - len(used)
 
 
-def student_events(model, oracle, frames, layer=15, thr=(0.9146, 0.5, 0.5), deb=(2, 2, 2)):
-    """Replay one shard using its mode track (older shards default to listen-only)."""
+def student_events(model, oracle, frames, layer=15, thr=(0.9146, 0.5, 0.5), deb=(2, 2, 2),
+                   barge_ok=None):
+    """Replay one shard using its mode track (older shards default to listen-only).
+
+    `barge_ok` (per-frame bools, or None) is an extra online condition on the barge
+    branch: a BARGE that the rules would emit in a frame where it is False is
+    dropped. Tests what the rules *would* emit with the gate, rather than removing
+    events from the ungated list afterwards (the debounce and the seeded pre-buffer
+    keep running unchanged, which is what the real gate does too)."""
     hu_all, ha_all = pick_features(frames, layer)
     sess = oracle.EarsSession(0, ep_thr=thr[0], ep_deb=deb[0], barge_thr=thr[1],
                               barge_deb=deb[1], bc_thr=thr[2], bc_deb=deb[2])
@@ -59,8 +66,11 @@ def student_events(model, oracle, frames, layer=15, thr=(0.9146, 0.5, 0.5), deb=
             if reset:
                 hidden = None
             for e in evs:
-                if e["kind"] != "FRAME":
-                    events.append((f + 1, e["kind"]))  # parity7 counts frames 1-based
+                if e["kind"] == "FRAME":
+                    continue
+                if e["kind"] == "BARGE" and barge_ok is not None and not barge_ok[f]:
+                    continue
+                events.append((f + 1, e["kind"]))  # parity7 counts frames 1-based
     return events
 
 

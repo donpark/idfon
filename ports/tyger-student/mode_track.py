@@ -95,6 +95,22 @@ def frame_modes(agent_db=None, given=None, thr=VAD_DB, release_hops=RELEASE_HOPS
     return np.asarray(out)
 
 
+def agent_audible(agent_db, lookup=2, thr=VAD_DB):
+    """Per frame: was the agent's own channel loud within the last `lookup` frames?
+
+    `mode` is bridged (it holds RELEASE_HOPS past the last loud hop so the state
+    machine survives pauses inside one agent turn), so `mode == "speaking"` means
+    "spoke in the last 1.92 s", not "is audible now". A barge needs the second
+    meaning: stopping playback that already finished is not an interruption. Use
+    this as the extra condition on the barge branch, never on the floor state.
+    """
+    loud = np.asarray(agent_db, np.float64).ravel() > thr
+    out = np.zeros(len(loud), bool)
+    for f in range(len(loud)):
+        out[f] = bool(loud[max(0, f - lookup):f + 1].any())
+    return out
+
+
 def mode_at_hop(modes, hop, hop_frames=HOP_FRAMES):
     """The mode the app would feed for this 320 ms hop (its first frame's mode)."""
     return str(modes[min(hop * hop_frames, len(modes) - 1)])
@@ -120,6 +136,16 @@ def selfcheck():
     assert frame_modes(given=np.array(["listen", "speaking"])).tolist() == ["listen", "speaking"]
     assert mode_at_hop(np.array(["speaking"] * 4 + ["listen"] * 4), 0) == "speaking"
     assert mode_at_hop(np.array(["speaking"] * 4 + ["listen"] * 4), 1) == "listen"
+
+    # audible: one loud frame carries `lookup` frames of tolerance, then stops.
+    # This is the barge condition; the mode track stays speaking for 28 frames here.
+    db2 = np.full(20, -120.0)
+    db2[2] = -20.0
+    assert agent_audible(db2, lookup=0).sum() == 1
+    assert agent_audible(db2, lookup=2)[:5].tolist() == [False, False, True, True, True]
+    assert not agent_audible(db2, lookup=2)[5:].any()
+    assert agent_audible(np.full(6, -120.0)).sum() == 0
+    assert set(frame_modes(db2)[:4].tolist()) == {"speaking"} and not agent_audible(db2)[10]  # the tail
 
     # the old bug's value is not a mode
     for bad in (["response"] * 4, np.array([0, 2, 0, 0])):

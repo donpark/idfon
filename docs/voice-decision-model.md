@@ -521,6 +521,63 @@ larger version of the losing shape.
   time within 0.01 ms and repeated runs agree, but this is not a quiet-machine
   figure. No ANE/CoreML/CoreAI export was attempted — that is P7.
 
+## Barge event spec (2026-11-06): audibility gate, refractory, the turn-grab split
+
+Status: **decision, harness-verified; ports pending.** The measurement is on Open
+Yap 1K's 16-conversation public sample (8.9 h, 48 kHz dual-channel, CC-BY-4.0),
+first 300 s of each call: 16 independent sessions, 80 min, `featurize.py` with the
+current mode track, then `scripts/openyap-barge-sweep.py --selfcheck`.
+
+**What the rules do today.** BARGE needs `mode == "speaking"` and
+`yield ≥ barge_thr` for `barge_deb` frames. `mode` is *bridged*: it holds for
+1.92 s past the agent's last loud hop (`mode_track.RELEASE_HOPS`), and the rules
+never see the agent's own energy — `act_db` is the caller's.
+
+**Measured, same 80 min, one row per threshold:**
+
+| yield thr | events | false/min | precision | recall | per-episode | ep. precision | ep. false/min |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.30 | 2232 | 24.4 | 13% | 37% | 195 | 14% | 2.1 |
+| 0.40 | 1646 | 18.0 | 12% | 29% | 194 | 13% | 2.1 |
+| 0.50 (shipped) | 1257 | 13.7 | 13% | 23% | 179 | 14% | 1.9 |
+
+Three readings, all reproduced by the tool:
+
+1. **The threshold is not the knob.** Recall moves 23% → 37% over a 1.7×
+   threshold range while precision stays at 12–13%.
+2. **The rule re-fires ~19× per speaking episode** (1,257 events → 179 episodes).
+   One event per episode alone takes 13.7 → 1.9 false fires/min at unchanged
+   recall. Backchannels have `bc_refractory`; barge has nothing.
+3. **The release tail is a different event, not noise.** Under a strict overlap
+   reference (agent voiced on the frame before the caller's onset) 14% of
+   per-episode decisions are real; the human audit of the same head
+   (`bench-results/human-audit-openyap.md`, question: *did the user cut in over
+the agent and take or contest the floor near the mark*) confirms 63%. The gap is
+   the definition, and both are true: with the agent silent there is nothing to
+   stop, but the caller is taking the floor.
+
+**Decision.**
+
+- `BARGE` — agent audible (its own channel loud within 320 ms) **and** one event
+  per speaking episode. Action: stop playback. Acceptance: ≥50% of strict-overlap
+  interruptions, ≤1 false stop/min.
+- `TURN_GRAB` — caller takes the floor within ~1.2 s of our last agent audio.
+  Action: yield/queue the next utterance; **never** stop playback.
+  Acceptance: set by the semantic audit, not by this sweep.
+- Neither may fire while the agent channel is silent for the other's action.
+  `mode` stays bridged for the floor state, ENDPOINT and BACKCHANNEL — the
+  audibility condition belongs to the barge branch only.
+
+**Rollout.** Harness A/B (`openyap-barge-sweep.py`), then the three rules ports
+with fixtures (positive: audible overlap; negative: 1.9 s release tail), then a
+traits revision bump. The gate changes events, not labels: the head is distilled
+from the teacher's `yield` score, so no retraining is implied.
+
+**Open.** The 30 blinded clips (`--clips`) adjudicate the TURN_GRAB bar; until
+then its precision estimate is the audit's 63% on a stratified sample, not a
+population figure. Whether TURN_GRAB needs its own head or reuses `yield` is
+undecided.
+
 ## References
 
 - `docs/voice-tyger-ondevice.md` — per-tier guard numbers, precision rulings, the

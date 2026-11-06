@@ -119,6 +119,13 @@ def run_session(oracle, wavs, feature_layers=(15,)):
         "mode": np.asarray(modes, np.int8),
         "teacher": np.asarray(outs, np.float32),
     }
+    if not any(modes):
+        # A silent/absent agent channel derives all "listen", and mode_track takes a
+        # recorded track verbatim: the shard then replays listen-only for good, and a
+        # constant track is indistinguishable from a real listen-only call.
+        print("  ! agent channel silent: every frame is listen, so this shard can never "
+              "emit BARGE and the SPEAK gate never opens", flush=True)
+
     frames.update({f"hu_l{k}": np.asarray(v[0], np.float32) for k, v in extra.items()})
     frames.update({f"ha_l{k}": np.asarray(v[1], np.float32) for k, v in extra.items()})
     return frames, events
