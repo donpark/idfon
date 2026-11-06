@@ -1,0 +1,108 @@
+# Template — expand with scripts/patchbay/gen.sh.
+# Rationale, measured results and the run command are in
+# docs/relay-test-plan.md § "Network-path simulation (patchbay)".
+[sim]
+name = "iroh-tls-__CELL__"
+
+[[binary]]
+name = "doctor"
+path = "iroh-doctor"
+
+[[binary]]
+name = "relay"
+path = "iroh-relay"
+
+[[router]]
+name = "dc"
+
+[[router]]
+name = "home"
+nat = "moderate"
+
+[[router]]
+name = "carrier"
+nat = "__BOB_NAT__"
+
+[device.relay.eth0]
+gateway = "dc"
+
+[device.alice.eth0]
+gateway = "home"
+
+[device.bob.eth0]
+gateway = "carrier"
+
+[[step]]
+action = "gen-certs"
+id = "tls"
+device = "relay"
+
+[[step]]
+action = "gen-file"
+id = "relay-cfg"
+content = """
+enable_relay = true
+enable_quic_addr_discovery = true
+http_bind_addr = "[::]:3340"
+quic_bind_addr = "[::]:7842"
+
+[tls]
+https_bind_addr = "[::]:4433"
+cert_mode = "Manual"
+manual_cert_path = "${tls.cert_pem_path}"
+manual_key_path = "${tls.key_pem_path}"
+"""
+
+[[step]]
+action = "gen-file"
+id = "client-cfg"
+content = """
+[[relay_nodes]]
+url = "https://$NETSIM_IP_relay:4433"
+quic = { port = 7842 }
+"""
+
+[[step]]
+action = "spawn"
+id = "relay"
+device = "relay"
+cmd = ["${binary.relay}", "--config-path", "${relay-cfg.path}"]
+ready_after = "2s"
+
+[[step]]
+action = "spawn"
+id = "accept"
+device = "bob"
+env = { IROH_DOCTOR_INSECURE_TLS = "1" }
+cmd = ["${binary.doctor}", "--config", "${client-cfg.path}", "accept", "--secret-key", "1111111111111111111111111111111111111111111111111111111111111111", "--disable-address-lookup", "--size", "8388608", "--iterations", "1"]
+parser = "text"
+
+[[step]]
+action = "wait"
+duration = "3s"
+
+[[step]]
+action = "run"
+id = "rxbefore"
+device = "relay"
+cmd = ["sh", "-c", "awk '/eth0:/{print $2}' /proc/net/dev"]
+parser = "text"
+
+[[step]]
+action = "run"
+id = "connect"
+device = "alice"
+env = { IROH_DOCTOR_INSECURE_TLS = "1" }
+cmd = ["${binary.doctor}", "--config", "${client-cfg.path}", "connect", "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737", "--secret-key", "random", "--disable-address-lookup", "--relay-url", "https://$NETSIM_IP_relay:4433"]
+parser = "text"
+
+[[step]]
+action = "wait"
+duration = "1s"
+
+[[step]]
+action = "run"
+id = "rxafter"
+device = "relay"
+cmd = ["sh", "-c", "awk '/eth0:/{print $2}' /proc/net/dev"]
+parser = "text"
