@@ -12,8 +12,30 @@ from __future__ import annotations
 import csv
 import html
 import json
+import math
 import os
 import sys
+import wave
+
+import numpy as np
+
+MARK_S = 2.0
+VAD = 0.00316   # -50 dBFS, the rules' voiced threshold
+
+
+def level_db(path: str) -> tuple[float, float]:
+    """RMS in dBFS of the caller and agent at the mark (one 80 ms frame)."""
+    with wave.open(path) as w:
+        sr = w.getframerate()
+        raw = w.readframes(w.getnframes())
+    a = np.frombuffer(raw, np.int16).reshape(-1, 2).astype(np.float32) / 32768.0
+    i = int(MARK_S * sr)
+    hop = int(0.08 * sr)
+    out = []
+    for ch in (0, 1):
+        rms = float(np.sqrt(np.mean(a[i:i + hop, ch] ** 2)))
+        out.append(20 * math.log10(rms) if rms > 1e-9 else -120.0)
+    return out[0], out[1]
 
 
 def main() -> None:
@@ -23,6 +45,10 @@ def main() -> None:
     for r in rows:
         r["human_verdict"] = ""
         r["human_notes"] = ""
+        clip = os.path.join(d, r["clip"])
+        caller, agent = level_db(clip) if os.path.exists(clip) else (-120.0, -120.0)
+        r["caller_db"] = round(caller)
+        r["agent_db"] = round(agent)
     clips = json.dumps(rows)
     title = "Barge audit — " + os.path.basename(os.path.abspath(d))
 
@@ -93,6 +119,7 @@ def main() -> None:
     <div class="col yes">
       <h2>Say <b>Yes</b> — the caller is claiming the floor at the mark</h2>
       <ul>
+        <li><b>the caller is mid-utterance with content</b>, whether they started at the mark or before it</li>
         <li>starting a new turn: a question, an answer, a statement, a “wait—”</li>
         <li>cutting in while the agent is still talking</li>
         <li>a short but turn-shaped utterance: “what?”, “hang on”, “no no no”</li>
@@ -101,16 +128,17 @@ def main() -> None:
     <div class="col no">
       <h2>Say <b>No</b> — not a claim on the floor</h2>
       <ul>
-        <li>backchannel while the other speaks: “mm-hm”, “yeah”, “right”, laughter</li>
+        <li>filler or acknowledgement: “mm-hm”, “yeah”, “right”, laughter</li>
         <li>noise: cough, breath, chair, click, mic bump, the agent’s own audio</li>
-        <li>the caller merely finishing the turn they were already in, or silence</li>
+        <li>a word cut off and restarted, a stutter, or the caller clearly stopped (silence)</li>
       </ul>
     </div>
     <div class="tie">
       <b>Tiebreak:</b> if answering the caller right now would be <b>correct</b>, say Yes.
       If staying silent would be <b>correct</b>, say No.
-      Judge what happens around the mark (±0.5 s), not what comes later.
-      Left channel = caller, right = agent.
+      “Already talking” is <b>not</b> a reason for No: if the mark lands inside the caller’s turn and
+      they are saying something, say Yes. Judge around the mark (±0.5 s), not what comes later.
+      Left channel = caller, right = agent; after you vote, the levels at the mark are shown.
     </div>
   </section>
   <div id="items" style="display:grid; gap:10px"></div>
@@ -138,7 +166,8 @@ function item(r, i) {{
                src="${{encodeURIComponent(r.clip)}}"></audio>
       </div>
       <div class="meta">${{r.kind.toLowerCase()}} · ${{Math.round(r.ts_s)}} s into the call
-        <span class="reveal" data-reveal>· threshold ${{r.threshold}}</span></div>
+        <span class="reveal" data-reveal>· threshold ${{r.threshold}} ·
+        at the mark: caller ${{r.caller_db}} dB, agent ${{r.agent_db <= -60 ? "silent" : r.agent_db + " dB"}}</span></div>
     </div>
     <div class="votes">
       <button data-v="yes" class="${{v.verdict === 'yes' ? 'on-yes' : ''}}" title="caller took the floor">Yes</button>
