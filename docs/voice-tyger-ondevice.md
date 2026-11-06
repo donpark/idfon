@@ -1346,6 +1346,27 @@ restart; and the streaming mel reproduces the whole-signal extractor row for row
 fixture. Not measured: iPhone ANE scheduling/thermals and the first-decision latency
 (the first chunk needs its full 41-row window, so it lands one hop after a stream start).
 
+**Device probe without a call (2026-11-05, #185).** `-turnprefixprobe [file]` loads the
+prefix through `TurnShadow.prefixModel` (the same artifact lookup, step choice,
+`TurnPrefixModel` initializer and sidecar rules as the call path), runs 2 warm-up +
+24 synthetic 320 ms hops (swept sine on the mic slot, silence on playback, caches
+carried), and writes `Documents/turnprefixprobe.json` (or the given relative/absolute
+path). The report has the load result or refusal reason, artifact bytes, cadence/depth/
+rows/shape, per-hop p50/p95/max, `task_vm_info` `phys_footprint` and `resident_size`
+before load / after load / after the run, the ASR load result when
+`StreamingNemotronAsrManager.loadModels(from:)` can load beside it, and the final
+`thermalState`. No probe argument means no probe. Run it on the phone:
+
+```sh
+IDFON_UDID=<udid> ios/device.sh
+scripts/device-lock.sh xcrun devicectl device process launch --terminate-existing \
+  --device <udid> -e '{"IDFON_TURN_PREFIX":"1"}' com.idfon.ios -- \
+  -turnprefixprobe turnprefixprobe.json
+scripts/device-lock.sh xcrun devicectl device copy from \
+  --domain-type appDataContainer --domain-identifier com.idfon.ios \
+  --source Documents/turnprefixprobe.json --destination /tmp/turnprefixprobe.json
+```
+
 **Publishing the prefix (packer tier, 2026-11-05, #132).** The prefix is a third
 artifact beside the cut tier, packed by `scripts/pack-tyger-models.mjs` as the
 `prefix` tier and installed at `<store>/prefix`. Measured staging output
