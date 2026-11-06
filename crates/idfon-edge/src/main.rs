@@ -61,6 +61,7 @@ OPTIONS:
   --files-user-expiry-hours N  User pin term (default 24; 0 = no default)
   --files-max-upload-mb N Per-file cap for user publishes (default 2; 0 = none)
   --files-writes-per-minute N  PUT/DELETE limit per role (default 60; 0 = none)
+  --files-read-bytes-per-second N  Total read egress cap (default 1048576; 0 = none)
   --help, -h              Print this help
 
 ENV: IDFON_EDGE_TOKEN, IDFON_EDGE_KEY, IDFON_EDGE_KEY_FILE, IDFON_EDGE_DOMAIN, RUST_LOG
@@ -107,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
     let mut files_user_expiry_hours: u64 = 24;
     let mut files_max_upload_mb: u64 = 2;
     let mut files_writes_per_minute: u32 = 60;
+    let mut files_read_bytes_per_second: u64 = 1024 * 1024;
     let mut files_aliases: Vec<String> = Vec::new();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -240,6 +242,12 @@ async fn main() -> anyhow::Result<()> {
                     .context("--files-writes-per-minute is a number")?;
                 i += 2;
             }
+            "--files-read-bytes-per-second" => {
+                files_read_bytes_per_second = args[i + 1]
+                    .parse()
+                    .context("--files-read-bytes-per-second is a number")?;
+                i += 2;
+            }
             "--key-file" => {
                 key_file = PathBuf::from(&args[i + 1]);
                 i += 2;
@@ -299,7 +307,8 @@ async fn main() -> anyhow::Result<()> {
                 .with_ops_token(files_ops_token.clone())
                 .with_user_expiry_hours(files_user_expiry_hours)
                 .with_max_upload_bytes(files_max_upload_mb.saturating_mul(1024 * 1024))
-                .with_write_limit(files_writes_per_minute);
+                .with_write_limit(files_writes_per_minute)
+                .with_read_limit(files_read_bytes_per_second);
         for alias in &files_aliases {
             let (next, ok) = files.with_alias(alias);
             if !ok {
@@ -345,6 +354,9 @@ async fn main() -> anyhow::Result<()> {
         handle.addr
     );
     if let Some(dir) = &files_dir {
+        println!(
+            "files:  read cap {files_read_bytes_per_second} B/s (0 = unlimited)"
+        );
         println!(
             "files:  {scheme}://{}/files/<name> and /files/.../sha256/<hash> (dir {}{}{})",
             handle.addr,

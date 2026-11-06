@@ -87,7 +87,11 @@ print(json.dumps({
     "CacheControlMaxAgeOverride": -1,
     "CacheControlPublicMaxAgeOverride": -1,
     "CacheControlBrowserMaxAgeOverride": -1,
-    "IgnoreQueryStrings": False,
+    # The edge resolves files by path only (`FilesRoutes::handle` ignores the
+    # URI query), so the query carries no content. Keying the cache on it would
+    # let `?v=1`, `?v=2`, ... turn every repeat read of the same 2 MB object
+    # into an origin miss.
+    "IgnoreQueryStrings": True,
     "EnableRequestCoalescing": True,
     "EnableOriginShield": False,
     "EnableCacheSlice": False,
