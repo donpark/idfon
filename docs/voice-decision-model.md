@@ -594,6 +594,31 @@ positions systematically, which spreads evenly over the run-length quartiles.
   TURN_GRAB (yield), so the gate only loses them if the tail has no TURN_GRAB
   path. That split, not the gate, is the open item.
 
+### Endpoint audit clips (step 1's second verdict, 2026-11-06)
+
+The handoff and fire clips answered the barge question. The endpoint question —
+*has the caller finished, may the agent safely take the floor?* — needs its own
+set, split by the corpus's own `eot` label so the two classes are comparable.
+
+`scripts/endpoint-clips.py` streams the dualturn-switchboard dataset (the replay
+shards store features, not audio), decodes each chosen session's Mimi codes, and
+cuts 6 s stereo clips with the mark 3 s in. Selection prefers sessions that
+supply both classes so the comparison is within-conversation.
+
+| set | n | definition |
+| --- | --- | --- |
+| fires-on-eot | 10 | ENDPOINT fire within 10 frames (0.8 s) of an `eot` label |
+| fires-off | 10 | ENDPOINT fire at least 10 frames from any `eot` label |
+
+The clips and manifest are in `bench-results/endpoint-audit-2026-11-06/`; open
+`index.html` there. The page reads the manifest's columns and uses the endpoint
+rubric when a `class_` column is present. `mark_s` is clip-relative (3.0 s) and
+`ts_s` is the absolute time in the conversation.
+
+This settles the label-vs-domain question only if the two classes land
+differently in the ear; that verdict is the listening session's, not the
+drawer's.
+
 ### Event catalog for training clips (step 3, 2026-11-06)
 
 The four events are one detector's output split by `gap_ms` (caller onset minus
