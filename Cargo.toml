@@ -6,6 +6,17 @@ members = ["crates/idfon-protocol", "crates/idfon-telemetry", "crates/idfon-core
 license = "MIT OR Apache-2.0"
 version = "0.9.1"
 
+# Dev/test artifacts are a byproduct of `cargo check`/`cargo test`, never of the
+# shipping iOS/macOS builds — those are release. Full debuginfo made
+# target/debug 97 GB across 186k files (one artifact set per feature/metadata
+# hash, nothing pruned). Line tables keep useful backtraces at a fraction of
+# the size; dependencies need no symbols at all.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 # thin, not fat: fat LTO doubles every rlib (bitcode) and makes each relink of
 # the ~350-crate graph minutes; thin LTO keeps cross-crate inlining at a
