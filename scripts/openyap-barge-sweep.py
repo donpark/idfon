@@ -136,17 +136,28 @@ def sweep(y: np.ndarray, mode: np.ndarray, caller: np.ndarray, agent: np.ndarray
     return res
 
 
-def write_clips(wav: str, fired: list[int], out_dir: str, cid: str, limit: int, rng) -> list[dict]:
+def write_clips(wav: str, fired: list[int], out_dir: str, cid: str, limit: int, rng,
+                lead: float = MARK_S, agent_before: bool = True) -> list[dict]:
+    """Cut 6 s clips whose lead reaches the agent's last utterance.
+
+    A fire sits in the mode release tail, so a fixed 2 s lead can land entirely
+    after the agent stopped and the clip then answers nothing. Each clip starts
+    0.8 s before the agent's last voiced frame before the fire, so the listener
+    hears the agent stop and then the caller; the mark (the fire) moves with it.
+    """
     rows = []
     for i in rng.permutation(len(fired))[:limit]:
         f = fired[int(i)]
-        t0 = f * FRAME_S - MARK_S
-        if t0 < 0 or t0 + CLIP_S > 300:
+        t_fire = f * FRAME_S
+        t0 = max(0.0, t_fire - lead)
+        if t0 + CLIP_S > 300:
             continue
-        name = f"{cid}-barge-{f * FRAME_S:.2f}s.wav"
+        name = f"{cid}-barge-{t_fire:.2f}s.wav"
         subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t0:.2f}", "-t", f"{CLIP_S}", "-i", wav,
-                        "-ac", "2", "-acodec", "pcm_s16le", os.path.join(out_dir, name), "-y"], check=True)
-        rows.append({"conversation_id": cid, "ts_s": round(f * FRAME_S, 2), "kind": "BARGE", "clip": name})
+                        "-ac", "2", "-acodec", "pcm16le" if False else "pcm_s16le",
+                        os.path.join(out_dir, name), "-y"], check=True)
+        rows.append({"conversation_id": cid, "ts_s": round(t_fire, 2), "kind": "BARGE", "clip": name,
+                     "mark_s": round(t_fire - t0, 2), "agent_before": agent_before})
     return rows
 
 
@@ -230,7 +241,10 @@ def main() -> None:
                 agg[t][k] += r[t][k]
             if a.clips and r[t]["fires"]:
                 for f in fires_at(y, mode, t, refractory=a.refractory):
-                    pending[t].append((wav, cid, f))
+                    # lead back to the agent's last voiced frame *in this session*
+                    before = np.flatnonzero(agent[:f + 1] > VAD)
+                    lead = 2.0 if not len(before) else min(2.0, max(0.4, (f - before[-1]) * FRAME_S + 0.8))
+                    pending[t].append((wav, cid, f, float(lead), bool(len(before))))
 
     print(f"{len(shards)} shards, {mins:.1f} min")
     print(f"  {'thr':>5} | {'fires':>6} {'false/min':>9} {'prec':>5} {'recall':>6} | "
@@ -245,13 +259,15 @@ def main() -> None:
         for t in thrs:
             pool = pending[t]
             for i in rng.permutation(len(pool))[:a.per_thr]:
-                wav, cid, f = pool[int(i)]
-                for row in write_clips(wav, [f], a.clips, cid, 1, rng):
+                wav, cid, f, lead, agent_before = pool[int(i)]
+                for row in write_clips(wav, [f], a.clips, cid, 1, rng, lead=lead,
+                                       agent_before=agent_before):
                     row["threshold"] = t
                     rows.append(row)
     if a.clips and rows:
         path = os.path.join(a.clips, "manifest.csv")
-        cols = ["sample_id", "conversation_id", "ts_s", "kind", "threshold", "clip", "human_verdict", "human_notes"]
+        cols = ["sample_id", "conversation_id", "ts_s", "kind", "threshold", "clip", "mark_s",
+                "agent_before", "human_verdict", "human_notes"]
         with open(path, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
             w.writeheader()

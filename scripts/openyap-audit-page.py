@@ -23,13 +23,13 @@ MARK_S = 2.0
 VAD = 0.00316   # -50 dBFS, the rules' voiced threshold
 
 
-def level_db(path: str) -> tuple[float, float]:
+def level_db(path: str, mark_s: float) -> tuple[float, float]:
     """RMS in dBFS of the caller and agent at the mark (one 80 ms frame)."""
     with wave.open(path) as w:
         sr = w.getframerate()
         raw = w.readframes(w.getnframes())
     a = np.frombuffer(raw, np.int16).reshape(-1, 2).astype(np.float32) / 32768.0
-    i = int(MARK_S * sr)
+    i = int(mark_s * sr)
     hop = int(0.08 * sr)
     out = []
     for ch in (0, 1):
@@ -45,8 +45,10 @@ def main() -> None:
     for r in rows:
         r["human_verdict"] = ""
         r["human_notes"] = ""
+        r.setdefault("mark_s", "2.0")
         clip = os.path.join(d, r["clip"])
-        caller, agent = level_db(clip) if os.path.exists(clip) else (-120.0, -120.0)
+        caller, agent = (level_db(clip, float(r["mark_s"]))
+                         if os.path.exists(clip) else (-120.0, -120.0))
         r["caller_db"] = round(caller)
         r["agent_db"] = round(agent)
     clips = json.dumps(rows)
@@ -103,9 +105,10 @@ def main() -> None:
 </style>
 <header>
   <h1>{html.escape(title)}</h1>
-  <div class="q">At the mark (2.0 s), <b>was the caller taking the floor</b> — cutting in or starting a new
-  turn — or was this just a pause, a noise, or a backchannel?</div>
-  <div class="sub">6 s stereo clip, caller left / agent right. Thresholds are hidden until you vote.
+  <div class="q">At the mark, <b>was the caller taking the floor</b> — cutting in or starting a new
+  turn — or was this just a pause, a noise, or a backchannel? Each clip starts just before the
+  agent’s last words and the mark is where the barge fired (shown per row).</div>
+  <div class="sub">6 s stereo clip, caller left / agent right; the agent stops shortly after the clip starts.
   Keys: <b>Y</b> yes, <b>N</b> no, <b>space</b> play/pause, <b>J</b>/<b>K</b> next/previous.</div>
   <div class="bar">
     <span class="pill" id="progress">0 / 0</span>
@@ -165,7 +168,7 @@ function item(r, i) {{
         <audio controls preload="metadata" style="flex:1"
                src="${{encodeURIComponent(r.clip)}}"></audio>
       </div>
-      <div class="meta">${{r.kind.toLowerCase()}} · ${{Math.round(r.ts_s)}} s into the call
+      <div class="meta">mark ${{r.mark_s}} s · ${{r.kind.toLowerCase()}} · ${{Math.round(r.ts_s)}} s into the call
         <span class="reveal" data-reveal>· threshold ${{r.threshold}} ·
         at the mark: caller ${{r.caller_db}} dB, agent ${{r.agent_db <= -60 ? "silent" : r.agent_db + " dB"}}</span></div>
     </div>
