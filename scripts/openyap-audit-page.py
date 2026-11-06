@@ -47,6 +47,16 @@ def main() -> None:
   button:hover {{ border-color:#3d4a5c; }}
   button.primary {{ background:var(--accent); border-color:var(--accent); color:#0b1017; font-weight:600; }}
   main {{ margin:0 auto; padding:18px 22px 130px; display:grid; gap:10px; max-width:1100px; }}
+  .rubric {{ display:grid; grid-template-columns:1fr 1fr; gap:10px 22px; background:var(--card);
+             border:1px solid var(--line); border-radius:12px; padding:14px 16px; }}
+  .rubric h2 {{ font-size:13px; margin:0 0 6px; font-weight:600; letter-spacing:.2px; }}
+  .rubric ul {{ margin:0; padding-left:18px; color:var(--dim); font-size:13px; }}
+  .rubric li {{ margin:3px 0; }}
+  .rubric .yes h2 {{ color:var(--yes); }}
+  .rubric .no h2 {{ color:var(--no); }}
+  .rubric .tie {{ grid-column:1 / span 2; color:var(--dim); font-size:13px;
+                  border-top:1px solid var(--line); padding-top:9px; }}
+  @media (max-width: 720px) {{ .rubric {{ grid-template-columns:1fr; }} .rubric .tie {{ grid-column:1; }} }}
   .item {{ scroll-margin-bottom:90px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px;
            display:grid; grid-template-columns:64px 1fr auto; gap:14px; align-items:center; }}
   .item.done {{ border-color:#2b4d33; }}
@@ -78,7 +88,33 @@ def main() -> None:
     <button id="reset">Reset votes</button>
   </div>
 </header>
-<main id="items"></main>
+<main>
+  <section class="rubric">
+    <div class="col yes">
+      <h2>Say <b>Yes</b> — the caller is claiming the floor at the mark</h2>
+      <ul>
+        <li>starting a new turn: a question, an answer, a statement, a “wait—”</li>
+        <li>cutting in while the agent is still talking</li>
+        <li>a short but turn-shaped utterance: “what?”, “hang on”, “no no no”</li>
+      </ul>
+    </div>
+    <div class="col no">
+      <h2>Say <b>No</b> — not a claim on the floor</h2>
+      <ul>
+        <li>backchannel while the other speaks: “mm-hm”, “yeah”, “right”, laughter</li>
+        <li>noise: cough, breath, chair, click, mic bump, the agent’s own audio</li>
+        <li>the caller merely finishing the turn they were already in, or silence</li>
+      </ul>
+    </div>
+    <div class="tie">
+      <b>Tiebreak:</b> if answering the caller right now would be <b>correct</b>, say Yes.
+      If staying silent would be <b>correct</b>, say No.
+      Judge what happens around the mark (±0.5 s), not what comes later.
+      Left channel = caller, right = agent.
+    </div>
+  </section>
+  <div id="items" style="display:grid; gap:10px"></div>
+</main>
 <footer><span class="sub" id="hint">Verdicts save automatically in this browser.</span></footer>
 <script>
 const ROWS = {clips};
@@ -111,8 +147,14 @@ function item(r, i) {{
     <div class="notes"><input placeholder="note (optional)" value="${{v.notes ? v.notes.replace(/"/g, '&quot;') : ''}}"></div>`;
   const audio = el.querySelector("audio");
   const play = el.querySelector(".play");
-  play.onclick = () => {{ audio.paused ? audio.play().catch(() => {{}}) : audio.pause(); }};
-  audio.onplay = () => {{ play.textContent = "❚❚"; }};
+  play.onclick = () => {{
+    if (audio.paused) {{ audio.currentTime = 0; audio.play().catch(() => {{}}); }} else audio.pause();
+  }};
+  // start every playback from the mark-relative beginning, never where it stopped
+  audio.onplay = () => {{
+    if (audio.currentTime > 0.01) audio.currentTime = 0;
+    play.textContent = "❚❚";
+  }};
   audio.onpause = () => {{ play.textContent = "▶"; }};
   audio.onerror = () => {{
     play.textContent = "!";
@@ -171,8 +213,8 @@ document.getElementById("reset").onclick = () => {{
   votes = {{}}; save(); location.reload();
 }};
 
-const main = document.getElementById("items");
-ROWS.forEach((r, i) => main.appendChild(item(r, i)));
+const list = document.getElementById("items");
+ROWS.forEach((r, i) => list.appendChild(item(r, i)));
 // reveal thresholds only for rows already voted
 ROWS.forEach((r) => {{
   const el = document.querySelector(`[data-sample="${{r.sample_id}}"] [data-reveal]`);
@@ -189,7 +231,7 @@ document.addEventListener("keydown", (e) => {{
   const cur = idx >= 0 ? items[idx] : null;
   if (!cur) return;
   if (e.key === " ") {{ e.preventDefault(); const a = cur.querySelector("audio");
-    a.paused ? a.play() : a.pause(); }}
+    if (a.paused) {{ a.currentTime = 0; a.play().catch(() => {{}}); }} else a.pause(); }}
   if (e.key === "y" || e.key === "Y") cast(cur.dataset.sample, "yes", cur);
   if (e.key === "n" || e.key === "N") cast(cur.dataset.sample, "no", cur);
 }});
