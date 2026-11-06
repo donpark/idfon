@@ -116,7 +116,9 @@ idfon put --file report.pdf            # prints a BlobTicket
 # Durable tier: an always-on copy at a hash URL.
 idfon publish report.pdf               # user pin: 24h
 idfon publish report.pdf --expires-in 1h
-idfon publish bundle.json --name phonon-31m/bundle.json --permanent   # ops pin
+idfon publish pack.json --name phonon-31m/pack.json --permanent       # ops pin
+# (not `bundle.json`: that name is blocklisted — the pre-fix index clobbered
+# the model metadata at that path; see the 2026-11-06 takedown)
 ```
 
 `idfon publish` (daemon `files.publish { path, name?, url?, token?, expires_in?, permanent? }`):
