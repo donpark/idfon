@@ -15,6 +15,19 @@ upstream TYGER repository, which keeps NVIDIA's copy of the license in
 and the unchanged
 [NVIDIA model card](https://huggingface.co/nineninesix/tyger/blob/main/upstream/NVIDIA_MODEL_CARD.md).
 
+**The runtime ASR bundle matters to this licence, not just the weights.** The tiers
+above are NVIDIA 3.5 exports. The decoder, joint and tokenizer are not in this
+repository: the app downloads them from a FluidInference bundle. Only the 3.5
+multilingual bundle
+([`FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML`](https://huggingface.co/FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-CoreML))
+is OpenMDW-1.1. The older English bundle
+(`nemotron-speech-streaming-en-0.6b-coreml`, the current shipping ASR) declares
+NVIDIA's Open Model License instead, so pairing it with these tiers would mix two
+grants — which is why the split tier's ASR moves to the 3.5 multilingual bundle and
+retires the English one. Its multilingual manager also supplies `prompt_id`
+natively; the English manager does not, which is what forced the baked-const
+packaging fix in the probe.
+
 Not covered: the training and evaluation data (Open Yap 1K and the
 dualturn-otospeech-turn-taking corpora), which aren't included here and keep
 their own terms; the Parakeet Redux feature tap
