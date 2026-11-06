@@ -62,6 +62,17 @@ on renewal, like the edge — no restart), serving
 `IDFON_RELAY_URLS=https://relay.<domain>:8443` into the edge's env. The firewall
 already allows those two ports.
 
+`relay/config.toml` sets `[limits.client.rx]` (512 KiB/s per connection, 2 MiB
+burst) so one admitted client cannot relay unbounded traffic. That is a
+per-connection cap, not a monthly one: the relay has no aggregate/total limit,
+so set a DigitalOcean billing alert as the backstop. The free-tier starting
+guess lives in `IDFON_RELAY_RX_BYTES_PER_SECOND` / `IDFON_RELAY_RX_BURST_BYTES`
+(paid tiers are separate relays with their own cap). The relay's Prometheus
+text is published on `127.0.0.1:9090` (loopback only) — `relayserver_bytes_sent`,
+`relayserver_bytes_recv` and `relayserver_conns_rx_ratelimited_total` are the
+numbers that say whether the cap is too tight or too loose. Tune the config and
+`docker compose ... restart iroh-relay`; no image rebuild is involved.
+
 **Every peer must use the same relay** (a relay is a shared rendezvous): set
 `IDFON_RELAY_URLS` / `IDFON_RELAY_TOKEN` on each daemon too. A peer left on N0
 will not meet one on the enterprise relay.

@@ -10,6 +10,7 @@ services:
     ports:
       - "8443:8443/tcp" # WSS relay (the edge owns 443)
       - "7842:7842/udp" # QUIC address discovery
+      - "127.0.0.1:9090:9090" # Prometheus text; loopback only, tune the cap from it
     volumes:
       - ./relay/config.toml:/config/config.toml:ro
       - /etc/idfon-edge:/etc/idfon-edge:ro
@@ -32,6 +33,7 @@ services:
       IDFON_RELAY_AUTH_TLS_KEY: /etc/idfon-edge/key.pem
     volumes:
       - ./relay-auth/server.mjs:/app/server.mjs:ro
+      - ./relay-auth/rcan.mjs:/app/rcan.mjs:ro
       - ./relay-auth/data:/data
       - /etc/idfon-edge:/etc/idfon-edge:ro
     ports:

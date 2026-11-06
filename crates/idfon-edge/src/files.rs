@@ -21,11 +21,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use http::{HeaderMap, Method, Response, StatusCode};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::Incoming;
@@ -57,6 +57,53 @@ const PIN_HEADER: &str = "x-idfon-pin";
 /// bound by the store quota instead). 2 MiB is about four minutes of 32–48 kbps
 /// Opus speech (32 kbps ≈ 1.4 MB, 48 kbps ≈ 1.9 MB; 64 kbps exceeds it).
 const DEFAULT_MAX_UPLOAD_BYTES: u64 = 2 * 1024 * 1024;
+
+/// A token bucket over the store's total read egress. Reads are public and
+/// unauthenticated, so without this the only bound is the NIC: an object the
+/// CDN has not cached can be looped at line rate. One global bucket (not
+/// per-IP) is deliberate — the edge cannot see client IPs behind the CDN.
+struct ReadLimiter {
+    bytes_per_second: f64,
+    /// One second of tokens: enough to start a single file immediately.
+    burst: f64,
+    bucket: Mutex<ReadBucket>,
+}
+
+struct ReadBucket {
+    tokens: f64,
+    last: Instant,
+}
+
+impl ReadLimiter {
+    fn new(bytes_per_second: u64) -> Self {
+        let rate = bytes_per_second as f64;
+        Self {
+            bytes_per_second: rate,
+            burst: rate,
+            bucket: Mutex::new(ReadBucket {
+                tokens: rate,
+                last: Instant::now(),
+            }),
+        }
+    }
+
+    /// Reserve `bytes`; returns how long the sender must wait to stay at the
+    /// cap. Tokens may go negative — concurrent readers then split the refill
+    /// instead of all bursting.
+    fn reserve(&self, bytes: u64) -> Duration {
+        let mut bucket = self.bucket.lock().unwrap_or_else(|error| error.into_inner());
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * self.bytes_per_second).min(self.burst);
+        bucket.last = now;
+        bucket.tokens -= bytes as f64;
+        if bucket.tokens < 0.0 {
+            Duration::from_secs_f64(-bucket.tokens / self.bytes_per_second)
+        } else {
+            Duration::ZERO
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -96,6 +143,8 @@ pub struct FilesRoutes {
     /// not pass through the gateway's rate limiter, so the store owns this.
     write_limit: u32,
     writes: Mutex<HashMap<String, (Instant, u32)>>,
+    /// Global read-egress cap; `None` = unlimited.
+    read_limit: Option<Arc<ReadLimiter>>,
     /// Mount points for named files: `/files/` and `/models/` always, plus any
     /// deployment-declared top-level name (e.g. `talk-radio/`), so a CDN that
     /// passes paths through unchanged reaches the store without a rewrite.
@@ -135,6 +184,7 @@ impl FilesRoutes {
             grace_days: 30,
             write_limit: 0,
             writes: Mutex::new(HashMap::new()),
+            read_limit: None,
             prefixes: NAME_PREFIXES.iter().map(|prefix| (*prefix).to_owned()).collect(),
         };
         routes.sweep(now_secs());
@@ -184,6 +234,12 @@ impl FilesRoutes {
     /// PUT/DELETE requests per minute per role (`0` = unlimited).
     pub fn with_write_limit(mut self, per_minute: u32) -> Self {
         self.write_limit = per_minute;
+        self
+    }
+
+    /// Total bytes the store may serve per second (`0` = unlimited).
+    pub fn with_read_limit(mut self, bytes_per_second: u64) -> Self {
+        self.read_limit = (bytes_per_second > 0).then(|| Arc::new(ReadLimiter::new(bytes_per_second)));
         self
     }
 
@@ -341,6 +397,7 @@ impl FilesRoutes {
                 "application/octet-stream",
                 &cache,
                 head,
+                self.read_limit.clone(),
             )
             .await;
         }
@@ -358,7 +415,7 @@ impl FilesRoutes {
         }
         let file = self.root.join(name.join("/"));
         let content_type = content_type(name.last().copied().unwrap_or_default());
-        static_file(file, content_type, MUTABLE, head).await
+        static_file(file, content_type, MUTABLE, head, self.read_limit.clone()).await
     }
 
     async fn publish(
@@ -799,6 +856,7 @@ async fn static_file(
     content_type: &str,
     cache_control: &str,
     head: bool,
+    read_limit: Option<Arc<ReadLimiter>>,
 ) -> Response<ResponseBody> {
     let Ok(metadata) = tokio::fs::metadata(&file).await else {
         return not_found();
@@ -818,9 +876,24 @@ async fn static_file(
     }
     match tokio::fs::File::open(&file).await {
         Ok(file) => {
-            let stream = ReaderStream::new(file).map_ok(http_body::Frame::data);
+            let stream = ReaderStream::new(file)
+                .map_ok(http_body::Frame::data)
+                .then(move |frame| {
+                    let limit = read_limit.clone();
+                    async move {
+                        if let (Some(limit), Ok(frame)) = (&limit, &frame) {
+                            if let Some(len) = frame.data_ref().map(|data| data.len() as u64) {
+                                let wait = limit.reserve(len);
+                                if !wait.is_zero() {
+                                    tokio::time::sleep(wait).await;
+                                }
+                            }
+                        }
+                        frame
+                    }
+                });
             response
-                .body(StreamBody::new(stream).boxed())
+                .body(BodyExt::boxed(StreamBody::new(stream)))
                 .expect("static response")
         }
         Err(_) => not_found(),
@@ -1095,6 +1168,17 @@ mod tests {
         let routes = FilesRoutes::new(&root, 0, None).unwrap();
         assert_eq!(routes.max_upload_bytes, 2 * 1024 * 1024);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_limiter_bursts_one_second_then_holds_the_rate() {
+        let limiter = ReadLimiter::new(1_000_000);
+        assert_eq!(limiter.reserve(1_000_000), Duration::ZERO, "burst is free");
+        let wait = limiter.reserve(1_000_000);
+        assert!(
+            wait >= Duration::from_millis(900),
+            "second second must wait ~1s, got {wait:?}"
+        );
     }
 
     #[test]

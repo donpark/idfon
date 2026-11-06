@@ -56,6 +56,9 @@ resolves to bunny.net — re-run if the first run reports it is not issued yet.
 - **Terms drive the TTL.** User pins last 24h, so their `max-age` is at most a
   day; operational pins (`--permanent`) are `immutable`. Mutable names are
   `no-store` and are never cached.
+- **Query strings are ignored (`IgnoreQueryStrings`).** The edge resolves files
+  by path only, so the query carries no content. Keying on it would let anyone
+  turn every repeat read of a 2 MB object into a separate origin miss.
 - **Origin is the droplet, HTTPS verified.** The wildcard cert covers
   `idfon.net` and `*.idfon.net` (`deploy/digitalocean/acme-issue.sh`), so the
   apex origin validates.

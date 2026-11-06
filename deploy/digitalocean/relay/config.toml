@@ -24,6 +24,20 @@ metrics_bind_addr = "[::]:9090"
 # the relay itself can override its token list via IROH_RELAY_ACCESS_TOKEN.
 access = { allowlist = [] }
 
+# Per-connection cap on data read from a client — and therefore relayed on,
+# since the relay only forwards. Auth decides who may relay, not how much: an
+# admitted client (or a leaked shared token) is otherwise bounded only by the
+# droplet's NIC and DigitalOcean's per-GB transfer overage.
+#
+# Limits are per connection (one per endpoint, carrying all its calls), not an
+# aggregate: N endpoints still get N x the cap. iroh-relay 1.4.0 has no total,
+# monthly, or tx limit; use provider billing alerts as the backstop.
+# `max_burst_bytes` must exceed MAX_FRAME_SIZE (1 MiB) or a single frame trips
+# the limiter.
+[limits.client.rx]
+bytes_per_second = 524288 # 512 KiB/s ~ 4 Mbit/s per endpoint (free-tier guess)
+max_burst_bytes = 2097152 # 2 MiB burst (4 s at the cap; > one 1 MiB frame)
+
 [tls]
 # 443 belongs to the edge, so the relay URL carries its port:
 #   https://relay.<domain>:8443

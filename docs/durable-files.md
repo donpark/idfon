@@ -83,6 +83,12 @@ Mounted only with `--files-dir`; served before requester auth, like `/_push/*`.
 - `--files-writes-per-minute N` (default 60, `0` = unlimited) caps PUT/DELETE
   per role. Local routes bypass the gateway's rate limiter, so the store owns
   this one.
+- `--files-read-bytes-per-second N` (default 1 MiB/s, `0` = unlimited) caps the
+  store's **total** read egress with a token bucket (one second of burst). Read
+  routes bypass the gateway's rate limiter and are public, so without this the
+  only bound is the NIC: a 2 MB object the CDN has not cached can be looped at
+  line rate. This is the starting guesstimate; tune it from the relay/CDN
+  metrics and the bill.
 - `--files-max-upload-mb N` (default 2, `0` = unlimited) caps a single
   **user** upload. Operations uploads have no per-file limit and are exempt
   from the store quota (the disk is the bound); the quota is a user-abuse
