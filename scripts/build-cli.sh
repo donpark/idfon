@@ -34,6 +34,10 @@ case "$target" in
     ;;
 esac
 
+# macOS 15 (Sequoia) is the floor for shipped darwin binaries (matches
+# mac/Package.swift); pin it so the build machine's OS doesn't set it implicitly.
+case "$target" in *apple-darwin) export MACOSX_DEPLOYMENT_TARGET=15.0 ;; esac
+
 # $build / $cross_flag are intentionally word-split (POSIX sh has no arrays).
 cross_flag=""
 build="cargo build"

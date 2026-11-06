@@ -10,8 +10,7 @@ let phonon = ProcessInfo.processInfo.environment["IDFON_TTS_PHONON"] != "0"
 
 let package = Package(
     name: "Idfon",
-    // ptts (Phonon) needs macOS 15+; phonon builds raise the floor with it.
-    platforms: [.macOS(phonon ? "15.0" : "14.0")],
+    platforms: [.macOS("15.0")],
     dependencies: [
         // On-device speech models: Parakeet (ASR) + Kokoro (TTS).
         // Fork branch carried until FluidInference/FluidAudio#1109 merges: it adds
@@ -50,7 +49,7 @@ let package = Package(
                 // Everything macOS 26/27-only (the on-device director + Apple
                 // Foundation Models, SystemConfiguration, libc++) lives in
                 // libidfon_director.dylib (see build-deps.sh), dlopen'd by
-                // CIdfon.c on first use, so the app links at macOS 14.
+                // CIdfon.c on first use, so the app links at macOS 15.
                 .unsafeFlags(["-L\(packageDir)/Vendor"]),
             ]
         ),

@@ -7,9 +7,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
 
-# Build objects for the app's link target (Package.swift: .macOS(.v14));
+# Build objects for the app's link target (Package.swift: .macOS("15.0"));
 # otherwise cargo uses the SDK default and ld warns once per object.
-export MACOSX_DEPLOYMENT_TARGET=14.0
+export MACOSX_DEPLOYMENT_TARGET=15.0
 
 echo "== libiroh_c_ffi.dylib"
 (cd "$ROOT" && cargo build --release -p iroh-c-ffi)
@@ -31,7 +31,7 @@ codesign --force -s - Vendor/libiroh_c_ffi.dylib
 
 # The director's AFM shim needs macOS 26 (AFM3 paths gate at macOS 27 inside
 # fm-rs), so it gets its own dylib with a matching min OS and only the C ABI
-# exported. The app links at macOS 14 and dlopens this at first use
+# exported. The app links at macOS 15 and dlopens this at first use
 # (Sources/CIdfon/CIdfon.c); below macOS 26 the dlopen fails and the director
 # is simply unavailable.
 cat > Vendor/idfon_director.exports <<'EOF'

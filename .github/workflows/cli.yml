@@ -37,9 +37,9 @@ jobs:
           # arm64 macOS, which also sidesteps the macos-13 (Intel) runner
           # queue starvation. If a runner name is unavailable, swap it;
           # ubuntu-24.04-arm is the fallback for ubuntu-22.04-arm (at the
-          # cost of a newer glibc floor).
-          - { os: macos-14, pkg: idfon-darwin-arm64 }
-          - { os: macos-14, pkg: idfon-darwin-x64, target: x86_64-apple-darwin }
+          # cost of a newer glibc floor). (macos-14 was retired 2026-11-02.)
+          - { os: macos-15, pkg: idfon-darwin-arm64 }
+          - { os: macos-15, pkg: idfon-darwin-x64, target: x86_64-apple-darwin }
           - { os: ubuntu-22.04, pkg: idfon-linux-x64 }
           - { os: ubuntu-22.04-arm, pkg: idfon-linux-arm64 }
     runs-on: ${{ matrix.os }}
