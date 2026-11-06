@@ -3,7 +3,7 @@ import CryptoKit
 import Foundation
 
 /// The Phonon model pack: the Core ML bundle `scripts/fetch-phonon-31m.sh`
-/// writes, delivered over HTTP from a content-addressed tree (`<base>/bundle.json`,
+/// writes, delivered over HTTP from a content-addressed tree (`<base>/pack.json`,
 /// files at `<base>/sha256/<hash>`) or kept by the caller.
 ///
 /// Two manifest paths are the same bytes: the flow LM's weights ship inside
@@ -18,7 +18,7 @@ import Foundation
 /// Self-contained (no ptts types) on purpose: `mac/Checks/PhononPackCheck`
 /// compiles it alone.
 enum PhononPack {
-    /// A `bundle.json` as the exporter writes it.
+    /// A `pack.json` (the download index) as the exporter writes it.
     struct Manifest: Decodable {
         struct File: Decodable {
             let path: String
@@ -43,8 +43,8 @@ enum PhononPack {
         let data: Data
         do {
             let (remote, response) = try await URLSession.shared.data(
-                from: base.appending(path: "bundle.json"))
-            try check(response, "bundle.json")
+                from: base.appending(path: "pack.json"))
+            try check(response, "pack.json")
             data = remote
         } catch {
             // Offline: the installed pack is still good if its own manifest
@@ -90,7 +90,7 @@ enum PhononPack {
             donors[file.sha256] = dest
         }
 
-        try data.write(to: staging.appending(path: "bundle.json"))
+        try data.write(to: staging.appending(path: "pack.json"))
         try? fm.removeItem(at: dir)
         try fm.moveItem(at: staging, to: dir)
         var url = dir
@@ -168,7 +168,10 @@ enum PhononPack {
     }
 
     private static func manifest(at dir: URL) -> Manifest? {
-        (try? Data(contentsOf: dir.appending(path: "bundle.json")))
+        // `pack.json` only exists on a fixed install; a pre-fix install (the
+        // index clobbering `bundle.json`) reads as unknown and re-downloads,
+        // which also repairs the model metadata `Phonon.load` needs.
+        (try? Data(contentsOf: dir.appending(path: "pack.json")))
             .flatMap { try? JSONDecoder().decode(Manifest.self, from: $0) }
     }
 

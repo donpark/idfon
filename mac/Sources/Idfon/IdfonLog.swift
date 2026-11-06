@@ -27,7 +27,7 @@ private func logToIdfon(_ level: OSLogType, _ message: String, _ file: String) {
     // pipe breaks, which SIGABRTed the app on its next log line (2026-11-03).
     var out = "\(message)\n"
     out.withUTF8 { buf in
-        fcntl(STDERR_FILENO, F_SETNOSIGPIPE, 1)
+        _ = fcntl(STDERR_FILENO, F_SETNOSIGPIPE, 1)
         _ = Darwin.write(STDERR_FILENO, buf.baseAddress, buf.count)
     }
 }

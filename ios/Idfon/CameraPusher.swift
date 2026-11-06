@@ -36,14 +36,14 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         // object: nil so rebuilt (fresh) sessions are observed too; this is
         // the only AVCaptureSession in the process.
         observers.append(NotificationCenter.default.addObserver(
-            forName: .AVCaptureSessionRuntimeError, object: nil, queue: nil
+            forName: AVCaptureSession.runtimeErrorNotification, object: nil, queue: nil
         ) { [weak self] note in
             let err = note.userInfo?[AVCaptureSessionErrorKey] as? NSError
             self?.lastSessionError = "runtime: \(err?.description ?? "?")"
             idfonLog("idfon camera push: RUNTIME ERROR \(err?.description ?? "?")")
         })
         observers.append(NotificationCenter.default.addObserver(
-            forName: .AVCaptureSessionWasInterrupted, object: nil, queue: nil
+            forName: AVCaptureSession.wasInterruptedNotification, object: nil, queue: nil
         ) { [weak self] note in
             let reason = note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int ?? -1
             guard let self else { return }
@@ -55,7 +55,7 @@ final class CameraPusher: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
             idfonLog("idfon camera push: INTERRUPTED reason=\(reason)")
         })
         observers.append(NotificationCenter.default.addObserver(
-            forName: .AVCaptureSessionInterruptionEnded, object: nil, queue: .main
+            forName: AVCaptureSession.interruptionEndedNotification, object: nil, queue: .main
         ) { [weak self] _ in
             guard let self, self.restartAfterInterruption else { return }
             self.restartAfterInterruption = false

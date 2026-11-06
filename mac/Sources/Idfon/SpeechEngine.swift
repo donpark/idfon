@@ -301,15 +301,16 @@ final class SpeechCompletion: NSObject, AVSpeechSynthesizerDelegate {
 }
 
 #if PHONON_TTS
-/// Downloads a Phonon pack from a content-addressed base. `bundle.json` lives
-/// at the base (mutable, `no-store`); every file is fetched from
+/// Downloads a Phonon pack from a content-addressed base. The download index is
+/// `pack.json` at the base (mutable, `no-store`); every file is fetched from
 /// `sha256/<sha256>` (immutable) and installed at its manifest `path`, so the
 /// Core ML package layout and the voice filenames survive the move to the CDN.
+/// `bundle.json` is Phonon's model metadata (dims, ctx, languages), a listed file.
 /// Phonon 31m (gradium via the `ptts` Swift package) — build-time engine
 /// (`IDFON_TTS_PHONON=1` at build, then `IDFON_TTS=phonon` or per-contact).
 /// Models: `scripts/fetch-phonon-31m.sh` provisions the Core ML bundle into
 /// `ModelStore.root/phonon` (or `IDFON_PHONON_PACK_URL` / the baked-in
-/// `defaultPackURL` serves the export's `bundle.json`; files come from
+/// `defaultPackURL` serves the export's `pack.json` index; files come from
 /// `sha256/<hash>` (the CDN tree)). Custom voices are 256KB
 /// `.safetensors` embeddings dropped in `phonon/voices/NAME.safetensors` and
 /// picked with `IDFON_TTS_VOICE=NAME` (default: Clara, an idfon blend voice).
@@ -383,8 +384,8 @@ final class PhononTtsEngine: NSObject, TtsEngine {
                         return
                     }
                     let duration = Double(buffer.frameLength) / buffer.format.sampleRate
-                    AudioMeter.playStream(buffer) { [weak self] in
-                        Task { @MainActor in self?.playedSeconds += duration }
+                    AudioMeter.playStream(buffer) { [weak weakSelf = self] in
+                        Task { @MainActor in weakSelf?.playedSeconds += duration }
                         tracker.chunkDone()
                     }
                 }

@@ -31,19 +31,23 @@ let installed = root.appendingPathComponent("installed")
 // content-addressed tree (`sha256/<hash>`), so one blob serves both paths.
 let weights = Data((0..<(1 << 20)).map { UInt8($0 % 251) })
 let small = Data("graph".utf8)
-for data in [weights, small] {
+// Phonon's model metadata: a listed file at `bundle.json`. The index must
+// never overwrite it ("bundle.json has no dims", 2026-11-01).
+let meta = Data(#"{"dims":{"d":512},"ctx":32,"languages":["en"]}"#.utf8)
+for data in [weights, small, meta] {
     let url = served.appendingPathComponent("sha256/\(sha(data))")
     try! fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     try! data.write(to: url)
 }
 let manifest = """
 {"built": 1, "files": [
+ {"path": "bundle.json", "size": \(meta.count), "sha256": "\(sha(meta))"},
  {"path": "flow-c414-t1.mlpackage/Data/com.apple.CoreML/weights/weight.bin", "size": \(weights.count), "sha256": "\(sha(weights))"},
  {"path": "flow-c414-t48.mlpackage/Data/com.apple.CoreML/weights/weight.bin", "size": \(weights.count), "sha256": "\(sha(weights))"},
  {"path": "host.safetensors", "size": \(small.count), "sha256": "\(sha(small))"}
 ]}
 """
-try! Data(manifest.utf8).write(to: served.appendingPathComponent("bundle.json"))
+try! Data(manifest.utf8).write(to: served.appendingPathComponent("pack.json"))
 
 let a = installed.appendingPathComponent("flow-c414-t1.mlpackage/Data/com.apple.CoreML/weights/weight.bin")
 let b = installed.appendingPathComponent("flow-c414-t48.mlpackage/Data/com.apple.CoreML/weights/weight.bin")
@@ -60,7 +64,10 @@ check(installError == nil, "install succeeds: \(installError.map { "\($0)" } ?? 
 check(fm.fileExists(atPath: a.path) && fm.fileExists(atPath: b.path), "both flow paths installed")
 check(inode(a) != nil && inode(a) == inode(b), "duplicate weights hardlinked to one file")
 check(fm.fileExists(atPath: installed.appendingPathComponent("host.safetensors").path), "small file installed")
-check(fm.fileExists(atPath: installed.appendingPathComponent("bundle.json").path), "bundle.json written")
+check((try? Data(contentsOf: installed.appendingPathComponent("bundle.json"))) == meta,
+      "bundle.json is the model metadata, not the index")
+check((try? Data(contentsOf: installed.appendingPathComponent("pack.json"))) == Data(manifest.utf8),
+      "index installed as pack.json")
 let excluded = (try? installed.resourceValues(forKeys: [.isExcludedFromBackupKey]))?.isExcludedFromBackup
 check(excluded == true, "bundle excluded from backup")
 // 2. A pre-dedupe install (two separate copies) relinks in place.
@@ -72,7 +79,8 @@ try! fm.createDirectory(at: separate.appendingPathComponent("flow-c414-t48.mlpac
 try! weights.write(to: separate.appendingPathComponent("flow-c414-t1.mlpackage/Data/com.apple.CoreML/weights/weight.bin"))
 try! weights.write(to: separate.appendingPathComponent("flow-c414-t48.mlpackage/Data/com.apple.CoreML/weights/weight.bin"))
 try! small.write(to: separate.appendingPathComponent("host.safetensors"))
-try! Data(manifest.utf8).write(to: separate.appendingPathComponent("bundle.json"))
+try! meta.write(to: separate.appendingPathComponent("bundle.json"))
+try! Data(manifest.utf8).write(to: separate.appendingPathComponent("pack.json"))
 let c = separate.appendingPathComponent("flow-c414-t1.mlpackage/Data/com.apple.CoreML/weights/weight.bin")
 let d = separate.appendingPathComponent("flow-c414-t48.mlpackage/Data/com.apple.CoreML/weights/weight.bin")
 check(inode(c) != nil && inode(c) != inode(d), "two copies before relink")
@@ -105,7 +113,7 @@ check((try? Data(contentsOf: e)) == weights, "damaged file replaced with the ser
 check(inode(e) == inode(installed.appendingPathComponent("flow-c414-t48.mlpackage/Data/com.apple.CoreML/weights/weight.bin")),
       "repair keeps the dedupe")
 try! Data(manifest.replacingOccurrences(of: "\"built\": 1", with: "\"built\": 2").utf8)
-    .write(to: served.appendingPathComponent("bundle.json"))
+    .write(to: served.appendingPathComponent("pack.json"))
 run("new built")
 check((try? Data(contentsOf: e)) == weights, "new built stamp replaces the pack")
 check(inode(e) == inode(installed.appendingPathComponent("flow-c414-t48.mlpackage/Data/com.apple.CoreML/weights/weight.bin")),

@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { _ in
-            LiveCall.shared.foregrounded()
+            Task { @MainActor in LiveCall.shared.foregrounded() }
         }
         // Config schema migrations before launch-arg config below: automation
         // must win over a migration, never the other way round.

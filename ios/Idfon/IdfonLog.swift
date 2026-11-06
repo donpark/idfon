@@ -29,7 +29,7 @@ private func logToIdfon(_ level: OSLogType, _ message: String, _ file: String) {
     // next log line (2026-11-03 crash traces).
     var out = "\(message)\n"
     out.withUTF8 { buf in
-        fcntl(STDERR_FILENO, F_SETNOSIGPIPE, 1)
+        _ = fcntl(STDERR_FILENO, F_SETNOSIGPIPE, 1)
         _ = Darwin.write(STDERR_FILENO, buf.baseAddress, buf.count)
     }
     IdfonLogFile.append(message)
@@ -73,7 +73,7 @@ enum IdfonLogFile {
         // blind). Retry the creation per append.
         if fd < 0 { fd = openLogFile() }
         line.withUTF8 { buf in
-            fcntl(fd, F_SETNOSIGPIPE, 1)
+            _ = fcntl(fd, F_SETNOSIGPIPE, 1)
             _ = Darwin.write(fd, buf.baseAddress, buf.count)
         }
     }
