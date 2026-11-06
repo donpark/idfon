@@ -46,8 +46,8 @@ def main() -> None:
             color:var(--ink); padding:7px 13px; cursor:pointer; }}
   button:hover {{ border-color:#3d4a5c; }}
   button.primary {{ background:var(--accent); border-color:var(--accent); color:#0b1017; font-weight:600; }}
-  main {{ margin:0 auto; padding:18px 22px 80px; display:grid; gap:10px; max-width:1100px; }}
-  .item {{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px;
+  main {{ margin:0 auto; padding:18px 22px 130px; display:grid; gap:10px; max-width:1100px; }}
+  .item {{ scroll-margin-bottom:90px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px;
            display:grid; grid-template-columns:64px 1fr auto; gap:14px; align-items:center; }}
   .item.done {{ border-color:#2b4d33; }}
   .id {{ color:var(--dim); font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }}
@@ -96,7 +96,11 @@ function item(r, i) {{
   el.innerHTML = `
     <div><div class="id">${{r.sample_id}}</div><div class="meta">${{i + 1}}/${{ROWS.length}}</div></div>
     <div>
-      <audio preload="none" src="${{encodeURIComponent(r.clip)}}"></audio>
+      <div style="display:flex; gap:8px; align-items:center">
+        <button class="play" title="play / pause (space)">▶</button>
+        <audio controls preload="metadata" style="flex:1"
+               src="${{encodeURIComponent(r.clip)}}"></audio>
+      </div>
       <div class="meta">${{r.kind.toLowerCase()}} · ${{Math.round(r.ts_s)}} s into the call
         <span class="reveal" data-reveal>· threshold ${{r.threshold}}</span></div>
     </div>
@@ -106,12 +110,20 @@ function item(r, i) {{
     </div>
     <div class="notes"><input placeholder="note (optional)" value="${{v.notes ? v.notes.replace(/"/g, '&quot;') : ''}}"></div>`;
   const audio = el.querySelector("audio");
+  const play = el.querySelector(".play");
+  play.onclick = () => {{ audio.paused ? audio.play().catch(() => {{}}) : audio.pause(); }};
+  audio.onplay = () => {{ play.textContent = "❚❚"; }};
+  audio.onpause = () => {{ play.textContent = "▶"; }};
+  audio.onerror = () => {{
+    play.textContent = "!";
+    el.querySelector("[data-reveal]").textContent = "· audio failed to load: " + decodeURIComponent(audio.getAttribute("src"));
+    el.querySelector("[data-reveal]").style.visibility = "visible";
+  }};
   el.querySelectorAll("button[data-v]").forEach((b) => b.onclick = () => cast(r.sample_id, b.dataset.v, el));
   el.querySelector("input").oninput = (e) => {{
     votes[r.sample_id] = Object.assign(votes[r.sample_id] || {{}}, {{ notes: e.target.value }});
     save();
   }};
-  audio.onplay = () => {{ if (!el.dataset.played) {{ el.dataset.played = "1"; }} }};
   return el;
 }}
 
