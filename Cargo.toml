@@ -43,6 +43,6 @@ moq-mux = { git = "https://github.com/donpark/moq", branch = "loss-recovery-rele
 moq-net = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
 moq-video = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
 moq-tokio = { git = "https://github.com/donpark/moq", branch = "loss-recovery-release" }
-moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4" }
+moq-media = { git = "https://github.com/n0-computer/iroh-live", rev = "dd80d44efb587f31deed14fc11eeaa12946c9fd2" }
 # Match the MoQ development snapshot selected by the current iroh-live rev.
-iroh-moq = { git = "https://github.com/n0-computer/iroh-live", rev = "9abd29be2da2564cf295225ba630a34f62daa7a4" }
+iroh-moq = { git = "https://github.com/n0-computer/iroh-live", rev = "dd80d44efb587f31deed14fc11eeaa12946c9fd2" }
