@@ -615,9 +615,28 @@ The clips and manifest are in `bench-results/endpoint-audit-2026-11-06/`; open
 rubric when a `class_` column is present. `mark_s` is clip-relative (3.0 s) and
 `ts_s` is the absolute time in the conversation.
 
-This settles the label-vs-domain question only if the two classes land
-differently in the ear; that verdict is the listening session's, not the
-drawer's.
+**The verdict (20 clips, 10 per class).** The two classes do land differently:
+
+| set | yes | rate | 95% CI |
+| --- | ---: | ---: | --- |
+| fires-on-eot | 10/10 | 100% | 72–100% |
+| fires-off | 5/10 | 50% | 24–76% |
+
+The on-eot class is the stronger result: every fire that landed within 0.8 s of
+an `eot` label sounded like the caller had finished. The off-eot class is the
+finding that matters for training — only half of fires far from an `eot` label
+sounded finished, so **the absence of an `eot` label is not evidence that the
+caller had not finished**. The label under-covers the actual turn end: fires
+just outside its window (1.52 s away) and fires 40–58 s away both drew "yes".
+One of the ten off-eot verdicts is a hangup (caller already gone at the mark),
+not an endpoint judgment; excluding it leaves 4/9 = 44% (19–73%).
+
+So the label is a valid positive but a noisy negative. A detector trained on
+`eot`-present vs `eot`-absent learns label coverage, not turn-taking — the
+negative class needs its own audit, not the label's silence.
+
+Caveat: n=10 per class over 10 Switchboard sessions, so the CIs are wide; the
+100% and 50% are directionally solid but the exact rates are not.
 
 ### Event catalog for training clips (step 3, 2026-11-06)
 
